@@ -7,13 +7,13 @@
    the two transcripts part. */
 
 import { byId, el, toast } from '../dom';
-import { fmtNum, pad } from '../format';
+import { fmtNum } from '../format';
 import type { Run, Vm } from '../models/run';
 import { exitKind, exitKindText } from '../models/run';
-import { isExitLine, kindOf } from '../serial';
 import type { CompareTarget } from '../store';
 import { store } from '../store';
 import { vmStateMk } from './chrome';
+import { txRow } from './txrow';
 
 const MAXROWS = 800; // per-pane render window; older lines elide
 
@@ -53,17 +53,8 @@ function blankState(): PaneState {
   return { key: '', from: 0, to: 0, lastRow: null, empty: null, dirty: true };
 }
 
-/* ------------------------------------------------------------ transcript */
-function txRow(i: number, line: string, cls?: string): HTMLElement {
-  const row = el('div', 'row' + (cls ? ' ' + cls : ''));
-  row.appendChild(el('span', 'seq', i >= 0 ? pad(i + 1, 4) : ''));
-  row.appendChild(el('span', 'kind', cls === 'elide' ? '' : kindOf(line)));
-  row.appendChild(el('pre', null, line));
-  const marg = el('span', 'marg');
-  if (isExitLine(line)) marg.appendChild(el('span', 'mk warn', 'exit'));
-  row.appendChild(marg);
-  return row;
-}
+/* ------------------------------------------------------------ transcript
+   The rows come from ./txrow — the run entry and these panes read alike. */
 
 /** Windowed append, the same convention as the run view's transcript —
     including the last-line-grows case (a partial line on the wire). */

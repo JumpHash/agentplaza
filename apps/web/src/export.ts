@@ -3,14 +3,25 @@
    download is inert by construction (Blob -> object URL -> a download anchor,
    revoked on use). Nothing here renders markup. */
 
-import { fmtNum } from './format';
+import { fmtDateTime, fmtDur, fmtNum } from './format';
 import type { FleetSample } from './models/history';
 import type { Run, Vm } from './models/run';
+import { cidRange, exitKind, exitKindText, modeText } from './models/run';
+import { sessionOf, sessionSummary } from './models/session';
 
 /** One VM's transcript, exactly as captured: the lines joined, with a final
     newline. No headers, no reformatting — the file is the transcript. */
 export function vmTranscriptText(lines: string[]): string {
   return lines.length === 0 ? '' : lines.join('\n') + '\n';
+}
+
+/** The labeled section rule every run-level export puts over a VM's transcript. */
+function sectionRule(run: Run, vm: Vm, lineCount: number): string {
+  const cid = vm.guest_cid != null ? ` · cid ${vm.guest_cid}` : '';
+  return (
+    `══ run ${run.id} · vm ${vm.id}${cid} · ${vm.state} · ` +
+    `${fmtNum(lineCount)} ${lineCount === 1 ? 'line' : 'lines'} ══\n`
+  );
 }
 
 /** The whole run: every VM's transcript under its own labeled section rule,
@@ -19,11 +30,44 @@ export function runTranscriptText(run: Run, linesForVm: (vm: Vm) => string[]): s
   const parts: string[] = [];
   for (const vm of run.vms) {
     const lines = linesForVm(vm);
+    parts.push(sectionRule(run, vm, lines.length));
+    parts.push(vmTranscriptText(lines));
+    parts.push('\n');
+  }
+  return parts.join('');
+}
+
+/** The run's report: the register's facts about the run (state, shape,
+    times, per-VM CIDs and exit kinds), then every VM's transcript under its
+    section rule — with the session's summary line when the transcript shows
+    a completed vsock session. Assembled here, byte for byte; the transcripts
+    inside stay exactly as captured. */
+export function runReportText(run: Run, linesForVm: (vm: Vm) => string[]): string {
+  const n = run.vms.length;
+  const parts: string[] = [];
+  parts.push(`══ run ${run.id} · report ══\n`);
+  parts.push(`state: ${run.state}\n`);
+  parts.push(`opened: ${fmtDateTime(run.created_at)}\n`);
+  parts.push(`closed: ${run.ended_at != null ? fmtDateTime(run.ended_at) : '—'}\n`);
+  parts.push(`elapsed: ${fmtDur((run.ended_at ?? Date.now()) - run.created_at)}\n`);
+  parts.push(
+    `shape: ${n} ${n === 1 ? 'VM' : 'VMs'} × ${run.vcpus} ${run.vcpus === 1 ? 'vCPU' : 'vCPUs'} · ` +
+    `${fmtNum(run.memory_mib)} MiB each · ${modeText(run)}\n`,
+  );
+  const cids = cidRange(run);
+  parts.push(`vsock: ${cids != null ? `guest cids ${cids}` : 'none'}\n`);
+  parts.push('guests:\n');
+  for (const vm of run.vms) {
     const cid = vm.guest_cid != null ? ` · cid ${vm.guest_cid}` : '';
-    parts.push(
-      `══ run ${run.id} · vm ${vm.id}${cid} · ${vm.state} · ` +
-      `${fmtNum(lines.length)} ${lines.length === 1 ? 'line' : 'lines'} ══\n`,
-    );
+    const exit = vm.state === 'exited' ? ` · ${exitKindText(exitKind(linesForVm(vm)))}` : '';
+    parts.push(`  vm ${vm.id}${cid} · ${vm.state}${exit}\n`);
+  }
+  parts.push('\n');
+  for (const vm of run.vms) {
+    const lines = linesForVm(vm);
+    parts.push(sectionRule(run, vm, lines.length));
+    const session = sessionOf(lines);
+    if (session?.phase === 'complete') parts.push(`session: ${sessionSummary(session)}\n`);
     parts.push(vmTranscriptText(lines));
     parts.push('\n');
   }

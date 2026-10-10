@@ -14,7 +14,13 @@ import {
   utf8ByteLength,
   type SerialCache,
 } from '../src/serial';
+import { runReportText, runTranscriptText } from '../src/export';
+import { fmtDateTime } from '../src/format';
+import type { Vm } from '../src/models/run';
+import { cidRange } from '../src/models/run';
+import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
+import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
 
 let failures = 0;
 function eq(actual: unknown, expected: unknown, name: string): void {
@@ -165,6 +171,199 @@ function runShaped(id: string, createdAt: number, state: 'running' | 'done', ser
   setTimeout(settledDone, 30);
   await settled;
   eq(typeof s.runsError, 'string', 'the register was asked for the truth');
+}
+
+/* ================= the vsock session, read out of the transcript =========
+   The frozen session's own lines are the derivation: a session is in flight
+   from the guest's hello until its bye; untrusted junk is never believed. */
+
+const SESSION_LINES = [
+  '[    3.110] plaza guest: agent harness starting',
+  '[vsock->] {"type":"hello","vm":0,"guest_cid":10}',
+  '[vsock<-] {"type":"welcome","echo":"plaza-orchestrator"}',
+  '[vsock->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza@cid-10"}}',
+  '[vsock<-] {"type":"tool_result","call":1,"ok":true,"output":"plaza@cid-10"}',
+  '[vsock->] {"type":"tool_call","call":2,"name":"uptime","args":{}}',
+  '[vsock<-] {"type":"tool_result","call":2,"ok":true,"output":"244073.16 5326141.84"}',
+  '[vsock->] {"type":"bye","calls":2}',
+  'agent-harness: session complete after 2 tool calls',
+];
+
+eq(sessionOf(['[    0.0] boot', 'plaza guest: hello world']), null, 'no session lines, no session');
+eq(sessionOf(SESSION_LINES.slice(0, 2)), { phase: 'active', steps: ['hello'], calls: 0 }, 'hello opens the session');
+eq(
+  sessionOf(SESSION_LINES.slice(0, 3)),
+  { phase: 'active', steps: ['hello', 'welcome'], calls: 0 },
+  'the welcome joins the steps',
+);
+eq(
+  sessionOf(SESSION_LINES.slice(0, 5)),
+  { phase: 'active', steps: ['hello', 'welcome', 'echo✓'], calls: 1 },
+  'an answered call carries its mark mid-session',
+);
+eq(
+  sessionOf(SESSION_LINES),
+  { phase: 'complete', steps: ['hello', 'welcome', 'echo✓', 'uptime✓', 'bye'], calls: 2 },
+  'the frozen session reads whole',
+);
+eq(
+  sessionSummary(sessionOf(SESSION_LINES) ?? { phase: 'active', steps: [], calls: 0 }),
+  'hello→welcome→echo✓→uptime✓→bye, 2 tool calls',
+  'the summary is the session in one line',
+);
+eq(
+  sessionOf([
+    '[vsock->] {"type":"hello","vm":1,"guest_cid":11}',
+    '[vsock->] {"type":"tool_call","call":1,"name":"echo","args":{}}',
+    '[vsock<-] {"type":"tool_result","call":1,"ok":false,"output":"refused"}',
+  ]),
+  { phase: 'active', steps: ['hello', 'echo✗'], calls: 1 },
+  'a failed tool is data, marked ✗',
+);
+eq(
+  sessionOf(['[vsock->] not json at all', '[vsock->] 42', '[vsock->] {"type":"mystery"}', '[vsock<-] ["array"]']),
+  null,
+  'untrusted junk is skipped, never believed',
+);
+eq(
+  sessionOf([
+    '[vsock->] {"type":"hello","vm":0,"guest_cid":10}',
+    '[vsock->] {"type":"bye","calls":2}',
+    '[vsock->] {"type":"hello","vm":0,"guest_cid":10}',
+  ]),
+  { phase: 'active', steps: ['hello'], calls: 0 },
+  'a reboot begins a new session reading',
+);
+eq(
+  sessionOf([
+    '[vsock->] {"type":"hello","vm":0,"guest_cid":10}',
+    '[vsock->] {"type":"tool_call","call":1,"name":"echo","args":{}}',
+    '[vsock->] {"type":"tool_call","call":2,"name":"uptime","args":{}}',
+    '[vsock->] {"type":"bye"}',
+  ]),
+  { phase: 'complete', steps: ['hello', 'echo', 'uptime', 'bye'], calls: 2 },
+  'a bye without its count falls back to the observed calls',
+);
+eq(
+  sessionOf([
+    '[vsock->] {"type":"hello","vm":0,"guest_cid":10}',
+    'agent-harness: session complete after 2 tool calls',
+  ]),
+  { phase: 'complete', steps: ['hello'], calls: 2 },
+  'the closing note completes a session whose bye was lost',
+);
+
+/* ------------------------------------------- the run's CID range -------- */
+function vmShaped(id: number, cid?: number): Vm {
+  return cid == null ? { id, state: 'running' } : { id, state: 'running', guest_cid: cid };
+}
+const cidRun = (vms: Vm[]) => ({
+  id: 'r1', state: 'running' as const, vcpus: 2, memory_mib: 512, beats: null,
+  created_at: 1, ended_at: null, vms,
+});
+eq(cidRange(cidRun([vmShaped(0), vmShaped(1)])), null, 'no vsock, no range');
+eq(cidRange(cidRun([vmShaped(0, 10)])), '10', 'a lone CID is itself');
+eq(cidRange(cidRun([vmShaped(0, 11), vmShaped(1, 10), vmShaped(2, 12)])), '10–12', 'the range spans min to max');
+
+/* --------------------------------- the district's pure derivations ------ */
+eq(
+  runPlateLines({
+    id: 'r3', state: 'running', vcpus: 2, memory_mib: 512, beats: null,
+    created_at: 1, ended_at: null, vms: [vmShaped(0, 10), vmShaped(1, 11)],
+  }),
+  { title: 'r3 · running', sub: 'cid 10–11 · 2 VMs × 2 vCPU · 512 MiB' },
+  'the nameplate carries id, state, CID range and shape',
+);
+eq(
+  runPlateLines({
+    id: 'r4', state: 'done', vcpus: 1, memory_mib: 128, beats: 12,
+    created_at: 1, ended_at: 2, vms: [vmShaped(0)],
+  }),
+  { title: 'r4 · done', sub: 'no vsock · 1 VM × 1 vCPU · 128 MiB' },
+  'a run without vsock says so on its plate',
+);
+{
+  const one = overviewFraming(24, 128320, 1);
+  eq(one.target, [0, 0, 0], 'the overview looks at the plot’s centre');
+  eq(one.pos[0], one.pos[2], 'the overview keeps the boot framing’s diagonal');
+  const many = overviewFraming(24, 128320, 20);
+  eq(many.pos[0] > one.pos[0], true, 'many runs widen the overview past the machine span');
+  eq(overviewFraming(2, 1024, 0).pos[0], 16 * 0.9, 'a small machine floors at the minimum span');
+  const focus = focusFraming(5.2, 4.4, -4.5);
+  eq(focus.target, [0, 0.8, -4.5], 'the focus frames the platform’s own centre');
+  eq(focusFraming(20.8, 20, 0).pos[0] > focus.pos[0], true, 'a bigger platform frames from further');
+  eq(arcLift(0), 2.5, 'the arc lift has a floor');
+  eq(arcLift(10), 3.2, 'the arc lift follows the span');
+  eq(arcLift(100), 14, 'the arc lift is bounded');
+}
+
+/* the session arc's bounds: the protocol window, one beat of dwell after a
+   bye seen on an open run, and never for a killed VM or a historical run */
+eq(arcAlive('active', 'running', null, 1000), true, 'a session in flight draws its arc');
+eq(arcAlive('active', 'exited', null, 1000), false, 'a VM gone mid-session draws no arc');
+eq(arcAlive('active', 'killed', null, 1000), false, 'a killed VM draws no arc');
+eq(arcAlive('complete', 'running', 1000, 1000 + ARC_DWELL_MS - 1), true, 'the dwell keeps a fresh bye on the plot');
+eq(arcAlive('complete', 'exited', 1000, 1000 + ARC_DWELL_MS - 1), true, 'the natural exit path keeps the dwell');
+eq(arcAlive('complete', 'exited', 1000, 1000 + ARC_DWELL_MS), false, 'the dwell ends after one beat');
+eq(arcAlive('complete', 'running', null, 1000), false, 'a session read from history draws no arc');
+eq(arcAlive('complete', 'killed', 1000, 1001), false, 'the strike ends even a fresh dwell');
+
+/* ------------------------------------- the run report, byte for byte ---- */
+eq(fmtDateTime(null), '—', 'no time reads as a dash');
+eq(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(fmtDateTime(1791664501432)), true, 'the report’s timestamps are self-contained');
+
+{
+  const reportRun = {
+    id: 'r1', state: 'done' as const, vcpus: 2, memory_mib: 512, beats: null,
+    created_at: 1000, ended_at: 6000,
+    vms: [
+      { id: 0, state: 'exited' as const, guest_cid: 10 },
+      { id: 1, state: 'exited' as const, guest_cid: 11 },
+    ],
+  };
+  const linesOfVm = (vm: { id: number }): string[] =>
+    vm.id === 0
+      ? ['[    0.0] boot', '[vsock->] {"type":"hello","vm":0,"guest_cid":10}', '[vsock->] {"type":"bye","calls":0}', 'reboot: Power down']
+      : ['[    0.0] boot', 'reboot: Restarting system'];
+  const expected =
+    `══ run r1 · report ══\n` +
+    `state: done\n` +
+    `opened: ${fmtDateTime(1000)}\n` +
+    `closed: ${fmtDateTime(6000)}\n` +
+    `elapsed: 5 s\n` +
+    `shape: 2 VMs × 2 vCPUs · 512 MiB each · steady · runs until killed\n` +
+    `vsock: guest cids 10–11\n` +
+    `guests:\n` +
+    `  vm 0 · cid 10 · exited · Slept · S5\n` +
+    `  vm 1 · cid 11 · exited · Reset\n` +
+    `\n` +
+    `══ run r1 · vm 0 · cid 10 · exited · 4 lines ══\n` +
+    `session: hello→bye, 0 tool calls\n` +
+    `[    0.0] boot\n[vsock->] {"type":"hello","vm":0,"guest_cid":10}\n[vsock->] {"type":"bye","calls":0}\nreboot: Power down\n` +
+    `\n` +
+    `══ run r1 · vm 1 · cid 11 · exited · 2 lines ══\n` +
+    `[    0.0] boot\nreboot: Restarting system\n` +
+    `\n`;
+  eq(runReportText(reportRun, linesOfVm), expected, 'the report assembles byte for byte');
+  /* the shared section rule keeps the plain run export byte-stable */
+  eq(
+    runTranscriptText(reportRun, linesOfVm),
+    `══ run r1 · vm 0 · cid 10 · exited · 4 lines ══\n` +
+    `[    0.0] boot\n[vsock->] {"type":"hello","vm":0,"guest_cid":10}\n[vsock->] {"type":"bye","calls":0}\nreboot: Power down\n` +
+    `\n` +
+    `══ run r1 · vm 1 · cid 11 · exited · 2 lines ══\n` +
+    `[    0.0] boot\nreboot: Restarting system\n` +
+    `\n`,
+    'the plain run export is byte-stable across the shared rule',
+  );
+  /* a VM whose session never completed gets no session line */
+  const activeRun = { ...reportRun, vms: [{ id: 0, state: 'running' as const, guest_cid: 10 }] };
+  const activeLines = (): string[] => ['[vsock->] {"type":"hello","vm":0,"guest_cid":10}'];
+  eq(
+    runReportText(activeRun, activeLines).includes('session:'),
+    false,
+    'an in-flight session is not summarised as done',
+  );
 }
 
 if (failures > 0) {

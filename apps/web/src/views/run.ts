@@ -4,17 +4,18 @@
 
 import { deleteRun, sendInput } from '../api';
 import { announce, byId, el, toast } from '../dom';
-import { downloadText, runTranscriptText, vmTranscriptText } from '../export';
+import { downloadText, runReportText, runTranscriptText, vmTranscriptText } from '../export';
 import { fmtDur, fmtNum, fmtTime, pad } from '../format';
 import { HISTORY_CAP } from '../models/history';
 import type { Run, Vm } from '../models/run';
 import { exitKind, exitKindText, isOpen, modeText, seqOf } from '../models/run';
 import { vmKey } from '../models/activity';
-import { QUICK_COMMANDS, isExitLine, kindOf } from '../serial';
+import { QUICK_COMMANDS } from '../serial';
 import { store } from '../store';
 import { runStateMk, vmStateMk } from './chrome';
 import type { Palette } from './plan';
 import { palette } from './plan';
+import { txRow } from './txrow';
 
 const MAXROWS = 1500; // transcript render window; older lines elide
 
@@ -286,16 +287,8 @@ function drawSpark(cv: HTMLCanvasElement, series: readonly number[], p: Palette)
   );
 }
 
-function txRow(i: number, line: string, cls?: string): HTMLElement {
-  const row = el('div', 'row' + (cls ? ' ' + cls : ''));
-  row.appendChild(el('span', 'seq', i >= 0 ? pad(i + 1, 4) : ''));
-  row.appendChild(el('span', 'kind', cls === 'elide' ? '' : kindOf(line)));
-  row.appendChild(el('pre', null, line));
-  const marg = el('span', 'marg');
-  if (isExitLine(line)) marg.appendChild(el('span', 'mk warn', 'exit'));
-  row.appendChild(marg);
-  return row;
-}
+/* The transcript rows come from ./txrow — the entry and the compare panes
+   read alike: seq in the margin, kind, the line as text, marginalia. */
 
 function renderSerial(run: Run | null): void {
   const tx = byId('tx');
@@ -492,6 +485,17 @@ export function initRun(): void {
       runTranscriptText(run, (vm) => store.linesFor(run.id, vm.id, vm.serial)),
     );
     toast(`Run ${run.id} exported — ${run.vms.length} VM ${run.vms.length === 1 ? 'section' : 'sections'}`);
+  });
+  /* the run's report: the register's facts header, then the sectioned
+     transcripts with each completed session's summary line */
+  byId('tx-export-report').addEventListener('click', () => {
+    const run = store.openRun;
+    if (!run || run.vms.length === 0) return;
+    downloadText(
+      `agentplaza-${run.id}-report.txt`,
+      runReportText(run, (vm) => store.linesFor(run.id, vm.id, vm.serial)),
+    );
+    toast(`Run ${run.id} report exported — facts and ${run.vms.length} ${run.vms.length === 1 ? 'section' : 'sections'}`);
   });
 }
 

@@ -58,6 +58,19 @@ export function modeText(run: Run): string {
   return run.beats == null ? 'steady · runs until killed' : `churn · ${run.beats} beats then poweroff`;
 }
 
+/** The run's guest CID range as marginalia (`10–11`); null without vsock. */
+export function cidRange(run: Run): string | null {
+  let lo: number | null = null;
+  let hi: number | null = null;
+  for (const v of run.vms) {
+    if (v.guest_cid == null) continue;
+    lo = lo == null ? v.guest_cid : Math.min(lo, v.guest_cid);
+    hi = hi == null ? v.guest_cid : Math.max(hi, v.guest_cid);
+  }
+  if (lo == null || hi == null) return null;
+  return lo === hi ? String(lo) : `${lo}–${hi}`;
+}
+
 /** How a VM left the running state, derived from its transcript's final lines. */
 export type ExitKind = 'slept' | 'reset' | 'parked';
 

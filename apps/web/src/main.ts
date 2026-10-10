@@ -15,7 +15,7 @@ import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from '
 import { renderMachine } from './views/machine';
 import { renderMap, syncMapVisibility } from './views/map2d';
 import { initTelemetry, renderTelemetry } from './views/telemetry';
-import { sync3d } from './views/view3d';
+import { cameraPreset, cameraState, initView3d, sync3d } from './views/view3d';
 
 /* ------------------------------------------------------------ routing */
 function show(): void {
@@ -115,6 +115,11 @@ document.addEventListener('keydown', (e) => {
     else if (store.route.name === 'compare') (on ? cmpFollowKey : cmpJumpKey)();
     return;
   }
+  /* the 3D view's camera keys (the canvas itself handles them when focused) */
+  if ((e.key === 'o' || e.key === 'r') && store.route.name === 'view3d') {
+    cameraPreset(e.key === 'o' ? 'overview' : 'focus');
+    return;
+  }
   if (e.key === 'Enter' && t instanceof HTMLElement && t.matches('tr[data-sel-vm]')) {
     selectVm(Number(t.getAttribute('data-sel-vm')));
     return;
@@ -131,6 +136,7 @@ initRun();
 initCompare();
 initKeys();
 initTelemetry();
+initView3d();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -156,4 +162,5 @@ window.__PLAZA_DIAG__ = {
   get renders() { return store.renders; },
   get wire() { return { ...store.wire }; },
   get stream() { return store.stream; },
+  get camera3d() { return cameraState(); },
 };

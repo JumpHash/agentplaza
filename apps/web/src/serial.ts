@@ -90,8 +90,11 @@ export function linesOf(cache: Map<string, SerialCache>, key: string, raw: strin
   return lines;
 }
 
-/** The transcript's kind column: boot lines, heartbeats, guest chatter, replies. */
+/** The transcript's kind column: boot lines, heartbeats, guest chatter, replies,
+    and the vsock wire's two directions (the frozen session's own lines). */
 export function kindOf(line: string): string {
+  if (line.startsWith('[vsock->]')) return 'out';
+  if (line.startsWith('[vsock<-]')) return 'in';
   if (line.startsWith('plaza guest alive: heartbeat')) return 'beat';
   if (line.startsWith('plaza guest:')) return 'guest';
   if (line.startsWith('[')) return 'boot';
@@ -103,6 +106,12 @@ export function kindOf(line: string): string {
 /** Lines that mark a VM's way out, flagged in the transcript margin. */
 export function isExitLine(line: string): boolean {
   return /rebooting|parking|Power down/.test(line);
+}
+
+/** The harness's own note that a session closed well — the margin marks it
+    like an exit, but in the register's green: the wire's work is done. */
+export function isSessionMark(line: string): boolean {
+  return line.startsWith('agent-harness: session complete');
 }
 
 /** The guest's command set: quick buttons beside the serial input. */

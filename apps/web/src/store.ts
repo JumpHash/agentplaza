@@ -32,6 +32,8 @@ declare global {
       readonly renders: number;
       readonly wire: { readonly run: number; readonly vm: number; readonly serial: number };
       readonly stream: StreamState;
+      /** The 3D camera's position and target, when the scene has booted. */
+      readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
     };
   }
 }

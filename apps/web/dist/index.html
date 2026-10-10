@@ -19,10 +19,10 @@
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-CLEKGIEU.css">
-<script type="module" src="main-L3K5NHDH.js"></script>
+<link rel="stylesheet" href="main-VJIUG5LB.css">
+<script type="module" src="main-B2KFBFHJ.js"></script>
 </head>
-<body data-bundle-hash="e72a3974d42560a268133c357c482ba64fc23be13b26cc770f8e9a46b1d73df1">
+<body data-bundle-hash="3f2ccd8486a292513363a1a5ecc3322dbeffd1fa0ca138c34aad54bafc405480">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -38,7 +38,7 @@
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">e72a3974d42560a268133c357c482ba64fc23be13b26cc770f8e9a46b1d73df1</code></span>
+      <span>Bundle <code id="colo-hash">3f2ccd8486a292513363a1a5ecc3322dbeffd1fa0ca138c34aad54bafc405480</code></span>
       <span id="colo-wire">The wire · opening…</span>
       <span>Keys 0–5 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
@@ -210,6 +210,7 @@
           <button type="button" class="btn sm" id="tx-jump">Jump to the latest line</button>
           <button type="button" class="btn sm" id="tx-export-vm">Export vm — transcript</button>
           <button type="button" class="btn sm" id="tx-export-run">Export the whole run</button>
+          <button type="button" class="btn sm" id="tx-export-report">Export the run's report</button>
         </div>
       </div></div>
 
@@ -294,7 +295,7 @@
       <div class="parts top bb0"><div class="body canvasbody">
         <canvas id="map-canvas" tabindex="0" role="application"
           aria-label="Fleet map. Arrow keys walk the VMs; Enter opens the selected VM's run."></canvas>
-        <div class="maplegend" aria-hidden="true">
+        <div class="legend" aria-hidden="true">
           <span class="mk ok">running</span>
           <span class="mk">exited</span>
           <span class="mk crit">killed</span>
@@ -310,7 +311,7 @@
         <span class="folio">f. 4</span>
         <h1>3D view</h1>
         <span class="aside mk ok" id="v3-live" hidden>live</span>
-        <p class="lede">The same register, raised: the machine is the ground (gridded to its CPUs and memory), runs are platforms, VMs are blocks whose glow follows serial chatter. Drag to orbit, scroll to zoom, click a block to open its entry. Nothing is drawn that is not a machine, a run, or a VM.</p>
+        <p class="lede">The same register, raised: the machine is the ground (gridded to its CPUs and memory), runs are platforms named on their plates, VMs are blocks whose glow follows serial chatter. The host every guest talks to stands off the plot's corner (cid 2); each session draws an arc from its VM's block to the host — from its hello line to its bye, and one beat after, so a session the register just wrote stays visible. Drag to orbit, scroll to zoom, click a block to open its entry. Nothing is drawn that is not the machine, a run, a VM, the host, or a session.</p>
       </div>
 
       <div class="parts" id="v3-notice" hidden><div class="body">
@@ -320,6 +321,17 @@
 
       <div class="parts top bb0"><div class="body canvasbody">
         <div id="v3-mount" class="v3mount"></div>
+        <div class="legend" aria-hidden="true">
+          <span class="mk ok">running — glows with chatter</span>
+          <span class="mk">exited</span>
+          <span class="mk crit">killed</span>
+          <span class="mk">host · cid 2</span>
+          <span class="mk vsock">vsock session — live arc</span>
+        </div>
+        <div class="actions mt-sm">
+          <button type="button" class="btn sm" id="v3-overview">Frame the whole plot</button>
+          <button type="button" class="btn sm" id="v3-focus">Frame a run</button>
+        </div>
         <p class="example" id="v3-status">Waiting for the register…</p>
       </div></div>
     </div>
@@ -465,6 +477,8 @@
         <tr><td class="kc"><kbd>t</kbd></td><td>Theme — system, then light, then dark</td></tr>
         <tr><td class="kc"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></td><td>Walk the VMs on the map</td></tr>
         <tr><td class="kc"><kbd>Enter</kbd></td><td>Open the focused VM's entry on the map · select a VM row on a run</td></tr>
+        <tr><td class="kc"><kbd>o</kbd></td><td>Frame the whole plot — on the 3D view</td></tr>
+        <tr><td class="kc"><kbd>r</kbd></td><td>Frame the selected run — on the 3D view</td></tr>
       </tbody>
     </table>
     <p class="example">Keys never fire while you are typing in a field, and the canvases keep their own arrows.</p>
