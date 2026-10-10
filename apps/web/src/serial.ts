@@ -5,6 +5,58 @@
 export interface SerialCache {
   raw: string;
   lines: string[];
+  /** The UTF-8 byte length of `raw` — the unit the daemon's serial offsets speak. */
+  bytes: number;
+}
+
+/* ---------------------------------------------------------- byte offsets
+   The event stream's `serial` frames name a byte offset into the VM's
+   capture (a Vec<u8> daemon-side), not a string index: for ASCII the two
+   agree, but any multibyte guest byte would drift a naive .length merge.
+   The line cache therefore tracks the byte length of what it holds, and a
+   re-delivery is clipped by bytes. */
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const ASCII_ONLY = /^[\x00-\x7F]*$/;
+
+/** The UTF-8 byte length of `text`. */
+export function utf8ByteLength(text: string): number {
+  return ASCII_ONLY.test(text) ? text.length : encoder.encode(text).length;
+}
+
+/**
+ * `text` with its first `bytes` UTF-8 bytes dropped — a re-delivered stretch
+ * of a serial event. The store's copy and the daemon's capture decode the
+ * same buffer, so the clip point always lands on a character boundary; a
+ * capture that went through a lossy decode misaligns instead and heals
+ * through the gap path (a detail GET), never through a wrong append.
+ */
+export function clipLeadingBytes(text: string, bytes: number): string {
+  if (bytes <= 0) return text;
+  if (ASCII_ONLY.test(text)) return text.slice(bytes); // ascii: bytes are indices; past the end is ''
+  const buf = encoder.encode(text);
+  if (bytes >= buf.length) return '';
+  return decoder.decode(buf.subarray(bytes));
+}
+
+/** What one serial event means against what the store already holds. */
+export type SerialDelta =
+  | { kind: 'append'; text: string } // the unseen stretch, ready to append
+  | { kind: 'dup' } // a re-delivery carrying nothing new
+  | { kind: 'gap' }; // bytes were missed — a detail GET reconciles
+
+/**
+ * The offset-idempotent merge decision, pure so the harness can test it
+ * directly: `have` is the byte length of the store's copy, `offset` the
+ * capture byte the event's `text` starts at. offset == have appends;
+ * offset < have clips the re-delivered head and keeps only what is new;
+ * offset > have is a gap (a missed poll or frame), never an append.
+ */
+export function serialDelta(have: number, offset: number, text: string): SerialDelta {
+  if (offset > have) return { kind: 'gap' };
+  const kept = clipLeadingBytes(text, have - offset);
+  return kept === '' ? { kind: 'dup' } : { kind: 'append', text: kept };
 }
 
 /**
@@ -19,12 +71,13 @@ export function linesOf(cache: Map<string, SerialCache>, key: string, raw: strin
   if (!cached || !text.startsWith(cached.raw)) {
     /* fresh vm or the daemon replaced the buffer: re-split wholesale */
     const lines = text === '' ? [] : text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
-    cache.set(key, { raw: text, lines });
+    cache.set(key, { raw: text, lines, bytes: utf8ByteLength(text) });
     return lines;
   }
   /* append-only growth; the last line may still be on its way (no \n yet) */
   const lines = cached.lines;
-  const parts = text.slice(cached.raw.length).replace(/\r/g, '').split('\n');
+  const grown = text.slice(cached.raw.length);
+  const parts = grown.replace(/\r/g, '').split('\n');
   let i = 0;
   if (cached.raw !== '' && !cached.raw.endsWith('\n') && lines.length) {
     lines[lines.length - 1] = (lines[lines.length - 1] ?? '') + (parts[0] ?? '');
@@ -33,6 +86,7 @@ export function linesOf(cache: Map<string, SerialCache>, key: string, raw: strin
   for (; i < parts.length; i++) lines.push(parts[i] ?? '');
   if (text.endsWith('\n')) lines.pop();
   cached.raw = text;
+  cached.bytes += utf8ByteLength(grown);
   return lines;
 }
 

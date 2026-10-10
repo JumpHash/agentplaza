@@ -10,7 +10,7 @@
      hashed js/css) — hostable on any static host, no server build, no framework.
      Talks to the frozen /api/v0 contract on the same origin:
        GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
-       POST /api/v0/runs/{id}/input
+       POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial deltas)
      Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry;
      keys 0–5 walk the six index destinations, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
@@ -39,6 +39,7 @@
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
       <span>Bundle <code id="colo-hash">{{BUNDLE_HASH}}</code></span>
+      <span id="colo-wire">The wire · opening…</span>
       <span>Keys 0–5 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>

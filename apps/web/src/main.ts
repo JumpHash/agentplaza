@@ -4,6 +4,7 @@
 import './styles/base.css';
 import './styles/views.css';
 
+import { startEvents } from './events';
 import { KEY_ROUTES, NAV_OF, parseRoute } from './router';
 import { store } from './store';
 import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
@@ -146,3 +147,13 @@ store.onRender(() => {
 
 show();
 store.startPolling();
+startEvents();
+
+/* The verification harness's read-only window into the live data layer:
+   render passes flushed, wire frames carried, stream state. The app itself
+   never reads these. */
+window.__PLAZA_DIAG__ = {
+  get renders() { return store.renders; },
+  get wire() { return { ...store.wire }; },
+  get stream() { return store.stream; },
+};

@@ -83,7 +83,21 @@ export function initColophon(): void {
 /* ------------------------------------------------------------ header */
 const HEALTH_MARK: Record<string, string> = { live: 'mk ok', stale: 'mk warn', down: 'mk crit' };
 
+/* The wire as marginalia: the event stream's own liveness and what it has
+   carried, kept honest about being transport — daemon health is the polls'. */
+function renderWire(): void {
+  const w = store.wire;
+  const total = w.run + w.vm + w.serial;
+  byId('colo-wire').textContent =
+    store.stream === 'live'
+      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial)`
+      : store.stream === 'reconnecting'
+        ? 'The wire · down — reconnecting; the polls carry the register'
+        : 'The wire · opening…';
+}
+
 export function renderChrome(): void {
+  renderWire();
   byId('nav-count').textContent = store.runsError != null ? '—' : fmtNum(store.runs.length);
   byId('nav-run-id').textContent = store.detailId ?? '—';
   byId('nav-machine').textContent = store.machine?.class ?? '—';

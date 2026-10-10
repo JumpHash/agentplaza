@@ -9,15 +9,32 @@ import { ActivityTracker, vmKey } from './models/activity';
 import type { RunSlice } from './models/history';
 import { SessionHistory } from './models/history';
 import type { Machine } from './models/machine';
-import type { Run } from './models/run';
-import { seqOf } from './models/run';
+import type { Run, RunState, VmState } from './models/run';
+import { isOpen, seqOf } from './models/run';
 import type { SerialCache } from './serial';
-import { linesOf } from './serial';
+import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
 export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
+/** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
+export type StreamState = 'connecting' | 'live' | 'reconnecting';
+
+declare global {
+  interface Window {
+    /** Verification hook: a harness may set this before boot to slow the
+        poll clock, proving the event stream — not the polls — carries
+        liveness. Production never sets it. */
+    __PLAZA_TICK_MS__?: number;
+    /** Read-only counters for the verification harness; the app never reads them. */
+    __PLAZA_DIAG__?: {
+      readonly renders: number;
+      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number };
+      readonly stream: StreamState;
+    };
+  }
+}
 
 /** The pair a #compare route names: run a's vm avm against run b's vm bvm. */
 export interface CompareTarget {
@@ -33,9 +50,15 @@ export interface Route {
   compare: CompareTarget | null;
 }
 
-const TICK_MS = 1000; // detail cadence; the list polls every 2 ticks
+const TICK_MS =
+  typeof window !== 'undefined' && typeof window.__PLAZA_TICK_MS__ === 'number' && window.__PLAZA_TICK_MS__ > 0
+    ? window.__PLAZA_TICK_MS__
+    : 1000; // detail cadence; the list polls every 2 ticks
 const MACHINE_EVERY = 15; // ticks between machine polls
 const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
+const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
+const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
+const VM_PUSH_MIN_MS = 1000; // a VM's sparkline ring gains at most one point per this window
 
 export class Store {
   /* daemon state */
@@ -65,12 +88,26 @@ export class Store {
   private lastOkAt = 0;
   private lastErrAt = 0;
 
+  /* the live wire (GET /api/v0/events): its own liveness and tallies —
+     informational only; daemon health stays with the polls */
+  stream: StreamState = 'connecting';
+  readonly wire = { run: 0, vm: 0, serial: 0 };
+  /** Render passes flushed; the harness asserts a burst cannot storm the paint path. */
+  renders = 0;
+
   /* polling internals */
   private busy = false;
   private ticks = 0;
   private timer: number | null = null;
   private renderQueued = false;
   private readonly renderers: Array<() => void> = [];
+
+  /* live-wire internals */
+  private liveRenderAt = 0;
+  private liveRenderTimer: number | null = null;
+  private listRefreshTimer: number | null = null;
+  private readonly detailRefreshPending = new Set<string>();
+  private readonly vmPushAt = new Map<string, number>();
 
   get health(): Health {
     if (this.lastOkAt === 0) return this.lastErrAt > 0 ? 'down' : 'stale';
@@ -88,8 +125,28 @@ export class Store {
     this.renderQueued = true;
     queueMicrotask(() => {
       this.renderQueued = false;
+      this.renders++;
       for (const render of this.renderers) render();
     });
+  }
+
+  /** The live lane, for the event stream's serial frames: immediate while
+      quiet, at most one paint per LIVE_RENDER_MS under a burst, and always
+      a trailing paint so the last frame of a burst is never lost. A guest
+      spewing serial can never storm the renderers. */
+  private scheduleLiveRender(): void {
+    if (this.liveRenderTimer != null) return; // a trailing paint is already queued
+    const since = Date.now() - this.liveRenderAt;
+    if (since >= LIVE_RENDER_MS) {
+      this.liveRenderAt = Date.now();
+      this.scheduleRender();
+    } else {
+      this.liveRenderTimer = setTimeout(() => {
+        this.liveRenderTimer = null;
+        this.liveRenderAt = Date.now();
+        this.scheduleRender();
+      }, LIVE_RENDER_MS - since);
+    }
   }
 
   /* -------------------------------------------------------------- polling
@@ -163,19 +220,18 @@ export class Store {
       const body = await listRuns();
       const runs = (body.runs ?? []).slice();
       runs.sort((a, b) => seqOf(b.id) - seqOf(a.id));
+      /* identity is (id, created_at): a restarted daemon hands the same id
+         out again — a changed created_at is a different run wearing it */
+      for (const run of runs) {
+        const prev = this.runs.find((r) => r.id === run.id);
+        if (prev && prev.created_at !== run.created_at) this.forgetRun(run.id);
+        const detail = this.details.get(run.id);
+        if (detail && detail.created_at !== run.created_at) this.forgetRun(run.id);
+      }
       /* forget caches of runs that left the register */
       const alive = new Set(runs.map((r) => r.id));
-      for (const id of [...this.details.keys()]) {
-        if (!alive.has(id)) this.details.delete(id);
-      }
-      for (const key of [...this.serial.keys()]) {
-        if (!alive.has(key.slice(0, key.indexOf('/')))) this.serial.delete(key);
-      }
-      for (const old of this.runs) {
-        if (!alive.has(old.id)) {
-          this.activity.dropRun(old.id);
-          this.history.dropRun(old.id);
-        }
+      for (const id of new Set([...this.runs.map((r) => r.id), ...this.details.keys()])) {
+        if (!alive.has(id)) this.forgetRun(id);
       }
       this.runs = runs;
       this.runsError = null;
@@ -255,18 +311,165 @@ export class Store {
   /** Merge a freshly fetched run: keep serial a response did not carry
       (DELETE answers without it), feed the activity tracker. */
   mergeDetail(run: Run): void {
-    const old = this.details.get(run.id);
+    let old = this.details.get(run.id);
+    if (old && old.created_at !== run.created_at) {
+      /* the daemon began this id again: the old run is not this run */
+      this.forgetRun(run.id);
+      old = undefined;
+    }
     const now = Date.now();
     run.vms.forEach((v, i) => {
+      const kept = old?.vms[i]?.serial;
       if (v.serial == null) {
-        const kept = old?.vms[i]?.serial;
         if (kept != null) v.serial = kept;
+      } else if (kept != null && kept.length > v.serial.length && kept.startsWith(v.serial)) {
+        /* the event stream already carried bytes past this response's
+           snapshot — the capture only grows, so the longer copy is newer */
+        v.serial = kept;
       }
       const key = vmKey(run.id, v.id);
       const lps = this.activity.observe(key, linesOf(this.serial, key, v.serial).length, now);
       this.history.pushVm(key, lps);
+      this.vmPushAt.set(key, now);
     });
     this.details.set(run.id, run);
+  }
+
+  /* ---------------------------------------------------------- the live wire
+     The SSE consumer (events.ts) drives these. Every event lands in the
+     same caches the polls fill, so every view updates through the one
+     render path — and the polls reconcile anything the stream missed (the
+     bus has no backlog; a reconnect's lost window heals on the GETs that
+     each (re)open triggers). */
+
+  setStreamState(state: StreamState): void {
+    if (this.stream === state) return;
+    this.stream = state;
+    this.scheduleRender();
+  }
+
+  /** A run changed state (or was registered, as `starting`). Patch the
+      copies the views read; the register's full row (shape, closed time)
+      comes from a debounced list GET — a burst of transitions collapses
+      into one fetch. A closed run's `ended_at` comes from its detail.
+      An event that would wake an ENDED run is never believed: ids restart
+      with the daemon, so that is a new run wearing the id — the register
+      is asked at once (its answer carries every run's created_at). */
+  applyRunEvent(id: string, state: RunState): void {
+    this.wire.run++;
+    const listed = this.runs.find((r) => r.id === id);
+    const detail = this.details.get(id);
+    const known = detail ?? listed;
+    if (known && !isOpen(known) && (state === 'starting' || state === 'running')) {
+      this.queueListRefresh(true);
+      return;
+    }
+    if (listed) listed.state = state;
+    if (detail) detail.state = state;
+    this.scheduleRender();
+    this.queueListRefresh();
+    if (state !== 'starting' && state !== 'running') this.queueDetailRefresh(id);
+  }
+
+  /** A VM changed state. The mark, the tallies and the stamps all read the
+      store's copies — patch both (the register's list row and the detail).
+      A `running` event for an ended run is the restarted-id case above. */
+  applyVmEvent(runId: string, vmId: number, state: VmState): void {
+    this.wire.vm++;
+    const listed = this.runs.find((r) => r.id === runId);
+    const detail = this.details.get(runId);
+    const known = detail ?? listed;
+    if (known && !isOpen(known) && state === 'running') {
+      this.queueListRefresh(true);
+      return;
+    }
+    for (const run of [listed, detail]) {
+      const vm = run?.vms.find((v) => v.id === vmId);
+      if (vm) vm.state = state;
+    }
+    this.scheduleRender();
+  }
+
+  /** A VM's serial capture grew. `offset` is the capture byte the text
+      starts at; the merge is offset-idempotent — append the new stretch,
+      clip a re-delivery, and let a detail GET reconcile a gap (a missed
+      frame or poll; rare by construction). The delta feeds the line cache
+      and the activity EMA exactly as a poll merge does, so the transcript,
+      the lines/s figures, the map's pulse and the 3D glow all go live
+      between polls. */
+  applySerialEvent(runId: string, vmId: number, offset: number, text: string): void {
+    this.wire.serial++;
+    const run = this.details.get(runId);
+    const vm = run?.vms.find((v) => v.id === vmId);
+    if (!vm || vm.serial == null) {
+      /* no baseline to offset against — the detail GET carries the capture */
+      this.queueDetailRefresh(runId);
+      return;
+    }
+    const key = vmKey(runId, vmId);
+    linesOf(this.serial, key, vm.serial); // sync the cache before the offset math
+    const have = this.serial.get(key)?.bytes ?? 0;
+    const delta = serialDelta(have, offset, text);
+    if (delta.kind === 'gap') {
+      this.queueDetailRefresh(runId);
+      return;
+    }
+    if (delta.kind === 'dup') return;
+    vm.serial += delta.text;
+    const now = Date.now();
+    const lps = this.activity.observe(key, linesOf(this.serial, key, vm.serial).length, now);
+    /* the sparkline ring keeps its one-observation-per-poll timebase:
+       between polls it gains at most one point per VM_PUSH_MIN_MS window */
+    if (now - (this.vmPushAt.get(key) ?? 0) >= VM_PUSH_MIN_MS) {
+      this.vmPushAt.set(key, now);
+      this.history.pushVm(key, lps);
+    }
+    this.scheduleLiveRender();
+  }
+
+  /** One list GET shortly after run events land; a burst collapses into it.
+      An identity question (an ended run supposedly waking) asks NOW — the
+      register's answer carries every run's created_at. */
+  private queueListRefresh(immediate = false): void {
+    if (immediate) {
+      if (this.listRefreshTimer != null) {
+        clearTimeout(this.listRefreshTimer);
+        this.listRefreshTimer = null;
+      }
+      void this.pollList();
+      return;
+    }
+    if (this.listRefreshTimer != null) return;
+    this.listRefreshTimer = setTimeout(() => {
+      this.listRefreshTimer = null;
+      void this.pollList();
+    }, EVENT_REFRESH_MS);
+  }
+
+  /** Forget everything held for a run. Run ids RESTART with the daemon:
+      after a restart the first run is r1 again — a different run wearing
+      the same id. Identity is (id, created_at); when it changes, the old
+      run's captures, activity and history must not bleed into the new one. */
+  private forgetRun(id: string): void {
+    this.details.delete(id);
+    const prefix = id + '/';
+    for (const key of [...this.serial.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.serial.delete(key);
+        this.vmPushAt.delete(key);
+      }
+    }
+    this.activity.dropRun(id);
+    this.history.dropRun(id);
+  }
+
+  /** A detail GET reconciles what an event could not carry (a serial gap,
+      a run the register has not listed yet, a closed run's ended_at).
+      One in flight per run. */
+  private queueDetailRefresh(id: string): void {
+    if (this.detailRefreshPending.has(id)) return;
+    this.detailRefreshPending.add(id);
+    void this.pollDetail(id, true).finally(() => this.detailRefreshPending.delete(id));
   }
 
   /** Lines for a VM of the open run, from the append-only cache. */

@@ -7,7 +7,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
-    "check": "tsc --noEmit && node build.mjs"
+    "test": "node test/run.mjs",
+    "check": "tsc --noEmit && node build.mjs && node test/run.mjs"
   },
   "dependencies": {
     "three": "0.186.1"
