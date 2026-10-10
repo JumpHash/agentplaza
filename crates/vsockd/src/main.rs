@@ -77,6 +77,11 @@ const ACCEPT_POLL_MS: i32 = 200;
 #[cfg(target_os = "linux")]
 const MAX_SESSIONS: usize = 64;
 
+/// How many probe/remove/bind rounds `bind_listener` runs before giving up
+/// with the honest error (two restarts racing the same stale path resolve in
+/// one or two rounds; the bound keeps a hostile race from looping forever).
+const MAX_BIND_ATTEMPTS: u32 = 8;
+
 /// How long one read may block before the session is reconsidered. Set as
 /// `SO_RCVTIMEO` on every accepted socket, so a guest that connects and then
 /// sends nothing cannot pin its worker thread forever.
@@ -285,10 +290,7 @@ fn run(config: Config) -> Result<(), String> {
     for cid in &config.cids {
         let cid = *cid;
         let path = uds_path(&config.uds_dir, cid, config.port);
-        clear_stale_listener(&path, cid)?;
-        let listener = UnixListener::bind(&path).map_err(|err| {
-            format!("cannot listen on {} for guest CID {cid}: {err}", path.display())
-        })?;
+        let listener = bind_listener(&path, cid)?;
         listener
             .set_nonblocking(true)
             .map_err(|err| format!("cannot make {0} non-blocking: {err}", path.display()))?;
@@ -322,27 +324,108 @@ fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Makes `path` bindable: a socket file left by an earlier `vsockd` (a crash,
-/// or a stop that could not clean up) makes `bind` fail with "address already
-/// in use" although nothing listens on it. The file is stale only if nothing
-/// answers a connection: a live answer means another listener already owns
-/// the path — this daemon refuses to take an orchestrator's place — while an
-/// unanswered probe (a dead socket, or any other leftover file in the
-/// daemon's own 0700 directory) is removed so the listener can bind again.
+/// What a failed probe connection says about the path: a REFUSED connection
+/// (`ECONNREFUSED`) is a dead socket, a path NOT FOUND (`ENOENT`) is a plain
+/// leftover file in the daemon's own 0700 directory — both stale, removable.
+/// Anything else — a connection that would block because the listener's
+/// accept backlog is full (`EAGAIN`), a permission problem, an unexplained
+/// failure — is treated as live: the path is kept and the takeover refused.
+#[derive(Debug, PartialEq, Eq)]
+enum ProbeVerdict {
+    Stale,
+    Live,
+}
+
 #[cfg(target_os = "linux")]
-fn clear_stale_listener(path: &Path, cid: u32) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
+fn probe_verdict(err: &std::io::Error) -> ProbeVerdict {
+    match err.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => ProbeVerdict::Stale,
+        _ => ProbeVerdict::Live,
     }
-    match UnixStream::connect(path) {
-        Ok(_) => Err(format!(
-            "another listener is already serving {} for guest CID {cid} — refusing to take it over",
-            path.display()
-        )),
-        Err(_) => std::fs::remove_file(path).map_err(|err| {
-            format!("cannot remove the stale socket {}: {err}", path.display())
-        }),
+}
+
+/// Binds the listener for `cid` at `path`, clearing stale socket files.
+///
+/// A socket file left by an earlier `vsockd` (a crash, or a stop that could
+/// not clean up) makes `bind` fail although nothing listens on it. The probe
+/// distinguishes exactly: a connection that is REFUSED (`ECONNREFUSED`) is
+/// a dead socket, a path that is NOT FOUND (`ENOENT`) is a plain leftover
+/// file in the daemon's own 0700 directory — both are stale and removed.
+/// A connection that is ANSWERED, one that fails because the listener's
+/// accept backlog is FULL (`EAGAIN`), or any other unexplained failure is
+/// treated as live: the takeover is refused, and never by removing the file
+/// a live listener may own. Two restarts may race the same stale path (both
+/// see it dead, both remove): the loser's `bind` then fails because the
+/// winner is already bound, and the next round's probe refuses — a live
+/// listener's path is never harvested, whoever won. A `NotFound` on the
+/// remove means another restart won that race (fall through to the bind,
+/// whose `EADDRINUSE` retry re-probes), and the whole dance is bounded:
+/// after [`MAX_BIND_ATTEMPTS`] rounds the daemon gives up with the honest
+/// error rather than looping forever.
+#[cfg(target_os = "linux")]
+fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
+
+    for _attempt in 1..=MAX_BIND_ATTEMPTS {
+        if path.exists() {
+            match UnixStream::connect(path) {
+                Ok(_) => {
+                    return Err(format!(
+                        "another listener is already serving {} for guest CID {cid} — refusing to take it over",
+                        path.display()
+                    ));
+                }
+                Err(err) => match err.kind() {
+                    // A dead socket (`ECONNREFUSED`) or a leftover
+                    // non-socket file in the daemon's own 0700 directory
+                    // (`ENOENT` on Linux when the path is no socket):
+                    // nothing answers, the path is stale.
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => {}
+                    // A listener is there but its accept backlog is full
+                    // (`EAGAIN`), or the probe failed in a way this daemon
+                    // does not understand: treat the path as live and
+                    // refuse — never remove a file a live listener may own.
+                    _ => {
+                        return Err(format!(
+                            "the listener at {} for guest CID {cid} does not answer ({err}) — refusing to take it over",
+                            path.display()
+                        ));
+                    }
+                },
+            }
+            if path.exists() {
+                if let Err(err) = std::fs::remove_file(path) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        return Err(format!(
+                            "cannot remove the stale socket {}: {err}",
+                            path.display()
+                        ));
+                    }
+                    // `NotFound`: another restart removed the same stale
+                    // file first. Fall through to the bind; its
+                    // `EADDRINUSE` retry re-probes whoever bound it.
+                }
+            }
+        }
+        match UnixListener::bind(path) {
+            Ok(listener) => return Ok(listener),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                // Someone bound this path between the probe and the bind. If
+                // it is a live listener the next round's probe refuses; if it
+                // is already dead again the next round clears it.
+                continue;
+            }
+            Err(err) => {
+                return Err(format!(
+                    "cannot listen on {} for guest CID {cid}: {err}",
+                    path.display()
+                ));
+            }
+        }
     }
+    Err(format!(
+        "cannot bind {} for guest CID {cid} after {MAX_BIND_ATTEMPTS} attempts — another restart is racing this path",
+        path.display()
+    ))
 }
 
 /// Accepts sessions for one guest CID and serves each on its own thread.
@@ -481,9 +564,12 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
-    /// A path that does not exist is bindable as-is; a leftover file is
-    /// removed (nothing answers on it); a live listener keeps its path and
-    /// the takeover is refused.
+    /// `bind_listener`: an absent path binds as-is; a leftover file nothing
+    /// answers is cleared and the listener binds over it; a live listener
+    /// keeps its path and the takeover is refused; and a live listener whose
+    /// backlog is full (whose probes fail, so it looks stale) is still never
+    /// taken over — the bind retry refuses to harvest it, and the daemon
+    /// gives up with the honest race error instead.
     #[test]
     fn stale_listener_files_are_cleared_but_live_listeners_are_kept() {
         let dir = std::env::temp_dir().join(format!("plaza-vsockd-stale-test-{}", std::process::id()));
@@ -492,14 +578,18 @@ mod tests {
 
         // Absent: bindable without a word.
         let fresh = dir.join("vm30_5000");
-        clear_stale_listener(&fresh, 30).expect("an absent path is bindable");
-        assert!(!fresh.exists(), "an absent path stays absent");
+        let fresh_listener = bind_listener(&fresh, 30).expect("an absent path is bindable");
+        assert!(fresh.exists(), "the new listener's socket file exists");
+        drop(fresh_listener);
+        let _ = std::fs::remove_file(&fresh);
 
-        // Stale: a leftover file nothing answers is removed.
+        // Stale: a leftover file nothing answers is removed and bound over.
         let stale = dir.join("vm31_5000");
         std::fs::write(&stale, b"").expect("a leftover socket file");
-        clear_stale_listener(&stale, 31).expect("a stale file is cleared");
-        assert!(!stale.exists(), "the stale file is removed");
+        let stale_listener = bind_listener(&stale, 31).expect("a stale file is cleared and bound");
+        assert!(stale.exists(), "the new listener's socket file exists");
+        drop(stale_listener);
+        let _ = std::fs::remove_file(&stale);
 
         // Live: a listener that answers keeps its path; the takeover is
         // refused (the probe connection is closed immediately).
@@ -509,17 +599,47 @@ mod tests {
             let (stream, _) = listener.accept().expect("the probe connects");
             drop(stream);
         });
-        let refusal = clear_stale_listener(&live, 32)
-            .expect_err("a live listener must not be taken over");
+        let refusal = bind_listener(&live, 32).expect_err("a live listener must not be taken over");
         assert!(
             refusal.contains("refusing to take it over"),
             "the refusal says why: {refusal}"
         );
-        answer.join().expect("the probe connection is answered");
-        assert!(live.exists(), "the live listener's path is kept");
+        // A listener with parked (un-accepted) connections is still live: the
+        // takeover is refused and its path file is never removed. (A truly
+        // FULL backlog would make the probe itself fail with EAGAIN — that
+        // policy is `probe_verdict`'s, unit-tested below, because a blocking
+        // std connect cannot produce EAGAIN from a client.)
+        let busy = dir.join("vm33_5000");
+        let busy_listener = UnixListener::bind(&busy).expect("the busy listener binds");
+        let parked: Vec<UnixStream> = (0..64)
+            .map(|_| UnixStream::connect(&busy).expect("the parked connection connects"))
+            .collect();
+        let race = bind_listener(&busy, 33).expect_err("a busy listener is never taken over");
+        assert!(
+            race.contains("refusing to take it over"),
+            "the refusal says why: {race}"
+        );
+        assert!(busy.exists(), "the busy listener's path file is never removed");
+        drop(parked);
+        drop(busy_listener);
 
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
+
+    /// The probe's error-kind policy: only a refused connection and a path
+    /// not found are stale; everything else — a would-block (a full accept
+    /// backlog), a permission problem, anything unexplained — is live, and a
+    /// live path is never removed.
+    #[test]
+    fn only_refused_and_missing_probes_are_stale() {
+        let kind = |k: std::io::ErrorKind| probe_verdict(&std::io::Error::from(k));
+        assert_eq!(kind(std::io::ErrorKind::ConnectionRefused), ProbeVerdict::Stale);
+        assert_eq!(kind(std::io::ErrorKind::NotFound), ProbeVerdict::Stale);
+        assert_eq!(kind(std::io::ErrorKind::WouldBlock), ProbeVerdict::Live);
+        assert_eq!(kind(std::io::ErrorKind::PermissionDenied), ProbeVerdict::Live);
+        assert_eq!(kind(std::io::ErrorKind::TimedOut), ProbeVerdict::Live);
+    }
+
 
     /// The session cap reserves at most `max` slots and refuses the next
     /// connection, but reuses a slot once its session ends.
