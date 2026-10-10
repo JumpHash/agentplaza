@@ -1,16 +1,16 @@
 {
   "acceptance": "AgentPlaza MVP",
-  "verdict": "FAIL",
+  "verdict": "PASS",
   "machine_class": "server",
-  "generated_at": "2026-10-10T22:24:24+0200",
-  "wall_seconds": 553.231,
+  "generated_at": "2026-10-10T22:44:17+0200",
+  "wall_seconds": 553.065,
   "manifest": {
     "suite": "all",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "49756a49eaf75f9d86d73e9077a8909b6d9d5a58",
+      "head": "71f0a4c41104a24702071670902d52e66e695977",
       "dirty": true,
-      "harness_tree_sha256": "41274142f4289da1b8326073e5ec2d9f7cd9f730471da45b42be8abc4d21ec76"
+      "harness_tree_sha256": "44c46d5f0e6e294291c8731b52abd791792a23eedea54d67d426f027f717a6a6"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
@@ -32,12 +32,12 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-server-bh38onhh",
-    "started_at": "2026-10-10T22:24:24+0200",
+    "artifacts_dir": "/tmp/apz-acceptance-server-gq0wqw67",
+    "started_at": "2026-10-10T22:44:17+0200",
     "binaries": {
       "noded": {
         "path": "/mnt/fast/AgentPlaza/target/debug/noded",
-        "sha256": "3cf13d70302b73698e317678cf95cf314ab0bd96d1991ddff0be6885d875eca4"
+        "sha256": "45b5579f82fbf0cb8034418fd3efc33dea6ee36e2fdbb3485bb08d49b2e41c7f"
       },
       "vsockd": {
         "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
@@ -45,211 +45,211 @@
       }
     },
     "canary_planted": {
-      "APZ_CANARY": "apz-canary-769a63c8a27a682f",
-      "APZ_CANARY_CRED": "AKIA769A63C8A27A682F"
+      "APZ_CANARY": "apz-canary-c5542959918a80d1",
+      "APZ_CANARY_CRED": "AKIAC5542959918A80D1"
     },
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/demo-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/demo-logs/noded.log",
         "bytes": 1067556,
-        "sha256": "16df948364fd0cd85f6e545c3676230a97329842ae81ea934b6574c15505bc5b",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/16df9483-noded.log",
+        "sha256": "1c2c40485de1aefca5a0c9e2468d995cf3bef088ce07c730761d696cdd302fba",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/1c2c4048-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/demo-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/demo-logs/vsockd.log",
         "bytes": 112708,
-        "sha256": "ca8ae7fe3930e7d7e629af50991f4ae4f30bd4b830f3b36efb68e6e4658fbe2d",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/ca8ae7fe-vsockd.log",
+        "sha256": "557b8f05f0d8f24d0a04b9014f23e3262122ab3e94cfe01bc27e2ab18f6458c2",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/557b8f05-vsockd.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-nic-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-nic-logs/noded.log",
         "bytes": 16324,
-        "sha256": "d0eb8dc43292800da62fd94b5dfb8a23c71bb6176fa827486c88c1e694b4d6e3",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/d0eb8dc4-noded.log",
+        "sha256": "46efa12332540b3c700b5fd7807e61f636c18fa0359ac3cb5850988cda7e01eb",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/46efa123-noded.log",
         "excerpt_bytes": 16324
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-nic-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-nic-logs/vsockd.log",
         "bytes": 1952,
-        "sha256": "6a304e12a6d67e43bdaf500be7ef594c6d926156f1860ef916f182509a3d1907",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/6a304e12-vsockd.log",
+        "sha256": "95b2910a35e967d20d4a8b083a34df76e075e834a091595c935244b07b74f870",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/95b2910a-vsockd.log",
         "excerpt_bytes": 1952
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-wire-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-wire-logs/noded.log",
         "bytes": 154,
-        "sha256": "046ea7086aa2692616bbc8bcba910a8682ac00c47eafa453d86c4be40ff2254a",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/046ea708-noded.log",
+        "sha256": "351bc5e773b75b759c7dfd514baa9f5bcda958bf7915240cb1eafa8ed343e453",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/351bc5e7-noded.log",
         "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-wire-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-wire-logs/vsockd.log",
         "bytes": 524,
-        "sha256": "935deb206ecfb4ed7b9e4a3409dc5a5a23dc296b73addeb54a7bb197f222dd63",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/935deb20-vsockd.log",
+        "sha256": "ac07b94f754285016af8c52367aedb56fe424c4db861170823b76957f2c1c7cd",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/ac07b94f-vsockd.log",
         "excerpt_bytes": 524
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-canary-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-canary-logs/noded.log",
         "bytes": 24409,
-        "sha256": "22c6d645a42aaebac961067cac3bacf218f126297871093e936758f2ede951d7",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/22c6d645-noded.log",
+        "sha256": "d5b560994b76a51373f42d2e905d51e745301f8ae392f6c6096b55e1aff0d602",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/d5b56099-noded.log",
         "excerpt_bytes": 24409
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-canary-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-canary-logs/vsockd.log",
         "bytes": 1958,
-        "sha256": "df4db4085df0ffcb67e812693afda731afda33d621c3913ad1a47e07c4b072ae",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/df4db408-vsockd.log",
+        "sha256": "b3160c4a0cfd404e7df59d9d80cdb1fabe49c050d40be1a33b7449a848231c3e",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/b3160c4a-vsockd.log",
         "excerpt_bytes": 1958
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-bounded-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-bounded-logs/noded.log",
         "bytes": 8239,
-        "sha256": "d03ad1c9b2fbd5f5ada9d5113f253d0ee7a09ad591eab17ca88bf7fb2244203a",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/d03ad1c9-noded.log",
+        "sha256": "de4f098b3cd526b3a319a0fe7ad1768fd37e929e1089d408d9789ba9c9ec337b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/de4f098b-noded.log",
         "excerpt_bytes": 8239
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/redteam-bounded-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/redteam-bounded-logs/vsockd.log",
         "bytes": 150,
-        "sha256": "ab494bc50783124a2086fd52392d45b8f5910439534a9af9a0c8b97931aa6361",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/ab494bc5-vsockd.log",
+        "sha256": "092a93c9659a056da046bf71b1f56bee019f4d1f274e409a3f354172be38cb0b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/092a93c9-vsockd.log",
         "excerpt_bytes": 150
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-delete-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-delete-logs/noded.log",
         "bytes": 64834,
-        "sha256": "369223fa3271a3ce95d1aaa32200b1473b85abbeddd680e2be5bea987a299a84",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/369223fa-noded.log",
+        "sha256": "d45f964d257bd437dcb53214e010d0b8d80f68e586f608ccad24e2f4e2478304",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/d45f964d-noded.log",
         "excerpt_bytes": 64834
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-delete-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-delete-logs/vsockd.log",
         "bytes": 7670,
-        "sha256": "6f68be535ce6814d3a598dc972380303218ffdb6a7eeb24feecd7a91d950cce4",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/6f68be53-vsockd.log",
+        "sha256": "38583b79c163429ae3cafe9f4e8e6c5e3b5b568f746fd9796f04acc8542c1bf3",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/38583b79-vsockd.log",
         "excerpt_bytes": 7670
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-reuse-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-reuse-logs/noded.log",
         "bytes": 129514,
-        "sha256": "fbd3f37fc20ac98e1e6c968a2a64652d201b6a9cb2814137564bdff99bf915bb",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/fbd3f37f-noded.log",
+        "sha256": "129fa3ad61a6b6393a3266bba9d8dcf560c566c2fe4c4e6125952f6837cc8c26",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/129fa3ad-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-reuse-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-reuse-logs/vsockd.log",
         "bytes": 14486,
-        "sha256": "007b7cb0842d70079ea7a6ef9f1add9ff5031204b7fb3083d82b6089ce3aa97d",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/007b7cb0-vsockd.log",
+        "sha256": "69cee96b777b12b4613ba6c85ab332641ab5e5da04dda293ae3b25b830efc583",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/69cee96b-vsockd.log",
         "excerpt_bytes": 14486
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-sigterm-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-sigterm-logs/noded.log",
         "bytes": 32494,
-        "sha256": "01590d578d023118101ca4e08dd0d8c7f2157afbfab1328838c470d9cb60c0c4",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/01590d57-noded.log",
+        "sha256": "1ae0b616f39d158a8e1d5ba55dd22a2d08adacd0c486dc25fdc161dd958e3a40",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/1ae0b616-noded.log",
         "excerpt_bytes": 32494
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-sigterm-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-sigterm-logs/vsockd.log",
         "bytes": 4266,
-        "sha256": "39ceac48cf89acb5c3fa687b9af3ee809aff61b916d8a106eb80af6db81b461b",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/39ceac48-vsockd.log",
+        "sha256": "41400b85d1a2d6ef232c302b9fe2c0bed2d66c89d187e4354f439604b49acfb3",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/41400b85-vsockd.log",
         "excerpt_bytes": 4266
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-a-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-restart-a-logs/noded.log",
         "bytes": 32494,
-        "sha256": "9e5de5d518bbfa1506c5810a5a71c902d6c44ea7b9136ecf0ca15b343800a5a4",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/9e5de5d5-noded.log",
+        "sha256": "9fb63e3c423b1f97fb93e258aeb24d567fd8f839dc0b01de539f8113a6b5db2b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/9fb63e3c-noded.log",
         "excerpt_bytes": 32494
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-a-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-restart-a-logs/vsockd.log",
         "bytes": 4282,
-        "sha256": "b96da8b8f18d72df828262750057d85bcd884905be598c0a0050868a671ff7a0",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/b96da8b8-vsockd.log",
+        "sha256": "e051cb15672a51b428b3b766695f071b719f02a2281f180cbf3fb67682003d0a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/e051cb15-vsockd.log",
         "excerpt_bytes": 4282
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-b-logs/noded.log",
-        "bytes": 40796,
-        "sha256": "f4e5963397b66e3136934e28526d8f41170b0aa0aa9615bfa41fe1f52c3b93ab",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/f4e59633-noded.log",
-        "excerpt_bytes": 40796
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-restart-b-logs/noded.log",
+        "bytes": 40579,
+        "sha256": "1b8a0c15e2439c7af3a7c8b657c1a33d718377ecc660497da585f07e6f7ee1b0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/1b8a0c15-noded.log",
+        "excerpt_bytes": 40579
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-b-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-restart-b-logs/vsockd.log",
         "bytes": 5135,
-        "sha256": "a3a548fda400278e756917b1c596c6f90f6f7d5427bb3900595311fe27efd48d",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/a3a548fd-vsockd.log",
+        "sha256": "5611ea1d0fbfd06c59b48c0cdbdc40416029dbc446ae50e48579cac5ba7da8ed",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/5611ea1d-vsockd.log",
         "excerpt_bytes": 5135
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-churn-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-churn-logs/noded.log",
         "bytes": 194194,
-        "sha256": "93b0e985985d7bce1280d76684222875571cd371cc6c9ec109997124843935da",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/93b0e985-noded.log",
+        "sha256": "f8c913e7e59e74c25b8489c3cef57328b405c2c193131d5c41ff934c22b691a0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/f8c913e7-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/kill-churn-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/kill-churn-logs/vsockd.log",
         "bytes": 21310,
-        "sha256": "42533962fc4f3ecdd326dc43573d2818d6380a37f7eae7a1faa09d64640bd1d5",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/42533962-vsockd.log",
+        "sha256": "54bd88dbf5a606879eef9e7768661573a377903d8d98271018187b2370763457",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/54bd88db-vsockd.log",
         "excerpt_bytes": 21310
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-boot-logs/noded.log",
-        "bytes": 4052503,
-        "sha256": "d028b03046a9d7200577d07131d8bfe77264777c50d61576aa7e9e03c9728cbb",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/d028b030-noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-boot-logs/noded.log",
+        "bytes": 4051915,
+        "sha256": "b5b4b69d567c1d454960317397dbcadf7026ebf71b0952818e7f18e8692e30dd",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/b5b4b69d-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-lifecycle-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-lifecycle-logs/noded.log",
         "bytes": 1576729,
-        "sha256": "f08fe6f003c9e298247cb431c0c867ee4d67545fc9421c03f9db807c2f516df9",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/f08fe6f0-noded.log",
+        "sha256": "f22b9f67c6fb69698debe7dac7286474737f76052cec05a14de1881b18869535",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/f22b9f67-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-footprint-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-footprint-logs/noded.log",
         "bytes": 420574,
-        "sha256": "a93852f395eee88cc619f3abd044db17cbcc85b4bae750c4248385d39f57a4e2",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/a93852f3-noded.log",
+        "sha256": "cc9c201858e05a7ce4168d78e600398a80f489ca51a07d7d6a188c478d11c518",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/cc9c2018-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-restore-a-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-restore-a-logs/noded.log",
         "bytes": 16324,
-        "sha256": "a4b1cba6700a80900e133e31c70e6da45c3ca30b7d66aa758f33e0cc7131592d",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/a4b1cba6-noded.log",
+        "sha256": "8fcc46c07c012423e9a7b21c28b0dc642b89b2de4b37590482f0cf1db9809949",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/8fcc46c0-noded.log",
         "excerpt_bytes": 16324
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-restore-a-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-restore-a-logs/vsockd.log",
         "bytes": 2176,
-        "sha256": "270f23c98d58f917b762209bf4d5479b53799a04b3a16180d297671bffe6b049",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/270f23c9-vsockd.log",
+        "sha256": "fa427329759baa3bb14ee12189e7bb9aafa1615d465120de04bf70dd620df2f5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/fa427329-vsockd.log",
         "excerpt_bytes": 2176
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-restore-b-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-restore-b-logs/noded.log",
         "bytes": 16381,
-        "sha256": "dd42dc9669b2fd5c4e7ef0e06428eb52e3d5d94fb8f1c3abe2002478a1c44c64",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/dd42dc96-noded.log",
+        "sha256": "401a339b9e79383c18750aec27176712a28ee1085aaba8089625c12b8e8b7231",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/401a339b-noded.log",
         "excerpt_bytes": 16381
       },
       {
-        "source": "/tmp/apz-acceptance-server-bh38onhh/budgets-restore-b-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-gq0wqw67/budgets-restore-b-logs/vsockd.log",
         "bytes": 2176,
-        "sha256": "fbb37f67d869c56e052b0fe2bee4e71ba145e7c6dec37173d32804d6d5b6e7b7",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T221511/fbb37f67-vsockd.log",
+        "sha256": "49067b14e83808ed3d1e50f1ca21f35c7d049bf262dd080ab638354ee8c68616",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223504/49067b14-vsockd.log",
         "excerpt_bytes": 2176
       }
     ]
@@ -291,7 +291,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272165.68 5855079.24'"
+              "detail": "output='273358.99 5876666.62'"
             },
             {
               "name": "bye cid 10",
@@ -375,7 +375,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272171.12 5855184.19'"
+              "detail": "output='273364.41 5876769.44'"
             },
             {
               "name": "bye cid 10",
@@ -459,7 +459,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272176.57 5855287.05'"
+              "detail": "output='273369.82 5876876.98'"
             },
             {
               "name": "bye cid 100",
@@ -543,7 +543,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272181.95 5855390.67'"
+              "detail": "output='273375.25 5876980.12'"
             },
             {
               "name": "bye cid 100",
@@ -553,7 +553,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20835"
+              "detail": "serial_bytes=20836"
             }
           ],
           "invariants": [
@@ -575,7 +575,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.4s"
+              "detail": "state=done after 5.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -627,7 +627,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272187.35 5855493.27'"
+              "detail": "output='273380.68 5877086.98'"
             },
             {
               "name": "bye cid 10",
@@ -637,7 +637,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20814"
+              "detail": "serial_bytes=20813"
             }
           ],
           "invariants": [
@@ -711,7 +711,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272192.78 5855596.57'"
+              "detail": "output='273386.10 5877190.91'"
             },
             {
               "name": "bye cid 10",
@@ -795,7 +795,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272198.21 5855699.61'"
+              "detail": "output='273391.63 5877297.03'"
             },
             {
               "name": "bye cid 100",
@@ -827,7 +827,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.4s"
+              "detail": "state=done after 5.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -879,7 +879,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272203.61 5855804.16'"
+              "detail": "output='273397.08 5877403.73'"
             },
             {
               "name": "bye cid 100",
@@ -963,7 +963,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272209.03 5855905.11'"
+              "detail": "output='273402.55 5877507.24'"
             },
             {
               "name": "bye cid 10",
@@ -973,91 +973,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21405"
-            }
-          ],
-          "invariants": [
-            {
-              "name": "POST accepted the run (201)",
-              "ok": true,
-              "detail": "status=201"
-            },
-            {
-              "name": "run is running when POST answers",
-              "ok": true,
-              "detail": "state=running"
-            },
-            {
-              "name": "run has n VMs",
-              "ok": true,
-              "detail": "vms=1"
-            },
-            {
-              "name": "run reached done before the deadline",
-              "ok": true,
-              "detail": "state=done after 5.4s"
-            },
-            {
-              "name": "done run carries ended_at",
-              "ok": true,
-              "detail": ""
-            },
-            {
-              "name": "every VM exited",
-              "ok": true,
-              "detail": "states=exited"
-            },
-            {
-              "name": "per-VM CIDs are base+i",
-              "ok": true,
-              "detail": "cids=[10]"
-            },
-            {
-              "name": "fresh capture cid 10",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "no leftover vsock sockets",
-              "ok": true,
-              "detail": "leftover=[]"
-            }
-          ],
-          "notes": []
-        },
-        {
-          "name": "cell n=1 vcpus=2 mem=128 cid=10 beats=2",
-          "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
-          "vector": null,
-          "ok": true,
-          "tasks_passed": 5,
-          "tasks_required": 4,
-          "tasks_total": 5,
-          "tasks": [
-            {
-              "name": "handshake cid 10",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 10} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 10",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-10-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-10-hello'}"
-            },
-            {
-              "name": "uptime cid 10",
-              "ok": true,
-              "detail": "output='272214.46 5856011.93'"
-            },
-            {
-              "name": "bye cid 10",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 10",
-              "ok": true,
-              "detail": "serial_bytes=21434"
+              "detail": "serial_bytes=21407"
             }
           ],
           "invariants": [
@@ -1110,6 +1026,90 @@
           "notes": []
         },
         {
+          "name": "cell n=1 vcpus=2 mem=128 cid=10 beats=2",
+          "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
+          "vector": null,
+          "ok": true,
+          "tasks_passed": 5,
+          "tasks_required": 4,
+          "tasks_total": 5,
+          "tasks": [
+            {
+              "name": "handshake cid 10",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 10} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 10",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-10-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-10-hello'}"
+            },
+            {
+              "name": "uptime cid 10",
+              "ok": true,
+              "detail": "output='273407.98 5877613.48'"
+            },
+            {
+              "name": "bye cid 10",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 10",
+              "ok": true,
+              "detail": "serial_bytes=21435"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "run is running when POST answers",
+              "ok": true,
+              "detail": "state=running"
+            },
+            {
+              "name": "run has n VMs",
+              "ok": true,
+              "detail": "vms=1"
+            },
+            {
+              "name": "run reached done before the deadline",
+              "ok": true,
+              "detail": "state=done after 5.4s"
+            },
+            {
+              "name": "done run carries ended_at",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every VM exited",
+              "ok": true,
+              "detail": "states=exited"
+            },
+            {
+              "name": "per-VM CIDs are base+i",
+              "ok": true,
+              "detail": "cids=[10]"
+            },
+            {
+              "name": "fresh capture cid 10",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "no leftover vsock sockets",
+              "ok": true,
+              "detail": "leftover=[]"
+            }
+          ],
+          "notes": []
+        },
+        {
           "name": "cell n=1 vcpus=2 mem=128 cid=100 beats=None",
           "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
@@ -1131,7 +1131,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272219.91 5856115.16'"
+              "detail": "output='273413.38 5877716.76'"
             },
             {
               "name": "bye cid 100",
@@ -1141,7 +1141,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21412"
+              "detail": "serial_bytes=21411"
             }
           ],
           "invariants": [
@@ -1215,7 +1215,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272225.35 5856217.50'"
+              "detail": "output='273418.77 5877822.44'"
             },
             {
               "name": "bye cid 100",
@@ -1299,7 +1299,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272230.80 5856320.01'"
+              "detail": "output='273424.15 5877921.08'"
             },
             {
               "name": "bye cid 10",
@@ -1309,7 +1309,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21418"
+              "detail": "serial_bytes=21417"
             }
           ],
           "invariants": [
@@ -1383,7 +1383,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272236.20 5856423.52'"
+              "detail": "output='273429.58 5878028.89'"
             },
             {
               "name": "bye cid 10",
@@ -1393,7 +1393,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21445"
+              "detail": "serial_bytes=21444"
             }
           ],
           "invariants": [
@@ -1467,7 +1467,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272241.66 5856528.08'"
+              "detail": "output='273434.98 5878131.08'"
             },
             {
               "name": "bye cid 100",
@@ -1551,7 +1551,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272247.12 5856632.72'"
+              "detail": "output='273440.38 5878236.66'"
             },
             {
               "name": "bye cid 100",
@@ -1561,7 +1561,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21451"
+              "detail": "serial_bytes=21450"
             }
           ],
           "invariants": [
@@ -1583,7 +1583,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.5s"
+              "detail": "state=done after 5.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -1635,7 +1635,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272252.56 5856735.63'"
+              "detail": "output='273445.81 5878339.54'"
             },
             {
               "name": "bye cid 10",
@@ -1645,7 +1645,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20803"
+              "detail": "serial_bytes=20802"
             },
             {
               "name": "handshake cid 11",
@@ -1660,7 +1660,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272252.55 5856735.37'"
+              "detail": "output='273445.84 5878340.17'"
             },
             {
               "name": "bye cid 11",
@@ -1670,7 +1670,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=20803"
+              "detail": "serial_bytes=20802"
             }
           ],
           "invariants": [
@@ -1749,7 +1749,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272258.02 5856837.11'"
+              "detail": "output='273451.29 5878441.94'"
             },
             {
               "name": "bye cid 10",
@@ -1774,7 +1774,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272258.00 5856836.77'"
+              "detail": "output='273451.30 5878442.25'"
             },
             {
               "name": "bye cid 11",
@@ -1806,7 +1806,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.4s"
+              "detail": "state=done after 5.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -1863,7 +1863,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272263.44 5856942.32'"
+              "detail": "output='273456.72 5878542.50'"
             },
             {
               "name": "bye cid 100",
@@ -1888,7 +1888,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272263.41 5856941.70'"
+              "detail": "output='273456.73 5878542.75'"
             },
             {
               "name": "bye cid 101",
@@ -1898,7 +1898,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=20807"
+              "detail": "serial_bytes=20808"
             }
           ],
           "invariants": [
@@ -1977,7 +1977,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272268.86 5857044.93'"
+              "detail": "output='273462.16 5878645.68'"
             },
             {
               "name": "bye cid 100",
@@ -2002,7 +2002,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272268.86 5857044.90'"
+              "detail": "output='273462.17 5878645.77'"
             },
             {
               "name": "bye cid 101",
@@ -2091,7 +2091,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272274.27 5857150.19'"
+              "detail": "output='273467.61 5878742.54'"
             },
             {
               "name": "bye cid 10",
@@ -2101,7 +2101,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20813"
+              "detail": "serial_bytes=20814"
             },
             {
               "name": "handshake cid 11",
@@ -2116,7 +2116,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272274.28 5857150.38'"
+              "detail": "output='273467.62 5878742.82'"
             },
             {
               "name": "bye cid 11",
@@ -2126,7 +2126,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=20813"
+              "detail": "serial_bytes=20814"
             }
           ],
           "invariants": [
@@ -2205,7 +2205,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272279.69 5857250.70'"
+              "detail": "output='273473.09 5878845.85'"
             },
             {
               "name": "bye cid 10",
@@ -2230,7 +2230,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272279.70 5857250.87'"
+              "detail": "output='273473.09 5878845.85'"
             },
             {
               "name": "bye cid 11",
@@ -2262,7 +2262,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.4s"
+              "detail": "state=done after 5.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -2319,7 +2319,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272285.09 5857353.98'"
+              "detail": "output='273478.50 5878945.32'"
             },
             {
               "name": "bye cid 100",
@@ -2344,7 +2344,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272285.10 5857354.33'"
+              "detail": "output='273478.52 5878945.66'"
             },
             {
               "name": "bye cid 101",
@@ -2433,7 +2433,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272290.54 5857456.79'"
+              "detail": "output='273483.94 5879050.59'"
             },
             {
               "name": "bye cid 100",
@@ -2458,7 +2458,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272290.55 5857456.90'"
+              "detail": "output='273483.95 5879050.76'"
             },
             {
               "name": "bye cid 101",
@@ -2547,7 +2547,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272295.98 5857559.43'"
+              "detail": "output='273489.39 5879154.11'"
             },
             {
               "name": "bye cid 10",
@@ -2572,7 +2572,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272295.99 5857559.73'"
+              "detail": "output='273489.39 5879154.07'"
             },
             {
               "name": "bye cid 11",
@@ -2661,7 +2661,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272301.37 5857661.61'"
+              "detail": "output='273494.82 5879259.49'"
             },
             {
               "name": "bye cid 10",
@@ -2686,7 +2686,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272301.37 5857661.62'"
+              "detail": "output='273494.82 5879259.64'"
             },
             {
               "name": "bye cid 11",
@@ -2696,7 +2696,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21434"
+              "detail": "serial_bytes=21435"
             }
           ],
           "invariants": [
@@ -2775,7 +2775,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272306.80 5857766.33'"
+              "detail": "output='273500.22 5879361.10'"
             },
             {
               "name": "bye cid 100",
@@ -2785,7 +2785,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21412"
+              "detail": "serial_bytes=21411"
             },
             {
               "name": "handshake cid 101",
@@ -2800,7 +2800,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272306.81 5857766.45'"
+              "detail": "output='273500.21 5879361.00'"
             },
             {
               "name": "bye cid 101",
@@ -2810,7 +2810,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=21412"
+              "detail": "serial_bytes=21411"
             }
           ],
           "invariants": [
@@ -2889,7 +2889,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272312.25 5857869.08'"
+              "detail": "output='273505.62 5879466.74'"
             },
             {
               "name": "bye cid 100",
@@ -2914,7 +2914,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272312.25 5857868.94'"
+              "detail": "output='273505.62 5879466.75'"
             },
             {
               "name": "bye cid 101",
@@ -3003,7 +3003,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272317.70 5857974.45'"
+              "detail": "output='273511.11 5879568.11'"
             },
             {
               "name": "bye cid 10",
@@ -3028,7 +3028,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272317.69 5857974.35'"
+              "detail": "output='273511.10 5879567.91'"
             },
             {
               "name": "bye cid 11",
@@ -3038,7 +3038,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21417"
+              "detail": "serial_bytes=21418"
             }
           ],
           "invariants": [
@@ -3117,7 +3117,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272323.15 5858078.53'"
+              "detail": "output='273516.58 5879673.93'"
             },
             {
               "name": "bye cid 10",
@@ -3142,7 +3142,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272323.16 5858078.61'"
+              "detail": "output='273516.57 5879673.81'"
             },
             {
               "name": "bye cid 11",
@@ -3174,7 +3174,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.4s"
+              "detail": "state=done after 5.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -3231,7 +3231,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272328.55 5858181.26'"
+              "detail": "output='273522.01 5879775.98'"
             },
             {
               "name": "bye cid 100",
@@ -3241,7 +3241,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21422"
+              "detail": "serial_bytes=21423"
             },
             {
               "name": "handshake cid 101",
@@ -3256,7 +3256,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272328.55 5858181.32'"
+              "detail": "output='273522.02 5879776.12'"
             },
             {
               "name": "bye cid 101",
@@ -3345,7 +3345,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272333.95 5858284.42'"
+              "detail": "output='273527.47 5879880.52'"
             },
             {
               "name": "bye cid 100",
@@ -3370,7 +3370,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272333.96 5858284.54'"
+              "detail": "output='273527.48 5879880.70'"
             },
             {
               "name": "bye cid 101",
@@ -3459,7 +3459,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272339.38 5858388.98'"
+              "detail": "output='273532.91 5879984.72'"
             },
             {
               "name": "bye cid 10",
@@ -3484,7 +3484,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272339.41 5858389.49'"
+              "detail": "output='273532.91 5879984.79'"
             },
             {
               "name": "bye cid 11",
@@ -3509,7 +3509,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='272339.39 5858389.20'"
+              "detail": "output='273532.92 5879984.91'"
             },
             {
               "name": "bye cid 12",
@@ -3534,7 +3534,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='272339.41 5858389.39'"
+              "detail": "output='273532.95 5879985.70'"
             },
             {
               "name": "bye cid 13",
@@ -3633,7 +3633,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272344.87 5858488.69'"
+              "detail": "output='273538.41 5880090.14'"
             },
             {
               "name": "bye cid 10",
@@ -3658,7 +3658,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272344.91 5858489.48'"
+              "detail": "output='273538.43 5880090.58'"
             },
             {
               "name": "bye cid 11",
@@ -3683,7 +3683,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='272344.87 5858488.77'"
+              "detail": "output='273538.43 5880090.56'"
             },
             {
               "name": "bye cid 12",
@@ -3708,7 +3708,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='272344.88 5858488.97'"
+              "detail": "output='273538.43 5880090.42'"
             },
             {
               "name": "bye cid 13",
@@ -3807,7 +3807,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272350.33 5858595.26'"
+              "detail": "output='273543.91 5880190.58'"
             },
             {
               "name": "bye cid 100",
@@ -3832,7 +3832,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272350.36 5858595.77'"
+              "detail": "output='273543.91 5880190.50'"
             },
             {
               "name": "bye cid 101",
@@ -3857,7 +3857,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272350.35 5858595.56'"
+              "detail": "output='273543.92 5880190.74'"
             },
             {
               "name": "bye cid 102",
@@ -3882,7 +3882,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272350.37 5858595.98'"
+              "detail": "output='273543.92 5880190.66'"
             },
             {
               "name": "bye cid 103",
@@ -3914,7 +3914,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.5s"
+              "detail": "state=done after 5.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -3981,7 +3981,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272355.84 5858696.81'"
+              "detail": "output='273549.33 5880293.74'"
             },
             {
               "name": "bye cid 100",
@@ -4006,7 +4006,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272355.86 5858697.17'"
+              "detail": "output='273549.34 5880294.06'"
             },
             {
               "name": "bye cid 101",
@@ -4031,7 +4031,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272355.85 5858696.99'"
+              "detail": "output='273549.34 5880293.92'"
             },
             {
               "name": "bye cid 102",
@@ -4056,7 +4056,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272355.86 5858697.22'"
+              "detail": "output='273549.35 5880294.18'"
             },
             {
               "name": "bye cid 103",
@@ -4088,7 +4088,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.5s"
+              "detail": "state=done after 5.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -4155,7 +4155,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272361.30 5858801.69'"
+              "detail": "output='273554.79 5880396.20'"
             },
             {
               "name": "bye cid 10",
@@ -4180,7 +4180,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272361.30 5858801.83'"
+              "detail": "output='273554.81 5880396.54'"
             },
             {
               "name": "bye cid 11",
@@ -4205,7 +4205,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='272361.31 5858801.85'"
+              "detail": "output='273554.81 5880396.52'"
             },
             {
               "name": "bye cid 12",
@@ -4230,7 +4230,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='272361.31 5858802.03'"
+              "detail": "output='273554.82 5880396.68'"
             },
             {
               "name": "bye cid 13",
@@ -4241,6 +4241,180 @@
               "name": "guest transcript cid 13",
               "ok": true,
               "detail": "serial_bytes=20814"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "run is running when POST answers",
+              "ok": true,
+              "detail": "state=running"
+            },
+            {
+              "name": "run has n VMs",
+              "ok": true,
+              "detail": "vms=4"
+            },
+            {
+              "name": "run reached done before the deadline",
+              "ok": true,
+              "detail": "state=done after 5.5s"
+            },
+            {
+              "name": "done run carries ended_at",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every VM exited",
+              "ok": true,
+              "detail": "states=exited,exited,exited,exited"
+            },
+            {
+              "name": "per-VM CIDs are base+i",
+              "ok": true,
+              "detail": "cids=[10, 11, 12, 13]"
+            },
+            {
+              "name": "fresh capture cid 10",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 11",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 12",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 13",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "no leftover vsock sockets",
+              "ok": true,
+              "detail": "leftover=[]"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "cell n=4 vcpus=1 mem=512 cid=10 beats=2",
+          "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=10 beats=2",
+          "vector": null,
+          "ok": true,
+          "tasks_passed": 20,
+          "tasks_required": 4,
+          "tasks_total": 20,
+          "tasks": [
+            {
+              "name": "handshake cid 10",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 10} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 10",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-10-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-10-hello'}"
+            },
+            {
+              "name": "uptime cid 10",
+              "ok": true,
+              "detail": "output='273560.25 5880502.37'"
+            },
+            {
+              "name": "bye cid 10",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 10",
+              "ok": true,
+              "detail": "serial_bytes=20842"
+            },
+            {
+              "name": "handshake cid 11",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 1, 'guest_cid': 11} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 11",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-11-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-11-hello'}"
+            },
+            {
+              "name": "uptime cid 11",
+              "ok": true,
+              "detail": "output='273560.27 5880502.59'"
+            },
+            {
+              "name": "bye cid 11",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 11",
+              "ok": true,
+              "detail": "serial_bytes=20842"
+            },
+            {
+              "name": "handshake cid 12",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 2, 'guest_cid': 12} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 12",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-12-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-12-hello'}"
+            },
+            {
+              "name": "uptime cid 12",
+              "ok": true,
+              "detail": "output='273560.28 5880502.75'"
+            },
+            {
+              "name": "bye cid 12",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 12",
+              "ok": true,
+              "detail": "serial_bytes=20840"
+            },
+            {
+              "name": "handshake cid 13",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 3, 'guest_cid': 13} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 13",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-13-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-13-hello'}"
+            },
+            {
+              "name": "uptime cid 13",
+              "ok": true,
+              "detail": "output='273560.28 5880502.86'"
+            },
+            {
+              "name": "bye cid 13",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 13",
+              "ok": true,
+              "detail": "serial_bytes=20842"
             }
           ],
           "invariants": [
@@ -4308,180 +4482,6 @@
           "notes": []
         },
         {
-          "name": "cell n=4 vcpus=1 mem=512 cid=10 beats=2",
-          "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=10 beats=2",
-          "vector": null,
-          "ok": true,
-          "tasks_passed": 20,
-          "tasks_required": 4,
-          "tasks_total": 20,
-          "tasks": [
-            {
-              "name": "handshake cid 10",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 10} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 10",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-10-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-10-hello'}"
-            },
-            {
-              "name": "uptime cid 10",
-              "ok": true,
-              "detail": "output='272366.74 5858903.61'"
-            },
-            {
-              "name": "bye cid 10",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 10",
-              "ok": true,
-              "detail": "serial_bytes=20842"
-            },
-            {
-              "name": "handshake cid 11",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 1, 'guest_cid': 11} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 11",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-11-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-11-hello'}"
-            },
-            {
-              "name": "uptime cid 11",
-              "ok": true,
-              "detail": "output='272366.75 5858903.79'"
-            },
-            {
-              "name": "bye cid 11",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 11",
-              "ok": true,
-              "detail": "serial_bytes=20842"
-            },
-            {
-              "name": "handshake cid 12",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 2, 'guest_cid': 12} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 12",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-12-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-12-hello'}"
-            },
-            {
-              "name": "uptime cid 12",
-              "ok": true,
-              "detail": "output='272366.75 5858903.75'"
-            },
-            {
-              "name": "bye cid 12",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 12",
-              "ok": true,
-              "detail": "serial_bytes=20842"
-            },
-            {
-              "name": "handshake cid 13",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 3, 'guest_cid': 13} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 13",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-13-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-13-hello'}"
-            },
-            {
-              "name": "uptime cid 13",
-              "ok": true,
-              "detail": "output='272366.78 5858904.35'"
-            },
-            {
-              "name": "bye cid 13",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 13",
-              "ok": true,
-              "detail": "serial_bytes=20842"
-            }
-          ],
-          "invariants": [
-            {
-              "name": "POST accepted the run (201)",
-              "ok": true,
-              "detail": "status=201"
-            },
-            {
-              "name": "run is running when POST answers",
-              "ok": true,
-              "detail": "state=running"
-            },
-            {
-              "name": "run has n VMs",
-              "ok": true,
-              "detail": "vms=4"
-            },
-            {
-              "name": "run reached done before the deadline",
-              "ok": true,
-              "detail": "state=done after 5.5s"
-            },
-            {
-              "name": "done run carries ended_at",
-              "ok": true,
-              "detail": ""
-            },
-            {
-              "name": "every VM exited",
-              "ok": true,
-              "detail": "states=exited,exited,exited,exited"
-            },
-            {
-              "name": "per-VM CIDs are base+i",
-              "ok": true,
-              "detail": "cids=[10, 11, 12, 13]"
-            },
-            {
-              "name": "fresh capture cid 10",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 11",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 12",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 13",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "no leftover vsock sockets",
-              "ok": true,
-              "detail": "leftover=[]"
-            }
-          ],
-          "notes": []
-        },
-        {
           "name": "cell n=4 vcpus=1 mem=512 cid=100 beats=None",
           "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
@@ -4503,7 +4503,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272372.22 5859007.56'"
+              "detail": "output='273565.70 5880605.88'"
             },
             {
               "name": "bye cid 100",
@@ -4528,7 +4528,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272372.20 5859007.31'"
+              "detail": "output='273565.70 5880605.94'"
             },
             {
               "name": "bye cid 101",
@@ -4553,7 +4553,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272372.21 5859007.37'"
+              "detail": "output='273565.72 5880606.32'"
             },
             {
               "name": "bye cid 102",
@@ -4578,7 +4578,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272372.21 5859007.51'"
+              "detail": "output='273565.71 5880606.06'"
             },
             {
               "name": "bye cid 103",
@@ -4610,7 +4610,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.5s"
+              "detail": "state=done after 5.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -4677,7 +4677,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272377.67 5859109.89'"
+              "detail": "output='273571.16 5880709.79'"
             },
             {
               "name": "bye cid 100",
@@ -4702,7 +4702,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272377.67 5859110.01'"
+              "detail": "output='273571.17 5880709.94'"
             },
             {
               "name": "bye cid 101",
@@ -4727,7 +4727,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272377.67 5859109.96'"
+              "detail": "output='273571.17 5880709.98'"
             },
             {
               "name": "bye cid 102",
@@ -4752,7 +4752,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272377.67 5859109.89'"
+              "detail": "output='273571.17 5880709.98'"
             },
             {
               "name": "bye cid 103",
@@ -4851,7 +4851,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272383.13 5859214.53'"
+              "detail": "output='273576.59 5880811.96'"
             },
             {
               "name": "bye cid 10",
@@ -4876,7 +4876,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272383.13 5859214.53'"
+              "detail": "output='273576.61 5880812.32'"
             },
             {
               "name": "bye cid 11",
@@ -4901,7 +4901,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='272383.14 5859214.62'"
+              "detail": "output='273576.62 5880812.48'"
             },
             {
               "name": "bye cid 12",
@@ -4926,7 +4926,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='272383.15 5859214.89'"
+              "detail": "output='273576.62 5880812.46'"
             },
             {
               "name": "bye cid 13",
@@ -4937,180 +4937,6 @@
               "name": "guest transcript cid 13",
               "ok": true,
               "detail": "serial_bytes=21407"
-            }
-          ],
-          "invariants": [
-            {
-              "name": "POST accepted the run (201)",
-              "ok": true,
-              "detail": "status=201"
-            },
-            {
-              "name": "run is running when POST answers",
-              "ok": true,
-              "detail": "state=running"
-            },
-            {
-              "name": "run has n VMs",
-              "ok": true,
-              "detail": "vms=4"
-            },
-            {
-              "name": "run reached done before the deadline",
-              "ok": true,
-              "detail": "state=done after 5.4s"
-            },
-            {
-              "name": "done run carries ended_at",
-              "ok": true,
-              "detail": ""
-            },
-            {
-              "name": "every VM exited",
-              "ok": true,
-              "detail": "states=exited,exited,exited,exited"
-            },
-            {
-              "name": "per-VM CIDs are base+i",
-              "ok": true,
-              "detail": "cids=[10, 11, 12, 13]"
-            },
-            {
-              "name": "fresh capture cid 10",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 11",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 12",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 13",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "no leftover vsock sockets",
-              "ok": true,
-              "detail": "leftover=[]"
-            }
-          ],
-          "notes": []
-        },
-        {
-          "name": "cell n=4 vcpus=2 mem=128 cid=10 beats=2",
-          "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
-          "vector": null,
-          "ok": true,
-          "tasks_passed": 20,
-          "tasks_required": 4,
-          "tasks_total": 20,
-          "tasks": [
-            {
-              "name": "handshake cid 10",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 10} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 10",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-10-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-10-hello'}"
-            },
-            {
-              "name": "uptime cid 10",
-              "ok": true,
-              "detail": "output='272388.57 5859314.56'"
-            },
-            {
-              "name": "bye cid 10",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 10",
-              "ok": true,
-              "detail": "serial_bytes=21434"
-            },
-            {
-              "name": "handshake cid 11",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 1, 'guest_cid': 11} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 11",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-11-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-11-hello'}"
-            },
-            {
-              "name": "uptime cid 11",
-              "ok": true,
-              "detail": "output='272388.59 5859314.89'"
-            },
-            {
-              "name": "bye cid 11",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 11",
-              "ok": true,
-              "detail": "serial_bytes=21435"
-            },
-            {
-              "name": "handshake cid 12",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 2, 'guest_cid': 12} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 12",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-12-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-12-hello'}"
-            },
-            {
-              "name": "uptime cid 12",
-              "ok": true,
-              "detail": "output='272388.58 5859314.70'"
-            },
-            {
-              "name": "bye cid 12",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 12",
-              "ok": true,
-              "detail": "serial_bytes=21435"
-            },
-            {
-              "name": "handshake cid 13",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 3, 'guest_cid': 13} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 13",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-13-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-13-hello'}"
-            },
-            {
-              "name": "uptime cid 13",
-              "ok": true,
-              "detail": "output='272388.60 5859315.00'"
-            },
-            {
-              "name": "bye cid 13",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 13",
-              "ok": true,
-              "detail": "serial_bytes=21435"
             }
           ],
           "invariants": [
@@ -5178,6 +5004,180 @@
           "notes": []
         },
         {
+          "name": "cell n=4 vcpus=2 mem=128 cid=10 beats=2",
+          "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
+          "vector": null,
+          "ok": true,
+          "tasks_passed": 20,
+          "tasks_required": 4,
+          "tasks_total": 20,
+          "tasks": [
+            {
+              "name": "handshake cid 10",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 10} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 10",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-10-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-10-hello'}"
+            },
+            {
+              "name": "uptime cid 10",
+              "ok": true,
+              "detail": "output='273582.14 5880917.30'"
+            },
+            {
+              "name": "bye cid 10",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 10",
+              "ok": true,
+              "detail": "serial_bytes=21435"
+            },
+            {
+              "name": "handshake cid 11",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 1, 'guest_cid': 11} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 11",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-11-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-11-hello'}"
+            },
+            {
+              "name": "uptime cid 11",
+              "ok": true,
+              "detail": "output='273582.15 5880917.41'"
+            },
+            {
+              "name": "bye cid 11",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 11",
+              "ok": true,
+              "detail": "serial_bytes=21435"
+            },
+            {
+              "name": "handshake cid 12",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 2, 'guest_cid': 12} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 12",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-12-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-12-hello'}"
+            },
+            {
+              "name": "uptime cid 12",
+              "ok": true,
+              "detail": "output='273582.27 5880918.84'"
+            },
+            {
+              "name": "bye cid 12",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 12",
+              "ok": true,
+              "detail": "serial_bytes=21437"
+            },
+            {
+              "name": "handshake cid 13",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 3, 'guest_cid': 13} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 13",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-13-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-13-hello'}"
+            },
+            {
+              "name": "uptime cid 13",
+              "ok": true,
+              "detail": "output='273582.30 5880919.25'"
+            },
+            {
+              "name": "bye cid 13",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 13",
+              "ok": true,
+              "detail": "serial_bytes=21437"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "run is running when POST answers",
+              "ok": true,
+              "detail": "state=running"
+            },
+            {
+              "name": "run has n VMs",
+              "ok": true,
+              "detail": "vms=4"
+            },
+            {
+              "name": "run reached done before the deadline",
+              "ok": true,
+              "detail": "state=done after 5.6s"
+            },
+            {
+              "name": "done run carries ended_at",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every VM exited",
+              "ok": true,
+              "detail": "states=exited,exited,exited,exited"
+            },
+            {
+              "name": "per-VM CIDs are base+i",
+              "ok": true,
+              "detail": "cids=[10, 11, 12, 13]"
+            },
+            {
+              "name": "fresh capture cid 10",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 11",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 12",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 13",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "no leftover vsock sockets",
+              "ok": true,
+              "detail": "leftover=[]"
+            }
+          ],
+          "notes": []
+        },
+        {
           "name": "cell n=4 vcpus=2 mem=128 cid=100 beats=None",
           "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
@@ -5199,7 +5199,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272394.02 5859419.48'"
+              "detail": "output='273587.70 5881022.34'"
             },
             {
               "name": "bye cid 100",
@@ -5209,7 +5209,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21411"
+              "detail": "serial_bytes=21412"
             },
             {
               "name": "handshake cid 101",
@@ -5224,7 +5224,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272394.03 5859419.61'"
+              "detail": "output='273587.71 5881022.37'"
             },
             {
               "name": "bye cid 101",
@@ -5249,7 +5249,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272394.03 5859419.79'"
+              "detail": "output='273587.72 5881022.57'"
             },
             {
               "name": "bye cid 102",
@@ -5274,7 +5274,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272394.04 5859419.89'"
+              "detail": "output='273587.73 5881022.80'"
             },
             {
               "name": "bye cid 103",
@@ -5284,7 +5284,7 @@
             {
               "name": "guest transcript cid 103",
               "ok": true,
-              "detail": "serial_bytes=21411"
+              "detail": "serial_bytes=21412"
             }
           ],
           "invariants": [
@@ -5373,7 +5373,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272399.50 5859519.83'"
+              "detail": "output='273593.16 5881126.47'"
             },
             {
               "name": "bye cid 100",
@@ -5398,7 +5398,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272399.51 5859520.01'"
+              "detail": "output='273593.17 5881126.67'"
             },
             {
               "name": "bye cid 101",
@@ -5423,7 +5423,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272399.55 5859520.69'"
+              "detail": "output='273593.17 5881126.62'"
             },
             {
               "name": "bye cid 102",
@@ -5448,7 +5448,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272399.53 5859520.31'"
+              "detail": "output='273593.18 5881126.87'"
             },
             {
               "name": "bye cid 103",
@@ -5480,7 +5480,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.5s"
+              "detail": "state=done after 5.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -5547,7 +5547,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272404.99 5859624.19'"
+              "detail": "output='273598.60 5881231.76'"
             },
             {
               "name": "bye cid 10",
@@ -5572,7 +5572,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272405.00 5859624.32'"
+              "detail": "output='273598.62 5881232.14'"
             },
             {
               "name": "bye cid 11",
@@ -5597,7 +5597,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='272405.01 5859624.47'"
+              "detail": "output='273598.62 5881232.03'"
             },
             {
               "name": "bye cid 12",
@@ -5622,7 +5622,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='272405.02 5859624.62'"
+              "detail": "output='273598.63 5881232.18'"
             },
             {
               "name": "bye cid 13",
@@ -5721,7 +5721,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='272410.49 5859727.88'"
+              "detail": "output='273604.06 5881333.08'"
             },
             {
               "name": "bye cid 10",
@@ -5746,7 +5746,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='272410.50 5859728.10'"
+              "detail": "output='273604.08 5881333.37'"
             },
             {
               "name": "bye cid 11",
@@ -5771,7 +5771,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='272410.49 5859727.91'"
+              "detail": "output='273604.07 5881333.33'"
             },
             {
               "name": "bye cid 12",
@@ -5796,7 +5796,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='272410.49 5859727.85'"
+              "detail": "output='273604.09 5881333.63'"
             },
             {
               "name": "bye cid 13",
@@ -5895,7 +5895,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272415.97 5859831.47'"
+              "detail": "output='273609.52 5881438.85'"
             },
             {
               "name": "bye cid 100",
@@ -5920,7 +5920,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272415.99 5859831.82'"
+              "detail": "output='273609.51 5881438.75'"
             },
             {
               "name": "bye cid 101",
@@ -5945,7 +5945,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272416.00 5859831.95'"
+              "detail": "output='273609.53 5881438.97'"
             },
             {
               "name": "bye cid 102",
@@ -5970,7 +5970,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272415.99 5859831.67'"
+              "detail": "output='273609.53 5881438.95'"
             },
             {
               "name": "bye cid 103",
@@ -6002,7 +6002,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 5.5s"
+              "detail": "state=done after 5.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -6069,7 +6069,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='272421.42 5859933.57'"
+              "detail": "output='273614.96 5881539.47'"
             },
             {
               "name": "bye cid 100",
@@ -6094,7 +6094,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='272421.43 5859933.76'"
+              "detail": "output='273614.99 5881539.90'"
             },
             {
               "name": "bye cid 101",
@@ -6119,7 +6119,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='272421.44 5859933.82'"
+              "detail": "output='273614.98 5881539.80'"
             },
             {
               "name": "bye cid 102",
@@ -6129,7 +6129,7 @@
             {
               "name": "guest transcript cid 102",
               "ok": true,
-              "detail": "serial_bytes=21450"
+              "detail": "serial_bytes=21451"
             },
             {
               "name": "handshake cid 103",
@@ -6144,7 +6144,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='272421.45 5859934.18'"
+              "detail": "output='273615.01 5881540.23'"
             },
             {
               "name": "bye cid 103",
@@ -6303,8 +6303,8 @@
         "matrix: 48 cells over the served CIDs [10, 11, 12, 13, 100, 101, 102, 103]"
       ],
       "findings": [],
-      "started_at": "2026-10-10T22:15:11+0200",
-      "duration_s": 294.478
+      "started_at": "2026-10-10T22:35:04+0200",
+      "duration_s": 294.474
     },
     {
       "suite": "credential-redteam",
@@ -6530,11 +6530,11 @@
             {
               "name": "the live capture never exceeds the cap",
               "ok": true,
-              "detail": "observed_bytes=21510 cap=4194304"
+              "detail": "observed_bytes=21509 cap=4194304"
             }
           ],
           "notes": [
-            "max observed capture 21510 bytes; the MVP guest's console output rate cannot reach the 4194304 byte cap inside a bounded run, so the cap is proven by the crate assertion plus this live bound"
+            "max observed capture 21509 bytes; the MVP guest's console output rate cannot reach the 4194304 byte cap inside a bounded run, so the cap is proven by the crate assertion plus this live bound"
           ]
         }
       ],
@@ -6542,7 +6542,7 @@
       "notes": [
         "guest has no network device: scanned /mnt/fast/AgentPlaza/crates/vmm/src/builder.rs for net-device identifiers and mmio transports",
         "no host secret reaches guest-reachable state: surfaces scanned for two canaries (one credential-shaped) and seven credential patterns: agent output / guest transcript (raw), agent output / guest transcript (reconstructed), orchestrator log with every tool argument, daemon log, run API view (JSON-escaped), UDS directory names, machine view, artifact files on disk",
-        "serial capture stays bounded: max observed capture 21510 bytes; the MVP guest's console output rate cannot reach the 4194304 byte cap inside a bounded run, so the cap is proven by the crate assertion plus this live bound",
+        "serial capture stays bounded: max observed capture 21509 bytes; the MVP guest's console output rate cannot reach the 4194304 byte cap inside a bounded run, so the cap is proven by the crate assertion plus this live bound",
         "egress: the MVP has no egress proxy or hostname allowlist (no NIC, no AF_VSOCK listener, only the suite's own UDS listeners), so 'out-of-allowlist destination denied' has no subject; the structural substitute above is asserted"
       ],
       "findings": [
@@ -6552,15 +6552,15 @@
           "detail": "the persona's egress-denial surface assumes an egress proxy (decision 0010 names one for a later milestone). In this MVP the only wire is the per-VM UDS muxer, so the suite asserts the structural equivalent (only the created listeners exist, no AF_VSOCK, no NIC) instead of a denial that cannot occur"
         }
       ],
-      "started_at": "2026-10-10T22:20:05+0200",
-      "duration_s": 33.998
+      "started_at": "2026-10-10T22:39:58+0200",
+      "duration_s": 34.016
     },
     {
       "suite": "kill-and-resume",
       "pass_bar": "5 of 5 cases",
-      "status": "FAIL",
+      "status": "PASS",
       "blocked_reason": null,
-      "cases_passed": 4,
+      "cases_passed": 5,
       "cases_total": 5,
       "cases": [
         {
@@ -6586,12 +6586,12 @@
             {
               "name": "the daemon's process group holds only itself",
               "ok": true,
-              "detail": "group=[3827327] leader=3827327"
+              "detail": "group=[3877826] leader=3877826"
             },
             {
               "name": "teardown inside the VMM kill deadline (< 10.0s)",
               "ok": true,
-              "detail": "DELETE took 0.373s"
+              "detail": "DELETE took 0.278s"
             },
             {
               "name": "run is killed",
@@ -6708,12 +6708,12 @@
             {
               "name": "the daemon's group holds only itself",
               "ok": true,
-              "detail": "group=[3827721]"
+              "detail": "group=[3878276]"
             },
             {
               "name": "the daemon is gone",
               "ok": true,
-              "detail": "pid=3827721"
+              "detail": "pid=3878276"
             },
             {
               "name": "no process survives in the dead daemon's group",
@@ -6736,7 +6736,7 @@
           "name": "daemon restart reconciles and binds cleanly over the killed run's CIDs",
           "detail": "",
           "vector": "SIGTERM mid-run, restart the daemon on the SAME uds dir, POST the same CIDs again",
-          "ok": false,
+          "ok": true,
           "tasks_passed": 0,
           "tasks_required": 0,
           "tasks_total": 0,
@@ -6755,7 +6755,7 @@
             {
               "name": "a new run is a different run (fresh id sequence, new created_at)",
               "ok": true,
-              "detail": "id=r1 created_at=1791663655984 vs 1791663654367"
+              "detail": "id=r1 created_at=1791664849030 vs 1791664847401"
             },
             {
               "name": "the reconcile run completes cleanly on a fresh CID",
@@ -6764,13 +6764,12 @@
             },
             {
               "name": "the restart binds cleanly over the killed run's CIDs",
-              "ok": false,
-              "detail": "state=failed log=noded: run r2 failed to boot: failed to build or boot the VM: failed to create the vsock device: vsock device: vsock UDS backend error: error binding to the host-side Unix socket: Address already in use (os error 98)"
+              "ok": true,
+              "detail": "state=done log=warning: vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.; warning: vcpu: IO read @ 0xcfc:0x2 failed: Failed to find address range.; warning: vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.; warning: vcpu: IO read @ 0xcfc:0x2 failed: Failed to find address range.; warning: vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.; warning: vcpu: IO read @ 0x"
             }
           ],
           "notes": [
-            "leftover muxer sockets after the SIGTERM: ['vm20', 'vm21', 'vm22', 'vm23']",
-            "with the stale sockets removed by hand the same CIDs bind again (state=done), which isolates the leftover socket file as the only blocker"
+            "leftover muxer sockets after the SIGTERM: ['vm20', 'vm21', 'vm22', 'vm23']"
           ]
         },
         {
@@ -6821,7 +6820,7 @@
             {
               "name": "generation 1 stayed inside the RSS budget",
               "ok": true,
-              "detail": "peak=951 MiB budget=8192 MiB"
+              "detail": "peak=950 MiB budget=8192 MiB"
             },
             {
               "name": "generation 1 left no muxer socket",
@@ -6831,7 +6830,7 @@
             {
               "name": "generation 1 released its memory",
               "ok": true,
-              "detail": "baseline=4 MiB peak=951 MiB after=7 MiB"
+              "detail": "baseline=4 MiB peak=950 MiB after=7 MiB"
             },
             {
               "name": "generation 2 reached done",
@@ -6856,16 +6855,16 @@
             {
               "name": "generation 2 released its memory",
               "ok": true,
-              "detail": "baseline=4 MiB peak=952 MiB after=8 MiB"
+              "detail": "baseline=4 MiB peak=952 MiB after=7 MiB"
             },
             {
               "name": "no RSS accumulation across generations",
               "ok": true,
-              "detail": "peaks MiB=[950, 951, 952] growth=2 MiB"
+              "detail": "peaks MiB=[950, 950, 952] growth=2 MiB"
             }
           ],
           "notes": [
-            "RSS baseline 4 MiB; peaks [950, 951, 952] MiB"
+            "RSS baseline 4 MiB; peaks [950, 950, 952] MiB"
           ]
         }
       ],
@@ -6873,31 +6872,9 @@
       "notes": [
         "kill offsets from seed 'apz-acceptance-v1': DELETE@2.775s SIGTERM@2.366s"
       ],
-      "findings": [
-        {
-          "title": "a daemon restart cannot reuse the CIDs that were live when it was killed",
-          "classification": "product-defect",
-          "severity": "medium-high",
-          "affected_cell": "daemon restart over a killed run's CIDs (kill-and-resume case 4)",
-          "detail": "SIGTERM leaves the VMM muxer's host-side Unix socket on disk (crates/vmm/src/devices/virtio/vsock/unix/muxer.rs binds uds_path with a plain UnixListener::bind and only unlinks it in Drop, which a signal death never runs; the muxer's own comment documents that a SIGKILLed VM leaves one behind) and noded installs no signal handler, so there is no clean-shutdown path that would run those Drops. The next daemon's boot over the same CID therefore fails with EADDRINUSE and the run is reported failed. vsockd has a stale-socket probe for its listeners (slice 17); the muxer's path has none, so nothing ever clears it and the CID is wedged until an operator removes the file.",
-          "observed": "run r2 state=failed; noded logs: noded: run r2 failed to boot: failed to build or boot the VM: failed to create the vsock device: vsock device: vsock UDS backend error: error binding to the host-side Unix socket: Address already in use (os error 98)",
-          "expected": "state=done (the restart binds cleanly over the killed run's CIDs)",
-          "reproducer": "start noded --uds-dir D --port 0; POST {n:1,...,vsock_cid:20}; SIGTERM the daemon; start noded again on D; POST the same spec -> 201 with state=failed and 'error binding to the host-side Unix socket: Address already in use (os error 98)'; D/vm20 exists and nothing answers on it",
-          "suspected_component": "crates/vmm/src/devices/virtio/vsock/unix/muxer.rs (bind path) + crates/noded (no shutdown path)",
-          "artifacts": {
-            "leftover_sockets": [
-              "vm20",
-              "vm21",
-              "vm22",
-              "vm23"
-            ],
-            "noded_log": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-b-logs/noded.log",
-            "vsockd_log": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-b-logs/vsockd.log"
-          }
-        }
-      ],
-      "started_at": "2026-10-10T22:20:39+0200",
-      "duration_s": 45.059
+      "findings": [],
+      "started_at": "2026-10-10T22:40:32+0200",
+      "duration_s": 44.75
     },
     {
       "suite": "boot-restore-footprint-budgets",
@@ -6945,7 +6922,7 @@
             {
               "name": "8-VM boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=0.071 p95=0.082 p99=0.118"
+              "detail": "p50=0.071 p95=0.083 p99=0.101"
             },
             {
               "name": "every one of the 10 50-VM boots came up running",
@@ -6960,13 +6937,13 @@
             {
               "name": "50-VM boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=1.174 p95=1.232 p99=1.232"
+              "detail": "p50=1.139 p95=1.310 p99=1.310"
             }
           ],
           "notes": [
             "1-VM boot: n=20 p50=9ms p95=14ms p99=15ms max=15ms",
-            "8-VM boot: n=20 p50=71ms p95=82ms p99=118ms max=118ms",
-            "50-VM boot: n=10 p50=1174ms p95=1232ms p99=1232ms max=1232ms",
+            "8-VM boot: n=20 p50=71ms p95=83ms p99=101ms max=101ms",
+            "50-VM boot: n=10 p50=1139ms p95=1310ms p99=1310ms max=1310ms",
             "no boot-time threshold is configured in this repository (no in-repo boot budget exists), so these are measurements; pass --boot-p95-ms to enforce a bar"
           ]
         },
@@ -7012,9 +6989,9 @@
             }
           ],
           "notes": [
-            "1-VM lifecycle: n=5 p50=5.42s p95=5.44s p99=5.44s (guest beats every 5s)",
-            "8-VM lifecycle: n=5 p50=5.69s p95=5.73s p99=5.73s (guest beats every 5s)",
-            "50-VM lifecycle: n=3 p50=6.88s p95=6.96s p99=6.96s (guest beats every 5s)"
+            "1-VM lifecycle: n=5 p50=5.41s p95=5.43s p99=5.43s (guest beats every 5s)",
+            "8-VM lifecycle: n=5 p50=5.70s p95=5.72s p99=5.72s (guest beats every 5s)",
+            "50-VM lifecycle: n=3 p50=6.92s p95=6.95s p99=6.95s (guest beats every 5s)"
           ]
         },
         {
@@ -7040,7 +7017,7 @@
             {
               "name": "steady-state CPU under 5.0% of one core",
               "ok": true,
-              "detail": "peak=4.250% samples=[4.25, 4.0, 3.5]"
+              "detail": "peak=4.250% samples=[3.75, 4.25, 2.5]"
             },
             {
               "name": "the fleet self-terminates cleanly (beats=12)",
@@ -7049,9 +7026,9 @@
             }
           ],
           "notes": [
-            "50-VM boot (POST -> running): 1145ms",
-            "fleet 50: RSS baseline 4 MiB peak 5709 MiB; CPU [4.25, 4.0, 3.5]% of one core",
-            "CPU at n=2: 0.250% of one core (per-VM scaling evidence)"
+            "50-VM boot (POST -> running): 1133ms",
+            "fleet 50: RSS baseline 4 MiB peak 5709 MiB; CPU [3.75, 4.25, 2.5]% of one core",
+            "CPU at n=2: 0.500% of one core (per-VM scaling evidence)"
           ]
         },
         {
@@ -7082,7 +7059,7 @@
             {
               "name": "a new run is a different run (new id sequence, new created_at)",
               "ok": true,
-              "detail": "id=r1 created_at=1791663858619 vs 1791663856320"
+              "detail": "id=r1 created_at=1791665051808 vs 1791665049503"
             },
             {
               "name": "the SSE stream carries the new run's identity",
@@ -7104,106 +7081,106 @@
         "boot_ms": {
           "1": {
             "n": 20,
-            "min": 0.0057836350169964135,
-            "p50": 0.008994160976726562,
-            "p95": 0.014176666038110852,
-            "p99": 0.014612274011597037,
-            "max": 0.014612274011597037,
-            "mean": 0.009453678797581234
+            "min": 0.006123588012997061,
+            "p50": 0.009157766995485872,
+            "p95": 0.013885812018997967,
+            "p99": 0.014526974991895258,
+            "max": 0.014526974991895258,
+            "mean": 0.00937462845176924
           },
           "8": {
             "n": 20,
-            "min": 0.05979402596130967,
-            "p50": 0.07141928299097344,
-            "p95": 0.08220471703680232,
-            "p99": 0.11807150504318997,
-            "max": 0.11807150504318997,
-            "mean": 0.07362966405344196
+            "min": 0.05814883898710832,
+            "p50": 0.07111639698268846,
+            "p95": 0.08277771901339293,
+            "p99": 0.10120658902451396,
+            "max": 0.10120658902451396,
+            "mean": 0.07210203289578203
           },
           "50": {
             "n": 10,
-            "min": 1.1044113740208559,
-            "p50": 1.174399618001189,
-            "p95": 1.232042373972945,
-            "p99": 1.232042373972945,
-            "max": 1.232042373972945,
-            "mean": 1.183173067396274
+            "min": 1.0805236209998839,
+            "p50": 1.138898016011808,
+            "p95": 1.3100225260131992,
+            "p99": 1.3100225260131992,
+            "max": 1.3100225260131992,
+            "mean": 1.1691123348020482
           }
         },
         "lifecycle_s": {
           "1": {
             "n": 5,
-            "min": 5.382277233991772,
-            "p50": 5.419819622009527,
-            "p95": 5.436846749042161,
-            "p99": 5.436846749042161,
-            "max": 5.436846749042161,
-            "mean": 5.410010213206988
+            "min": 5.373321667022537,
+            "p50": 5.406659558007959,
+            "p95": 5.425952321966179,
+            "p99": 5.425952321966179,
+            "max": 5.425952321966179,
+            "mean": 5.406368961802218
           },
           "8": {
             "n": 5,
-            "min": 5.549547742004506,
-            "p50": 5.6870674539823085,
-            "p95": 5.725567601970397,
-            "p99": 5.725567601970397,
-            "max": 5.725567601970397,
-            "mean": 5.66528535237303
+            "min": 5.652647296956275,
+            "p50": 5.695621129998472,
+            "p95": 5.715365547046531,
+            "p99": 5.715365547046531,
+            "max": 5.715365547046531,
+            "mean": 5.689700718584936
           },
           "50": {
             "n": 3,
-            "min": 6.853602654999122,
-            "p50": 6.879365682019852,
-            "p95": 6.964029630005825,
-            "p99": 6.964029630005825,
-            "max": 6.964029630005825,
-            "mean": 6.8989993223415995
+            "min": 6.851315136009362,
+            "p50": 6.92168251198018,
+            "p95": 6.95041653199587,
+            "p99": 6.95041653199587,
+            "max": 6.95041653199587,
+            "mean": 6.907804726661804
           }
         },
         "footprint": {
           "n": 50,
           "beats": 12,
-          "rss_baseline_bytes": 4354048,
+          "rss_baseline_bytes": 4423680,
           "rss_samples_bytes": [
-            5986340864,
-            5986340864,
-            5986340864
+            5986430976,
+            5986430976,
+            5986430976
           ],
-          "rss_peak_bytes": 5986340864,
+          "rss_peak_bytes": 5986430976,
           "rss_budget_bytes": 8589934592,
-          "rss_after_bytes": 11063296,
+          "rss_after_bytes": 11091968,
           "cpu_samples_pct": [
-            4.249925041932906,
-            3.9999007534530215,
-            3.4999259835904595
+            3.74992836228988,
+            4.2499255539968015,
+            2.49995660384981
           ],
-          "cpu_peak_pct": 4.249925041932906,
+          "cpu_peak_pct": 4.2499255539968015,
           "cpu_budget_pct": 5.0,
           "recorded_cpu_baseline_pct": 0.03,
           "scale_cpu": {
             "n": 2,
-            "cpu_pct": 0.24998917328007514
+            "cpu_pct": 0.49996652924138507
           }
         }
       },
       "notes": [
         "boot budget: measured only \u2014 no configured threshold exists in-repo",
-        "budget regression check: no previous results file for this machine class (baseline unset)"
+        "budget regression check: comparing against acceptance-server-budgets-2026-10-10.json"
       ],
       "findings": [
         {
           "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
           "classification": "baseline-discrepancy",
-          "detail": "measured peak 4.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.250%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
-          "measured_cpu_pct": 4.249925041932906,
+          "detail": "measured peak 4.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.500%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+          "measured_cpu_pct": 4.2499255539968015,
           "measured_cpu_pct_at_scale": {
-            "n2": 0.24998917328007514
+            "n2": 0.49996652924138507
           },
           "recorded_baseline_pct": 0.03,
           "budget_pct": 5.0
         }
       ],
-      "started_at": "2026-10-10T22:21:24+0200",
-      "duration_s": 179.625
+      "started_at": "2026-10-10T22:41:17+0200",
+      "duration_s": 179.809
     }
   ],
   "findings": [
@@ -7214,35 +7191,13 @@
       "detail": "the persona's egress-denial surface assumes an egress proxy (decision 0010 names one for a later milestone). In this MVP the only wire is the per-VM UDS muxer, so the suite asserts the structural equivalent (only the created listeners exist, no AF_VSOCK, no NIC) instead of a denial that cannot occur"
     },
     {
-      "suite": "kill-and-resume",
-      "title": "a daemon restart cannot reuse the CIDs that were live when it was killed",
-      "classification": "product-defect",
-      "severity": "medium-high",
-      "affected_cell": "daemon restart over a killed run's CIDs (kill-and-resume case 4)",
-      "detail": "SIGTERM leaves the VMM muxer's host-side Unix socket on disk (crates/vmm/src/devices/virtio/vsock/unix/muxer.rs binds uds_path with a plain UnixListener::bind and only unlinks it in Drop, which a signal death never runs; the muxer's own comment documents that a SIGKILLed VM leaves one behind) and noded installs no signal handler, so there is no clean-shutdown path that would run those Drops. The next daemon's boot over the same CID therefore fails with EADDRINUSE and the run is reported failed. vsockd has a stale-socket probe for its listeners (slice 17); the muxer's path has none, so nothing ever clears it and the CID is wedged until an operator removes the file.",
-      "observed": "run r2 state=failed; noded logs: noded: run r2 failed to boot: failed to build or boot the VM: failed to create the vsock device: vsock device: vsock UDS backend error: error binding to the host-side Unix socket: Address already in use (os error 98)",
-      "expected": "state=done (the restart binds cleanly over the killed run's CIDs)",
-      "reproducer": "start noded --uds-dir D --port 0; POST {n:1,...,vsock_cid:20}; SIGTERM the daemon; start noded again on D; POST the same spec -> 201 with state=failed and 'error binding to the host-side Unix socket: Address already in use (os error 98)'; D/vm20 exists and nothing answers on it",
-      "suspected_component": "crates/vmm/src/devices/virtio/vsock/unix/muxer.rs (bind path) + crates/noded (no shutdown path)",
-      "artifacts": {
-        "leftover_sockets": [
-          "vm20",
-          "vm21",
-          "vm22",
-          "vm23"
-        ],
-        "noded_log": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-b-logs/noded.log",
-        "vsockd_log": "/tmp/apz-acceptance-server-bh38onhh/kill-restart-b-logs/vsockd.log"
-      }
-    },
-    {
       "suite": "boot-restore-footprint-budgets",
       "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
       "classification": "baseline-discrepancy",
-      "detail": "measured peak 4.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.250%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
-      "measured_cpu_pct": 4.249925041932906,
+      "detail": "measured peak 4.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.500%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+      "measured_cpu_pct": 4.2499255539968015,
       "measured_cpu_pct_at_scale": {
-        "n2": 0.24998917328007514
+        "n2": 0.49996652924138507
       },
       "recorded_baseline_pct": 0.03,
       "budget_pct": 5.0

@@ -1,0 +1,31 @@
+vsockd: listening on /tmp/apz-acceptance-server-gq0wqw67/budgets-restore-a-uds/vm40_5000 for guest CID 40
+vsockd: listening on /tmp/apz-acceptance-server-gq0wqw67/budgets-restore-a-uds/vm41_5000 for guest CID 41
+vsockd: listening on /tmp/apz-acceptance-server-gq0wqw67/budgets-restore-a-uds/vm42_5000 for guest CID 42
+vsockd: listening on /tmp/apz-acceptance-server-gq0wqw67/budgets-restore-a-uds/vm43_5000 for guest CID 43
+vsockd: accepted a connection from cid 40
+[guest 40 vm? ->] {"type":"hello","vm":0,"guest_cid":40}
+vsockd: guest 40 vm 0 says hello (accepted on the socket for cid 40)
+[<-] guest 40 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 40 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-40-hello"}}
+[<-] guest 40 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-40-hello"}
+vsockd: answered call 1 (echo) for guest 40 vm 0
+[guest 40 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 40 vm0 {"type":"tool_result","call":2,"ok":true,"output":"273904.02 5886672.16"}
+vsockd: answered call 2 (uptime) for guest 40 vm 0
+[guest 40 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 40 vm 0 said bye after 2 tool calls
+vsockd: session with guest 40 vm 0 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 41
+[guest 41 vm? ->] {"type":"hello","vm":1,"guest_cid":41}
+vsockd: guest 41 vm 1 says hello (accepted on the socket for cid 41)
+[<-] guest 41 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 41 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-41-hello"}}
+[<-] guest 41 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-41-hello"}
+vsockd: answered call 1 (echo) for guest 41 vm 1
+[guest 41 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 41 vm1 {"type":"tool_result","call":2,"ok":true,"output":"273904.03 5886672.39"}
+vsockd: answered call 2 (uptime) for guest 41 vm 1
+[guest 41 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 41 vm 1 said bye after 2 tool calls
+vsockd: session with guest 41 vm 1 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

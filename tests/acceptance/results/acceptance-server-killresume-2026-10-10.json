@@ -1,0 +1,462 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-10T22:34:56+0200",
+  "wall_seconds": 44.961,
+  "manifest": {
+    "suite": "killresume",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "928c1130316303cb1c0b04a79c3d2001d0b1995b",
+      "dirty": true,
+      "harness_tree_sha256": "44c46d5f0e6e294291c8731b52abd791792a23eedea54d67d426f027f717a6a6"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "765ef7f003f193c7eadbd4ef24d1c8ce31d641d44f4218636ef66862da76a35f"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-server-z0uvwh9w",
+    "started_at": "2026-10-10T22:34:56+0200",
+    "binaries": {
+      "noded": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "45b5579f82fbf0cb8034418fd3efc33dea6ee36e2fdbb3485bb08d49b2e41c7f"
+      },
+      "vsockd": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "f2908eddfe7ed0fa575656de10e176ffe65c03366286edf33d15b06742175ceb"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-delete-logs/noded.log",
+        "bytes": 64834,
+        "sha256": "4d3b543279a4d962a44dea991055a5370d1d87ff204713ad8140da6dfe9e1ede",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/4d3b5432-noded.log",
+        "excerpt_bytes": 64834
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-delete-logs/vsockd.log",
+        "bytes": 7670,
+        "sha256": "ea9faf1ec7ba10211c37c41f383ea34a0b112ec09a8dc2241a3b8e0d52e395c5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/ea9faf1e-vsockd.log",
+        "excerpt_bytes": 7670
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-reuse-logs/noded.log",
+        "bytes": 129514,
+        "sha256": "e520cae5008acbf80aa0c1837c7f095fe0c2d2361769c0e85be949f177e1035a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/e520cae5-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-reuse-logs/vsockd.log",
+        "bytes": 14486,
+        "sha256": "109635e75f8bbd7fb514005006c5205ec1334cc18010fc2adb3de6eb23432ee6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/109635e7-vsockd.log",
+        "excerpt_bytes": 14486
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-sigterm-logs/noded.log",
+        "bytes": 32494,
+        "sha256": "c83db9082f85cebc1e46a18c468d7444e4c4ae4080a7cee346e4a61cccc6aa7a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/c83db908-noded.log",
+        "excerpt_bytes": 32494
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-sigterm-logs/vsockd.log",
+        "bytes": 4266,
+        "sha256": "ec5c640e6debbc45905806e396dd28d07ef13ab86bfadb1193e0adfb6276ee09",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/ec5c640e-vsockd.log",
+        "excerpt_bytes": 4266
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-restart-a-logs/noded.log",
+        "bytes": 32494,
+        "sha256": "31b18cfdd92c2c6dac3a8532f9077b5ad8198e7f17e4f6ec3ef2262df045f6f9",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/31b18cfd-noded.log",
+        "excerpt_bytes": 32494
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-restart-a-logs/vsockd.log",
+        "bytes": 4282,
+        "sha256": "fa7693a09dd831e72d0b333d2e2e5227e117d4b7cb947e0598fc1ec4c0386ab3",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/fa7693a0-vsockd.log",
+        "excerpt_bytes": 4282
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-restart-b-logs/noded.log",
+        "bytes": 40579,
+        "sha256": "1a094e9aeb999716bfb6d87ecff7b91a1200fb339b3046106dbca372bc17e2d3",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/1a094e9a-noded.log",
+        "excerpt_bytes": 40579
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-restart-b-logs/vsockd.log",
+        "bytes": 5135,
+        "sha256": "fd7ab4c4334c2e7a1f5b04651a7d0359ae5537cfe1a4d4329ce02bc814f18592",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/fd7ab4c4-vsockd.log",
+        "excerpt_bytes": 5135
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-churn-logs/noded.log",
+        "bytes": 194194,
+        "sha256": "7c2336631cd71a577daf150c40bf83774e81bba253e65ec0d128591a21d7a68b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/7c233663-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-z0uvwh9w/kill-churn-logs/vsockd.log",
+        "bytes": 21310,
+        "sha256": "f3a2717cd1a047c99551cb12e7093ae06c50f2fec841bee188ba9a0e4f2ef11d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T223411/f3a2717c-vsockd.log",
+        "excerpt_bytes": 21310
+      }
+    ]
+  },
+  "suites_run": [
+    "killresume"
+  ],
+  "suites": [
+    {
+      "suite": "kill-and-resume",
+      "pass_bar": "5 of 5 cases",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 5,
+      "cases_total": 5,
+      "cases": [
+        {
+          "name": "DELETE tears an 8-VM run down promptly",
+          "detail": "",
+          "vector": "DELETE mid-session: teardown time, socket unlink, RSS release, no orphan, transcript intact",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the fleet is up",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the daemon runs its VMs in-process (no child process to orphan)",
+              "ok": true,
+              "detail": "children=[]"
+            },
+            {
+              "name": "the daemon's process group holds only itself",
+              "ok": true,
+              "detail": "group=[3862887] leader=3862887"
+            },
+            {
+              "name": "teardown inside the VMM kill deadline (< 10.0s)",
+              "ok": true,
+              "detail": "DELETE took 0.342s"
+            },
+            {
+              "name": "run is killed",
+              "ok": true,
+              "detail": "killed"
+            },
+            {
+              "name": "every VM is killed",
+              "ok": true,
+              "detail": "states=killed,killed,killed,killed,killed,killed,killed,killed"
+            },
+            {
+              "name": "no VM hit the kill timeout",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every muxer UDS socket is unlinked",
+              "ok": true,
+              "detail": "stale=[]"
+            },
+            {
+              "name": "no service answers on the torn-down CIDs",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "guest RAM is released (RSS returns toward baseline)",
+              "ok": true,
+              "detail": "baseline=4 MiB during=949 MiB after=5 MiB allowance=283 MiB"
+            },
+            {
+              "name": "no leaked VMM process in the daemon's group",
+              "ok": true,
+              "detail": "group_extra=[]"
+            },
+            {
+              "name": "the killed run's transcript has no torn records",
+              "ok": true,
+              "detail": "records=7 broken=[] boot_banners=1"
+            },
+            {
+              "name": "the daemon is still serving after a kill",
+              "ok": true,
+              "detail": ""
+            }
+          ],
+          "notes": [
+            "kill offset 2.775s after POST (seed 'apz-acceptance-v1')",
+            "at kill time: state=running vsock connections seen=8",
+            "RSS baseline 4 MiB, 945 MiB held by the fleet, 5 MiB after the teardown",
+            "orphan scope: this host is shared with other live daemons and a fleet, so the check is scoped to the daemon's own process group (a global pgrep would blame other tenants)",
+            "run r1 inspected after the kill; sessions seen while live: 8"
+          ]
+        },
+        {
+          "name": "immediate re-spawn over the same CIDs and UDS paths",
+          "detail": "",
+          "vector": "run -> DELETE -> run again on the same base CID without EADDRINUSE",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the first run's sockets are gone before the re-spawn",
+              "ok": true,
+              "detail": "stale=[]"
+            },
+            {
+              "name": "the re-spawn reached done",
+              "ok": true,
+              "detail": "done"
+            },
+            {
+              "name": "every VM of the re-spawn exited",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the re-spawn carried the same CIDs",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "no EADDRINUSE on the reuse",
+              "ok": true,
+              "detail": []
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "SIGTERM mid-run takes the VMs with the daemon",
+          "detail": "",
+          "vector": "SIGTERM the daemon mid-session: the VMs die with it, no orphan VMM process",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the fleet is up before the kill",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the daemon had no child process",
+              "ok": true,
+              "detail": "children=[]"
+            },
+            {
+              "name": "the daemon's group holds only itself",
+              "ok": true,
+              "detail": "group=[3863332]"
+            },
+            {
+              "name": "the daemon is gone",
+              "ok": true,
+              "detail": "pid=3863332"
+            },
+            {
+              "name": "no process survives in the dead daemon's group",
+              "ok": true,
+              "detail": "survivors=[]"
+            },
+            {
+              "name": "no live guest answers after the daemon dies",
+              "ok": true,
+              "detail": "probes={20: 'refused', 21: 'refused', 22: 'refused', 23: 'refused'}"
+            }
+          ],
+          "notes": [
+            "kill offset 2.366s after POST (seed 'apz-acceptance-v1')",
+            "probe verdicts on the dead daemon's muxer paths: {20: 'refused', 21: 'refused', 22: 'refused', 23: 'refused'}",
+            "muxer sockets left on disk after SIGTERM: vm20,vm21,vm22,vm23"
+          ]
+        },
+        {
+          "name": "daemon restart reconciles and binds cleanly over the killed run's CIDs",
+          "detail": "",
+          "vector": "SIGTERM mid-run, restart the daemon on the SAME uds dir, POST the same CIDs again",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the killed daemon's run is r1",
+              "ok": true,
+              "detail": "r1"
+            },
+            {
+              "name": "the restarted daemon serves the API",
+              "ok": true,
+              "detail": "server"
+            },
+            {
+              "name": "a new run is a different run (fresh id sequence, new created_at)",
+              "ok": true,
+              "detail": "id=r1 created_at=1791664468223 vs 1791664466596"
+            },
+            {
+              "name": "the reconcile run completes cleanly on a fresh CID",
+              "ok": true,
+              "detail": "state=done"
+            },
+            {
+              "name": "the restart binds cleanly over the killed run's CIDs",
+              "ok": true,
+              "detail": "state=done log=warning: vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.; warning: vcpu: IO read @ 0xcfc:0x2 failed: Failed to find address range.; warning: vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.; warning: vcpu: IO read @ 0xcfc:0x2 failed: Failed to find address range.; warning: vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.; warning: vcpu: IO read @ 0x"
+            }
+          ],
+          "notes": [
+            "leftover muxer sockets after the SIGTERM: ['vm20', 'vm21', 'vm22', 'vm23']"
+          ]
+        },
+        {
+          "name": "three generations of an 8-VM beats fleet",
+          "detail": "",
+          "vector": "run -> done times 3 back-to-back on the same CIDs, each inside the footprint budget",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "generation 0 reached done",
+              "ok": true,
+              "detail": "done"
+            },
+            {
+              "name": "generation 0 exited every VM",
+              "ok": true,
+              "detail": "states=exited,exited,exited,exited,exited,exited,exited,exited"
+            },
+            {
+              "name": "generation 0 stayed inside the RSS budget",
+              "ok": true,
+              "detail": "peak=949 MiB budget=8192 MiB"
+            },
+            {
+              "name": "generation 0 left no muxer socket",
+              "ok": true,
+              "detail": "stale=[]"
+            },
+            {
+              "name": "generation 0 released its memory",
+              "ok": true,
+              "detail": "baseline=4 MiB peak=949 MiB after=5 MiB"
+            },
+            {
+              "name": "generation 1 reached done",
+              "ok": true,
+              "detail": "done"
+            },
+            {
+              "name": "generation 1 exited every VM",
+              "ok": true,
+              "detail": "states=exited,exited,exited,exited,exited,exited,exited,exited"
+            },
+            {
+              "name": "generation 1 stayed inside the RSS budget",
+              "ok": true,
+              "detail": "peak=950 MiB budget=8192 MiB"
+            },
+            {
+              "name": "generation 1 left no muxer socket",
+              "ok": true,
+              "detail": "stale=[]"
+            },
+            {
+              "name": "generation 1 released its memory",
+              "ok": true,
+              "detail": "baseline=4 MiB peak=950 MiB after=7 MiB"
+            },
+            {
+              "name": "generation 2 reached done",
+              "ok": true,
+              "detail": "done"
+            },
+            {
+              "name": "generation 2 exited every VM",
+              "ok": true,
+              "detail": "states=exited,exited,exited,exited,exited,exited,exited,exited"
+            },
+            {
+              "name": "generation 2 stayed inside the RSS budget",
+              "ok": true,
+              "detail": "peak=951 MiB budget=8192 MiB"
+            },
+            {
+              "name": "generation 2 left no muxer socket",
+              "ok": true,
+              "detail": "stale=[]"
+            },
+            {
+              "name": "generation 2 released its memory",
+              "ok": true,
+              "detail": "baseline=4 MiB peak=951 MiB after=8 MiB"
+            },
+            {
+              "name": "no RSS accumulation across generations",
+              "ok": true,
+              "detail": "peaks MiB=[949, 950, 951] growth=2 MiB"
+            }
+          ],
+          "notes": [
+            "RSS baseline 4 MiB; peaks [949, 950, 951] MiB"
+          ]
+        }
+      ],
+      "data": {},
+      "notes": [
+        "kill offsets from seed 'apz-acceptance-v1': DELETE@2.775s SIGTERM@2.366s"
+      ],
+      "findings": [],
+      "started_at": "2026-10-10T22:34:11+0200",
+      "duration_s": 44.956
+    }
+  ],
+  "findings": []
+}
