@@ -254,8 +254,9 @@ tr.sel td:first-child { color: var(--signal-ink); font-weight: 700; }
             <div class="f"><label for="f-vcpus">vCPUs each</label><input id="f-vcpus" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></div>
             <div class="f"><label for="f-mem">Memory each · MiB</label><input id="f-mem" type="number" min="128" step="1" value="512" inputmode="numeric"></div>
             <div class="f"><label for="f-beats">Beats · churn, optional</label><input id="f-beats" type="number" min="1" step="1" placeholder="steady" inputmode="numeric"></div>
+            <div class="f"><label for="f-vsock">vsock CID · optional</label><input id="f-vsock" type="number" min="3" step="1" placeholder="no vsock" inputmode="numeric"></div>
           </div>
-          <p class="example" style="margin-top:12px">n 1–64 · vCPUs 1–64 · memory 128 MiB and up. With beats set, each guest heartbeats that many times, then powers itself off (churn mode); the run closes itself. Empty beats runs steady, until you kill it.</p>
+          <p class="example" style="margin-top:12px">n 1–64 · vCPUs 1–64 · memory 128 MiB and up. With beats set, each guest heartbeats that many times, then powers itself off (churn mode); the run closes itself. Empty beats runs steady, until you kill it. With a vsock CID set, each VM gets a vsock device (VM i takes CID base + i) and the agent inside talks to the orchestrator over it — the only wire a plaza guest has, there is no NIC; empty boots with no vsock at all.</p>
           <div class="actions" style="margin-top:14px">
             <button type="submit" class="btn owner" id="spawn-btn">Spawn the run</button>
             <span class="err" id="spawn-err" role="alert"></span>
@@ -891,13 +892,17 @@ document.getElementById('spawn').addEventListener('submit', function (e) {
   var mem = Number(document.getElementById('f-mem').value);
   var beatsRaw = document.getElementById('f-beats').value.trim();
   var beats = beatsRaw === '' ? null : Number(beatsRaw);
+  var vsockRaw = document.getElementById('f-vsock').value.trim();
+  var vsock = vsockRaw === '' ? null : Number(vsockRaw);
   function bad(msg) { errEl.textContent = msg; }
   if (!Number.isInteger(n) || n < 1 || n > 64) return bad('n must be a whole number from 1 to 64.');
   if (!Number.isInteger(vcpus) || vcpus < 1 || vcpus > 64) return bad('vCPUs must be a whole number from 1 to 64.');
   if (!Number.isInteger(mem) || mem < 128) return bad('Memory must be 128 MiB or more.');
   if (beats != null && (!Number.isInteger(beats) || beats < 1)) return bad('Beats must be a whole number of 1 or more, or empty for steady mode.');
+  if (vsock != null && (!Number.isInteger(vsock) || vsock < 3)) return bad('vsock CID must be a whole number of 3 or more (1 and 2 are reserved), or empty for no vsock.');
   var body = { n: n, vcpus: vcpus, memory_mib: mem };
   if (beats != null) body.beats = beats;
+  if (vsock != null) body.vsock_cid = vsock;
   var btn = document.getElementById('spawn-btn');
   btn.disabled = true;
   btn.textContent = 'Entering…';
