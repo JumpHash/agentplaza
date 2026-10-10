@@ -99,7 +99,7 @@ h1 { grid-column: 2; font: 700 30px/1.02 var(--mono); font-stretch: 78%; letter-
 .entry .matter b { font: 600 16px/1.35 var(--serif); display: block; }
 .entry .matter > span { font-size: 13.5px; color: var(--ink-2); }
 .entry .due { font: 500 12px var(--mono); padding: 13px 0; font-variant-numeric: tabular-nums; }
-.entry .auth { padding: 13px 18px 0 0; text-align: right; }
+.entry .auth { padding: 13px 18px 0 0; text-align: right; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: 2px 12px; }
 .m { font: 11.5px var(--mono); }
 a { color: var(--ink); text-decoration-color: var(--ink-3); text-underline-offset: 3px; }
 a:hover { color: var(--signal-ink); }
@@ -111,11 +111,14 @@ a:hover { color: var(--signal-ink); }
 .mk.crit { color: var(--crit); } .mk.crit::before { background: var(--crit); border-color: var(--crit); transform: rotate(45deg) scale(.85); }
 .mk.ok { color: var(--ok); } .mk.ok::before { border-radius: 50%; background: var(--ok); border-color: var(--ok); }
 .mk.warn { color: var(--warn); }
+/* vsock: the outlined square with the wire run through it — the one channel a guest has.
+   The shape carries the meaning; the ink stays the register's. */
+.mk.vsock::before { background: linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat; }
 
 /* particulars: label ........ value */
 .parts { display: grid; grid-template-columns: 62px minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
 .parts.top { border-top: 1px solid var(--ink); }
-.parts .body { grid-column: 2; padding: 16px 22px 18px 14px; display: grid; gap: 14px; min-width: 0; }
+.parts .body { grid-column: 2; padding: 16px 22px 18px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .parts .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px 36px; }
 .parts h2 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0 0 6px; }
 dl { margin: 0; }
@@ -170,6 +173,8 @@ td.m { font: 11.5px var(--mono); }
 tr.link { cursor: pointer; } tr.link:hover td { background: var(--hover); }
 tr.sel td { background: var(--hover); }
 tr.sel td:first-child { color: var(--signal-ink); font-weight: 700; }
+/* the guest-CID chip beside a VM id: small, square, ink-outlined */
+.chip { display: inline-block; margin-left: 8px; padding: 0 5px; border: 1px solid var(--ink-3); color: var(--ink-2); font: 500 9.5px var(--mono); letter-spacing: .06em; white-space: nowrap; vertical-align: 1px; }
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .toast { position: fixed; right: 22px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); background: var(--sheet); color: var(--ink); border: 1px solid var(--ink); box-shadow: var(--print); padding: 10px 14px; font: 600 11.5px var(--mono); z-index: 3; max-width: min(420px, calc(100vw - 44px)); }
@@ -191,7 +196,7 @@ tr.sel td:first-child { color: var(--signal-ink); font-weight: 700; }
   h1 { font-size: 23px; }
   .entry { grid-template-columns: 34px minmax(0, 1fr); }
   .entry .no { padding-right: 6px; font-size: 9.5px; }
-  .entry .due, .entry .auth { grid-column: 2; padding: 0 14px 10px; text-align: left; }
+  .entry .due, .entry .auth { grid-column: 2; padding: 0 14px 10px; text-align: left; justify-content: flex-start; }
   .entry .due { padding-bottom: 2px; }
   .tx .row { grid-template-columns: 34px minmax(0, 1fr); }
   .tx .seq { padding-right: 6px; }
@@ -426,6 +431,10 @@ function vmStateMk(state) {
   var cls = { running: 'mk ok', exited: 'mk', killed: 'mk' }[state] || 'mk';
   return el('span', cls, state || '—');
 }
+/* A run is on the wire when any of its VMs reports a vsock guest CID. */
+function hasVsock(run) {
+  return !!(run && run.vms && run.vms.some(function (v) { return v.guest_cid != null; }));
+}
 function modeText(run) {
   return run.beats == null ? 'steady · runs until killed' : 'churn · ' + run.beats + ' beats then poweroff';
 }
@@ -606,7 +615,7 @@ function renderRuns() {
   /* Rebuild entries only when the register's shape changes; tick the
      durations in place otherwise so focus is never stolen. */
   var sig = store.runs.map(function (r) {
-    return r.id + ':' + r.state + ':' + (r.ended_at || 0) + ':' + (r.vms ? r.vms.length : 0);
+    return r.id + ':' + r.state + ':' + (r.ended_at || 0) + ':' + (r.vms ? r.vms.length : 0) + ':' + (hasVsock(r) ? 1 : 0);
   }).join('|');
   var list = document.getElementById('runs-list');
   if (sig !== store.runsSig) {
@@ -627,11 +636,12 @@ function renderRuns() {
       var btn = el('button', 'entry');
       btn.type = 'button';
       btn.setAttribute('data-go', '#run/' + r.id);
-      btn.setAttribute('aria-label', 'Open run ' + r.id + ', ' + r.state);
+      btn.setAttribute('aria-label', 'Open run ' + r.id + ', ' + r.state + (hasVsock(r) ? ', vsock' : ''));
       btn.appendChild(el('span', 'no', pad(seq, 4)));
       btn.appendChild(matter);
       btn.appendChild(el('span', 'due', fmtTime(r.created_at)));
       var auth = el('span', 'auth');
+      if (hasVsock(r)) auth.appendChild(el('span', 'mk vsock', 'vsock'));
       auth.appendChild(stateMk(r.state));
       btn.appendChild(auth);
       list.appendChild(btn);
@@ -723,7 +733,7 @@ function renderVms(run) {
   document.getElementById('d-vm-count').textContent =
     vms.length ? fmtNum(vms.length) + (vms.length === 1 ? ' handle' : ' handles') : (run ? 'starting' : '—');
   if (store.vm > vms.length - 1) store.vm = Math.max(0, vms.length - 1);
-  var sig = vms.map(function (v) { return v.id + ':' + v.state; }).join('|');
+  var sig = vms.map(function (v) { return v.id + ':' + v.state + ':' + (v.guest_cid == null ? '' : v.guest_cid); }).join('|');
   var tb = document.getElementById('vm-body');
   if (sig !== store.vmSig) {
     store.vmSig = sig;
@@ -733,9 +743,11 @@ function renderVms(run) {
       var tr = el('tr', 'link');
       tr.tabIndex = 0;
       tr.setAttribute('data-sel-vm', String(i));
-      tr.setAttribute('aria-label', 'Show transcript of vm ' + v.id + ', ' + v.state);
+      tr.setAttribute('aria-label', 'Show transcript of vm ' + v.id + ', ' + v.state + (v.guest_cid != null ? ', cid ' + v.guest_cid : ''));
       tr.appendChild(el('td', null, pad(i + 1, 2)));
-      tr.appendChild(el('td', 'm', 'vm ' + v.id));
+      var idTd = el('td', 'm', 'vm ' + v.id);
+      if (v.guest_cid != null) idTd.appendChild(el('span', 'chip', 'cid ' + v.guest_cid));
+      tr.appendChild(idTd);
       var stTd = el('td'); stTd.appendChild(vmStateMk(v.state)); tr.appendChild(stTd);
       var linesTd = el('td', 'num', '0');
       var bytesTd = el('td', 'num', '0');
