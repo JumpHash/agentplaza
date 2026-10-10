@@ -24,19 +24,26 @@ pub fn application(
     config: Config,
 ) -> Application<impl Program<State = Model, Message = Message, Theme = iced::Theme>> {
     let client = Client::new(config.endpoint.clone()).with_timeout(config.timeout);
-    let model = Model::at_cadence(config.endpoint, config.refresh_ms);
+    // The hub is a second process on a second loopback port, read with the
+    // same client: `None` when no `--hub-url` named one.
+    let hub = config
+        .hub
+        .clone()
+        .map(|endpoint| Client::new(endpoint).with_timeout(config.timeout));
+    let model = Model::at_cadence(config.endpoint, config.refresh_ms).with_hub(config.hub);
 
     // The first poll is the first tick: the reducer schedules it and counts
     // it, and the timer takes over from there.
     let boot_client = client.clone();
+    let boot_hub = hub.clone();
     let boot = move || {
         let mut model = model.clone();
         let effect = model.boot(epoch_ms());
-        (model, dispatch(effect, &boot_client))
+        (model, dispatch(effect, &boot_client, boot_hub.as_ref()))
     };
     let update = move |model: &mut Model, message: Message| {
         let effect = model.apply(message);
-        dispatch(effect, &client)
+        dispatch(effect, &client, hub.as_ref())
     };
 
     iced::application(boot, update, view::view)
@@ -196,7 +203,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
 }
 
 /// Runs one effect's calls concurrently and turns their answers into messages.
-fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
+fn dispatch(effect: Effect, client: &Client, hub: Option<&Client>) -> Task<Message> {
     let mut tasks: Vec<Task<Message>> = Vec::new();
     if effect.poll_list {
         let client = client.clone();
@@ -207,6 +214,19 @@ fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
             },
             |(at_ms, result)| Message::Runs { at_ms, result },
         ));
+    }
+    if effect.poll_hub {
+        // The hub's own client, and its own message: a hub that is down is
+        // never mistaken for a daemon that is.
+        if let Some(hub) = hub.cloned() {
+            tasks.push(Task::perform(
+                async move {
+                    let result = hub.hub_status();
+                    (epoch_ms(), result)
+                },
+                |(at_ms, result)| Message::Hub { at_ms, result },
+            ));
+        }
     }
     if effect.poll_machine {
         let client = client.clone();

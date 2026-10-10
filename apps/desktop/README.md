@@ -2,7 +2,10 @@
 
 An iced + wgpu (WebGPU) desktop dashboard for the node daemon's fleet API: the
 fleet as a register — an index of runs on the left, a ruled sheet on the right,
-stamps for every state the daemon reports.
+stamps for every state the daemon reports. With `--hub-url` it also reads the
+hub's read-only status surface, so the **roster** (`w`) can show not only who
+the register says is running but who is actually **connected to the
+orchestrator** right now — the two halves joined by guest CID, never merged.
 
 It is **its own cargo workspace** (`apps/desktop/Cargo.toml` declares
 `[workspace]`, with its own `Cargo.lock`): the root workspace's members are
@@ -18,17 +21,19 @@ cargo test
 ## Using it
 
 ```
-agentplaza-desktop [--url <url>] [--refresh-ms <milliseconds>]
-                   [--timeout-secs <seconds>]
+agentplaza-desktop [--url <url>] [--hub-url <host:port>]
+                   [--refresh-ms <milliseconds>] [--timeout-secs <seconds>]
 ```
 
 | | |
 |---|---|
 | `--url <url>` | the node daemon to read; `http://127.0.0.1:8899` by default |
+| `--hub-url <host:port>` | the hub's read-only status surface (`vsockd --status-port`), whose `GET /status` says who is connected to the orchestrator right now; **off** by default |
 | `--refresh-ms <n>` | how often a healthy daemon is polled, 250–30000 ms; 2000 by default |
 | `--timeout-secs <n>` | how long one call may take, 1–600; 5 by default |
 | `-h`, `--help` | the usage text |
 | `APZ_DESKTOP_URL` | the same as `--url` |
+| `APZ_DESKTOP_HUB` | the same as `--hub-url` |
 | `APZ_DESKTOP_REFRESH_MS` | the same as `--refresh-ms` |
 | `APZ_DESKTOP_TIMEOUT_SECS` | the same as `--timeout-secs` |
 
@@ -39,7 +44,7 @@ agentplaza-desktop [--url <url>] [--refresh-ms <milliseconds>]
 | `r` | the fleet register |
 | `m` | the machine (the index also lists it) |
 | `f` | the fleet map |
-| `w` | the roster: who is running right now, grouped by role |
+| `w` | the roster: who is running right now, and — with `--hub-url` — who is connected |
 | `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
 | `Escape` | back to the register |
@@ -53,11 +58,17 @@ never trips a shortcut.
 An argument wins over the environment. Only a **loopback** host is accepted,
 and only an exact one: `127.0.0.1` (or `localhost`, normalized to it), never
 resolved through DNS. Any other host is refused before a socket is opened.
+`--hub-url` is held to the same policy and additionally **requires its port**:
+the status surface is off unless the daemon was started with `--status-port`,
+so there is no default to fall back to and a bare host is refused rather than
+pointed at whatever holds the daemon's own port.
 
 ```sh
 cargo run -- --url http://127.0.0.1:8899
 APZ_DESKTOP_URL=http://127.0.0.1:9000 cargo run
 cargo run -- --refresh-ms 500
+cargo run -- --url http://127.0.0.1:8899 --hub-url 127.0.0.1:19080
+APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
 ```
 
 ## What it does
@@ -95,18 +106,47 @@ cargo run -- --refresh-ms 500
 * the **machine** sheet: `GET /api/v0/machine` as a ruled table — name, arch,
   backend, irqchip, class, cpus, memory, the vsock transport mode, when the
   daemon started, and its uptime ticking with the poll;
-* the **roster** (`w`): *who is running right now*, read off the live register
-  and nothing else — the daemon is asked for nothing new. Every VM whose row
-  carries a role is a row: the role it accepted, the run and VM it is, its
-  guest CID, the state right now, and the serial rate the activity feed has
-  for it (a rate needs two reads of a VM's capture, so a freshly opened roster
-  starts at zero and moves as the polls land). Grouped by role, in the order
-  the roles appear in the register, each group with its own tally; the sheet
-  scrolls, because twenty-one roles do not fit one window. Pressing an agent's
-  row opens its run with that agent's console selected, the same target the map
-  cells use. A daemon that reports no role on any VM — an older one, or one not
-  started with `--agents` — gets the honest empty state that says so rather
-  than an empty table;
+* the **roster** (`w`): *who is running right now* — and, when `--hub-url`
+  names one, *who is connected to the orchestrator right now*. Two surfaces,
+  two halves, joined by guest CID and **never merged**:
+  * the **register's half**, from `GET /api/v0/runs` and nothing else: every VM
+    whose row carries a role, with the role it accepted, the run and VM it is,
+    its guest CID, the state right now and the serial rate the activity feed
+    has for it (a rate needs two reads of a VM's capture, so a freshly opened
+    roster starts at zero and moves as the polls land);
+  * the **hub's half**, from `GET /status` on the hub's status surface
+    (`vsockd --status-port`), read on its own schedule at the same cadence: a
+    header — `hub · 6 cid(s) served · 2 agent(s) connected · 2 session(s)
+    active · up 1h 04m` — and, per agent, the session the hub actually holds
+    (when it connected, how long ago it last beat, the calls it has served, and
+    the role the handshake accepted).
+
+  The two are joined on **guest CID**: an agent the register reports and the
+  hub does not is drawn `registered, not connected`, and a session the hub
+  holds that no VM row claims is drawn `connected, not registered` — *never*
+  folded into a row it does not match, so a session the register cannot account
+  for is visible rather than dropped. A CID both halves hold is one row with
+  both sides; when the register's role and the hub's accepted role disagree,
+  the row keeps the register's word and marks the hub's in the caution's amber.
+  A hub-only row draws no button, because there is no run to open. With no
+  `--hub-url` the register's half is drawn exactly as it was before there was a
+  hub, and the sheet says `hub unknown (no --hub-url)` rather than leaving the
+  absence to be guessed at; a hub that cannot be read says `hub unreachable
+  (<reason>)`, keeps the register's half working and claims nothing about who
+  is connected (a connection list is a statement about *now*), and the hub's
+  failures are its own — a second process on a second port that never marks the
+  daemon down, never slows its polls and never counts as one of its failures.
+  The index's roster entry carries the hub's own count too once it has
+  answered (`21 role(s) · 21 agent(s) up · 21 connected`), so the entry the
+  operator reads first cannot quietly disagree with the sheet.
+
+  Grouped by role, in the order the roles appear, each group with its own tally
+  (`N agent(s) · M up · K connected · L line(s)/s`); the sheet scrolls, because
+  twenty-one roles do not fit one window. Pressing an agent's row opens its run
+  with that agent's console selected, the same target the map cells use. A
+  register that reports no role on any VM — an older daemon, or one not started
+  with `--agents` — gets the honest empty state that says so rather than an
+  empty table;
 * the **fleet map**: iced's own canvas (`iced::widget::canvas`). The machine is
   the bounded substrate region, labelled with its model; each run is a lane
   placed by run index; each VM is a cell placed by VM index. A VM's state is
@@ -199,7 +239,14 @@ cargo run -- --refresh-ms 500
   deliberately not `tokio`.
 * The API client is a tiny blocking HTTP/1.1 client over `TcpStream`, loopback
   only, with no HTTP client dependency — the same shape
-  `crates/noded/tests/common/mod.rs` uses to test the daemon.
+  `crates/noded/tests/common/mod.rs` uses to test the daemon. The **hub's**
+  read-only status surface (`vsockd --status-port`'s `GET /status`) is read
+  with that same client and held to that same exact-loopback policy, with one
+  stricter rule: its port is required, since the surface is off unless the
+  daemon was asked for it and there is no default to fall back to. The
+  desktop asks it directly because it *can* — the surface is loopback-only and
+  a browser cannot fetch it (no CORS), which is exactly why the connected view
+  belongs in this console.
 * The event stream (`src/events.rs`) is the same kind of thing: a raw
   `TcpStream`, the request, the head that confirms the subscription, and a
   server-sent-events parser fed by whatever the socket returns — a thread
@@ -229,13 +276,20 @@ cargo run -- --refresh-ms 500
 ## Tests
 
 ```
-cargo test          # 259 lib + 19 client + 36 render = 314, 0 failed
+cargo test          # 274 lib + 26 client + 42 render = 342, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
   machine and the console write, and a role's presence, absence and explicit
-  null), the reducer and every pane transition (including the roster's grouping
-  and its tally), the age/date/instant arithmetic, the map's
+  null; and the hub's `/status` — the frozen shape parsed field for field, an
+  unknown extra field tolerated at every level, a missing field named in the
+  error, and the hub url's port requirement), the reducer and every pane
+  transition (including the roster's grouping
+  and its tally, and the register⇄hub join: register-only, hub-only, matched,
+  the two labels that say which half is missing, a role the two surfaces
+  disagree about, and the hub's own schedule, backoff and failures — none of
+  which may touch the register's health), the age/date/instant arithmetic, the
+  map's
   layout/hit-test/rate arithmetic, its lane overflow and its role labels'
   character-wise elision, the exit-kind
   matrix, the console's history walk, the spawn form's boundaries and the
@@ -272,7 +326,14 @@ cargo test          # 259 lib + 19 client + 36 render = 314, 0 failed
   bodies (create **and** console write), the malformed/refused/unreachable
   paths, and the event stream: the frames off a real socket (the heartbeat is
   not an event, an unknown kind is not an event) and a reconnect whose second
-  event comes off a second connection after the backoff.
+  event comes off a second connection after the backoff. The hub's status
+  surface is read the same way, off its own stub: `GET /status` on the status
+  path, the frozen body parsed field for field, an empty registry as an answer
+  rather than a failure, an unknown extra field tolerated, a missing field
+  named, a daemon without a status surface as a recognizable 404, and the
+  loopback policy's negatives — subdomains, a suffix (`127.0.0.1.evil.tld`),
+  a trailing dot, case variants, `::1`, `0.0.0.0`, a path, a query, port 0 and
+  a missing port — every one refused before a socket is opened.
 * `tests/render.rs` — headless rendering with iced's own harness: the register
   drawn with the stub's runs, a click on a run fetching it and rendering the
   guest's serial, a click on `New run` opening the form, the presets row and a
@@ -308,11 +369,26 @@ cargo test          # 259 lib + 19 client + 36 render = 314, 0 failed
   rates off the activity feed, its rows opening their run with that agent
   selected, and the honest empty state for a daemon that reports no role; plus
   the long-running register: a three-day-old `running` run reading `3d 07h` and
-  its creation stamped `2025-10-06`), and a full application frame written to
+  its creation stamped `2025-10-06`), the **hub's half of the roster** (a hub
+  that answered: its header line — its served CIDs, its connected agents, its
+  live sessions and its uptime — and its capacity line, the join drawing one
+  row per agent with the register's half and the hub's, `registered, not
+  connected` for a live VM nobody is connected to, `connected, not registered`
+  for a session no VM row claims *and* not a button (there is no run to open),
+  the per-group `K connected` count, the `hub unknown (no --hub-url)` state
+  that claims nothing about connections it never read, `hub unreachable
+  (cannot reach …)` with the register's half still drawn and the daemon still
+  `LIVE`, a hub with nobody connected as an answer rather than a failure, and
+  the **whole application** asking the hub's `/status` over a real socket),
+  and a full application frame written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
   the telemetry pane's to `target/tmp/telemetry-frame.rgba`, the stream's to
   `target/tmp/stream-frame.rgba`).
 
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
 read a running daemon (read-only: it reads the machine, lists runs, and reads
-each one with its serial and exit kind).
+each one with its serial and exit kind). Set `APZ_DESKTOP_LIVE_HUB=host:port`
+to have it read a running hub's status surface too (read-only: the served CIDs,
+the uptime, the session count, and every connected agent's role, call count and
+heartbeat age). Neither is set by default, so the suite runs on a host with
+neither process.

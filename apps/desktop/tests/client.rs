@@ -140,6 +140,132 @@ fn a_daemon_without_the_machine_endpoint_is_a_recognizable_404() {
     assert_eq!(error.to_string(), "404: no such endpoint");
 }
 
+#[test]
+fn reading_the_hubs_status_follows_the_status_path_and_reads_the_frozen_shape() {
+    let server = common::hub(common::HUB_STATUS);
+    let status = client(server.port)
+        .hub_status()
+        .expect("the status should parse");
+
+    // Field for field, off a real socket: the frozen contract's own body.
+    assert_eq!(status.node.cids, vec![10, 11, 12, 13, 14, 15]);
+    assert_eq!(status.node.port, 5_000);
+    assert_eq!(status.node.uptime_s, 673);
+    assert_eq!(status.node.max_sessions, 64);
+    assert_eq!(status.node.keepalive_idle_s, 300);
+    assert_eq!(status.sessions_active, 1);
+    let agent = &status.agents[0];
+    assert_eq!(agent.cid, 10);
+    assert_eq!(agent.role, "builder");
+    assert_eq!(agent.connected_at_ms, 1_760_000_000_000);
+    assert_eq!(agent.last_heartbeat_ms, 1_760_000_009_000);
+    assert_eq!(agent.calls, 7);
+    assert_eq!(status.agent(10).map(|agent| agent.role.as_str()), Some("builder"));
+    assert_eq!(status.agent(11), None);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "one request, on the status path");
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/status");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn a_hub_with_nobody_connected_reads_as_an_answer_not_a_failure() {
+    let server = common::hub(common::HUB_STATUS_EMPTY);
+    let status = client(server.port)
+        .hub_status()
+        .expect("an empty registry is still an answer");
+    assert!(status.agents.is_empty());
+    assert_eq!(status.sessions_active, 0);
+    assert_eq!(status.node.cids.len(), 6);
+}
+
+#[test]
+fn a_hub_body_the_client_does_not_know_parses_and_a_missing_field_is_named() {
+    // A newer hub may add fields at any level: the known shape still parses.
+    let server = common::hub(
+        r#"{"node":{"cids":[10],"port":5000,"uptime_s":7,"max_sessions":64,
+            "keepalive_idle_s":300,"revision":"v2"},
+            "agents":[{"cid":10,"role":"builder","connected_at_ms":1,
+            "last_heartbeat_ms":2,"calls":3,"latency_ms":4}],
+            "sessions_active":1,"future":true}"#,
+    );
+    let status = client(server.port).hub_status().expect("known fields parse");
+    assert_eq!(status.agents[0].calls, 3);
+    assert_eq!(status.node.port, 5_000);
+
+    // A field the contract freezes and the body does not carry is a malformed
+    // answer whose message names it.
+    let server = common::hub(r#"{"node":{"cids":[10]},"agents":[],"sessions_active":0}"#);
+    let error = client(server.port)
+        .hub_status()
+        .expect_err("a body missing a field is not the frozen shape");
+    assert!(matches!(error, ApiError::Malformed(_)), "{error:?}");
+    let message = error.to_string();
+    assert!(message.contains("missing field"), "{message}");
+    assert!(message.contains("port"), "the error names the field: {message}");
+}
+
+#[test]
+fn a_daemon_without_a_status_surface_is_a_recognizable_404() {
+    // `noded` has no `/status`: pointed at it, the client says what the
+    // daemon said rather than inventing a hub.
+    let server = always(404, r#"{"error":"no such endpoint"}"#);
+    let error = client(server.port)
+        .hub_status()
+        .expect_err("the daemon has no status surface");
+    assert!(error.is_not_found());
+    assert_eq!(error.to_string(), "404: no such endpoint");
+}
+
+#[test]
+fn a_hub_url_off_the_loopback_is_refused_before_any_socket_is_opened() {
+    for url in [
+        "example.com:19080",
+        "10.0.0.1:19080",
+        "192.168.1.10:19080",
+        "127.0.0.1.evil.tld:19080",
+        "api.127.0.0.1:19080",
+        "localhost.evil.tld:19080",
+        "127.0.0.1.:19080",
+        "LOCALHOST:19080",
+        "Localhost:19080",
+        "http://[::1]:19080",
+        "http://0.0.0.0:19080",
+        "https://127.0.0.1:19080",
+        "127.0.0.1:0",
+        "http://127.0.0.1:19080/status",
+        "http://127.0.0.1:19080?q=1",
+    ] {
+        let error = Endpoint::hub_url(url).expect_err("must be refused");
+        assert!(
+            matches!(error, ApiError::Config(_)),
+            "{url} should be a configuration error, got {error:?}"
+        );
+    }
+    // The exact loopback names, and only those, are the hub's.
+    assert_eq!(
+        Endpoint::hub_url("localhost:19080").expect("localhost is loopback").host(),
+        "127.0.0.1"
+    );
+    assert_eq!(Endpoint::hub_url("127.0.0.1:19080").expect("loopback").port(), 19_080);
+    // And the port is required: there is no default status port to fall to.
+    let error = Endpoint::hub_url("127.0.0.1").expect_err("no port to read");
+    assert!(error.to_string().contains("--status-port"), "{error}");
+}
+
+#[test]
+fn an_unreachable_hub_is_a_connect_error_rather_than_a_panic() {
+    // Nothing listens on port 1 of the loopback: the hub is a second process,
+    // and its absence is its own error, not the daemon's.
+    let error = Client::new(Endpoint::hub_url("127.0.0.1:1").expect("loopback"))
+        .hub_status()
+        .expect_err("nothing is listening");
+    assert!(error.is_unreachable(), "{error:?}");
+    assert!(error.to_string().starts_with("cannot reach "), "{error}");
+}
+
 /// The exact bytes the daemon parses out of a console write.
 const INPUT_BODY: &str = r#"{"data":"uname\n","vm":1}"#;
 
@@ -372,6 +498,43 @@ fn the_stream_client_reconnects_when_the_daemon_closes_the_stream() {
         2,
         "two connections"
     );
+}
+
+/// Reads the live hub's status surface when `APZ_DESKTOP_LIVE_HUB` names one
+/// (`host:port`), and does nothing otherwise: the suite stays runnable on a
+/// host with no hub.
+#[test]
+fn a_live_hub_reads_when_one_is_named() {
+    let Ok(url) = std::env::var("APZ_DESKTOP_LIVE_HUB") else {
+        eprintln!("APZ_DESKTOP_LIVE_HUB is not set: skipping the live hub read");
+        return;
+    };
+    let endpoint = Endpoint::hub_url(&url).expect("a loopback host:port");
+    let client = Client::new(endpoint.clone());
+    let status = client
+        .hub_status()
+        .expect("the live hub should answer its status surface");
+    println!(
+        "live {}: {} cid(s) served on vsock port {} · up {}s · {}/{} session(s) · {} agent(s) connected",
+        endpoint.url(),
+        status.node.cids.len(),
+        status.node.port,
+        status.node.uptime_s,
+        status.sessions_active,
+        status.node.max_sessions,
+        status.agents.len()
+    );
+    let now = agentplaza_desktop::epoch_ms();
+    for agent in &status.agents {
+        println!(
+            "  cid {} · role {} · connected {} · beat {}s ago · {} call(s)",
+            agent.cid,
+            agent.role,
+            agent.connected_at_ms,
+            agent.heartbeat_age_ms(now) / 1_000,
+            agent.calls
+        );
+    }
 }
 
 /// Reads the live daemon when `APZ_DESKTOP_LIVE` names one, and does nothing

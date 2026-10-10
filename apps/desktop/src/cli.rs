@@ -4,6 +4,12 @@
 //! the environment, and both default to `http://127.0.0.1:8899`. Only a
 //! loopback host is accepted, and only an exact one — see
 //! [`Endpoint::from_url`](crate::api::Endpoint::from_url).
+//!
+//! `--hub-url` and `APZ_DESKTOP_HUB` name the hub's read-only status surface,
+//! when the host has one: a second loopback process (`vsockd --status-port`)
+//! the roster reads to learn who is connected. It is off by default, and held
+//! to the same exact-loopback policy with its port required — see
+//! [`Endpoint::hub_url`](crate::api::Endpoint::hub_url).
 
 use std::time::Duration;
 
@@ -12,6 +18,10 @@ use crate::model::{DEFAULT_REFRESH_MS, MAX_REFRESH_MS, MIN_REFRESH_MS};
 
 /// The environment variable naming the daemon.
 pub const URL_ENV: &str = "APZ_DESKTOP_URL";
+
+/// The environment variable naming the hub's status surface, when there is
+/// one: `vsockd --status-port`'s read-only `/status`.
+pub const HUB_ENV: &str = "APZ_DESKTOP_HUB";
 
 /// The environment variable bounding one call, in seconds.
 pub const TIMEOUT_ENV: &str = "APZ_DESKTOP_TIMEOUT_SECS";
@@ -36,6 +46,10 @@ pub enum Invocation {
 pub struct Config {
     /// The daemon.
     pub endpoint: Endpoint,
+    /// The hub's status surface, when one was named: the read-only second
+    /// port that says who is connected, rather than the register's word for
+    /// who should be. `None` — the default — is a console with no hub half.
+    pub hub: Option<Endpoint>,
     /// The bound on one call.
     pub timeout: Duration,
     /// How often a healthy daemon is polled, in milliseconds.
@@ -46,6 +60,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             endpoint: Endpoint::default(),
+            hub: None,
             timeout: DEFAULT_TIMEOUT,
             refresh_ms: DEFAULT_REFRESH_MS,
         }
@@ -57,12 +72,18 @@ pub const HELP: &str = "\
 agentplaza-desktop — the AgentPlaza fleet register
 
 USAGE:
-    agentplaza-desktop [--url <url>] [--refresh-ms <milliseconds>]
-                       [--timeout-secs <seconds>]
+    agentplaza-desktop [--url <url>] [--hub-url <host:port>]
+                       [--refresh-ms <milliseconds>] [--timeout-secs <seconds>]
 
 OPTIONS:
     --url <url>            the node daemon to read; http://127.0.0.1:8899 by
                            default. Only a loopback host is accepted.
+    --hub-url <host:port>  the hub's read-only status surface
+                           (vsockd --status-port), whose GET /status says who
+                           is connected right now. Only a loopback host is
+                           accepted, and the port is required. Off by default:
+                           without it the roster draws the register's half
+                           only.
     --refresh-ms <n>       how often a healthy daemon is polled, 250–30000;
                            2000 by default. A failing daemon backs off from
                            here, doubling to a 30 s ceiling.
@@ -71,6 +92,7 @@ OPTIONS:
 
 ENVIRONMENT:
     APZ_DESKTOP_URL           the same as --url
+    APZ_DESKTOP_HUB           the same as --hub-url
     APZ_DESKTOP_REFRESH_MS    the same as --refresh-ms
     APZ_DESKTOP_TIMEOUT_SECS  the same as --timeout-secs
 
@@ -78,6 +100,8 @@ KEYS:
     r                      the fleet register
     m                      the machine (GET /api/v0/machine)
     f                      the fleet map
+    w                      the roster: who is running by role, and — when a
+                           hub url is configured — who is connected to it
     t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
     Escape                 back to the register
@@ -90,6 +114,12 @@ them with DELETE /api/v0/runs/{id}. Between polls it follows
 GET /api/v0/events — the daemon's event stream: run and VM state changes and
 each VM's serial deltas — and reconnects to it with a bounded backoff. The
 polls stay the source of truth; the stream only moves the same state sooner.
+When --hub-url names a status surface, GET /status is read at the same
+cadence and the roster joins it to the register by guest CID: an agent the
+register reports and the hub does not is drawn 'registered, not connected',
+and one the hub reports and the register does not is 'connected, not
+registered'. The hub is a second process: its failures are its own and never
+mark the daemon down.
 The spawn form's quick boots fill the form; the run pane exports a transcript,
 and the telemetry pane the session's CSV, to the path in its box with plain
 std::fs.
@@ -102,6 +132,7 @@ where
     F: Fn(&str) -> Option<String>,
 {
     let mut url = env(URL_ENV);
+    let mut hub = env(HUB_ENV);
     let mut timeout_secs = env(TIMEOUT_ENV).map(|value| parse_secs(&value)).transpose()?;
     let mut refresh_ms = env(REFRESH_ENV)
         .map(|value| parse_refresh_ms(&value))
@@ -114,6 +145,10 @@ where
         }
         if let Some(value) = value_of(&arg, "--url", &mut args)? {
             url = Some(value);
+            continue;
+        }
+        if let Some(value) = value_of(&arg, "--hub-url", &mut args)? {
+            hub = Some(value);
             continue;
         }
         if let Some(value) = value_of(&arg, "--timeout-secs", &mut args)? {
@@ -131,12 +166,19 @@ where
         Some(url) => Endpoint::from_url(&url).map_err(|err| err.to_string())?,
         None => Endpoint::default(),
     };
+    // The hub is optional and, when named, held to the same loopback-only
+    // policy — with its port required, since the status surface has none.
+    let hub = match hub {
+        Some(url) => Some(Endpoint::hub_url(&url).map_err(|err| err.to_string())?),
+        None => None,
+    };
     let timeout = match timeout_secs {
         Some(secs) => Duration::from_secs(secs),
         None => DEFAULT_TIMEOUT,
     };
     Ok(Invocation::Run(Config {
         endpoint,
+        hub,
         timeout,
         refresh_ms: refresh_ms.unwrap_or(DEFAULT_REFRESH_MS),
     }))
@@ -269,11 +311,83 @@ mod tests {
         for key in ["r ", "m ", "f ", "t ", "? ", "Escape"] {
             assert!(HELP.contains(key), "the help should document {key:?}");
         }
+        // The roster's own key, named with what it answers.
+        assert!(HELP.contains("w                      the roster: who is running by role"));
         // The two local behaviours the help names, and the stream it follows.
         assert!(HELP.contains("quick boots fill the"));
         assert!(HELP.contains("exports a transcript"));
         assert!(HELP.contains("the session's CSV"));
         assert!(HELP.contains("GET /api/v0/events"));
+        // And the hub half: what it reads, and what its absence means.
+        assert!(HELP.contains("--hub-url"));
+        assert!(HELP.contains("APZ_DESKTOP_HUB"));
+        assert!(HELP.contains("registered, not connected"));
+    }
+
+    #[test]
+    fn no_hub_is_configured_by_default() {
+        assert_eq!(config(&[]).hub, None);
+    }
+
+    #[test]
+    fn the_hub_argument_takes_both_spellings_and_a_port() {
+        assert_eq!(
+            config(&["--hub-url", "127.0.0.1:19080"]).hub,
+            Some(Endpoint::loopback_at("127.0.0.1", 19_080).expect("loopback"))
+        );
+        assert_eq!(
+            config(&["--hub-url=http://localhost:19081/"]).hub,
+            Some(Endpoint::loopback_at("127.0.0.1", 19_081).expect("loopback"))
+        );
+        assert_eq!(
+            parse(args(&["--hub-url"]), &no_env).expect_err("needs a value"),
+            "--hub-url needs a value"
+        );
+    }
+
+    #[test]
+    fn the_hub_environment_names_the_hub_and_an_argument_wins() {
+        let env = |name: &str| match name {
+            HUB_ENV => Some("127.0.0.1:19080".to_string()),
+            _ => None,
+        };
+        let Invocation::Run(config) = parse(args(&[]), &env).expect("parses") else {
+            panic!("not help")
+        };
+        assert_eq!(config.hub.expect("a hub").port(), 19_080);
+
+        let Invocation::Run(config) =
+            parse(args(&["--hub-url", "127.0.0.1:19082"]), &env).expect("parses")
+        else {
+            panic!("not help")
+        };
+        assert_eq!(config.hub.expect("a hub").port(), 19_082);
+
+        let broken = |name: &str| match name {
+            HUB_ENV => Some("not a url".to_string()),
+            _ => None,
+        };
+        assert!(parse(args(&[]), &broken).is_err());
+    }
+
+    #[test]
+    fn a_hub_url_off_the_loopback_or_without_a_port_is_refused_by_name() {
+        for url in [
+            "http://10.0.0.9:19080",
+            "http://127.0.0.1.evil.tld:19080",
+            "api.example.com:19080",
+            "127.0.0.1.",
+            "127.0.0.1:19080/status?a=b",
+        ] {
+            let error = parse(args(&["--hub-url", url]), &no_env)
+                .expect_err("must be refused");
+            assert!(!error.is_empty(), "{url}: {error}");
+        }
+        // The status surface has no default port, so a bare host is refused
+        // rather than pointed at the daemon's.
+        let error = parse(args(&["--hub-url", "127.0.0.1"]), &no_env)
+            .expect_err("must be refused");
+        assert!(error.contains("--status-port"), "{error}");
     }
 
     #[test]

@@ -6,7 +6,9 @@
 //! display or a window. `main` turns an [`Effect`] into an iced [`Task`] and
 //! nothing more.
 
-use crate::api::{ApiError, CreateRun, Endpoint, Machine, Run, RunState, RunsPage, VmState};
+use crate::api::{
+    ApiError, CreateRun, Endpoint, HubAgent, HubStatus, Machine, Run, RunState, RunsPage, VmState,
+};
 use crate::events::Event;
 use crate::export::{
     self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_report, run_transcript,
@@ -236,6 +238,9 @@ pub struct Effect {
     pub poll_list: bool,
     /// Fetch `GET /api/v0/machine`.
     pub poll_machine: bool,
+    /// Fetch `GET /status` on the hub's status surface, when one is
+    /// configured: the other half of the roster, read on its own schedule.
+    pub poll_hub: bool,
     /// Fetch `GET /api/v0/runs/{id}`.
     pub fetch_run: Option<String>,
     /// Fetch each of these runs, with serial: every VM's rate for the map's
@@ -271,6 +276,14 @@ impl Effect {
     pub fn machine() -> Self {
         Self {
             poll_machine: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read the hub's status surface: who is connected right now.
+    pub fn hub() -> Self {
+        Self {
+            poll_hub: true,
             ..Self::default()
         }
     }
@@ -357,6 +370,14 @@ pub enum Message {
         at_ms: u64,
         /// The answer.
         result: Result<Machine, ApiError>,
+    },
+    /// `GET /status` on the hub's status surface answered: who is connected
+    /// right now, or why the hub could not be read.
+    Hub {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer.
+        result: Result<HubStatus, ApiError>,
     },
     /// `POST /api/v0/runs/{id}/input` answered.
     Input {
@@ -490,6 +511,7 @@ impl Message {
             | Message::Runs { at_ms, .. }
             | Message::Run { at_ms, .. }
             | Message::Machine { at_ms, .. }
+            | Message::Hub { at_ms, .. }
             | Message::Input { at_ms, .. }
             | Message::Killed { at_ms, .. }
             | Message::Spawned { at_ms, .. }
@@ -526,6 +548,28 @@ impl Message {
 pub struct Model {
     /// The daemon this register is talking to.
     pub endpoint: Endpoint,
+    /// The hub's status surface, when `--hub-url` named one: a second
+    /// read-only process, on a second loopback port, that says who is
+    /// connected — as opposed to the register's word for who should be. `None`
+    /// is a console with no hub half.
+    pub hub: Option<Endpoint>,
+    /// The hub's last answer, or `None` when it has not been read or its last
+    /// read failed.
+    ///
+    /// A connection list is a statement about *now*, so a failed read clears
+    /// it rather than drawing yesterday's sessions as if they were here: the
+    /// pane then says the hub is unreachable and claims nothing about who is
+    /// connected.
+    pub hub_status: Option<HubStatus>,
+    /// Why the last hub call failed, if it did.
+    pub hub_error: Option<String>,
+    /// When the hub last answered, in milliseconds since the Unix epoch.
+    pub hub_last_ok_ms: Option<u64>,
+    /// When the hub's status surface should be read next.
+    pub hub_next_at_ms: u64,
+    /// How many hub calls have failed in a row: the hub's own backoff, since
+    /// the hub is a second process and its failures are not the daemon's.
+    pub hub_failures: u32,
     /// Which sheet is showing.
     pub pane: Pane,
     /// The register: every run, as the list endpoint reports it.
@@ -589,6 +633,12 @@ impl Default for Model {
     fn default() -> Self {
         Self {
             endpoint: Endpoint::loopback(),
+            hub: None,
+            hub_status: None,
+            hub_error: None,
+            hub_last_ok_ms: None,
+            hub_next_at_ms: 0,
+            hub_failures: 0,
             pane: Pane::Fleet,
             runs: Vec::new(),
             detail: None,
@@ -641,6 +691,20 @@ impl Model {
             refresh_ms,
             ..Self::default()
         }
+    }
+
+    /// The same, with the hub's status surface to read as well: the roster's
+    /// second half. `None` leaves the console exactly as it was before there
+    /// was a hub.
+    pub fn with_hub(mut self, hub: Option<Endpoint>) -> Self {
+        self.hub = hub;
+        self
+    }
+
+    /// Whether a hub's status surface is configured: whether the roster has a
+    /// connected half at all.
+    pub fn has_hub(&self) -> bool {
+        self.hub.is_some()
     }
 
     /// The register's first effect: the first poll, and the machine once, so
@@ -738,10 +802,13 @@ impl Model {
     }
 
     /// The role fleet as the roster pane lists it: every role agent in the
-    /// register, grouped by role. Empty when no VM in the register carries a
-    /// role — an older daemon, or one that was not started with `--agents`.
+    /// register, joined to the hub's connected sessions when a hub is
+    /// configured and has answered, grouped by role.
+    ///
+    /// Empty when neither surface reports a role agent — an older daemon that
+    /// stamps no role, and a hub nobody is connected to.
     pub fn roster(&self) -> Vec<RosterGroup> {
-        roster(&self.runs, &self.activity)
+        roster(&self.runs, &self.activity, self.hub_status.as_ref())
     }
 
     /// How many role agents are up right now: what "who is running right now"
@@ -752,6 +819,12 @@ impl Model {
             .flat_map(|run| run.vms.iter())
             .filter(|vm| vm.role.is_some() && vm.state == VmState::Running)
             .count()
+    }
+
+    /// How many agents the hub reports connected right now, when it has
+    /// answered.
+    pub fn hub_connected(&self) -> Option<usize> {
+        self.hub_status.as_ref().map(|status| status.agents.len())
     }
 
     /// Whether the live VMs have been asked for more guest memory than the
@@ -825,6 +898,7 @@ impl Model {
                 Effect::none()
             }
             Message::Run { at_ms, id, result } => self.run_answer(at_ms, &id, result),
+            Message::Hub { at_ms, result } => self.hub_answer(at_ms, result),
             Message::Machine { at_ms, result } => {
                 match result {
                     Ok(machine) => {
@@ -1053,20 +1127,27 @@ impl Model {
     }
 
     /// The timer fired: poll if the schedule says so.
+    ///
+    /// Two schedules tick here, because two processes are being read: the
+    /// daemon's register, and — when one is configured — the hub's status
+    /// surface. They are independent on purpose. A daemon that is down must
+    /// not stop the console asking who is connected to a hub that is up, and a
+    /// hub that is down must not slow the register's polls or mark its health.
     fn poll_tick(&mut self, at_ms: u64) -> Effect {
         self.now_ms = at_ms;
+        let mut effect = self.hub_tick(at_ms);
         if at_ms < self.next_poll_at_ms {
-            return Effect::none();
+            return effect;
         }
         self.polls += 1;
         // The schedule advances when the call goes out, and again when the
         // answer lands (with the backoff of however many have failed since).
         self.next_poll_at_ms = at_ms.saturating_add(poll_interval_ms(self.refresh_ms, self.failures));
+        effect.poll_list = true;
         // Everything on the sheet that moves is refreshed by one tick: the
         // register always, the run pane's serial while it follows, the
         // machine's uptime while it is on the sheet, and the map's pulse
         // (which needs every run's serial to have anything to measure).
-        let mut effect = Effect::poll();
         match &self.pane {
             Pane::Run(id) if self.follow => effect.fetch_run = Some(id.clone()),
             Pane::Machine => effect.poll_machine = true,
@@ -1085,6 +1166,51 @@ impl Model {
             _ => {}
         }
         effect
+    }
+
+    /// The hub's half of the tick: `GET /status`, on the hub's own schedule.
+    ///
+    /// The status surface is off unless the host was started with one, so a
+    /// model with no hub has nothing to schedule and this is exactly the old
+    /// tick. With one, the first tick reads it (the schedule starts due) and
+    /// the cadence is the register's, backing off on the hub's own failures.
+    fn hub_tick(&mut self, at_ms: u64) -> Effect {
+        if self.hub.is_none() || at_ms < self.hub_next_at_ms {
+            return Effect::none();
+        }
+        self.hub_next_at_ms = at_ms.saturating_add(poll_interval_ms(self.refresh_ms, self.hub_failures));
+        Effect::hub()
+    }
+
+    /// The hub's answer: the connected half of the roster, or why it is not
+    /// there.
+    ///
+    /// The hub's health is its own — a second process on a second port — so
+    /// this never touches the register's failures, its schedule, or what
+    /// [`Model::health`] reports. A hub that refuses is a hub the pane says is
+    /// unreachable, not a daemon that reads down.
+    fn hub_answer(&mut self, at_ms: u64, result: Result<HubStatus, ApiError>) -> Effect {
+        match result {
+            Ok(status) => {
+                self.hub_status = Some(status);
+                self.hub_error = None;
+                self.hub_last_ok_ms = Some(at_ms);
+                self.hub_failures = 0;
+                // Like the register's: the cadence measures from the answer,
+                // not from the request.
+                self.hub_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+            }
+            Err(error) => {
+                // A connection list is a statement about now: an answer that
+                // did not arrive leaves the pane with nothing to claim.
+                self.hub_status = None;
+                self.hub_error = Some(error.to_string());
+                self.hub_failures = self.hub_failures.saturating_add(1);
+                self.hub_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.hub_failures));
+            }
+        }
+        Effect::none()
     }
 
     /// Every run in the register, by id: what the map's pulse is fed from.
@@ -1389,8 +1515,13 @@ impl Model {
                 // One row per role agent, each with its own rate: the register
                 // and every run's serial, the same read the map's pulse is
                 // measured from. The roster draws no substrate, so the machine
-                // is not asked for.
-                Effect::roster(self.run_ids())
+                // is not asked for. With a hub configured, its status surface
+                // is read at once too: the pane's other half is a live
+                // connection list, and opening the sheet is a reason to want it
+                // now rather than at the next tick.
+                let mut effect = Effect::roster(self.run_ids());
+                effect.poll_hub = self.has_hub();
+                effect
             }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
@@ -1761,18 +1892,17 @@ pub fn moved_vm_state(known: VmState, next: VmState) -> VmState {
     }
 }
 
-/// One role agent, as the roster lists it: which run and VM its guest is,
-/// which role it accepted, its guest CID, the state the register reports and
-/// the serial rate the activity feed has for it.
+/// The register's half of a roster row: the VM row whose guest runs a role.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RosterAgent {
+pub struct Registered {
     /// The id of the run whose VM row carries the role.
     pub run: String,
     /// The VM's index within that run.
     pub vm: u32,
     /// The role the VM's guest runs as (the daemon's word, as it reported it).
     pub role: String,
-    /// The VM's guest CID, when its run has vsock devices.
+    /// The VM's guest CID, when its run has vsock devices: the key the hub's
+    /// connected sessions are joined on.
     pub guest_cid: Option<u64>,
     /// The VM's state.
     pub state: VmState,
@@ -1781,10 +1911,104 @@ pub struct RosterAgent {
     pub lps: f32,
 }
 
-impl RosterAgent {
-    /// Whether this agent's VM is up right now.
+impl Registered {
+    /// Whether this VM is up right now.
     pub fn is_live(&self) -> bool {
         self.state == VmState::Running
+    }
+}
+
+/// One agent on the roster: the register's side, the hub's side, or both.
+///
+/// The two are joined by guest CID and never merged: a row is drawn from the
+/// halves the two surfaces actually report, so an agent one of them knows and
+/// the other does not is visible as exactly that rather than as a name in the
+/// wrong column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterAgent {
+    /// What the register reports: the VM row carrying the role. `None` is an
+    /// agent the hub reports connected that no VM row claims.
+    pub registered: Option<Registered>,
+    /// What the hub reports: the connected keepalive session. `None` is a role
+    /// agent the hub reports nobody connected on — when the hub was read at
+    /// all, which the row cannot know on its own.
+    pub connected: Option<HubAgent>,
+}
+
+impl RosterAgent {
+    /// The role this row is filed under: the register's word for the VM when
+    /// there is one, and the role the hub accepted otherwise.
+    pub fn role(&self) -> &str {
+        match (&self.registered, &self.connected) {
+            (Some(registered), _) => &registered.role,
+            (None, Some(connected)) => &connected.role,
+            (None, None) => "",
+        }
+    }
+
+    /// The guest CID the two halves were joined on: the register's VM CID,
+    /// falling back to the hub's accepted CID for a row the register does not
+    /// report.
+    pub fn cid(&self) -> Option<u64> {
+        self.registered
+            .as_ref()
+            .and_then(|registered| registered.guest_cid)
+            .or_else(|| self.connected.as_ref().map(|connected| u64::from(connected.cid)))
+    }
+
+    /// Whether the register reports this agent's VM.
+    pub fn is_registered(&self) -> bool {
+        self.registered.is_some()
+    }
+
+    /// Whether the hub reports this agent connected.
+    pub fn is_connected(&self) -> bool {
+        self.connected.is_some()
+    }
+
+    /// Whether the register's VM is up right now.
+    pub fn is_live(&self) -> bool {
+        self.registered.as_ref().is_some_and(Registered::is_live)
+    }
+
+    /// The register's serial rate for this agent, 0 without a register half.
+    pub fn lps(&self) -> f32 {
+        self.registered.as_ref().map_or(0.0, |registered| registered.lps)
+    }
+
+    /// The words this row prints for the half it does not have, when it has
+    /// only one: the register's row with nobody connected on its CID, or a
+    /// connected session no VM row claims. `None` when both halves are there,
+    /// and when neither is (which no row of a roster is).
+    ///
+    /// This is a property of the halves the row holds, and says nothing about
+    /// whether the hub was read at all: a row built with no hub has one half
+    /// because there is no hub to ask. It is the sheet's business — see
+    /// `view::hub_header` — whether that half is *missing* or merely *unasked*,
+    /// and it draws these words only when a hub has answered.
+    pub fn missing_half(&self) -> Option<&'static str> {
+        match (self.registered.is_some(), self.connected.is_some()) {
+            (true, false) => Some("registered, not connected"),
+            (false, true) => Some("connected, not registered"),
+            _ => None,
+        }
+    }
+
+    /// Whether the hub accepted a different role than the register stamps on
+    /// the same CID. The socket is the same one, so a disagreement is a real
+    /// observation about the deployment, not a formatting detail.
+    pub fn role_mismatch(&self) -> bool {
+        match (&self.registered, &self.connected) {
+            (Some(registered), Some(connected)) => registered.role != connected.role,
+            _ => false,
+        }
+    }
+
+    /// How long ago this agent last beat, when the hub reports it connected.
+    pub fn heartbeat_age_ms(&self, now_ms: u64) -> Option<u64> {
+        self.connected
+            .as_ref()
+            .map(|connected| connected.heartbeat_age_ms(now_ms))
     }
 }
 
@@ -1793,7 +2017,8 @@ impl RosterAgent {
 pub struct RosterGroup {
     /// The role.
     pub role: String,
-    /// Every VM carrying it, in the register's own run-then-VM order.
+    /// Every agent carrying it: the register's rows in run-then-VM order,
+    /// then the hub's rows the register did not claim, in CID order.
     pub agents: Vec<RosterAgent>,
 }
 
@@ -1803,45 +2028,124 @@ impl RosterGroup {
         self.agents.iter().filter(|agent| agent.is_live()).count()
     }
 
+    /// How many of the role's agents the hub reports connected.
+    pub fn connected(&self) -> usize {
+        self.agents.iter().filter(|agent| agent.is_connected()).count()
+    }
+
     /// The role's agents' serial throughput now, in lines per second.
     pub fn lps(&self) -> f32 {
-        history::total(self.agents.iter().map(|agent| agent.lps))
+        history::total(self.agents.iter().map(RosterAgent::lps))
     }
 }
 
 /// The role fleet as the roster lists it: every VM in the register whose row
-/// carries a role, grouped by role in the order the roles first appear.
+/// carries a role, joined by guest CID to the hub's connected sessions, and
+/// grouped by role in the order the roles first appear.
 ///
-/// It is a derivation of the live register and nothing else — the daemon is
-/// asked for nothing new — so a role appears here exactly when the daemon
-/// reports one on a VM row. A register in which no VM carries a role (an
-/// older daemon, or one that was not started with `--agents`) gives an empty
-/// roster, which is the honest answer to "who is running right now".
-pub fn roster(runs: &[Run], activity: &Activity) -> Vec<RosterGroup> {
+/// The register's half is a derivation of the live register and nothing else —
+/// the daemon is asked for nothing new — so a role appears here exactly when
+/// the daemon reports one on a VM row. The hub's half is `hub`'s answer when
+/// there is one: an agent it reports connected whose CID no VM row claims is
+/// drawn as it is, never folded into a row it does not match. With no hub (the
+/// console's default) every row is the register's alone, and the roster is
+/// exactly what it was before there was a hub.
+pub fn roster(runs: &[Run], activity: &Activity, hub: Option<&HubStatus>) -> Vec<RosterGroup> {
     let mut groups: Vec<RosterGroup> = Vec::new();
+    // The hub's rows a register VM claimed, so the leftovers can be drawn as
+    // connected-only rather than dropped.
+    let mut claimed: Vec<u32> = Vec::new();
+
     for run in runs {
         for vm in &run.vms {
             let Some(role) = vm.role.as_deref() else {
                 continue;
             };
-            let agent = RosterAgent {
-                run: run.id.clone(),
-                vm: vm.id,
-                role: role.to_string(),
-                guest_cid: vm.guest_cid,
-                state: vm.state,
-                lps: activity.lps(&run.id, vm.id),
-            };
-            match groups.iter_mut().find(|group| group.role == agent.role) {
-                Some(group) => group.agents.push(agent),
-                None => groups.push(RosterGroup {
-                    role: agent.role.clone(),
-                    agents: vec![agent],
-                }),
+            let connected = hub
+                .and_then(|status| vm.guest_cid.and_then(|cid| status.agent(cid)))
+                .cloned();
+            if let Some(agent) = &connected {
+                claimed.push(agent.cid);
             }
+            file(&mut groups, RosterAgent {
+                registered: Some(Registered {
+                    run: run.id.clone(),
+                    vm: vm.id,
+                    role: role.to_string(),
+                    guest_cid: vm.guest_cid,
+                    state: vm.state,
+                    lps: activity.lps(&run.id, vm.id),
+                }),
+                connected,
+            });
         }
     }
+
+    // The hub's other half: an agent it accepted that no VM row claims. It is
+    // drawn where it is — connected, not registered — so a session the
+    // register does not account for is never silently dropped.
+    if let Some(status) = hub {
+        for connected in &status.agents {
+            if claimed.contains(&connected.cid) {
+                continue;
+            }
+            file(&mut groups, RosterAgent {
+                registered: None,
+                connected: Some(connected.clone()),
+            });
+        }
+    }
+
     groups
+}
+
+/// Files `agent` under its role, in the order the roles first appear.
+fn file(groups: &mut Vec<RosterGroup>, agent: RosterAgent) {
+    let role = agent.role().to_string();
+    match groups.iter_mut().find(|group| group.role == role) {
+        Some(group) => group.agents.push(agent),
+        None => groups.push(RosterGroup {
+            role,
+            agents: vec![agent],
+        }),
+    }
+}
+
+/// The hub's header line, as the roster writes it: what it serves, who is
+/// connected, the live sessions, and the daemon's uptime.
+pub fn hub_line(status: &HubStatus) -> String {
+    format!(
+        "hub · {} cid(s) served · {} agent(s) connected · {} session(s) active · up {}",
+        status.node.cids.len(),
+        status.agents.len(),
+        status.sessions_active,
+        duration_label(status.uptime_ms())
+    )
+}
+
+/// The hub's capacity line: the facts the frozen body carries and nothing else
+/// on the sheet says — which CIDs it serves, on which vsock port, how full its
+/// session budget is, and how long a session may go quiet before it is
+/// dropped.
+pub fn hub_facts(status: &HubStatus) -> String {
+    format!(
+        "serves {} on vsock port {} · {}/{} session(s) · keepalive idle {}s",
+        cid_span(&status.node.cids),
+        status.node.port,
+        status.sessions_active,
+        status.node.max_sessions,
+        status.node.keepalive_idle_s
+    )
+}
+
+/// How the CIDs a hub serves are written: the single CID, the first-to-last
+/// span, or the honest nothing.
+fn cid_span(cids: &[u32]) -> String {
+    match (cids.first(), cids.last()) {
+        (Some(first), Some(last)) if first == last => format!("cid {first}"),
+        (Some(first), Some(last)) => format!("cid {first}..{last}"),
+        _ => "no cid".to_string(),
+    }
 }
 
 /// The window title: the register's name and the sheet that is showing.
@@ -1868,9 +2172,10 @@ pub fn tally_line(model: &Model) -> String {
     )
 }
 
-/// The roster's tally as the roster sheet writes it: the role agents the
-/// register reports, how many of them are up right now, the roles they carry,
-/// and the serial throughput they are writing between polls.
+/// The roster's tally as the roster sheet writes it: the agents the sheet
+/// carries (a register row or a connected session — a row is an agent), how
+/// many of their VMs are up right now, the roles they are filed under, and the
+/// serial throughput the register's half is writing between polls.
 pub fn roster_tally(groups: &[RosterGroup]) -> String {
     let agents: usize = groups.iter().map(|group| group.agents.len()).sum();
     let live: usize = groups.iter().map(RosterGroup::live).sum();
@@ -1885,16 +2190,22 @@ pub fn roster_tally(groups: &[RosterGroup]) -> String {
 /// and how many of their agents are up, and the honest nothing when no VM
 /// carries a role at all (an older daemon, or one not started with
 /// `--agents`).
+///
+/// With a hub that has answered, the hub's own connected count joins the line.
+/// The index is what the operator reads first, and an entry that says "21
+/// agent(s) up" while the sheet's header says "21 agent(s) connected" leaves
+/// them to scroll to find out whether those are the same twenty-one.
 pub fn roster_line(model: &Model) -> String {
     let groups = model.roster();
     if groups.is_empty() {
         return "no role agent yet".to_string();
     }
-    format!(
-        "{} role(s) · {} agent(s) up",
-        groups.len(),
-        groups.iter().map(RosterGroup::live).sum::<usize>()
-    )
+    let up = groups.iter().map(RosterGroup::live).sum::<usize>();
+    let mut line = format!("{} role(s) · {up} agent(s) up", groups.len());
+    if let Some(connected) = model.hub_connected() {
+        line.push_str(&format!(" · {connected} connected"));
+    }
+    line
 }
 
 /// Guest memory as the register writes it: MiB below a gibibyte (where a
@@ -3490,6 +3801,55 @@ mod tests {
         model
     }
 
+    /// The register's half of a roster row, which a register row always has.
+    fn reg(agent: &RosterAgent) -> &Registered {
+        agent
+            .registered
+            .as_ref()
+            .expect("the register reports this row")
+    }
+
+    /// A hub's `/status` body as a value: the CIDs it serves, and one row per
+    /// connected agent — `(cid, role, connected_at_ms, last_heartbeat_ms,
+    /// calls)`.
+    fn hub_status(agents: &[(u32, &str, u64, u64, u64)]) -> HubStatus {
+        HubStatus {
+            node: crate::api::HubNode {
+                cids: vec![10, 11, 12, 13, 14, 15],
+                port: 5_000,
+                // An hour and four minutes: the header's own `up 1h 04m`.
+                uptime_s: 3_840,
+                max_sessions: 64,
+                keepalive_idle_s: 300,
+            },
+            agents: agents
+                .iter()
+                .map(
+                    |&(cid, role, connected_at_ms, last_heartbeat_ms, calls)| HubAgent {
+                        cid,
+                        role: role.to_string(),
+                        connected_at_ms,
+                        last_heartbeat_ms,
+                        calls,
+                    },
+                )
+                .collect(),
+            sessions_active: agents.len(),
+        }
+    }
+
+    /// `fleet_with_roles` with a hub that has answered: the register's role
+    /// agents and the hub's connected sessions, side by side.
+    fn fleet_with_hub(agents: &[(u32, &str, u64, u64, u64)]) -> Model {
+        let mut model = fleet_with_roles();
+        model.hub = Some(Endpoint::loopback_at("127.0.0.1", 19_080).expect("loopback"));
+        model.apply(Message::Hub {
+            at_ms: 10_500,
+            result: Ok(hub_status(agents)),
+        });
+        model
+    }
+
     #[test]
     fn the_roster_groups_role_agents_by_role_and_leaves_other_vms_out() {
         let model = fleet_with_roles();
@@ -3505,13 +3865,21 @@ mod tests {
         let builder = &groups[0];
         assert_eq!(builder.agents.len(), 2, "both of the builder's VMs are agents");
         assert_eq!(builder.live(), 1, "one of them has stopped");
-        assert_eq!(builder.agents[0].run, "r1");
-        assert_eq!(builder.agents[0].vm, 0);
-        assert_eq!(builder.agents[0].guest_cid, Some(100));
-        assert_eq!(builder.agents[0].state, VmState::Running);
+        assert_eq!(reg(&builder.agents[0]).run, "r1");
+        assert_eq!(reg(&builder.agents[0]).vm, 0);
+        assert_eq!(reg(&builder.agents[0]).guest_cid, Some(100));
+        assert_eq!(reg(&builder.agents[0]).state, VmState::Running);
         assert!(builder.agents[0].is_live());
-        assert_eq!(builder.agents[1].state, VmState::Exited);
+        assert_eq!(reg(&builder.agents[1]).state, VmState::Exited);
         assert!(!builder.agents[1].is_live());
+        // With no hub configured there is no hub half to be judged by: every
+        // row is the register's alone, and it is the sheet (not the row) that
+        // knows the hub was never asked and so must not print a label.
+        assert!(builder.agents.iter().all(|agent| !agent.is_connected()));
+        assert!(
+            builder.agents.iter().all(|agent| agent.missing_half() == Some("registered, not connected")),
+            "the row's halves are the register's alone"
+        );
 
         let reviewer = &groups[1];
         assert_eq!(reviewer.agents.len(), 1);
@@ -3533,7 +3901,7 @@ mod tests {
             !groups
                 .iter()
                 .flat_map(|group| group.agents.iter())
-                .any(|agent| agent.vm == 3),
+                .any(|agent| reg(agent).vm == 3),
             "a VM with no role is not an agent, however it is running"
         );
     }
@@ -3578,13 +3946,279 @@ mod tests {
         model.activity.observe("r1", 0, 40, 12_000);
         let builder = &model.roster()[0];
         assert!(
-            builder.agents[0].lps > 0.0,
+            builder.agents[0].lps() > 0.0,
             "the roster's rate is the feed's, not a figure of its own"
         );
-        assert_eq!(builder.lps(), builder.agents.iter().map(|a| a.lps).sum::<f32>());
+        assert_eq!(builder.lps(), builder.agents.iter().map(RosterAgent::lps).sum::<f32>());
         assert_eq!(
-            builder.agents[1].lps, 0.0,
+            builder.agents[1].lps(),
+            0.0,
             "a VM nobody read a capture of yet has no rate"
+        );
+    }
+
+    #[test]
+    fn a_message_from_the_hub_is_the_connected_half_and_nothing_else() {
+        let mut model = fleet_with_roles();
+        assert!(!model.has_hub());
+        assert_eq!(model.hub_connected(), None, "no hub was asked, so none answered");
+
+        // The hub is configured and has answered: one builder connected.
+        let mut model = model.with_hub(Some(
+            Endpoint::loopback_at("127.0.0.1", 19_080).expect("loopback"),
+        ));
+        assert!(model.has_hub());
+        model.apply(Message::Hub {
+            at_ms: 10_500,
+            result: Ok(hub_status(&[(100, "builder", 1_760_000_000_000, 1_760_000_009_000, 7)])),
+        });
+        assert_eq!(model.hub_connected(), Some(1));
+        assert_eq!(model.hub_error, None);
+        assert_eq!(model.hub_last_ok_ms, Some(10_500));
+
+        // The join itself: the register's builder vm 0 and the hub's cid 100
+        // are one row, carrying both halves.
+        let builder = &model.roster()[0];
+        assert_eq!(builder.role, "builder");
+        let agent = &builder.agents[0];
+        assert_eq!(reg(agent).vm, 0);
+        assert_eq!(agent.cid(), Some(100));
+        assert!(agent.is_registered() && agent.is_connected());
+        assert_eq!(agent.missing_half(), None, "both halves are here");
+        assert!(!agent.role_mismatch());
+        assert_eq!(agent.role(), "builder");
+        let connected = agent.connected.as_ref().expect("the hub's row");
+        assert_eq!(connected.calls, 7);
+        assert_eq!(agent.heartbeat_age_ms(1_760_000_012_000), Some(3_000));
+        assert_eq!(builder.connected(), 1);
+        // The register's other builder VM (cid 102, stopped) is not connected:
+        // the join is per CID, not per role name.
+        assert!(!builder.agents[1].is_connected());
+    }
+
+    #[test]
+    fn a_register_agent_the_hub_reports_nobody_on_is_registered_not_connected() {
+        // A hub that answered, and has nobody connected on any CID: the live
+        // hub's own observation on a quiet host.
+        let model = fleet_with_hub(&[]);
+        assert_eq!(model.hub_connected(), Some(0));
+        let groups = model.roster();
+        assert_eq!(groups.len(), 2, "the register's roles are still the roster");
+        for agent in groups.iter().flat_map(|group| group.agents.iter()) {
+            assert!(agent.is_registered());
+            assert!(!agent.is_connected());
+            assert_eq!(agent.missing_half(), Some("registered, not connected"));
+        }
+        // The hub-only half is empty, so the tally is exactly the register's.
+        assert_eq!(roster_tally(&groups), "3 agent(s) · 2 up right now · 2 role(s) · 0.0 line(s)/s");
+    }
+
+    #[test]
+    fn a_connected_agent_the_register_does_not_hold_is_connected_not_registered() {
+        // The hub accepted a session on a CID no register VM row claims, and
+        // one the register does not report at all.
+        let mut model = fleet_with_hub(&[
+            (100, "builder", 1_760_000_000_000, 1_760_000_009_000, 7),
+            (900, "librarian", 1_760_000_001_000, 1_760_000_011_000, 2),
+        ]);
+        // The register's last answer placed the whole fleet one poll ago; the
+        // hub's answer is the newer one.
+        assert_eq!(model.hub_connected(), Some(2));
+        let groups = model.roster();
+
+        let librarian = groups
+            .iter()
+            .find(|group| group.role == "librarian")
+            .expect("the hub's role is on the sheet");
+        assert_eq!(librarian.agents.len(), 1);
+        let agent = &librarian.agents[0];
+        assert!(!agent.is_registered(), "no VM row claims cid 900");
+        assert!(agent.is_connected());
+        assert_eq!(agent.registered, None);
+        assert_eq!(agent.cid(), Some(900));
+        assert_eq!(agent.role(), "librarian");
+        assert_eq!(agent.missing_half(), Some("connected, not registered"));
+        assert!(!agent.is_live(), "a session is not a running VM");
+        assert_eq!(agent.lps(), 0.0, "no register half, no serial rate");
+        assert_eq!(librarian.connected(), 1);
+        assert_eq!(librarian.live(), 0);
+
+        // The builder's matched row is not duplicated, and the roster's tally
+        // counts the session the register cannot account for.
+        assert_eq!(groups.iter().filter(|group| group.role == "builder").count(), 1);
+        assert_eq!(
+            roster_tally(&groups),
+            "4 agent(s) · 2 up right now · 3 role(s) · 0.0 line(s)/s"
+        );
+    }
+
+    #[test]
+    fn a_role_the_hub_accepted_that_the_register_disagrees_with_is_a_mismatch() {
+        // The same socket, two answers: the register booted cid 100 as a
+        // builder, and the handshake it accepted says auditor.
+        let mut model = fleet_with_hub(&[(100, "auditor", 1, 2, 0)]);
+        let groups = model.roster();
+        let builder = &groups[0];
+        assert_eq!(builder.role, "builder", "the register's word files the row");
+        let agent = &builder.agents[0];
+        assert!(agent.role_mismatch());
+        assert_eq!(agent.role(), "builder");
+        assert_eq!(agent.connected.as_ref().expect("connected").role, "auditor");
+        assert_eq!(agent.cid(), Some(100));
+        // It is still one row with both halves — the disagreement is shown,
+        // not used to split the agent in two.
+        assert_eq!(agent.missing_half(), None);
+        assert!(
+            !groups.iter().any(|group| group.role == "auditor"),
+            "the hub's word does not open a second group for the same socket"
+        );
+
+        // A mismatch does not touch the register's own health or failures: the
+        // hub is a second process.
+        model.apply(Message::Runs {
+            at_ms: 11_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.health(), Health::Live);
+    }
+
+    #[test]
+    fn the_hub_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        // No hub: the tick is exactly what it always was.
+        let mut plain = Model::new();
+        assert_eq!(plain.apply(Message::Tick { at_ms: 1_000 }), Effect::poll());
+        assert!(!plain.apply(Message::Tick { at_ms: 100_000 }).poll_hub);
+
+        // With a hub, the same tick asks for both: the register and the hub.
+        let mut model = Model::new().with_hub(Some(
+            Endpoint::loopback_at("127.0.0.1", 19_080).expect("loopback"),
+        ));
+        let effect = model.apply(Message::Tick { at_ms: 1_000 });
+        assert_eq!(effect, Effect { poll_list: true, poll_hub: true, ..Effect::none() });
+        assert_eq!(model.polls, 1, "the register's own count");
+        assert_eq!(model.hub_next_at_ms, 3_000, "the hub's cadence is the register's");
+
+        // A tick before the hub's schedule asks for neither part of it.
+        assert!(model.apply(Message::Tick { at_ms: 2_000 }).is_idle());
+        assert_eq!(model.hub_failures, 0);
+
+        // The answers to that first tick's calls land, and both schedules
+        // re-anchor on them — the register's in its own way, the hub's in its.
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        let ok_health = model.health();
+        assert_eq!(ok_health, Health::Live);
+        model.apply(Message::Hub {
+            at_ms: 1_000,
+            result: Ok(hub_status(&[])),
+        });
+        assert_eq!(model.hub_next_at_ms, 3_000);
+        assert_eq!(model.hub_connected(), Some(0), "nobody connected is an answer");
+
+        // The next tick asks for both again.
+        let effect = model.apply(Message::Tick { at_ms: 3_000 });
+        assert!(effect.poll_list && effect.poll_hub, "{effect:?}");
+
+        // The hub refuses. The register's health, failure count and schedule
+        // are untouched: the hub is a second process, on a second port.
+        let effect = model.apply(Message::Hub {
+            at_ms: 3_100,
+            result: Err(ApiError::Connect("http://127.0.0.1:19080: refused".to_string())),
+        });
+        assert!(effect.is_idle(), "an answer is not another call");
+        assert_eq!(model.health(), ok_health, "the daemon is not down because the hub is");
+        assert_eq!(model.failures, 0);
+        assert_eq!(model.last_error, None);
+        assert_eq!(model.hub_failures, 1);
+        assert_eq!(
+            model.hub_error.as_deref(),
+            Some("cannot reach http://127.0.0.1:19080: refused")
+        );
+        assert_eq!(model.hub_status, None, "an unreachable hub has nothing to claim");
+        assert_eq!(model.hub_next_at_ms, 7_100, "the hub backs off on its own failures");
+        assert_eq!(model.polls, 2, "no hub message ever counts as a register poll");
+
+        // And the register keeps answering for itself while the hub is down.
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.health(), Health::Live);
+        assert_eq!(model.failures, 0);
+
+        // The hub comes back: the error clears and the view is drawn again.
+        let effect = model.apply(Message::Tick { at_ms: 7_100 });
+        assert!(effect.poll_hub && effect.poll_list);
+        model.apply(Message::Hub {
+            at_ms: 7_200,
+            result: Ok(hub_status(&[(100, "builder", 1, 2, 3)])),
+        });
+        assert_eq!(model.hub_error, None);
+        assert_eq!(model.hub_failures, 0);
+        assert_eq!(model.hub_connected(), Some(1));
+        assert_eq!(model.hub_next_at_ms, 9_200, "the cadence measures from the answer");
+    }
+
+    #[test]
+    fn the_roster_line_names_the_connected_count_only_when_a_hub_answered() {
+        // No hub: the index's entry is the register's own count.
+        let plain = fleet_with_roles();
+        assert_eq!(roster_line(&plain), "2 role(s) · 2 agent(s) up");
+
+        // A hub that answered: the entry carries the hub's own figure too, so
+        // the index and the sheet cannot quietly disagree about who is
+        // connected.
+        let model = fleet_with_hub(&[
+            (100, "builder", 1_760_000_000_000, 1_760_000_009_000, 7),
+            (900, "librarian", 1_760_000_001_000, 1_760_000_011_000, 2),
+        ]);
+        assert_eq!(roster_line(&model), "3 role(s) · 2 agent(s) up · 2 connected");
+
+        // A hub with nobody connected: nought is a figure, not an absence.
+        let empty = fleet_with_hub(&[]);
+        assert_eq!(roster_line(&empty), "2 role(s) · 2 agent(s) up · 0 connected");
+    }
+
+    #[test]
+    fn the_hub_s_header_and_capacity_lines_say_what_the_surface_reports() {
+        let status = hub_status(&[
+            (10, "builder", 1_760_000_000_000, 1_760_000_009_000, 7),
+            (11, "auditor", 1_760_000_001_000, 1_760_000_010_000, 2),
+        ]);
+        assert_eq!(
+            hub_line(&status),
+            "hub · 6 cid(s) served · 2 agent(s) connected · 2 session(s) active · up 1h 04m"
+        );
+        assert_eq!(
+            hub_facts(&status),
+            "serves cid 10..15 on vsock port 5000 · 2/64 session(s) · keepalive idle 300s"
+        );
+
+        // One CID is written as one, and none as none rather than a range.
+        let mut single = status.clone();
+        single.node.cids = vec![10];
+        assert!(hub_facts(&single).starts_with("serves cid 10 on vsock port 5000"));
+        single.node.cids = Vec::new();
+        assert!(hub_facts(&single).starts_with("serves no cid on vsock port 5000"));
+
+        // Every figure on the header comes from the field it names and no
+        // other: the contract carries the session count *beside* the rows, so
+        // a body where a registry row has gone while its session has not is
+        // reported as exactly that, not as one number written twice.
+        let mut uneven = status.clone();
+        uneven.sessions_active = 5;
+        assert_eq!(
+            hub_line(&uneven),
+            "hub · 6 cid(s) served · 2 agent(s) connected · 5 session(s) active · up 1h 04m"
+        );
+        let mut wide = status;
+        wide.node.cids.push(16);
+        wide.node.uptime_s = 0;
+        assert_eq!(
+            hub_line(&wide),
+            "hub · 7 cid(s) served · 2 agent(s) connected · 2 session(s) active · up 0s"
         );
     }
 
@@ -3608,6 +4242,23 @@ mod tests {
         let effect = model.apply(Message::Key(KeyAction::Roster));
         assert_eq!(effect, Effect::roster(vec!["r1".to_string(), "r2".to_string()]));
         assert_eq!(model.pane, Pane::Roster);
+
+        // With a hub configured, opening the roster asks for its status at
+        // once: the pane's other half is a live connection list.
+        let mut model = fleet_with_roles().with_hub(Some(
+            Endpoint::loopback_at("127.0.0.1", 19_080).expect("loopback"),
+        ));
+        let effect = model.apply(Message::Show(Pane::Roster));
+        assert_eq!(
+            effect,
+            Effect {
+                poll_list: true,
+                poll_hub: true,
+                fetch_map: vec!["r1".to_string(), "r2".to_string()],
+                ..Effect::none()
+            }
+        );
+        assert!(!effect.poll_machine, "the roster still draws no substrate");
     }
 
     #[test]

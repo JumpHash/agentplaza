@@ -198,6 +198,34 @@ pub fn always(status: u16, body: &str) -> Stub {
     spawn(Box::new(move |_, _| Some(response(status, &body))))
 }
 
+/// A `/status` body as `vsockd --status-port` serves it, byte for byte: the
+/// host facts, one connected keepalive agent, and the live session count.
+pub const HUB_STATUS: &str = concat!(
+    r#"{"node":{"cids":[10,11,12,13,14,15],"port":5000,"uptime_s":673,"#,
+    r#""max_sessions":64,"keepalive_idle_s":300},"#,
+    r#""agents":[{"cid":10,"role":"builder","connected_at_ms":1760000000000,"#,
+    r#""last_heartbeat_ms":1760000009000,"calls":7}],"sessions_active":1}"#
+);
+
+/// The same surface with nobody connected: the live hub's own answer on a
+/// host whose keepalive guests have not connected yet.
+pub const HUB_STATUS_EMPTY: &str = concat!(
+    r#"{"node":{"cids":[10,11,12,13,14,15],"port":5000,"uptime_s":673,"#,
+    r#""max_sessions":64,"keepalive_idle_s":300},"agents":[],"sessions_active":0}"#
+);
+
+/// A hub's read-only status surface: `GET /status` answers `body`, and every
+/// other path or method is the 404 the hub serves.
+pub fn hub(body: &str) -> Stub {
+    let body = body.to_string();
+    spawn(Box::new(move |request, _| {
+        Some(match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/status") => response(200, &body),
+            _ => response(404, r#"{"error":"no such endpoint"}"#),
+        })
+    }))
+}
+
 /// A stub answering `replies` in order; a request past the end is a 500.
 pub fn replies(replies: Vec<(u16, String)>) -> Stub {
     let mut queue = replies.into_iter();

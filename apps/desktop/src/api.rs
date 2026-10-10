@@ -263,6 +263,82 @@ impl Machine {
     }
 }
 
+/// `GET /status` on a `vsockd --status-port` surface: the host facts the hub
+/// serves, one row per connected keepalive agent, and the live session count.
+///
+/// The shape is frozen by the fleet contract (`crates/vsockd/src/status.rs`),
+/// and this parses it field for field: a field the body does not carry is an
+/// error that names it, and a field this client does not know is ignored
+/// rather than a parse failure — a newer hub may add to its body without
+/// breaking the console.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HubStatus {
+    /// The hub's own facts.
+    pub node: HubNode,
+    /// One row per connected agent, ordered by CID.
+    pub agents: Vec<HubAgent>,
+    /// How many sessions are live.
+    pub sessions_active: usize,
+}
+
+/// The hub's host facts, as `/status` reports them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HubNode {
+    /// The guest CIDs the hub serves (one Unix socket per CID).
+    pub cids: Vec<u32>,
+    /// The vsock port every CID is served on.
+    pub port: u32,
+    /// How long the daemon has been up, in seconds.
+    pub uptime_s: u64,
+    /// The most sessions the hub will accept at once.
+    pub max_sessions: usize,
+    /// How long a keepalive session may go unheard before it is dropped.
+    pub keepalive_idle_s: u64,
+}
+
+/// One connected agent, as `/status` reports it: a keepalive session the hub
+/// accepted at a handshake and holds until its CID goes quiet.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HubAgent {
+    /// The guest CID the session was accepted for: the key the register's own
+    /// VM rows join it on.
+    pub cid: u32,
+    /// The role the hub accepted at the handshake.
+    pub role: String,
+    /// When the session connected, in milliseconds since the Unix epoch.
+    pub connected_at_ms: u64,
+    /// When the most recent heartbeat arrived, in milliseconds since the Unix
+    /// epoch.
+    pub last_heartbeat_ms: u64,
+    /// How many tool calls the session has served.
+    pub calls: u64,
+}
+
+impl HubAgent {
+    /// How long ago this agent last beat, at `now_ms`.
+    pub fn heartbeat_age_ms(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.last_heartbeat_ms)
+    }
+
+    /// How long this agent has been connected, at `now_ms`.
+    pub fn connected_for_ms(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.connected_at_ms)
+    }
+}
+
+impl HubStatus {
+    /// The hub's row for one guest CID, when it reports one connected.
+    pub fn agent(&self, cid: u64) -> Option<&HubAgent> {
+        let cid = u32::try_from(cid).ok()?;
+        self.agents.iter().find(|agent| agent.cid == cid)
+    }
+
+    /// The hub's uptime as a duration label, from its whole seconds.
+    pub fn uptime_ms(&self) -> u64 {
+        self.node.uptime_s.saturating_mul(1_000)
+    }
+}
+
 /// `POST /api/v0/runs/{id}/input`: the body writes one line to one VM's
 /// console, in exactly the fields `noded` accepts (`noded::InputRequest`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,8 +411,26 @@ impl Endpoint {
         Ok(Self { host, port })
     }
 
-    /// Parses `http://127.0.0.1[:port]` (a bare `host[:port]` is accepted too).
+    /// Parses `http://127.0.0.1[:port]` (a bare `host[:port]` is accepted
+    /// too): the daemon serves its API at the root of a known default port.
     pub fn from_url(url: &str) -> Result<Self, ApiError> {
+        Self::parse_url(url, Some(DEFAULT_PORT))
+    }
+
+    /// Parses the hub's status url: the same parsing and the same
+    /// loopback-only policy, with the port required.
+    ///
+    /// `vsockd`'s status surface is off unless it was started with
+    /// `--status-port`, so there is no default to fall back to — a bare host
+    /// would silently poll whatever happens to hold the daemon's port.
+    pub fn hub_url(url: &str) -> Result<Self, ApiError> {
+        Self::parse_url(url, None)
+    }
+
+    /// Parses `host[:port]` (an `http://` prefix is accepted too), filling a
+    /// missing port from `default_port` — or, when there is none, refusing the
+    /// url because its caller needs the port named.
+    fn parse_url(url: &str, default_port: Option<u16>) -> Result<Self, ApiError> {
         let url = url.trim();
         let rest = match url.strip_prefix("http://") {
             Some(rest) => rest,
@@ -360,7 +454,15 @@ impl Endpoint {
                 })?;
                 (host, port)
             }
-            None => (rest, DEFAULT_PORT),
+            None => match default_port {
+                Some(port) => (rest, port),
+                None => {
+                    return Err(ApiError::Config(format!(
+                        "{url:?} names no port: the hub's status surface is off unless it was \
+                         started with --status-port, so its url must carry the port it serves on"
+                    )));
+                }
+            },
         };
         Self::loopback_at(host, port)
     }
@@ -475,6 +577,15 @@ impl Client {
     /// `GET /api/v0/machine`: the node as a machine.
     pub fn machine(&self) -> Result<Machine, ApiError> {
         self.json("GET", "/api/v0/machine", None)
+    }
+
+    /// `GET /status` on the hub's status surface: who is connected right now,
+    /// and the host facts the hub serves them with.
+    ///
+    /// The same client, a different endpoint: the hub is a second read-only
+    /// process on a second loopback port, and its body is not the daemon's.
+    pub fn hub_status(&self) -> Result<HubStatus, ApiError> {
+        self.json("GET", "/status", None)
     }
 
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
@@ -964,6 +1075,125 @@ mod tests {
         // rather than a machine with invented values.
         let body = r#"{"name":"pi","arch":"aarch64","backend":"kvm"}"#;
         assert!(serde_json::from_str::<Machine>(body).is_err());
+    }
+
+    /// The frozen `/status` body, byte for byte as the live hub serves it
+    /// (`vsockd --status-port 19080`, with a keepalive guest connected). The
+    /// contract is this shape, so the client is tested against this shape.
+    const HUB_STATUS: &str = concat!(
+        r#"{"node":{"cids":[10,11,12,13,14,15],"port":5000,"uptime_s":673,"#,
+        r#""max_sessions":64,"keepalive_idle_s":300},"#,
+        r#""agents":[{"cid":10,"role":"builder","connected_at_ms":1760000000000,"#,
+        r#""last_heartbeat_ms":1760000009000,"calls":7}],"sessions_active":1}"#
+    );
+
+    /// The same surface with nobody connected: the live hub's own answer on a
+    /// host where no keepalive guest has connected yet.
+    const HUB_STATUS_EMPTY: &str = concat!(
+        r#"{"node":{"cids":[10,11,12,13,14,15],"port":5000,"uptime_s":673,"#,
+        r#""max_sessions":64,"keepalive_idle_s":300},"agents":[],"sessions_active":0}"#
+    );
+
+    #[test]
+    fn the_frozen_hub_status_parses_field_for_field() {
+        let status: HubStatus = from_body(HUB_STATUS);
+        assert_eq!(status.node.cids, vec![10, 11, 12, 13, 14, 15]);
+        assert_eq!(status.node.port, 5_000);
+        assert_eq!(status.node.uptime_s, 673);
+        assert_eq!(status.node.max_sessions, 64);
+        assert_eq!(status.node.keepalive_idle_s, 300);
+        assert_eq!(status.sessions_active, 1);
+        assert_eq!(status.uptime_ms(), 673_000);
+
+        let agent = &status.agents[0];
+        assert_eq!(agent.cid, 10);
+        assert_eq!(agent.role, "builder");
+        assert_eq!(agent.connected_at_ms, 1_760_000_000_000);
+        assert_eq!(agent.last_heartbeat_ms, 1_760_000_009_000);
+        assert_eq!(agent.calls, 7);
+        assert_eq!(agent.heartbeat_age_ms(1_760_000_012_000), 3_000);
+        assert_eq!(agent.connected_for_ms(1_760_000_012_000), 12_000);
+        assert_eq!(
+            agent.heartbeat_age_ms(1),
+            0,
+            "a clock behind the hub's is not a negative age"
+        );
+
+        // The join key: the hub's row for a CID, and nothing for a CID it does
+        // not hold.
+        assert_eq!(status.agent(10).map(|agent| agent.role.as_str()), Some("builder"));
+        assert_eq!(status.agent(11), None);
+
+        // The hub with nobody connected — the live hub's own observation.
+        let empty: HubStatus = from_body(HUB_STATUS_EMPTY);
+        assert!(empty.agents.is_empty());
+        assert_eq!(empty.sessions_active, 0);
+        assert_eq!(empty.node.cids.len(), 6);
+    }
+
+    #[test]
+    fn a_hub_status_field_the_client_does_not_know_is_ignored() {
+        // A newer hub may add fields without breaking this console: the known
+        // shape parses, at every level of the body.
+        let status: HubStatus = from_body(
+            r#"{"node":{"cids":[10],"port":5000,"uptime_s":7,"max_sessions":64,
+                "keepalive_idle_s":300,"future":"something"},
+                "agents":[{"cid":10,"role":"builder","connected_at_ms":1,
+                "last_heartbeat_ms":2,"calls":3,"latency_ms":4}],
+                "sessions_active":1,"revision":"v2"}"#,
+        );
+        assert_eq!(status.node.port, 5_000);
+        assert_eq!(status.agents[0].calls, 3);
+        assert_eq!(status.sessions_active, 1);
+    }
+
+    #[test]
+    fn a_hub_status_missing_a_field_is_an_error_that_names_it() {
+        // Every level: the body, the node facts, an agent row.
+        for (body, field) in [
+            (
+                r#"{"agents":[],"sessions_active":0}"#,
+                "node",
+            ),
+            (
+                r#"{"node":{"cids":[10],"port":5000,"uptime_s":7,"max_sessions":64},
+                    "agents":[],"sessions_active":0}"#,
+                "keepalive_idle_s",
+            ),
+            (
+                r#"{"node":{"cids":[10],"port":5000,"uptime_s":7,"max_sessions":64,
+                    "keepalive_idle_s":300},
+                    "agents":[{"cid":10,"role":"builder","connected_at_ms":1,
+                    "last_heartbeat_ms":2}],
+                    "sessions_active":1}"#,
+                "calls",
+            ),
+            (
+                r#"{"node":{"cids":[10],"port":5000,"uptime_s":7,"max_sessions":64,
+                    "keepalive_idle_s":300},"agents":[]}"#,
+                "sessions_active",
+            ),
+        ] {
+            let error = serde_json::from_str::<HubStatus>(body)
+                .expect_err("a missing field must be refused");
+            assert!(
+                error.to_string().contains(field),
+                "the error should name {field:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hub_url_needs_its_port_and_stays_on_the_loopback() {
+        assert_eq!(Endpoint::hub_url("127.0.0.1:19080").expect("loopback").port(), 19_080);
+        assert_eq!(
+            Endpoint::hub_url("http://localhost:19080/").expect("loopback").host(),
+            "127.0.0.1"
+        );
+        // The status surface has no default port, so a bare host is refused by
+        // name rather than pointed at the daemon's port.
+        let error = Endpoint::hub_url("127.0.0.1").expect_err("no port to read");
+        assert!(error.to_string().contains("--status-port"), "{error}");
     }
 
     #[test]

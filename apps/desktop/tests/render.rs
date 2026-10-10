@@ -45,6 +45,7 @@ const SHEET: [u8; 4] = [0xf4, 0xf6, 0xf1, 0xff];
 fn config(port: u16) -> Config {
     Config {
         endpoint: Endpoint::loopback_at("127.0.0.1", port).expect("loopback"),
+        hub: None,
         timeout: Duration::from_secs(5),
         refresh_ms: DEFAULT_REFRESH_MS,
     }
@@ -107,6 +108,19 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             at_ms: model.now_ms,
             result,
         });
+    }
+    if effect.poll_hub {
+        // The hub is a second endpoint, read with the same client: what the
+        // runtime does for an effect, done synchronously.
+        if let Some(hub) = model.hub.clone() {
+            let result = Client::new(hub)
+                .with_timeout(Duration::from_secs(5))
+                .hub_status();
+            model.apply(Message::Hub {
+                at_ms: model.now_ms,
+                result,
+            });
+        }
     }
     if let Some(id) = effect.fetch_run {
         let result = client.run(&id);
@@ -1646,6 +1660,7 @@ fn stream_frames() -> String {
 fn config_at(port: u16, refresh_ms: u64) -> Config {
     Config {
         endpoint: Endpoint::loopback_at("127.0.0.1", port).expect("loopback"),
+        hub: None,
         timeout: Duration::from_secs(5),
         refresh_ms,
     }
@@ -1982,6 +1997,246 @@ fn the_roster_pane_is_offered_by_the_index_and_the_key_sheet() {
     assert!(
         ui.find(says("who is running")).is_ok(),
         "the index says what the roster answers"
+    );
+}
+
+/// A register whose role run's guests hold the CIDs the hub fixture below
+/// serves: builder on cid 10 and 12, reviewer on cid 11.
+const HUB_ROLE_LIST: &str = r#"{"runs":[
+    {"id":"r1","state":"running","vcpus":1,"memory_mib":128,"beats":null,
+     "created_at":1760000000000,"ended_at":null,
+     "vms":[{"id":0,"guest_cid":10,"role":"builder","state":"running",
+             "serial":"agent-harness: role builder accepted\r\n"},
+            {"id":1,"guest_cid":11,"role":"reviewer","state":"running",
+             "serial":"agent-harness: role reviewer accepted\r\n"},
+            {"id":2,"guest_cid":12,"role":"builder","state":"exited",
+             "serial":"$ halted\r\n"}]}
+]}"#;
+
+/// The same run as a single-run GET reports it.
+const HUB_ROLE_DETAIL: &str = HUB_ROLE_LIST;
+
+/// A `/status` body with the builder connected (cid 10) and a keepalive
+/// session the register does not report (cid 13, a librarian); the stopped
+/// builder (cid 12) and the reviewer (cid 11) are not connected.
+const HUB_CONNECTED: &str = concat!(
+    r#"{"node":{"cids":[10,11,12,13],"port":5000,"uptime_s":3840,"#,
+    r#""max_sessions":64,"keepalive_idle_s":300},"#,
+    r#""agents":[{"cid":10,"role":"builder","connected_at_ms":1760000000000,"#,
+    r#""last_heartbeat_ms":1760000497000,"calls":7},"#,
+    r#"{"cid":13,"role":"librarian","connected_at_ms":1760000100000,"#,
+    r#""last_heartbeat_ms":1760000499000,"calls":2}],"sessions_active":2}"#
+);
+
+/// A model reading the daemon stub on `port` and the status surface on
+/// `hub_port`, with the hub's own answer already in it — through the same
+/// client and the same message the runtime uses.
+fn hub_model(port: u16, hub_port: u16) -> Model {
+    let mut model = model_from(port).with_hub(Some(
+        Endpoint::loopback_at("127.0.0.1", hub_port).expect("loopback"),
+    ));
+    let client = Client::new(model.endpoint.clone());
+    perform(Effect::hub(), &mut model, &client);
+    model
+}
+
+#[test]
+fn the_roster_draws_the_hub_header_and_joins_the_connected_agents() {
+    let server = common::fleet(HUB_ROLE_LIST, HUB_ROLE_DETAIL);
+    let hub = common::hub(HUB_CONNECTED);
+    let mut model = hub_model(server.port, hub.port);
+    model.pane = Pane::Roster;
+    assert_eq!(
+        model.hub_connected(),
+        Some(2),
+        "the hub's own answer, read through the client"
+    );
+
+    {
+        let mut ui = simulator(view::view(&model));
+        for expected in [
+            // The hub's header: what it serves, who is connected, the live
+            // sessions, and the daemon's uptime.
+            "hub · 4 cid(s) served · 2 agent(s) connected · 2 session(s) active · up 1h 04m",
+            // And the capacities the frozen body carries.
+            "serves cid 10..13 on vsock port 5000 · 2/64 session(s) · keepalive idle 300s",
+            "CONNECTED",
+            // The builder's session: when it connected, how long ago it beat,
+            // and what it has served.
+            "08:53:20 UTC",
+            "3s ago",
+            "7 call(s)",
+            "role builder",
+            // The session the register cannot account for, and the register's
+            // agents nobody is connected to.
+            "connected, not registered",
+            "role librarian",
+            "registered, not connected",
+            // The register's half is still the register's half.
+            "cid 10",
+            "cid 11",
+            "cid 12",
+            "EXITED",
+            "4 agent(s) · 2 up right now · 3 role(s)",
+        ] {
+            assert!(
+                ui.find(says(expected)).is_ok(),
+                "the roster should show {expected:?}"
+            );
+        }
+        // The role group counts the join: two builder rows, one of them up and
+        // connected.
+        assert!(ui.find(says("2 agent(s) · 1 up · 1 connected")).is_ok());
+    }
+
+    // A session the register cannot account for has no run to open: its row is
+    // not a press that goes nowhere.
+    let mut ui = simulator(view::view(&model));
+    ui.click("connected, not registered")
+        .expect("the label is on the sheet");
+    assert!(
+        ui.into_messages().collect::<Vec<_>>().is_empty(),
+        "a hub-only row is not a button"
+    );
+
+    let frame = frame_of(model);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+    assert!(
+        holds(&frame, OK, 8),
+        "the connected session is stamped in the register's green"
+    );
+}
+
+#[test]
+fn the_roster_names_the_hub_as_unknown_when_no_hub_url_is_configured() {
+    let server = common::fleet(HUB_ROLE_LIST, HUB_ROLE_DETAIL);
+    let mut model = model_from(server.port);
+    assert!(!model.has_hub());
+    model.pane = Pane::Roster;
+
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("hub unknown (no --hub-url)")).is_ok(),
+        "with no hub there is no connected half, and the sheet says which"
+    );
+    // And it claims nothing about connections it never read.
+    assert!(ui.find(says("registered, not connected")).is_err());
+    assert!(ui.find(says("connected, not registered")).is_err());
+    assert!(
+        ui.find(says("builder")).is_ok(),
+        "the register's half is drawn exactly as before"
+    );
+}
+
+#[test]
+fn the_roster_says_the_hub_is_unreachable_and_keeps_the_register_half() {
+    let server = common::fleet(HUB_ROLE_LIST, HUB_ROLE_DETAIL);
+    // Nothing listens on port 1 of the loopback: the hub is gone.
+    let mut model = hub_model(server.port, 1);
+    assert!(model.hub_status.is_none());
+    assert!(model.hub_error.is_some());
+    model.pane = Pane::Roster;
+
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("hub unreachable (cannot reach")).is_ok(),
+        "the reason is the hub's own refusal"
+    );
+    assert!(
+        ui.find(says("builder")).is_ok() && ui.find(says("cid 10")).is_ok(),
+        "the register's half keeps working"
+    );
+    assert!(
+        ui.find(says("registered, not connected")).is_err(),
+        "an unread hub is not a claim that nobody is connected"
+    );
+    // The register itself is not down: the hub is a second process.
+    assert_eq!(model.failures, 0);
+}
+
+/// The hub's accepted role on cid 10 is `auditor`, while the register booted
+/// that same VM as a `builder`: the row keeps the register's word and prints
+/// the hub's beside it, so a disagreement between the two surfaces is visible
+/// rather than hidden behind one of them.
+const HUB_MISMATCH: &str = concat!(
+    r#"{"node":{"cids":[10,11,12,13],"port":5000,"uptime_s":30,"#,
+    r#""max_sessions":64,"keepalive_idle_s":300},"#,
+    r#""agents":[{"cid":10,"role":"auditor","connected_at_ms":1760000000000,"#,
+    r#""last_heartbeat_ms":1760000009000,"calls":1}],"sessions_active":1}"#
+);
+
+#[test]
+fn a_role_the_hub_accepted_that_the_register_disagrees_with_is_printed_beside_it() {
+    let server = common::fleet(HUB_ROLE_LIST, HUB_ROLE_DETAIL);
+    let hub = common::hub(HUB_MISMATCH);
+    let mut model = hub_model(server.port, hub.port);
+    model.pane = Pane::Roster;
+
+    let mut ui = simulator(view::view(&model));
+    // The register's word files the row...
+    assert!(ui.find(says("BUILDER")).is_ok());
+    // ...and the hub's accepted role is printed beside it, not swallowed.
+    assert!(
+        ui.find(says("role auditor")).is_ok(),
+        "the handshake's role is shown even when it disagrees with the register"
+    );
+    assert!(
+        ui.find(says("role builder")).is_err(),
+        "the hub's half never repeats the register's word"
+    );
+    // It is still one row with both halves: a disagreement is not a split.
+    assert_eq!(
+        model
+            .roster()
+            .iter()
+            .flat_map(|group| group.agents.iter())
+            .filter(|agent| agent.cid() == Some(10))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_hub_with_nobody_connected_is_an_answer_the_roster_draws() {
+    let server = common::fleet(HUB_ROLE_LIST, HUB_ROLE_DETAIL);
+    let hub = common::hub(common::HUB_STATUS_EMPTY);
+    let mut model = hub_model(server.port, hub.port);
+    model.pane = Pane::Roster;
+
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("hub · 6 cid(s) served · 0 agent(s) connected · 0 session(s) active · up 11m 13s"))
+            .is_ok(),
+        "nobody connected is a fact, not a failure"
+    );
+    assert!(ui.find(says("registered, not connected")).is_ok());
+    assert!(ui.find(says("connected, not registered")).is_err());
+}
+
+#[test]
+fn the_application_itself_reads_the_hub_when_one_is_configured() {
+    let server = common::fleet(HUB_ROLE_LIST, HUB_ROLE_DETAIL);
+    let hub = common::hub(HUB_CONNECTED);
+    let mut cfg = config_at(server.port, 250);
+    cfg.hub = Some(Endpoint::loopback_at("127.0.0.1", hub.port).expect("loopback"));
+
+    // The whole application: its own boot tick, its own dispatch, its own
+    // hub client.
+    let frame = iced_test::screenshot(
+        &app::application(cfg),
+        &theme::theme(),
+        Size::new(1280.0, 860.0),
+        1.0,
+        Duration::from_millis(1_200),
+    );
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+
+    let requests = hub.requests();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method == "GET" && request.target == "/status"),
+        "the app asked the hub's status surface over a real socket: {requests:?}"
     );
 }
 

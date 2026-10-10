@@ -8,7 +8,9 @@
 //! The crate is split so the interesting half is testable without a display:
 //!
 //! * [`api`] — the daemon's JSON API over a tiny blocking HTTP/1.1 client,
-//!   loopback only, no client dependency.
+//!   loopback only, no client dependency. The hub's read-only status surface
+//!   (`GET /status` on a second loopback port) is the same client and the
+//!   same policy: who is connected, as opposed to who the register reports.
 //! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
 //! * [`events`] — the daemon's event stream: the server-sent frames, the
 //!   parser, and the connection that follows the stream.
@@ -23,8 +25,9 @@
 //! * [`mapview`] — the map as an iced canvas, painting what [`map`] computes.
 //! * [`model`] — the panes, the reducer and the poll arithmetic: pure state,
 //!   no iced types. The roster — who is running right now, from the live
-//!   register — is a derivation here, alongside the age and instant arithmetic
-//!   a long-running fleet run needs.
+//!   register, joined by guest CID to the hub's connected sessions — is a
+//!   derivation here, alongside the age and instant arithmetic a long-running
+//!   fleet run needs.
 //! * [`serial`] — the offset-idempotent merge of the stream's serial deltas,
 //!   and the per-VM capture bookkeeping it needs.
 //! * [`session`] — the frozen vsock session read back out of a serial
@@ -33,8 +36,8 @@
 //!   [`chart`] and [`history`] compute.
 //! * [`theme`] — the register's palette, stamps and rulings.
 //! * [`view`] — iced widgets built from the model.
-//! * [`cli`] — `--url` / `--refresh-ms` / `APZ_DESKTOP_URL` and the call
-//!   timeout.
+//! * [`cli`] — `--url` / `--hub-url` / `--refresh-ms` / `APZ_DESKTOP_URL` /
+//!   `APZ_DESKTOP_HUB` and the call timeout.
 
 pub mod api;
 pub mod app;

@@ -19,11 +19,11 @@ use crate::history;
 use crate::mapview::{self, FleetMap};
 use crate::model::{
     Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, RosterAgent, SERIAL_TAIL_LINES,
-    duration_label, instant_label, memory_label, preset_footprint, roster_line, roster_tally,
-    serial_tail, tally_line, transcript_span,
+    duration_label, hub_facts, hub_line, instant_label, memory_label, preset_footprint,
+    roster_line, roster_tally, serial_tail, tally_line, transcript_span,
 };
 use crate::telemetryview::{self, ChartKind};
-use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
+use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
 
 /// The guest's command set, as the node's console offers it: the quick buttons
 /// beside the serial input, mirroring the web console.
@@ -211,7 +211,7 @@ fn index(model: &Model) -> Container<'_, Message> {
 /// them: one table, so the sheet cannot drift from the index.
 const KEYS: [(&str, &str); 8] = [
     ("r", "register"),
-    ("w", "roster: who is running, by role"),
+    ("w", "roster: running + connected, by role"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
@@ -351,7 +351,13 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         ),
         Pane::Roster => (
             "Roster".to_string(),
-            "who is running right now · every role agent the register reports".to_string(),
+            if model.has_hub() {
+                "who is running right now · the register's role agents, joined by guest CID to \
+                 the hub's connected sessions"
+                    .to_string()
+            } else {
+                "who is running right now · every role agent the register reports".to_string()
+            },
         ),
         Pane::Telemetry => (
             "Telemetry".to_string(),
@@ -704,99 +710,87 @@ fn map_status(model: &Model) -> String {
     text
 }
 
-/// The roster: who is running right now, grouped by role.
+/// The roster: who is running right now — the register's report — and, when a
+/// hub url is configured, who is connected to it.
 ///
-/// It reads the live register and nothing else — the daemon is asked for
-/// nothing new — so the sheet is exactly as true as the register is, and a
-/// register in which no VM carries a role says so rather than drawing an empty
-/// table.
+/// The two halves are joined by guest CID and never merged, so an agent one of
+/// them reports and the other does not is drawn as exactly that. With no hub
+/// configured the sheet draws the register's half alone, as it did before
+/// there was a hub, and the hub header says why.
 fn roster_pane(model: &Model) -> Element<'_, Message> {
     let groups = model.roster();
     let live = model.roster_live();
+    let hub_known = model.hub_status.is_some();
+
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "One row per role agent: the register's side (its run, VM, guest CID, state and \
+             serial rate) and the hub's side (the session it holds — when it connected, its last \
+             heartbeat and the calls it has served). The halves are joined by guest CID and never \
+             merged, so an agent only one of the two reports is drawn as exactly that. Grouped by \
+             role, in the order the roles appear.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+        hub_header(model),
+    ];
 
     if groups.is_empty() {
-        let message = if model.health() == Health::Unknown {
+        let message = if model.health() == Health::Unknown && !hub_known {
             "waiting for the daemon's first answer…"
+        } else if hub_known {
+            "no role agent is on either surface: the daemon reports a role on a VM's row only \
+             when it booted that VM as one (noded --agents <manifest>), and the hub reports no \
+             connected agent. Nothing here is a role fleet yet."
         } else {
             "no role agent is in the register: the daemon reports a role on a VM's row only when \
              it booted that VM as one (noded --agents <manifest>). Nothing here is a role fleet \
              yet."
         };
-        return Column::with_children(vec![
-            serif(
-                "The service's initial setup is a long-running agent per role. The roster lists \
-                 the ones the register reports right now; until the daemon stamps a role on a VM \
-                 row there is nobody to name.",
-                12.0,
-                INK_2,
-            )
-            .into(),
+        body.push(
             container(serif(message, 12.5, INK_2))
                 .style(theme::boxed)
                 .width(Length::Fill)
                 .padding(edge(16.0, 14.0, 16.0, 14.0))
                 .into(),
-        ])
-        .spacing(10.0)
-        .height(Length::Fill)
-        .into();
+        );
+        return scrollable(Column::with_children(body).spacing(10.0))
+            .height(Length::Fill)
+            .into();
     }
 
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "One row per role agent the register reports: its run and VM, the role its guest \
-             accepted, its guest CID, its state right now, and the serial rate the activity feed \
-             has for it (a rate needs two reads of a VM's capture, so a freshly opened roster \
-             starts at zero and moves as the polls land). Grouped by role, in the order the roles \
-             appear in the register.",
-            12.0,
-            INK_2,
-        )
-        .into(),
+    body.push(
         mono(
             roster_tally(&groups),
             11.5,
             if live > 0 { INK } else { INK_2 },
         )
         .into(),
-        rule::horizontal(1.0).style(theme::rule_ink).into(),
-    ];
+    );
+    body.push(rule::horizontal(1.0).style(theme::rule_ink).into());
 
     for group in &groups {
+        let mut counts = format!("{} agent(s) · {} up", group.agents.len(), group.live());
+        if hub_known {
+            counts.push_str(&format!(" · {} connected", group.connected()));
+        }
+        counts.push_str(&format!(" · {:.1} line(s)/s", group.lps()));
         body.push(
             row![
                 stamp(group.role.to_uppercase(), Tone::Neutral),
                 mono(group.role.clone(), 12.0, INK),
                 space::horizontal(),
-                mono(
-                    format!(
-                        "{} agent(s) · {} up · {:.1} line(s)/s",
-                        group.agents.len(),
-                        group.live(),
-                        group.lps()
-                    ),
-                    10.5,
-                    INK_3
-                ),
+                mono(counts, 10.5, INK_3),
             ]
             .spacing(8.0)
             .align_y(Alignment::Center)
             .into(),
         );
-        body.push(
-            row![
-                mono("run", 10.0, INK_3).width(Length::Fixed(70.0)),
-                mono("vm", 10.0, INK_3).width(Length::Fixed(46.0)),
-                mono("guest cid", 10.0, INK_3).width(Length::Fixed(110.0)),
-                mono("state", 10.0, INK_3).width(Length::Fixed(96.0)),
-                mono("lines/s", 10.0, INK_3),
-            ]
-            .spacing(8.0)
-            .into(),
-        );
+        body.push(roster_heads(hub_known));
         body.push(rule_heading());
         for agent in &group.agents {
-            body.push(roster_row(agent));
+            body.push(roster_row(agent, hub_known, model.now_ms));
         }
         body.push(vertical(8.0));
     }
@@ -820,40 +814,174 @@ fn roster_pane(model: &Model) -> Element<'_, Message> {
         .into()
 }
 
-/// One role agent's row: pressing it opens its run with its VM selected, the
-/// same target the map's cells and the console use.
+/// The roster's hub header: what the status surface says — its host facts and
+/// its live counts — or why there is nothing to say.
 ///
-/// The row owns its own text (the agent is a value derived from the register
-/// for this frame, not a borrowed row of the model).
-fn roster_row(agent: &RosterAgent) -> Element<'static, Message> {
-    let cid = match agent.guest_cid {
+/// Always drawn, because "who is connected" has three honest answers and the
+/// operator should never have to guess which one the sheet is giving: no hub
+/// was configured, the hub answered, or the hub could not be read.
+fn hub_header(model: &Model) -> Element<'_, Message> {
+    let line: Element<'_, Message> = match (&model.hub, &model.hub_status) {
+        (None, _) => mono("hub unknown (no --hub-url)", 11.5, INK_3).into(),
+        (Some(_), Some(status)) => column![
+            mono(hub_line(status), 11.5, INK),
+            mono(hub_facts(status), 10.5, INK_3),
+        ]
+        .spacing(2.0)
+        .into(),
+        (Some(_), None) => match &model.hub_error {
+            Some(error) => mono(format!("hub unreachable ({error})"), 11.5, WARN).into(),
+            None => mono("hub: waiting for its first answer…", 11.5, INK_3).into(),
+        },
+    };
+    container(line)
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .padding(edge(14.0, 10.0, 14.0, 10.0))
+        .into()
+}
+
+/// The roster's column widths: one place for the heads and the cells, so the
+/// table cannot drift from itself, and each wide enough for the widest value
+/// it prints — a cell the text does not fit is a cell that wraps.
+const COL_CID: f32 = 72.0;
+const COL_RUN: f32 = 44.0;
+const COL_VM: f32 = 44.0;
+const COL_STATE: f32 = 88.0;
+const COL_RATE: f32 = 56.0;
+const COL_CONNECTED: f32 = 88.0;
+const COL_BEAT: f32 = 84.0;
+const COL_CALLS: f32 = 84.0;
+
+/// The register's half of a row, summed: what the missing-half label has to
+/// occupy to keep the hub's half in its columns.
+const ROSTER_REGISTER_HALF: f32 =
+    COL_RUN + 8.0 + COL_VM + 8.0 + COL_STATE + 8.0 + COL_RATE;
+
+/// The roster's column heads, matched to the cells below them: the join key,
+/// the register's half, and — when the hub was read — the hub's half.
+fn roster_heads(hub_known: bool) -> Element<'static, Message> {
+    let mut cells: Vec<Element<'static, Message>> = vec![
+        mono("guest cid", 10.0, INK_3).width(Length::Fixed(COL_CID)).into(),
+        mono("run", 10.0, INK_3).width(Length::Fixed(COL_RUN)).into(),
+        mono("vm", 10.0, INK_3).width(Length::Fixed(COL_VM)).into(),
+        mono("state", 10.0, INK_3).width(Length::Fixed(COL_STATE)).into(),
+        mono("lines/s", 10.0, INK_3).width(Length::Fixed(COL_RATE)).into(),
+    ];
+    if hub_known {
+        cells.push(mono("connected", 10.0, INK_3).width(Length::Fixed(COL_CONNECTED)).into());
+        cells.push(mono("heartbeat", 10.0, INK_3).width(Length::Fixed(COL_BEAT)).into());
+        cells.push(mono("calls", 10.0, INK_3).width(Length::Fixed(COL_CALLS)).into());
+        cells.push(mono("role (hub)", 10.0, INK_3).into());
+    }
+    Row::with_children(cells).spacing(8.0).into()
+}
+
+/// One agent's row: the CID the halves were joined on, then the register's
+/// side and the hub's side, each drawn from what that surface actually
+/// reports.
+///
+/// Pressing it opens its run with its VM selected — the same target the map's
+/// cells and the console use — when the register reports one. A row only the
+/// hub knows has no run to open, so it is not a button: a press that goes
+/// nowhere is worse than no press at all.
+fn roster_row(agent: &RosterAgent, hub_known: bool, now_ms: u64) -> Element<'static, Message> {
+    let cid = match agent.cid() {
         Some(cid) => format!("cid {cid}"),
         None => "no vsock".to_string(),
     };
-    let rate = if agent.lps > 0.02 {
-        format!("{:.1}", agent.lps)
+    let mut cells: Vec<Element<'static, Message>> = vec![
+        mono(cid, 10.5, INK_2).width(Length::Fixed(COL_CID)).into(),
+        register_half(agent),
+    ];
+    if hub_known {
+        cells.push(hub_half(agent, now_ms));
+    }
+    let row = Row::with_children(cells).spacing(8.0).align_y(Alignment::Center);
+    match &agent.registered {
+        Some(registered) => button(row)
+            .on_press(Message::Select {
+                run: registered.run.clone(),
+                vm: registered.vm,
+            })
+            .style(theme::register_row(false))
+            .padding(edge(4.0, 6.0, 4.0, 6.0))
+            .width(Length::Fill)
+            .into(),
+        None => container(row)
+            .padding(edge(4.0, 6.0, 4.0, 6.0))
+            .width(Length::Fill)
+            .into(),
+    }
+}
+
+/// The register's half of an agent's row: which run and VM its guest is, the
+/// state it is in and the serial rate the activity feed last measured — or the
+/// honest word that the register does not report the agent at all.
+fn register_half(agent: &RosterAgent) -> Element<'static, Message> {
+    let Some(registered) = &agent.registered else {
+        return mono("connected, not registered", 10.5, WARN)
+            .width(Length::Fixed(ROSTER_REGISTER_HALF))
+            .into();
+    };
+    let rate = if registered.lps > 0.02 {
+        format!("{:.1}", registered.lps)
     } else {
         "—".to_string()
     };
-    button(
-        row![
-            mono(agent.run.clone(), 11.0, INK).width(Length::Fixed(70.0)),
-            mono(format!("vm {:02}", agent.vm), 10.5, INK_2).width(Length::Fixed(46.0)),
-            mono(cid, 10.5, INK_2).width(Length::Fixed(110.0)),
-            stamp(agent.state.stamp_label(), tone_for_vm(agent.state))
-                .width(Length::Fixed(96.0)),
-            mono(rate, 10.5, INK_2),
-        ]
-        .spacing(8.0)
-        .align_y(Alignment::Center),
-    )
-    .on_press(Message::Select {
-        run: agent.run.clone(),
-        vm: agent.vm,
-    })
-    .style(theme::register_row(false))
-    .padding(edge(4.0, 6.0, 4.0, 6.0))
-    .width(Length::Fill)
+    Row::with_children(vec![
+        mono(registered.run.clone(), 11.0, INK)
+            .width(Length::Fixed(COL_RUN))
+            .into(),
+        mono(format!("vm {:02}", registered.vm), 10.5, INK_2)
+            .width(Length::Fixed(COL_VM))
+            .into(),
+        stamp(registered.state.stamp_label(), tone_for_vm(registered.state))
+            .width(Length::Fixed(COL_STATE))
+            .into(),
+        mono(rate, 10.5, INK_2)
+            .width(Length::Fixed(COL_RATE))
+            .into(),
+    ])
+    .spacing(8.0)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The hub's half of an agent's row: when its session connected, how long ago
+/// it last beat and how many calls it has served — or the honest word that the
+/// hub reports nobody on its CID.
+///
+/// The words for a missing half are toned by what they mean: a VM that is up
+/// with nobody connected to it is worth a second look, while one that has
+/// stopped has simply left.
+fn hub_half(agent: &RosterAgent, now_ms: u64) -> Element<'static, Message> {
+    let Some(connected) = &agent.connected else {
+        let tone = if agent.is_live() { WARN } else { INK_3 };
+        return mono("registered, not connected", 10.5, tone).into();
+    };
+    let role_tone = if agent.role_mismatch() { WARN } else { INK_2 };
+    Row::with_children(vec![
+        stamp("CONNECTED", Tone::Ok)
+            .width(Length::Fixed(COL_CONNECTED))
+            .into(),
+        mono(instant_label(connected.connected_at_ms, now_ms), 10.5, INK_2)
+            .width(Length::Fixed(COL_BEAT))
+            .into(),
+        mono(
+            format!("{} ago", duration_label(connected.heartbeat_age_ms(now_ms))),
+            10.5,
+            INK_2,
+        )
+        .width(Length::Fixed(COL_BEAT))
+        .into(),
+        mono(format!("{} call(s)", connected.calls), 10.5, INK_2)
+            .width(Length::Fixed(COL_CALLS))
+            .into(),
+        mono(format!("role {}", connected.role), 10.5, role_tone).into(),
+    ])
+    .spacing(8.0)
+    .align_y(Alignment::Center)
     .into()
 }
 
