@@ -190,6 +190,11 @@ pub struct Vcpu {
     /// Whether this vCPU's exit was a reset rather than a shutdown, published
     /// for the VM's exit watcher (which reports it to the spawner).
     guest_reset: Arc<AtomicBool>,
+    /// Whether the VM's vCPUs have been asked to finish; shared with the VM
+    /// and with every handle (see `VmCommon::vcpu_finish_requested`). The run
+    /// loop checks it on every exit from `KVM_RUN`, which is what makes a
+    /// stop request impossible to lose.
+    finish_requested: Arc<AtomicBool>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -223,6 +228,7 @@ impl Vcpu {
             event_sender: Some(event_sender),
             kvm_vcpu,
             guest_reset: Arc::clone(&vm.common.guest_reset),
+            finish_requested: Arc::clone(&vm.common.vcpu_finish_requested),
         })
     }
 
@@ -254,6 +260,7 @@ impl Vcpu {
         // failure is reported to the caller rather than left to a thread.
         install_kick_signal_handler()?;
         let event_sender = self.event_sender.take().expect("vCPU already started");
+        let finish_requested = Arc::clone(&self.finish_requested);
         let vcpu_fd = self
             .copy_kvm_vcpu_fd(vm)
             .map_err(StartThreadedError::CopyFd)?;
@@ -271,7 +278,12 @@ impl Vcpu {
             })
             .map_err(StartThreadedError::Spawn)?;
 
-        Ok(VcpuHandle::new(event_sender, vcpu_fd, vcpu_thread))
+        Ok(VcpuHandle::new(
+            event_sender,
+            vcpu_fd,
+            vcpu_thread,
+            finish_requested,
+        ))
     }
 
     /// Main loop of the vCPU thread.
@@ -280,6 +292,15 @@ impl Vcpu {
     /// Note that the state of the VCPU and associated VM must be setup first for this to do
     /// anything useful.
     pub fn run(&mut self) {
+        // A VM that was asked to stop before this vCPU was released from the
+        // start gate - a kill that raced the boot, or the teardown of a
+        // partially started set - must not enter the guest: the run loop is
+        // the only place a stop request is observed, and a vCPU that entered
+        // `KVM_RUN` would have to be kicked out again for it to be seen.
+        if self.finish_requested() {
+            self.signal_exit();
+            return;
+        }
         // Start running the machine state in the `Running` state. (Upstream
         // starts `Paused` and waits for a resume event from the main thread.)
         let mut state = VcpuRunState::Running;
@@ -291,14 +312,34 @@ impl Vcpu {
         }
     }
 
+    /// Whether the VM's vCPUs have been asked to finish.
+    fn finish_requested(&self) -> bool {
+        self.finish_requested.load(Ordering::SeqCst)
+    }
+
     // This is the main loop of the `Running` state.
     fn running(&mut self) -> VcpuRunState {
         // This loop is here just for optimizing the emulation path.
         // No point in ticking the state machine if there are no external events.
         loop {
             match self.run_emulation() {
-                // Emulation ran successfully, continue.
-                Ok(VcpuEmulation::Handled) => (),
+                // Emulation ran successfully, continue - unless the VM has
+                // been asked to stop in the meantime. Checking the request
+                // here, on *every* exit from `KVM_RUN`, is what keeps the
+                // event channel from being the only way to observe it: a
+                // `Finish` published while this vCPU was in user space (or one
+                // whose kick was lost) may leave this loop re-entering the
+                // guest with exit reasons it handles locally, and this loop
+                // only reads the channel after an interrupt. The thread leaves
+                // through `Finished` rather than `exit()`: the reset flag a
+                // sibling may have published belongs to the vCPU that decided
+                // to leave, and must not be overwritten here.
+                Ok(VcpuEmulation::Handled) => {
+                    if self.finish_requested() {
+                        self.signal_exit();
+                        return VcpuRunState::Finished;
+                    }
+                }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
                 // The guest requested a SHUTDOWN or a RESET.
@@ -327,10 +368,22 @@ impl Vcpu {
     // sibling vCPU threads) and finishes this thread's loop.
     fn exit(&mut self, reset: bool) -> VcpuRunState {
         self.guest_reset.store(reset, Ordering::SeqCst);
+        self.signal_exit();
+        VcpuRunState::Finished
+    }
+
+    /// Writes the VM's exit event, waking the VM's exit watcher.
+    ///
+    /// Every path that ends this thread's run loop goes through here - a guest
+    /// exit, a vCPU fault, and a stop the VM asked for - so that the watcher
+    /// (which stops and joins the sibling vCPUs and then drops the VM with its
+    /// devices) never depends on who requested the stop, or on that request
+    /// having reached it any other way. It does not touch `guest_reset`: that
+    /// flag belongs to the vCPU that *decided* to leave.
+    fn signal_exit(&mut self) {
         if let Err(err) = self.exit_evt.write(1) {
             eprintln!("warning: failed signaling vcpu exit event: {err}");
         }
-        VcpuRunState::Finished
     }
 
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
@@ -456,6 +509,9 @@ pub struct VcpuHandle {
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
     // We want to be able to join these threads in tests.
     vcpu_thread: Option<thread::JoinHandle<()>>,
+    /// The VM's "finish requested" flag, set before the vCPU is kicked (see
+    /// `VmCommon::vcpu_finish_requested`).
+    finish_requested: Arc<AtomicBool>,
 }
 
 /// Error type for [`VcpuHandle::send_event`].
@@ -470,24 +526,38 @@ impl VcpuHandle {
     /// + `event_sender`: [`Sender`] to communicate [`VcpuEvent`] to control the vcpu.
     /// + `vcpu_fd`: duplicated vCPU fd, used to set `immediate_exit` from this side.
     /// + `vcpu_thread`: A [`JoinHandle`] for the vcpu thread.
+    /// + `finish_requested`: the VM's finish flag, published by
+    ///   [`VcpuHandle::send_event`] before the vCPU is kicked.
     pub fn new(
         event_sender: Sender<VcpuEvent>,
         vcpu_fd: kvm_ioctls::VcpuFd,
         vcpu_thread: thread::JoinHandle<()>,
+        finish_requested: Arc<AtomicBool>,
     ) -> Self {
         Self {
             event_sender,
             vcpu_fd,
             vcpu_thread: Some(vcpu_thread),
+            finish_requested,
         }
     }
 
     /// Sends event to vCPU.
     ///
+    /// A `Finish` is published in the VM's finish flag *before* the channel is
+    /// written and the vCPU is kicked: the vCPU's run loop checks that flag on
+    /// every exit from `KVM_RUN`, so the request is observed even when this
+    /// kick does not interrupt it (it may be in user space, or not yet in its
+    /// run loop, at which point the signal only runs the handler).
+    ///
     /// Upstream expects the channel to be alive; a vCPU thread that already
     /// exited is not an error for this port's watchers (they finish every
     /// vCPU, including ones that already stopped on their own).
     pub fn send_event(&mut self, event: VcpuEvent) -> Result<(), VcpuSendEventError> {
+        // `VcpuEvent` carries a single variant in this port, so the request
+        // always means "finish"; an event that must *not* stop the vCPU would
+        // have to move this into a match arm.
+        self.finish_requested.store(true, Ordering::SeqCst);
         // The vCPU thread may already have exited; then the channel is closed
         // and there is nothing left to kick.
         if self.event_sender.send(event).is_err() {

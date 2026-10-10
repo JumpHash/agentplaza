@@ -198,6 +198,18 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
     let console: Arc<dyn ConsoleLine> = shared.clone();
     shared.install_serial(SerialDevice::new(Arc::clone(&runtime.serial), &console));
 
+    // The console's input side, the counterpart of the capture above: a
+    // caller's bytes go to the UART, which queues them and raises the
+    // console's SPI. Installed right after the console itself (so no input can
+    // arrive before there is a console to take it) and holding the VM weakly -
+    // a strong reference would keep the VM, its vCPU threads and its guest
+    // memory alive for as long as the spawner's handle exists.
+    let input_vm = Arc::downgrade(&shared);
+    runtime.set_input_hook(move |data| match input_vm.upgrade() {
+        Some(shared) => shared.serial_input(data),
+        None => Err("the VM has stopped".to_string()),
+    });
+
     // The stop control goes in before the vCPUs start, so that a VM which
     // fails to come up can still be stopped (and so `VmHandle::kill` works
     // from the moment `spawn` returns). It holds a weak reference: the VM and

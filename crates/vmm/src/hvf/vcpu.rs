@@ -579,6 +579,23 @@ impl SharedVm {
         *lock(&self.serial) = Some(serial);
     }
 
+    /// Queues host bytes as console input: the guest reads them from the UART
+    /// and its received-data interrupt is raised (see
+    /// `crate::spawner::VmHandle::serial_input`).
+    ///
+    /// The reason is the text the caller sees in
+    /// `crate::spawner::SpawnError::SerialInput`; nothing is queued when it is
+    /// returned.
+    pub fn serial_input(&self, data: &[u8]) -> Result<(), String> {
+        let mut serial = lock(&self.serial);
+        match serial.as_mut() {
+            Some(serial) => serial.queue_input(data),
+            // The console is installed before the vCPUs start, so it is gone
+            // only once the VM has stopped (or never came up).
+            None => Err("the VM has stopped".to_string()),
+        }
+    }
+
     /// The number of vCPUs.
     pub fn vcpu_count(&self) -> usize {
         self.slots.len()

@@ -64,6 +64,20 @@ pub struct VmCommon {
     /// spawner. (The exit event fd cannot carry the difference: it is a
     /// counter several writers share.)
     pub guest_reset: Arc<AtomicBool>,
+    /// Whether the VM's vCPUs have been asked to finish.
+    ///
+    /// The `Finish` event alone is not enough to stop a vCPU: a vCPU inside
+    /// `KVM_RUN` only notices the message once it is kicked back to user
+    /// space, and one kick can be lost - it lands while the vCPU is already in
+    /// user space, or before the thread has entered its run loop at all - after
+    /// which the vCPU re-enters the guest and the run loop, which only consults
+    /// the event channel when `KVM_RUN` is interrupted, never looks again. The
+    /// request is therefore published as a flag *before* the kick, and every
+    /// vCPU checks it on each way out of `KVM_RUN`: whatever the exit reason
+    /// was, the next one observes the request. It is the same rule the
+    /// Hypervisor.framework backend's wake slots follow (`hvf/wait.rs`): set
+    /// the state you are notifying about before you notify.
+    pub vcpu_finish_requested: Arc<AtomicBool>,
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -147,6 +161,7 @@ impl KvmVm {
             vcpus_handles: Mutex::new(Vec::new()),
             vcpus_exit_evt,
             guest_reset: Arc::new(AtomicBool::new(false)),
+            vcpu_finish_requested: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -232,7 +247,18 @@ impl KvmVm {
     }
 
     /// Sends finish events to all vCPU threads and joins them.
+    ///
+    /// The request is published in `vcpu_finish_requested` **before** the
+    /// events are sent (see that field's documentation): the vCPU threads
+    /// check it on every exit from `KVM_RUN`, so a vCPU that is not (or not
+    /// yet) reachable through its handle's channel - one still parked on the
+    /// start gate, or one whose `Finish` message was lost to a kick that
+    /// arrived while it was in user space - stops all the same instead of
+    /// running on after this function returns.
     pub fn shutdown_vcpus(&self) {
+        self.common
+            .vcpu_finish_requested
+            .store(true, Ordering::SeqCst);
         let mut handles = self.vcpus_handles();
         for (idx, handle) in handles.iter_mut().enumerate() {
             if let Err(err) = handle.send_event(VcpuEvent::Finish) {

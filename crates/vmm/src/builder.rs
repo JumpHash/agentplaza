@@ -23,11 +23,12 @@
 
 use std::io;
 use std::os::fd::AsRawFd;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use vmm_sys_util::eventfd::EventFd;
 
+use crate::devices::legacy::SerialDevice;
 use crate::spawner::{SpawnError, VmRuntime, VmSpec};
 use crate::vstate::vm::KvmVm;
 
@@ -160,6 +161,25 @@ fn start_exit_watcher<D: Send + 'static>(
     runtime.add_thread(watcher);
 
     Ok(())
+}
+
+/// Installs the VM's console input hook: host bytes → the guest's console.
+///
+/// The device is held **weakly**. The console lives exactly as long as the VM
+/// — it is owned by the exit watcher, the VM's last thread — and a strong
+/// reference here would keep it (and its input queue) alive after the VM
+/// stopped, silently accepting input that no guest will ever read. With a weak
+/// reference, input sent to a stopped VM fails with "the VM has stopped",
+/// which is what a caller that keeps a console open needs to know.
+fn set_serial_input_hook(runtime: &Arc<VmRuntime>, serial: &Arc<Mutex<SerialDevice>>) {
+    let serial = Arc::downgrade(serial);
+    runtime.set_input_hook(move |data| match serial.upgrade() {
+        Some(serial) => {
+            let mut serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
+            serial.queue_input(data)
+        }
+        None => Err("the VM has stopped".to_string()),
+    });
 }
 
 /// Blocks until `evt` is signalled.
@@ -358,6 +378,13 @@ mod x86_64 {
                 .map_err(BootError::Irq)?;
         }
 
+        // Host console input (a caller's bytes for the guest to read from
+        // ttyS0): installed before the vCPUs start, so it is in place by the
+        // time the spawner hands the VM out. It holds the console weakly, so
+        // input sent after the VM stopped fails instead of being queued for a
+        // guest that is gone.
+        super::set_serial_input_hook(runtime, &serial);
+
         // The bus only holds weak references: the VM must own strong handles
         // to the legacy devices for as long as it runs. They are moved into
         // the exit watcher below, which is the VM's last thread — so the
@@ -544,6 +571,13 @@ mod aarch64 {
             vm.register_irq(serial.serial.interrupt_evt(), SERIAL_GSI)
                 .map_err(BootError::Irq)?;
         }
+
+        // Host console input (a caller's bytes for the guest to read from its
+        // serial line): installed before the vCPUs start, so it is in place by
+        // the time the spawner hands the VM out. It holds the console weakly,
+        // so input sent after the VM stopped fails instead of being queued for
+        // a guest that is gone.
+        super::set_serial_input_hook(runtime, &serial);
 
         // The bus only holds a weak reference: the watcher below keeps the
         // strong handle, so the console lives exactly as long as the VM.

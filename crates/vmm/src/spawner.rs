@@ -1,14 +1,15 @@
 //! The public multi-VM API: [`spawn`] boots one microVM, [`spawn_n`] boots
 //! `n` of them (ids `0..n`), and each returned [`VmHandle`] exposes the VM's
-//! id, its guest serial capture, and blocking `wait`/`kill` control.
+//! id, its guest serial capture (output) and its serial input
+//! ([`VmHandle::serial_input`]), plus blocking `wait`/`kill` control.
 //!
 //! Every VM is built and booted by the backend of the current platform
 //! (`crate::builder` on Linux, `crate::hvf` on Apple Silicon); the state the
-//! spawner and the backend share — the serial sink, the stop control and the
-//! backend's thread joins — lives in [`VmRuntime`], which is backend-neutral.
-//! A backend's `boot` fills the runtime in and returns once the VM is
-//! running; the spawner then owns the runtime and joins the backend's
-//! threads when the VM stops.
+//! spawner and the backend share — the serial sink and its input hook, the
+//! stop control and the backend's thread joins — lives in [`VmRuntime`], which
+//! is backend-neutral. A backend's `boot` fills the runtime in and returns
+//! once the VM is running; the spawner then owns the runtime and joins the
+//! backend's threads when the VM stops.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -130,6 +131,16 @@ pub enum SpawnError {
     /// No backend is compiled in for this platform
     #[error("no VM backend is compiled in for this platform")]
     NoBackend,
+    /// VM {id} could not take the console input: {reason}
+    #[error("VM {id} could not take the console input: {reason}")]
+    SerialInput {
+        /// Id of the VM whose console refused the input.
+        id: u32,
+        /// Why the console could not take the bytes. Nothing was queued when
+        /// the console rejected the call, so the caller can retry the same
+        /// bytes once the guest has drained the console's input queue.
+        reason: String,
+    },
 }
 
 impl SpawnError {
@@ -142,13 +153,22 @@ impl SpawnError {
 /// A thread the backend must join before the VM is considered stopped.
 type StopControl = Box<dyn Fn() + Send + Sync>;
 
+/// The backend's console input hook: host bytes for the guest to read from its
+/// serial console (see [`VmRuntime::set_input_hook`]).
+///
+/// The reason is the caller-facing text of a [`SpawnError::SerialInput`]; it is
+/// a plain string because the hook is dispatched dynamically across backends,
+/// each of which has its own console error type.
+type InputHook = Box<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
+
 /// State shared between the spawner, the VM handle and the active backend.
 ///
 /// The spawner creates one per VM and hands it to the backend's `boot`, which
-/// installs the stop control, registers the threads it spawned and, when the
-/// guest stops the VM by itself, marks the exit as guest-initiated. The
-/// spawner then owns the VM: [`VmHandle::wait`] joins the registered threads
-/// and [`VmHandle::kill`] first invokes the stop control.
+/// installs the stop control and the console input hook, registers the threads
+/// it spawned and, when the guest stops the VM by itself, marks the exit as
+/// guest-initiated. The spawner then owns the VM: [`VmHandle::wait`] joins the
+/// registered threads, [`VmHandle::kill`] first invokes the stop control and
+/// [`VmHandle::serial_input`] calls the input hook.
 pub struct VmRuntime {
     /// 0-based id of the VM this runtime belongs to.
     pub id: u32,
@@ -160,6 +180,10 @@ pub struct VmRuntime {
     /// [`VmHandle::kill`] can invoke it again when the first request did not
     /// stop the VM.
     stop: Mutex<Option<StopControl>>,
+    /// Console input hook installed by the backend in `boot`: hands host bytes
+    /// to the VM's UART, which queues them and raises the console's interrupt
+    /// (see [`VmHandle::serial_input`]).
+    input: Mutex<Option<InputHook>>,
     /// Whether the stop control has been invoked.
     stop_requested: AtomicBool,
     /// Whether the guest ended the VM itself.
@@ -197,6 +221,7 @@ impl VmRuntime {
             id,
             serial: Arc::new(Mutex::new(Vec::new())),
             stop: Mutex::new(None),
+            input: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
             guest_exited: AtomicBool::new(false),
             guest_reset: AtomicBool::new(false),
@@ -208,6 +233,42 @@ impl VmRuntime {
     /// it returns.
     pub fn set_stop_control(&self, stop: impl Fn() + Send + Sync + 'static) {
         *self.stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(stop));
+    }
+
+    /// Installs the console input hook. Called by the backend from `boot`,
+    /// before it returns, whether or not the boot succeeds.
+    ///
+    /// The hook hands `data` to the VM's UART, which queues the bytes for the
+    /// guest to read through its data register and raises the console's
+    /// received-data interrupt (that is what makes a guest reading `ttyS0` —
+    /// a `console=ttyS0` kernel, or a `PID 1` whose stdin is the serial line —
+    /// notice input without polling). It returns `Err(reason)` when the
+    /// console could not take the bytes *at all*; nothing is queued in that
+    /// case, so a caller can retry the same bytes.
+    pub fn set_input_hook(
+        &self,
+        input: impl Fn(&[u8]) -> Result<(), String> + Send + Sync + 'static,
+    ) {
+        *self
+            .input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(input));
+    }
+
+    /// Forwards `data` to the guest's serial console: this is the host side of
+    /// the guest's console input (see [`VmHandle::serial_input`]).
+    pub fn serial_input(&self, data: &[u8]) -> Result<(), SpawnError> {
+        let input = self
+            .input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(input) = input.as_ref() else {
+            return Err(SpawnError::SerialInput {
+                id: self.id,
+                reason: "this VM's backend has no console input".to_string(),
+            });
+        };
+        input(data).map_err(|reason| SpawnError::SerialInput { id: self.id, reason })
     }
 
     /// Registers a thread the spawner must join before the VM counts as
@@ -370,6 +431,35 @@ impl VmHandle {
     pub fn serial_sink(&self) -> Arc<Mutex<Vec<u8>>> {
         Arc::clone(&self.runtime.serial)
     }
+
+    /// Forwards `data` to the guest's serial console: the host's console
+    /// input, the counterpart of [`VmHandle::serial`]'s captured output.
+    ///
+    /// The bytes go into the console's input queue and the console's interrupt
+    /// is raised, so a guest reading its serial line — a `console=ttyS0`
+    /// kernel console, a shell on `ttyS0`, or a `PID 1` whose stdin is that
+    /// line — receives them as typed input. A guest terminal echoes what it
+    /// receives, so the bytes a caller sends usually show up in
+    /// [`VmHandle::serial`] as well.
+    ///
+    /// This is deliberately *not* a byte stream: the call takes all of `data`
+    /// or none of it. It fails, without queueing anything, when the console's
+    /// input queue cannot take the whole slice (the guest has not drained it
+    /// yet) or when the VM has stopped. A caller that must not lose input
+    /// retries the same slice once the guest has drained the queue, which is
+    /// what `vmctl --console` does.
+    pub fn serial_input(&self, data: &[u8]) -> Result<(), SpawnError> {
+        self.runtime.serial_input(data)
+    }
+
+    /// The VM's shared runtime: everything [`VmHandle`] exposes except the
+    /// `&mut self` control — [`VmRuntime::serial_input`], the serial capture,
+    /// the recorded exit reason — for code that has to keep using the VM from
+    /// another thread while the handle itself is being waited on or killed
+    /// (`vmctl`'s stdin reader is the first such caller).
+    pub fn runtime(&self) -> Arc<VmRuntime> {
+        Arc::clone(&self.runtime)
+    }
 }
 
 /// Boots one microVM.
@@ -437,6 +527,7 @@ fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
 ///
 /// * append guest console output to `runtime.serial`,
 /// * install its stop control with [`VmRuntime::set_stop_control`],
+/// * install its console input hook with [`VmRuntime::set_input_hook`],
 /// * register every thread it spawned with [`VmRuntime::add_thread`],
 /// * call [`VmRuntime::mark_guest_exited`] (or
 ///   [`VmRuntime::mark_guest_reset`], for a reset) when the guest stopped the

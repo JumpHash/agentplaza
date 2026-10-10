@@ -9,7 +9,10 @@
 // the event-manager input plumbing (stdin/epoll), the rate limiter, the
 // metrics counters and the stdout/file sinks are dropped; the queue events
 // of `SerialEventsWrapper` become no-ops; a `Shared` sink appends the guest
-// serial output to an in-memory buffer shared with the VM handle).
+// serial output to an in-memory buffer shared with the VM handle; the
+// console input the event manager used to read from stdin is instead queued
+// through `SerialWrapper::queue_input`, which calls the same
+// `RawIOHandler::raw_input` it did).
 
 //! Implements a wrapper over an UART serial device.
 use std::fmt::Debug;
@@ -38,7 +41,8 @@ pub trait RawIOHandler {
 impl<EV: SerialEvents + Debug, W: std::io::Write + Debug> RawIOHandler
     for Serial<EventFdTrigger, EV, W>
 {
-    // This is not used for anything and is basically just a dummy implementation for `raw_input`.
+    // Upstream calls this a dummy implementation; here it is the console
+    // input path (`SerialWrapper::queue_input`).
     fn raw_input(&mut self, data: &[u8]) -> Result<(), RawIOError> {
         // Fail fast if the serial is serviced with more data than it can buffer.
         if data.len() > self.fifo_capacity() {
@@ -142,8 +146,11 @@ impl std::io::Write for SerialOut {
 /// Wrapper over the imported serial device.
 ///
 /// Upstream is generic over a serial input source (`I: Read + AsRawFd +
-/// Send`) wired to the event manager; this port has no serial input, so
-/// the wrapper owns only the serial device itself.
+/// Send`) wired to the event manager, which is what fed the guest's console
+/// from stdin. This port has no event manager: the wrapper owns only the
+/// serial device itself, and the host's console input is pushed into it by
+/// [`SerialWrapper::queue_input`] (the stdin path upstream reached through
+/// `RawIOHandler::raw_input`, which is what that method calls).
 #[derive(Debug)]
 pub struct SerialWrapper {
     /// Serial device object.
@@ -164,6 +171,25 @@ impl SerialDevice {
         let serial = Serial::with_events(interrupt_evt, events, serial_out);
 
         Ok(SerialDevice { serial })
+    }
+
+    /// Queues `data` as console input for the guest to read from the UART's
+    /// data register, raising the console's received-data interrupt.
+    ///
+    /// Everything or nothing: a slice that does not fit in the input queue is
+    /// refused (upstream's `RawIOHandler::raw_input`, which the event manager
+    /// fed at most `fifo_capacity()` bytes at a time) and nothing is queued, so
+    /// a caller can retry the same slice once the guest has drained what is
+    /// there. The reason is the text a caller sees in
+    /// `crate::spawner::SpawnError::SerialInput`.
+    pub fn queue_input(&mut self, data: &[u8]) -> Result<(), String> {
+        self.serial.raw_input(data).map_err(|err| {
+            format!(
+                "the console's input queue takes {} more bytes and was given {}: {err}",
+                self.serial.fifo_capacity(),
+                data.len()
+            )
+        })
     }
 }
 
@@ -284,5 +310,51 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(captured.as_slice(), b"Linux version\n".as_slice());
+    }
+
+    #[test]
+    fn test_queue_input_is_readable_from_the_data_register() {
+        let mut serial = SerialDevice::new(test_serial_out_sink()).unwrap();
+
+        // Console input comes from the host, not from a bus write: the bytes
+        // become readable through the data register, which is what the guest
+        // driver's read of ttyS0 does (and the interrupt that tells it to
+        // read is raised by the queue).
+        serial.queue_input(b"uname\n").expect("queueing input");
+
+        let mut byte = [0u8; 1];
+        for expected in b"uname\n" {
+            serial.read(0x3f8, 0, &mut byte);
+            assert_eq!(byte[0], *expected);
+        }
+
+        // The queue is drained: a read with nothing queued returns the
+        // register's default instead of a stale byte.
+        serial.read(0x3f8, 0, &mut byte);
+        assert_eq!(byte[0], 0);
+    }
+
+    #[test]
+    fn test_queue_input_refuses_a_chunk_larger_than_the_queue() {
+        let mut serial = SerialDevice::new(test_serial_out_sink()).unwrap();
+
+        // Everything or nothing: a chunk the queue cannot hold whole is
+        // refused *and queues nothing*, so a caller that retries it does not
+        // duplicate the bytes that were already taken.
+        let oversized = vec![b'a'; 1024];
+        let reason = serial.queue_input(&oversized).unwrap_err();
+        assert!(
+            reason.contains("1024"),
+            "the reason must say what was refused: {reason}"
+        );
+
+        let mut byte = [0u8; 1];
+        serial.read(0x3f8, 0, &mut byte);
+        assert_eq!(byte[0], 0, "a refused chunk must not queue anything");
+
+        // The queue still works afterwards.
+        serial.queue_input(b"x").expect("queueing a fitting chunk");
+        serial.read(0x3f8, 0, &mut byte);
+        assert_eq!(byte[0], b'x');
     }
 }

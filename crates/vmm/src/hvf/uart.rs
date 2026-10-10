@@ -125,6 +125,29 @@ impl SerialDevice {
             uart: Serial::with_events(trigger, NoEvents, SharedSink::new(capture)),
         }
     }
+
+    /// Queues `data` as console input for the guest to read from the UART's
+    /// data register, raising the console's received-data interrupt.
+    ///
+    /// This is the `ttyS0`/`ttyAMA0` counterpart of the guest's own writes:
+    /// the same contract as the KVM path's
+    /// `devices::legacy::SerialWrapper::queue_input` (everything or nothing,
+    /// with a reason the caller can show), and the same `vm-superio` queue
+    /// underneath. The reason is the text a caller sees in
+    /// `crate::spawner::SpawnError::SerialInput`.
+    pub fn queue_input(&mut self, data: &[u8]) -> Result<(), String> {
+        let room = self.uart.fifo_capacity();
+        if data.len() > room {
+            return Err(format!(
+                "the console's input queue takes {room} more bytes and was given {}",
+                data.len()
+            ));
+        }
+        self.uart
+            .enqueue_raw_bytes(data)
+            .map(|_| ())
+            .map_err(|err| format!("the console's input queue rejected the data: {err}"))
+    }
 }
 
 impl BusDevice for SerialDevice {
@@ -262,6 +285,60 @@ mod tests {
         );
         // ... and the console still captures the guest's output.
         assert_eq!(&capture.lock().unwrap()[..], b"ab");
+    }
+
+    #[test]
+    fn console_input_is_readable_from_the_data_register() {
+        let mut console = console();
+
+        // The driver enables the received-data interrupt (IER bit 0), as the
+        // ns16550a driver does before it can be told about input.
+        console.device.write(0, 1, &[0x01]);
+        console
+            .device
+            .queue_input(b"help\n")
+            .expect("queueing console input");
+
+        let mut byte = [0u8; 1];
+        for expected in b"help\n" {
+            console.device.read(0, 0, &mut byte);
+            assert_eq!(byte[0], *expected);
+        }
+        assert_eq!(
+            console.raises.load(Ordering::SeqCst),
+            1,
+            "queued input raises the console's interrupt"
+        );
+
+        // Drained: a read with nothing queued returns the register default.
+        console.device.read(0, 0, &mut byte);
+        assert_eq!(byte[0], 0);
+    }
+
+    #[test]
+    fn console_input_refuses_a_chunk_larger_than_the_queue() {
+        let mut console = console();
+
+        // Everything or nothing, as on the KVM path: a refused chunk leaves
+        // the queue empty, so a caller that retries it does not duplicate
+        // bytes.
+        let oversized = vec![b'a'; 1024];
+        let reason = console.device.queue_input(&oversized).unwrap_err();
+        assert!(
+            reason.contains("1024"),
+            "the reason must say what was refused: {reason}"
+        );
+
+        let mut byte = [0u8; 1];
+        console.device.read(0, 0, &mut byte);
+        assert_eq!(byte[0], 0, "a refused chunk must not queue anything");
+
+        console
+            .device
+            .queue_input(b"x")
+            .expect("queueing a fitting chunk");
+        console.device.read(0, 0, &mut byte);
+        assert_eq!(byte[0], b'x');
     }
 
     #[test]
