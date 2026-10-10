@@ -14,6 +14,7 @@
 use std::ffi::c_void;
 use std::ops::Deref;
 
+#[cfg(target_os = "linux")]
 use kvm_bindings::kvm_userspace_memory_region;
 pub use vm_memory::{
     Address, ByteValued, Bytes, FileOffset, GuestAddress, GuestMemoryRegion, GuestUsize,
@@ -373,6 +374,7 @@ pub struct GuestRegionMmapExt {
     pub slot: u32,
 }
 
+#[cfg(target_os = "linux")]
 impl From<&GuestRegionMmapExt> for kvm_userspace_memory_region {
     fn from(region: &GuestRegionMmapExt) -> Self {
         kvm_userspace_memory_region {

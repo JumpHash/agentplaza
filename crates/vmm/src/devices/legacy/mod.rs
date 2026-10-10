@@ -10,24 +10,38 @@
 // are dropped; the serial input plumbing lives in `serial.rs`).
 
 //! Implements legacy devices (UART, RTC etc).
+//!
+//! Linux/KVM-only as landed: the serial trigger and the i8042 reset port
+//! ride on `EventFd`, which does not exist on macOS. The Hypervisor.framework
+//! backend wraps `vm_superio` directly with its own portable trigger instead
+//! of these modules.
+#[cfg(target_os = "linux")]
 mod i8042;
+#[cfg(target_os = "linux")]
 pub mod serial;
 
+#[cfg(target_os = "linux")]
 use std::io;
+#[cfg(target_os = "linux")]
 use std::ops::Deref;
 
+#[cfg(target_os = "linux")]
 use vm_superio::Trigger;
+#[cfg(target_os = "linux")]
 use vmm_sys_util::eventfd::EventFd;
 
+#[cfg(target_os = "linux")]
 pub use self::i8042::{I8042Device, I8042Error as I8042DeviceError};
+#[cfg(target_os = "linux")]
 pub use self::serial::{SerialDevice, SerialEventsWrapper, SerialOut, SerialOutInner, SerialWrapper};
-
+#[cfg(target_os = "linux")]
 /// Wrapper for implementing the trigger functionality for `EventFd`.
 ///
 /// The trigger is used for handling events in the legacy devices.
 #[derive(Debug)]
 pub struct EventFdTrigger(EventFd);
 
+#[cfg(target_os = "linux")]
 impl Trigger for EventFdTrigger {
     type E = io::Error;
 
@@ -36,6 +50,7 @@ impl Trigger for EventFdTrigger {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Deref for EventFdTrigger {
     type Target = EventFd;
     fn deref(&self) -> &Self::Target {
@@ -43,6 +58,7 @@ impl Deref for EventFdTrigger {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl EventFdTrigger {
     /// Clone an `EventFdTrigger`.
     pub fn try_clone(&self) -> io::Result<Self> {

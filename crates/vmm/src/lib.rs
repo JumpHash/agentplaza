@@ -19,6 +19,7 @@
 //! - [`hvf`] — Apple Silicon Hypervisor.framework backend (macOS; written for
 //!   this port, absent upstream)
 
+#[cfg(target_os = "linux")]
 pub mod builder;
 pub mod devices;
 pub mod spawner;
@@ -26,7 +27,7 @@ pub mod spawner;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod arch;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod vstate;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
