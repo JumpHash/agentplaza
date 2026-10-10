@@ -1,0 +1,19 @@
+[package]
+name = "noded"
+description = "AgentPlaza node daemon v0: run lifecycle and VM control over localhost HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+vmm = { path = "../vmm" }
+
+[lib]
+name = "noded"
+path = "src/lib.rs"
+
+[[bin]]
+name = "noded"
+path = "src/main.rs"
