@@ -840,6 +840,18 @@ impl VsockMuxer {
     }
 }
 
+impl Drop for VsockMuxer {
+    fn drop(&mut self) {
+        // The Unix socket the muxer bound lives in the filesystem, not in the
+        // process: close does not unlink it. Removing it here means a VM whose
+        // muxer is dropped (a clean stop) leaves no stale path behind for the
+        // next VM that reuses the CID. A VM killed by SIGKILL still leaves one
+        // behind, which is why a re-boot over a stale path fails with a clear
+        // "address already in use" rather than silently stealing a live CID.
+        let _ = std::fs::remove_file(&self.host_sock_path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
