@@ -51,6 +51,9 @@ pub enum VcpuError {
     /// Failed to run action on vcpu: {0}
     #[error("Failed to run action on vcpu: {0}")]
     VcpuResponse(KvmVcpuError),
+    /// Failed to create the KVM vCPU: {0}
+    #[error("Failed to create the KVM vCPU: {0}")]
+    KvmVcpu(#[from] KvmVcpuError),
     /// Cannot spawn a new vCPU thread: {0}
     #[error("Cannot spawn a new vCPU thread: {0}")]
     VcpuSpawn(io::Error),
@@ -401,11 +404,17 @@ impl VcpuHandle {
         self.vcpu_fd.set_kvm_immediate_exit(1);
         fence(Ordering::Release);
         // Safe to unwrap since constructor make this 'Some'.
-        self.vcpu_thread
+        match self
+            .vcpu_thread
             .as_ref()
             .expect("vcpu handle keeps its thread")
-            .kill(SIGRTMIN() + VCPU_RTSIG_OFFSET)?;
-        Ok(())
+            .kill(SIGRTMIN() + VCPU_RTSIG_OFFSET)
+        {
+            // The vCPU thread exited between the send and the signal: it is
+            // already where we want it.
+            Err(err) if err.errno() == libc::ESRCH => Ok(()),
+            result => result.map_err(VcpuSendEventError),
+        }
     }
 }
 

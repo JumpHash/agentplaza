@@ -18,6 +18,7 @@ use std::sync::{Arc, Barrier, Mutex};
 
 use vm_superio::serial::{Error as SerialError, SerialEvents};
 use vm_superio::Serial;
+use vmm_sys_util::eventfd::EventFd;
 
 use crate::devices::legacy::EventFdTrigger;
 use crate::vstate::bus::BusDevice;
@@ -89,6 +90,12 @@ pub enum SerialOutInner {
     Shared(Arc<Mutex<Vec<u8>>>),
 }
 
+/// Upper bound on the in-memory serial capture: guest console output is
+/// guest-controlled, so it must not grow the VMM's memory without bound.
+/// Output past the bound is dropped; the head (which holds the boot log) is
+/// kept.
+const MAX_SERIAL_CAPTURE: usize = 4 << 20;
+
 /// Output sink for the serial device.
 #[derive(Debug)]
 pub struct SerialOut {
@@ -117,11 +124,12 @@ impl std::io::Write for SerialOut {
                 let mut buffer = buffer
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // Upstream caps the serial history (via a `LARGE_SPSC_BUFFER`
-                // bound when attached to an output file); keep the tail so the
-                // captured log stays finite: the interesting output (boot log)
-                // is at the start, so keep the head.
-                buffer.extend_from_slice(buf);
+                // Keep at most `MAX_SERIAL_CAPTURE` bytes: the boot log is at
+                // the head, and a chatty guest must not grow VMM memory
+                // without bound.
+                let room = MAX_SERIAL_CAPTURE.saturating_sub(buffer.len());
+                let taken = room.min(buf.len());
+                buffer.extend_from_slice(&buf[..taken]);
                 Ok(buf.len())
             }
         }
@@ -182,6 +190,8 @@ impl BusDevice for SerialWrapper {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     /// Helper to create a `SerialOut` with `Sink` inner for tests.
@@ -215,8 +225,18 @@ mod tests {
         serial.serial.raw_input(b"abc").unwrap();
 
         let state = serial.serial.state();
-        let mut restored = SerialDevice::new(test_serial_out_sink()).unwrap();
-        restored.serial.restore(state).unwrap();
+
+        // vm-superio rebuilds a device from a saved state (the path a VM
+        // restore takes); the trigger and the sink are fresh.
+        let interrupt_evt = EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
+        let events = SerialEventsWrapper {
+            buffer_ready_event_fd: None,
+        };
+        let restored_serial =
+            Serial::from_state(&state, interrupt_evt, events, test_serial_out_sink()).unwrap();
+        let mut restored = SerialDevice {
+            serial: restored_serial,
+        };
 
         // Make sure we read back what we previously injected
         let mut buf = [0u8; 1];

@@ -90,6 +90,11 @@ impl BusRange {
         self.base
     }
 
+    /// The last address of the range (inclusive).
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+
     /// Returns true if there is overlap with the given range.
     pub fn overlaps(&self, other: &BusRange) -> bool {
         self.base <= other.end && other.base <= self.end
@@ -184,7 +189,7 @@ impl Bus {
                 free
             }
             None => {
-                devices.push(Arc::downgrade(&device));
+                devices.push(Some(Arc::downgrade(&device)));
                 devices.len() - 1
             }
         };
@@ -226,18 +231,16 @@ impl Bus {
             let ranges = read_lock(&self.ranges);
             match ranges.range(..=access).next_back() {
                 // `range` query already guarantees `range.base() <= addr`.
-                Some((range, &slot)) if access.end() <= range.end() => (range.base(), slot),
+                Some((range, &slot)) if access.end <= range.end => (range.base, slot),
                 _ => return Err(BusError::MissingAddressRange),
             }
         };
 
         let device = devices
             .get(slot)
-            .expect("Bus ranges and devices out of sync");
-
-        let Some(device) = device.upgrade() else {
-            return Err(BusError::MissingAddressRange);
-        };
+            .and_then(Option::as_ref)
+            .and_then(Weak::upgrade)
+            .ok_or(BusError::MissingAddressRange)?;
 
         let mut locked = lock(&device);
         let offset = addr - base;
@@ -258,10 +261,10 @@ impl Bus {
             .ok_or(BusError::MissingAddressRange)?;
 
         assert_eq!(
-            registered.end(),
-            old_range.end(),
+            registered.end,
+            old_range.end,
             "Bus mapping at {old_base:#x} is registered with length {}, not {len}",
-            registered.end() - registered.base() + 1
+            registered.end - registered.base + 1
         );
 
         // Reject if the destination overlaps another device

@@ -139,7 +139,7 @@ pub fn setup_mptable(
     }
 
     let mp_size = compute_mp_size(num_cpus);
-    let mptable_addr = resource_allocator
+    let mptable_addr = *resource_allocator
         .system_memory
         .allocate(mp_size as u64, 1, AllocPolicy::FirstMatch)?
         .start();

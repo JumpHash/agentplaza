@@ -21,7 +21,7 @@ use crate::arch::x86_64::interrupts;
 use crate::arch::x86_64::kvm::Kvm;
 use crate::arch::x86_64::msr::{MsrError, create_boot_msr_entries, set_msrs};
 use crate::arch::x86_64::regs::{SetupFpuError, SetupRegistersError, SetupSpecialRegistersError};
-use crate::arch::EntryPoint;
+use crate::arch::x86_64::EntryPoint;
 use crate::vstate::bus::Bus;
 use crate::vstate::memory::GuestMemoryMmap;
 use crate::vstate::vcpu::{VcpuEmulation, VcpuError};

@@ -42,6 +42,7 @@ pub mod generated;
 use std::cmp::max;
 use std::fs::File;
 use std::fmt;
+use std::os::unix::fs::MetadataExt;
 
 use crate::vstate::memory::{u64_to_usize, usize_to_u64, Address, GuestAddress, GuestMemoryMmap, GuestMemoryRegion};
 use crate::vstate::vcpu::{KvmVcpuConfigureError, Vcpu};
@@ -64,6 +65,7 @@ use linux_loader::loader::{
     Cmdline, Error as KernelLoaderError, KernelLoader, PvhBootCapability, load_cmdline,
 };
 use vm_memory::GuestMemoryBackend;
+use vm_memory::ReadVolatile;
 
 // Value taken from https://elixir.bootlin.com/linux/v5.10.68/source/arch/x86/include/uapi/asm/e820.h#L31
 // Usable normal RAM

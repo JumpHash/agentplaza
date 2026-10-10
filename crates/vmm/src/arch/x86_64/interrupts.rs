@@ -121,7 +121,10 @@ mod tests {
 
     #[test]
     fn test_apic_delivery_mode() {
-        let v: Vec<u32> = (0..20).map(|x| x * 2654435761).collect();
+        // A spread of values with bits set across the delivery-mode field
+        // (upstream seeds this from `vmm_sys_util::rand`, which this port does
+        // not depend on).
+        let v: Vec<u32> = (0..20u32).map(|x| x.wrapping_mul(2_654_435_761)).collect();
 
         let after: Vec<u32> = v.iter().map(|x| (*x & !0x700) | ((2) << 8)).collect();
         let set: Vec<u32> = v.iter().map(|x| set_apic_delivery_mode(*x, 2)).collect();

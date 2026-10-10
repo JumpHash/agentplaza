@@ -19,7 +19,7 @@ pub use vm_memory::{
     Address, ByteValued, Bytes, FileOffset, GuestAddress, GuestMemoryRegion, GuestUsize,
     MemoryRegionAddress, VolatileSlice,
 };
-use vm_memory::{GuestMemoryBackend, GuestMemoryRegionBytes, GuestRegionCollection};
+use vm_memory::{GuestMemoryRegionBytes, GuestRegionCollection};
 
 /// Type of GuestMemoryMmap.
 pub type GuestMemoryMmap = GuestRegionCollection<GuestRegionMmapExt>;
