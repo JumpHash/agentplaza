@@ -15,7 +15,10 @@
 //!   a `tool_result` for every `tool_call` the hub sends, until the hub says
 //!   `stop`, which is answered with `bye`. This mode never exits on its own
 //!   account: any failure is printed and retried with a jittered backoff, and
-//!   the guest's `init` keeps the VM up when it does end.
+//!   the guest's `init` keeps the VM up when it does end. The tools it serves
+//!   are `echo` and `uptime` plus the file tools (`read_file`, `write_file`,
+//!   `edit_file`, `append_file`, `list`, `search`) over the guest's writable
+//!   `/workspace` volume — see [`crate::tools`] and [`crate::files`].
 //!
 //! There is no NIC and no other network path: the plaza rule is that a guest
 //! reaches the orchestrator over vsock only. The harness holds no secrets and
@@ -42,6 +45,8 @@
 
 #[cfg(target_os = "linux")]
 mod cmdline;
+#[cfg(target_os = "linux")]
+mod files;
 #[cfg(target_os = "linux")]
 mod keepalive;
 #[cfg(target_os = "linux")]
@@ -72,6 +77,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
 use cmdline::{Config, ConfigError};
+#[cfg(target_os = "linux")]
+use files::Workspace;
 #[cfg(target_os = "linux")]
 use line::StreamLines;
 #[cfg(target_os = "linux")]
@@ -247,11 +254,18 @@ fn keepalive_once(config: &Config, out: &mut impl Write) -> Result<u64, (bool, S
         guest_cid,
         vm: config.vm,
     };
+    // The volume the file tools work in: the guest's init mounted the plaza's
+    // workspace image at /workspace before it started this binary (see
+    // `crate::files`). It is created per attempt — it is a path, not a handle —
+    // so a guest that never had the volume is reported by the tools that need
+    // it, not by the session.
+    let workspace = Workspace::default();
     let mut transport = StreamLines::new(stream);
     keepalive::session(
         &mut transport,
         out,
         &identity,
+        &workspace,
         config.role.as_deref(),
         keepalive::heartbeat_interval(),
     )

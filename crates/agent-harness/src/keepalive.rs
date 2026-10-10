@@ -24,6 +24,7 @@ use std::fmt;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+use crate::files::Workspace;
 use crate::line::{LineTransport, Received};
 use crate::proto::{GuestMessage, HostMessage, WELCOME_ECHO};
 use crate::session::{
@@ -90,18 +91,21 @@ impl From<SessionError> for KeepaliveError {
 /// until the hub stops the agent.
 ///
 /// `heartbeat` is the interval between beats (the shipped agent uses
-/// [`heartbeat_interval`]). Returns how many tool calls were served when the
-/// hub said `stop`, whose `bye` is the last line this function sends. Every
-/// other ending is an error; the caller reconnects.
+/// [`heartbeat_interval`]), and `workspace` is the volume the file tools work
+/// in (the shipped agent uses [`Workspace::default`], the guest's
+/// `/workspace`). Returns how many tool calls were served when the hub said
+/// `stop`, whose `bye` is the last line this function sends. Every other
+/// ending is an error; the caller reconnects.
 pub fn session<T: LineTransport, W: Write>(
     transport: &mut T,
     log: &mut W,
     identity: &Identity,
+    workspace: &Workspace,
     role: Option<&str>,
     heartbeat: Duration,
 ) -> Result<u64, KeepaliveError> {
     handshake(transport, log, identity, role)?;
-    serve(transport, log, heartbeat).map_err(KeepaliveError::after_adoption)
+    serve(transport, log, workspace, heartbeat).map_err(KeepaliveError::after_adoption)
 }
 
 /// Offers `hello` and waits for a `welcome` the hub accepted as keepalive.
@@ -208,6 +212,7 @@ fn handshake<T: LineTransport, W: Write>(
 fn serve<T: LineTransport, W: Write>(
     transport: &mut T,
     log: &mut W,
+    workspace: &Workspace,
     heartbeat: Duration,
 ) -> Result<u64, SessionError> {
     let mut calls = 0u64;
@@ -233,7 +238,7 @@ fn serve<T: LineTransport, W: Write>(
                     // lines that are neither a tool call nor a stop.
                     skipped = 0;
                     calls += 1;
-                    let answer = match tools::serve(&name, &args) {
+                    let answer = match tools::serve(workspace, &name, &args) {
                         Ok(output) => GuestMessage::ToolResult {
                             call,
                             ok: true,
@@ -409,6 +414,12 @@ mod tests {
         }
     }
 
+    /// The workspace the session under test serves its file tools in. Only a
+    /// test that touches the filesystem resolves it: the rest never do.
+    fn workspace() -> Workspace {
+        Workspace::default()
+    }
+
     /// A heartbeat interval short enough that a test does not wait, but long
     /// enough that the schedule is a schedule: the scripted hub reads until it
     /// has what it wants, so the test is not racing the clock.
@@ -484,6 +495,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -578,8 +590,15 @@ mod tests {
 
         let mut guest = guest;
         let mut log = Vec::new();
-        let calls = session(&mut guest, &mut log, &identity(), Some("qa"), HEARTBEAT)
-            .expect("the hub stops the agent cleanly");
+        let calls = session(
+            &mut guest,
+            &mut log,
+            &identity(),
+            &workspace(),
+            Some("qa"),
+            HEARTBEAT,
+        )
+        .expect("the hub stops the agent cleanly");
         assert_eq!(calls, 1, "a refused call is still a call served");
 
         let (answer, bye) = hub.join().expect("the hub thread finished");
@@ -607,6 +626,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("auditor"),
             HEARTBEAT,
         )
@@ -637,6 +657,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -671,6 +692,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -700,6 +722,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -741,6 +764,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -783,6 +807,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -863,6 +888,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -899,6 +925,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -941,6 +968,7 @@ mod tests {
             &mut guest,
             &mut log,
             &identity(),
+            &workspace(),
             Some("builder"),
             HEARTBEAT,
         )
@@ -956,5 +984,137 @@ mod tests {
         let log = String::from_utf8(log).expect("the transcript is UTF-8");
         assert!(log.contains("agent-harness: heartbeat 1"), "{log}");
         assert!(log.contains("agent-harness: heartbeat 2"), "{log}");
+    }
+
+    #[test]
+    fn the_file_tools_are_served_over_the_wire_and_refuse_escapes() {
+        // The hub drives the file tools: every call is one `tool_call` and one
+        // `tool_result` whose `output` is the tool's own JSON, and a refused
+        // call is `ok:false` data on the same connection, not a disconnect.
+        let dir = std::env::temp_dir().join(format!("apz-harness-wire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch workspace");
+        let workspace = Workspace::at(&dir);
+
+        let (guest, mut host, _waits) = pair();
+        let hub = thread::spawn(move || {
+            let _hello = next(&mut host);
+            host.send_line(
+                r#"{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}"#,
+            )
+            .expect("welcome sends");
+
+            let calls = [
+                r#"{"type":"tool_call","call":1,"name":"write_file","args":{"path":"notes.txt","content":"one\ntwo\n"}}"#,
+                r#"{"type":"tool_call","call":2,"name":"read_file","args":{"path":"notes.txt"}}"#,
+                r#"{"type":"tool_call","call":3,"name":"list","args":{}}"#,
+                r#"{"type":"tool_call","call":4,"name":"search","args":{"pattern":"two"}}"#,
+                r#"{"type":"tool_call","call":5,"name":"edit_file","args":{"path":"notes.txt","find":"two","replace":"TWO"}}"#,
+                r#"{"type":"tool_call","call":6,"name":"read_file","args":{"path":"notes.txt"}}"#,
+                r#"{"type":"tool_call","call":7,"name":"append_file","args":{"path":"notes.txt","content":"three\n"}}"#,
+                r#"{"type":"tool_call","call":8,"name":"read_file","args":{"path":"../escape"}}"#,
+                r#"{"type":"tool_call","call":9,"name":"read_file","args":{"path":"/etc/passwd"}}"#,
+            ];
+            let mut answers = Vec::new();
+            for call in calls {
+                host.send_line(call).expect("the call sends");
+                answers.push(next_kind(&mut host, "tool_result"));
+            }
+            host.send_line(r#"{"type":"stop","reason":"done"}"#)
+                .expect("stop sends");
+            let bye = next_kind(&mut host, "bye");
+            (answers, bye)
+        });
+
+        let mut guest = guest;
+        let mut log = Vec::new();
+        let calls = session(
+            &mut guest,
+            &mut log,
+            &identity(),
+            &workspace,
+            Some("builder"),
+            HEARTBEAT,
+        )
+        .expect("the hub stops the agent cleanly");
+        assert_eq!(calls, 9, "every call is served, refused or not");
+
+        let (answers, bye) = hub.join().expect("the hub thread finished");
+        // Each answer is the wire's shape: the call it answers, its `ok`, and
+        // the tool's output as a string.
+        let parsed: Vec<serde_json::Value> = answers
+            .iter()
+            .enumerate()
+            .map(|(index, answer)| {
+                let answer: serde_json::Value = serde_json::from_str(answer).expect("a JSON line");
+                assert_eq!(answer["type"], "tool_result", "{answer}");
+                assert_eq!(answer["call"], index as u64 + 1, "{answer}");
+                answer
+            })
+            .collect();
+        // The `output` is the tool's own JSON: the wire escapes it, and the
+        // hub parses it back.
+        let payload = |index: usize| -> serde_json::Value {
+            let output = parsed[index]["output"].as_str().expect("an output");
+            serde_json::from_str(output).expect("a tool's output is JSON")
+        };
+        assert_eq!(parsed[0]["ok"], true);
+        assert_eq!(payload(0)["path"], "notes.txt");
+        assert_eq!(payload(0)["created"], true);
+        assert_eq!(payload(1)["content"], "one\ntwo\n");
+        assert_eq!(payload(1)["bytes"], 8);
+        assert_eq!(payload(1)["truncated"], false);
+        assert_eq!(payload(2)["path"], ".");
+        assert_eq!(payload(2)["entries"][0]["name"], "notes.txt");
+        assert_eq!(payload(2)["entries"][0]["kind"], "file");
+        assert_eq!(payload(3)["matches"][0]["file"], "notes.txt");
+        assert_eq!(payload(3)["matches"][0]["line"], 2);
+        assert_eq!(payload(3)["truncated"], false);
+        assert_eq!(payload(4)["matches"], 1);
+        assert_eq!(payload(5)["content"], "one\nTWO\n");
+        assert_eq!(payload(6)["size"], 14);
+        // The escapes are refusals with the reason, on the same connection.
+        assert_eq!(parsed[7]["ok"], false);
+        assert!(
+            parsed[7]["output"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("denied: "),
+            "{}",
+            parsed[7]
+        );
+        assert_eq!(parsed[8]["ok"], false);
+        assert!(
+            parsed[8]["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("absolute"),
+            "{}",
+            parsed[8]
+        );
+        assert_eq!(bye, r#"{"type":"bye","calls":9}"#);
+
+        // The transcript carries the calls and the refusal in protocol order.
+        let log = String::from_utf8(log).expect("the transcript is UTF-8");
+        assert!(
+            log.contains(r#"[vsock<-] {"type":"tool_call","call":1,"name":"write_file""#),
+            "{log}"
+        );
+        assert!(
+            log.contains("agent-harness: tool read_file call 8 refused: denied: "),
+            "{log}"
+        );
+        let (call, refusal) = (
+            log.find(r#"[vsock->] {"type":"tool_result","call":8,"ok":false"#),
+            log.find("agent-harness: tool read_file call 8 refused"),
+        );
+        assert!(call.is_some() && refusal.is_some(), "{log}");
+
+        // And the volume holds what the calls wrote.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).expect("the file"),
+            "one\nTWO\nthree\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
