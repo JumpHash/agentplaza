@@ -254,10 +254,18 @@ fn push_capture(out: &mut String, vm: &Vm) {
     }
 }
 
-/// A VM's facts as a transcript header writes them: how it is, its guest CID
-/// and, once it has left the running state, how it left.
+/// A VM's facts as a transcript header writes them: the role its guest runs
+/// as when it ran as one, how it is, its guest CID and, once it has left the
+/// running state, how it left.
+///
+/// The role leads because an exported transcript is evidence read later: a
+/// file of an agent's serial that does not say which agent wrote it is a
+/// transcript of nobody in particular.
 fn vm_facts(vm: &Vm) -> String {
-    let mut facts = vm.state.label().to_string();
+    let mut facts = match vm.role.as_deref() {
+        Some(role) => format!("role {role} · {}", vm.state.label()),
+        None => vm.state.label().to_string(),
+    };
     match vm.guest_cid {
         Some(cid) => facts.push_str(&format!(" · cid {cid}")),
         None => facts.push_str(" · no vsock"),
@@ -291,6 +299,7 @@ mod tests {
         Vm {
             id,
             guest_cid: cid,
+            role: None,
             state,
             serial: serial.map(str::to_string),
         }
@@ -382,6 +391,29 @@ mod tests {
              # run r1 · vm 0 · exited · cid 40\n\
              # exported 00:00:00 UTC\n"
         );
+    }
+
+    #[test]
+    fn a_role_agents_transcript_names_its_role_on_the_facts_line() {
+        let mut run = run();
+        run.vms[0].role = Some("builder".to_string());
+        let one = vm_transcript(&run, &run.vms[0], 0);
+        assert!(
+            one.contains("# run r1 · vm 0 · role builder · exited · cid 40 · exit slept\n"),
+            "{one:?}"
+        );
+        // A VM with no role gets no role on its line: nothing is invented.
+        assert!(
+            !one.contains("# vm 1 · role"),
+            "the run's other VM carries no role: {one:?}"
+        );
+        let two = vm_transcript(&run, &run.vms[1], 0);
+        assert!(two.contains("# run r1 · vm 1 · killed · cid 41 · exit reset\n"), "{two:?}");
+
+        // The run export labels each of its sections the same way.
+        let all = run_transcript(&run, 0);
+        assert!(all.contains("# vm 0 · role builder · exited · cid 40 · exit slept\n"), "{all:?}");
+        assert!(all.contains("# vm 1 · killed · cid 41 · exit reset\n"), "{all:?}");
     }
 
     #[test]

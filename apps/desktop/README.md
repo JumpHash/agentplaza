@@ -39,6 +39,7 @@ agentplaza-desktop [--url <url>] [--refresh-ms <milliseconds>]
 | `r` | the fleet register |
 | `m` | the machine (the index also lists it) |
 | `f` | the fleet map |
+| `w` | the roster: who is running right now, grouped by role |
 | `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
 | `Escape` | back to the register |
@@ -81,11 +82,31 @@ cargo run -- --refresh-ms 500
   machine reports it (in critical ink, with `· overcommit`, when the fleet has
   been asked for more than the host has), the poll cursor, a **Help** button,
   and the keys;
-* the fleet register: every run with its state, live/total VMs, vCPUs, memory,
-  vsock base CID and age;
+* the fleet register: every run with its state, **its role** (the role itself
+  for a run booted as one role — `noded --agents` boots one long-running VM per
+  role of `docs/agents/initial-roles.json` — the count for a run carrying
+  several, and a dash for every VM that carries none), live/total VMs, vCPUs,
+  memory, vsock base CID and age. The age reads in days once a run is a day
+  old (`3d 07h`, never `79h`) and a creation is stamped with its **day**
+  rather than a bare time of day whenever that day is not today's: a fleet run
+  stays `running` for hours, and a clock with no date, read three days later,
+  names no particular instant. The run pane's created/ended facts read the
+  same way;
 * the **machine** sheet: `GET /api/v0/machine` as a ruled table — name, arch,
   backend, irqchip, class, cpus, memory, the vsock transport mode, when the
   daemon started, and its uptime ticking with the poll;
+* the **roster** (`w`): *who is running right now*, read off the live register
+  and nothing else — the daemon is asked for nothing new. Every VM whose row
+  carries a role is a row: the role it accepted, the run and VM it is, its
+  guest CID, the state right now, and the serial rate the activity feed has
+  for it (a rate needs two reads of a VM's capture, so a freshly opened roster
+  starts at zero and moves as the polls land). Grouped by role, in the order
+  the roles appear in the register, each group with its own tally; the sheet
+  scrolls, because twenty-one roles do not fit one window. Pressing an agent's
+  row opens its run with that agent's console selected, the same target the map
+  cells use. A daemon that reports no role on any VM — an older one, or one not
+  started with `--agents` — gets the honest empty state that says so rather
+  than an empty table;
 * the **fleet map**: iced's own canvas (`iced::widget::canvas`). The machine is
   the bounded substrate region, labelled with its model; each run is a lane
   placed by run index; each VM is a cell placed by VM index. A VM's state is
@@ -97,7 +118,8 @@ cargo run -- --refresh-ms 500
   the cells that fit and prints `N of M cells · K past` in the caution's amber
   beside its label: the register and the run pane are where all fifty stay
   legible;
-* the run pane: per-VM state, guest CID, **exit kind** (`SLEPT` from
+* the run pane: per-VM **role** (stamped; a dash for a VM that is not a role
+  agent), state, guest CID, **exit kind** (`SLEPT` from
   `reboot: Power down`, `RESET` from `machine restart`/`Restarting system`, a
   dash when the tail says nothing), serial rate, and the latest line each VM
   wrote; the run's facts; the guest's serial transcript (the last 400 lines of
@@ -116,7 +138,8 @@ cargo run -- --refresh-ms 500
   takes no dependency for one) pre-filled with
   `{temp}/plaza-{run}-{vm}.txt`, a `this vm` / `all vms` switch, and an `EXPORT`
   button that writes the transcript — the pane's own bytes, with a header line
-  naming the run, the VM, its state, CID and exit kind — with plain `std::fs`.
+  naming the run, the VM, its role, its state, CID and exit kind — with plain
+  `std::fs`.
   A run export writes one labelled section per VM. A write that cannot land is
   a refusal in the notice line, in the disk's own words, and never touches the
   daemon's connection stamp. A path you type is kept; emptying the box hands it
@@ -174,7 +197,9 @@ cargo run -- --refresh-ms 500
   it reads into messages. `src/serial.rs` is the offset-idempotent merge of the
   serial deltas and the capture bookkeeping it needs: both are pure, so the
   frame matrix and the merge matrix are unit-tested without a socket.
-* The model (`src/model.rs`), the map's geometry and activity (`src/map.rs`),
+* The model (`src/model.rs`) — the panes, the reducer, the roster's grouping
+  and its tallies, the age/instant arithmetic — the map's geometry and activity
+  (`src/map.rs`),
   the exit kinds (`src/exit.rs`), the form and its presets (`src/form.rs`), the
   export (`src/export.rs`), the session's rolling history (`src/history.rs`),
   the charts' arithmetic (`src/chart.rs`), the client (`src/api.rs`) and the
@@ -192,17 +217,20 @@ cargo run -- --refresh-ms 500
 ## Tests
 
 ```
-cargo test
+cargo test          # 245 lib + 19 client + 35 render = 299, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
-  machine and the console write), the reducer and every pane transition, the
-  map's layout/hit-test/rate arithmetic and its lane overflow, the exit-kind
+  machine and the console write, and a role's presence, absence and explicit
+  null), the reducer and every pane transition (including the roster's grouping
+  and its tally), the age/date/instant arithmetic, the map's
+  layout/hit-test/rate arithmetic, its lane overflow and its role labels'
+  character-wise elision, the exit-kind
   matrix, the console's history walk, the spawn form's boundaries and the
   presets' fill + byte-for-byte bodies, the export path's token arithmetic and
   its write (bytes read back off the disk), the help sheet's toggling, the poll
   schedule and backoff at more than one cadence, the serial tail (with the byte
-  each row starts at), the key bindings, the CLI.
+  each row starts at), the key bindings (`w` among them), the CLI.
 * the stream: the frame parser's whole matrix (the daemon's frames, a frame
   split mid-line across reads, a heartbeat, CRLF frames, a leading blank line,
   an unknown event kind, a data line with no kind, a malformed frame followed
@@ -250,7 +278,14 @@ cargo test
   ceiling and exactly one boot poll, the register moves a run the list still
   calls `running` to `DONE`, the pane's transcript lands on exactly the polled
   capture plus the streamed bytes once, the ledger heading names that span, and
-  the frame is drawn), and a full application frame written to
+  the frame is drawn), the **role fleet** (the register stamping a run's role —
+  the role itself for one, the count for several, nothing at all for a run whose
+  VMs carry none — a role run's run pane stamping each agent's own role, and the
+  roster grouping the live register by role with its own per-group tally, its
+  rates off the activity feed, its rows opening their run with that agent
+  selected, and the honest empty state for a daemon that reports no role; plus
+  the long-running register: a three-day-old `running` run reading `3d 07h` and
+  its creation stamped `2025-10-06`), and a full application frame written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
   the telemetry pane's to `target/tmp/telemetry-frame.rgba`, the stream's to
   `target/tmp/stream-frame.rgba`).

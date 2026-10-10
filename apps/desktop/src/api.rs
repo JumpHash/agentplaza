@@ -129,6 +129,12 @@ pub struct Vm {
     /// The VM's vsock guest CID; absent when the run has no vsock devices.
     #[serde(default)]
     pub guest_cid: Option<u64>,
+    /// The role this VM's guest runs as, when it runs as one (the daemon's
+    /// `noded --agents` fleet boots one long-running VM per role and stamps
+    /// each of its VM rows): absent for every VM that was not started as a
+    /// role, and absent from an older daemon that does not report it yet.
+    #[serde(default)]
+    pub role: Option<String>,
     /// The VM's state.
     pub state: VmState,
     /// The VM's serial capture; present only in a single-run GET.
@@ -171,6 +177,39 @@ impl Run {
     /// The base guest CID the run's vsock devices were given, when it has any.
     pub fn base_cid(&self) -> Option<u64> {
         self.vms.first().and_then(|vm| vm.guest_cid)
+    }
+
+    /// The distinct roles the run's VMs carry, in the order their VMs appear:
+    /// one entry for a run booted as a single role, every role for the
+    /// daemon's role fleet, and none for a run whose VMs carry no role.
+    pub fn roles(&self) -> Vec<&str> {
+        let mut roles: Vec<&str> = Vec::new();
+        for vm in &self.vms {
+            if let Some(role) = vm.role.as_deref() {
+                if !roles.contains(&role) {
+                    roles.push(role);
+                }
+            }
+        }
+        roles
+    }
+
+    /// The run's single role, when exactly one distinct role is carried: what
+    /// a register row stamps. `None` when no VM carries a role, and also when
+    /// several roles are carried (the register prints the count instead).
+    pub fn role(&self) -> Option<&str> {
+        let mut found: Option<&str> = None;
+        for vm in &self.vms {
+            match vm.role.as_deref() {
+                None => {}
+                Some(role) => match found {
+                    None => found = Some(role),
+                    Some(known) if known == role => {}
+                    Some(_) => return None,
+                },
+            }
+        }
+        found
     }
 
     /// The run's serial transcript: the first VM's capture, or empty when the
@@ -713,6 +752,58 @@ mod tests {
         assert_eq!(run.vms[0].guest_cid, Some(50));
         assert_eq!(run.vms[0].serial.as_deref(), Some("login: plaza\r\n$ uname\r\nLinux\r\n"));
         assert_eq!(run.serial().lines().count(), 3);
+    }
+
+    /// A role run's body as the daemon reports it once `noded --agents` has
+    /// booted the initial setup: VM rows that each carry their role (the
+    /// daemon's fleet is one run of them).
+    const ROLES: &str = r#"{"id":"r1","state":"running","vcpus":1,"memory_mib":128,
+        "beats":null,"created_at":1760000000000,"ended_at":null,
+        "vms":[{"id":0,"guest_cid":100,"role":"builder","state":"running"},
+               {"id":1,"guest_cid":101,"role":"reviewer","state":"running"},
+               {"id":2,"guest_cid":102,"state":"exited"}]}"#;
+
+    #[test]
+    fn a_role_on_a_vm_row_parses_and_a_missing_one_is_none() {
+        let run: Run = from_body(ROLES);
+        assert_eq!(run.vms[0].role.as_deref(), Some("builder"));
+        assert_eq!(run.vms[1].role.as_deref(), Some("reviewer"));
+        assert_eq!(
+            run.vms[2].role, None,
+            "a VM row with no role is a VM that is not a role agent"
+        );
+        assert_eq!(
+            from_body::<RunsPage>(LIST).runs[0].vms[0].role,
+            None,
+            "an older daemon's rows carry no role field at all, and that is not a parse error"
+        );
+    }
+
+    #[test]
+    fn a_runs_roles_are_distinct_and_in_vm_order() {
+        let run: Run = from_body(ROLES);
+        assert_eq!(run.roles(), vec!["builder", "reviewer"]);
+        assert_eq!(
+            run.role(),
+            None,
+            "two distinct roles are what the register prints as a count"
+        );
+
+        // A run whose VMs all share one role is the run that gets its name
+        // stamped; a repeated role is still one role.
+        let single: Run = from_body(
+            r#"{"id":"r2","state":"running","vcpus":1,"memory_mib":128,"created_at":1,
+                "ended_at":null,
+                "vms":[{"id":0,"role":"builder","state":"running"},
+                       {"id":1,"role":"builder","state":"running"}]}"#,
+        );
+        assert_eq!(single.roles(), vec!["builder"]);
+        assert_eq!(single.role(), Some("builder"));
+        assert_eq!(
+            from_body::<RunsPage>(LIST).runs[0].role(),
+            None,
+            "a run with no roles is not a role run"
+        );
     }
 
     #[test]

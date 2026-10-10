@@ -53,6 +53,8 @@ pub enum Pane {
     Machine,
     /// The fleet as a map: the machine's substrate, run lanes and VM cells.
     Map,
+    /// The role fleet: who is running right now, grouped by role.
+    Roster,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -85,6 +87,8 @@ pub enum KeyAction {
     Machine,
     /// `f`: the fleet map.
     Map,
+    /// `w`: the roster — who is running right now.
+    Roster,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
@@ -233,7 +237,8 @@ pub struct Effect {
     pub poll_machine: bool,
     /// Fetch `GET /api/v0/runs/{id}`.
     pub fetch_run: Option<String>,
-    /// Fetch each of these runs, with serial: the map's activity feed.
+    /// Fetch each of these runs, with serial: every VM's rate for the map's
+    /// pulse, the roster's rows and the telemetry pane's decomposition.
     pub fetch_map: Vec<String>,
     /// `DELETE /api/v0/runs/{id}`.
     pub kill: Option<String>,
@@ -291,6 +296,17 @@ impl Effect {
         Self {
             poll_list: true,
             poll_machine: true,
+            fetch_map: ids.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Open the roster: the register, and every run's serial, so each role
+    /// agent's own rate is a real figure and not a zero. The machine is not
+    /// asked for — the roster draws no substrate.
+    pub fn roster(ids: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            poll_list: true,
             fetch_map: ids.into_iter().collect(),
             ..Self::default()
         }
@@ -632,11 +648,17 @@ impl Model {
         effect
     }
 
-    /// How long a run has been up: created to ended, or created to now.
+    /// The moment a run's age is read against: the wall clock of its end when
+    /// it ended, and the register's own clock while it is still live — a fleet
+    /// run that has been `running` for days is exactly as old as the register's
+    /// clock says, never as old as a missing end would make it.
+    pub fn run_reference_ms(&self, run: &Run) -> u64 {
+        run.ended_at.unwrap_or(self.now_ms)
+    }
+
+    /// How long `run` has been (or was) alive, in milliseconds.
     pub fn run_elapsed_ms(&self, run: &Run) -> u64 {
-        run.ended_at
-            .unwrap_or(self.now_ms)
-            .saturating_sub(run.created_at)
+        self.run_reference_ms(run).saturating_sub(run.created_at)
     }
 
     /// How long the daemon has been up, as the machine reports it.
@@ -709,6 +731,23 @@ impl Model {
         self.telemetry_run
             .as_deref()
             .filter(|id| self.runs.iter().any(|run| run.id == *id))
+    }
+
+    /// The role fleet as the roster pane lists it: every role agent in the
+    /// register, grouped by role. Empty when no VM in the register carries a
+    /// role — an older daemon, or one that was not started with `--agents`.
+    pub fn roster(&self) -> Vec<RosterGroup> {
+        roster(&self.runs, &self.activity)
+    }
+
+    /// How many role agents are up right now: what "who is running right now"
+    /// counts.
+    pub fn roster_live(&self) -> usize {
+        self.runs
+            .iter()
+            .flat_map(|run| run.vms.iter())
+            .filter(|vm| vm.role.is_some() && vm.state == VmState::Running)
+            .count()
     }
 
     /// Whether the live VMs have been asked for more guest memory than the
@@ -1334,6 +1373,16 @@ impl Model {
                 // both at once.
                 Effect::map(self.run_ids())
             }
+            Pane::Roster => {
+                self.pane = Pane::Roster;
+                self.detail = None;
+                self.armed = None;
+                // One row per role agent, each with its own rate: the register
+                // and every run's serial, the same read the map's pulse is
+                // measured from. The roster draws no substrate, so the machine
+                // is not asked for.
+                Effect::roster(self.run_ids())
+            }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
                 self.detail = None;
@@ -1481,6 +1530,7 @@ impl Model {
             KeyAction::Register => self.show(Pane::Fleet),
             KeyAction::Machine => self.show(Pane::Machine),
             KeyAction::Map => self.show(Pane::Map),
+            KeyAction::Roster => self.show(Pane::Roster),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
@@ -1700,6 +1750,89 @@ pub fn moved_vm_state(known: VmState, next: VmState) -> VmState {
     }
 }
 
+/// One role agent, as the roster lists it: which run and VM its guest is,
+/// which role it accepted, its guest CID, the state the register reports and
+/// the serial rate the activity feed has for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterAgent {
+    /// The id of the run whose VM row carries the role.
+    pub run: String,
+    /// The VM's index within that run.
+    pub vm: u32,
+    /// The role the VM's guest runs as (the daemon's word, as it reported it).
+    pub role: String,
+    /// The VM's guest CID, when its run has vsock devices.
+    pub guest_cid: Option<u64>,
+    /// The VM's state.
+    pub state: VmState,
+    /// The VM's serial rate in lines per second, as the activity feed last
+    /// measured it (0 until a capture of that VM has been read twice).
+    pub lps: f32,
+}
+
+impl RosterAgent {
+    /// Whether this agent's VM is up right now.
+    pub fn is_live(&self) -> bool {
+        self.state == VmState::Running
+    }
+}
+
+/// One role and the agents running it, as the roster groups them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterGroup {
+    /// The role.
+    pub role: String,
+    /// Every VM carrying it, in the register's own run-then-VM order.
+    pub agents: Vec<RosterAgent>,
+}
+
+impl RosterGroup {
+    /// How many of the role's agents are up.
+    pub fn live(&self) -> usize {
+        self.agents.iter().filter(|agent| agent.is_live()).count()
+    }
+
+    /// The role's agents' serial throughput now, in lines per second.
+    pub fn lps(&self) -> f32 {
+        history::total(self.agents.iter().map(|agent| agent.lps))
+    }
+}
+
+/// The role fleet as the roster lists it: every VM in the register whose row
+/// carries a role, grouped by role in the order the roles first appear.
+///
+/// It is a derivation of the live register and nothing else — the daemon is
+/// asked for nothing new — so a role appears here exactly when the daemon
+/// reports one on a VM row. A register in which no VM carries a role (an
+/// older daemon, or one that was not started with `--agents`) gives an empty
+/// roster, which is the honest answer to "who is running right now".
+pub fn roster(runs: &[Run], activity: &Activity) -> Vec<RosterGroup> {
+    let mut groups: Vec<RosterGroup> = Vec::new();
+    for run in runs {
+        for vm in &run.vms {
+            let Some(role) = vm.role.as_deref() else {
+                continue;
+            };
+            let agent = RosterAgent {
+                run: run.id.clone(),
+                vm: vm.id,
+                role: role.to_string(),
+                guest_cid: vm.guest_cid,
+                state: vm.state,
+                lps: activity.lps(&run.id, vm.id),
+            };
+            match groups.iter_mut().find(|group| group.role == agent.role) {
+                Some(group) => group.agents.push(agent),
+                None => groups.push(RosterGroup {
+                    role: agent.role.clone(),
+                    agents: vec![agent],
+                }),
+            }
+        }
+    }
+    groups
+}
+
 /// The window title: the register's name and the sheet that is showing.
 pub fn title(model: &Model) -> String {
     match &model.pane {
@@ -1708,6 +1841,7 @@ pub fn title(model: &Model) -> String {
         Pane::Spawn => "AgentPlaza register — new run".to_string(),
         Pane::Machine => "AgentPlaza register — machine".to_string(),
         Pane::Map => "AgentPlaza register — fleet map".to_string(),
+        Pane::Roster => "AgentPlaza register — roster".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -1720,6 +1854,35 @@ pub fn tally_line(model: &Model) -> String {
         "{runs} run(s) · {vms} vm(s) up · {} cid(s) · {} vsock run(s)",
         model.guest_cids().len(),
         model.vsock_runs()
+    )
+}
+
+/// The roster's tally as the roster sheet writes it: the role agents the
+/// register reports, how many of them are up right now, the roles they carry,
+/// and the serial throughput they are writing between polls.
+pub fn roster_tally(groups: &[RosterGroup]) -> String {
+    let agents: usize = groups.iter().map(|group| group.agents.len()).sum();
+    let live: usize = groups.iter().map(RosterGroup::live).sum();
+    format!(
+        "{agents} agent(s) · {live} up right now · {} role(s) · {:.1} line(s)/s",
+        groups.len(),
+        history::total(groups.iter().map(RosterGroup::lps))
+    )
+}
+
+/// The roster as the index column writes it: the roles the register reports
+/// and how many of their agents are up, and the honest nothing when no VM
+/// carries a role at all (an older daemon, or one not started with
+/// `--agents`).
+pub fn roster_line(model: &Model) -> String {
+    let groups = model.roster();
+    if groups.is_empty() {
+        return "no role agent yet".to_string();
+    }
+    format!(
+        "{} role(s) · {} agent(s) up",
+        groups.len(),
+        groups.iter().map(RosterGroup::live).sum::<usize>()
     )
 }
 
@@ -1793,7 +1956,13 @@ pub fn transcript_span<'a>(
     Some((first.offset, capture.len() as u64))
 }
 
-/// A duration as the register writes it: seconds, then minutes, then hours.
+/// A duration as the register writes it: seconds, then minutes, then hours,
+/// then days.
+///
+/// A node's uptime and a fleet run's age are hours-to-days figures — a run
+/// that has been `running` since the day before yesterday must read as days,
+/// not as an unbounded hour count — so the ladder tops out at days rather than
+/// running on in hours forever.
 pub fn duration_label(ms: u64) -> String {
     let seconds = ms / 1_000;
     if seconds < 60 {
@@ -1803,8 +1972,16 @@ pub fn duration_label(ms: u64) -> String {
     if minutes < 60 {
         return format!("{minutes}m {:02}s", seconds % 60);
     }
-    format!("{}h {:02}m", minutes / 60, minutes % 60)
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h {:02}m", minutes % 60);
+    }
+    format!("{}d {:02}h", hours / 24, hours % 24)
 }
+
+/// One day, in milliseconds: the register's own day, for the date it prints
+/// beside a time. A UTC day, because every clock this register writes is UTC.
+pub const DAY_MS: u64 = 86_400_000;
 
 /// A wall-clock time as the register writes it, in UTC.
 pub fn clock_label(epoch_ms: u64) -> String {
@@ -1817,6 +1994,46 @@ pub fn clock_label(epoch_ms: u64) -> String {
     )
 }
 
+/// A UTC date as the register writes it: `2026-10-07`.
+pub fn date_label(epoch_ms: u64) -> String {
+    let days = epoch_ms / DAY_MS;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// An instant as the register writes it, read against `reference_ms`: the
+/// clock when the instant and the reference are on the same UTC day, and the
+/// date when they are not.
+///
+/// The register always prints an instant *beside* its age (`created
+/// 14:03:22 UTC · 3d 02h`), and a fleet run stays `running` for days at a
+/// time. A bare time of day read three days later names no particular instant
+/// — it is today's clock applied to Wednesday — so on another day the day is
+/// what the register writes, and the age beside it says the rest.
+pub fn instant_label(epoch_ms: u64, reference_ms: u64) -> String {
+    if epoch_ms / DAY_MS == reference_ms / DAY_MS {
+        clock_label(epoch_ms)
+    } else {
+        date_label(epoch_ms)
+    }
+}
+
+/// The civil date of a count of days since 1970-01-01, as `(year, month,
+/// day)`: Howard Hinnant's `civil_from_days`, which is exact for every day the
+/// register can hold.
+fn civil_from_days(days: u64) -> (u64, u64, u64) {
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1826,6 +2043,7 @@ mod tests {
         Vm {
             id,
             guest_cid: cid,
+            role: None,
             state,
             serial: serial.map(str::to_string),
         }
@@ -2298,10 +2516,57 @@ mod tests {
     }
 
     #[test]
+    fn a_long_running_run_reads_in_days_rather_than_endless_hours() {
+        // The hour tier is where a fleet run lives for its first day...
+        assert_eq!(duration_label(23 * 3_600_000 + 59 * 60_000 + 59_000), "23h 59m");
+        // ...and a run still `running` after that is a day old, not "24h".
+        assert_eq!(duration_label(24 * 3_600_000), "1d 00h");
+        assert_eq!(duration_label(25 * 3_600_000 + 7 * 60_000), "1d 01h");
+        assert_eq!(duration_label(72 * 3_600_000 + 5 * 60_000), "3d 00h");
+        assert_eq!(duration_label(100 * 3_600_000 + 30 * 60_000), "4d 04h");
+        assert_eq!(duration_label(30 * 24 * 3_600_000), "30d 00h");
+        // Never a mislabelled tier: the ladder only ever moves up whole
+        // hours into whole days, and a minute is never lost to rounding.
+        assert_eq!(duration_label(24 * 3_600_000 - 1), "23h 59m");
+    }
+
+    #[test]
     fn clock_labels_are_utc() {
         assert_eq!(clock_label(0), "00:00:00 UTC");
         assert_eq!(clock_label(1_760_000_000_000), "08:53:20 UTC");
         assert_eq!(clock_label(86_400_000 + 3_661_000), "01:01:01 UTC");
+    }
+
+    #[test]
+    fn dates_are_the_utc_civil_date() {
+        assert_eq!(date_label(0), "1970-01-01");
+        assert_eq!(date_label(DAY_MS - 1), "1970-01-01");
+        assert_eq!(date_label(DAY_MS), "1970-01-02");
+        // A leap day, and a year boundary: the day count must not drift.
+        assert_eq!(date_label(11_016 * DAY_MS), "2000-02-29");
+        assert_eq!(date_label(19_723 * DAY_MS), "2024-01-01");
+        assert_eq!(date_label(1_760_000_000_000), "2025-10-09");
+    }
+
+    #[test]
+    fn an_instant_on_another_day_is_written_as_its_day() {
+        let noon = 1_760_000_000_000; // 2025-10-09 08:53:20 UTC
+        // The same UTC day keeps the clock the register has always written.
+        assert_eq!(instant_label(noon, noon + 3 * 3_600_000), "08:53:20 UTC");
+        assert_eq!(
+            instant_label(noon, noon + 15 * 3_600_000 + 6 * 60_000),
+            "08:53:20 UTC"
+        );
+        // Another day is a day: a bare time of day about a run that began on
+        // Wednesday would read as today's clock.
+        assert_eq!(instant_label(noon, noon + DAY_MS), "2025-10-09");
+        assert_eq!(instant_label(noon - DAY_MS, noon), "2025-10-08");
+        assert_eq!(instant_label(0, 1_760_000_000_000), "1970-01-01");
+        // Across the UTC day boundary, one second either side of midnight.
+        let midnight = DAY_MS * 20_000; // 2024-10-04 00:00:00 UTC
+        assert_eq!(instant_label(midnight - 1_000, midnight), "2024-10-03");
+        assert_eq!(instant_label(midnight, midnight - 1_000), "2024-10-04");
+        assert_eq!(instant_label(midnight, midnight + 1_000), "00:00:00 UTC");
     }
 
     #[test]
@@ -3134,6 +3399,154 @@ mod tests {
         assert_eq!(model.apply(Message::Key(KeyAction::Back)), Effect::poll());
         assert_eq!(model.pane, Pane::Fleet);
         assert!(!model.help);
+    }
+
+    /// One VM of a role fleet.
+    fn role_vm(id: u32, role: Option<&str>, cid: Option<u64>, state: VmState) -> Vm {
+        Vm {
+            role: role.map(str::to_string),
+            ..vm(id, state, cid, None)
+        }
+    }
+
+    /// The daemon's initial setup as the register sees it: one run whose VMs
+    /// each carry their role, next to an ordinary demo run whose VMs do not.
+    fn fleet_with_roles() -> Model {
+        let mut model = Model::new();
+        let mut roles = run("r1", RunState::Running);
+        roles.vcpus = 1;
+        roles.memory_mib = 128;
+        roles.vms = vec![
+            role_vm(0, Some("builder"), Some(100), VmState::Running),
+            role_vm(1, Some("reviewer"), Some(101), VmState::Running),
+            role_vm(2, Some("builder"), Some(102), VmState::Exited),
+            role_vm(3, None, Some(103), VmState::Running),
+        ];
+        model.apply(Message::Runs {
+            at_ms: 10_000,
+            result: page(vec![roles, run("r2", RunState::Done)]),
+        });
+        model
+    }
+
+    #[test]
+    fn the_roster_groups_role_agents_by_role_and_leaves_other_vms_out() {
+        let model = fleet_with_roles();
+        let groups = model.roster();
+
+        // Two roles, in the order their VMs first appear in the register.
+        assert_eq!(
+            groups.iter().map(|group| group.role.as_str()).collect::<Vec<_>>(),
+            vec!["builder", "reviewer"],
+            "a role appears once, where it first appears"
+        );
+
+        let builder = &groups[0];
+        assert_eq!(builder.agents.len(), 2, "both of the builder's VMs are agents");
+        assert_eq!(builder.live(), 1, "one of them has stopped");
+        assert_eq!(builder.agents[0].run, "r1");
+        assert_eq!(builder.agents[0].vm, 0);
+        assert_eq!(builder.agents[0].guest_cid, Some(100));
+        assert_eq!(builder.agents[0].state, VmState::Running);
+        assert!(builder.agents[0].is_live());
+        assert_eq!(builder.agents[1].state, VmState::Exited);
+        assert!(!builder.agents[1].is_live());
+
+        let reviewer = &groups[1];
+        assert_eq!(reviewer.agents.len(), 1);
+        assert_eq!(reviewer.live(), 1);
+
+        // vm 3 carries no role, and the demo run's VM carries none either:
+        // neither is a role agent, so neither is on the roster — only the two
+        // role agents that are up are counted.
+        assert_eq!(
+            groups
+                .iter()
+                .flat_map(|group| group.agents.iter())
+                .filter(|agent| agent.is_live())
+                .count(),
+            2
+        );
+        assert_eq!(model.roster_live(), 2, "builder vm 0 and reviewer vm 0");
+        assert!(
+            !groups
+                .iter()
+                .flat_map(|group| group.agents.iter())
+                .any(|agent| agent.vm == 3),
+            "a VM with no role is not an agent, however it is running"
+        );
+    }
+
+    #[test]
+    fn a_register_with_no_role_agents_has_an_empty_roster() {
+        let mut model = Model::new();
+        model.apply(Message::Runs {
+            at_ms: 10_000,
+            result: page(vec![run("r1", RunState::Running), run("r2", RunState::Done)]),
+        });
+        assert!(
+            model.roster().is_empty(),
+            "a daemon that stamps no role has no roster to draw"
+        );
+        assert_eq!(model.roster_live(), 0);
+        assert_eq!(
+            roster_tally(&model.roster()),
+            "0 agent(s) · 0 up right now · 0 role(s) · 0.0 line(s)/s"
+        );
+    }
+
+    #[test]
+    fn the_roster_tally_counts_the_agents_the_roles_and_their_rate() {
+        let mut model = fleet_with_roles();
+        model.activity.observe("r1", 0, 0, 10_000);
+        model.activity.observe("r1", 0, 40, 12_000);
+        let groups = model.roster();
+        let tally = roster_tally(&groups);
+        assert!(tally.starts_with("3 agent(s) · 2 up right now · 2 role(s) · "), "{tally}");
+        assert!(
+            !tally.contains("0.0 line(s)/s"),
+            "the builder's rate is a real figure: {tally}"
+        );
+    }
+
+    #[test]
+    fn a_roster_agents_rate_is_the_activity_feed_s_own() {
+        let mut model = fleet_with_roles();
+        // Two reads of builder vm 0's capture 2 s apart, forty lines apart.
+        model.activity.observe("r1", 0, 0, 10_000);
+        model.activity.observe("r1", 0, 40, 12_000);
+        let builder = &model.roster()[0];
+        assert!(
+            builder.agents[0].lps > 0.0,
+            "the roster's rate is the feed's, not a figure of its own"
+        );
+        assert_eq!(builder.lps(), builder.agents.iter().map(|a| a.lps).sum::<f32>());
+        assert_eq!(
+            builder.agents[1].lps, 0.0,
+            "a VM nobody read a capture of yet has no rate"
+        );
+    }
+
+    #[test]
+    fn opening_the_roster_reads_the_register_and_every_runs_serial() {
+        let mut model = Model::new();
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        let effect = model.apply(Message::Show(Pane::Roster));
+        assert_eq!(effect, Effect::roster(vec!["r1".to_string()]));
+        assert_eq!(model.pane, Pane::Roster);
+        assert!(
+            !effect.poll_machine,
+            "the roster draws no substrate, so it does not ask for the machine"
+        );
+
+        // The key is the same switch as the index entry.
+        let mut model = fleet_with_roles();
+        let effect = model.apply(Message::Key(KeyAction::Roster));
+        assert_eq!(effect, Effect::roster(vec!["r1".to_string(), "r2".to_string()]));
+        assert_eq!(model.pane, Pane::Roster);
     }
 
     #[test]

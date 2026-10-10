@@ -18,9 +18,9 @@ use crate::form::{Field, Preset};
 use crate::history;
 use crate::mapview::{self, FleetMap};
 use crate::model::{
-    Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, SERIAL_TAIL_LINES,
-    clock_label, duration_label, memory_label, preset_footprint, serial_tail, tally_line,
-    transcript_span,
+    Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, RosterAgent, SERIAL_TAIL_LINES,
+    duration_label, instant_label, memory_label, preset_footprint, roster_line, roster_tally,
+    serial_tail, tally_line, transcript_span,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
@@ -68,10 +68,17 @@ fn index(model: &Model) -> Container<'_, Message> {
             ),
             Pane::Fleet,
         ),
-        index_entry(model, "1", "Machine", machine_detail, Pane::Machine),
         index_entry(
             model,
-            "2",
+            "1",
+            "Roster",
+            roster_line(model),
+            Pane::Roster,
+        ),
+        index_entry(model, "2", "Machine", machine_detail, Pane::Machine),
+        index_entry(
+            model,
+            "3",
             "Fleet map",
             format!(
                 "{runs} lane(s) · {} cell(s)",
@@ -81,7 +88,7 @@ fn index(model: &Model) -> Container<'_, Message> {
         ),
         index_entry(
             model,
-            "3",
+            "4",
             "Telemetry",
             format!(
                 "{} observation(s) · {} lines/s",
@@ -202,8 +209,9 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 7] = [
+const KEYS: [(&str, &str); 8] = [
     ("r", "register"),
+    ("w", "roster: who is running, by role"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
@@ -311,6 +319,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Spawn => body.push(spawn_pane(model)),
         Pane::Machine => body.push(machine_pane(model)),
         Pane::Map => body.push(map_pane(model)),
+        Pane::Roster => body.push(roster_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -339,6 +348,10 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         Pane::Map => (
             "Fleet map".to_string(),
             "the machine's substrate, its runs as lanes, its VMs as cells".to_string(),
+        ),
+        Pane::Roster => (
+            "Roster".to_string(),
+            "who is running right now · every role agent the register reports".to_string(),
         ),
         Pane::Telemetry => (
             "Telemetry".to_string(),
@@ -408,7 +421,7 @@ fn fleet(model: &Model) -> Element<'_, Message> {
 
     let mut rows: Vec<Element<'_, Message>> = vec![
         fleet_head(
-            "run", "state", "vms", "vcpus", "memory", "vsock", "created",
+            "run", "state", "role", "vms", "vcpus", "memory", "vsock", "created",
         ),
         rule::horizontal(1.0).style(theme::rule_ink).into(),
     ];
@@ -422,6 +435,7 @@ fn fleet(model: &Model) -> Element<'_, Message> {
 fn fleet_head(
     run: &'static str,
     state: &'static str,
+    role: &'static str,
     vms: &'static str,
     vcpus: &'static str,
     memory: &'static str,
@@ -433,6 +447,7 @@ fn fleet_head(
         mono(state, 10.0, INK_3)
             .width(Length::FillPortion(2))
             .into(),
+        mono(role, 10.0, INK_3).width(Length::FillPortion(3)).into(),
         mono(vms, 10.0, INK_3).width(Length::FillPortion(3)).into(),
         mono(vcpus, 10.0, INK_3)
             .width(Length::FillPortion(2))
@@ -451,6 +466,25 @@ fn fleet_head(
     .into()
 }
 
+/// A run's roles as the register stamps them: the role itself for a run
+/// booted as one role, the count for a run carrying several (the daemon's role
+/// fleet is one run of twenty-one), and a dash for a run whose VMs carry none
+/// — the register's own way of writing nothing.
+fn role_cell<'a>(run: &'a Run) -> Element<'a, Message> {
+    let roles = run.roles();
+    match roles.as_slice() {
+        [] => mono("—", 10.5, INK_3)
+            .width(Length::FillPortion(3))
+            .into(),
+        [role] => stamp(role.to_uppercase(), Tone::Neutral)
+            .width(Length::FillPortion(3))
+            .into(),
+        roles => stamp(format!("{} ROLES", roles.len()), Tone::Neutral)
+            .width(Length::FillPortion(3))
+            .into(),
+    }
+}
+
 /// One run's row, which opens the run when pressed.
 fn fleet_row<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
     let selected = model.pane == Pane::Run(run.id.clone());
@@ -459,9 +493,12 @@ fn fleet_row<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
         Some(cid) => format!("{cid}+"),
         None => "—".to_string(),
     };
+    // A fleet run stays `running` for days: its age is read against the
+    // register's clock, and its creation is written as the day it was when
+    // that is not this day.
     let created = format!(
         "{} · {}",
-        clock_label(run.created_at),
+        instant_label(run.created_at, model.run_reference_ms(run)),
         duration_label(model.run_elapsed_ms(run))
     );
 
@@ -469,6 +506,7 @@ fn fleet_row<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
         row![
             mono(run.id.as_str(), 12.0, INK).width(Length::FillPortion(2)),
             stamp(run.state.stamp_label(), tone_for_run(run.state)).width(Length::FillPortion(2)),
+            role_cell(run),
             mono(vms, 10.5, INK_2).width(Length::FillPortion(3)),
             mono(run.vcpus.to_string(), 10.5, INK_2).width(Length::FillPortion(2)),
             mono(format!("{} MiB", run.memory_mib), 10.5, INK_2)
@@ -563,7 +601,7 @@ fn machine_pane(model: &Model) -> Element<'_, Message> {
         ),
         (
             "started_at",
-            clock_label(machine.started_at_ms),
+            instant_label(machine.started_at_ms, model.now_ms),
             "when the daemon started",
         ),
         (
@@ -664,6 +702,159 @@ fn map_status(model: &Model) -> String {
         }
     }
     text
+}
+
+/// The roster: who is running right now, grouped by role.
+///
+/// It reads the live register and nothing else — the daemon is asked for
+/// nothing new — so the sheet is exactly as true as the register is, and a
+/// register in which no VM carries a role says so rather than drawing an empty
+/// table.
+fn roster_pane(model: &Model) -> Element<'_, Message> {
+    let groups = model.roster();
+    let live = model.roster_live();
+
+    if groups.is_empty() {
+        let message = if model.health() == Health::Unknown {
+            "waiting for the daemon's first answer…"
+        } else {
+            "no role agent is in the register: the daemon reports a role on a VM's row only when \
+             it booted that VM as one (noded --agents <manifest>). Nothing here is a role fleet \
+             yet."
+        };
+        return Column::with_children(vec![
+            serif(
+                "The service's initial setup is a long-running agent per role. The roster lists \
+                 the ones the register reports right now; until the daemon stamps a role on a VM \
+                 row there is nobody to name.",
+                12.0,
+                INK_2,
+            )
+            .into(),
+            container(serif(message, 12.5, INK_2))
+                .style(theme::boxed)
+                .width(Length::Fill)
+                .padding(edge(16.0, 14.0, 16.0, 14.0))
+                .into(),
+        ])
+        .spacing(10.0)
+        .height(Length::Fill)
+        .into();
+    }
+
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "One row per role agent the register reports: its run and VM, the role its guest \
+             accepted, its guest CID, its state right now, and the serial rate the activity feed \
+             has for it (a rate needs two reads of a VM's capture, so a freshly opened roster \
+             starts at zero and moves as the polls land). Grouped by role, in the order the roles \
+             appear in the register.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+        mono(
+            roster_tally(&groups),
+            11.5,
+            if live > 0 { INK } else { INK_2 },
+        )
+        .into(),
+        rule::horizontal(1.0).style(theme::rule_ink).into(),
+    ];
+
+    for group in &groups {
+        body.push(
+            row![
+                stamp(group.role.to_uppercase(), Tone::Neutral),
+                mono(group.role.clone(), 12.0, INK),
+                space::horizontal(),
+                mono(
+                    format!(
+                        "{} agent(s) · {} up · {:.1} line(s)/s",
+                        group.agents.len(),
+                        group.live(),
+                        group.lps()
+                    ),
+                    10.5,
+                    INK_3
+                ),
+            ]
+            .spacing(8.0)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+        body.push(
+            row![
+                mono("run", 10.0, INK_3).width(Length::Fixed(70.0)),
+                mono("vm", 10.0, INK_3).width(Length::Fixed(46.0)),
+                mono("guest cid", 10.0, INK_3).width(Length::Fixed(110.0)),
+                mono("state", 10.0, INK_3).width(Length::Fixed(96.0)),
+                mono("lines/s", 10.0, INK_3),
+            ]
+            .spacing(8.0)
+            .into(),
+        );
+        body.push(rule_heading());
+        for agent in &group.agents {
+            body.push(roster_row(agent));
+        }
+        body.push(vertical(8.0));
+    }
+    if live == 0 {
+        body.push(
+            serif(
+                "No role agent is up right now: the register reports every role below, and every \
+                 one of their VMs has stopped.",
+                12.0,
+                INK_2,
+            )
+            .into(),
+        );
+    }
+
+    // A role per the codex is twenty-one in this fleet, and each group is a
+    // heading, a table and its agents: the sheet scrolls rather than showing
+    // the first few roles and silently hiding the rest.
+    scrollable(Column::with_children(body).spacing(6.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// One role agent's row: pressing it opens its run with its VM selected, the
+/// same target the map's cells and the console use.
+///
+/// The row owns its own text (the agent is a value derived from the register
+/// for this frame, not a borrowed row of the model).
+fn roster_row(agent: &RosterAgent) -> Element<'static, Message> {
+    let cid = match agent.guest_cid {
+        Some(cid) => format!("cid {cid}"),
+        None => "no vsock".to_string(),
+    };
+    let rate = if agent.lps > 0.02 {
+        format!("{:.1}", agent.lps)
+    } else {
+        "—".to_string()
+    };
+    button(
+        row![
+            mono(agent.run.clone(), 11.0, INK).width(Length::Fixed(70.0)),
+            mono(format!("vm {:02}", agent.vm), 10.5, INK_2).width(Length::Fixed(46.0)),
+            mono(cid, 10.5, INK_2).width(Length::Fixed(110.0)),
+            stamp(agent.state.stamp_label(), tone_for_vm(agent.state))
+                .width(Length::Fixed(96.0)),
+            mono(rate, 10.5, INK_2),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::Select {
+        run: agent.run.clone(),
+        vm: agent.vm,
+    })
+    .style(theme::register_row(false))
+    .padding(edge(4.0, 6.0, 4.0, 6.0))
+    .width(Length::Fill)
+    .into()
 }
 
 /// The session's figures: what the register observed, one observation per
@@ -887,6 +1078,7 @@ fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
     let mut vm_rows: Vec<Element<'a, Message>> = vec![
         row![
             mono("vm", 10.0, INK_3).width(Length::Fixed(46.0)),
+            mono("role", 10.0, INK_3).width(Length::Fixed(150.0)),
             mono("state", 10.0, INK_3).width(Length::Fixed(90.0)),
             mono("guest cid", 10.0, INK_3).width(Length::Fixed(96.0)),
             mono("exit", 10.0, INK_3).width(Length::Fixed(70.0)),
@@ -921,12 +1113,12 @@ fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
                     None => "none".to_string(),
                 },
             ),
-            ("created", clock_label(run.created_at)),
+            ("created", instant_label(run.created_at, model.run_reference_ms(run))),
             ("elapsed", duration_label(model.run_elapsed_ms(run))),
             (
                 "ended",
                 match run.ended_at {
-                    Some(ended) => clock_label(ended),
+                    Some(ended) => instant_label(ended, model.now_ms),
                     None => "—".to_string(),
                 },
             ),
@@ -1059,9 +1251,24 @@ fn vm_row<'a>(model: &'a Model, run: &'a Run, vm: &'a Vm) -> Element<'a, Message
 
     let mut cells: Vec<Element<'a, Message>> = vec![
         mono(format!("vm {:02}", vm.id), 11.0, INK).width(Length::Fixed(46.0)).into(),
-        stamp(vm.state.stamp_label(), tone_for_vm(vm.state)).width(Length::Fixed(90.0)).into(),
-        mono(cid, 10.5, INK_2).width(Length::Fixed(96.0)).into(),
     ];
+    // The role a VM's guest runs as, stamped where a VM is listed: an agent
+    // is who it is, so a role agent's row says so, and a VM that is not one
+    // gets the register's dash and no stamp at all.
+    cells.push(match vm.role.as_deref() {
+        Some(role) => stamp(role.to_uppercase(), Tone::Neutral)
+            .width(Length::Fixed(150.0))
+            .into(),
+        None => mono("—", 10.5, INK_3)
+            .width(Length::Fixed(150.0))
+            .into(),
+    });
+    cells.push(
+        stamp(vm.state.stamp_label(), tone_for_vm(vm.state))
+            .width(Length::Fixed(90.0))
+            .into(),
+    );
+    cells.push(mono(cid, 10.5, INK_2).width(Length::Fixed(96.0)).into());
     cells.push(match exit {
         Some(kind) => stamp(kind.stamp_label(), tone_for_exit(kind))
             .width(Length::Fixed(70.0))
@@ -1398,8 +1605,9 @@ fn lead(facts: Vec<(&'static str, String)>) -> Element<'static, Message> {
     Row::with_children(cells).spacing(10.0).into()
 }
 
-/// A stamped word, boxed in its tone.
-fn stamp<'a>(word: &'static str, tone: Tone) -> Container<'a, Message> {
+/// A stamped word, boxed in its tone. The word may be static (a state's own
+/// label) or borrowed (a role, which is the daemon's word and not a constant).
+fn stamp<'a>(word: impl IntoFragment<'a>, tone: Tone) -> Container<'a, Message> {
     container(mono(word, 9.5, tone.color()))
         .style(theme::stamp(tone))
         .padding(edge(3.0, 7.0, 3.0, 7.0))
@@ -1509,6 +1717,7 @@ mod tests {
             vms: vec![Vm {
                 id: 0,
                 guest_cid: Some(50),
+                role: None,
                 state: VmState::Running,
                 serial: Some("$ uname\nLinux\n".to_string()),
             }],
@@ -1565,6 +1774,7 @@ mod tests {
             Pane::Spawn,
             Pane::Machine,
             Pane::Map,
+            Pane::Roster,
             Pane::Telemetry,
         ] {
             model.pane = pane;
@@ -1589,6 +1799,7 @@ mod tests {
                     .map(|id| Vm {
                         id,
                         guest_cid: Some(50 + u64::from(id)),
+                        role: None,
                         state: VmState::Running,
                         serial: None,
                     })
@@ -1616,6 +1827,7 @@ mod tests {
                     vms: vec![Vm {
                         id: 0,
                         guest_cid: Some(50),
+                        role: None,
                         state: VmState::Running,
                         serial: None,
                     }],
@@ -1746,6 +1958,7 @@ mod tests {
         detail.vms.push(Vm {
             id: 1,
             guest_cid: Some(51),
+            role: None,
             state: VmState::Running,
             serial: Some("up\n".to_string()),
         });

@@ -67,7 +67,9 @@ pub fn fleet_lps(runs: &[Run], activity: &Activity) -> f32 {
 ///
 /// `f32`'s own sum starts at `-0.0`, so an empty fleet would write `-0.00`
 /// lines per second — a figure nobody measured, in a file that is evidence.
-fn total(values: impl Iterator<Item = f32>) -> f32 {
+/// Every figure this crate prints has to go through here: the fleet's own
+/// total, and the roster's per-role one.
+pub fn total(values: impl Iterator<Item = f32>) -> f32 {
     let sum: f32 = values.sum();
     if sum == 0.0 { 0.0 } else { sum }
 }
@@ -294,6 +296,7 @@ mod tests {
         Vm {
             id,
             guest_cid: None,
+            role: None,
             state,
             serial: None,
         }

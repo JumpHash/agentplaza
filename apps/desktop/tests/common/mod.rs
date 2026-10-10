@@ -47,6 +47,30 @@ pub const MACHINE: &str = r#"{"name":"plaza-node","arch":"x86_64","backend":"kvm
     "irqchip":"ioapic","class":"server","cpus":24,"memory_mib":128320,
     "vsock_mode":"uds-muxer","started_at_ms":1760000000000}"#;
 
+/// A register as the daemon reports it once the service has booted its
+/// initial setup: one long-running run whose VM rows each carry their role,
+/// next to an ordinary run whose VMs carry none.
+pub const ROLE_LIST: &str = r#"{"runs":[
+    {"id":"r1","state":"running","vcpus":1,"memory_mib":128,"beats":null,
+     "created_at":1760000000000,"ended_at":null,
+     "vms":[{"id":0,"guest_cid":100,"role":"builder","state":"running"},
+            {"id":1,"guest_cid":101,"role":"reviewer","state":"running"},
+            {"id":2,"guest_cid":102,"role":"legal-gov-prosecutor","state":"exited"}]},
+    {"id":"r2","state":"done","vcpus":1,"memory_mib":128,"beats":3,
+     "created_at":1760000001000,"ended_at":1760000060000,
+     "vms":[{"id":0,"guest_cid":50,"state":"exited"}]}
+]}"#;
+
+/// The same role run as a single-run GET reports it, with each agent's serial.
+pub const ROLE_DETAIL: &str = r#"{"id":"r1","state":"running","vcpus":1,"memory_mib":128,
+    "beats":null,"created_at":1760000000000,"ended_at":null,
+    "vms":[{"id":0,"guest_cid":100,"role":"builder","state":"running",
+            "serial":"agent-harness: role builder accepted\r\n$ uname\r\nLinux plaza\r\n"},
+           {"id":1,"guest_cid":101,"role":"reviewer","state":"running",
+            "serial":"agent-harness: role reviewer accepted\r\n$ uptime\r\n"},
+           {"id":2,"guest_cid":102,"role":"legal-gov-prosecutor","state":"exited",
+            "serial":"$ halted\r\n"}]}"#;
+
 /// One request as the stub read it.
 #[derive(Debug)]
 pub struct Request {

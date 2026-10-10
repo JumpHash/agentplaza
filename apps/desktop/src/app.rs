@@ -172,14 +172,15 @@ fn keys() -> Subscription<Message> {
     })
 }
 
-/// The action a key names, if the register binds it: `r`, `m`, `f` in either
-/// case, `?`, Escape, and the console's arrows.
+/// The action a key names, if the register binds it: `r`, `m`, `f`, `w` and
+/// `t` in either case, `?`, Escape, and the console's arrows.
 pub fn shortcut(key: &Key) -> Option<KeyAction> {
     match key.as_ref() {
         Key::Character(character) => match character.to_ascii_lowercase().as_str() {
             "r" => Some(KeyAction::Register),
             "m" => Some(KeyAction::Machine),
             "f" => Some(KeyAction::Map),
+            "w" => Some(KeyAction::Roster),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -454,11 +455,13 @@ mod tests {
             (Key::Character("r".into()), KeyAction::Register),
             (Key::Character("m".into()), KeyAction::Machine),
             (Key::Character("f".into()), KeyAction::Map),
+            (Key::Character("w".into()), KeyAction::Roster),
             (Key::Character("t".into()), KeyAction::Telemetry),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
             (Key::Character("M".into()), KeyAction::Machine),
             (Key::Character("F".into()), KeyAction::Map),
+            (Key::Character("W".into()), KeyAction::Roster),
             (Key::Character("T".into()), KeyAction::Telemetry),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
             (Key::Character("?".into()), KeyAction::Help),

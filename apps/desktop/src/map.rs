@@ -96,8 +96,34 @@ pub struct Cell {
     pub state: VmState,
     /// The VM's vsock guest CID, when it has one.
     pub guest_cid: Option<u64>,
+    /// The role the VM's guest runs as, when it runs as one: the label the
+    /// cell is drawn with instead of its bare index.
+    pub role: Option<String>,
     /// The VM's serial rate, in lines per second, as last observed.
     pub lps: f32,
+}
+
+/// How many characters of a role a cell's own label can hold.
+///
+/// Cells sit [`CELL_STEP`] apart and the label is centred on the cell, so this
+/// is the longest role name that does not touch its neighbour's. A longer one
+/// is drawn truncated with a trailing `…` — the register, the run pane and the
+/// roster print every role in full, so nothing is lost that the map is the
+/// only place to say.
+pub const ROLE_LABEL_CHARS: usize = 9;
+
+/// A role as a map cell labels it: the name when it fits, and the first
+/// `ROLE_LABEL_CHARS - 1` characters and an ellipsis when it does not.
+///
+/// The elision is by `char`, so a role with a multi-byte character in it is
+/// never cut through the middle of one.
+pub fn role_label(role: &str) -> String {
+    if role.chars().count() <= ROLE_LABEL_CHARS {
+        return role.to_string();
+    }
+    let mut label: String = role.chars().take(ROLE_LABEL_CHARS - 1).collect();
+    label.push('…');
+    label
 }
 
 /// How many of a lane's cells fit across the plate, and how many are past its
@@ -182,6 +208,7 @@ pub fn layout(runs: &[Run], activity: &Activity, width: f32, height: f32) -> Lay
                 y,
                 state: vm.state,
                 guest_cid: vm.guest_cid,
+                role: vm.role.clone(),
                 lps: activity.lps(&run.id, vm.id),
             });
         }
@@ -298,6 +325,7 @@ mod tests {
         Vm {
             id,
             guest_cid: cid,
+            role: None,
             state,
             serial: None,
         }
@@ -372,6 +400,42 @@ mod tests {
         let killed = plate.cells.iter().find(|c| c.run_id == "r2").expect("r2");
         assert_eq!(killed.state, VmState::Killed);
         assert_eq!(killed.guest_cid, None);
+        assert_eq!(killed.role, None, "a VM with no role has no cell label");
+    }
+
+    #[test]
+    fn a_cell_carries_the_role_its_run_stamped_on_it() {
+        let mut vms = fleet();
+        let r1 = vms.iter_mut().find(|run| run.id == "r1").expect("the live run");
+        r1.vms[0].role = Some("builder".to_string());
+        r1.vms[1].role = Some("reviewer".to_string());
+        let plate = layout(&vms, &Activity::default(), 900.0, 500.0);
+
+        let builder = plate.cells.iter().find(|c| c.run_id == "r1" && c.vm == 0).expect("r1/vm0");
+        assert_eq!(builder.role.as_deref(), Some("builder"));
+        let reviewer = plate.cells.iter().find(|c| c.run_id == "r1" && c.vm == 1).expect("r1/vm1");
+        assert_eq!(reviewer.role.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn a_role_label_fits_a_cell_and_is_elided_by_character() {
+        // A short role is its own label.
+        assert_eq!(role_label("builder"), "builder");
+        assert_eq!(role_label("qa"), "qa");
+        // Exactly the budget is not truncation.
+        assert_eq!(role_label("123456789"), "123456789");
+        assert_eq!(role_label("1234567890"), "12345678…");
+        assert_eq!(role_label("legal-gov-prosecutor"), "legal-go…");
+        // The elision counts characters, never bytes: a multi-byte role is
+        // cut between characters, so the label is still valid text.
+        assert_eq!(role_label("æøå-æøå-æøå"), "æøå-æøå-…");
+        assert_eq!(role_label("æøå-æøå-æøå").chars().count(), ROLE_LABEL_CHARS);
+        for label in [role_label("legal-gov-prosecutor"), role_label("æøå-æøå-æøå")] {
+            assert!(
+                label.chars().count() <= ROLE_LABEL_CHARS,
+                "{label:?} must not reach its neighbour's label"
+            );
+        }
     }
 
     #[test]

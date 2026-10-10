@@ -188,12 +188,22 @@ impl FleetMap<'_> {
             );
         }
 
-        // The labels: the VM above its mark, its guest CID below.
+        // The labels: the VM above its mark, its guest CID below. A role
+        // agent is labelled with its role instead of its bare index — the
+        // index is already its place in the lane, and who it is is the thing
+        // the map cannot say any other way; the full name is on the roster.
         frame.fill_text(canvas_text(
-            format!("vm {}", cell.vm),
+            match cell.role.as_deref() {
+                Some(role) => map::role_label(role),
+                None => format!("vm {}", cell.vm),
+            },
             Point::new(cell.x, cell.y - 32.0),
             9.0,
-            theme::INK_3,
+            if cell.role.is_some() {
+                theme::INK_2
+            } else {
+                theme::INK_3
+            },
             Alignment::Center,
         ));
         if let Some(cid) = cell.guest_cid {
@@ -328,6 +338,7 @@ mod tests {
         Vm {
             id,
             guest_cid: cid,
+            role: None,
             state,
             serial: Some("$ uname\nLinux plaza\n".to_string()),
         }

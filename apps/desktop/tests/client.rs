@@ -72,6 +72,33 @@ fn reading_one_run_follows_the_runs_path() {
 }
 
 #[test]
+fn a_role_field_parses_off_a_real_socket_and_a_missing_one_stays_none() {
+    // The daemon's role fleet: every VM row carries a role.
+    let server = replies(vec![(200, common::ROLE_DETAIL.to_string())]);
+    let run = client(server.port).run("r1").expect("the run should parse");
+    assert_eq!(run.vms[0].role.as_deref(), Some("builder"));
+    assert_eq!(run.vms[1].role.as_deref(), Some("reviewer"));
+    assert_eq!(run.vms[2].role.as_deref(), Some("legal-gov-prosecutor"));
+    assert_eq!(run.role(), None, "three roles are a count, not one name");
+
+    // An older daemon's body: no `role` key anywhere, and not a parse error.
+    let server = replies(vec![(200, DETAIL.to_string())]);
+    let run = client(server.port).run("r1").expect("the run should parse");
+    assert_eq!(run.vms[0].role, None);
+    assert!(run.roles().is_empty());
+    assert_eq!(run.role(), None);
+    // Explicitly null is the same as absent.
+    let server = replies(vec![(
+        200,
+        r#"{"id":"r1","state":"running","vcpus":1,"memory_mib":128,"created_at":1,
+            "ended_at":null,"vms":[{"id":0,"role":null,"state":"running"}]}"#
+            .to_string(),
+    )]);
+    let run = client(server.port).run("r1").expect("the run should parse");
+    assert_eq!(run.vms[0].role, None);
+}
+
+#[test]
 fn killing_a_run_deletes_the_runs_path() {
     let server = replies(vec![(200, DETAIL.to_string())]);
     let run = client(server.port).kill("r1").expect("the answer should parse");
@@ -390,9 +417,10 @@ fn a_live_daemon_reads_when_one_is_named() {
         for vm in &detail.vms {
             let kind = vm.serial.as_deref().map(exit_kind);
             println!(
-                "    vm {} {} · cid {:?} · serial {:?} bytes · exit {}",
+                "    vm {} {} · role {:?} · cid {:?} · serial {:?} bytes · exit {}",
                 vm.id,
                 vm.state.label(),
+                vm.role,
                 vm.guest_cid,
                 vm.serial.as_deref().map(str::len),
                 kind.unwrap_or(ExitKind::Unknown).label()

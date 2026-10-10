@@ -22,7 +22,9 @@
 //!   no iced types.
 //! * [`mapview`] — the map as an iced canvas, painting what [`map`] computes.
 //! * [`model`] — the panes, the reducer and the poll arithmetic: pure state,
-//!   no iced types.
+//!   no iced types. The roster — who is running right now, from the live
+//!   register — is a derivation here, alongside the age and instant arithmetic
+//!   a long-running fleet run needs.
 //! * [`serial`] — the offset-idempotent merge of the stream's serial deltas,
 //!   and the per-VM capture bookkeeping it needs.
 //! * [`telemetryview`] — the session's figures as iced canvases, painting what

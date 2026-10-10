@@ -10,7 +10,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DETAIL, EXITS, LIST, MACHINE};
+use common::{DETAIL, EXITS, LIST, MACHINE, ROLE_DETAIL, ROLE_LIST};
 
 use agentplaza_desktop::api::{Client, Endpoint};
 use agentplaza_desktop::cli::Config;
@@ -1169,6 +1169,7 @@ fn a_lane_wider_than_the_plate_draws_what_fits_and_says_what_it_could_not() {
             .map(|id| agentplaza_desktop::api::Vm {
                 id,
                 guest_cid: None,
+                role: None,
                 state: agentplaza_desktop::api::VmState::Running,
                 serial: None,
             })
@@ -1697,4 +1698,252 @@ fn dominant(frame: &iced::window::Screenshot) -> ([u8; 4], usize) {
         .into_iter()
         .max_by_key(|(_, count)| *count)
         .expect("a frame has pixels")
+}
+
+// ---------------------------------------------------------------- the role fleet
+
+#[test]
+fn the_register_stamps_a_runs_roles_and_says_nothing_without_them() {
+    let server = common::fleet(ROLE_LIST, ROLE_DETAIL);
+    let model = model_from(server.port);
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("role")).is_ok(), "the register names the column");
+    // One run of three distinct roles is a count, not three rows: the run is
+    // one run however many agents it boots.
+    assert!(
+        ui.find(says("3 ROLES")).is_ok(),
+        "the role fleet's run is stamped with its role count"
+    );
+    // The ordinary run next to it carries no role, so it is stamped with
+    // nothing at all.
+    assert!(
+        ui.find(says("r2")).is_ok(),
+        "the ordinary run is still in the register"
+    );
+
+    // A run booted as one role is stamped with that role.
+    let mut single = model.clone();
+    single.runs[0].vms[1].role = None;
+    single.runs[0].vms[2].role = None;
+    let mut ui = simulator(view::view(&single));
+    assert!(
+        ui.find(says("BUILDER")).is_ok(),
+        "a one-role run is stamped with the role itself"
+    );
+    assert!(
+        ui.find(says("3 ROLES")).is_err(),
+        "and not with a count of one"
+    );
+
+    // A register with no role at all stamps no role anywhere.
+    let no_roles = common::fleet(LIST, DETAIL);
+    let plain = model_from(no_roles.port);
+    let mut ui = simulator(view::view(&plain));
+    assert!(
+        ui.find(says("BUILDER")).is_err(),
+        "no role was reported, so no role is drawn"
+    );
+    assert!(ui.find(says("roles")).is_err());
+}
+
+#[test]
+fn a_role_agents_row_in_the_run_pane_carries_its_role() {
+    let server = common::fleet(ROLE_LIST, ROLE_DETAIL);
+    let mut model = model_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    for message in [Message::Show(Pane::Run("r1".to_string()))] {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    assert_eq!(model.detail.as_ref().expect("the run").vms.len(), 3);
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "role",
+        "BUILDER",
+        "REVIEWER",
+        "LEGAL-GOV-PROSECUTOR",
+        "cid 100",
+        "cid 101",
+        "cid 102",
+        // The agents' own serial is what the pane is for.
+        "agent-harness: role builder accepted",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the run pane should show {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn the_roster_groups_who_is_running_by_role() {
+    let server = common::fleet(ROLE_LIST, ROLE_DETAIL);
+    let mut model = model_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Roster));
+    assert_eq!(
+        effect,
+        Effect::roster(vec!["r1".to_string(), "r2".to_string()]),
+        "the roster reads the register and every run's serial"
+    );
+    perform(effect, &mut model, &client);
+
+    {
+        let mut ui = simulator(view::view(&model));
+        for expected in [
+            "Roster",
+            "who is running right now",
+            // The tally is the answer to the pane's own question.
+            "3 agent(s) · 2 up right now · 3 role(s)",
+            // Every role the register reports, its own group, and its own agents.
+            "builder",
+            "reviewer",
+            "legal-gov-prosecutor",
+            "1 agent(s) · 1 up",
+            "cid 100",
+            "cid 101",
+            "cid 102",
+            "guest cid",
+            "lines/s",
+            "EXITED",
+        ] {
+            assert!(
+                ui.find(says(expected)).is_ok(),
+                "the roster should show {expected:?}"
+            );
+        }
+        // The role's name is printed in full beside its stamp, so a long role
+        // is never a mystery.
+        assert!(ui.find(says("LEGAL-GOV-PROSECUTOR")).is_ok());
+        // A VM with no role is not an agent: the demo run's VM (cid 50) is
+        // not on the roster, whatever the index lists.
+        assert!(
+            ui.find(says("cid 50")).is_err(),
+            "a run whose VMs carry no role has no roster row"
+        );
+    }
+
+    let frame = frame_of(model);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+    assert!(
+        holds(&frame, OK, 8),
+        "the two up agents are stamped in the register's green"
+    );
+}
+
+#[test]
+fn the_roster_says_so_when_no_vm_carries_a_role() {
+    // A daemon that answered, and stamps no role on any VM row.
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = model_from(server.port);
+    model.pane = Pane::Roster;
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("no role agent is in the register")).is_ok(),
+        "the roster's empty state is the honest one: no role was reported"
+    );
+    // No tally of a fleet that is not there, and the index says so too.
+    assert!(ui.find(says("up right now")).is_err());
+    assert!(ui.find(says("no role agent yet")).is_ok());
+
+    // And before the daemon has answered at all, it says that instead.
+    let mut cold = Model::new();
+    cold.pane = Pane::Roster;
+    let mut ui = simulator(view::view(&cold));
+    assert!(
+        ui.find(says("waiting for the daemon's first answer")).is_ok(),
+        "a register nobody has polled yet has nothing to name"
+    );
+}
+
+#[test]
+fn clicking_a_roster_row_opens_its_run_with_that_vm_selected() {
+    let server = common::fleet(ROLE_LIST, ROLE_DETAIL);
+    let mut model = model_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    model.pane = Pane::Roster;
+
+    let mut ui = simulator(view::view(&model));
+    ui.click("cid 101").expect("the reviewer's row is clickable");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert!(
+        messages.contains(&Message::Select {
+            run: "r1".to_string(),
+            vm: 1,
+        }),
+        "pressing an agent's row aims the console at that agent, got {messages:?}"
+    );
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    assert_eq!(model.pane, Pane::Run("r1".to_string()));
+    assert_eq!(model.selection, Some(Selection { run: "r1".to_string(), vm: 1 }));
+
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("agent-harness: role reviewer accepted")).is_ok(),
+        "the reviewer's own serial is what the run pane opened on"
+    );
+}
+
+#[test]
+fn the_roster_pane_is_offered_by_the_index_and_the_key_sheet() {
+    let server = common::fleet(ROLE_LIST, ROLE_DETAIL);
+    let mut model = model_from(server.port);
+    model.pane = Pane::Roster;
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Roster")).is_ok(), "the index lists the roster");
+    assert!(ui.find(says("w")).is_ok(), "and names its key");
+    assert!(
+        ui.find(says("who is running")).is_ok(),
+        "the index says what the roster answers"
+    );
+}
+
+#[test]
+fn a_fleet_run_running_for_days_reads_as_days_and_a_day_stamp() {
+    // The register's own clock is the poll's: three days and seven hours into
+    // a run that is still `running`.
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = model_from(server.port);
+    const DAY: u64 = 86_400_000;
+    let now = 1_760_000_000_000u64;
+    let age = 3 * DAY + 7 * 3_600_000 + 5 * 60_000;
+    model.now_ms = now;
+    model.runs[0].created_at = now - age;
+    assert_eq!(model.run_elapsed_ms(&model.runs[0]), age);
+
+    {
+        let mut ui = simulator(view::view(&model));
+        // Three days old is three days, not seventy-nine hours.
+        assert!(
+            ui.find(says("3d 07h")).is_ok(),
+            "a run of days reads in days"
+        );
+        assert!(
+            ui.find(says("79h")).is_err(),
+            "an hour count must not run on past a day"
+        );
+        // Its creation is on another UTC day, so the register writes that day
+        // rather than a bare time of day that would read as today's.
+        assert!(
+            ui.find(says("2025-10-06")).is_ok(),
+            "a creation that is not today is stamped with its day"
+        );
+        assert!(
+            ui.find(says("01:48:20 UTC")).is_err(),
+            "and not with a time of day that names no day"
+        );
+    }
+
+    // The same run, ended, keeps its own day for the age it lived.
+    model.runs[0].state = agentplaza_desktop::api::RunState::Killed;
+    model.runs[0].ended_at = Some(now);
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("3d 07h")).is_ok());
+    assert!(ui.find(says("2025-10-06")).is_ok(), "the day it began is kept");
 }
