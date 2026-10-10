@@ -5,8 +5,10 @@
 //! connected keepalive session is kept for the session's lifetime and removed
 //! when it ends — cleanly, or because the session was reaped for going idle.
 //! Every transition is logged in the daemon's existing voice (`vsockd: agent
-//! <cid> ...`); the registry itself is a later slice's status surface, so
-//! nothing here is public API yet.
+//! <cid> ...`), and [`Hub::snapshot`] copies the rows out for the status
+//! surface ([`crate::status`]). The copy is taken under the registry lock and
+//! serialised after it is released, so a console scrape never sits between a
+//! session and its heartbeat.
 //!
 //! Liveness is the *session's* idle deadline, not a lock: the hub never holds
 //! an application-level lock as the correctness mechanism for a session. The
@@ -62,6 +64,42 @@ struct Registry {
     beats: HashMap<u32, u64>,
 }
 
+/// One registry row as the status surface reports it: the hub's monotonic
+/// instants translated to milliseconds since the Unix epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// The guest CID the session was accepted for.
+    pub cid: u32,
+    /// The role the hub accepted at the handshake.
+    pub role: String,
+    /// When the session connected, in milliseconds since the Unix epoch.
+    pub connected_at_ms: u64,
+    /// When the most recent heartbeat arrived, in milliseconds since the Unix
+    /// epoch.
+    pub last_heartbeat_ms: u64,
+    /// How many tool calls the session has served.
+    pub calls: u64,
+}
+
+/// A copy of the registry for the status surface: the rows plus the session
+/// count, returned owned, so the caller serialises with no lock held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// One row per connected agent, ordered by CID.
+    pub rows: Vec<Row>,
+    /// How many sessions are live — the steering map's size.
+    pub sessions_active: usize,
+}
+
+/// Milliseconds since the Unix epoch: the unit the daemon's surfaces report
+/// wall-clock times in. A clock reading before 1970 reports 0 rather than
+/// panicking.
+fn epoch_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
+}
+
 /// The hub every keepalive session registers with.
 pub struct Hub {
     registry: Mutex<Registry>,
@@ -72,16 +110,35 @@ pub struct Hub {
     steering: Mutex<HashMap<u32, (u64, Sender<HostMessage>)>>,
     /// Bumped on every connect: a session's token.
     epoch: AtomicU64,
+    /// What the registry's monotonic instants are reported against: the wall
+    /// clock (milliseconds since the Unix epoch) at the moment the hub
+    /// started. `Instant` is monotonic and carries no epoch of its own, so a
+    /// row's timestamps are this anchor plus its elapsed time — see
+    /// [`Hub::epoch_ms`].
+    anchor: (Instant, u64),
     log: Arc<dyn SessionLog + Send + Sync>,
 }
 
 impl Hub {
     /// A hub that logs its transitions to `log`.
     pub fn new(log: Arc<dyn SessionLog + Send + Sync>) -> Self {
+        Self::started_at(log, Instant::now(), epoch_ms_now())
+    }
+
+    /// A hub whose monotonic instants are translated to epoch milliseconds
+    /// against `at` == `epoch_ms`. Production always starts the hub now
+    /// ([`Hub::new`]); the tests pin the anchor so the status surface's
+    /// timestamps are exactly assertable.
+    pub(crate) fn started_at(
+        log: Arc<dyn SessionLog + Send + Sync>,
+        at: Instant,
+        epoch_ms: u64,
+    ) -> Self {
         Self {
             registry: Mutex::new(Registry::default()),
             steering: Mutex::new(HashMap::new()),
             epoch: AtomicU64::new(0),
+            anchor: (at, epoch_ms),
             log,
         }
     }
@@ -239,6 +296,48 @@ impl Hub {
     #[cfg(test)]
     pub(crate) fn agent_count(&self) -> usize {
         self.registry().agents.len()
+    }
+
+    /// Copies the registry out for the status surface.
+    ///
+    /// The registry lock is held only for the copy: the rows are returned
+    /// owned and serialised by the caller with no lock held, so a scrape
+    /// cannot sit between a session and its heartbeat. The row count and the
+    /// session count come from two maps under two locks, so a session
+    /// registering between them may be seen by one and not the other — this
+    /// is a status view, not a transaction.
+    pub fn snapshot(&self) -> Snapshot {
+        let rows = {
+            let registry = self.registry();
+            let mut rows: Vec<Row> = registry
+                .agents
+                .values()
+                .map(|agent| Row {
+                    cid: agent.cid,
+                    role: agent.role.clone(),
+                    connected_at_ms: self.epoch_ms(agent.connected_at),
+                    last_heartbeat_ms: self.epoch_ms(agent.last_heartbeat),
+                    calls: agent.calls,
+                })
+                .collect();
+            // Ordered by CID: a `HashMap`'s order is not stable, and the
+            // status body is byte-checked (and read by an operator).
+            rows.sort_by_key(|row| row.cid);
+            rows
+        };
+        let sessions_active = self.steering().len();
+        Snapshot {
+            rows,
+            sessions_active,
+        }
+    }
+
+    /// The epoch milliseconds a monotonic instant maps to: the hub's anchor
+    /// plus the time since it. An instant before the anchor saturates to the
+    /// anchor's milliseconds rather than panicking.
+    fn epoch_ms(&self, at: Instant) -> u64 {
+        let (anchor_at, anchor_ms) = self.anchor;
+        anchor_ms.saturating_add(at.saturating_duration_since(anchor_at).as_millis() as u64)
     }
 }
 
@@ -414,5 +513,89 @@ mod tests {
             SESSIONS as usize / 2,
             "{text}"
         );
+    }
+
+    /// A hub whose anchor is pinned, so the status surface's timestamps are
+    /// exactly assertable.
+    fn anchored(epoch_ms: u64) -> (Instant, Hub) {
+        let anchor = Instant::now();
+        let log = Arc::new(Recording::default());
+        let hub = Hub::started_at(
+            Arc::clone(&log) as Arc<dyn SessionLog + Send + Sync>,
+            anchor,
+            epoch_ms,
+        );
+        (anchor, hub)
+    }
+
+    /// The snapshot reports one row per connected agent, ordered by CID, with
+    /// the hub's monotonic instants translated to epoch milliseconds against
+    /// the anchor — the one place the two clocks meet — and drops a row
+    /// however its session ended.
+    #[test]
+    fn the_snapshot_reports_rows_in_epoch_milliseconds_ordered_by_cid() {
+        let (anchor, hub) = anchored(1_700_000_000_000);
+        let (first, _steering) = hub.connect(11, "builder", anchor + Duration::from_millis(250));
+        hub.connect(10, "reviewer", anchor + Duration::from_millis(500));
+        hub.note_calls(10, 4);
+        hub.heartbeat(10, 7, anchor + Duration::from_millis(5_500));
+
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.sessions_active, 2);
+        assert_eq!(
+            snapshot.rows,
+            vec![
+                Row {
+                    cid: 10,
+                    role: "reviewer".to_string(),
+                    connected_at_ms: 1_700_000_000_500,
+                    last_heartbeat_ms: 1_700_000_005_500,
+                    calls: 4,
+                },
+                Row {
+                    cid: 11,
+                    role: "builder".to_string(),
+                    connected_at_ms: 1_700_000_000_250,
+                    // No heartbeat yet: a fresh session's last beat is its connect.
+                    last_heartbeat_ms: 1_700_000_000_250,
+                    calls: 0,
+                },
+            ]
+        );
+
+        hub.end_clean(11, first, 0);
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.rows.len(), 1, "the ended session is gone");
+        assert_eq!(snapshot.sessions_active, 1);
+        assert_eq!(snapshot.rows[0].cid, 10);
+    }
+
+    /// An instant before the anchor cannot happen in production (the anchor
+    /// is taken first), and must saturate rather than panic.
+    #[test]
+    fn an_instant_before_the_anchor_saturates() {
+        let (anchor, hub) = anchored(5_000);
+        hub.connect(10, "builder", anchor - Duration::from_secs(3_600));
+        assert_eq!(hub.snapshot().rows[0].connected_at_ms, 5_000);
+    }
+
+    /// A session thread that panics while holding the registry lock must not
+    /// take the status surface — or any other agent — down: the hub's lock
+    /// helpers recover the poisoned guard.
+    #[test]
+    fn a_poisoned_registry_lock_still_snapshots() {
+        let (_anchor, hub) = anchored(5_000);
+        hub.connect(10, "builder", Instant::now());
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = hub.registry();
+            panic!("a session thread panics holding the registry lock");
+        }));
+        assert!(panicked.is_err(), "the helper really did panic");
+        assert!(hub.registry.lock().is_err(), "the registry lock is poisoned");
+
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.rows.len(), 1, "a poisoned lock still reports");
+        assert_eq!(snapshot.sessions_active, 1);
     }
 }

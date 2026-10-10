@@ -1,7 +1,7 @@
 //! `vsockd` — the plaza's hub: the host end of the agent protocol.
 //!
 //! ```text
-//! vsockd [--uds-dir DIR] [--cids LIST] [--port P]
+//! vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
 //! ```
 //!
 //! Listens on one Unix socket per guest CID (`{DIR}/vm{cid}_{port}`, the path
@@ -14,6 +14,11 @@
 //! transitions (`vsockd: agent <cid> ...`). It runs until `SIGTERM` or
 //! `SIGINT`; a guest that sends something this side cannot answer is logged
 //! and dropped, never guessed at.
+//!
+//! `--status-port` adds a second, read-only surface on `127.0.0.1`: the
+//! registry as JSON (`GET /status`), so the fleet's console can ask who is
+//! connected without scraping the log, and a liveness probe (`GET /healthz`).
+//! It is off unless asked for and mutates nothing — see [`status`].
 //!
 //! This is a stand-in for the real orchestrator: it exists so the plaza's core
 //! loop can be exercised end to end against a real VM. It holds no policy
@@ -39,10 +44,14 @@ mod proto;
 #[cfg(target_os = "linux")]
 mod serve;
 #[cfg(target_os = "linux")]
+mod status;
+#[cfg(target_os = "linux")]
 mod sys;
 
 use std::process::ExitCode;
 
+#[cfg(target_os = "linux")]
+use std::net::TcpListener;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
@@ -65,6 +74,8 @@ use hub::Hub;
 use line::StreamLines;
 #[cfg(target_os = "linux")]
 use serve::{HostError, SessionLimits, SystemClock, StdoutLog, handle_session};
+#[cfg(target_os = "linux")]
+use status::NodeFacts;
 
 /// The port the orchestrator listens on (the contract fixes 5000).
 #[cfg(target_os = "linux")]
@@ -167,13 +178,16 @@ impl Drop for SessionGuard {
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P]
+usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
 
   --uds-dir DIR  directory for the per-VM vsock Unix sockets
                  (default /tmp/plaza-vsock)
   --cids LIST    comma-separated guest CIDs to serve, one listener per CID
                  (default 3)
   --port P       vsock port to listen on for each CID (default 5000)
+  --status-port P  also serve the read-only status surface on 127.0.0.1:P
+                 (GET /status — the agent registry and the host facts as
+                 JSON; GET /healthz — a liveness probe; default: off)
   -h, --help     print this help
 
 For each guest CID `c` the daemon listens on the Unix socket
@@ -222,6 +236,9 @@ struct Config {
     cids: Vec<u32>,
     /// The vsock port each listener answers on.
     port: u32,
+    /// The loopback TCP port the read-only status surface answers on, when
+    /// `--status-port` asks for it.
+    status_port: Option<u16>,
 }
 
 #[cfg(target_os = "linux")]
@@ -231,11 +248,13 @@ impl Default for Config {
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
             cids: vec![3],
             port: DEFAULT_PORT,
+            status_port: None,
         }
     }
 }
 
-/// Reads `--uds-dir`, `--cids` and `--port`, leaving the rest at its default.
+/// Reads `--uds-dir`, `--cids`, `--port` and `--status-port`, leaving the rest
+/// at its default.
 #[cfg(target_os = "linux")]
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
@@ -261,6 +280,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 config.port = value("--port")?
                     .parse()
                     .map_err(|err| format!("--port: {err}"))?;
+            }
+            "--status-port" => {
+                config.status_port = Some(
+                    value("--status-port")?
+                        .parse()
+                        .map_err(|err| format!("--status-port: {err}"))?,
+                );
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -301,6 +327,7 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 /// signal asks it to stop.
 #[cfg(target_os = "linux")]
 fn run(config: Config) -> Result<(), String> {
+    let started = Instant::now();
     sys::install_signal_handlers();
     // The listeners live under `uds_dir` with deterministic names; create it
     // 0700 first, so another local user cannot squat a path or impersonate
@@ -318,6 +345,21 @@ fn run(config: Config) -> Result<(), String> {
     // agents, shared by every session thread.
     let hub = Arc::new(Hub::new(Arc::new(StdoutLog)));
     let mut handles = Vec::new();
+    // The status surface, when asked for, binds with the guest listeners: a
+    // port that is already taken fails the daemon rather than half-serving.
+    if let Some(port) = config.status_port {
+        let listener = bind_status_listener(port)?;
+        let bound = listener.local_addr().map_or(port, |addr| addr.port());
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| format!("cannot make the status listener non-blocking: {err}"))?;
+        println!(
+            "vsockd: status on http://127.0.0.1:{bound} (GET /status, GET /healthz, read-only)"
+        );
+        let facts = Arc::new(NodeFacts::new(config.cids.clone(), config.port, started));
+        let hub = Arc::clone(&hub);
+        handles.push(thread::spawn(move || status::serve(listener, hub, facts)));
+    }
     let mut listener_paths = Vec::new();
     for cid in &config.cids {
         let cid = *cid;
@@ -461,6 +503,16 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
     ))
 }
 
+/// Binds the status surface's listener.
+///
+/// It is loopback-only by construction: the console runs on the same host, and
+/// the registry is not the network's to read.
+#[cfg(target_os = "linux")]
+fn bind_status_listener(port: u16) -> Result<TcpListener, String> {
+    TcpListener::bind(("127.0.0.1", port))
+        .map_err(|err| format!("cannot listen on 127.0.0.1:{port} for the status surface: {err}"))
+}
+
 /// Accepts sessions for one guest CID and serves each on its own thread.
 #[cfg(target_os = "linux")]
 fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, hub: Arc<Hub>) {
@@ -551,6 +603,10 @@ mod tests {
         assert_eq!(config.uds_dir, PathBuf::from(DEFAULT_UDS_DIR));
         assert_eq!(config.cids, vec![3]);
         assert_eq!(config.port, 5000);
+        assert_eq!(
+            config.status_port, None,
+            "the status surface is off unless asked for"
+        );
     }
 
     #[test]
@@ -562,11 +618,14 @@ mod tests {
             "3,4,5".to_string(),
             "--port".to_string(),
             "6000".to_string(),
+            "--status-port".to_string(),
+            "9101".to_string(),
         ])
         .expect("explicit flags parse");
         assert_eq!(config.uds_dir, PathBuf::from("/tmp/x"));
         assert_eq!(config.cids, vec![3, 4, 5]);
         assert_eq!(config.port, 6000);
+        assert_eq!(config.status_port, Some(9101));
     }
 
     #[test]
@@ -575,7 +634,24 @@ mod tests {
         assert!(parse_args(vec!["--port".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--cids".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--cids".to_string(), "".to_string()]).is_err());
+        assert!(parse_args(vec!["--status-port".to_string()]).is_err());
+        assert!(parse_args(vec!["--status-port".to_string(), "x".to_string()]).is_err());
+        assert!(parse_args(vec!["--status-port".to_string(), "70000".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
+    }
+
+    /// The status surface binds loopback only, and a port that is taken is an
+    /// honest error rather than a silent second binding.
+    #[test]
+    fn the_status_listener_binds_loopback_and_refuses_a_taken_port() {
+        let listener = bind_status_listener(0).expect("an ephemeral port binds");
+        let addr = listener.local_addr().expect("a bound address");
+        assert!(addr.ip().is_loopback(), "the status surface is loopback only");
+        let taken = bind_status_listener(addr.port());
+        assert!(
+            taken.expect_err("a taken port is an error").contains("status surface"),
+            "the error names the surface"
+        );
     }
 
     /// F4: the socket directory is created `0700`, and an existing wider one is
