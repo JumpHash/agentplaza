@@ -46,9 +46,9 @@ pub const DEFAULT_KERNEL: &str = "/boot/vmlinuz-linux";
 /// directory.
 pub const DEFAULT_INITRD: &str = "target/guest/initrd.x86_64.gz";
 
-/// The web app's files (the agentplaza.io console), relative to the working
-/// directory.
-pub const DEFAULT_CONSOLE_DIR: &str = "apps/web";
+/// The web app's BUILT files (the static build output under apps/web — what a
+/// static host like S3 would serve), relative to the working directory.
+pub const DEFAULT_CONSOLE_DIR: &str = "apps/web/dist";
 
 /// Where the per-VM vsock Unix sockets live unless `--uds-dir` says otherwise;
 /// VM `i`'s muxer binds `{DEFAULT_UDS_DIR}/vm{cid}`.
@@ -85,10 +85,36 @@ impl Default for Config {
     }
 }
 
-/// The daemon's state: its runs and the console directory it serves.
+/// The daemon's state: its runs, the console directory it serves, and when it
+/// started (the machine view's uptime).
 pub struct Node {
     registry: Registry,
     console_dir: PathBuf,
+    started_at_ms: u64,
+}
+
+/// The node's machine, self-reported (`core.machines`'s fields, plus the
+/// vsock transport mode this daemon runs).
+#[derive(Debug, Serialize)]
+pub struct MachineView {
+    /// The host's hostname.
+    pub name: String,
+    /// The host architecture (`x86_64`/`aarch64`).
+    pub arch: &'static str,
+    /// The VMM backend (`kvm`/`hvf`).
+    pub backend: &'static str,
+    /// The interrupt controller in use.
+    pub irqchip: &'static str,
+    /// The machine class per the schema (`server`/`apple`).
+    pub class: &'static str,
+    /// The host's CPU count.
+    pub cpus: u32,
+    /// The host's total memory, in MiB.
+    pub memory_mib: u64,
+    /// The vsock transport: per-VM UDS paths behind a userspace muxer.
+    pub vsock_mode: &'static str,
+    /// When the daemon started, in milliseconds since the Unix epoch.
+    pub started_at_ms: u64,
 }
 
 impl Node {
@@ -104,6 +130,22 @@ impl Node {
                 config.uds_dir,
             ),
             console_dir: config.console_dir,
+            started_at_ms: epoch_ms(),
+        }
+    }
+
+    /// The node as a machine (`GET /api/v0/machine`).
+    pub fn machine(&self) -> MachineView {
+        MachineView {
+            name: hostname(),
+            arch: machine_arch(),
+            backend: machine_backend(),
+            irqchip: machine_irqchip(),
+            class: machine_class(),
+            cpus: host_cpus(),
+            memory_mib: host_memory_mib(),
+            vsock_mode: "uds-muxer",
+            started_at_ms: self.started_at_ms,
         }
     }
 
@@ -111,12 +153,94 @@ impl Node {
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
+}
 
+impl Node {
     /// The directory the console's files are served from.
     pub fn console_dir(&self) -> &Path {
         &self.console_dir
     }
 }
+
+/// The current time in milliseconds since the Unix epoch.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The host's hostname (`/proc/sys/kernel/hostname`; `unknown` off Linux or
+/// on a read error).
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|name| name.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// The host's architecture, per the schema's machine model.
+fn machine_arch() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "aarch64"
+    }
+}
+
+/// The VMM backend this daemon boots VMs with.
+fn machine_backend() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "hvf"
+    } else {
+        "kvm"
+    }
+}
+
+/// The interrupt controller the VMM sets up (`vgicv2` on Pi 4/5 hosts is the
+/// schema's example; the aarch64 port auto-selects GICv3 with a GICv2
+/// fallback).
+fn machine_irqchip() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "ioapic"
+    } else {
+        "vgic (v3, v2 fallback)"
+    }
+}
+
+/// The machine class per the schema (`server`/`apple`).
+fn machine_class() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "apple"
+    } else {
+        "server"
+    }
+}
+
+/// The host's CPU count.
+fn host_cpus() -> u32 {
+    std::thread::available_parallelism()
+        .map(|cpus| u32::from(u16::try_from(cpus.get()).unwrap_or(u16::MAX)))
+        .unwrap_or(1)
+}
+
+/// The host's total memory, in MiB (`MemTotal` from `/proc/meminfo`).
+fn host_memory_mib() -> u64 {
+    let Ok(info) = std::fs::read_to_string("/proc/meminfo") else {
+        return 0;
+    };
+    for line in info.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            let kb: u64 = rest
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse()
+                .unwrap_or(0);
+            return kb / 1024;
+        }
+    }
+    0
+}
+
 
 /// A bound, serving node daemon: one accept thread, one thread per connection.
 pub struct Server {
@@ -225,6 +349,10 @@ struct InputRequest {
 fn route(request: &http::Request, node: &Node) -> Response {
     let path = request.path();
     match path {
+        "/api/v0/machine" => match request.method() {
+            "GET" => json_response(200, &node.machine()),
+            _ => method_not_allowed("GET"),
+        },
         "/api/v0/runs" => match request.method() {
             "GET" => list_runs(node),
             "POST" => create_run(node, request.body()),
