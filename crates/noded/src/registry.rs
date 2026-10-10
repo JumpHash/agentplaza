@@ -23,7 +23,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use vmm::spawner::{self, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec};
+use vmm::spawner::{self, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig, MIN_GUEST_CID};
 
 /// The most VMs one run may have (`n`).
 pub const MAX_VMS: u32 = 64;
@@ -61,6 +61,10 @@ pub struct CreateRun {
     /// the guest long-lived.
     #[serde(default)]
     pub beats: Option<u32>,
+    /// Base guest CID for the run's vsock devices (`vsock_cid + i` for VM `i`);
+    /// `None` boots the VMs without a vsock device.
+    #[serde(default)]
+    pub vsock_cid: Option<u64>,
 }
 
 impl CreateRun {
@@ -69,7 +73,7 @@ impl CreateRun {
     ///
     /// `n` is 1..=64, `vcpus` is 1..=64 and `memory_mib` is at least 128;
     /// anything else is refused with the reason, before any run exists.
-    fn spec(&self, images: &VmImages) -> Result<(VmSpec, usize), String> {
+    fn spec(&self, images: &VmImages) -> Result<(VmSpec, usize, Option<u64>), String> {
         let vms = checked_count("n", self.n, 1, MAX_VMS)?;
         let vcpus = checked_count("vcpus", self.vcpus, 1, MAX_VCPUS)?;
         if self.memory_mib < MIN_MEMORY_MIB {
@@ -83,6 +87,23 @@ impl CreateRun {
             Some(beats) => format!("console=ttyS0 plaza.beats={beats}"),
             None => "console=ttyS0".to_string(),
         };
+        let vsock_cid = match self.vsock_cid {
+            Some(cid) => {
+                if cid < MIN_GUEST_CID {
+                    return Err(format!(
+                        "vsock_cid must be at least {MIN_GUEST_CID} (1 and 2 are reserved)"
+                    ));
+                }
+                // The run's last VM keeps a CID that fits the transport.
+                if cid.checked_add(u64::try_from(vms).map_err(|_| "n is too large".to_string())? - 1)
+                    .is_none()
+                {
+                    return Err("vsock_cid is too large for this many VMs".to_string());
+                }
+                Some(cid)
+            }
+            None => None,
+        };
         let spec = VmSpec {
             kernel: images.kernel.clone(),
             cmdline,
@@ -90,8 +111,9 @@ impl CreateRun {
             memory_mib,
             initrd: Some(images.initrd.clone()),
             gic: None,
+            vsock: None,
         };
-        Ok((spec, vms))
+        Ok((spec, vms, vsock_cid))
     }
 }
 
@@ -336,9 +358,22 @@ impl Registry {
     /// booting moves the run to `killed`, and the VMs that come up afterwards
     /// are killed rather than left behind.
     pub fn create_run(&self, request: &CreateRun) -> Result<Arc<Run>, String> {
-        let (spec, vms) = request.spec(&self.images)?;
+        let (spec, vms, vsock_cid) = request.spec(&self.images)?;
         let run = self.insert(request);
-        match spawner::spawn_n(spec, vms) {
+        let boot = match vsock_cid {
+            Some(base) => spawner::spawn_each(vms, |i| {
+                let mut per_vm = spec.clone();
+                // One command line is shared by every VM of a spawn, so the
+                // per-VM index rides as a flag the guest harness can trust.
+                per_vm.cmdline = format!("{} plaza.vm={}", spec.cmdline, i);
+                per_vm.vsock = Some(VsockConfig {
+                    guest_cid: base + u64::from(i),
+                });
+                per_vm
+            }),
+            None => spawner::spawn_n(spec, vms),
+        };
+        match boot {
             Ok(handles) => {
                 let mut inner = run.lock();
                 if let Err(refused) = inner.transition(RunState::Running) {
@@ -804,11 +839,13 @@ mod tests {
             vcpus,
             memory_mib,
             beats: None,
+            vsock_cid: None,
         };
 
-        let (spec, vms) = request(2, 2, 512)
+        let (spec, vms, vsock_cid) = request(2, 2, 512)
             .spec(&images())
             .expect("a request inside the ranges");
+        assert_eq!(vsock_cid, None);
         assert_eq!(vms, 2);
         assert_eq!(spec.vcpus, 2);
         assert_eq!(spec.memory_mib, 512);
@@ -842,8 +879,9 @@ mod tests {
             vcpus: 1,
             memory_mib: 128,
             beats: Some(2),
+            vsock_cid: None,
         };
-        let (spec, _) = request.spec(&images()).expect("a request inside the ranges");
+        let (spec, _, _) = request.spec(&images()).expect("a request inside the ranges");
         assert_eq!(spec.cmdline, "console=ttyS0 plaza.beats=2");
     }
 }
