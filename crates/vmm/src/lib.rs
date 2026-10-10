@@ -29,6 +29,8 @@ pub mod arch;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod vstate;
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+/// The `hvf` module declares itself on every target; its own `mod.rs` gates the
+/// platform halves: the pure decode/PSCI/GIC model (and its unit tests)
+/// compiles and runs on any target, the FFI/vm/vcpu backend only on
+/// macOS/Apple Silicon.
 pub mod hvf;
