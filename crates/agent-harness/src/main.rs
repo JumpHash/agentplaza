@@ -157,6 +157,12 @@ fn connect(config: &Config, log: &mut impl Write) -> io::Result<(VsockStream, us
                     log,
                     "agent-harness: connect attempt {attempt}/{CONNECT_ATTEMPTS} failed: {err}"
                 );
+                // A refused or unroutable connection can be a transport that is
+                // not registered yet, so it is worth retrying. A connect the
+                // device took and never completed is not going to fix itself.
+                if err.kind() == io::ErrorKind::TimedOut {
+                    return Err(err);
+                }
                 last_error = Some(err);
             }
         }
