@@ -103,6 +103,58 @@ src/vmm crate in part, and written for this port in part:
   *before* `connect(2)`, so a full listener backlog is `EAGAIN` rather than a
   blocked caller. The muxer's call site delegates to it.
 
+- crates/vmm/src/devices/virtio/block/{mod,device,request,test_utils}.rs are
+  derived from Firecracker's src/vmm/src/devices/virtio/block/virtio/{mod.rs,
+  device.rs, request.rs, test_utils.rs} and
+  src/vmm/src/devices/virtio/block/virtio/io/sync_io.rs (Apache-2.0, Copyright
+  2018-2021 Amazon.com, Inc. or its affiliates; upstream commit
+  fd9fc7a9f164b73002d22065d17c150d8c262d91 of firecracker-microvm/firecracker):
+  the virtio-blk device model, its request parsers and the synchronous
+  file-engine transfer that backs them.
+
+  Ported unchanged in behaviour: `RequestHeader`, `RequestType`, `Request::parse`
+  and `Request::validate_discard_ranges` (every bounds check, every error case
+  and every descriptor-direction rule), the `Status`/`PendingRequest`/
+  `FinishedRequest` status-byte protocol, `DiskProperties` (the backing file and
+  the `virtio_blk_config` configuration space), and `VirtioBlk::process_queue`'s
+  loop (pop, parse, execute, `add_used`, `advance_used_ring_idx`,
+  `prepare_kick`). The test modules of `request.rs` and `test_utils.rs` are
+  upstream's cases, adapted (`RequestDescriptorChain` now publishes its three
+  descriptors into this port's `VirtQueue` instead of upstream's per-descriptor
+  cells, and upstream's proptest matrix is not ported because the port takes no
+  `proptest` dependency).
+
+  Local modifications, marked in the files' headers:
+  * trimmed — the async io_uring engine (`io/async_io.rs`), the rate limiter,
+    the device metrics, the snapshot/persist support, the event-manager
+    subscriber and its queue/interrupt event fds, the PCI transport,
+    multi-queue, read-only drives, `CacheType`, and DISCARD/WRITE_ZEROES
+    execution (their `fallocate`/`BLKDISCARD` ioctls are `unsafe` and a writable
+    workspace does not need them; a discard request is answered
+    `VIRTIO_BLK_S_UNSUPP`, which upstream also does when the feature is not
+    negotiated);
+  * the request header and the discard range are read as little-endian
+    `zerocopy` fields instead of upstream's platform-endian `ByteValued` PODs —
+    no `unsafe impl` under this port's safe-Rust policy, and correct on any
+    host endianness;
+  * `displaydoc` derives become explicit `thiserror` messages and
+    `crate::logger` calls become `eprintln!`;
+  * `GET_ID` answers with zeroes instead of upstream's file metadata: host
+    information must not reach a guest (plaza invariant 2);
+  * the device is synchronous (no event thread): it serves its queue inside the
+    MMIO transport's notification, and it fsyncs on a flush request.
+
+- crates/vmm/src/devices/virtio/block/mmio_device.rs is written for this port
+  (Copyright 2026 AgentPlaza, Apache-2.0): the `VirtioDevice` adapter that
+  bridges the mmio transport's `QueueConfig` to the block device's real
+  virtqueue, following the shape of this port's `vsock::mmio_device` (which
+  itself has no upstream counterpart).
+
+- scripts/mk-workspace-image.sh is written for this port (Copyright 2026
+  AgentPlaza, Apache-2.0): the ext4 image builder for the writable workspace
+  volume. No upstream code is copied; Firecracker's own test tooling builds
+  filesystems with `mkfs` directly, which this script does too.
+
 - fuzz/ is written for this port (Copyright 2026 AgentPlaza, Apache-2.0); see
   fuzz/README.md. Upstream Firecracker ships a `vsock_packet_fuzzer` in the same
   spirit, but this port's packet API and descriptor-chain layout differ, so no

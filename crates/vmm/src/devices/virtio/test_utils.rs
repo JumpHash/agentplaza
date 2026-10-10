@@ -53,6 +53,27 @@ impl<'a> VirtQueue<'a> {
         self.avail_start.checked_add(2).unwrap()
     }
 
+    /// The guest memory the virtqueue is laid out in.
+    pub fn memory(&self) -> &'a GuestMemoryMmap {
+        self.mem
+    }
+
+    /// Guest address of the descriptor table (what a driver writes to the
+    /// transport's `QueueDescLow`/`High`).
+    pub fn desc_table_addr(&self) -> GuestAddress {
+        self.dtable_start
+    }
+
+    /// Guest address of the available ring (`QueueDriverLow`/`High`).
+    pub fn avail_ring_addr(&self) -> GuestAddress {
+        self.avail_start
+    }
+
+    /// Guest address of the used ring (`QueueDeviceLow`/`High`).
+    pub fn used_ring_addr(&self) -> GuestAddress {
+        self.used_start
+    }
+
     fn write_desc(&self, index: u16, desc: Descriptor) {
         let addr = self
             .dtable_start

@@ -86,21 +86,24 @@ pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
 ///   the reboot on the ACPI reset register, so a guest reboot stops the VM
 ///   cleanly with `reset=true`. Callers that set a `reboot=` mode themselves
 ///   are left alone.
-/// * on `x86_64` only, when the VM has a vsock device, the `virtio_mmio.device`
-///   entry that registers the device's transport window with the guest: an
-///   `x86_64` guest has no device tree, so the kernel learns about the
-///   transport from its command line. The entry is
+/// * on `x86_64` only, one `virtio_mmio.device` entry per virtio-mmio device
+///   the VM has (the vsock device and/or the block device's writable volume):
+///   an `x86_64` guest has no device tree, so the kernel learns about each
+///   transport from its command line. An entry is
 ///   `<size>@<base>:<irq>`, the format of `drivers/virtio/virtio_mmio.c`,
 ///   whose parameters the kernel consumes as it loads the `virtio_mmio`
 ///   platform driver (built in, or — as on the host kernel 7.2.8-arch1-2 —
-///   loaded from the initramfs with the same entry as a module parameter). On
-///   `aarch64` the device tree node [`crate::arch::aarch64::fdt`] writes says
+///   loaded from the initramfs with the same entry as a module parameter; the
+///   parameter is repeatable, the kernel appends every occurrence to its
+///   command-line device array). A caller that registered its own transport by
+///   setting the parameter is left alone entirely. On `aarch64` the device
+///   tree nodes [`crate::arch::aarch64::fdt`] writes say
 ///   the same thing, so nothing is added here.
 ///
 /// This is deliberate and documented, not a hidden rewrite: the appended
 /// strings are constants derived from the port's own layout, never host state
 /// (no environment variable, token or path can reach the guest this way).
-fn guest_cmdline(requested: &str, has_vsock: bool) -> String {
+fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
     #[cfg(target_arch = "x86_64")]
@@ -131,19 +134,28 @@ fn guest_cmdline(requested: &str, has_vsock: bool) -> String {
         defaults.push("reboot=acpi".to_string());
     }
 
-    // The `x86_64` transport window. The numbers are this port's own layout
-    // constants, and the guest needs them only when it has a vsock device to
-    // find.
+    // The `x86_64` transport windows, one entry per virtio-mmio device. The
+    // numbers are this port's own layout constants, and no two devices share an
+    // address or an interrupt.
     #[cfg(target_arch = "x86_64")]
-    if has_vsock && !sets(&VIRTIO_MMIO_ARGS) {
-        use crate::arch::x86_64::layout::{MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START};
-        defaults.push(format!(
-            "virtio_mmio.device={MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}"
-        ));
+    if !sets(&VIRTIO_MMIO_ARGS) {
+        use crate::arch::x86_64::layout::{
+            MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
+        };
+        if has_vsock {
+            defaults.push(format!(
+                "virtio_mmio.device={MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}"
+            ));
+        }
+        if has_workspace {
+            defaults.push(format!(
+                "virtio_mmio.device={MMIO_LEN:#x}@{WORKSPACE_MMIO_START:#x}:{WORKSPACE_GSI}"
+            ));
+        }
     }
-    // On `aarch64` the device tree describes the transport.
+    // On `aarch64` the device tree describes the transports.
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = has_vsock;
+    let _ = (has_vsock, has_workspace);
 
     if defaults.is_empty() {
         return requested.to_string();
@@ -303,15 +315,15 @@ mod tests {
     #[test]
     fn guest_cmdline_appends_console_defaults() {
         assert_eq!(
-            guest_cmdline("console=ttyS0 panic=-1", false),
+            guest_cmdline("console=ttyS0 panic=-1", false, false),
             format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("", false),
+            guest_cmdline("", false, false),
             format!("pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("  panic=-1  ", false),
+            guest_cmdline("  panic=-1  ", false, false),
             format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
     }
@@ -319,66 +331,87 @@ mod tests {
     #[test]
     fn guest_cmdline_respects_the_callers_settings() {
         assert_eq!(
-            guest_cmdline("quiet", false),
+            guest_cmdline("quiet", false, false),
             format!("quiet pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("debug", false),
+            guest_cmdline("debug", false, false),
             format!("debug pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("loglevel=3 ignore_loglevel", false),
+            guest_cmdline("loglevel=3 ignore_loglevel", false, false),
             format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=off loglevel=9", false),
+            guest_cmdline("pci=off loglevel=9", false, false),
             format!("pci=off loglevel=9{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=nocrs", false),
+            guest_cmdline("pci=nocrs", false, false),
             format!("pci=nocrs loglevel=7{REBOOT_ACPI}")
         );
         // A caller-chosen reboot mode is left alone.
         assert_eq!(
-            guest_cmdline("reboot=k", false),
+            guest_cmdline("reboot=k", false, false),
             "reboot=k pci=off loglevel=7"
         );
     }
 
-    /// With a vsock device, the command line tells an `x86_64` guest where the
-    /// device's `virtio-mmio` transport is — an architecture without a device
-    /// tree has no other way to say it. The entry is the port's own layout,
-    /// and a caller that already registered a transport is left alone.
+    /// With a virtio-mmio device, the command line tells an `x86_64` guest
+    /// where its transport is — an architecture without a device tree has no
+    /// other way to say it. One entry per device, each with the port's own
+    /// window and interrupt, and a caller that registered a transport itself is
+    /// left alone entirely.
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn guest_cmdline_registers_the_x86_64_vsock_transport() {
-        use crate::arch::x86_64::layout::{MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START};
+    fn guest_cmdline_registers_the_x86_64_virtio_transports() {
+        use crate::arch::x86_64::layout::{
+            MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
+        };
 
-        let expected = format!("{MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}");
-        assert_eq!(
-            guest_cmdline("console=ttyS0", true),
-            format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={expected}")
+        let vsock = format!("{MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}");
+        let workspace = format!("{MMIO_LEN:#x}@{WORKSPACE_MMIO_START:#x}:{WORKSPACE_GSI}");
+        assert_ne!(
+            vsock, workspace,
+            "the two transports must not share a window or an interrupt"
         );
-        // A VM without a vsock device registers no transport...
+
+        // A vsock device, a workspace volume, or both.
         assert_eq!(
-            guest_cmdline("console=ttyS0", false),
+            guest_cmdline("console=ttyS0", true, false),
+            format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock}")
+        );
+        assert_eq!(
+            guest_cmdline("console=ttyS0", false, true),
+            format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={workspace}")
+        );
+        assert_eq!(
+            guest_cmdline("console=ttyS0", true, true),
+            format!(
+                "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
+                 virtio_mmio.device={workspace}"
+            )
+        );
+        // A VM with neither device registers no transport...
+        assert_eq!(
+            guest_cmdline("console=ttyS0", false, false),
             "console=ttyS0 pci=off loglevel=7 reboot=acpi"
         );
-        // ...and a caller that registered one itself keeps its own.
+        // ...and a caller that registered transports itself keeps its own.
         assert_eq!(
-            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true),
+            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true, true),
             "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
         );
     }
 
-    /// On `aarch64` the device tree describes the transport, so the command
-    /// line is the same with and without a vsock device.
+    /// On `aarch64` the device tree describes the transports, so the command
+    /// line is the same with and without them.
     #[cfg(target_arch = "aarch64")]
     #[test]
-    fn guest_cmdline_adds_nothing_for_the_vsock_device() {
+    fn guest_cmdline_adds_nothing_for_the_virtio_transports() {
         assert_eq!(
-            guest_cmdline("console=ttyS0", true),
-            guest_cmdline("console=ttyS0", false)
+            guest_cmdline("console=ttyS0", true, true),
+            guest_cmdline("console=ttyS0", false, false)
         );
     }
 }
@@ -392,7 +425,10 @@ mod x86_64 {
     use linux_loader::loader::Cmdline;
     use vmm_sys_util::eventfd::EventFd;
 
-    use crate::arch::x86_64::layout::{CMDLINE_MAX_SIZE, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START};
+    use crate::arch::x86_64::layout::{
+        CMDLINE_MAX_SIZE, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI,
+        WORKSPACE_MMIO_START,
+    };
     use crate::arch::x86_64::{
         ConfigurationError, InitrdConfig, InitrdError, arch_memory_regions,
         configure_system_for_boot, load_kernel,
@@ -401,6 +437,8 @@ mod x86_64 {
         I8042Device, PM1_CNT_SIZE, Pm1CntDevice, SLEEP_CONTROL_PORT, SerialDevice, SerialOut,
     };
     use crate::devices::virtio::VirtioError;
+    use crate::devices::virtio::block::device::VirtioBlock;
+    use crate::devices::virtio::block::mmio_device::BlockMmioDevice;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
     use crate::devices::virtio::vsock::VsockError;
     use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
@@ -475,9 +513,9 @@ mod x86_64 {
         /// Failed to register a device IRQ: {0}
         #[error("failed to register a device IRQ: {0}")]
         Irq(vmm_sys_util::errno::Error),
-        /// Failed to create the vsock device: {0}
-        #[error("failed to create the vsock device: {0}")]
-        Vsock(#[from] VirtioError),
+        /// Failed to create a virtio device: {0}
+        #[error("failed to create a virtio device: {0}")]
+        Virtio(#[from] VirtioError),
         /// Failed to create an event fd: {0}
         #[error("failed to create an event fd: {0}")]
         EventFd(io::Error),
@@ -579,11 +617,11 @@ mod x86_64 {
                 )
                 .map_err(VsockError::from)
                 .map_err(VirtioError::from)
-                .map_err(BootError::Vsock)?;
+                .map_err(BootError::Virtio)?;
                 let device = Arc::new(Mutex::new(
                     super::Vsock::new(config.guest_cid, backend)
                         .map_err(VirtioError::from)
-                        .map_err(BootError::Vsock)?,
+                        .map_err(BootError::Virtio)?,
                 ));
                 super::start_vsock_event_thread(
                     vm.vcpus_exit_evt(),
@@ -605,6 +643,33 @@ mod x86_64 {
             None => None,
         };
 
+        // The block device, when the caller configured a workspace volume: a
+        // second virtio-mmio transport in the layout's next MMIO slot, its own
+        // interrupt registered as a KVM irqfd on the layout's next legacy GSI,
+        // and the *writable* volume behind it — the only writable queue in this
+        // port (invariant 3). The device opens the image read-write here, so a
+        // path that does not exist (or is not writable) fails the boot with the
+        // path in the error, before the guest is started.
+        let workspace = match &spec.workspace {
+            Some(image) => {
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, WORKSPACE_GSI).map_err(BootError::Irq)?;
+                let device = VirtioBlock::new(image)
+                    .map_err(VirtioError::from)
+                    .map_err(BootError::Virtio)?;
+                let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
+                    Box::new(BlockMmioDevice::new(device)),
+                    vm.guest_memory().clone(),
+                    irq,
+                )));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), WORKSPACE_MMIO_START, MMIO_LEN)?;
+                Some(transport)
+            }
+            None => None,
+        };
+
         // Host console input (a caller's bytes for the guest to read from
         // ttyS0): installed before the vCPUs start, so it is in place by the
         // time the spawner hands the VM out. It holds the console weakly, so
@@ -616,7 +681,7 @@ mod x86_64 {
         // to its devices for as long as it runs. They are moved into the exit
         // watcher below, which is the VM's last thread — so the devices live
         // exactly as long as the VM does.
-        let legacy_devices = (serial, i8042, pm1, vsock);
+        let legacy_devices = (serial, i8042, pm1, vsock, workspace);
 
         // Load the kernel (ELF first, bzImage fallback), the optional initrd,
         // and write the boot parameters into guest memory.
@@ -636,7 +701,8 @@ mod x86_64 {
             None => None,
         };
         let cmdline = Cmdline::try_from(
-            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some()).as_str(),
+            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some(), spec.workspace.is_some())
+                .as_str(),
             CMDLINE_MAX_SIZE,
         )?;
         configure_system_for_boot(
@@ -698,6 +764,7 @@ mod aarch64 {
     use crate::arch::aarch64::gic::GICVersion as KvmGicVersion;
     use crate::arch::aarch64::layout::{
         CMDLINE_MAX_SIZE, GSI_LEGACY_START, MMIO_LEN, SERIAL_MEM_START, VSOCK_GSI, VSOCK_MMIO_START,
+        WORKSPACE_GSI, WORKSPACE_MMIO_START,
     };
     use crate::arch::aarch64::{
         ConfigurationError, InitrdConfig, InitrdError, SerialFdtInfo, VirtioMmioFdtInfo,
@@ -705,6 +772,8 @@ mod aarch64 {
     };
     use crate::devices::legacy::{SerialDevice, SerialOut};
     use crate::devices::virtio::VirtioError;
+    use crate::devices::virtio::block::device::VirtioBlock;
+    use crate::devices::virtio::block::mmio_device::BlockMmioDevice;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
     use crate::devices::virtio::vsock::VsockError;
     use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
@@ -769,9 +838,9 @@ mod aarch64 {
         /// Failed to register the serial console IRQ: {0}
         #[error("failed to register the serial console IRQ: {0}")]
         Irq(vmm_sys_util::errno::Error),
-        /// Failed to create the vsock device: {0}
-        #[error("failed to create the vsock device: {0}")]
-        Vsock(#[from] VirtioError),
+        /// Failed to create a virtio device: {0}
+        #[error("failed to create a virtio device: {0}")]
+        Virtio(#[from] VirtioError),
         /// Failed to create an event fd: {0}
         #[error("failed to create an event fd: {0}")]
         EventFd(io::Error),
@@ -836,11 +905,11 @@ mod aarch64 {
                 )
                 .map_err(VsockError::from)
                 .map_err(VirtioError::from)
-                .map_err(BootError::Vsock)?;
+                .map_err(BootError::Virtio)?;
                 let device = Arc::new(Mutex::new(
                     super::Vsock::new(config.guest_cid, backend)
                         .map_err(VirtioError::from)
-                        .map_err(BootError::Vsock)?,
+                        .map_err(BootError::Virtio)?,
                 ));
                 super::start_vsock_event_thread(
                     vm.vcpus_exit_evt(),
@@ -862,15 +931,54 @@ mod aarch64 {
             None => None,
         };
 
-        // The device tree node that tells the guest where the vsock device's
-        // transport is — the `aarch64` counterpart of the command-line entry
-        // the `x86_64` backend appends. It is written with the rest of the
-        // device tree below, after the device itself is handed to the watcher.
-        let virtio_mmio = vsock.as_ref().map(|_| VirtioMmioFdtInfo {
-            addr: VSOCK_MMIO_START,
-            len: MMIO_LEN,
-            gsi: VSOCK_GSI,
-        });
+        // The block device, when the caller configured a workspace volume: a
+        // second virtio-mmio transport in the layout's next MMIO slot, its own
+        // interrupt on the layout's next legacy GSI (registered as a KVM
+        // irqfd, like the console's), and the *writable* volume behind it — the
+        // only writable queue in this port (invariant 3). The device opens the
+        // image read-write here, so a path that does not exist (or is not
+        // writable) fails the boot with the path in the error, before the guest
+        // is started.
+        let workspace = match &spec.workspace {
+            Some(image) => {
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, WORKSPACE_GSI).map_err(BootError::Irq)?;
+                let device = VirtioBlock::new(image)
+                    .map_err(VirtioError::from)
+                    .map_err(BootError::Virtio)?;
+                let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
+                    Box::new(BlockMmioDevice::new(device)),
+                    vm.guest_memory().clone(),
+                    irq,
+                )));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), WORKSPACE_MMIO_START, MMIO_LEN)?;
+                Some(transport)
+            }
+            None => None,
+        };
+
+        // The device tree nodes that tell the guest where the virtio-mmio
+        // transports are — the `aarch64` counterpart of the command-line
+        // entries the `x86_64` backend appends. They are written with the rest
+        // of the device tree below, after the devices are handed to the
+        // watcher. Each node carries its own window and interrupt.
+        let mut virtio_mmio = Vec::new();
+        if vsock.is_some() {
+            virtio_mmio.push(VirtioMmioFdtInfo {
+                addr: VSOCK_MMIO_START,
+                len: MMIO_LEN,
+                gsi: VSOCK_GSI,
+            });
+        }
+        if workspace.is_some() {
+            virtio_mmio.push(VirtioMmioFdtInfo {
+                addr: WORKSPACE_MMIO_START,
+                len: MMIO_LEN,
+                gsi: WORKSPACE_GSI,
+            });
+        }
 
         // Host console input (a caller's bytes for the guest to read from its
         // serial line): installed before the vCPUs start, so it is in place by
@@ -881,7 +989,7 @@ mod aarch64 {
 
         // The bus only holds weak references: the watcher below keeps the
         // strong handles, so the devices live exactly as long as the VM.
-        let legacy_devices = (serial, vsock);
+        let legacy_devices = (serial, vsock, workspace);
 
         // Load the kernel (the PE loader, which covers arm64 `Image` and
         // EFI-stub images alike), the optional initrd, and write the boot
@@ -902,7 +1010,8 @@ mod aarch64 {
             None => None,
         };
         let cmdline = Cmdline::try_from(
-            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some()).as_str(),
+            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some(), spec.workspace.is_some())
+                .as_str(),
             CMDLINE_MAX_SIZE,
         )?;
         let serial_info = SerialFdtInfo {
@@ -917,7 +1026,7 @@ mod aarch64 {
             &initrd,
             cmdline,
             &serial_info,
-            virtio_mmio,
+            &virtio_mmio,
         )?;
 
         // The exit watcher goes in before the vCPUs start, exactly as on

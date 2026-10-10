@@ -8,10 +8,11 @@
 // Derived from Firecracker src/vmm/src/arch/aarch64/fdt.rs (trimmed: the
 // `DeviceManager` parameter is replaced by two small descriptors — [`GicFdt`]
 // for the interrupt controller and [`SerialFdtInfo`] for the console, plus
-// [`VirtioMmioFdtInfo`] for an optional virtio-mmio device — because this port
-// has no device manager (its MMIO devices are the serial console at the fixed
-// [`layout::SERIAL_MEM_START`] address and, when the VM has one, the vsock
-// device's transport at [`layout::VSOCK_MMIO_START`]); the VMGenID, vmclock,
+// [`VirtioMmioFdtInfo`] for each of the VM's virtio-mmio devices — because this
+// port has no device manager (its MMIO devices are the serial console at the
+// fixed [`layout::SERIAL_MEM_START`] address and, when the VM has them, the
+// vsock device's transport at [`layout::VSOCK_MMIO_START`] and the block
+// device's at [`layout::WORKSPACE_MMIO_START`]); the VMGenID, vmclock,
 // PCI, RTC, PL061 GPIO nodes, the `rng-seed` property (needs `aws-lc-rs`) and
 // the `linux,pci-probe-only` property (this port has no PCI) are dropped.
 // `create_virtio_node` is upstream's.
@@ -119,7 +120,7 @@ pub fn create_fdt(
     vcpu_mpidr: Vec<u64>,
     cmdline: CString,
     serial: &SerialFdtInfo,
-    virtio_mmio: Option<VirtioMmioFdtInfo>,
+    virtio_mmio: &[VirtioMmioFdtInfo],
     gic_device: &dyn GicFdt,
     initrd: &Option<super::InitrdConfig>,
 ) -> Result<Vec<u8>, FdtError> {
@@ -148,8 +149,8 @@ pub fn create_fdt(
     create_clock_node(&mut fdt_writer)?;
     create_psci_node(&mut fdt_writer)?;
     create_serial_node(&mut fdt_writer, serial)?;
-    if let Some(virtio_mmio) = virtio_mmio {
-        create_virtio_node(&mut fdt_writer, &virtio_mmio)?;
+    for node in virtio_mmio {
+        create_virtio_node(&mut fdt_writer, node)?;
     }
 
     // End Header node.
@@ -515,7 +516,7 @@ mod tests {
             vec![0],
             CString::new("console=ttyS0 panic=-1").unwrap(),
             &serial,
-            None,
+            &[],
             &gic,
             &Some(initrd),
         )
@@ -600,7 +601,7 @@ mod tests {
             vec![0],
             CString::new("console=ttyS0").unwrap(),
             &serial,
-            Some(vsock),
+            &[vsock],
             &gic,
             &None,
         )

@@ -74,8 +74,14 @@ pub struct Config {
     /// The directory `GET /` and `GET /<file>` serve.
     pub console_dir: PathBuf,
     /// The directory holding the per-VM vsock Unix sockets; VM `i`'s muxer
-    /// binds `{uds_dir}/vm{cid}`.
+    /// binds `{uds_dir}/vm{cid}`. With `workspace`, it also holds each run's
+    /// directory of per-VM image copies.
     pub uds_dir: PathBuf,
+    /// The base image of every run's writable workspace volume. `None` boots
+    /// the guests with no block device; `Some` gives every run one copy of the
+    /// image per VM, in the run's own directory under `uds_dir` — a writable
+    /// volume is never shared between VMs.
+    pub workspace: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -86,6 +92,7 @@ impl Default for Config {
             initrd: PathBuf::from(DEFAULT_INITRD),
             console_dir: PathBuf::from(DEFAULT_CONSOLE_DIR),
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
+            workspace: None,
         }
     }
 }
@@ -133,6 +140,7 @@ impl Node {
                 VmImages {
                     kernel: config.kernel,
                     initrd: config.initrd,
+                    workspace: config.workspace,
                 },
                 config.uds_dir,
                 events,

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use vmm::spawner::{
     GicVersion, MAX_GUEST_CID, MIN_GUEST_CID, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig,
-    create_uds_dir, spawn_each,
+    create_uds_dir, materialize_workspaces, spawn_each,
 };
 
 /// How often the printer polls the VMs' serial captures.
@@ -73,7 +73,7 @@ const CONSOLE_INPUT_ATTEMPTS: usize = 100;
 const USAGE: &str = "\
 usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
              [--mem-mib M] [--timeout-secs T] [--gic v2|v3] [--vsock-cid BASE]
-             [--console]
+             [--workspace IMAGE] [--console]
 
   --kernel PATH      guest kernel image (uncompressed ELF vmlinux or bzImage)
   --cmdline STR      kernel command line
@@ -85,8 +85,11 @@ usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
   --gic v2|v3        aarch64 interrupt controller (ignored on x86_64)
   --vsock-cid BASE   give the VMs vsock devices, VM i getting CID BASE+i (default:
                      no vsock device; BASE is a guest CID, so at least 3)
-  --uds-dir DIR      directory for the per-VM vsock Unix sockets (default
+  --uds-dir DIR      directory for the per-VM vsock Unix sockets and, with
+                     --workspace, for the run's image copies (default
                      /tmp/plaza-vsock; VM i's muxer binds DIR/vm{BASE+i})
+  --workspace IMAGE  give the VMs a writable workspace volume built from the
+                     ext4 image at IMAGE (default: no block device)
   --console          forward this tool's stdin to VM 0's serial console
   -h, --help         print this help
 
@@ -103,6 +106,13 @@ guest's serial driver discards bytes that arrive while it is still bringing the
 port up, exactly as a real UART's would, so input sent at a boot log can be
 eaten before any program reads it. Input sent once the guest is up (the usual
 case) is unaffected.
+
+--workspace gives each VM a virtio-blk device backed by its own copy of IMAGE,
+mounted by the guest as /workspace. A volume is writable, so the run never
+shares one image: vmctl copies IMAGE once per VM into the run's own directory
+under --uds-dir (DIR/run-{pid}/workspace-{i}.ext4) before booting, and each VM
+boots with its own copy — so two VMs of a run can never corrupt each other's
+workspace, and the copies outlive the run for inspection.
 
 --vsock-cid gives each VM a virtio-vsock device so its guest can reach the
 host's orchestrator over AF_VSOCK (CID 2). The tool assigns the CIDs (VM i gets
@@ -145,8 +155,13 @@ struct Config {
     /// no vsock device.
     vsock_cid: Option<u64>,
     /// Directory holding the per-VM vsock Unix sockets; VM `i`'s muxer binds
-    /// `{uds_dir}/vm{cid}`. Ignored when `vsock_cid` is `None`.
+    /// `{uds_dir}/vm{cid}`. With `workspace`, it also holds the run's directory
+    /// of per-VM image copies.
     uds_dir: PathBuf,
+    /// The base image of the VMs' writable workspace volume. `None` boots VMs
+    /// with no block device; `Some` gives every VM its own copy of the image,
+    /// laid out in the run's directory under `uds_dir`.
+    workspace: Option<PathBuf>,
     /// Forward this process's stdin to VM 0's serial console.
     console: bool,
 }
@@ -164,6 +179,7 @@ impl Config {
         let mut gic = None;
         let mut vsock_cid = None;
         let mut uds_dir = PathBuf::from(DEFAULT_UDS_DIR);
+        let mut workspace = None;
         let mut console = false;
 
         let mut args = args.iter();
@@ -223,6 +239,7 @@ impl Config {
                     }
                     vsock_cid = Some(base);
                 }
+                "--workspace" => workspace = Some(PathBuf::from(value("--workspace")?)),
                 "--console" => console = true,
                 "--uds-dir" => uds_dir = PathBuf::from(value("--uds-dir")?),
                 other => return Err(format!("unknown argument: {other}")),
@@ -259,6 +276,7 @@ impl Config {
             gic,
             vsock_cid,
             uds_dir,
+            workspace,
             console,
         })
     }
@@ -273,6 +291,8 @@ fn run(config: Config) -> ExitCode {
         initrd: config.initrd,
         gic: config.gic,
         vsock: None,
+        // Filled in per VM below, from the run's image copies.
+        workspace: None,
     };
     // Every VM's vsock device carries its own CID and its own host Unix socket
     // path: VM `id` gets the base CID plus its id, and the muxer binds
@@ -283,16 +303,34 @@ fn run(config: Config) -> ExitCode {
     // F4: the sockets live under `uds_dir` with deterministic names
     // (`vm{cid}`), and it defaults under world-writable `/tmp`. Create it 0700
     // first, so another local user cannot squat a path (EADDRINUSE) or bind
-    // `vm{cid}_{port}` and impersonate the orchestrator.
-    if vsock_cid.is_some() {
-        if let Err(err) = create_uds_dir(&uds_dir) {
-            eprintln!(
-                "vmctl: cannot create the vsock socket directory {}: {err}",
-                uds_dir.display()
-            );
-            return ExitCode::FAILURE;
-        }
+    // `vm{cid}_{port}` and impersonate the orchestrator. A run with a workspace
+    // needs the directory for its image copies too.
+    if (vsock_cid.is_some() || config.workspace.is_some())
+        && let Err(err) = create_uds_dir(&uds_dir)
+    {
+        eprintln!(
+            "vmctl: cannot create the per-run directory {}: {err}",
+            uds_dir.display()
+        );
+        return ExitCode::FAILURE;
     }
+    // The workspace volume is writable, so the run gets one copy of the base
+    // image per VM, in the run's own directory (named after this process: vmctl
+    // owns the run for as long as it lives). The copies are left behind when
+    // the run ends: they hold the guests' work.
+    let workspaces = match &config.workspace {
+        Some(base_image) => {
+            let run_dir = uds_dir.join(format!("run-{}", std::process::id()));
+            match materialize_workspaces(base_image, &run_dir, config.count) {
+                Ok(paths) => Some(paths),
+                Err(err) => {
+                    eprintln!("vmctl: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => None,
+    };
     let mut vms = match spawn_each(config.count, |id| {
         let mut spec = base.clone();
         spec.vsock = vsock_cid.map(|base| {
@@ -301,6 +339,15 @@ fn run(config: Config) -> ExitCode {
                 guest_cid,
                 uds_path: uds_dir.join(format!("vm{guest_cid}")),
             }
+        });
+        // One image per VM, in the order `materialize_workspaces` produced
+        // them: `spawn_each` builds the ids `0..count` and the run has exactly
+        // `count` copies, so every id resolves to its own image.
+        spec.workspace = workspaces.as_ref().and_then(|images| {
+            usize::try_from(id)
+                .ok()
+                .and_then(|index| images.get(index))
+                .cloned()
         });
         spec
     }) {

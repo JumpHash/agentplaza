@@ -25,6 +25,11 @@
 #   plaza.vm=N       this VM's index within the spawn (default 0), read by the
 #                    harness itself.
 #
+# Serial commands: help, echo <text>, uname, uptime, mem, cpu, interrupts,
+# wspace [text], sync, poweroff, reboot, halt. `interrupts` prints the kernel's
+# IRQ table (which device is on which IRQ), `wspace` reads and writes the
+# workspace volume, and `sync` flushes the guest's filesystems.
+#
 # The `poweroff` serial command uses ACPI S5 (RB_POWER_OFF): the guest kernel
 # evaluates the DSDT `_S5` object and writes SLP_EN to the PM1-control port,
 # and the VMM stops the VM cleanly (GuestExited{reset=false}).
@@ -41,12 +46,24 @@
 # window - which the VMM publishes on the kernel command line as
 # `virtio_mmio.device=<size>@<addr>:<irq>`. That parameter belongs to the
 # virtio_mmio module, so init hands it straight to finit_module(2) (a modprobe
-# would read /proc/cmdline itself; init loads the module directly).
+# would read /proc/cmdline itself; init loads the module directly). One
+# `virtio_mmio.device=` entry exists per virtio-mmio device: the vsock device's
+# and, when the VMM was given one, the block device's.
+#
+# The workspace volume: the VMM's second virtio-mmio device is a virtio-blk
+# device backed by a host file (the writable workspace image). When the guest
+# sees it, init mounts it (ext4) at /workspace and says so on the console; the
+# `wspace <text>` serial command appends a line to /workspace/notes.txt and
+# prints the file back, which is the guest-side proof that the volume is
+# writable and survives the VM. A guest with no such device just has no
+# /workspace, and `wspace` says so.
 #
 # Without flags the guest heartbeats and serves commands forever
 # (console=ttyS0 gives PID 1 stdin/stdout on the serial line).
 #
 # Output: target/guest/initrd.x86_64.gz   (usage: vmctl --initrd <path> [--console])
+#         (the workspace image itself is built by scripts/mk-workspace-image.sh
+#          and handed to the VMM with --workspace)
 #
 # Env overrides: APZ_HARNESS_BIN=/path/to/agent-harness  skip the cargo build.
 set -eu
@@ -60,17 +77,36 @@ rm -rf "$root"
 mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root" "$root/lib/modules"
 
 # ---------------------------------------------------------------------------
-# The guest's vsock modules: resolved from modules.dep at build time, in
+# The guest's virtio modules: resolved from modules.dep at build time, in
 # dependency order (a module after every module it depends on), and written
 # into the initramfs as /lib/modules/load-order for the guest's init.
+#
+# virtio_mmio is a module on this kernel; the block device's driver
+# (virtio_blk) and the workspace volume's filesystem (ext4) are built in
+# (CONFIG_VIRTIO_BLK=y, CONFIG_EXT4_FS=y), so the guest needs no module for
+# them. That is checked here rather than assumed: a kernel that ships either as
+# a module gets it added to the load order, because the guest's init mounts the
+# volume right after loading the modules.
 # ---------------------------------------------------------------------------
 modules_dir="$root/lib/modules"
 want="vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport virtio_mmio"
 
 if [ ! -r "$mod_root/modules.dep" ]; then
-    echo "mk-initrd: $mod_root/modules.dep not found: cannot resolve the guest's vsock modules" >&2
+    echo "mk-initrd: $mod_root/modules.dep not found: cannot resolve the guest's virtio modules" >&2
     exit 1
 fi
+
+# A kernel feature is either built in (no module to load) or a module that must
+# load before the guest can use it. `modules.builtin` lists the built-ins by
+# path, so an entry ending in `/<name>.ko` is exactly that feature.
+for feature in virtio_blk ext4; do
+    if grep -q "/${feature}\.ko\$" "$mod_root/modules.builtin" 2>/dev/null; then
+        echo "guest kernel feature: $feature is built in"
+    else
+        echo "guest kernel feature: $feature is a module; adding it to the load order"
+        want="$want $feature"
+    fi
+done
 
 order=$(awk -v want="$want" -v dep_file="$mod_root/modules.dep" '
 function visit(m,   k, j, d) {
@@ -189,14 +225,20 @@ cat > "$out_dir/init.c" <<'EOF'
 //
 // Mounts the pseudo-filesystems, beats a heartbeat to the serial console every
 // 5 s, serves the serial command loop and - when the kernel command line says
-// `plaza.harness=1` - loads the guest's vsock modules and runs the AgentPlaza
+// `plaza.harness=1` - loads the guest's virtio modules and runs the AgentPlaza
 // agent harness, which prints its whole session to this same console.
+//
+// The same module load carries the workspace volume's transport: when the VMM
+// gave the VM a workspace image, its virtio-blk device appears as /dev/vda and
+// init mounts it (ext4) at /workspace. `wspace <text>` proves the volume is
+// writable from the guest's side.
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -279,6 +321,52 @@ static void read_file_head(const char *path, unsigned lines)
     put(buf);
 }
 
+// Flushes the guest's filesystems.
+//
+// PID 1 owns the guest's data until the kernel is asked to stop, and neither
+// the kernel's own poweroff/restart path nor this VMM's reset waits for the
+// filesystems to be flushed — a guest that stops with uncommitted writes
+// (ext4's journal commits every 5 s) loses them. The workspace volume is where
+// an agent's work lives, so the guest syncs before it asks the kernel to stop,
+// and `sync` lets an operator do it on demand.
+static void do_sync(void)
+{
+    sync();
+    put("plaza guest: filesystems synced\n");
+}
+
+// Prints the kernel's interrupt table: which IRQ each device is on.
+//
+// This is how the guest proves the VMM's interrupt wiring: the legacy devices
+// and the virtio-mmio transports must be on the identity-mapped IRQs the VMM
+// registered them on (serial 4, i8042 1, vsock 5, workspace 6), and the count
+// for a virtio device grows as its queue is used.
+static void do_interrupts(void)
+{
+    char buf[2048];
+    int fd = open("/proc/interrupts", O_RDONLY);
+    if (fd < 0) {
+        put("cannot open /proc/interrupts\n");
+        return;
+    }
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        put("(empty /proc/interrupts)\n");
+        return;
+    }
+    buf[n] = '\0';
+    unsigned lines = 16;
+    for (ssize_t i = 0; i < n && lines; i++) {
+        if (buf[i] == '\n')
+            if (lines-- == 1) {
+                buf[i + 1] = '\0';
+                break;
+            }
+    }
+    put(buf);
+}
+
 static void do_cpu(void)
 {
     char buf[8192];
@@ -314,10 +402,23 @@ static void do_cpu(void)
     write(1, out, (size_t)len);
 }
 
+// Defined with the rest of the workspace code, below; the serial command loop
+// is above it because it is the guest's console protocol.
+static void workspace_show(void);
+static void workspace_append(const char *text);
+
 static void do_command(const char *cmd)
 {
     if (!strcmp(cmd, "help")) {
-        put("commands: help, echo <text>, uname, uptime, mem, cpu, poweroff, reboot, halt\n");
+        put("commands: help, echo <text>, uname, uptime, mem, cpu, interrupts, wspace [text], sync, poweroff, reboot, halt\n");
+    } else if (!strcmp(cmd, "interrupts")) {
+        do_interrupts();
+    } else if (!strcmp(cmd, "sync")) {
+        do_sync();
+    } else if (!strncmp(cmd, "wspace ", 7)) {
+        workspace_append(cmd + 7);
+    } else if (!strcmp(cmd, "wspace")) {
+        workspace_show();
     } else if (!strncmp(cmd, "echo ", 5)) {
         put(cmd + 5);
         put("\n");
@@ -333,6 +434,7 @@ static void do_command(const char *cmd)
     } else if (!strcmp(cmd, "mem")) {
         read_file_head("/proc/meminfo", 3);
     } else if (!strcmp(cmd, "poweroff")) {
+        do_sync();
         if (poweroff_is_acpi()) {
             put("plaza guest: powering off (ACPI S5)\n");
             reboot(RB_POWER_OFF);
@@ -341,6 +443,7 @@ static void do_command(const char *cmd)
             reboot(RB_AUTOBOOT);
         }
     } else if (!strcmp(cmd, "reboot")) {
+        do_sync();
         put("plaza guest: rebooting\n");
         reboot(RB_AUTOBOOT);
     } else if (!strcmp(cmd, "halt")) {
@@ -426,13 +529,24 @@ static void insmod(const char *name, const char *params)
     }
 }
 
-// Loads the guest's vsock module set in the order the initramfs was built
-// with, giving virtio_mmio the device window the command line published.
-static void load_vsock_modules(void)
+// Loads the guest's virtio module set in the order the initramfs was built
+// with, giving virtio_mmio the device windows the command line published.
+//
+// A guest whose command line carries no `virtio_mmio.device=` has no
+// virtio-mmio device at all (neither a vsock device nor a workspace volume), so
+// there is nothing to load and nothing to report unless the caller asked for
+// the harness and would otherwise wait for a device that cannot appear
+// (`verbose`).
+static void load_guest_modules(int verbose)
 {
     char params[256];
     char line[160];
     const int published = virtio_mmio_params(params, sizeof params);
+    if (published <= 0) {
+        if (verbose)
+            put("plaza guest: the command line has no virtio_mmio.device=; the vsock device is missing\n");
+        return;
+    }
     FILE *order = fopen("/lib/modules/load-order", "r");
     if (!order) {
         put("plaza guest: no /lib/modules/load-order in the initramfs\n");
@@ -444,20 +558,114 @@ static void load_vsock_modules(void)
             line[--len] = '\0';
         if (!len)
             continue;
-        // Only virtio_mmio has a command-line parameter here; the vsock
-        // modules take none.
+        // Only virtio_mmio has a command-line parameter here; the vsock and
+        // block modules take none.
         insmod(line, strncmp(line, "virtio_mmio", 11) ? "" : params);
     }
     fclose(order);
-    if (published <= 0) {
-        put("plaza guest: the command line has no virtio_mmio.device=; the vsock device is missing\n");
-    } else {
+    char msg[160];
+    int len = snprintf(msg, sizeof msg,
+                       "plaza guest: virtio_mmio took %d command-line parameter(s)\n",
+                       published);
+    write(1, msg, (size_t)len);
+}
+
+// --- workspace: the writable volume the block device carries -----------------
+
+// Mounts the workspace volume at /workspace, if the VM has one.
+//
+// The volume is a virtio-blk device on a virtio-mmio transport, so it appears
+// as /dev/vda once the driver probed it - the module load above is
+// synchronous, and the disk node exists by the time finit_module(2) returns,
+// but a short poll costs nothing and covers a deferred probe. A VM with no
+// block device (no `virtio_mmio.device=` for one) simply has no /workspace:
+// the guest is still a valid guest, so a missing device is not an error.
+static void mount_workspace(void)
+{
+    int fd = -1;
+    for (int attempt = 0; attempt < 200; attempt++) {
+        fd = open("/dev/vda", O_RDONLY | O_CLOEXEC);
+        if (fd >= 0)
+            break;
+        usleep(10000);
+    }
+    if (fd < 0)
+        return;
+    close(fd);
+
+    if (mkdir("/workspace", 0755) < 0 && errno != EEXIST) {
+        put("plaza guest: cannot create /workspace: ");
+        put(strerror(errno));
+        put("\n");
+        return;
+    }
+    if (mount("/dev/vda", "/workspace", "ext4", 0, "") < 0) {
         char msg[160];
         int len = snprintf(msg, sizeof msg,
-                           "plaza guest: virtio_mmio took %d command-line parameter(s)\n",
-                           published);
+                           "plaza guest: cannot mount /dev/vda on /workspace: %s\n",
+                           strerror(errno));
         write(1, msg, (size_t)len);
+        return;
     }
+    struct statvfs vfs;
+    unsigned long mib = 0;
+    if (statvfs("/workspace", &vfs) == 0 && vfs.f_frsize)
+        mib = (unsigned long)(((unsigned long long)vfs.f_blocks * vfs.f_frsize) >> 20);
+    char msg[128];
+    int len = snprintf(msg, sizeof msg, "plaza guest: /workspace mounted (ext4, %lu MiB)\n", mib);
+    write(1, msg, (size_t)len);
+}
+
+// Whether the VM has a mounted workspace volume.
+static int workspace_ready(void)
+{
+    return access("/workspace/notes.txt", F_OK) == 0 || access("/workspace", F_OK) == 0;
+}
+
+// Prints /workspace/notes.txt (bounded: it is the guest's own data).
+static void workspace_show(void)
+{
+    if (!workspace_ready()) {
+        put("plaza guest: no workspace volume mounted\n");
+        return;
+    }
+    char buf[4096];
+    int fd = open("/workspace/notes.txt", O_RDONLY);
+    if (fd < 0) {
+        put("plaza guest: no /workspace/notes.txt yet\n");
+        return;
+    }
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n < 0)
+        n = 0;
+    buf[n] = '\0';
+    write(1, buf, (size_t)n);
+    if (n > 0 && buf[n - 1] != '\n')
+        put("\n");
+}
+
+// Appends `text` as one line of /workspace/notes.txt and prints the file back:
+// the guest-side proof that the volume is writable, and - read back after a
+// reboot on the same image - that it persists.
+static void workspace_append(const char *text)
+{
+    if (!workspace_ready()) {
+        put("plaza guest: no workspace volume mounted\n");
+        return;
+    }
+    int fd = open("/workspace/notes.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+        put("plaza guest: cannot open /workspace/notes.txt: ");
+        put(strerror(errno));
+        put("\n");
+        return;
+    }
+    write(fd, text, strlen(text));
+    write(fd, "\n", 1);
+    close(fd);
+    put("plaza guest: appended to /workspace/notes.txt; contents:\n");
+    workspace_show();
 }
 
 // Starts the agent harness; it inherits this console as its stdout.
@@ -495,6 +703,7 @@ static void reap_harness(pid_t *harness)
     *harness = -1;
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         put("plaza guest: agent harness session complete, rebooting\n");
+        do_sync();
         reboot(RB_AUTOBOOT);
     }
     char msg[96];
@@ -530,11 +739,17 @@ int main(void)
             pause();
     }
 
-    if (harness) {
+    if (harness)
         put("plaza guest: plaza.harness=1: loading the vsock modules\n");
-        load_vsock_modules();
+    // The virtio modules carry every virtio-mmio device this VM has: the vsock
+    // device and/or the block device of its workspace volume.
+    load_guest_modules((int)harness);
+    // The workspace volume, if this VM was given one: mounted before anything
+    // the harness does, so its sessions (and the serial `wspace` command) can
+    // use it.
+    mount_workspace();
+    if (harness)
         harness_pid = start_harness();
-    }
 
     for (unsigned long beat = 1;; beat++) {
         reap_harness(&harness_pid);
@@ -548,6 +763,7 @@ int main(void)
             len = snprintf(line, sizeof line,
                            "plaza guest: %lu beats done, rebooting\n", beats);
             write(1, line, (size_t)len);
+            do_sync();
             reboot(RB_AUTOBOOT);
         }
 

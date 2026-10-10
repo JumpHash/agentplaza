@@ -116,6 +116,18 @@ pub struct VmSpec {
     /// (Hypervisor.framework has no vsock device, and this port has no
     /// network device to fall back to).
     pub vsock: Option<VsockConfig>,
+    /// The VM's writable workspace volume: the image its block device exposes
+    /// to the guest, `None` for a VM with no block device at all.
+    ///
+    /// **The caller gives each VM its own image.** A volume is writable, so
+    /// two VMs sharing one image would corrupt each other's filesystem; the
+    /// spawner neither copies nor invents the path — a caller that has one base
+    /// image lays the run's private copies out with [`materialize_workspaces`]
+    /// and hands each VM its own.
+    ///
+    /// Unsupported on Apple Silicon: a spec that sets it makes the boot fail
+    /// with an explicit error rather than boot a VM whose device never appears.
+    pub workspace: Option<PathBuf>,
 }
 
 impl Default for VmSpec {
@@ -128,6 +140,7 @@ impl Default for VmSpec {
             initrd: None,
             gic: None,
             vsock: None,
+            workspace: None,
         }
     }
 }
@@ -643,15 +656,83 @@ fn validate_spec(spec: &VmSpec) -> Result<(), SpawnError> {
 /// rather than a reason to bind sockets in the open.
 #[cfg(unix)]
 pub fn create_uds_dir(path: &Path) -> std::io::Result<()> {
+    create_private_dir(path)
+}
+
+/// Creates `path` (with its parents) as a `0700` directory, re-tightening one
+/// that already exists.
+///
+/// `mode()` in `DirBuilder` is masked by the process umask, so the mode is set
+/// explicitly afterwards as well. A directory that cannot be made `0700` (one
+/// owned by another user, say) is an error the caller reports rather than a
+/// reason to lay private files out in the open.
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(path)?;
-    // `mode()` is masked by the process umask, so set the mode explicitly too
-    // (this also tightens a directory that already existed).
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Errors from [`materialize_workspaces`].
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceError {
+    /// The run's workspace directory could not be created.
+    #[error("cannot create the workspace directory {path}: {source}")]
+    Directory {
+        /// The directory that could not be created.
+        path: PathBuf,
+        /// The error the creation failed with.
+        source: std::io::Error,
+    },
+    /// A per-VM workspace image could not be copied.
+    #[error("cannot copy the workspace image {base} to {copy}: {source}")]
+    Copy {
+        /// The base image the caller configured.
+        base: PathBuf,
+        /// The per-VM copy that could not be created.
+        copy: PathBuf,
+        /// The error the copy failed with.
+        source: std::io::Error,
+    },
+}
+
+/// Copies `base` into `dir` as `workspace-{0..n}.ext4`: one private workspace
+/// image per VM of an `n`-VM run.
+///
+/// A workspace volume is *writable*, so the VMs of a run must not share one
+/// image — each gets its own copy, in the run's own directory, and the caller
+/// hands each VM its path through [`VmSpec::workspace`]. The directory is
+/// created `0700` (see [`create_uds_dir`]): an agent's workspace is its private
+/// data, and under the default `/tmp` prefix a wider mode would let any local
+/// user read or rewrite it. `std::fs::copy` reads and writes the bytes, which
+/// is the only copy this port can ask of a plain file (no reflink through
+/// `std`); the images are a few MiB and the copies happen once per run, before
+/// its VMs boot.
+#[cfg(unix)]
+pub fn materialize_workspaces(
+    base: &Path,
+    dir: &Path,
+    n: usize,
+) -> Result<Vec<PathBuf>, WorkspaceError> {
+    create_private_dir(dir).map_err(|source| WorkspaceError::Directory {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    (0..n)
+        .map(|id| {
+            let copy = dir.join(format!("workspace-{id}.ext4"));
+            std::fs::copy(base, &copy).map_err(|source| WorkspaceError::Copy {
+                base: base.to_path_buf(),
+                copy: copy.clone(),
+                source,
+            })?;
+            Ok(copy)
+        })
+        .collect()
 }
 
 /// Hands the VM to the backend of the current platform.
@@ -688,6 +769,74 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch directory unique to this process and test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-spawner-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    /// A run's workspace images are one per VM, byte-identical to the base
+    /// image, named for the VM that owns them, inside a directory only the
+    /// run's user can reach.
+    #[test]
+    fn a_run_gets_one_workspace_copy_per_vm() {
+        let dir = scratch("workspaces");
+        let base = dir.join("base.ext4");
+        std::fs::write(&base, b"a workspace image").expect("the base image");
+        let run_dir = dir.join("run-1");
+
+        let copies = materialize_workspaces(&base, &run_dir, 3).expect("the run's copies");
+
+        assert_eq!(copies.len(), 3, "one image per VM");
+        for (index, copy) in copies.iter().enumerate() {
+            assert_eq!(copy, &run_dir.join(format!("workspace-{index}.ext4")));
+            assert_eq!(
+                std::fs::read(copy).expect("a readable copy"),
+                b"a workspace image",
+                "a copy is the base's bytes"
+            );
+        }
+        // No copy is the base, and the base is untouched: a VM's writes must
+        // never reach the image the next run copies from.
+        assert!(copies.iter().all(|copy| copy != &base));
+        assert_eq!(
+            std::fs::read(&base).expect("the base image"),
+            b"a workspace image"
+        );
+        // The run's directory is private, exactly as the vsock sockets' is: a
+        // workspace is an agent's own data.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&run_dir)
+            .expect("the run's directory")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "the run's directory is 0700");
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A base image that cannot be read is an error naming both paths, so the
+    /// caller reports it instead of booting a guest with no volume.
+    #[test]
+    fn a_missing_base_image_is_an_error() {
+        let dir = scratch("missing-base");
+        let base = dir.join("missing.ext4");
+        let run_dir = dir.join("run-2");
+
+        let err = materialize_workspaces(&base, &run_dir, 1).expect_err("a missing base");
+        let text = err.to_string();
+        assert!(text.contains("missing.ext4"), "{text}");
+        assert!(text.contains("workspace-0.ext4"), "{text}");
+        assert!(
+            !run_dir.join("workspace-0.ext4").exists(),
+            "a failed copy leaves no image behind"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
 
     fn spec_with_cid(guest_cid: u64) -> VmSpec {
         VmSpec {

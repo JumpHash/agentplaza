@@ -51,6 +51,13 @@ pub struct VmImages {
     pub kernel: PathBuf,
     /// The guest initrd.
     pub initrd: PathBuf,
+    /// The base image of every run's writable workspace volume, or `None` for
+    /// runs whose guests have no block device.
+    ///
+    /// It is the *base*: a run never shares it. Each run gets one copy per VM
+    /// (see [`Registry::create_run`]), because a workspace volume is writable
+    /// and two guests sharing one image would corrupt each other's filesystem.
+    pub workspace: Option<PathBuf>,
 }
 
 /// The `POST /api/v0/runs` body, as the client sent it.
@@ -134,6 +141,8 @@ impl CreateRun {
             initrd: Some(images.initrd.clone()),
             gic: None,
             vsock: None,
+            // Filled in per VM by `create_run`, from the run's image copies.
+            workspace: None,
         };
         Ok((spec, vms, vsock_cid))
     }
@@ -391,22 +400,51 @@ impl Registry {
     /// are killed rather than left behind.
     pub fn create_run(&self, request: &CreateRun) -> Result<Arc<Run>, String> {
         let (spec, vms, vsock_cid) = request.spec(&self.images)?;
-        let run = self.insert(request);
-        let boot = match vsock_cid {
-            Some(base) => spawner::spawn_each(vms, |i| {
-                let mut per_vm = spec.clone();
+        // A run's workspace volume is writable, so every VM of the run gets its
+        // own copy of the base image: one copy per VM, in the run's own
+        // directory under the daemon's UDS root. The directory is created
+        // `0700` (an agent's workspace is its private data), and the copies are
+        // made before the run is registered, so a failure to prepare them is
+        // reported to the caller without leaving a run behind. The copies stay
+        // when the run ends: they hold the guests' work.
+        let id = self.reserve_run_id();
+        let workspaces = match &self.images.workspace {
+            Some(base) => {
+                let run_dir = self.uds_dir.join(format!("run-{id}"));
+                Some(
+                    spawner::materialize_workspaces(base, &run_dir, vms).map_err(|err| {
+                        format!("cannot prepare the run's workspace images: {err}")
+                    })?,
+                )
+            }
+            None => None,
+        };
+        let run = self.insert(id, request);
+        let boot = spawner::spawn_each(vms, |i| {
+            let mut per_vm = spec.clone();
+            if vsock_cid.is_some() || workspaces.is_some() {
                 // One command line is shared by every VM of a spawn, so the
                 // per-VM index rides as a flag the guest harness can trust.
                 per_vm.cmdline = format!("{} plaza.vm={}", spec.cmdline, i);
+            }
+            if let Some(base) = vsock_cid {
                 let guest_cid = base + u64::from(i);
                 per_vm.vsock = Some(VsockConfig {
                     guest_cid,
                     uds_path: self.uds_dir.join(format!("vm{guest_cid}")),
                 });
-                per_vm
-            }),
-            None => spawner::spawn_n(spec, vms),
-        };
+            }
+            // One image per VM, in the order `materialize_workspaces` produced
+            // them: the spawn's ids are `0..vms` and the run has exactly `vms`
+            // copies.
+            per_vm.workspace = workspaces.as_ref().and_then(|images| {
+                usize::try_from(i)
+                    .ok()
+                    .and_then(|index| images.get(index))
+                    .cloned()
+            });
+            per_vm
+        });
         match boot {
             Ok(handles) => {
                 let mut inner = run.lock();
@@ -490,11 +528,22 @@ impl Registry {
 
     /// Registers a new run in `starting`, which is where the schema says a run
     /// begins (`core.check_run`).
-    fn insert(&self, request: &CreateRun) -> Arc<Run> {
+    /// Reserves the next run id (`r{seq}`), consuming it.
+    ///
+    /// A run's id names its own directory under the UDS root (`run-{id}`, which
+    /// holds the run's workspace-image copies), so an id is never handed out
+    /// twice: a caller that reserves one and then fails leaves a gap in the
+    /// numbering rather than letting a later run share its directory.
+    fn reserve_run_id(&self) -> String {
         let mut inner = self.lock();
         inner.next_seq += 1;
+        format!("r{}", inner.next_seq)
+    }
+
+    fn insert(&self, id: String, request: &CreateRun) -> Arc<Run> {
+        let mut inner = self.lock();
         let run = Arc::new(Run {
-            id: format!("r{}", inner.next_seq),
+            id,
             vcpus: request.vcpus,
             memory_mib: request.memory_mib,
             beats: request.beats,
@@ -887,7 +936,67 @@ mod tests {
         VmImages {
             kernel: PathBuf::from("kernel"),
             initrd: PathBuf::from("initrd"),
+            workspace: None,
         }
+    }
+
+    /// A scratch directory unique to this process and test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-noded-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    /// A daemon with a workspace base image lays one copy per VM of a run out
+    /// in the run's own directory under its UDS root, before the run's VMs
+    /// boot — so no two VMs of a run ever share the one writable volume. The
+    /// images come from the real spawner path (the boot itself fails here: the
+    /// test has no guest kernel), and a failed boot does not delete them.
+    #[test]
+    fn a_run_with_a_workspace_lays_out_one_image_per_vm() {
+        let dir = scratch("workspace-run");
+        let base = dir.join("workspace.ext4");
+        std::fs::write(&base, b"workspace bytes").expect("the base image");
+        let uds_dir = dir.join("uds");
+        let events = EventBus::new();
+        let images = VmImages {
+            kernel: PathBuf::from("no-such-kernel"),
+            initrd: PathBuf::from("no-such-initrd"),
+            workspace: Some(base.clone()),
+        };
+        let registry = Registry::new(images, uds_dir.clone(), events);
+
+        let run = registry
+            .create_run(&CreateRun {
+                n: 2,
+                vcpus: 1,
+                memory_mib: MIN_MEMORY_MIB,
+                beats: None,
+                vsock_cid: None,
+            })
+            .expect("the run exists even when its VMs cannot boot");
+
+        let run_dir = uds_dir.join(format!("run-{}", run.id));
+        for index in 0..2 {
+            let image = run_dir.join(format!("workspace-{index}.ext4"));
+            assert_eq!(
+                std::fs::read(&image).expect("the VM's own image"),
+                b"workspace bytes"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&run_dir).expect("the run's directory").count(),
+            2,
+            "one image per VM, and nothing else"
+        );
+        // The base image the next run copies from is untouched.
+        assert_eq!(
+            std::fs::read(&base).expect("the base image"),
+            b"workspace bytes"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]

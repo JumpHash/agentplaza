@@ -17,13 +17,18 @@ use noded::{Config, Server};
 
 const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
+             [--workspace IMAGE]
 
-  --port PORT    port to listen on, on 127.0.0.1 (default 8899)
-  --kernel PATH  guest kernel image (default /boot/vmlinuz-linux)
-  --initrd PATH  guest initrd (default target/guest/initrd.x86_64.gz)
-  --uds-dir DIR  directory for the per-VM vsock Unix sockets
-                 (default /tmp/plaza-vsock; VM i's muxer binds DIR/vm{cid})
-  -h, --help     print this help
+  --port PORT      port to listen on, on 127.0.0.1 (default 8899)
+  --kernel PATH    guest kernel image (default /boot/vmlinuz-linux)
+  --initrd PATH    guest initrd (default target/guest/initrd.x86_64.gz)
+  --uds-dir DIR    directory for the per-VM vsock Unix sockets and, with
+                   --workspace, for the runs' image copies
+                   (default /tmp/plaza-vsock; VM i's muxer binds DIR/vm{cid})
+  --workspace IMAGE  base ext4 image of every run's writable workspace volume:
+                   each run copies it once per VM into DIR/run-{id}/
+                   (default: no block device in the guests)
+  -h, --help       print this help
 
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
 POST /api/v0/runs/{id}/input and the web app's files from apps/web.";
@@ -83,6 +88,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--kernel" => config.kernel = PathBuf::from(value("--kernel")?),
             "--initrd" => config.initrd = PathBuf::from(value("--initrd")?),
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
+            "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
             other => return Err(format!("unknown argument: {other}")),
         }
     }

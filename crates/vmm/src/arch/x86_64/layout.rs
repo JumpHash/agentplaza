@@ -157,3 +157,26 @@ pub const VSOCK_MMIO_START: u64 = MEM_32BIT_DEVICES_START;
 /// The serial console is on IRQ 4 and the i8042 controller on IRQ 1, so the
 /// first legacy GSI is the first one left.
 pub const VSOCK_GSI: u32 = GSI_LEGACY_START;
+
+/// Guest-physical MMIO window of the `virtio-mmio` transport that carries the
+/// VM's block device — its writable workspace volume: the second slot of the
+/// 32-bit MMIO device region, one slot above the vsock device's transport.
+///
+/// The guest learns about the window from its own `virtio_mmio.device=` command
+/// line entry, exactly as it does for the vsock device, and the two entries
+/// carry different addresses and interrupts. Nothing else may be mapped there:
+/// the window is outside every guest RAM region (this port's memory map ends at
+/// [`MMIO32_MEM_START`] at the latest).
+pub const WORKSPACE_MMIO_START: u64 = VSOCK_MMIO_START + MMIO_LEN;
+
+/// Interrupt line of the block device: the legacy GSI after the vsock device's.
+///
+/// It must stay inside the identity map the MPTable's `mpc_intsrc` records
+/// (ISA IRQ `i` -> GSI `i` for `0..=GSI_LEGACY_END`): that map is what keeps
+/// the guest's `request_irq` for a `virtio_mmio.device=...:<irq>` transport
+/// working, and adding an ACPI MADT I/O-APIC entry instead would move the
+/// kernel off it (see [`crate::acpi::build_madt`]). GSI 6 is free on this
+/// platform: IRQs 1 (i8042) and 4 (COM1) are used by the legacy devices, and
+/// the floppy controller that traditionally owns IRQ 6 is a module the guest
+/// never loads.
+pub const WORKSPACE_GSI: u32 = GSI_LEGACY_START + 1;

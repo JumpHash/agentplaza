@@ -163,3 +163,15 @@ pub const VSOCK_MMIO_START: u64 = MEM_32BIT_DEVICES_START;
 /// device the next. The in-kernel vGIC shifts a GSI to the SPI of the same
 /// name, and the device tree node declares that number as its interrupt.
 pub const VSOCK_GSI: u32 = GSI_LEGACY_START + 1;
+
+/// Guest-physical MMIO window of the `virtio-mmio` transport that carries the
+/// VM's block device — its writable workspace volume: the slot after the vsock
+/// device's transport in the 32-bit MMIO device region. The guest learns about
+/// it from the device tree node `create_fdt` writes.
+pub const WORKSPACE_MMIO_START: u64 = VSOCK_MMIO_START + MMIO_LEN;
+
+/// The block device's GSI: the console takes the first legacy GSI, the vsock
+/// device the second and the block device the third. The in-kernel vGIC shifts
+/// a GSI to the SPI of the same name, and the device tree node declares that
+/// number as its interrupt.
+pub const WORKSPACE_GSI: u32 = GSI_LEGACY_START + 2;

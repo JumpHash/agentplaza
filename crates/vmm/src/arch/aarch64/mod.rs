@@ -238,7 +238,7 @@ pub fn configure_system_for_boot(
     initrd: &Option<InitrdConfig>,
     boot_cmdline: Cmdline,
     serial: &SerialFdtInfo,
-    virtio_mmio: Option<VirtioMmioFdtInfo>,
+    virtio_mmio: &[VirtioMmioFdtInfo],
 ) -> Result<(), ConfigurationError> {
     // Upstream builds a `CpuConfiguration` here (from a CPU template), which is
     // also where every vCPU is initialized (`KvmVcpu::init`) and where the

@@ -91,8 +91,7 @@ fn spec_for(args: &Args) -> VmSpec {
         vcpus: 1,
         memory_mib: args.memory_mib,
         initrd: args.initrd.clone(),
-        gic: None,
-        vsock: None,
+        ..VmSpec::default()
     }
 }
 

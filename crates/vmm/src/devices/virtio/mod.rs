@@ -36,6 +36,7 @@
 //! [`mmio::VirtioDevice`], and the muxer's tests need only host Unix sockets
 //! (see `FACTS.md` next to this module for what was measured on a real host).
 
+pub mod block;
 pub mod iov_deque;
 pub mod iovec;
 pub mod mmio;
@@ -105,4 +106,10 @@ pub enum VirtioError {
     /// Failed to activate the userspace vsock device: {0}
     #[error("failed to activate the userspace vsock device: {0}")]
     VsockActivate(#[from] crate::devices::virtio::vsock::ActivateError),
+    /// The block device: {0}
+    #[error("block device: {0}")]
+    Block(#[from] crate::devices::virtio::block::VirtioBlockError),
+    /// Failed to activate the block device: {0}
+    #[error("failed to activate the block device: {0}")]
+    BlockActivate(#[from] crate::devices::virtio::block::ActivateError),
 }

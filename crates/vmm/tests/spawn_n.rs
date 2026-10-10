@@ -112,9 +112,7 @@ fn spawn_two_vms_boot_linux() {
         cmdline: "console=ttyS0 panic=-1".to_string(),
         vcpus: 1,
         memory_mib: 512,
-        initrd: None,
-        gic: None,
-        vsock: None,
+        ..VmSpec::default()
     };
 
     let mut vms = spawn_n(spec, 2).expect("spawning two VMs");

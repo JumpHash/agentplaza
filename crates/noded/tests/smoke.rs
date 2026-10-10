@@ -42,6 +42,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         initrd: root.join(noded::DEFAULT_INITRD),
         console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir: root.join(noded::DEFAULT_UDS_DIR),
+        workspace: None,
     };
     let server = noded::Server::start(config).expect("the smoke daemon should bind");
     let port = server.port();

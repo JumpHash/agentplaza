@@ -1,0 +1,248 @@
+{
+ "source": "docs/codex-draft/roles/build/roles_src.py (roles v1.1, statutes S-009-S-016)",
+ "roles": {
+  "builder": {
+   "role": "builder",
+   "title": "Builder",
+   "permits": [
+    "S-001"
+   ],
+   "toolsets": [
+    "python",
+    "git"
+   ],
+   "budget": 2000,
+   "variant": null
+  },
+  "reviewer": {
+   "role": "reviewer",
+   "title": "Reviewer",
+   "permits": [
+    "S-002"
+   ],
+   "toolsets": [
+    "python",
+    "git"
+   ],
+   "budget": 800,
+   "variant": null
+  },
+  "planner": {
+   "role": "planner",
+   "title": "Planner",
+   "permits": [
+    "S-003"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 1500,
+   "variant": null
+  },
+  "mayor": {
+   "role": "mayor",
+   "title": "Mayor",
+   "permits": [
+    "S-004"
+   ],
+   "toolsets": [],
+   "budget": 3000,
+   "variant": null
+  },
+  "finance": {
+   "role": "finance",
+   "title": "Finance",
+   "permits": [
+    "S-005"
+   ],
+   "toolsets": [
+    "python"
+   ],
+   "budget": 1000,
+   "variant": null
+  },
+  "legal-gov-prosecutor": {
+   "role": "legal-gov-prosecutor",
+   "title": "Prosecutor",
+   "permits": [
+    "S-005",
+    "S-007"
+   ],
+   "toolsets": [],
+   "budget": 500,
+   "variant": "prosecutor"
+  },
+  "legal-gov-judge": {
+   "role": "legal-gov-judge",
+   "title": "Judge",
+   "permits": [
+    "S-005",
+    "S-007"
+   ],
+   "toolsets": [],
+   "budget": 800,
+   "variant": "judge"
+  },
+  "legal-agents-defender": {
+   "role": "legal-agents-defender",
+   "title": "Public defender",
+   "permits": [
+    "S-005",
+    "S-007"
+   ],
+   "toolsets": [],
+   "budget": 500,
+   "variant": "defender"
+  },
+  "legal-agents-counsel": {
+   "role": "legal-agents-counsel",
+   "title": "Legislative counsel",
+   "permits": [
+    "S-005",
+    "S-007"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 1000,
+   "variant": "counsel"
+  },
+  "legal-agents-ombudsman": {
+   "role": "legal-agents-ombudsman",
+   "title": "Ombudsman",
+   "permits": [
+    "S-005",
+    "S-007"
+   ],
+   "toolsets": [],
+   "budget": 800,
+   "variant": "ombudsman"
+  },
+  "incident": {
+   "role": "incident",
+   "title": "Incident response",
+   "permits": [
+    "S-005"
+   ],
+   "toolsets": [],
+   "budget": 1000,
+   "variant": null
+  },
+  "mayor-office": {
+   "role": "mayor-office",
+   "title": "Mayor Office",
+   "permits": [
+    "S-005"
+   ],
+   "toolsets": [],
+   "budget": 800,
+   "variant": null
+  },
+  "breeder": {
+   "role": "breeder",
+   "title": "Breeder",
+   "permits": [
+    "S-006"
+   ],
+   "toolsets": [
+    "python"
+   ],
+   "budget": 1500,
+   "variant": null
+  },
+  "architect": {
+   "role": "architect",
+   "title": "Architect",
+   "permits": [
+    "S-009"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 2000,
+   "variant": null
+  },
+  "qa": {
+   "role": "qa",
+   "title": "QA / test author",
+   "permits": [
+    "S-010"
+   ],
+   "toolsets": [
+    "python",
+    "git"
+   ],
+   "budget": 1500,
+   "variant": null
+  },
+  "security-reviewer": {
+   "role": "security-reviewer",
+   "title": "Security reviewer",
+   "permits": [
+    "S-011"
+   ],
+   "toolsets": [
+    "python",
+    "git"
+   ],
+   "budget": 1200,
+   "variant": null
+  },
+  "release": {
+   "role": "release",
+   "title": "Release / DevOps",
+   "permits": [
+    "S-012"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 1000,
+   "variant": null
+  },
+  "researcher": {
+   "role": "researcher",
+   "title": "Researcher",
+   "permits": [
+    "S-013"
+   ],
+   "toolsets": [],
+   "budget": 800,
+   "variant": null
+  },
+  "librarian": {
+   "role": "librarian",
+   "title": "Librarian",
+   "permits": [
+    "S-014"
+   ],
+   "toolsets": [],
+   "budget": 800,
+   "variant": null
+  },
+  "auditor": {
+   "role": "auditor",
+   "title": "Auditor",
+   "permits": [
+    "S-015"
+   ],
+   "toolsets": [
+    "python"
+   ],
+   "budget": 1000,
+   "variant": null
+  },
+  "edge-operator": {
+   "role": "edge-operator",
+   "title": "Edge / device operator",
+   "permits": [
+    "S-016"
+   ],
+   "toolsets": [
+    "python"
+   ],
+   "budget": 800,
+   "variant": null
+  }
+ }
+}

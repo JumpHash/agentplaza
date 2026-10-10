@@ -108,6 +108,13 @@ pub enum BootError {
          to fall back to"
     )]
     UnsupportedVsock,
+    /// The VM asked for a workspace volume, which this backend cannot provide
+    #[error(
+        "this VM asked for a workspace volume, which the Apple Silicon backend cannot provide: \
+         its virtio-mmio transports have no device model on Hypervisor.framework (no block \
+         device is implemented for that backend)"
+    )]
+    UnsupportedWorkspace,
     /// The VM did not start: {0}
     #[error("the VM did not start: {0}")]
     Startup(String),
@@ -126,6 +133,12 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
     // back to.
     if spec.vsock.is_some() {
         return Err(BootError::UnsupportedVsock);
+    }
+    // A workspace volume is a virtio-mmio block device, and this backend has no
+    // virtio-mmio device model at all: refusing the spec keeps a caller from
+    // booting a guest that would wait forever for a device that never appears.
+    if spec.workspace.is_some() {
+        return Err(BootError::UnsupportedWorkspace);
     }
 
     let vcpu_count = usize::from(spec.vcpus);
@@ -192,9 +205,9 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             len: MMIO_LEN,
             gsi: gic::UART_SPI,
         },
-        // This backend has no vsock device (Hypervisor.framework has no
-        // vhost-vsock), so no virtio-mmio transport is described.
-        None,
+        // This backend has no virtio-mmio devices at all (no vsock device, and
+        // no block device either), so no transport is described.
+        &[],
         &GicFdtNode::new(vcpu_count),
         &initrd,
     )?;
