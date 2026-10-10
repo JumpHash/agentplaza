@@ -83,15 +83,53 @@ static void read_file_head(const char *path, unsigned lines)
     put(buf);
 }
 
+static void do_cpu(void)
+{
+    char buf[8192];
+    int fd = open("/proc/cpuinfo", O_RDONLY);
+    if (fd < 0) {
+        put("cannot open /proc/cpuinfo\n");
+        return;
+    }
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        put("(empty cpuinfo)\n");
+        return;
+    }
+    buf[n] = '\0';
+    unsigned cpus = 0;
+    char model[128] = "(model unknown)";
+    for (ssize_t i = 0; i < n; i++) {
+        if (buf[i] == '\n')
+            buf[i] = '\0';
+    }
+    for (ssize_t i = 0; i < n; i += strlen(&buf[i]) + 1) {
+        if (!strncmp(&buf[i], "processor", 9))
+            cpus++;
+        if (!strncmp(&buf[i], "model name", 10)) {
+            const char *tab = strstr(&buf[i], ": ");
+            if (tab && strlen(tab + 2) < sizeof model)
+                snprintf(model, sizeof model, "%s", tab + 2);
+        }
+    }
+    char out[192];
+    int len = snprintf(out, sizeof out, "cpus: %u (%s)\n", cpus, model);
+    write(1, out, (size_t)len);
+}
+
 static void do_command(const char *cmd)
 {
     if (!strcmp(cmd, "help")) {
-        put("commands: help, echo <text>, uname, uptime, mem, poweroff, reboot, halt\n");
+        put("commands: help, echo <text>, uname, uptime, mem, cpu, poweroff, reboot, halt\n");
     } else if (!strncmp(cmd, "echo ", 5)) {
         put(cmd + 5);
         put("\n");
     } else if (!strcmp(cmd, "echo")) {
         put("\n");
+
+    } else if (!strcmp(cmd, "cpu")) {
+        do_cpu();
     } else if (!strcmp(cmd, "uname")) {
         put("Linux plaza-vm 7.2.8-arch1-2 #1 SMP PREEMPT_DYNAMIC x86_64\n");
     } else if (!strcmp(cmd, "uptime")) {

@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentPlaza node console</title>
+<!-- Fleet console for the noded node daemon (crates/noded). Single file, no framework, no build step.
+     Talks to the frozen /api/v0 contract on the same origin:
+       GET /api/v0/runs · POST /api/v0/runs · GET /api/v0/runs/{id}
+       POST /api/v0/runs/{id}/input · DELETE /api/v0/runs/{id}
+     Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
+     a civic register — ruled rows, entry numbers in the margin, red double margin rule,
+     Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<style>
+/* Layout: the console is a register. An index with dot leaders on the left, a running header with the
+   folio, and every page a ruled sheet: entry numbers sit left of a red double margin rule.
+   Design system "Plaza" (see docs/ux-draft/owner-console.html — this file follows it). */
+:root {
+  --paper: #e9ece5; --sheet: #f4f6f1; --rule: #c7cfc3; --rule-faint: #dbe1d7; --margin: #d07a72;
+  --ink: #151916; --ink-2: #4c544d; --ink-3: #7d867e;
+  --signal: #e8590c; --signal-ink: #a63c00;
+  --crit: #a3182b; --warn: #85640e; --ok: #2e6a40; --hover: #e6eae2;
+  --mono: "Martian Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --serif: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+  --print: 2px 2px 0 var(--ink);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #101310; --sheet: #161a16; --rule: #2d342d; --rule-faint: #222822; --margin: #7a3a36;
+  --ink: #e4e8e1; --ink-2: #a6aea5; --ink-3: #6f786f;
+  --signal: #ff7a2e; --signal-ink: #ff9a5c;
+  --crit: #ff7c86; --warn: #e2bd5a; --ok: #86c995; --hover: #1c211c;
+  --print: 2px 2px 0 #000;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #101310; --sheet: #161a16; --rule: #2d342d; --rule-faint: #222822; --margin: #7a3a36;
+  --ink: #e4e8e1; --ink-2: #a6aea5; --ink-3: #6f786f;
+  --signal: #ff7a2e; --signal-ink: #ff9a5c;
+  --crit: #ff7c86; --warn: #e2bd5a; --ok: #86c995; --hover: #1c211c;
+  --print: 2px 2px 0 #000;
+  color-scheme: dark }
+
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--serif); margin: 0; }
+.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100%; }
+
+/* ---------- index */
+nav.index { padding: 22px 18px; border-right: 1px solid var(--rule); display: flex; flex-direction: column; gap: 18px; }
+.brand { font: 700 13px/1.2 var(--mono); font-stretch: 80%; letter-spacing: .02em; text-transform: uppercase; display: grid; gap: 4px; }
+.brand .mark { width: 14px; height: 14px; background: var(--ink); position: relative; margin-bottom: 4px; }
+.brand .mark::after { content: ""; position: absolute; right: 0; bottom: 0; width: 6px; height: 6px; background: var(--signal); }
+.brand small { font: 400 10.5px var(--mono); text-transform: none; color: var(--ink-3); letter-spacing: 0; font-stretch: 100%; }
+.index-list { display: grid; gap: 1px; }
+.index-list .hd { font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); padding-bottom: 6px; border-bottom: 1px solid var(--rule); margin-bottom: 4px; }
+.index-list a { display: grid; grid-template-columns: 16px auto minmax(12px, 1fr) auto; align-items: baseline; gap: 6px; padding: 5px 0; color: var(--ink-2); text-decoration: none; font: 400 12px var(--mono); }
+.index-list a .k { color: var(--ink-3); }
+.index-list a .dots { border-bottom: 1px dotted var(--ink-3); transform: translateY(-3px); }
+.index-list a .n { font-variant-numeric: tabular-nums; }
+.index-list a:hover { color: var(--ink); }
+.index-list a[aria-current="page"] { color: var(--ink); font-weight: 700; }
+.index-list a[aria-current="page"] .k { color: var(--signal-ink); }
+.colophon { margin-top: auto; font: 10.5px/1.6 var(--mono); color: var(--ink-3); display: grid; gap: 2px; }
+.colophon code { color: var(--ink-2); font: inherit; overflow-wrap: anywhere; }
+.theme { margin-top: 10px; display: flex; gap: 10px; }
+.theme button { font: 500 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; background: none; border: 0; padding: 2px 0; color: var(--ink-3); cursor: pointer; border-bottom: 1px solid transparent; }
+.theme button[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* ---------- running header and sheet */
+main { padding-block: 0 56px; min-width: 0; }
+.running { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 34px; border-bottom: 1px solid var(--rule);
+  font: 400 10.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); position: sticky; top: env(safe-area-inset-top, 0px); background: var(--paper); z-index: 2; }
+.running .prompt { text-transform: none; letter-spacing: 0; color: var(--ink-2); }
+.running .prompt .cur { display: inline-block; width: 6px; height: 11px; background: var(--ink-2); vertical-align: -1px; margin-left: 3px; }
+@media (prefers-reduced-motion: no-preference) { .running .prompt .cur { animation: blink 1.2s steps(1) infinite; } @keyframes blink { 50% { opacity: 0; } } }
+.sheet { margin: 26px 34px 0; background: var(--sheet); border: 1px solid var(--rule); max-width: 1060px; position: relative; }
+/* the red double margin rule of an account book */
+.sheet::before { content: ""; position: absolute; top: 0; bottom: 0; left: 62px; width: 3px; border-left: 1px solid var(--margin); border-right: 1px solid var(--margin); pointer-events: none; z-index: 1; }
+.title { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 0 18px; align-items: end; padding: 26px 22px 16px 0; border-bottom: 2px solid var(--ink); }
+.title .folio { grid-row: 1 / span 3; align-self: end; font: 400 10.5px var(--mono); color: var(--ink-3); text-align: right; padding-right: 10px; padding-bottom: 6px; }
+.crumbs { grid-column: 2; margin: 0 0 8px 8px; font: 10.5px var(--mono); color: var(--ink-3); letter-spacing: .04em; }
+.crumbs a { color: var(--ink-2); }
+h1 { grid-column: 2; font: 700 30px/1.02 var(--mono); font-stretch: 78%; letter-spacing: -.02em; text-transform: uppercase; margin: 0 0 0 8px; text-wrap: balance; }
+.title .lede { grid-column: 2 / -1; margin: 8px 0 0 8px; color: var(--ink-2); font-style: italic; max-width: 68ch; }
+.title .aside { grid-column: 3; justify-self: end; align-self: end; }
+
+/* ruled register rows */
+.group { display: grid; grid-template-columns: 62px minmax(0, 1fr); border-bottom: 1px solid var(--ink); }
+.group > .hd { grid-column: 2; padding: 14px 22px 6px 12px; font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; border-bottom: 1px solid var(--rule); display: flex; gap: 10px; }
+.group > .hd .c { color: var(--ink-3); font-weight: 400; }
+.group > .rows { display: contents; }
+.entry { grid-column: 1 / -1; display: grid; grid-template-columns: 62px minmax(0, 1fr) 110px 130px; align-items: baseline; border: 0; border-bottom: 1px solid var(--rule-faint);
+  background: none; color: inherit; font: inherit; text-align: left; padding: 0; cursor: pointer; width: 100%; }
+.entry:hover { background: var(--hover); }
+.entry:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, tr.link:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
+.entry .no { font: 400 11px var(--mono); color: var(--ink-3); text-align: right; padding: 13px 12px 0 0; font-variant-numeric: tabular-nums; }
+.entry .matter { padding: 11px 16px 11px 14px; min-width: 0; }
+.entry .matter b { font: 600 16px/1.35 var(--serif); display: block; }
+.entry .matter > span { font-size: 13.5px; color: var(--ink-2); }
+.entry .due { font: 500 12px var(--mono); padding: 13px 0; font-variant-numeric: tabular-nums; }
+.entry .auth { padding: 13px 18px 0 0; text-align: right; }
+.m { font: 11.5px var(--mono); }
+a { color: var(--ink); text-decoration-color: var(--ink-3); text-underline-offset: 3px; }
+a:hover { color: var(--signal-ink); }
+
+/* marks: the owner's square is the only filled orange; other states are ink or outlined */
+.mk { display: inline-flex; align-items: center; gap: 6px; font: 500 10.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; color: var(--ink-2); }
+.mk::before { content: ""; width: 8px; height: 8px; border: 1px solid currentColor; flex: none; box-sizing: border-box; }
+.mk.owner { color: var(--signal-ink); } .mk.owner::before { background: var(--signal); border-color: var(--signal); }
+.mk.crit { color: var(--crit); } .mk.crit::before { background: var(--crit); border-color: var(--crit); transform: rotate(45deg) scale(.85); }
+.mk.ok { color: var(--ok); } .mk.ok::before { border-radius: 50%; background: var(--ok); border-color: var(--ok); }
+.mk.warn { color: var(--warn); }
+
+/* particulars: label ........ value */
+.parts { display: grid; grid-template-columns: 62px minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
+.parts.top { border-top: 1px solid var(--ink); }
+.parts .body { grid-column: 2; padding: 16px 22px 18px 14px; display: grid; gap: 14px; min-width: 0; }
+.parts .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px 36px; }
+.parts h2 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0 0 6px; }
+dl { margin: 0; }
+.lead { display: grid; grid-template-columns: auto minmax(16px, 1fr) minmax(0, max-content); gap: 8px; align-items: baseline; padding: 3px 0; }
+.lead dt { font: 400 11px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+.lead i { border-bottom: 1px dotted var(--ink-3); transform: translateY(-4px); }
+.lead dd { margin: 0; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.example { font: italic 13.5px var(--serif); color: var(--ink-3); margin: 0; }
+.err { font: italic 13.5px var(--serif); color: var(--crit); }
+
+/* controls: square, ink-bordered, printed */
+.actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.btn { font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 10px 14px; border: 1px solid var(--ink); background: var(--sheet); color: var(--ink); cursor: pointer; box-shadow: var(--print); }
+.btn:hover { background: var(--ink); color: var(--sheet); }
+.btn:active { transform: translate(2px, 2px); box-shadow: none; }
+.btn.owner { background: var(--signal); color: #120800; }
+.btn.owner:hover { background: var(--signal-ink); color: #fff; }
+.btn.danger { color: var(--crit); border-color: var(--crit); box-shadow: 2px 2px 0 var(--crit); }
+.btn.danger:hover { background: var(--crit); color: var(--sheet); }
+.btn:disabled, .btn:disabled:hover { opacity: .4; cursor: default; transform: none; background: var(--sheet); color: var(--ink); box-shadow: var(--print); }
+.btn.sm { padding: 7px 10px; font-size: 10px; }
+label { font: 400 11px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+textarea, input[type="text"], input[type="number"] { font: 15px/1.5 var(--serif); width: 100%; padding: 4px 0 6px; border: 0; border-bottom: 1px solid var(--ink); border-radius: 0; background: transparent; color: var(--ink); box-sizing: border-box; }
+textarea:focus, input[type="text"]:focus, input[type="number"]:focus { outline: none; border-bottom: 2px solid var(--signal); }
+input[type="checkbox"] { accent-color: var(--signal); }
+.check { display: inline-flex; align-items: center; gap: 8px; font: 400 11px var(--mono); color: var(--ink-2); text-transform: none; letter-spacing: 0; cursor: pointer; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 24px; max-width: 780px; }
+.fields .f label { display: block; margin-bottom: 2px; }
+.stamp { display: inline-block; font: 700 13px var(--mono); font-stretch: 75%; letter-spacing: .1em; text-transform: uppercase; padding: 6px 12px; border: 2px solid currentColor; outline: 1px solid currentColor; outline-offset: 2px; transform: rotate(-3deg); color: var(--ok); }
+.stamp.deny { color: var(--crit); }
+@media (prefers-reduced-motion: no-preference) { .stamp { animation: press .18s ease-out; } @keyframes press { from { transform: rotate(-3deg) scale(1.25); opacity: 0; } } }
+
+/* transcript: seq in the margin, kinds in a narrow column, marginalia right */
+.txwrap { max-height: 60vh; overflow-y: auto; border-top: 1px solid var(--rule); }
+.tx .row { display: grid; grid-template-columns: 48px 62px minmax(0, 1fr) 70px; align-items: baseline; border-bottom: 1px solid var(--rule-faint); font: 12px/1.55 var(--mono); }
+.tx .row:last-child { border-bottom: 0; }
+.tx .seq { color: var(--ink-3); text-align: right; padding: 8px 12px 8px 0; font-variant-numeric: tabular-nums; }
+.tx .kind { color: var(--ink-3); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; padding: 8px 0; }
+.tx pre { margin: 0; padding: 8px 12px 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.tx .marg { padding: 8px 4px 8px 0; text-align: right; }
+.tx .row.elide pre { color: var(--ink-3); font-style: italic; }
+
+/* tables in register style */
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); text-align: left; padding: 12px 12px 6px; border-bottom: 1px solid var(--ink); white-space: nowrap; }
+th:first-child, td:first-child { width: 38px; text-align: right; padding-right: 14px; color: var(--ink-3); font: 400 11px var(--mono); }
+td { padding: 11px 12px; border-bottom: 1px solid var(--rule-faint); white-space: nowrap; }
+th:nth-child(2), td:nth-child(2) { padding-left: 16px; }
+td.num, th.num { text-align: right; font: 12px var(--mono); }
+td.m { font: 11.5px var(--mono); }
+tr.link { cursor: pointer; } tr.link:hover td { background: var(--hover); }
+tr.sel td { background: var(--hover); }
+tr.sel td:first-child { color: var(--signal-ink); font-weight: 700; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.toast { position: fixed; right: 22px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); background: var(--sheet); color: var(--ink); border: 1px solid var(--ink); box-shadow: var(--print); padding: 10px 14px; font: 600 11.5px var(--mono); z-index: 3; max-width: min(420px, calc(100vw - 44px)); }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  nav.index { border-right: 0; border-bottom: 1px solid var(--rule); padding: 12px 16px; gap: 8px; }
+  .colophon, .index-list .hd { display: none; }
+  .index-list { grid-auto-flow: column; overflow-x: auto; gap: 16px; }
+  .index-list a { grid-template-columns: auto auto auto; white-space: nowrap; }
+  .index-list a .dots { display: none; }
+  .running { padding: 10px 16px; }
+  .sheet { margin: 16px 16px 0; }
+  .sheet::before { left: 34px; }
+  .title, .group, .parts { grid-template-columns: 34px minmax(0, 1fr); }
+  .title { padding-right: 14px; }
+  .title .aside { grid-column: 2; justify-self: start; margin: 10px 0 0 8px; }
+  .title .folio { font-size: 9px; padding-right: 4px; }
+  h1 { font-size: 23px; }
+  .entry { grid-template-columns: 34px minmax(0, 1fr); }
+  .entry .no { padding-right: 6px; font-size: 9.5px; }
+  .entry .due, .entry .auth { grid-column: 2; padding: 0 14px 10px; text-align: left; }
+  .entry .due { padding-bottom: 2px; }
+  .tx .row { grid-template-columns: 34px minmax(0, 1fr); }
+  .tx .seq { padding-right: 6px; }
+  .tx .kind, .tx pre, .tx .marg { grid-column: 2; padding-left: 14px; text-align: left; }
+  .tx .kind { padding-top: 8px; padding-bottom: 0; }
+  .tx pre { padding-top: 0; }
+  .tx .marg:empty { display: none; }
+  .parts .body { padding: 14px 14px 16px 14px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="index" aria-label="Index">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
+    <div class="index-list">
+      <div class="hd">Index</div>
+      <a href="#runs" data-nav="runs" aria-keyshortcuts="0"><span class="k">0</span><span>Runs</span><span class="dots"></span><span class="n" id="nav-count">—</span></a>
+    </div>
+    <div class="colophon">
+      <span>Direct to the node daemon — no relay</span>
+      <span id="colo-origin">Node —</span>
+      <span>Bundle <code id="colo-hash">hashing…</code></span>
+      <span>Key 0 opens the register</span>
+      <div class="theme" role="group" aria-label="Theme">
+        <button type="button" data-theme-set="system" aria-pressed="true">System</button>
+        <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+        <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <div class="running">
+      <span id="running-left">Opening the register…</span>
+      <span class="prompt" id="prompt">$ apz runs --follow<span class="cur" aria-hidden="true"></span></span>
+    </div>
+
+    <div class="sheet">
+
+    <!-- ============================================================ RUNS -->
+    <div data-view="runs" data-cmd="apz runs --follow">
+      <div class="title">
+        <span class="folio">f. 1</span>
+        <h1>Runs</h1>
+        <span class="aside mk ok" id="runs-live" hidden>live</span>
+        <p class="lede">Every run entered on this node, newest first. A run is one to sixty-four guest VMs spawned together; their serial consoles are live below each entry.</p>
+      </div>
+
+      <div class="parts" id="notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <h2>Enter a run</h2>
+        <form id="spawn" novalidate>
+          <div class="fields">
+            <div class="f"><label for="f-n">VMs · n</label><input id="f-n" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></div>
+            <div class="f"><label for="f-vcpus">vCPUs each</label><input id="f-vcpus" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></div>
+            <div class="f"><label for="f-mem">Memory each · MiB</label><input id="f-mem" type="number" min="128" step="1" value="512" inputmode="numeric"></div>
+            <div class="f"><label for="f-beats">Beats · churn, optional</label><input id="f-beats" type="number" min="1" step="1" placeholder="steady" inputmode="numeric"></div>
+          </div>
+          <p class="example" style="margin-top:12px">n 1–64 · vCPUs 1–64 · memory 128 MiB and up. With beats set, each guest heartbeats that many times, then powers itself off (churn mode); the run closes itself. Empty beats runs steady, until you kill it.</p>
+          <div class="actions" style="margin-top:14px">
+            <button type="submit" class="btn owner" id="spawn-btn">Spawn the run</button>
+            <span class="err" id="spawn-err" role="alert"></span>
+          </div>
+        </form>
+      </div></div>
+
+      <div class="group" style="border-bottom:0">
+        <div class="hd">The register <span class="c" id="reg-count"></span></div>
+        <div class="rows" id="runs-list"></div>
+      </div>
+      <div class="parts" id="runs-empty" hidden style="border-bottom:0"><div class="body">
+        <p class="example">No runs entered yet — the page is blank. Enter the first one above.</p>
+      </div></div>
+    </div>
+
+    <!-- ============================================================ RUN -->
+    <div data-view="run" data-cmd="apz run --follow" hidden>
+      <div class="title">
+        <span class="folio" id="d-folio">no. —</span>
+        <div class="crumbs"><a href="#runs">Runs</a> / <span id="d-crumb">—</span></div>
+        <h1 id="d-h1">Run —</h1>
+        <span class="aside" id="d-state"></span>
+        <p class="lede" id="d-lede">Fetching the entry…</p>
+      </div>
+
+      <div class="parts" id="d-notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="d-notice-text"></p>
+      </div></div>
+
+      <div class="parts"><div class="body"><div class="cols">
+        <div>
+          <h2>Register</h2>
+          <dl>
+            <div class="lead"><dt>State</dt><i></i><dd id="d-state2">—</dd></div>
+            <div class="lead"><dt>Opened</dt><i></i><dd class="m" id="d-opened">—</dd></div>
+            <div class="lead"><dt>Closed</dt><i></i><dd class="m" id="d-closed">—</dd></div>
+            <div class="lead"><dt>Elapsed</dt><i></i><dd class="m" id="d-elapsed">—</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h2>Shape</h2>
+          <dl>
+            <div class="lead"><dt>VMs</dt><i></i><dd class="m" id="d-n">—</dd></div>
+            <div class="lead"><dt>vCPUs each</dt><i></i><dd class="m" id="d-vcpus">—</dd></div>
+            <div class="lead"><dt>Memory each</dt><i></i><dd class="m" id="d-mem">—</dd></div>
+            <div class="lead"><dt>Beats</dt><i></i><dd class="m" id="d-beats">—</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h2>Guests</h2>
+          <dl>
+            <div class="lead"><dt>Running</dt><i></i><dd class="m" id="d-vm-running">—</dd></div>
+            <div class="lead"><dt>Exited</dt><i></i><dd class="m" id="d-vm-exited">—</dd></div>
+            <div class="lead"><dt>Killed</dt><i></i><dd class="m" id="d-vm-killed">—</dd></div>
+          </dl>
+          <p class="example" style="margin-top:8px">Times are this node's local clock.</p>
+        </div>
+      </div></div></div>
+
+      <div class="parts"><div class="body">
+        <h2>The owner's hand</h2>
+        <p class="example">Killing stops every VM in the run at once. On an already-finished run the strike is a harmless no-op.</p>
+        <div class="actions">
+          <button type="button" class="btn danger" id="d-kill" disabled>Kill run</button>
+          <span id="d-stamp"></span>
+        </div>
+      </div></div>
+
+      <div class="group" style="border-bottom:0"><div class="hd">Virtual machines <span class="c" id="d-vm-count"></span></div></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>No.</th><th>VM</th><th>State</th><th class="num">Serial lines</th><th class="num">Serial bytes</th><th>Transcript</th></tr></thead>
+        <tbody id="vm-body"></tbody>
+      </table></div>
+
+      <div class="group" style="border-bottom:0"><div class="hd">Transcript <span class="c" id="tx-hd"></span></div></div>
+      <div class="parts"><div class="body">
+        <p class="example">Guest output is untrusted — rendered as text, never as markup.</p>
+        <div class="txwrap" id="txwrap">
+          <div class="tx" id="tx" role="log" aria-live="off" aria-label="Serial transcript"></div>
+        </div>
+        <div class="actions">
+          <label class="check" for="tx-follow"><input type="checkbox" id="tx-follow" checked> Follow new lines</label>
+          <button type="button" class="btn sm" id="tx-jump">Jump to the latest line</button>
+        </div>
+      </div></div>
+
+      <div class="parts top" style="border-bottom:0"><div class="body">
+        <h2 id="in-hd">Write to the serial console</h2>
+        <div class="actions" id="quick"></div>
+        <form id="in-form">
+          <label for="in-cmd" id="in-label">Command for vm —</label>
+          <input type="text" id="in-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="help">
+          <div class="actions" style="margin-top:12px">
+            <button type="submit" class="btn" id="in-send">Send to vm —</button>
+          </div>
+        </form>
+        <p class="example" id="in-note">The guest serves one command per heartbeat window (about 5 s); the reply lands in the transcript above. It understands: help, uname, cpu, mem, uptime, echo &lt;text&gt;, poweroff.</p>
+      </div></div>
+    </div>
+
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="sr-only" role="status" id="sr-status"></div>
+
+<script>
+(function () {
+'use strict';
+
+/* ============================================================ the store.
+   The only copy of daemon state. Every view renders from this; nothing
+   keeps its own divergent copy. Runs arrive whole from the daemon;
+   serial text is append-only per VM. */
+var store = {
+  runs: [],              // list view of runs (no serial), newest first
+  runsError: null,       // last list-poll error string, or null
+  detail: null,          // full run JSON for the open run view (with serial)
+  detailError: null,
+  detailId: null,        // run id named by the current #run/<id> route
+  vm: 0,                 // selected vm index within the open run
+  follow: true,          // transcript tail-follow
+  serial: {},            // vm id -> { raw, lines } parsed serial cache
+  txFrom: 0, txTo: 0,    // rendered window [from, to) into lines
+  txLastRow: null,       // { idx, pre } of a rendered partial last line
+  txEmpty: null,         // placeholder text currently shown, or null
+  txDirty: true,         // transcript needs a full rebuild
+  vmSig: null, vmRows: [],
+  runsSig: null, runRows: {},
+  announced: null,       // last state announced to screen readers
+  stampKey: null
+};
+var MAXROWS = 1500;      // transcript render window; older lines elide
+var TICK_MS = 1000;      // detail poll cadence; the list polls every 2 ticks
+
+/* ============================================================ helpers */
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
+function seqOf(id) { var m = /^r(\d+)$/.exec(id || ''); return m ? Number(m[1]) : 0; }
+function fmtNum(n) { return Number(n || 0).toLocaleString('en-GB'); }
+function fmtTime(ms) {
+  if (ms == null) return '—';
+  var d = new Date(ms);
+  return pad(d.getHours(), 2) + ':' + pad(d.getMinutes(), 2) + ':' + pad(d.getSeconds(), 2);
+}
+function fmtDur(ms) {
+  var s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return s + ' s';
+  var m = Math.floor(s / 60); s %= 60;
+  if (m < 60) return m + ' m ' + pad(s, 2) + ' s';
+  var h = Math.floor(m / 60); m %= 60;
+  return h + ' h ' + pad(m, 2) + ' m';
+}
+function isOpen(run) { return run && (run.state === 'starting' || run.state === 'running'); }
+function stateMk(state) {
+  var cls = { starting: 'mk warn', running: 'mk ok', done: 'mk', failed: 'mk crit', killed: 'mk' }[state] || 'mk';
+  return el('span', cls, state || '—');
+}
+function vmStateMk(state) {
+  var cls = { running: 'mk ok', exited: 'mk', killed: 'mk' }[state] || 'mk';
+  return el('span', cls, state || '—');
+}
+function modeText(run) {
+  return run.beats == null ? 'steady · runs until killed' : 'churn · ' + run.beats + ' beats then poweroff';
+}
+
+/* ============================================================ api (frozen /api/v0) */
+function api(path, opts) {
+  opts = opts || {};
+  opts.cache = 'no-store';
+  if (opts.body != null) {
+    opts.method = opts.method || 'POST';
+    opts.headers = { 'content-type': 'application/json' };
+    opts.body = JSON.stringify(opts.body);
+  }
+  return fetch(path, opts).then(function (res) {
+    return res.json().catch(function () { return null; }).then(function (body) {
+      if (!res.ok) {
+        var msg = body && (body.error || body.message) ? String(body.error || body.message) : ('HTTP ' + res.status);
+        var err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return body;
+    });
+  });
+}
+
+/* ============================================================ toast + announcements */
+var toastTimer;
+function toast(text) {
+  var t = document.getElementById('toast');
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 2600);
+}
+function announce(text) { document.getElementById('sr-status').textContent = text; }
+
+/* ============================================================ serial line cache */
+function linesOf(vm) {
+  var raw = vm.serial == null ? '' : String(vm.serial);
+  var c = store.serial[vm.id];
+  if (c && c.raw === raw) return c.lines;
+  if (!c || raw.slice(0, c.raw.length) !== c.raw) {
+    /* fresh vm or the daemon replaced the buffer: re-split wholesale */
+    var fresh = raw === '' ? [] : raw.replace(/\n$/, '').split('\n');
+    store.serial[vm.id] = { raw: raw, lines: fresh };
+    store.txDirty = true;
+    return fresh;
+  }
+  /* append-only growth; the last line may still be on its way (no \n yet) */
+  var lines = c.lines;
+  var parts = raw.slice(c.raw.length).split('\n');
+  var i = 0;
+  if (c.raw !== '' && c.raw.charAt(c.raw.length - 1) !== '\n' && lines.length) {
+    lines[lines.length - 1] += parts[0]; i = 1;
+  }
+  for (; i < parts.length; i++) lines.push(parts[i]);
+  if (raw.charAt(raw.length - 1) === '\n') lines.pop();
+  c.raw = raw;
+  return lines;
+}
+function kindOf(line) {
+  if (line.indexOf('plaza guest alive: heartbeat') === 0) return 'beat';
+  if (line.indexOf('plaza guest:') === 0) return 'guest';
+  if (line.charAt(0) === '[') return 'boot';
+  if (/^(cpus:|Linux plaza-vm|commands:|MemTotal:|MemFree:|MemAvailable:|unknown command)/.test(line)) return 'reply';
+  if (/^\d+\.\d+ +\d+\.\d+$/.test(line)) return 'reply';
+  return 'line';
+}
+
+/* ============================================================ polling */
+var view = 'runs';
+var busy = false, ticks = 0, timer = null;
+
+function pollList() {
+  return api('/api/v0/runs').then(function (body) {
+    var runs = body && body.runs ? body.runs.slice() : [];
+    runs.sort(function (a, b) { return seqOf(b.id) - seqOf(a.id); });
+    store.runs = runs;
+    store.runsError = null;
+  }).catch(function (err) {
+    store.runsError = err && err.message ? err.message : String(err);
+  }).then(scheduleRender);
+}
+function mergeDetail(run) {
+  /* DELETE answers with a run but without serial text: keep what we have. */
+  var old = store.detail;
+  if (run.vms) run.vms.forEach(function (v, i) {
+    if (v.serial == null) v.serial = (old && old.id === run.id && old.vms && old.vms[i] && old.vms[i].serial) || '';
+  });
+  store.detail = run;
+  if (run.state !== store.announced && store.announced != null) announce('Run ' + run.id + ' is now ' + run.state + '.');
+  store.announced = run.state;
+}
+function pollDetail() {
+  if (!store.detailId) return Promise.resolve();
+  return api('/api/v0/runs/' + encodeURIComponent(store.detailId)).then(function (run) {
+    mergeDetail(run);
+    store.detailError = null;
+  }).catch(function (err) {
+    if (err && err.status === 404) {
+      toast('Run ' + store.detailId + ' is not on the register');
+      store.detailError = null;
+      store.detail = null;
+      if (location.hash !== '#runs') location.hash = '#runs';
+      return;
+    }
+    store.detailError = err && err.message ? err.message : String(err);
+  }).then(scheduleRender);
+}
+function tick() {
+  if (busy) return;
+  busy = true;
+  var jobs = [];
+  if (view === 'run' && store.detailId) jobs.push(pollDetail());
+  if (ticks % 2 === 0 || store.runsError != null || store.runs.length === 0) jobs.push(pollList());
+  ticks++;
+  Promise.all(jobs).then(function () { busy = false; }, function () { busy = false; });
+}
+function startPolling() { if (timer == null) { tick(); timer = setInterval(tick, TICK_MS); } }
+function stopPolling() { if (timer != null) { clearInterval(timer); timer = null; } }
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) stopPolling(); else startPolling();
+});
+
+/* ============================================================ rendering.
+   Polls hand new store state to the DOM at most once per animation frame. */
+var renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(function () { renderQueued = false; render(); });
+}
+function render() {
+  renderChrome();
+  if (view === 'run') renderRun(); else renderRuns();
+}
+
+/* ---------- chrome: index count, running header, prompt */
+function renderChrome() {
+  document.getElementById('nav-count').textContent = store.runsError != null ? '—' : fmtNum(store.runs.length);
+  var left;
+  var date = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  if (store.runsError != null && store.runs.length === 0) {
+    left = date + ' · node unreachable';
+  } else if (store.runs.length === 0) {
+    left = date + ' · the register is blank';
+  } else {
+    left = date + ' · folio ' + fmtNum(seqOf(store.runs[0].id)) + ' · ' + fmtNum(store.runs.length) + (store.runs.length === 1 ? ' entry' : ' entries');
+  }
+  document.getElementById('running-left').textContent = left;
+  var cmd = view === 'run' && store.detailId ? 'apz run ' + store.detailId + ' --follow' : 'apz runs --follow';
+  var prompt = document.getElementById('prompt');
+  prompt.firstChild.nodeValue = '$ ' + cmd;
+}
+
+/* ---------- runs view */
+function renderRuns() {
+  var notice = document.getElementById('notice');
+  if (store.runsError != null) {
+    notice.hidden = false;
+    document.getElementById('notice-text').textContent =
+      'The node daemon is not answering at ' + location.origin + ' (' + store.runsError + '). Retrying every two seconds; the page catches up on its own.';
+  } else {
+    notice.hidden = true;
+  }
+
+  var live = 0;
+  store.runs.forEach(function (r) { if (isOpen(r)) live++; });
+  var liveEl = document.getElementById('runs-live');
+  liveEl.hidden = live === 0;
+  liveEl.textContent = live + ' live';
+  document.getElementById('reg-count').textContent =
+    store.runsError != null ? 'last known' : fmtNum(store.runs.length) + (store.runs.length === 1 ? ' entry' : ' entries');
+  document.getElementById('runs-empty').hidden = !(store.runsError == null && store.runs.length === 0);
+
+  /* Rebuild entries only when the register's shape changes; tick the
+     durations in place otherwise so focus is never stolen. */
+  var sig = store.runs.map(function (r) {
+    return r.id + ':' + r.state + ':' + (r.ended_at || 0) + ':' + (r.vms ? r.vms.length : 0);
+  }).join('|');
+  var list = document.getElementById('runs-list');
+  if (sig !== store.runsSig) {
+    store.runsSig = sig;
+    store.runRows = {};
+    list.textContent = '';
+    store.runs.forEach(function (r) {
+      var seq = seqOf(r.id);
+      var b = el('b', null, 'Run ' + r.id + ' — ' + (r.vms ? r.vms.length : 0) + ' VMs × ' + r.vcpus + ' vCPUs, ' + fmtNum(r.memory_mib) + ' MiB each');
+      var sub = el('span');
+      var subStatic = document.createTextNode(modeText(r) + ' · opened ' + fmtTime(r.created_at));
+      var subDur = document.createTextNode('');
+      sub.appendChild(subStatic);
+      sub.appendChild(el('span', null, '')).appendChild(subDur);
+      var matter = el('span', 'matter');
+      matter.appendChild(b);
+      matter.appendChild(sub);
+      var btn = el('button', 'entry');
+      btn.type = 'button';
+      btn.setAttribute('data-go', '#run/' + r.id);
+      btn.setAttribute('aria-label', 'Open run ' + r.id + ', ' + r.state);
+      btn.appendChild(el('span', 'no', pad(seq, 4)));
+      btn.appendChild(matter);
+      btn.appendChild(el('span', 'due', fmtTime(r.created_at)));
+      var auth = el('span', 'auth');
+      auth.appendChild(stateMk(r.state));
+      btn.appendChild(auth);
+      list.appendChild(btn);
+      store.runRows[r.id] = { dur: subDur, run: r };
+    });
+  }
+  var now = Date.now();
+  for (var id in store.runRows) {
+    var row = store.runRows[id], r = row.run;
+    row.dur.nodeValue = r.ended_at != null
+      ? ' · closed ' + fmtTime(r.ended_at) + ' after ' + fmtDur(r.ended_at - r.created_at)
+      : ' · ' + fmtDur(now - r.created_at) + ' so far';
+  }
+}
+
+/* ---------- run detail view */
+function renderRun() {
+  var run = store.detail;
+  var notice = document.getElementById('d-notice');
+  if (store.detailError != null) {
+    notice.hidden = false;
+    document.getElementById('d-notice-text').textContent =
+      'The node daemon is not answering (' + store.detailError + '). Retrying; the page catches up on its own.';
+  } else {
+    notice.hidden = true;
+  }
+
+  document.getElementById('d-crumb').textContent = store.detailId || '—';
+  if (!run) {
+    document.getElementById('d-folio').textContent = 'no. ' + pad(seqOf(store.detailId), 4);
+    document.getElementById('d-h1').textContent = 'Run ' + (store.detailId || '—');
+    document.getElementById('d-lede').textContent = store.detailError ? 'The entry cannot be read just now.' : 'Fetching the entry…';
+    renderVms(null);
+    renderSerial(null);
+    setInputEnabled(false, 'The entry cannot be read just now.');
+    return;
+  }
+
+  var n = run.vms ? run.vms.length : 0;
+  document.getElementById('d-folio').textContent = 'no. ' + pad(seqOf(run.id), 4);
+  document.getElementById('d-h1').textContent = 'Run ' + run.id;
+  var st = document.getElementById('d-state');
+  st.textContent = ''; st.appendChild(stateMk(run.state));
+  document.getElementById('d-lede').textContent =
+    n + (n === 1 ? ' VM' : ' VMs') + ' × ' + run.vcpus + ' vCPUs · ' + fmtNum(run.memory_mib) + ' MiB each · ' +
+    modeText(run) + ' · opened ' + fmtTime(run.created_at) +
+    (run.ended_at != null ? ' · closed ' + fmtTime(run.ended_at) : '');
+  var st2 = document.getElementById('d-state2');
+  st2.textContent = ''; st2.appendChild(stateMk(run.state));
+  document.getElementById('d-opened').textContent = fmtTime(run.created_at);
+  document.getElementById('d-closed').textContent = run.ended_at != null ? fmtTime(run.ended_at) : '—';
+  document.getElementById('d-elapsed').textContent = fmtDur((run.ended_at != null ? run.ended_at : Date.now()) - run.created_at);
+  document.getElementById('d-n').textContent = String(n);
+  document.getElementById('d-vcpus').textContent = String(run.vcpus);
+  document.getElementById('d-mem').textContent = fmtNum(run.memory_mib) + ' MiB';
+  document.getElementById('d-beats').textContent = run.beats == null ? 'steady — until killed' : String(run.beats);
+  var counts = { running: 0, exited: 0, killed: 0 };
+  (run.vms || []).forEach(function (v) { if (counts[v.state] != null) counts[v.state]++; });
+  document.getElementById('d-vm-running').textContent = String(counts.running);
+  document.getElementById('d-vm-exited').textContent = String(counts.exited);
+  document.getElementById('d-vm-killed').textContent = String(counts.killed);
+
+  /* the owner's hand: kill while open, a stamp once the register closes */
+  var kill = document.getElementById('d-kill');
+  if (!kill.hasAttribute('data-busy')) {
+    kill.disabled = !isOpen(run);
+    kill.textContent = 'Kill run ' + run.id;
+  }
+  var stampSlot = document.getElementById('d-stamp');
+  var key = isOpen(run) ? null : run.state + '@' + run.ended_at;
+  if (key !== store.stampKey) {
+    store.stampKey = key;
+    stampSlot.textContent = '';
+    if (key) {
+      var deny = run.state !== 'done';
+      stampSlot.appendChild(el('span', 'stamp' + (deny ? ' deny' : ''),
+        run.state.charAt(0).toUpperCase() + run.state.slice(1) + ' · ' + fmtTime(run.ended_at)));
+    }
+  }
+
+  renderVms(run);
+  renderSerial(run);
+  setInputEnabled(isOpen(run) && n > 0,
+    n === 0 ? 'The VMs are starting — handles land here shortly.' : 'This run is closed — its VMs have left.');
+}
+
+function renderVms(run) {
+  var vms = run && run.vms ? run.vms : [];
+  document.getElementById('d-vm-count').textContent =
+    vms.length ? fmtNum(vms.length) + (vms.length === 1 ? ' handle' : ' handles') : (run ? 'starting' : '—');
+  if (store.vm > vms.length - 1) store.vm = Math.max(0, vms.length - 1);
+  var sig = vms.map(function (v) { return v.id + ':' + v.state; }).join('|');
+  var tb = document.getElementById('vm-body');
+  if (sig !== store.vmSig) {
+    store.vmSig = sig;
+    store.vmRows = [];
+    tb.textContent = '';
+    vms.forEach(function (v, i) {
+      var tr = el('tr', 'link');
+      tr.tabIndex = 0;
+      tr.setAttribute('data-sel-vm', String(i));
+      tr.setAttribute('aria-label', 'Show transcript of vm ' + v.id + ', ' + v.state);
+      tr.appendChild(el('td', null, pad(i + 1, 2)));
+      tr.appendChild(el('td', 'm', 'vm ' + v.id));
+      var stTd = el('td'); stTd.appendChild(vmStateMk(v.state)); tr.appendChild(stTd);
+      var linesTd = el('td', 'num', '0');
+      var bytesTd = el('td', 'num', '0');
+      var viewTd = el('td', 'm');
+      tr.appendChild(linesTd); tr.appendChild(bytesTd); tr.appendChild(viewTd);
+      tb.appendChild(tr);
+      store.vmRows.push({ tr: tr, id: v.id, vm: v, linesTd: linesTd, bytesTd: bytesTd, viewTd: viewTd });
+    });
+    store.txDirty = true;
+  }
+  /* store.detail is replaced on every poll: rebind rows to the fresh vm
+     objects before reading serial, or the counts freeze at first paint */
+  var freshById = {};
+  vms.forEach(function (v) { freshById[v.id] = v; });
+  store.vmRows.forEach(function (row, i) {
+    if (freshById[row.id]) row.vm = freshById[row.id];
+    var lines = linesOf(row.vm);
+    row.linesTd.textContent = fmtNum(lines.length);
+    row.bytesTd.textContent = fmtNum(row.vm.serial ? row.vm.serial.length : 0);
+    var sel = i === store.vm;
+    row.tr.classList.toggle('sel', sel);
+    if (sel) row.tr.setAttribute('aria-current', 'true'); else row.tr.removeAttribute('aria-current');
+    row.viewTd.textContent = sel ? 'viewing' : '';
+  });
+}
+
+function txRow(i, line, cls) {
+  var row = el('div', 'row' + (cls ? ' ' + cls : ''));
+  row.appendChild(el('span', 'seq', i >= 0 ? pad(i + 1, 4) : ''));
+  row.appendChild(el('span', 'kind', cls === 'elide' ? '' : kindOf(line)));
+  row.appendChild(el('pre', null, line));
+  var marg = el('span', 'marg');
+  if (/rebooting|parking/.test(line)) marg.appendChild(el('span', 'mk warn', 'exit'));
+  row.appendChild(marg);
+  return row;
+}
+function renderSerial(run) {
+  var tx = document.getElementById('tx');
+  var vms = run && run.vms ? run.vms : [];
+  var vm = vms.length ? vms[Math.min(store.vm, vms.length - 1)] : null;
+  var hd = document.getElementById('tx-hd');
+
+  if (!vm) {
+    hd.textContent = run ? 'the VMs are starting' : '—';
+    tx.textContent = '';
+    tx.appendChild(txRow(0, run ? '— the run is starting; VM handles land here shortly.' : '— nothing to show yet.', 'elide'));
+    store.txFrom = store.txTo = 0; store.txLastRow = null; store.txEmpty = 'starting'; store.txDirty = false;
+    return;
+  }
+
+  var lines = linesOf(vm);
+  hd.textContent = 'vm ' + vm.id + ' · ' + fmtNum(lines.length) + (lines.length === 1 ? ' line' : ' lines');
+
+  if (lines.length === 0) {
+    if (store.txEmpty !== 'boot') {
+      tx.textContent = '';
+      tx.appendChild(txRow(0, '— the guest is booting; serial output lands here.', 'elide'));
+      store.txFrom = store.txTo = 0; store.txLastRow = null; store.txEmpty = 'boot'; store.txDirty = false;
+    }
+    return;
+  }
+  if (store.txEmpty != null) { store.txEmpty = null; store.txDirty = true; }
+
+  if (store.txDirty) {
+    tx.textContent = '';
+    store.txFrom = Math.max(0, lines.length - MAXROWS);
+    store.txTo = store.txFrom;
+    store.txLastRow = null;
+    store.txDirty = false;
+    if (store.txFrom > 0) tx.appendChild(txRow(-1, '… ' + fmtNum(store.txFrom) + ' earlier lines elided …', 'elide'));
+  } else if (lines.length - store.txFrom > MAXROWS) {
+    store.txFrom = lines.length - MAXROWS;
+    tx.textContent = '';
+    tx.appendChild(txRow(-1, '… ' + fmtNum(store.txFrom) + ' earlier lines elided …', 'elide'));
+    store.txTo = store.txFrom;
+    store.txLastRow = null;
+  }
+
+  /* a previously rendered last line may have grown (partial line on the wire) */
+  if (store.txLastRow && store.txLastRow.idx < lines.length) {
+    store.txLastRow.pre.textContent = lines[store.txLastRow.idx];
+  }
+  store.txLastRow = null;
+
+  var lastPre = null;
+  for (var i = store.txTo; i < lines.length; i++) {
+    var row = txRow(i, lines[i]);
+    lastPre = row.querySelector('pre');
+    tx.appendChild(row);
+  }
+  store.txTo = lines.length;
+  var raw = vm.serial || '';
+  if (lines.length && raw.charAt(raw.length - 1) !== '\n' && lastPre) {
+    store.txLastRow = { idx: lines.length - 1, pre: lastPre };
+  }
+
+  if (store.follow) {
+    var wrap = document.getElementById('txwrap');
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+}
+
+/* ---------- serial input */
+var QUICK = [
+  ['help', 'list the guest\u2019s commands'],
+  ['uname', 'kernel banner'],
+  ['cpu', 'vCPU count and model'],
+  ['mem', 'first lines of /proc/meminfo'],
+  ['uptime', '/proc/uptime'],
+  ['poweroff', 'the guest exits (reboot — no ACPI S5 in the VMM yet); the VM leaves the running state']
+];
+function currentVm() {
+  var run = store.detail;
+  if (!run || !run.vms || !run.vms.length) return null;
+  return run.vms[Math.min(store.vm, run.vms.length - 1)];
+}
+function sendCmd(text) {
+  text = String(text == null ? '' : text);
+  if (text === '') return;
+  var run = store.detail, vm = currentVm();
+  if (!run || !vm) return;
+  if (text.charAt(text.length - 1) !== '\n') text += '\n';
+  api('/api/v0/runs/' + encodeURIComponent(run.id) + '/input', { method: 'POST', body: { data: text, vm: vm.id } })
+    .then(function () {
+      toast('Sent to vm ' + vm.id);
+      document.getElementById('in-cmd').value = '';
+      pollDetail();
+    })
+    .catch(function (err) { toast('Not sent: ' + (err && err.message ? err.message : err)); });
+}
+function setInputEnabled(on, why) {
+  var vm = currentVm();
+  var note = document.getElementById('in-note');
+  var defNote = 'The guest serves one command per heartbeat window (about 5 s); the reply lands in the transcript above. It understands: help, uname, cpu, mem, uptime, echo <text>, poweroff.';
+  if (on) {
+    note.textContent = defNote;
+    document.getElementById('in-label').textContent = 'Command for vm ' + (vm ? vm.id : '—');
+    document.getElementById('in-send').textContent = 'Send to vm ' + (vm ? vm.id : '—');
+  } else {
+    note.textContent = why || 'Unavailable just now.';
+  }
+  document.getElementById('in-cmd').disabled = !on;
+  document.getElementById('in-send').disabled = !on;
+  Array.prototype.forEach.call(document.getElementById('quick').children, function (b) { b.disabled = !on; });
+}
+
+/* ============================================================ actions */
+document.getElementById('spawn').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var errEl = document.getElementById('spawn-err');
+  errEl.textContent = '';
+  var n = Number(document.getElementById('f-n').value);
+  var vcpus = Number(document.getElementById('f-vcpus').value);
+  var mem = Number(document.getElementById('f-mem').value);
+  var beatsRaw = document.getElementById('f-beats').value.trim();
+  var beats = beatsRaw === '' ? null : Number(beatsRaw);
+  function bad(msg) { errEl.textContent = msg; }
+  if (!Number.isInteger(n) || n < 1 || n > 64) return bad('n must be a whole number from 1 to 64.');
+  if (!Number.isInteger(vcpus) || vcpus < 1 || vcpus > 64) return bad('vCPUs must be a whole number from 1 to 64.');
+  if (!Number.isInteger(mem) || mem < 128) return bad('Memory must be 128 MiB or more.');
+  if (beats != null && (!Number.isInteger(beats) || beats < 1)) return bad('Beats must be a whole number of 1 or more, or empty for steady mode.');
+  var body = { n: n, vcpus: vcpus, memory_mib: mem };
+  if (beats != null) body.beats = beats;
+  var btn = document.getElementById('spawn-btn');
+  btn.disabled = true;
+  btn.textContent = 'Entering…';
+  api('/api/v0/runs', { method: 'POST', body: body }).then(function (run) {
+    toast('Run ' + run.id + ' entered — ' + n + (n === 1 ? ' VM' : ' VMs') + ' spawning');
+    mergeDetail(run);
+    store.detailId = run.id;
+    if (location.hash !== '#run/' + run.id) location.hash = '#run/' + run.id; else render();
+    pollList();
+  }).catch(function (err) {
+    errEl.textContent = 'The daemon refused: ' + (err && err.message ? err.message : err);
+  }).then(function () {
+    btn.disabled = false;
+    btn.textContent = 'Spawn the run';
+  });
+});
+
+document.getElementById('d-kill').addEventListener('click', function () {
+  var run = store.detail;
+  if (!run || !isOpen(run)) return;
+  var btn = this;
+  btn.disabled = true;
+  btn.setAttribute('data-busy', '1');
+  btn.textContent = 'Killing…';
+  api('/api/v0/runs/' + encodeURIComponent(run.id), { method: 'DELETE' }).then(function (killed) {
+    mergeDetail(killed);
+    toast('Run ' + run.id + ' killed — every VM stopped');
+  }).catch(function (err) {
+    toast('Not killed: ' + (err && err.message ? err.message : err));
+  }).then(function () {
+    btn.removeAttribute('data-busy');
+    scheduleRender();
+    pollList();
+  });
+});
+
+document.getElementById('in-form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  sendCmd(document.getElementById('in-cmd').value);
+});
+var quickEl = document.getElementById('quick');
+QUICK.forEach(function (q) {
+  var b = el('button', 'btn sm', q[0]);
+  b.type = 'button';
+  b.title = q[1];
+  b.addEventListener('click', function () { sendCmd(q[0]); });
+  quickEl.appendChild(b);
+});
+document.getElementById('tx-follow').addEventListener('change', function () {
+  store.follow = this.checked;
+  if (store.follow) scheduleRender();
+});
+document.getElementById('tx-jump').addEventListener('click', function () {
+  var wrap = document.getElementById('txwrap');
+  wrap.scrollTop = wrap.scrollHeight;
+  document.getElementById('tx-follow').checked = true;
+  store.follow = true;
+});
+
+/* ============================================================ routing */
+var views = Array.prototype.slice.call(document.querySelectorAll('[data-view]'));
+var navOf = { runs: 'runs', run: 'runs' };
+function route() {
+  var parts = location.hash.slice(1).split('/');
+  return { name: parts[0] || 'runs', param: parts[1] || null };
+}
+function show() {
+  var r = route();
+  if (!navOf[r.name]) { r.name = 'runs'; r.param = null; }
+  view = r.name;
+  views.forEach(function (v) { v.hidden = v.getAttribute('data-view') !== view; });
+  document.querySelectorAll('[data-nav]').forEach(function (a) {
+    if (a.getAttribute('data-nav') === navOf[view]) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  if (view === 'run') {
+    if (store.detailId !== r.param) {
+      store.detailId = r.param;
+      store.detail = null;
+      store.detailError = null;
+      store.vm = 0;
+      store.serial = {};
+      store.txFrom = store.txTo = 0; store.txLastRow = null; store.txEmpty = null; store.txDirty = true;
+      store.vmSig = null; store.stampKey = null; store.announced = null;
+      document.getElementById('d-stamp').textContent = '';
+    }
+    pollDetail();
+  }
+  window.scrollTo(0, 0);
+  render();
+}
+window.addEventListener('hashchange', show);
+document.addEventListener('click', function (e) {
+  var g = e.target.closest('[data-go]');
+  if (g) { e.preventDefault(); location.hash = g.getAttribute('data-go'); return; }
+  var s = e.target.closest('tr[data-sel-vm]');
+  if (s) selectVm(Number(s.getAttribute('data-sel-vm')));
+});
+document.addEventListener('keydown', function (e) {
+  if (e.altKey || e.ctrlKey || e.metaKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  if (e.key === 'Enter' && e.target.matches('tr[data-sel-vm]')) { selectVm(Number(e.target.getAttribute('data-sel-vm'))); return; }
+  if (e.key === '0') location.hash = '#runs';
+});
+function selectVm(i) {
+  if (i === store.vm) return;
+  store.vm = i;
+  store.txDirty = true;
+  scheduleRender();
+}
+
+/* ============================================================ theme + colophon */
+var root = document.documentElement, pref = 'system';
+try { pref = localStorage.getItem('apz-theme') || 'system'; } catch (err) {}
+function setTheme(p) {
+  if (p === 'system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', p);
+  document.querySelectorAll('[data-theme-set]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-theme-set') === p)); });
+  try { localStorage.setItem('apz-theme', p); } catch (err) {}
+}
+document.querySelectorAll('[data-theme-set]').forEach(function (b) { b.addEventListener('click', function () { setTheme(b.getAttribute('data-theme-set')); }); });
+setTheme(pref);
+
+document.getElementById('colo-origin').textContent = 'Node ' + location.host;
+(function bundleHash() {
+  var out = document.getElementById('colo-hash');
+  if (!window.crypto || !crypto.subtle || !window.fetch) { out.textContent = 'sha256 unavailable'; return; }
+  fetch('index.html', { cache: 'no-store' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.arrayBuffer();
+  }).then(function (buf) {
+    return crypto.subtle.digest('SHA-256', buf);
+  }).then(function (dig) {
+    var hex = Array.prototype.map.call(new Uint8Array(dig), function (b) { return pad(b.toString(16), 2); }).join('');
+    out.textContent = 'sha256:' + hex.slice(0, 8) + '…' + hex.slice(-4);
+  }).catch(function () { out.textContent = 'sha256 unavailable'; });
+})();
+
+show();
+if (!document.hidden) startPolling(); /* when opened hidden, visibilitychange starts us */
+})();
+</script>
+</body>
+</html>
