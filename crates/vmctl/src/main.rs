@@ -1,3 +1,7 @@
+// This crate is safe Rust only: `forbid(unsafe_code)` makes any future
+// `unsafe` block a compile error.
+#![forbid(unsafe_code)]
+
 //! `vmctl` — spawn N AgentPlaza microVMs, stream their serial consoles and
 //! report how they stopped.
 //!

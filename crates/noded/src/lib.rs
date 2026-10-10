@@ -1,3 +1,7 @@
+// This crate is safe Rust only: `forbid(unsafe_code)` makes any future
+// `unsafe` block a compile error.
+#![forbid(unsafe_code)]
+
 //! `noded` - the AgentPlaza node daemon v0: run lifecycle and VM control over
 //! a localhost HTTP/1.1 JSON API.
 //!

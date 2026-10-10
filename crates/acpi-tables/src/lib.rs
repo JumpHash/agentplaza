@@ -10,6 +10,10 @@
 // `#[error]` strings; the `GenericAddressStructure::new` access-size field is
 // documented against the ACPI spec).
 
+// This crate is safe Rust only: `forbid(unsafe_code)` makes any future
+// `unsafe` block a compile error.
+#![forbid(unsafe_code)]
+
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryError};
 
 pub mod aml;
