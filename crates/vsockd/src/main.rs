@@ -536,6 +536,7 @@ fn describe(err: &HostError) -> String {
     match err {
         HostError::Io(io) => format!("connection failed ({io})"),
         HostError::Protocol(detail) => format!("protocol violation ({detail})"),
+        HostError::Dropped(detail) => format!("connection lost ({detail})"),
         HostError::Reaped => "reaped: the agent stopped heartbeating".to_string(),
     }
 }

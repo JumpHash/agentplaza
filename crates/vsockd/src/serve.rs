@@ -112,6 +112,11 @@ pub enum HostError {
     Io(io::Error),
     /// The guest broke the protocol: {0}
     Protocol(String),
+    /// The agent's connection dropped. For a keepalive agent this is an
+    /// expected event — a guest whose connection drops reconnects with
+    /// backoff, and a hub restart re-adopts it — so it is reported as a lost
+    /// connection, never as a protocol violation the agent did not commit.
+    Dropped(String),
     /// The hub reaped a keepalive session that stopped heartbeating. The hub
     /// has already logged the reap with its reason; there is nothing left to
     /// report about the session.
@@ -123,6 +128,7 @@ impl fmt::Display for HostError {
         match self {
             Self::Io(err) => write!(f, "connection failed: {err}"),
             Self::Protocol(detail) => write!(f, "protocol violation: {detail}"),
+            Self::Dropped(detail) => write!(f, "connection lost: {detail}"),
             Self::Reaped => write!(f, "reaped: the keepalive agent stopped heartbeating"),
         }
     }
@@ -475,11 +481,11 @@ fn run_keepalive<T: LineTransport>(
             Ok(Inbound::Idle) => continue,
             Ok(Inbound::Closed) => {
                 let detail = if stopping {
-                    "the keepalive guest closed after a stop without sending bye"
+                    "the keepalive agent's connection dropped after a stop, before its bye"
                 } else {
-                    "the keepalive guest closed without sending bye"
+                    "the keepalive agent's connection dropped; it reconnects with backoff"
                 };
-                return Err(HostError::Protocol(detail.to_string()));
+                return Err(HostError::Dropped(detail.to_string()));
             }
             Err(err) => return Err(HostError::from(err)),
             Ok(Inbound::Line(line)) => {
@@ -1233,6 +1239,32 @@ mod tests {
             "log must record the refusal: {}",
             log.text()
         );
+    }
+
+    /// A keepalive agent whose connection drops is reported as a lost
+    /// connection — never as a protocol violation — and its registry row goes
+    /// with it. §1: a guest whose connection drops reconnects with backoff and
+    /// a hub restart re-adopts it, so a drop is designed behaviour, not a
+    /// violation the agent committed.
+    #[test]
+    fn a_dropped_keepalive_connection_is_a_loss_not_a_violation() {
+        let mut scripted = Scripted::script(&[
+            r#"{"type":"hello","vm":0,"guest_cid":23,"role":"builder","keepalive":true}"#,
+            r#"{"type":"heartbeat","seq":1}"#,
+        ]);
+        let log = Arc::new(Recording::default());
+        let hub = hub(&log);
+        let err = handle_session(&mut scripted, 23, keepalive_limits(), &*log, &hub, &SystemClock)
+            .expect_err("the dropped session ends");
+        assert!(
+            matches!(&err, HostError::Dropped(detail) if detail.contains("reconnects with backoff")),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().starts_with("connection lost:"),
+            "a drop reads as a loss, not a violation: {err}"
+        );
+        assert_eq!(hub.agent_count(), 0, "the dropped session is unregistered");
     }
 
     /// A heartbeat in a session that never asked for keepalive is a protocol
