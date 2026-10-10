@@ -12,6 +12,8 @@ import { vmKey } from '../models/activity';
 import type { Run, Vm } from '../models/run';
 import { seqOf } from '../models/run';
 import { store } from '../store';
+import type { Palette } from './plan';
+import { MONO, MONO_SM, palette } from './plan';
 
 interface Cell {
   run: Run;
@@ -19,11 +21,6 @@ interface Cell {
   index: number;
   x: number;
   y: number;
-}
-
-interface Palette {
-  paper: string; ink: string; ink2: string; ink3: string;
-  rule: string; margin: string; signal: string; ok: string; crit: string; warn: string;
 }
 
 const LANE_H = 84;
@@ -45,16 +42,6 @@ let phase = 0; // pulse phase 0..1
 let phaseTimer: number | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
-
-function palette(): Palette {
-  const cs = getComputedStyle(document.documentElement);
-  const g = (name: string): string => cs.getPropertyValue(name).trim();
-  return {
-    paper: g('--paper'), ink: g('--ink'), ink2: g('--ink-2'), ink3: g('--ink-3'),
-    rule: g('--rule'), margin: g('--margin'), signal: g('--signal'),
-    ok: g('--ok'), crit: g('--crit'), warn: g('--warn'),
-  };
-}
 
 /* ------------------------------------------------------------ layout */
 interface Lane {
@@ -114,8 +101,6 @@ export function renderMap(): void {
   const g = ctx;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   const p = palette();
-  const mono = '11px "Martian Mono", ui-monospace, monospace';
-  const monoSm = '9.5px "Martian Mono", ui-monospace, monospace';
 
   g.fillStyle = p.paper;
   g.fillRect(0, 0, cssWidth, cssHeight);
@@ -130,7 +115,7 @@ export function renderMap(): void {
   const label = m
     ? `${m.name} · ${m.class} · ${m.arch} ${m.backend} · ${fmtNum(m.cpus)} cpus · ${fmtNum(m.memory_mib)} MiB · vsock ${m.vsock_mode}`
     : store.machineError ? 'machine unreachable' : 'machine —';
-  g.font = mono;
+  g.font = MONO;
   g.fillStyle = p.ink2;
   g.textBaseline = 'middle';
   g.fillText(label, 24, 32);
@@ -143,10 +128,10 @@ export function renderMap(): void {
   /* lanes and cells */
   for (const lane of lanes) {
     const run = lane.run;
-    g.font = mono;
+    g.font = MONO;
     g.fillStyle = run.state === 'running' ? p.ink : p.ink3;
     g.fillText(run.id, 24, lane.y - 12);
-    g.font = monoSm;
+    g.font = MONO_SM;
     g.fillStyle = p.ink3;
     g.fillText(`${run.vms.length}×${run.vcpus} vCPU`, 24, lane.y + 2);
     g.fillText(`${fmtNum(run.memory_mib)} MiB`, 24, lane.y + 16);
@@ -220,7 +205,7 @@ function drawCell(g: CanvasRenderingContext2D, cell: Cell, p: Palette): void {
   }
 
   /* labels: vm id above, cid below */
-  g.font = '9.5px "Martian Mono", ui-monospace, monospace';
+  g.font = MONO_SM;
   g.textAlign = 'center';
   g.fillStyle = p.ink3;
   g.fillText(`vm ${cell.vm.id}`, cx, cy - 22);

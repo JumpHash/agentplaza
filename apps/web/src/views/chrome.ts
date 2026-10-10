@@ -90,6 +90,8 @@ export function renderChrome(): void {
   const vms = store.runs.reduce((n, r) => n + r.vms.length, 0);
   byId('nav-map').textContent = store.runsError != null ? '—' : fmtNum(vms);
   byId('nav-3d').textContent = byId('nav-map').textContent;
+  /* session data, not daemon state — the count stands even while unreachable */
+  byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 
   const date = new Date().toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',

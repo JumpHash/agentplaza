@@ -6,12 +6,15 @@ import { deleteRun, sendInput } from '../api';
 import { announce, byId, el, toast } from '../dom';
 import { downloadText, runTranscriptText, vmTranscriptText } from '../export';
 import { fmtDur, fmtNum, fmtTime, pad } from '../format';
+import { HISTORY_CAP } from '../models/history';
 import type { Run, Vm } from '../models/run';
 import { exitKind, exitKindText, isOpen, modeText, seqOf } from '../models/run';
 import { vmKey } from '../models/activity';
 import { QUICK_COMMANDS, isExitLine, kindOf } from '../serial';
 import { store } from '../store';
 import { runStateMk, vmStateMk } from './chrome';
+import type { Palette } from './plan';
+import { palette } from './plan';
 
 const MAXROWS = 1500; // transcript render window; older lines elide
 
@@ -21,6 +24,8 @@ interface VmRow {
   linesTd: HTMLTableCellElement;
   bytesTd: HTMLTableCellElement;
   lpsTd: HTMLTableCellElement;
+  sparkCv: HTMLCanvasElement;
+  sparkSig: string;
   exitTd: HTMLTableCellElement;
   viewTd: HTMLTableCellElement;
 }
@@ -175,10 +180,15 @@ function renderVms(run: Run | null): void {
       const linesTd = el('td', 'num', '0');
       const bytesTd = el('td', 'num', '0');
       const lpsTd = el('td', 'num', '0');
+      const sparkTd = el('td', 'sparkcell');
+      const sparkCv = el('canvas', 'spark');
+      sparkCv.setAttribute('role', 'img');
+      sparkTd.appendChild(sparkCv);
       const viewTd = el('td', 'm');
       tr.appendChild(linesTd);
       tr.appendChild(bytesTd);
       tr.appendChild(lpsTd);
+      tr.appendChild(sparkTd);
       tr.appendChild(viewTd);
       /* compare: this VM against the viewed one — the pair is resolved at
          click time (main.ts), so a re-selected view never stale-dates it */
@@ -192,13 +202,14 @@ function renderVms(run: Run | null): void {
       }
       tr.appendChild(cmpTd);
       tb.appendChild(tr);
-      vmRows.push({ tr, vm: v, linesTd, bytesTd, lpsTd, exitTd, viewTd });
+      vmRows.push({ tr, vm: v, linesTd, bytesTd, lpsTd, sparkCv, sparkSig: '', exitTd, viewTd });
     });
     txDirty = true;
   }
 
   /* runs are replaced on every poll: rebind rows to the fresh vm objects
      before reading serial, or the counts freeze at first paint */
+  const pal = palette();
   const freshById = new Map(vms.map((v) => [v.id, v]));
   vmRows.forEach((row, i) => {
     const fresh = freshById.get(row.vm.id);
@@ -208,12 +219,71 @@ function renderVms(run: Run | null): void {
     row.bytesTd.textContent = fmtNum(row.vm.serial?.length ?? 0);
     const lps = run ? store.activity.get(vmKey(run.id, row.vm.id)) : 0;
     row.lpsTd.textContent = lps > 0.05 ? lps.toFixed(1) : '—';
+    /* the rate's shape beside its number — redrawn only when a new
+       observation landed for this VM */
+    const series = run ? store.history.vmSeries(vmKey(run.id, row.vm.id)) : [];
+    const sparkSig = series.length + ':' + (series[series.length - 1] ?? -1).toFixed(3);
+    if (sparkSig !== row.sparkSig) {
+      row.sparkSig = sparkSig;
+      drawSpark(row.sparkCv, series, pal);
+    }
     const sel = i === store.vm;
     row.tr.classList.toggle('sel', sel);
     if (sel) row.tr.setAttribute('aria-current', 'true');
     else row.tr.removeAttribute('aria-current');
     row.viewTd.textContent = sel ? 'viewing' : '';
   });
+}
+
+/** The two-minute rate shape beside a VM's number: one ink brush, no axes —
+    the numeric column beside it carries the value; right-aligned on the
+    HISTORY_CAP window so a young series grows in from the right, oldest left. */
+function drawSpark(cv: HTMLCanvasElement, series: readonly number[], p: Palette): void {
+  const g = cv.getContext('2d');
+  if (!g) return;
+  const cw = 96;
+  const ch = 20;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (cv.width !== Math.round(cw * dpr) || cv.height !== Math.round(ch * dpr)) {
+    cv.width = Math.round(cw * dpr);
+    cv.height = Math.round(ch * dpr);
+  }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cw, ch);
+  if (series.length < 2) {
+    cv.setAttribute('aria-label', 'lines per second over the last two minutes: not enough observations yet');
+    return;
+  }
+  /* the baseline, ruled faint */
+  g.strokeStyle = p.rule;
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(0, ch - 1.5);
+  g.lineTo(cw, ch - 1.5);
+  g.stroke();
+  const max = Math.max(...series);
+  const head = max > 0 ? max * 1.15 : 1;
+  const xStep = cw / (HISTORY_CAP - 1);
+  const n = series.length;
+  g.strokeStyle = p.ink;
+  g.lineWidth = 1;
+  g.beginPath();
+  series.forEach((v, i) => {
+    const x = cw - (n - 1 - i) * xStep;
+    const y = ch - 2 - (v / head) * (ch - 4);
+    if (i === 0) g.moveTo(x, y);
+    else g.lineTo(x, y);
+  });
+  g.stroke();
+  const last = series[n - 1] ?? 0;
+  if (last > 0.05) {
+    g.fillStyle = p.ink;
+    g.fillRect(cw - 2, ch - 2 - (last / head) * (ch - 4) - 1.5, 3, 3);
+  }
+  cv.setAttribute(
+    'aria-label',
+    `lines per second over the last two minutes: now ${last.toFixed(1)}, peak ${max.toFixed(1)}`,
+  );
 }
 
 function txRow(i: number, line: string, cls?: string): HTMLElement {

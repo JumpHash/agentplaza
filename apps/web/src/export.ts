@@ -4,6 +4,7 @@
    revoked on use). Nothing here renders markup. */
 
 import { fmtNum } from './format';
+import type { FleetSample } from './models/history';
 import type { Run, Vm } from './models/run';
 
 /** One VM's transcript, exactly as captured: the lines joined, with a final
@@ -29,10 +30,28 @@ export function runTranscriptText(run: Run, linesForVm: (vm: Vm) => string[]): s
   return parts.join('');
 }
 
+/** The telemetry session as long-form CSV: one row per observation for the
+    fleet total, then one per run seen in that sample. Long form, because runs
+    arrive and leave mid-session — a wide sheet would lie with empty cells.
+    Run ids and figures are the node's own identifiers; no guest text here. */
+export function telemetryCsv(samples: readonly FleetSample[]): string {
+  const first = samples[0];
+  const rows: string[] = ['observed_at,elapsed_s,scope,vms_live,ram_mib,lines_per_s'];
+  for (const s of samples) {
+    const at = new Date(s.at).toISOString();
+    const elapsed = (first ? (s.at - first.at) / 1000 : 0).toFixed(1);
+    rows.push(`${at},${elapsed},fleet,${s.vms},${s.ramMib},${s.lps.toFixed(2)}`);
+    for (const [id, r] of Object.entries(s.runs)) {
+      rows.push(`${at},${elapsed},${id},${r.vms},${r.ramMib},${r.lps.toFixed(2)}`);
+    }
+  }
+  return rows.join('\n') + '\n';
+}
+
 /** Download `text` as a plain-text file. The object URL is revoked as soon as
     the browser has taken the download (a zero-timeout after the click). */
-export function downloadText(filename: string, text: string): void {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+export function downloadText(filename: string, text: string, mime = 'text/plain;charset=utf-8'): void {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

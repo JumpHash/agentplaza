@@ -187,6 +187,15 @@ export function initRegister(): void {
     if (mem == null || !Number.isInteger(mem) || mem < 128) return bad('Memory must be 128 MiB or more.');
     if (beats != null && (!Number.isInteger(beats) || beats < 1)) return bad('Beats must be a whole number of 1 or more, or empty for steady mode.');
     if (vsock != null && (!Number.isInteger(vsock) || vsock < 3)) return bad('vsock CID must be a whole number of 3 or more (1 and 2 are reserved), or empty for no vsock.');
+    /* the daemon's own bounds, mirrored so the form refuses before the round
+       trip (noded CreateRun::spec; the desktop form uses the same wording) */
+    const MAX_CID = 4294967294; // vmm::spawner::MAX_GUEST_CID — u32::MAX − 1
+    if (vsock != null && vsock > MAX_CID) {
+      return bad('vsock_cid must be at most 4294967294: the kernel refuses VMADDR_CID_ANY and above.');
+    }
+    if (vsock != null && vsock + n - 1 > MAX_CID) {
+      return bad('vsock_cid and n together run past the last guest CID.');
+    }
 
     const body: { n: number; vcpus: number; memory_mib: number; beats?: number; vsock_cid?: number } =
       { n, vcpus, memory_mib: mem };

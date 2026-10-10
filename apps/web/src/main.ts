@@ -13,6 +13,7 @@ import { initRegister, renderRegister } from './views/register';
 import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from './views/run';
 import { renderMachine } from './views/machine';
 import { renderMap, syncMapVisibility } from './views/map2d';
+import { initTelemetry, renderTelemetry } from './views/telemetry';
 import { sync3d } from './views/view3d';
 
 /* ------------------------------------------------------------ routing */
@@ -128,6 +129,7 @@ initRegister();
 initRun();
 initCompare();
 initKeys();
+initTelemetry();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -138,6 +140,7 @@ store.onRender(() => {
     case 'map': renderMap(); break;
     case 'view3d': sync3d(); break;
     case 'compare': renderCompare(); break;
+    case 'telemetry': renderTelemetry(); break;
   }
 });
 

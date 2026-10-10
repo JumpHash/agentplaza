@@ -6,7 +6,20 @@ canvas#map-canvas { display: block; width: 100%; height: 420px; border: 1px soli
 .v3mount { position: relative; width: 100%; height: 460px; border: 1px solid var(--rule); background: var(--paper); box-sizing: border-box; overflow: hidden; }
 .v3mount canvas { display: block; width: 100%; height: 100%; outline-offset: -2px; }
 
+/* telemetry: the session's figures, ruled like the sample console's charts —
+   transparent ground so the sheet's own paper shows through, as with the SVG
+   figures in the design draft */
+canvas.tchart { display: block; width: 100%; height: 150px; box-sizing: border-box; }
+/* the run pick: text links in the register's voice; the picked one reads orange */
+.tlscope { display: flex; gap: 6px 18px; flex-wrap: wrap; font: 500 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.tlscope .tlink { font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.tlscope .tlink[aria-pressed="true"] { color: var(--signal-ink); text-decoration-color: var(--signal-ink); font-weight: 700; }
+/* per-VM sparklines in the run table: one ink brush, no axes */
+td.sparkcell { padding-top: 6px; padding-bottom: 6px; }
+canvas.spark { display: block; width: 96px; height: 20px; }
+
 @media (max-width: 760px) {
   canvas#map-canvas { height: 320px; }
   .v3mount { height: 340px; }
+  canvas.tchart { height: 120px; }
 }

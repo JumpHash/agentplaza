@@ -11,18 +11,18 @@
      Talks to the frozen /api/v0 contract on the same origin:
        GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
        POST /api/v0/runs/{id}/input
-     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm};
-     keys 0–4 walk the first five, '?' opens the key sheet.
+     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry;
+     keys 0–5 walk the six index destinations, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
      a civic register — ruled rows, entry numbers in the margin, red double margin rule,
      Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-GNDEAAWU.css">
-<script type="module" src="main-G7LZK724.js"></script>
+<link rel="stylesheet" href="main-CLEKGIEU.css">
+<script type="module" src="main-ML5NJINK.js"></script>
 </head>
-<body data-bundle-hash="01dc09726650193fff39cbe478c2c2038269da4a3b4bb50381d7ec55b00df31b">
+<body data-bundle-hash="7b8e7193f8dfec0c099b16dbb8b653b017a377f377e930d60af6bc4ac773f79b">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -33,12 +33,13 @@
       <a href="#machine" data-nav="machine" aria-keyshortcuts="2"><span class="k">2</span><span>Machine</span><span class="dots"></span><span class="n" id="nav-machine">—</span></a>
       <a href="#map" data-nav="map" aria-keyshortcuts="3"><span class="k">3</span><span>Map</span><span class="dots"></span><span class="n" id="nav-map">—</span></a>
       <a href="#view3d" data-nav="view3d" aria-keyshortcuts="4"><span class="k">4</span><span>3D view</span><span class="dots"></span><span class="n" id="nav-3d">—</span></a>
+      <a href="#telemetry" data-nav="telemetry" aria-keyshortcuts="5"><span class="k">5</span><span>Telemetry</span><span class="dots"></span><span class="n" id="nav-telemetry">—</span></a>
     </div>
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">01dc09726650193fff39cbe478c2c2038269da4a3b4bb50381d7ec55b00df31b</code></span>
-      <span>Keys 0–4 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
+      <span>Bundle <code id="colo-hash">7b8e7193f8dfec0c099b16dbb8b653b017a377f377e930d60af6bc4ac773f79b</code></span>
+      <span>Keys 0–5 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
@@ -193,7 +194,7 @@
 
       <div class="group bb0"><div class="hd">Virtual machines <span class="c" id="d-vm-count"></span></div></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>No.</th><th>VM</th><th>State</th><th>Exit</th><th class="num">Serial lines</th><th class="num">Serial bytes</th><th class="num">Lines / s</th><th>Transcript</th><th>Compare</th></tr></thead>
+        <thead><tr><th>No.</th><th>VM</th><th>State</th><th>Exit</th><th class="num">Serial lines</th><th class="num">Serial bytes</th><th class="num">Lines / s</th><th>Lines / s · 2 min</th><th>Transcript</th><th>Compare</th></tr></thead>
         <tbody id="vm-body"></tbody>
       </table></div>
 
@@ -381,6 +382,63 @@
       </div>
     </div>
 
+    <!-- ============================================================ TELEMETRY -->
+    <div data-view="telemetry" data-cmd="apz telemetry --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 6</span>
+        <h1>Telemetry</h1>
+        <span class="aside mk ok" id="tl-live" hidden>live</span>
+        <p class="lede">The session's own ledger of figures — guest RAM committed, VMs live, serial chatter — sampled at each poll of the register and kept for the last two minutes. Nothing here left the node; it is what this console observed, and blank where nothing was observed.</p>
+      </div>
+
+      <div class="parts" id="tl-notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="tl-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <div class="tallies">
+          <div class="tally"><div class="figure" id="tl-t-mem">—</div><div class="tcap">MiB committed now</div></div>
+          <div class="tally"><div class="figure" id="tl-t-vms">—</div><div class="tcap">VMs live now</div></div>
+          <div class="tally"><div class="figure" id="tl-t-lps">—</div><div class="tcap">lines / s now</div></div>
+          <div class="tally"><div class="figure" id="tl-samples">—</div><div class="tcap">observations kept</div></div>
+        </div>
+        <div class="tlscope" id="tl-scope" role="group" aria-label="Scope the figures to a run"></div>
+        <p class="example" id="tl-sel"></p>
+      </div></div>
+
+      <div class="group"><div class="hd">Committed guest RAM <span class="c" id="tl-ram-c"></span></div></div>
+      <div class="parts"><div class="body canvasbody">
+        <canvas class="tchart" id="tl-ram" role="img" aria-label="Committed guest RAM over the session"></canvas>
+        <p class="example" id="tl-ram-note"></p>
+      </div></div>
+
+      <div class="group"><div class="hd">Live VMs <span class="c" id="tl-vms-c"></span></div></div>
+      <div class="parts"><div class="body canvasbody">
+        <canvas class="tchart" id="tl-vms" role="img" aria-label="Live VMs over the session"></canvas>
+        <p class="example" id="tl-vms-note"></p>
+      </div></div>
+
+      <div class="group"><div class="hd">Serial throughput <span class="c" id="tl-lps-c"></span></div></div>
+      <div class="parts"><div class="body canvasbody">
+        <canvas class="tchart" id="tl-lps" role="img" aria-label="Serial throughput over the session"></canvas>
+        <p class="example" id="tl-lps-note"></p>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">Recent observations <span class="c" id="tl-obs-c"></span></div></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>No.</th><th>Observed</th><th class="num">VMs live</th><th class="num">MiB committed</th><th class="num">Lines / s</th><th>Runs live</th></tr></thead>
+        <tbody id="tl-body"></tbody>
+      </table></div>
+
+      <div class="parts top bb0"><div class="body">
+        <div class="actions">
+          <button type="button" class="btn sm" id="tl-export">Export the session (CSV)</button>
+        </div>
+        <p class="example">One row per observation and scope — the fleet total, then each run — in long form, because runs arrive and leave mid-session and a wide sheet would lie with empty cells. Only the node's own identifiers and figures; no guest text.</p>
+      </div></div>
+    </div>
+
     </div>
   </main>
 </div>
@@ -399,6 +457,7 @@
         <tr><td class="kc"><kbd>2</kbd></td><td>Machine — the node's own sheet</td></tr>
         <tr><td class="kc"><kbd>3</kbd></td><td>Map — the fleet as a surveyor's plan</td></tr>
         <tr><td class="kc"><kbd>4</kbd></td><td>3D view — the same register, raised</td></tr>
+        <tr><td class="kc"><kbd>5</kbd></td><td>Telemetry — the session's figures, one observation per poll</td></tr>
         <tr><td class="kc"><kbd>?</kbd></td><td>This sheet — press again, Escape, or click outside to close</td></tr>
         <tr><td class="kc"><kbd>f</kbd></td><td>Follow new transcript lines — run and compare views</td></tr>
         <tr><td class="kc"><kbd>j</kbd></td><td>Jump to the latest line — run and compare views</td></tr>

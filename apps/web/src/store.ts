@@ -6,6 +6,8 @@
 
 import { getMachine, getRun, listRuns } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
+import type { RunSlice } from './models/history';
+import { SessionHistory } from './models/history';
 import type { Machine } from './models/machine';
 import type { Run } from './models/run';
 import { seqOf } from './models/run';
@@ -13,7 +15,7 @@ import type { SerialCache } from './serial';
 import { linesOf } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 
@@ -51,10 +53,13 @@ export class Store {
   follow = true; // transcript tail-follow
   theme: Theme = 'system';
   route: Route = { name: 'register', param: null, compare: null };
+  /** The telemetry view's run pick; null is the whole fleet. */
+  telemetryRun: string | null = null;
 
   /* derived caches */
   readonly serial = new Map<string, SerialCache>(); // "r3/0" -> lines
   readonly activity = new ActivityTracker();
+  readonly history = new SessionHistory();
 
   /* health */
   private lastOkAt = 0;
@@ -130,15 +135,19 @@ export class Store {
          register shows in its pane, never a redirect */
       jobs.push(this.pollDetail(route.compare.a, true));
       if (route.compare.b !== route.compare.a) jobs.push(this.pollDetail(route.compare.b, true));
-    } else if (route.name === 'map' || route.name === 'view3d') {
-      /* The map and 3D view pulse with serial activity, which only the
+    } else if (route.name === 'map' || route.name === 'view3d' || route.name === 'telemetry') {
+      /* The map, 3D view and telemetry read serial activity, which only the
          single-run GET carries: poll every open run's detail. */
       for (const run of this.runs) {
         if (run.state === 'starting' || run.state === 'running') jobs.push(this.pollDetail(run.id, true));
       }
     }
     this.ticks++;
+    const okBefore = this.lastOkAt;
     await Promise.all(jobs);
+    /* one fleet sample per poll that actually observed something — a poll
+       that only failed writes nothing, so unobserved time stays un-inked */
+    if (this.lastOkAt !== okBefore) this.sampleHistory();
   }
 
   private noteOk(): void {
@@ -162,6 +171,12 @@ export class Store {
       for (const key of [...this.serial.keys()]) {
         if (!alive.has(key.slice(0, key.indexOf('/')))) this.serial.delete(key);
       }
+      for (const old of this.runs) {
+        if (!alive.has(old.id)) {
+          this.activity.dropRun(old.id);
+          this.history.dropRun(old.id);
+        }
+      }
       this.runs = runs;
       this.runsError = null;
       this.noteOk();
@@ -182,6 +197,31 @@ export class Store {
       this.noteErr();
     }
     this.scheduleRender();
+  }
+
+  /** One fleet observation, derived from what the client already holds: the
+      register (live VMs, committed RAM) and the activity tracker (chatter). */
+  private sampleHistory(): void {
+    let vms = 0;
+    let ramMib = 0;
+    let lps = 0;
+    const runs: Record<string, RunSlice> = {};
+    for (const run of this.runs) {
+      let live = 0;
+      let runLps = 0;
+      for (const v of run.vms) {
+        if (v.state !== 'running') continue;
+        live++;
+        /* chatter counts while the VM is alive; an exited VM's EMA would
+           otherwise read as fresh throughput forever after the run closes */
+        runLps += this.activity.get(vmKey(run.id, v.id));
+      }
+      runs[run.id] = { vms: live, ramMib: live * run.memory_mib, lps: runLps };
+      vms += live;
+      ramMib += live * run.memory_mib;
+      lps += runLps;
+    }
+    this.history.push({ at: Date.now(), vms, ramMib, lps, runs });
   }
 
   /** The run the run-detail view is open on, with serial when fetched. */
@@ -223,7 +263,8 @@ export class Store {
         if (kept != null) v.serial = kept;
       }
       const key = vmKey(run.id, v.id);
-      this.activity.observe(key, linesOf(this.serial, key, v.serial).length, now);
+      const lps = this.activity.observe(key, linesOf(this.serial, key, v.serial).length, now);
+      this.history.pushVm(key, lps);
     });
     this.details.set(run.id, run);
   }

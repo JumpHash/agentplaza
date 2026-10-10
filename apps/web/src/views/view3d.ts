@@ -30,6 +30,8 @@ import { vmKey } from '../models/activity';
 import type { Run, Vm } from '../models/run';
 import { seqOf } from '../models/run';
 import { store } from '../store';
+import type { Palette } from './plan';
+import { palette } from './plan';
 
 /* The runtime module arrives by dynamic import; this named alias is its type. */
 type ThreeModule = typeof import('three');
@@ -56,11 +58,6 @@ interface RunObject {
   rows: number;
 }
 
-interface Palette {
-  paper: string; sheet: string; ink: string; ink2: string; ink3: string;
-  rule: string; signal: string; ok: string; crit: string;
-}
-
 const REDUCED = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 const CELL_PITCH = 2.6; // ground units between VM blocks on a platform
 
@@ -82,15 +79,6 @@ let pulse = 0;
 function three(): ThreeModule {
   if (!module3) throw new Error('the 3D scene has not booted');
   return module3;
-}
-
-function palette(): Palette {
-  const cs = getComputedStyle(document.documentElement);
-  const g = (name: string): string => cs.getPropertyValue(name).trim();
-  return {
-    paper: g('--paper'), sheet: g('--sheet'), ink: g('--ink'), ink2: g('--ink-2'), ink3: g('--ink-3'),
-    rule: g('--rule'), signal: g('--signal'), ok: g('--ok'), crit: g('--crit'),
-  };
 }
 
 /* ------------------------------------------------------------ boot */
