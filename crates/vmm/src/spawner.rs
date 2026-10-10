@@ -53,6 +53,14 @@ pub enum GicVersion {
 /// is re-exported from the device that talks to that stack.
 pub const MIN_GUEST_CID: u64 = 3;
 
+/// The largest CID a guest may be given.
+///
+/// The kernel's vsock stack refuses `VMADDR_CID_ANY` (`u32::MAX`) and anything
+/// above it, so a valid guest CID is [`MIN_GUEST_CID`]..=`u32::MAX - 1`.
+/// Callers that derive several CIDs from a base (VM `i` gets `base + i`) must
+/// keep every one inside this range.
+pub const MAX_GUEST_CID: u64 = u32::MAX as u64 - 1;
+
 /// Configuration of a VM's vsock device.
 ///
 /// A VM with a vsock device talks to the host over `AF_VSOCK`: the guest is

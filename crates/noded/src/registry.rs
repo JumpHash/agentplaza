@@ -23,7 +23,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use vmm::spawner::{self, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig, MIN_GUEST_CID};
+use vmm::spawner::{
+    self, MAX_GUEST_CID, MIN_GUEST_CID, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec,
+    VsockConfig,
+};
 
 /// The most VMs one run may have (`n`).
 pub const MAX_VMS: u32 = 64;
@@ -90,11 +93,23 @@ impl CreateRun {
                         "vsock_cid must be at least {MIN_GUEST_CID} (1 and 2 are reserved)"
                     ));
                 }
-                // The run's last VM keeps a CID that fits the transport.
-                if cid.checked_add(u64::try_from(vms).map_err(|_| "n is too large".to_string())? - 1)
-                    .is_none()
-                {
-                    return Err("vsock_cid is too large for this many VMs".to_string());
+                // A CID the kernel's vsock stack always refuses — VMADDR_CID_ANY
+                // (u32::MAX) and anything above it — is rejected here rather
+                // than left to a boot that would fail on it.
+                if cid > MAX_GUEST_CID {
+                    return Err(format!(
+                        "vsock_cid must be at most {MAX_GUEST_CID}: the kernel refuses \
+                         VMADDR_CID_ANY and above"
+                    ));
+                }
+                // Every VM's CID, up to the run's last, must fit the transport.
+                let last = cid
+                    .checked_add(u64::try_from(vms).map_err(|_| "n is too large".to_string())? - 1)
+                    .ok_or_else(|| "vsock_cid is too large for this many VMs".to_string())?;
+                if last > MAX_GUEST_CID {
+                    return Err(
+                        "vsock_cid and n together run past the last guest CID".to_string(),
+                    );
                 }
                 Some(cid)
             }
@@ -875,6 +890,28 @@ mod tests {
         for edge in edges {
             assert!(edge.spec(&images()).is_ok(), "should be allowed: {edge:?}");
         }
+    }
+
+    #[test]
+    fn vsock_cid_is_range_checked_before_a_run_exists() {
+        let request = |vsock_cid: Option<u64>| CreateRun {
+            n: 2,
+            vcpus: 1,
+            memory_mib: 128,
+            beats: None,
+            vsock_cid,
+        };
+
+        // A CID inside the valid range is accepted, base + n - 1 included.
+        assert!(request(Some(3)).spec(&images()).is_ok());
+        assert!(request(Some(MAX_GUEST_CID - 1)).spec(&images()).is_ok());
+
+        // The kernel refuses VMADDR_CID_ANY (u32::MAX) and anything above it.
+        assert!(request(Some(u32::MAX as u64)).spec(&images()).is_err());
+        assert!(request(Some(u64::from(u32::MAX) + 1)).spec(&images()).is_err());
+
+        // The run's last VM (base + n - 1) must still fit the transport.
+        assert!(request(Some(MAX_GUEST_CID)).spec(&images()).is_err());
     }
 
     #[test]

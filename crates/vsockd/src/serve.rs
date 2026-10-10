@@ -11,6 +11,7 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
+use std::time::Instant;
 
 use crate::line::LineTransport;
 use crate::proto::{GuestMessage, HostMessage, WELCOME_ECHO};
@@ -48,6 +49,16 @@ pub struct SessionSummary {
     pub guest_calls: u64,
 }
 
+/// The bounds one guest session is held to, enforced in
+/// [`handle_connection`].
+#[derive(Debug, Clone, Copy)]
+pub struct SessionLimits {
+    /// The most tool calls this session answers before it is dropped.
+    pub max_calls: u64,
+    /// The moment the session may not run past; `None` means no deadline.
+    pub deadline: Option<Instant>,
+}
+
 /// Why a session ended without a `bye`.
 #[derive(Debug)]
 pub enum HostError {
@@ -78,16 +89,22 @@ impl From<io::Error> for HostError {
 ///
 /// `peer_cid` is the CID the accepted connection reported; the guest reports
 /// its own CID again in `hello`, and the two are logged together so a
-/// disagreement is visible rather than assumed away.
+/// disagreement is visible rather than assumed away. `limits` bounds the
+/// session: a tool-call budget the host will not exceed, and a deadline the
+/// session may not run past.
 pub fn handle_connection<T: LineTransport>(
     transport: &mut T,
     peer_cid: u32,
+    limits: SessionLimits,
     log: &dyn SessionLog,
 ) -> Result<SessionSummary, HostError> {
     let mut guest: Option<(u32, u32)> = None; // (cid, vm) once `hello` arrived
     let mut calls = 0u64;
 
     loop {
+        if limits.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(HostError::Protocol("session deadline exceeded".to_string()));
+        }
         let inbound = match transport.recv_line() {
             Ok(Some(line)) => line,
             Ok(None) if guest.is_some() => {
@@ -102,7 +119,11 @@ pub fn handle_connection<T: LineTransport>(
             }
             Err(err) => return Err(HostError::from(err)),
         };
-        log.line(&format!("{} {inbound}", inbound_prefix(guest, peer_cid)));
+        log.line(&format!(
+            "{} {}",
+            inbound_prefix(guest, peer_cid),
+            sanitize_for_log(&inbound)
+        ));
 
         match GuestMessage::from_line(&inbound) {
             Ok(GuestMessage::Hello {
@@ -151,6 +172,18 @@ pub fn handle_connection<T: LineTransport>(
                         "tool_call {call} ({name}) before hello"
                     )));
                 };
+                if calls >= limits.max_calls {
+                    log.line(&format!(
+                        "vsockd: refusing call {call} ({}) for guest {cid} vm {vm}: the \
+                         session's {}-call budget is exhausted",
+                        sanitize_for_log(&name),
+                        limits.max_calls
+                    ));
+                    return Err(HostError::Protocol(format!(
+                        "tool-call budget ({}) exceeded",
+                        limits.max_calls
+                    )));
+                }
                 calls += 1;
                 let (ok, output) = run_tool(&name, &args);
                 send(
@@ -160,7 +193,8 @@ pub fn handle_connection<T: LineTransport>(
                     log,
                 )?;
                 log.line(&format!(
-                    "vsockd: answered call {call} ({name}) for guest {cid} vm {vm}"
+                    "vsockd: answered call {call} ({}) for guest {cid} vm {vm}",
+                    sanitize_for_log(&name)
                 ));
             }
             Ok(GuestMessage::Bye { calls: guest_calls }) => {
@@ -233,6 +267,26 @@ fn inbound_prefix(guest: Option<(u32, u32)>, peer_cid: u32) -> String {
         None if peer_cid_is_usable(peer_cid) => format!("[guest {peer_cid} vm? ->]"),
         None => "[guest cid? vm? ->]".to_string(),
     }
+}
+
+/// Renders a guest line for the operator log with every control character
+/// replaced by a visible `\xNN` escape.
+///
+/// The framing strips the newline, but a crafted line can still carry a
+/// carriage return (`\r`), an ANSI escape (`\x1b`) or any other control byte;
+/// logged raw, those move the terminal's cursor or repaint the screen, letting
+/// a guest forge or erase log lines. Replacing them makes them inert while
+/// printable text — including the JSON quotes — is left alone.
+fn sanitize_for_log(line: &str) -> String {
+    let mut sanitized = String::with_capacity(line.len());
+    for character in line.chars() {
+        if character.is_control() {
+            sanitized.push_str(&format!("\\x{:02x}", character as u32));
+        } else {
+            sanitized.push(character);
+        }
+    }
+    sanitized
 }
 
 /// Whether a CID the kernel reported for an accepted connection can be checked
@@ -330,6 +384,15 @@ mod tests {
             .expect("the connection is open")
     }
 
+    /// Unbounded session limits, for the tests that exercise the protocol
+    /// rather than the bounds.
+    fn limits() -> SessionLimits {
+        SessionLimits {
+            max_calls: u64::MAX,
+            deadline: None,
+        }
+    }
+
     #[test]
     fn the_frozen_session_round_trips_against_a_scripted_guest() {
         let (mut guest, mut host) = pair();
@@ -370,7 +433,7 @@ mod tests {
                 .expect("bye sends");
         });
 
-        let summary = handle_connection(&mut host, 3, &log).expect("the session completes");
+        let summary = handle_connection(&mut host, 3, limits(), &log).expect("the session completes");
         assert_eq!(
             summary,
             SessionSummary {
@@ -408,7 +471,7 @@ mod tests {
                 .expect("bye sends");
             refused
         });
-        let summary = handle_connection(&mut host, 3, &log).expect("the session completes");
+        let summary = handle_connection(&mut host, 3, limits(), &log).expect("the session completes");
         let refused = script.join().expect("the scripted guest finished");
         let refused: serde_json::Value = serde_json::from_str(&refused).expect("the result is JSON");
         assert_eq!(refused["call"], serde_json::json!(1));
@@ -441,7 +504,7 @@ mod tests {
                 .expect("bye sends");
             refused
         });
-        let summary = handle_connection(&mut host, 4, &log).expect("the session completes");
+        let summary = handle_connection(&mut host, 4, limits(), &log).expect("the session completes");
         let refused = script.join().expect("the scripted guest finished");
         let refused: serde_json::Value = serde_json::from_str(&refused).expect("the result is JSON");
         assert_eq!(refused["ok"], serde_json::json!(false));
@@ -456,7 +519,7 @@ mod tests {
         guest
             .send_line(r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"hi"}}"#)
             .expect("call sends");
-        let err = handle_connection(&mut host, 3, &log).expect_err("the session is dropped");
+        let err = handle_connection(&mut host, 3, limits(), &log).expect_err("the session is dropped");
         assert!(
             matches!(&err, HostError::Protocol(detail) if detail.contains("before hello")),
             "got {err:?}"
@@ -468,7 +531,7 @@ mod tests {
         let (mut guest, mut host) = pair();
         let log = Recording::default();
         guest.send_line("not json").expect("garbage sends");
-        let err = handle_connection(&mut host, 3, &log).expect_err("the session is dropped");
+        let err = handle_connection(&mut host, 3, limits(), &log).expect_err("the session is dropped");
         assert!(
             matches!(&err, HostError::Protocol(detail) if detail.contains("unparsable guest line")),
             "got {err:?}"
@@ -488,7 +551,7 @@ mod tests {
                 .send_line(r#"{"type":"hello","vm":0,"guest_cid":3}"#)
                 .expect("second hello sends");
         });
-        let err = handle_connection(&mut host, 3, &log).expect_err("the session is dropped");
+        let err = handle_connection(&mut host, 3, limits(), &log).expect_err("the session is dropped");
         assert!(
             matches!(&err, HostError::Protocol(detail) if detail.contains("second hello")),
             "got {err:?}"
@@ -503,7 +566,7 @@ mod tests {
         guest
             .send_line(r#"{"type":"hello","vm":0,"guest_cid":4}"#)
             .expect("hello sends");
-        let err = handle_connection(&mut host, 3, &log).expect_err("the session is dropped");
+        let err = handle_connection(&mut host, 3, limits(), &log).expect_err("the session is dropped");
         assert!(
             matches!(&err, HostError::Protocol(detail)
                 if detail.contains("claims guest_cid 4") && detail.contains("accepted from cid 3")),
@@ -530,7 +593,7 @@ mod tests {
                 .send_line(r#"{"type":"bye","calls":0}"#)
                 .expect("bye sends");
         });
-        let summary = handle_connection(&mut host, CID_ANY, &log).expect("the session completes");
+        let summary = handle_connection(&mut host, CID_ANY, limits(), &log).expect("the session completes");
         assert_eq!(summary.guest_cid, 7);
         assert_eq!(summary.peer_cid, CID_ANY);
         script.join().expect("the scripted guest finished");
@@ -546,7 +609,7 @@ mod tests {
         let (guest, mut host) = pair();
         drop(guest);
         let log = Recording::default();
-        let err = handle_connection(&mut host, 3, &log).expect_err("the session is dropped");
+        let err = handle_connection(&mut host, 3, limits(), &log).expect_err("the session is dropped");
         assert!(
             matches!(&err, HostError::Protocol(detail) if detail.contains("before sending hello")),
             "got {err:?}"
@@ -560,5 +623,89 @@ mod tests {
         assert_eq!(fields.len(), 2);
         assert!(fields[0].parse::<f64>().is_ok(), "{uptime}");
         assert!(fields[1].parse::<f64>().is_ok(), "{uptime}");
+    }
+
+    /// A guest that keeps asking for tools past its budget is refused and
+    /// dropped, so the host cannot be made to do unbounded work.
+    #[test]
+    fn a_tool_call_budget_is_enforced() {
+        let (mut guest, mut host) = pair();
+        let log = Recording::default();
+        let script = thread::spawn(move || {
+            guest
+                .send_line(r#"{"type":"hello","vm":0,"guest_cid":3}"#)
+                .expect("hello sends");
+            let _welcome = next(&mut guest);
+
+            // Two calls fit a budget of two; the third is refused.
+            guest
+                .send_line(r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"a"}}"#)
+                .expect("call 1 sends");
+            let _ = next(&mut guest);
+            guest
+                .send_line(r#"{"type":"tool_call","call":2,"name":"echo","args":{"text":"b"}}"#)
+                .expect("call 2 sends");
+            let _ = next(&mut guest);
+            guest
+                .send_line(r#"{"type":"tool_call","call":3,"name":"echo","args":{"text":"c"}}"#)
+                .expect("call 3 sends");
+        });
+
+        let limits = SessionLimits {
+            max_calls: 2,
+            deadline: None,
+        };
+        let err = handle_connection(&mut host, 3, limits, &log).expect_err("the session is dropped");
+        assert!(
+            matches!(&err, HostError::Protocol(detail) if detail.contains("tool-call budget (2) exceeded")),
+            "got {err:?}"
+        );
+        script.join().expect("the scripted guest finished");
+        assert!(
+            log.text().contains("budget is exhausted"),
+            "log must record the refusal: {}",
+            log.text()
+        );
+    }
+
+    /// A deadline in the past drops the session before any line is read, so a
+    /// session cannot outlive the wall-clock bound the daemon gives it.
+    #[test]
+    fn a_past_deadline_drops_the_session() {
+        let (mut guest, mut host) = pair();
+        let log = Recording::default();
+        guest
+            .send_line(r#"{"type":"hello","vm":0,"guest_cid":3}"#)
+            .expect("hello sends");
+        let limits = SessionLimits {
+            max_calls: u64::MAX,
+            deadline: Some(Instant::now()),
+        };
+        let err = handle_connection(&mut host, 3, limits, &log).expect_err("the session is dropped");
+        assert!(
+            matches!(&err, HostError::Protocol(detail) if detail.contains("session deadline exceeded")),
+            "got {err:?}"
+        );
+    }
+
+    /// A guest line that carries control characters (a carriage return and an
+    /// ANSI escape) is logged with those characters escaped, so it cannot
+    /// forge or erase operator log lines.
+    #[test]
+    fn control_characters_in_a_guest_line_are_escaped_in_the_log() {
+        let (mut guest, mut host) = pair();
+        let log = Recording::default();
+        // Valid UTF-8, no newline, but an interior ESC sequence and carriage
+        // return — exactly the bytes the framing leaves untouched.
+        guest
+            .send_line("not json\u{1b}[2K\rforged line")
+            .expect("the crafted line sends");
+        let _err =
+            handle_connection(&mut host, 3, limits(), &log).expect_err("the malformed line drops the session");
+        let logged = log.text();
+        assert!(logged.contains("\\x1b"), "ESC must be escaped: {logged}");
+        assert!(logged.contains("\\x0d"), "CR must be escaped: {logged}");
+        assert!(!logged.contains('\u{1b}'), "raw ESC must not reach the log: {logged}");
+        assert!(!logged.contains('\r'), "raw CR must not reach the log: {logged}");
     }
 }

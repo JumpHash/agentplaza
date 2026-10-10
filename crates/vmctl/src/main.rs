@@ -25,7 +25,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use vmm::spawner::{
-    GicVersion, MIN_GUEST_CID, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig, spawn_each,
+    GicVersion, MAX_GUEST_CID, MIN_GUEST_CID, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig,
+    spawn_each,
 };
 
 /// How often the printer polls the VMs' serial captures.
@@ -200,6 +201,12 @@ impl Config {
                              the hypervisor, loopback and the host"
                         ));
                     }
+                    if base > MAX_GUEST_CID {
+                        return Err(format!(
+                            "--vsock-cid must be at most {MAX_GUEST_CID}: the kernel refuses \
+                             VMADDR_CID_ANY and above"
+                        ));
+                    }
                     vsock_cid = Some(base);
                 }
                 "--console" => console = true,
@@ -217,10 +224,13 @@ impl Config {
             return Err("--mem-mib must be at least 1".to_string());
         }
 
-        if let Some(base) = vsock_cid
-            && base.checked_add(count as u64 - 1).is_none()
-        {
-            return Err("--vsock-cid and -n together run past the last guest CID".to_string());
+        if let Some(base) = vsock_cid {
+            let last = base.checked_add(count as u64 - 1).ok_or_else(|| {
+                "--vsock-cid and -n together run past the last guest CID".to_string()
+            })?;
+            if last > MAX_GUEST_CID {
+                return Err("--vsock-cid and -n together run past the last guest CID".to_string());
+            }
         }
 
         Ok(Config {
@@ -514,4 +524,45 @@ fn print_line(id: usize, line: &[u8]) {
     let text = text.strip_suffix('\n').unwrap_or(&text);
     let text = text.strip_suffix('\r').unwrap_or(text);
     println!("[vm {id}] {text}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses the required flags plus `extra` flag/value pairs.
+    fn parse(extra: &[(&str, &str)]) -> Result<Config, String> {
+        let mut argv: Vec<String> = vec![
+            "--kernel".into(),
+            "/boot/vmlinuz".into(),
+            "--cmdline".into(),
+            "console=ttyS0".into(),
+        ];
+        for (flag, value) in extra {
+            argv.push((*flag).to_string());
+            argv.push((*value).to_string());
+        }
+        Config::parse(&argv)
+    }
+
+    #[test]
+    fn the_last_guest_cid_is_u32_max_minus_one() {
+        assert_eq!(MAX_GUEST_CID, 4_294_967_294);
+        assert!(MAX_GUEST_CID < u32::MAX as u64);
+    }
+
+    #[test]
+    fn vsock_cid_upper_bound_is_enforced() {
+        assert!(parse(&[("--vsock-cid", "3")]).is_ok());
+        assert!(parse(&[("--vsock-cid", "4294967294")]).is_ok()); // u32::MAX - 1
+        assert!(parse(&[("--vsock-cid", "2")]).is_err()); // below MIN_GUEST_CID
+        assert!(parse(&[("--vsock-cid", "4294967295")]).is_err()); // u32::MAX
+        assert!(parse(&[("--vsock-cid", "4294967296")]).is_err()); // u32::MAX + 1
+    }
+
+    #[test]
+    fn vsock_cid_and_n_must_stay_under_the_transport_max() {
+        assert!(parse(&[("-n", "1"), ("--vsock-cid", "4294967294")]).is_ok());
+        assert!(parse(&[("-n", "2"), ("--vsock-cid", "4294967294")]).is_err());
+    }
 }

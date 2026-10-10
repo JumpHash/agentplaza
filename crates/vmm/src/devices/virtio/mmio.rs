@@ -259,6 +259,50 @@ impl VirtioMmioTransport {
         }
     }
 
+    /// Records the driver's `QueueNum` write, rejecting a size this device
+    /// cannot honour.
+    ///
+    /// The kernel's vhost ioctl (`VHOST_SET_VRING_NUM`) enforces only "non-zero,
+    /// ≤ 0xffff, power of two", not this device's `QueueNumMax`, so a hostile
+    /// driver could hand the backend a ring that is legal for vhost but larger
+    /// than the device advertises — and the VMM would learn only from the
+    /// kernel's refusal at activation. Rejecting here marks the device failed
+    /// on its own, so the failure is explicit rather than deferred to the
+    /// backend.
+    fn set_queue_size(&mut self, value: u32) {
+        if !self.check_device_status(
+            device_status::FEATURES_OK,
+            device_status::DRIVER_OK | device_status::FAILED,
+        ) {
+            eprintln!(
+                "warning: virtio-mmio: queue register written in invalid device state {:#x}",
+                self.device_status
+            );
+            return;
+        }
+        let Ok(select) = usize::try_from(self.queue_select) else {
+            return;
+        };
+        let Some(queue) = self.device.queues_mut().get_mut(select) else {
+            eprintln!(
+                "warning: virtio-mmio: queue register written for invalid queue {}",
+                self.queue_select
+            );
+            return;
+        };
+        let size = value & 0xffff;
+        if size == 0 || size > queue.max_size || !size.is_power_of_two() {
+            eprintln!(
+                "warning: virtio-mmio: QueueNum {size:#x} is invalid: it must be a non-zero \
+                 power of two no larger than {} (QueueNumMax)",
+                queue.max_size
+            );
+            self.device_status |= device_status::FAILED;
+            return;
+        }
+        queue.size = size;
+    }
+
     /// The low half of a 64-bit ring address (`Queue*Low`).
     fn set_address_low(address: &mut u64, value: u32) {
         *address = (*address & 0xffff_ffff_0000_0000) | u64::from(value);
@@ -430,7 +474,7 @@ impl BusDevice for VirtioMmioTransport {
                     }
                     0x24 => self.acked_features_select = value,
                     0x30 => self.queue_select = value,
-                    0x38 => self.update_queue_field(|queue| queue.size = value & 0xffff),
+                    0x38 => self.set_queue_size(value),
                     0x44 => self.update_queue_field(|queue| queue.ready = value == 1),
                     0x50 => {
                         if let Err(err) = self.device.notify_queue(value) {
@@ -716,6 +760,36 @@ mod tests {
         write_u32(&mut transport, 0x30, 9);
         assert_eq!(read_u32(&mut transport, 0x34), 0);
         assert_eq!(read_u32(&mut transport, 0x44), 0);
+    }
+
+    /// `QueueNum` must be a non-zero power of two no larger than the size the
+    /// device advertises; anything else fails the device on its own rather
+    /// than being handed to the backend for the kernel to refuse.
+    #[test]
+    fn queue_num_is_validated_at_write_time() {
+        use device_status::FAILED;
+
+        // A valid power of two within the advertised maximum is recorded.
+        let (mut transport, _state) = mock_transport(1 << 32, 1);
+        negotiate(&mut transport);
+        write_u32(&mut transport, 0x38, 128);
+        assert_eq!(transport.device.queues()[0].size, 128);
+        assert_eq!(read_u32(&mut transport, 0x70) & FAILED, 0);
+
+        // Zero, a non-power-of-two, an oversized power of two, and the
+        // largest legal u16 all fail the device instead of reaching the
+        // backend, and leave the queue unconfigured.
+        for bad in [0u32, 3, 512, 0xffff] {
+            let (mut transport, _state) = mock_transport(1 << 32, 1);
+            negotiate(&mut transport);
+            write_u32(&mut transport, 0x38, bad);
+            assert_eq!(
+                read_u32(&mut transport, 0x70) & FAILED,
+                FAILED,
+                "QueueNum {bad} must fail the device"
+            );
+            assert_eq!(transport.device.queues()[0].size, 0);
+        }
     }
 
     #[test]

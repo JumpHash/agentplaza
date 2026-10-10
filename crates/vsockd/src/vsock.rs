@@ -7,6 +7,7 @@
 
 use std::io::{self, Read, Write};
 use std::os::fd::RawFd;
+use std::time::Duration;
 
 /// The host's own CID (`VMADDR_CID_HOST`), the default listen CID.
 pub const HOST_CID: u32 = libc::VMADDR_CID_HOST as u32;
@@ -23,6 +24,37 @@ const LISTEN_BACKLOG: libc::c_int = 128;
 #[derive(Debug)]
 pub struct VsockStream {
     fd: RawFd,
+}
+
+impl VsockStream {
+    /// Sets how long a read on this stream may block before returning
+    /// [`io::ErrorKind::WouldBlock`].
+    ///
+    /// The accepted socket is blocking; without this, a guest that connects and
+    /// then sends nothing would pin its worker thread forever. The timeout
+    /// bounds every `recv_line`, so a silent guest is reaped and a session
+    /// deadline (checked on each line) can be reached.
+    pub fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
+        let timeval = libc::timeval {
+            tv_sec: timeout.as_secs() as libc::time_t,
+            tv_usec: libc::suseconds_t::from(timeout.subsec_micros()),
+        };
+        // SAFETY: `self.fd` is a live socket this type owns, `timeval` is a
+        // fully initialised `libc::timeval`, and `SO_RCVTIMEO` takes one.
+        let rc = unsafe {
+            libc::setsockopt(
+                self.fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                std::ptr::from_ref(&timeval).cast(),
+                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 impl Read for VsockStream {

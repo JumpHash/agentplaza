@@ -31,14 +31,19 @@ mod vsock;
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 #[cfg(target_os = "linux")]
 use std::thread;
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use line::StreamLines;
 #[cfg(target_os = "linux")]
-use serve::{HostError, StdoutLog, handle_connection};
+use serve::{HostError, SessionLimits, StdoutLog, handle_connection};
 #[cfg(target_os = "linux")]
 use vsock::{HOST_CID, VsockListener};
 
@@ -51,6 +56,70 @@ const DEFAULT_PORT: u32 = 5000;
 /// was asked to stop, in milliseconds.
 #[cfg(target_os = "linux")]
 const ACCEPT_POLL_MS: i32 = 200;
+
+/// The most guest sessions the daemon serves at once. A connection above this
+/// cap is refused and logged, so a fleet of hostile guests cannot exhaust the
+/// daemon's threads and file descriptors.
+#[cfg(target_os = "linux")]
+const MAX_SESSIONS: usize = 64;
+
+/// How long one read may block before the session is reconsidered. Set as
+/// `SO_RCVTIMEO` on every accepted socket, so a guest that connects and then
+/// sends nothing cannot pin its worker thread forever.
+#[cfg(target_os = "linux")]
+const RECV_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The most time one guest session may live, from accept to close.
+#[cfg(target_os = "linux")]
+const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The most tool calls one guest session may make before it is dropped.
+#[cfg(target_os = "linux")]
+const MAX_TOOL_CALLS: u64 = 1024;
+
+/// A cap on how many guest sessions may run at once.
+///
+/// The accept loop reserves a slot before spawning each worker and the guard
+/// releases it when the session ends, so the daemon's threads and file
+/// descriptors stay bounded no matter how many connections a guest (or a fleet
+/// of guests) opens.
+#[cfg(target_os = "linux")]
+struct SessionLimiter {
+    active: AtomicUsize,
+    max: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl SessionLimiter {
+    fn new(max: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            max,
+        }
+    }
+
+    /// Reserves a session slot, returning the guard that releases it on drop,
+    /// or `None` when the cap is reached.
+    fn try_acquire(self: &Arc<Self>) -> Option<SessionGuard> {
+        let previous = self.active.fetch_add(1, Ordering::SeqCst);
+        if previous >= self.max {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(SessionGuard(Arc::clone(self)))
+    }
+}
+
+/// Releases a reserved session slot when a worker finishes.
+#[cfg(target_os = "linux")]
+struct SessionGuard(Arc<SessionLimiter>);
+
+#[cfg(target_os = "linux")]
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Set by the signal handler; the accept loop reads it.
 #[cfg(target_os = "linux")]
@@ -154,6 +223,7 @@ fn run(config: Config) -> Result<(), String> {
         "vsockd: listening on AF_VSOCK CID {} port {}",
         config.cid, config.port
     );
+    let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
 
     while !SHUTDOWN.load(Ordering::SeqCst) {
         match listener.wait_readable(ACCEPT_POLL_MS) {
@@ -164,10 +234,22 @@ fn run(config: Config) -> Result<(), String> {
             Err(err) => eprintln!("vsockd: poll failed: {err}"),
         }
         match listener.accept() {
-            Ok((stream, peer_cid)) => {
-                println!("vsockd: accepted a connection from cid {peer_cid}");
-                thread::spawn(move || serve_guest(stream, peer_cid));
-            }
+            Ok((stream, peer_cid)) => match limiter.try_acquire() {
+                None => {
+                    println!(
+                        "vsockd: refusing a connection from cid {peer_cid}: {MAX_SESSIONS} \
+                         sessions are already running"
+                    );
+                    // `stream` is dropped here, closing the connection.
+                }
+                Some(guard) => {
+                    println!("vsockd: accepted a connection from cid {peer_cid}");
+                    thread::spawn(move || {
+                        let _guard = guard;
+                        serve_guest(stream, peer_cid);
+                    });
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(err) => eprintln!("vsockd: accept failed: {err}"),
         }
@@ -180,8 +262,19 @@ fn run(config: Config) -> Result<(), String> {
 /// Serves one guest session and reports how it ended.
 #[cfg(target_os = "linux")]
 fn serve_guest(stream: vsock::VsockStream, peer_cid: u32) {
+    if let Err(err) = stream.set_read_timeout(RECV_TIMEOUT) {
+        println!(
+            "vsockd: session with cid {peer_cid} dropped: cannot set a read timeout ({err})"
+        );
+        return;
+    }
+    let deadline = Instant::now().checked_add(SESSION_TIMEOUT);
     let mut transport = StreamLines::new(stream);
-    match handle_connection(&mut transport, peer_cid, &StdoutLog) {
+    let limits = SessionLimits {
+        max_calls: MAX_TOOL_CALLS,
+        deadline,
+    };
+    match handle_connection(&mut transport, peer_cid, limits, &StdoutLog) {
         Ok(summary) => println!(
             "vsockd: session with guest {} vm {} ended cleanly after {} tool calls",
             summary.guest_cid, summary.vm, summary.calls
@@ -258,5 +351,19 @@ mod tests {
         assert!(parse_args(vec!["--port".to_string()]).is_err());
         assert!(parse_args(vec!["--port".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
+    }
+
+    /// The session cap reserves at most `max` slots and refuses the next
+    /// connection, but reuses a slot once its session ends.
+    #[test]
+    fn the_session_cap_refuses_beyond_its_limit() {
+        let limiter = Arc::new(SessionLimiter::new(2));
+        let first = limiter.try_acquire().expect("the first slot");
+        let second = limiter.try_acquire().expect("the second slot");
+        assert!(limiter.try_acquire().is_none(), "the third slot is refused");
+        drop(first);
+        let third = limiter.try_acquire().expect("a freed slot is reused");
+        drop(second);
+        drop(third);
     }
 }
