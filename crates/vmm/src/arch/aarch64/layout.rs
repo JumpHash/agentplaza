@@ -152,3 +152,14 @@ pub const MEM_64BIT_DEVICES_SIZE: u64 = MMIO64_MEM_SIZE;
 pub const FIRST_ADDR_PAST_64BITS_MMIO: u64 = MMIO64_MEM_START + MMIO64_MEM_SIZE;
 /// Size of the memory past 64-bit MMIO gap
 pub const PAST_64BITS_MMIO_SIZE: u64 = 512 << 30;
+
+/// Guest-physical MMIO window of the `virtio-mmio` transport that carries the
+/// VM's vsock device: the first slot of the 32-bit MMIO device region, past the
+/// console (which has its own slot at [`SERIAL_MEM_START`]). The guest learns
+/// about it from the device tree node `create_fdt` writes.
+pub const VSOCK_MMIO_START: u64 = MEM_32BIT_DEVICES_START;
+
+/// The vsock device's GSI: the console takes the first legacy GSI, the vsock
+/// device the next. The in-kernel vGIC shifts a GSI to the SPI of the same
+/// name, and the device tree node declares that number as its interrupt.
+pub const VSOCK_GSI: u32 = GSI_LEGACY_START + 1;

@@ -140,3 +140,20 @@ pub const PAST_64BITS_MMIO_SIZE: u64 = 512 << 30;
 
 /// The size of one MMIO device slot (Firecracker `device_manager::mmio::MMIO_LEN`).
 pub const MMIO_LEN: u64 = 0x1000;
+
+/// Guest-physical MMIO window of the `virtio-mmio` transport that carries the
+/// VM's vsock device: the first slot of the 32-bit MMIO device region, which is
+/// free in this port (upstream puts its boot device at
+/// [`BOOT_DEVICE_MEM_START`], one slot below).
+///
+/// The guest learns about the window from the `virtio_mmio.device=` command
+/// line the builder appends — an `x86_64` guest has no device tree to describe
+/// it in. Nothing else may be mapped there: the window is outside every guest
+/// RAM region (this port's memory map ends at [`MMIO32_MEM_START`] at the
+/// latest).
+pub const VSOCK_MMIO_START: u64 = MEM_32BIT_DEVICES_START;
+
+/// Interrupt line of the vsock device: a legacy GSI of the in-kernel irqchip.
+/// The serial console is on IRQ 4 and the i8042 controller on IRQ 1, so the
+/// first legacy GSI is the first one left.
+pub const VSOCK_GSI: u32 = GSI_LEGACY_START;

@@ -7,12 +7,14 @@
 //
 // Derived from Firecracker src/vmm/src/arch/aarch64/fdt.rs (trimmed: the
 // `DeviceManager` parameter is replaced by two small descriptors — [`GicFdt`]
-// for the interrupt controller and [`SerialFdtInfo`] for the console — because
-// this port has no device manager (its only MMIO device is the serial console,
-// at the fixed [`layout::SERIAL_MEM_START`] address); the VMGenID, vmclock,
-// PCI, RTC, PL061 GPIO and virtio-mmio nodes, the `rng-seed` property (needs
-// `aws-lc-rs`) and the `linux,pci-probe-only` property (this port has no PCI)
-// are dropped).
+// for the interrupt controller and [`SerialFdtInfo`] for the console, plus
+// [`VirtioMmioFdtInfo`] for an optional virtio-mmio device — because this port
+// has no device manager (its MMIO devices are the serial console at the fixed
+// [`layout::SERIAL_MEM_START`] address and, when the VM has one, the vsock
+// device's transport at [`layout::VSOCK_MMIO_START`]); the VMGenID, vmclock,
+// PCI, RTC, PL061 GPIO nodes, the `rng-seed` property (needs `aws-lc-rs`) and
+// the `linux,pci-probe-only` property (this port has no PCI) are dropped.
+// `create_virtio_node` is upstream's.
 //
 // This module is deliberately free of any KVM import: the Hypervisor.framework
 // backend describes its userspace interrupt controller by implementing
@@ -79,6 +81,21 @@ pub struct SerialFdtInfo {
     pub gsi: u32,
 }
 
+/// MMIO location and interrupt of a `virtio-mmio` device node.
+///
+/// The device's GSI is the number the in-kernel interrupt controller shifts to
+/// an SPI, which is what the node declares: the device tree's SPI numbering and
+/// the vGIC's GSI numbering agree on it.
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioMmioFdtInfo {
+    /// Base address of the transport's MMIO window.
+    pub addr: u64,
+    /// Size of the window.
+    pub len: u64,
+    /// The device's GSI (SPI number in the device tree's own numbering).
+    pub gsi: u32,
+}
+
 /// Errors thrown while configuring the Flattened Device Tree for aarch64.
 #[derive(Debug, thiserror::Error)]
 pub enum FdtError {
@@ -102,6 +119,7 @@ pub fn create_fdt(
     vcpu_mpidr: Vec<u64>,
     cmdline: CString,
     serial: &SerialFdtInfo,
+    virtio_mmio: Option<VirtioMmioFdtInfo>,
     gic_device: &dyn GicFdt,
     initrd: &Option<super::InitrdConfig>,
 ) -> Result<Vec<u8>, FdtError> {
@@ -130,6 +148,9 @@ pub fn create_fdt(
     create_clock_node(&mut fdt_writer)?;
     create_psci_node(&mut fdt_writer)?;
     create_serial_node(&mut fdt_writer, serial)?;
+    if let Some(virtio_mmio) = virtio_mmio {
+        create_virtio_node(&mut fdt_writer, &virtio_mmio)?;
+    }
 
     // End Header node.
     fdt_writer.end_node(root)?;
@@ -409,6 +430,25 @@ fn create_serial_node(fdt: &mut FdtWriter, dev_info: &SerialFdtInfo) -> Result<(
     Ok(())
 }
 
+fn create_virtio_node(fdt: &mut FdtWriter, dev_info: &VirtioMmioFdtInfo) -> Result<(), FdtError> {
+    let virtio_mmio = fdt.begin_node(&format!("virtio_mmio@{:x}", dev_info.addr))?;
+
+    // Adding the dma-coherent property ensures that the guest driver allocates the virtio
+    // queue with the Write-Back attribute, maintaining cache coherency with the VMM's
+    // accesses to the virtio queue.
+    fdt.property_null("dma-coherent")?;
+    fdt.property_string("compatible", "virtio,mmio")?;
+    fdt.property_array_u64("reg", &[dev_info.addr, dev_info.len])?;
+    fdt.property_array_u32(
+        "interrupts",
+        &[GIC_FDT_IRQ_TYPE_SPI, dev_info.gsi, IRQ_TYPE_EDGE_RISING],
+    )?;
+    fdt.property_u32("interrupt-parent", GIC_PHANDLE)?;
+    fdt.end_node(virtio_mmio)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
@@ -475,6 +515,7 @@ mod tests {
             vec![0],
             CString::new("console=ttyS0 panic=-1").unwrap(),
             &serial,
+            None,
             &gic,
             &Some(initrd),
         )
@@ -527,5 +568,75 @@ mod tests {
         // No PCI and no MSI controller in this port.
         assert!(!text.contains("pci@"));
         assert!(!text.contains("arm,gic-v3-its"));
+        // A VM without a vsock device declares no virtio-mmio transport: the
+        // guest would otherwise probe an address nothing answers on.
+        assert!(!text.contains("virtio_mmio@"));
+    }
+
+    /// A VM with a vsock device gets a `virtio,mmio` node at the window its
+    /// transport is registered on, with the interrupt the vGIC shifts to the
+    /// device's SPI. The register and interrupt properties are binary in a
+    /// device tree, so they are checked as the byte sequences the flattened
+    /// device tree format requires (big-endian cells).
+    #[test]
+    fn create_fdt_describes_the_vsock_transport() {
+        let mem = arch_mem(mib_to_bytes(128));
+        let gic = FakeGicv3 {
+            properties: [0x3fff_0000, 0x1_0000, 0x3ffd_0000, 0x2_0000],
+        };
+        let serial = SerialFdtInfo {
+            addr: layout::SERIAL_MEM_START,
+            len: layout::MMIO_LEN,
+            gsi: layout::GSI_LEGACY_START,
+        };
+        let vsock = VirtioMmioFdtInfo {
+            addr: layout::VSOCK_MMIO_START,
+            len: layout::MMIO_LEN,
+            gsi: layout::VSOCK_GSI,
+        };
+
+        let dtb = create_fdt(
+            &mem,
+            vec![0],
+            CString::new("console=ttyS0").unwrap(),
+            &serial,
+            Some(vsock),
+            &gic,
+            &None,
+        )
+        .unwrap();
+
+        fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+        }
+        let text = String::from_utf8_lossy(&dtb);
+        assert!(
+            text.contains(&format!("virtio_mmio@{:x}", layout::VSOCK_MMIO_START)),
+            "missing virtio-mmio node"
+        );
+        assert!(text.contains("virtio,mmio"));
+        assert!(text.contains("dma-coherent"));
+        // `reg = <addr (2 cells) len (2 cells)>`, each 64-bit value as its high
+        // cell then its low one, all big-endian.
+        let cells = |value: u64| {
+            let mut cells = Vec::new();
+            cells.extend_from_slice(&((value >> 32) as u32).to_be_bytes());
+            cells.extend_from_slice(&(value as u32).to_be_bytes());
+            cells
+        };
+        let mut reg = cells(layout::VSOCK_MMIO_START);
+        reg.extend_from_slice(&cells(layout::MMIO_LEN));
+        assert!(contains(&dtb, &reg), "the transport's window is not `reg`");
+        // `interrupts = <SPI (0) gsi IRQ_TYPE_EDGE_RISING>`.
+        let mut interrupts = Vec::new();
+        for cell in [0u32, layout::VSOCK_GSI, 1] {
+            interrupts.extend_from_slice(&cell.to_be_bytes());
+        }
+        assert!(
+            contains(&dtb, &interrupts),
+            "the transport's interrupt is not `interrupts`"
+        );
     }
 }

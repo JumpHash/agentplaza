@@ -101,6 +101,13 @@ pub enum BootError {
     /// Failed to create a VM thread: {0}
     #[error("failed to create a VM thread: {0}")]
     Thread(io::Error),
+    /// The VM asked for a vsock device, which this backend cannot provide
+    #[error(
+        "this VM asked for a vsock device, which the Apple Silicon backend cannot provide: \
+         Hypervisor.framework has no vhost-vsock interface, and this port has no network device \
+         to fall back to"
+    )]
+    UnsupportedVsock,
     /// The VM did not start: {0}
     #[error("the VM did not start: {0}")]
     Startup(String),
@@ -112,6 +119,15 @@ pub fn boot(spec: &VmSpec, id: u32, runtime: Arc<VmRuntime>) -> Result<(), Spawn
 }
 
 fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+    // A vsock device is what a VM with a job needs (it is the only way to reach
+    // the orchestrator), so a spec that asks for one must not boot a VM that
+    // cannot have it: this backend has no vhost-vsock (Hypervisor.framework
+    // exposes no such interface) and this port has no network device to fall
+    // back to.
+    if spec.vsock.is_some() {
+        return Err(BootError::UnsupportedVsock);
+    }
+
     let vcpu_count = usize::from(spec.vcpus);
     if vcpu_count == 0 {
         return Err(BootError::NoVcpus);
@@ -176,6 +192,9 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             len: MMIO_LEN,
             gsi: gic::UART_SPI,
         },
+        // This backend has no vsock device (Hypervisor.framework has no
+        // vhost-vsock), so no virtio-mmio transport is described.
+        None,
         &GicFdtNode::new(vcpu_count),
         &initrd,
     )?;

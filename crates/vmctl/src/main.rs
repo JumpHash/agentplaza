@@ -24,7 +24,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vmm::spawner::{GicVersion, VmExit, VmHandle, VmRuntime, VmSpec, spawn_n};
+use vmm::spawner::{
+    GicVersion, MIN_GUEST_CID, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig, spawn_each,
+};
 
 /// How often the printer polls the VMs' serial captures.
 const PRINTER_INTERVAL: Duration = Duration::from_millis(20);
@@ -61,7 +63,8 @@ const CONSOLE_INPUT_ATTEMPTS: usize = 100;
 
 const USAGE: &str = "\
 usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
-             [--mem-mib M] [--timeout-secs T] [--gic v2|v3] [--console]
+             [--mem-mib M] [--timeout-secs T] [--gic v2|v3] [--vsock-cid BASE]
+             [--console]
 
   --kernel PATH      guest kernel image (uncompressed ELF vmlinux or bzImage)
   --cmdline STR      kernel command line
@@ -71,6 +74,8 @@ usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
   --mem-mib M        guest memory per VM in MiB (default 512)
   --timeout-secs T   stop VMs still running after T seconds (default 120, 0 = no timeout)
   --gic v2|v3        aarch64 interrupt controller (ignored on x86_64)
+  --vsock-cid BASE   give the VMs vsock devices, VM i getting CID BASE+i (default:
+                     no vsock device; BASE is a guest CID, so at least 3)
   --console          forward this tool's stdin to VM 0's serial console
   -h, --help         print this help
 
@@ -86,7 +91,14 @@ Before its first write, --console waits for the guest's console to go quiet: a
 guest's serial driver discards bytes that arrive while it is still bringing the
 port up, exactly as a real UART's would, so input sent at a boot log can be
 eaten before any program reads it. Input sent once the guest is up (the usual
-case) is unaffected.";
+case) is unaffected.
+
+--vsock-cid gives each VM a virtio-vsock device so its guest can reach the
+host's orchestrator over AF_VSOCK (CID 2). The tool assigns the CIDs (VM i gets
+BASE+i) because the caller — the orchestrator — has to know which guest is
+which; every VM needs its own CID, and CIDs 0, 1 and 2 belong to the vsock
+stack. The device exists only if this option is given: a guest without it has
+no way to reach the host at all, which is the point of the option.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -118,6 +130,9 @@ struct Config {
     /// `None` means "never time out".
     timeout: Option<Duration>,
     gic: Option<GicVersion>,
+    /// Guest CID of VM 0; VM `i` gets `vsock_cid + i`. `None` spawns VMs with
+    /// no vsock device.
+    vsock_cid: Option<u64>,
     /// Forward this process's stdin to VM 0's serial console.
     console: bool,
 }
@@ -133,6 +148,7 @@ impl Config {
         let mut memory_mib = defaults.memory_mib;
         let mut timeout = Some(Duration::from_secs(120));
         let mut gic = None;
+        let mut vsock_cid = None;
         let mut console = false;
 
         let mut args = args.iter();
@@ -174,6 +190,18 @@ impl Config {
                         other => return Err(format!("invalid --gic: {other}")),
                     })
                 }
+                "--vsock-cid" => {
+                    let base: u64 = value("--vsock-cid")?
+                        .parse()
+                        .map_err(|err| format!("invalid --vsock-cid: {err}"))?;
+                    if base < MIN_GUEST_CID {
+                        return Err(format!(
+                            "--vsock-cid must be at least {MIN_GUEST_CID}: CIDs 0, 1 and 2 are \
+                             the hypervisor, loopback and the host"
+                        ));
+                    }
+                    vsock_cid = Some(base);
+                }
                 "--console" => console = true,
                 other => return Err(format!("unknown argument: {other}")),
             }
@@ -189,6 +217,12 @@ impl Config {
             return Err("--mem-mib must be at least 1".to_string());
         }
 
+        if let Some(base) = vsock_cid
+            && base.checked_add(count as u64 - 1).is_none()
+        {
+            return Err("--vsock-cid and -n together run past the last guest CID".to_string());
+        }
+
         Ok(Config {
             kernel: kernel.ok_or("--kernel is required")?,
             cmdline: cmdline.ok_or("--cmdline is required")?,
@@ -198,22 +232,33 @@ impl Config {
             memory_mib,
             timeout,
             gic,
+            vsock_cid,
             console,
         })
     }
 }
 
 fn run(config: Config) -> ExitCode {
-    let spec = VmSpec {
+    let base = VmSpec {
         kernel: config.kernel,
         cmdline: config.cmdline,
         vcpus: config.vcpus,
         memory_mib: config.memory_mib,
         initrd: config.initrd,
         gic: config.gic,
+        vsock: None,
     };
-
-    let mut vms = match spawn_n(spec, config.count) {
+    // Every VM's vsock device carries its own CID: VM `id` gets the base the
+    // caller gave plus its id, because the host side identifies guests by CID
+    // and the spawner assigns none itself.
+    let vsock_cid = config.vsock_cid;
+    let mut vms = match spawn_each(config.count, |id| {
+        let mut spec = base.clone();
+        spec.vsock = vsock_cid.map(|base| VsockConfig {
+            guest_cid: base + u64::from(id),
+        });
+        spec
+    }) {
         Ok(vms) => vms,
         Err(err) => {
             eprintln!("vmctl: {err}");

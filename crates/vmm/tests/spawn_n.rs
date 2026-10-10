@@ -34,9 +34,7 @@ fn smoke_kernel() -> Option<PathBuf> {
     match env::var_os("APZ_VMM_SMOKE_KERNEL") {
         Some(path) if !path.is_empty() => Some(resolve(PathBuf::from(path))),
         _ => {
-            eprintln!(
-                "APZ_VMM_SMOKE_KERNEL is not set: skipping the N-VM boot smoke test"
-            );
+            eprintln!("APZ_VMM_SMOKE_KERNEL is not set: skipping the N-VM boot smoke test");
             None
         }
     }
@@ -65,7 +63,9 @@ fn resolve(path: PathBuf) -> PathBuf {
     if path.is_absolute() || path.exists() {
         return path;
     }
-    let from_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(&path);
+    let from_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(&path);
     if from_root.exists() { from_root } else { path }
 }
 
@@ -114,6 +114,7 @@ fn spawn_two_vms_boot_linux() {
         memory_mib: 512,
         initrd: None,
         gic: None,
+        vsock: None,
     };
 
     let mut vms = spawn_n(spec, 2).expect("spawning two VMs");
@@ -179,7 +180,9 @@ fn kill_stops_a_running_vm() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        vm.wait_timeout(Duration::from_millis(500)).unwrap().is_none(),
+        vm.wait_timeout(Duration::from_millis(500))
+            .unwrap()
+            .is_none(),
         "a guest panicked with panic=0 must keep the VM running"
     );
 
@@ -222,8 +225,7 @@ const KILL_BOUND: Duration = Duration::from_secs(30);
 /// never released.
 #[test]
 fn kill_stops_a_halted_vm() {
-    let (Some(kernel), Some(initrd)) =
-        (smoke_kernel(), image_from_env("APZ_VMM_HALT_INITRD"))
+    let (Some(kernel), Some(initrd)) = (smoke_kernel(), image_from_env("APZ_VMM_HALT_INITRD"))
     else {
         return;
     };
@@ -245,7 +247,9 @@ fn kill_stops_a_halted_vm() {
     // Nothing is about to stop this guest by itself: it is up, idle, and stays
     // up until it is killed.
     assert!(
-        vm.wait_timeout(Duration::from_millis(500)).unwrap().is_none(),
+        vm.wait_timeout(Duration::from_millis(500))
+            .unwrap()
+            .is_none(),
         "a guest parked in pause() must keep the VM running"
     );
 
@@ -282,8 +286,7 @@ fn kill_stops_a_halted_vm() {
 /// the VM still stops because the *guest* exited.
 #[test]
 fn serial_console_input_reaches_the_guest() {
-    let (Some(kernel), Some(initrd)) =
-        (smoke_kernel(), image_from_env("APZ_VMM_CONSOLE_INITRD"))
+    let (Some(kernel), Some(initrd)) = (smoke_kernel(), image_from_env("APZ_VMM_CONSOLE_INITRD"))
     else {
         return;
     };

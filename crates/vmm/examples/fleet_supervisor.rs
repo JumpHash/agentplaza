@@ -17,8 +17,8 @@
 //! (SIGINT/SIGTERM); without `--beats` the guests run long-lived.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -92,6 +92,7 @@ fn spec_for(args: &Args) -> VmSpec {
         memory_mib: args.memory_mib,
         initrd: args.initrd.clone(),
         gic: None,
+        vsock: None,
     }
 }
 

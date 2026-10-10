@@ -45,7 +45,7 @@ pub mod vm;
 // The FDT generator and its descriptors are also the Hypervisor.framework
 // backend's entry point into this module (`create_fdt`, the `GicFdt` trait a
 // userspace interrupt controller implements, and the serial description).
-pub use fdt::{FdtError, GicFdt, SerialFdtInfo, create_fdt};
+pub use fdt::{FdtError, GicFdt, SerialFdtInfo, VirtioMmioFdtInfo, create_fdt};
 
 use std::cmp::min;
 use std::fs::File;
@@ -238,6 +238,7 @@ pub fn configure_system_for_boot(
     initrd: &Option<InitrdConfig>,
     boot_cmdline: Cmdline,
     serial: &SerialFdtInfo,
+    virtio_mmio: Option<VirtioMmioFdtInfo>,
 ) -> Result<(), ConfigurationError> {
     // Upstream builds a `CpuConfiguration` here (from a CPU template), which is
     // also where every vCPU is initialized (`KvmVcpu::init`) and where the
@@ -280,6 +281,7 @@ pub fn configure_system_for_boot(
         vcpu_mpidr,
         cmdline,
         serial,
+        virtio_mmio,
         vm.get_irqchip(),
         initrd,
     )?;

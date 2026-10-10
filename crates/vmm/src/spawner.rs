@@ -44,6 +44,37 @@ pub enum GicVersion {
     V3,
 }
 
+/// The smallest CID a guest may be given.
+///
+/// CID 0 is the hypervisor, 1 is loopback and 2 is the host itself, so guests
+/// start at 3. The host's vsock stack enforces the same reservation (a
+/// `vhost-vsock` device refuses to claim a CID below it), which is why a wrong
+/// CID is a boot failure rather than a VM that silently cannot be reached. It
+/// is re-exported from the device that talks to that stack.
+pub const MIN_GUEST_CID: u64 = 3;
+
+/// Configuration of a VM's vsock device.
+///
+/// A VM with a vsock device talks to the host over `AF_VSOCK`: the guest is
+/// given [`guest_cid`](VsockConfig::guest_cid), and the host side (the
+/// orchestrator) listens on CID 2 — the host itself — at a port the two ends
+/// agree on. This is the *only* channel a guest has: this VMM has no network
+/// device at all, by design.
+///
+/// **The caller assigns CIDs.** The spawner never invents one (not even in
+/// [`spawn_n`]), because the host side has to know which CID to expect for each
+/// VM; a caller that boots several VMs derives each CID itself (see
+/// [`spawn_each`]). A guest CID is at least [`MIN_GUEST_CID`], and two running
+/// VMs must not share one: the kernel refuses a CID another backend already
+/// claims, which makes the VM whose device cannot claim it fail to boot rather
+/// than boot unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VsockConfig {
+    /// The CID the guest's `AF_VSOCK` sockets carry: at least 3, and unique
+    /// among the running VMs on the host.
+    pub guest_cid: u64,
+}
+
 /// Specification of the microVMs to spawn.
 ///
 /// `kernel` and `cmdline` are required; everything else has a default (see
@@ -63,6 +94,14 @@ pub struct VmSpec {
     /// `aarch64` interrupt controller to use; `None` selects the backend's
     /// default. Ignored on `x86_64`.
     pub gic: Option<GicVersion>,
+    /// The VM's vsock device (see [`VsockConfig`]), `None` for a VM with no
+    /// vsock device at all.
+    ///
+    /// Unsupported on Apple Silicon: a spec that sets it makes the boot fail
+    /// with an explicit error rather than boot a VM the host can never reach
+    /// (Hypervisor.framework has no `vhost-vsock`, and this port has no
+    /// network device to fall back to).
+    pub vsock: Option<VsockConfig>,
 }
 
 impl Default for VmSpec {
@@ -74,6 +113,7 @@ impl Default for VmSpec {
             memory_mib: 512,
             initrd: None,
             gic: None,
+            vsock: None,
         }
     }
 }
@@ -232,7 +272,10 @@ impl VmRuntime {
     /// Installs the stop control. Called by the backend from `boot`, before
     /// it returns.
     pub fn set_stop_control(&self, stop: impl Fn() + Send + Sync + 'static) {
-        *self.stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(stop));
+        *self
+            .stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(stop));
     }
 
     /// Installs the console input hook. Called by the backend from `boot`,
@@ -268,7 +311,10 @@ impl VmRuntime {
                 reason: "this VM's backend has no console input".to_string(),
             });
         };
-        input(data).map_err(|reason| SpawnError::SerialInput { id: self.id, reason })
+        input(data).map_err(|reason| SpawnError::SerialInput {
+            id: self.id,
+            reason,
+        })
     }
 
     /// Registers a thread the spawner must join before the VM counts as
@@ -467,16 +513,23 @@ pub fn spawn(spec: VmSpec) -> Result<VmHandle, SpawnError> {
     spawn_with_id(spec, 0)
 }
 
-/// Boots `n` microVMs, with ids `0..n`.
+/// Boots `n` microVMs, with ids `0..n`, each built from the spec `spec`
+/// returns for that id.
 ///
-/// If one VM fails to boot, the ones that did boot are killed before the
-/// error is returned; when one of those cannot be stopped either, the returned
-/// error is a [`SpawnError::PartialCleanup`] that names it.
-pub fn spawn_n(spec: VmSpec, n: usize) -> Result<Vec<VmHandle>, SpawnError> {
+/// This is the entry point for a caller whose VMs do not share one
+/// [`VmSpec`] — the fleet's VMs each have their own vsock CID, and the caller
+/// assigns it (see [`VsockConfig`]), so it has to build a spec per id. Every
+/// other property may differ too, of course: nothing here assumes the specs are
+/// alike beyond their being valid.
+///
+/// If one VM fails to boot, the ones that did boot are killed before the error
+/// is returned; when one of those cannot be stopped either, the returned error
+/// is a [`SpawnError::PartialCleanup`] that names it.
+pub fn spawn_each(n: usize, spec: impl Fn(u32) -> VmSpec) -> Result<Vec<VmHandle>, SpawnError> {
     let mut handles = Vec::with_capacity(n.min(1024));
     for id in 0..n {
         let id = u32::try_from(id).map_err(|_| SpawnError::TooManyVms)?;
-        match spawn_with_id(spec.clone(), id) {
+        match spawn_with_id(spec(id), id) {
             Ok(handle) => handles.push(handle),
             Err(err) => {
                 let err = cleanup_after_boot_failure(err, &mut handles);
@@ -485,6 +538,15 @@ pub fn spawn_n(spec: VmSpec, n: usize) -> Result<Vec<VmHandle>, SpawnError> {
         }
     }
     Ok(handles)
+}
+
+/// Boots `n` microVMs, with ids `0..n`, all from the same [`VmSpec`].
+///
+/// If one VM fails to boot, the ones that did boot are killed before the error
+/// is returned; when one of those cannot be stopped either, the returned error
+/// is a [`SpawnError::PartialCleanup`] that names it.
+pub fn spawn_n(spec: VmSpec, n: usize) -> Result<Vec<VmHandle>, SpawnError> {
+    spawn_each(n, |_| spec.clone())
 }
 
 /// Stops the VMs that did start after one of a batch failed to boot.
@@ -544,10 +606,7 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
         crate::hvf::boot(spec, runtime.id, runtime)
     }
 
-    #[cfg(not(any(
-        target_os = "linux",
-        all(target_os = "macos", target_arch = "aarch64")
-    )))]
+    #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
     {
         let _ = (spec, runtime);
         Err(SpawnError::NoBackend)
