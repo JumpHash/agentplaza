@@ -19,6 +19,12 @@
 //! in guest memory. This is done to avoid unnecessarily copying data from guest memory
 //! to temporary buffers, before passing it on to the vsock backend.
 
+// Guest-memory boundary (see the allowlist in `lib.rs`): the packet header is a
+// `ByteValued` POD type (so it can be copied to and from guest memory), and
+// `parse` loads the guest's descriptor chain through the `unsafe` chained-load
+// entry points of `iovec`.
+#![allow(unsafe_code)]
+
 use std::fmt::Debug;
 
 use vm_memory::volatile_memory::Error;
@@ -177,7 +183,6 @@ impl VsockPacketHeader {
         self
     }
 }
-
 /// The vsock packet header struct size (the struct is packed).
 pub const VSOCK_PKT_HDR_SIZE: u32 = 44;
 
@@ -282,7 +287,6 @@ impl VsockPacketTx {
         self.buffer.len() - VSOCK_PKT_HDR_SIZE
     }
 }
-
 /// Struct describing a single vsock packet.
 ///
 /// Encapsulates the virtio descriptor chain containing the packet through the `IoVecBuffer[Mut]`
@@ -385,7 +389,6 @@ impl VsockPacketRx {
             .and_then(|read| read.try_into().map_err(|_| VsockError::DescChainOverflow))
     }
 }
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -398,6 +401,8 @@ mod tests {
 
     const HDR_ADDR: u64 = 0x8000;
     const DATA_ADDR: u64 = 0x9000;
+    /// The data-descriptor size used by the assembly/offset tests.
+    const PKT_BUF_SIZE: u32 = 4096;
 
     #[test]
     fn packet_header_size_is_44() {
@@ -511,5 +516,300 @@ mod tests {
         mem.read_slice(&mut payload, GuestAddress(DATA_ADDR)).unwrap();
         assert_eq!(&payload, b"hello!");
     }
-}
 
+    /// Lays a two-descriptor chain — header at `HDR_ADDR`, data at `DATA_ADDR` —
+    /// with the given descriptor lengths and flags, publishes it, and returns
+    /// the popped head. The packet header's `len` field is written to guest
+    /// memory first, so `parse` sees it.
+    fn chain(
+        mem: &crate::vstate::memory::GuestMemoryMmap,
+        queue_start: GuestAddress,
+        hdr_len: u32,
+        hdr_flags: u16,
+        data_len: u32,
+        data_flags: u16,
+        pkt_len: u32,
+    ) -> crate::devices::virtio::queue::DescriptorChain {
+        let mut hdr = VsockPacketHeader::default();
+        hdr.set_len(pkt_len);
+        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR)).unwrap();
+
+        let vq = VirtQueue::new(queue_start, mem, 16);
+        vq.set_desc(0, HDR_ADDR, hdr_len, hdr_flags, 1);
+        vq.set_desc(1, DATA_ADDR, data_len, data_flags, 0);
+        let mut q = vq.create_queue();
+        vq.publish(0);
+        q.pop().unwrap().unwrap()
+    }
+
+    /// The standard RX/TX pair over the same buffers, for the offset tests.
+    fn packet_pair(
+        mem: &crate::vstate::memory::GuestMemoryMmap,
+    ) -> (VsockPacketRx, VsockPacketTx) {
+        let rx = chain(
+            mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+        let tx = chain(
+            mem,
+            GuestAddress(0x1000),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            0,
+            0,
+        );
+        let mut pkt = VsockPacketRx::new().unwrap();
+        pkt.parse(mem, rx).unwrap();
+        let mut pkt2 = VsockPacketTx::default();
+        pkt2.parse(mem, tx).unwrap();
+        (pkt, pkt2)
+    }
+
+    /// Derived from Firecracker's `test_tx_packet_assembly` / `test_rx_packet_assembly`
+    /// (the descriptor-shape error matrix), adapted to drive the chains directly.
+    #[test]
+    fn test_tx_packet_assembly_errors() {
+        let mem = default_mem();
+
+        // A write-only header descriptor is not device-readable.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            0,
+            0,
+        );
+        assert!(matches!(
+            VsockPacketTx::default().parse(&mem, head),
+            Err(VsockError::UnreadableDescriptor)
+        ));
+
+        // A write-only data descriptor is not device-readable either.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+        assert!(matches!(
+            VsockPacketTx::default().parse(&mem, head),
+            Err(VsockError::UnreadableDescriptor)
+        ));
+
+        // The chain cannot hold the 44-byte header.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE - 1,
+            VIRTQ_DESC_F_NEXT,
+            0,
+            0,
+            0,
+        );
+        assert!(matches!(
+            VsockPacketTx::default().parse(&mem, head),
+            Err(VsockError::DescChainTooShortForHeader(_))
+        ));
+
+        // A zero-length packet is valid.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            0,
+            0,
+            0,
+        );
+        VsockPacketTx::default().parse(&mem, head).unwrap();
+
+        // The header's length may not exceed the maximum packet buffer size.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            0,
+            defs::MAX_PKT_BUF_SIZE + 1,
+        );
+        assert!(matches!(
+            VsockPacketTx::default().parse(&mem, head),
+            Err(VsockError::InvalidPktLen(_))
+        ));
+
+        // A data length with no data descriptor behind it is rejected, and the
+        // error reports the chain's real size against the header's claim.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            0,
+            PKT_BUF_SIZE,
+            0,
+            1024,
+        );
+        assert!(matches!(
+            VsockPacketTx::default().parse(&mem, head),
+            Err(VsockError::DescChainTooShortForPacket(44, 1024))
+        ));
+
+        // A data descriptor that cannot fit the header's advertised length.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            0,
+            8 * 1024,
+        );
+        assert!(matches!(
+            VsockPacketTx::default().parse(&mem, head),
+            Err(VsockError::DescChainTooShortForPacket(4140, 8192))
+        ));
+    }
+
+    /// Derived from Firecracker's `test_rx_packet_assembly` (the RX half of the
+    /// matrix).
+    #[test]
+    fn test_rx_packet_assembly_errors() {
+        let mem = default_mem();
+
+        // A read-only header descriptor is not device-writable.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            PKT_BUF_SIZE,
+            0,
+            0,
+        );
+        assert!(matches!(
+            VsockPacketRx::new().unwrap().parse(&mem, head),
+            Err(VsockError::UnwritableDescriptor)
+        ));
+
+        // The chain cannot hold the 44-byte header.
+        let head = chain(
+            &mem,
+            GuestAddress(0),
+            VSOCK_PKT_HDR_SIZE - 1,
+            VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
+            0,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+        assert!(matches!(
+            VsockPacketRx::new().unwrap().parse(&mem, head),
+            Err(VsockError::DescChainTooShortForHeader(_))
+        ));
+    }
+
+    /// Derived from Firecracker's `test_packet_hdr_accessors`: every header
+    /// field round-trips, and flags accumulate rather than replace.
+    #[test]
+    fn test_packet_hdr_accessors() {
+        const SRC_CID: u64 = 1;
+        const DST_CID: u64 = 2;
+        const SRC_PORT: u32 = 3;
+        const DST_PORT: u32 = 4;
+        const LEN: u32 = 5;
+        const TYPE: u16 = 6;
+        const OP: u16 = 7;
+        const FLAGS: u32 = 8;
+        const BUF_ALLOC: u32 = 9;
+        const FWD_CNT: u32 = 10;
+
+        let mut hdr = VsockPacketHeader::default();
+        assert_eq!(hdr.src_cid(), 0);
+        assert_eq!(hdr.dst_cid(), 0);
+        assert_eq!(hdr.src_port(), 0);
+        assert_eq!(hdr.dst_port(), 0);
+        assert_eq!(hdr.len(), 0);
+        assert_eq!(hdr.type_(), 0);
+        assert_eq!(hdr.op(), 0);
+        assert_eq!(hdr.flags(), 0);
+        assert_eq!(hdr.buf_alloc(), 0);
+        assert_eq!(hdr.fwd_cnt(), 0);
+
+        // Test field accessors.
+        hdr.set_src_cid(SRC_CID)
+            .set_dst_cid(DST_CID)
+            .set_src_port(SRC_PORT)
+            .set_dst_port(DST_PORT)
+            .set_len(LEN)
+            .set_type(TYPE)
+            .set_op(OP)
+            .set_flags(FLAGS)
+            .set_buf_alloc(BUF_ALLOC)
+            .set_fwd_cnt(FWD_CNT);
+
+        assert_eq!(hdr.src_cid(), SRC_CID);
+        assert_eq!(hdr.dst_cid(), DST_CID);
+        assert_eq!(hdr.src_port(), SRC_PORT);
+        assert_eq!(hdr.dst_port(), DST_PORT);
+        assert_eq!(hdr.len(), LEN);
+        assert_eq!(hdr.type_(), TYPE);
+        assert_eq!(hdr.op(), OP);
+        assert_eq!(hdr.flags(), FLAGS);
+        assert_eq!(hdr.buf_alloc(), BUF_ALLOC);
+        assert_eq!(hdr.fwd_cnt(), FWD_CNT);
+
+        // Test individual flag setting.
+        let flags = hdr.flags() | 0b1000;
+        hdr.set_flag(0b1000);
+        assert_eq!(hdr.flags(), flags);
+    }
+
+    /// Derived from Firecracker's `test_packet_buf`: data read/written at every
+    /// offset of the packet buffer round-trips, and a read or write that would
+    /// leave the buffer fails closed with `GuestMemoryBounds`.
+    #[test]
+    fn test_packet_buf_offsets_and_bounds() {
+        let mem = default_mem();
+        let (mut pkt, pkt2) = packet_pair(&mem);
+        let buf_size = pkt.buf_size();
+        assert_eq!(buf_size, PKT_BUF_SIZE);
+
+        let data: Vec<u8> = (0..buf_size).map(|i| (i & 0xff) as u8).collect();
+        pkt.read_at_offset_from(&mut data.as_slice(), 0, buf_size)
+            .unwrap();
+
+        for offset in 0..buf_size {
+            let mut buf = vec![0; (buf_size - offset) as usize];
+            let written = pkt2
+                .write_from_offset_to(&mut buf.as_mut_slice(), offset, buf_size - offset)
+                .unwrap();
+            assert_eq!(written, buf_size - offset);
+            assert_eq!(buf, data[offset as usize..]);
+        }
+
+        // Out-of-bounds offset/count pairs are rejected by both views.
+        let oob_cases = [(1, buf_size), (buf_size, 1), (u32::MAX, 1), (1, u32::MAX)];
+        for (offset, count) in oob_cases {
+            let mut buf = vec![0; buf_size as usize];
+            assert!(matches!(
+                pkt2.write_from_offset_to(&mut buf.as_mut_slice(), offset, count),
+                Err(VsockError::GuestMemoryBounds)
+            ));
+            let mut src = data.as_slice();
+            assert!(matches!(
+                pkt.read_at_offset_from(&mut src, offset, count),
+                Err(VsockError::GuestMemoryBounds)
+            ));
+        }
+    }
+}

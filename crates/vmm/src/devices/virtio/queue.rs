@@ -10,6 +10,12 @@
 // living in `vstate::memory`; `crate::logger::error`/`crate::utils` become a
 // plain `eprintln!` and `vstate::memory::u64_to_usize`).
 
+// Guest-memory boundary (see the allowlist in `lib.rs`): volatile loads/stores
+// through guest-supplied addresses, the `ByteValued` descriptor structs, the
+// `unsafe fn` accessors whose length is checked by the caller, and the `Send`
+// impl for the memory slice these views hand out.
+#![allow(unsafe_code)]
+
 use std::num::Wrapping;
 use std::sync::atomic::{Ordering, fence};
 

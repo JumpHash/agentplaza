@@ -21,8 +21,43 @@
 //! - [`hvf`] — Apple Silicon Hypervisor.framework backend (macOS; written for
 //!   this port, absent upstream)
 
+// This crate is safe Rust only. `deny(unsafe_code)` makes any `unsafe` in a
+// module that is not on the allowlist below a compile error, so every
+// avoidable `unsafe` is eliminated and the irreducible syscall/FFI boundary is
+// confined to the small, enumerated, SAFETY-documented modules that follow.
+// This is Firecracker's posture — the same ioctl/`mmap`/FFI calls cannot be
+// expressed in safe Rust — made compiler-enforced.
+//
+// The allowlist (each module's `#![allow(unsafe_code)]` carries the reason
+// next to the code, and every `unsafe` block has its own `// SAFETY:` note):
+//   * `sys` — `poll(2)` and `uname(2)`; the crate's raw-syscall one-liners.
+//   * `vstate::memory` — `mmap`/`munmap`/`sysconf` and the raw-pointer guest
+//     region builder (`unsafe impl Send/Sync` for the owned mapping).
+//   * `vstate::vcpu` — `dup(2)` of the KVM fd and `create_vcpu_from_rawfd`.
+//   * `vstate::vm` — `KVM_SET_USER_MEMORY_REGION` (a raw-pointer ioctl).
+//   * `arch::x86_64::xstate` — `arch_prctl(2)` for dynamic XSAVE features.
+//   * `arch::x86_64::mptable` — the upstream `ByteValued` impls for the `mpspec`
+//     tables (upstream-copied, unchanged).
+//   * `arch::aarch64::gic::regs` — `KVM_GET_DEVICE_ATTR`, which `kvm-ioctls`
+//     exposes as an `unsafe fn` because the caller owns the out-pointer.
+//   * `devices::virtio::iov_deque` — `memfd_create`/`ftruncate`/`fcntl`/`mmap`
+//     and the volatile double-mapped ring access.
+//   * `devices::virtio::queue` — volatile guest-memory access, the
+//     `ByteValued` descriptor types and the `Send` impls.
+//   * `devices::virtio::iovec` — guest descriptor-chain walking (volatile
+//     access, `iovec` construction, `Send` impls).
+//   * `devices::virtio::vsock::packet` — the `ByteValued` packet header and the
+//     descriptor-chain loads into it.
+//   * `devices::virtio::vhost` — the `/dev/vhost-vsock` ioctl family.
+//   * `hvf::{sys,vm,vcpu}` (macOS only) — the Hypervisor.framework FFI
+//     declarations, the framework calls, and the exit-structure reads.
+#![deny(unsafe_code)]
+
 #[cfg(target_os = "linux")]
 pub mod builder;
+// The crate's raw-syscall boundary (`poll(2)`, `uname(2)`).
+#[cfg(target_os = "linux")]
+mod sys;
 pub mod devices;
 pub mod spawner;
 

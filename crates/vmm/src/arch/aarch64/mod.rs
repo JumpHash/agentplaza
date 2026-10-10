@@ -431,18 +431,10 @@ pub fn load_kernel(
 /// and compares the major and minor components it needs.
 #[cfg(target_os = "linux")]
 fn host_kernel_release_at_least(major: u8, minor: u8) -> bool {
-    // SAFETY: `utsname` is a plain C struct of fixed-size char arrays and
-    // integers; an all-zero value is a valid (if unusable) initialization of
-    // it, and `uname` overwrites it on success.
-    let mut utsname: libc::utsname = unsafe { std::mem::zeroed() };
-    // SAFETY: `utsname` points to a valid, writable `libc::utsname` for the
-    // duration of the call.
-    if unsafe { libc::uname(&mut utsname) } < 0 {
-        return false;
+    match crate::sys::uname_release() {
+        Some(release) => kernel_release_at_least(&release, major, minor),
+        None => false,
     }
-    // SAFETY: `uname` guarantees `release` is a NUL-terminated C string.
-    let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
-    kernel_release_at_least(&release.to_string_lossy(), major, minor)
 }
 
 /// Whether a Linux `uname -r` release string is at least `major.minor`.

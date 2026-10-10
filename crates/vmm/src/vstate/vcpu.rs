@@ -13,6 +13,11 @@
 // tree's `arch/mod.rs` declares the per-arch modules rather than re-exporting
 // their items.
 
+// Syscall boundary (see the allowlist in `lib.rs`): `dup(2)` of the KVM vCPU
+// fd plus `create_vcpu_from_rawfd`, whose contract (sole ownership of the
+// duplicated descriptor) is established immediately at the call site.
+#![allow(unsafe_code)]
+
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};

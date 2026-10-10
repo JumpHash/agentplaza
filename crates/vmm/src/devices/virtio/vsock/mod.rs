@@ -43,7 +43,10 @@ mod device;
 pub mod event_thread;
 pub mod metrics;
 pub mod mmio_device;
-mod packet;
+// Public because the parser is a boundary the fuzz harness exercises directly
+// (`fuzz/fuzz_targets/vsock_packet.rs`): it is the code that reads the guest's
+// descriptor chain, so it must be reachable from outside the crate.
+pub mod packet;
 pub mod unix;
 
 use std::os::unix::io::AsRawFd;

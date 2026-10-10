@@ -38,6 +38,12 @@
 //! releases it before waking anybody. `crate::hvf::wait` holds the other end
 //! of that rule.
 
+// FFI boundary (see the allowlist in `lib.rs`): the vCPU backend drives
+// Hypervisor.framework directly — `hv_vcpu_create`/`run`/`destroy`, the
+// register accessors, the vtimer, `mach_absolute_time`, and the read of the
+// exit structure `hv_vcpu_run` filled in.
+#![allow(unsafe_code)]
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};

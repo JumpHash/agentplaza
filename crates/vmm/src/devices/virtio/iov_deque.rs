@@ -5,6 +5,11 @@
 // the `memfd` crate becomes raw `libc` `memfd_create`/`fcntl` calls, so no new
 // dependency is pulled in; `displaydoc` becomes explicit `thiserror` messages).
 
+// Syscall + guest-memory boundary (see the allowlist in `lib.rs`):
+// `memfd_create`/`ftruncate`/`fcntl`/`mmap`/`munmap` and the volatile access to
+// the double-mapped iovec ring the guest and the device both see.
+#![allow(unsafe_code)]
+
 use libc::{c_int, c_void, iovec, off_t, size_t};
 
 use crate::vstate::memory::host_page_size;

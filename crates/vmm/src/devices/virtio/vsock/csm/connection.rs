@@ -673,3 +673,790 @@ where
             .set_fwd_cnt(self.fwd_cnt.0);
     }
 }
+
+// Derived from Firecracker src/vmm/src/devices/virtio/vsock/csm/connection.rs
+// (the `tests` module). Adapted to this port: upstream's event-manager test
+// harness (`TestContext` + `create_event_handler_context`) becomes the crate's
+// own `VirtQueue`, which lays the two virtqueues and the shared packet buffers
+// out in guest memory directly; `crate::vstate::memory::BitmapSlice` becomes
+// `vm_memory::bitmap::BitmapSlice`; the `csm_defs` alias is dropped in favour of
+// the already-imported `defs`. The assertions and the tests themselves are
+// upstream's.
+#[cfg(test)]
+mod tests {
+    use std::io::Error as IoError;
+
+    use vm_memory::bitmap::BitmapSlice;
+    use vm_memory::{VolatileMemoryError, VolatileSlice};
+    use vmm_sys_util::eventfd::EventFd;
+
+    use super::super::super::defs::uapi;
+    use super::*;
+    use crate::devices::virtio::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
+    use crate::devices::virtio::test_utils::{default_mem, VirtQueue};
+    use crate::devices::virtio::vsock::packet::{VSOCK_PKT_HDR_SIZE, VsockPacketRx, VsockPacketTx};
+    use crate::vstate::memory::GuestAddress;
+
+    const LOCAL_CID: u64 = 2;
+    const PEER_CID: u64 = 3;
+    const LOCAL_PORT: u32 = 1002;
+    const PEER_PORT: u32 = 1003;
+    const PEER_BUF_ALLOC: u32 = 64 * 1024;
+
+    /// Guest addresses of the shared packet buffers (the same memory is reached
+    /// through the RX queue's write-only descriptors and the TX queue's
+    /// read-only ones, as `TestContext` does upstream).
+    const HDR_ADDR: u64 = 0x2000;
+    const DATA_ADDR: u64 = 0x2100;
+    const PKT_BUF_SIZE: u32 = 4096;
+
+    #[derive(Debug)]
+    enum StreamState {
+        Closed,
+        Error(ErrorKind),
+        Ready,
+        WouldBlock,
+    }
+
+    /// A backing stream whose read and write behaviour the tests control
+    /// directly, so every error path of the CSM can be reached.
+    #[derive(Debug)]
+    struct TestStream {
+        fd: EventFd,
+        read_buf: Vec<u8>,
+        read_state: StreamState,
+        write_buf: Vec<u8>,
+        write_state: StreamState,
+    }
+
+    impl TestStream {
+        fn new() -> Self {
+            Self {
+                fd: EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+                read_state: StreamState::Ready,
+                write_state: StreamState::Ready,
+                read_buf: Vec::new(),
+                write_buf: Vec::new(),
+            }
+        }
+
+        fn new_with_read_buf(buf: &[u8]) -> Self {
+            let mut stream = Self::new();
+            stream.read_buf = buf.to_vec();
+            stream
+        }
+    }
+
+    impl AsRawFd for TestStream {
+        fn as_raw_fd(&self) -> RawFd {
+            self.fd.as_raw_fd()
+        }
+    }
+
+    impl ReadVolatile for TestStream {
+        fn read_volatile<B: BitmapSlice>(
+            &mut self,
+            buf: &mut VolatileSlice<B>,
+        ) -> Result<usize, VolatileMemoryError> {
+            match self.read_state {
+                StreamState::Closed => Ok(0),
+                StreamState::Error(kind) => Err(VolatileMemoryError::IOError(IoError::new(
+                    kind, "whatevs",
+                ))),
+                StreamState::Ready => {
+                    if self.read_buf.is_empty() {
+                        return Err(VolatileMemoryError::IOError(IoError::new(
+                            ErrorKind::WouldBlock,
+                            "EAGAIN",
+                        )));
+                    }
+                    let len = std::cmp::min(buf.len(), self.read_buf.len());
+                    assert_ne!(len, 0);
+                    buf.copy_from(&self.read_buf[..len]);
+                    self.read_buf = self.read_buf.split_off(len);
+                    Ok(len)
+                }
+                StreamState::WouldBlock => Err(VolatileMemoryError::IOError(IoError::new(
+                    ErrorKind::WouldBlock,
+                    "EAGAIN",
+                ))),
+            }
+        }
+    }
+
+    impl Write for TestStream {
+        fn write(&mut self, data: &[u8]) -> Result<usize, IoError> {
+            self.write_volatile(&VolatileSlice::from(data.to_vec().as_mut_slice()))
+                .map_err(|err| match err {
+                    VolatileMemoryError::IOError(io_err) => io_err,
+                    _ => unreachable!(),
+                })
+        }
+
+        fn flush(&mut self) -> Result<(), IoError> {
+            Ok(())
+        }
+    }
+
+    impl WriteVolatile for TestStream {
+        fn write_volatile<B: BitmapSlice>(
+            &mut self,
+            buf: &VolatileSlice<B>,
+        ) -> Result<usize, VolatileMemoryError> {
+            match self.write_state {
+                StreamState::Closed => Err(VolatileMemoryError::IOError(IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "EPIPE",
+                ))),
+                StreamState::Error(kind) => Err(VolatileMemoryError::IOError(IoError::new(
+                    kind, "whatevs",
+                ))),
+                StreamState::Ready => self.write_buf.write_volatile(buf),
+                StreamState::WouldBlock => Err(VolatileMemoryError::IOError(IoError::new(
+                    ErrorKind::WouldBlock,
+                    "EAGAIN",
+                ))),
+            }
+        }
+    }
+
+    impl VsockConnectionBackend for TestStream {}
+
+    /// Read `how_much` bytes of a packet's data buffer (upstream's
+    /// `test_utils::read_packet_data`).
+    fn read_packet_data(pkt: &VsockPacketTx, how_much: u32) -> Vec<u8> {
+        let mut buf = vec![0; how_much as usize];
+        pkt.write_from_offset_to(&mut buf.as_mut_slice(), 0, how_much)
+            .unwrap();
+        buf
+    }
+
+    fn init_pkt_hdr(hdr: &mut VsockPacketHeader, op: u16, len: u32) {
+        hdr.set_src_cid(PEER_CID)
+            .set_dst_cid(LOCAL_CID)
+            .set_src_port(PEER_PORT)
+            .set_dst_port(LOCAL_PORT)
+            .set_type(uapi::VSOCK_TYPE_STREAM)
+            .set_buf_alloc(PEER_BUF_ALLOC)
+            .set_op(op)
+            .set_len(len);
+    }
+
+    /// The connection state machine test context: an RX and a TX packet view
+    /// over the same guest buffers, plus the connection under test. The guest
+    /// memory is owned here, since a parsed `VsockPacket` is a wrapper over
+    /// pointers into it.
+    #[derive(Debug)]
+    struct CsmTestContext {
+        _mem: crate::vstate::memory::GuestMemoryMmap,
+        rx_pkt: VsockPacketRx,
+        tx_pkt: VsockPacketTx,
+        conn: VsockConnection<TestStream>,
+    }
+
+    impl CsmTestContext {
+        fn new_established() -> Self {
+            Self::new(ConnState::Established)
+        }
+
+        fn new(conn_state: ConnState) -> Self {
+            let mem = default_mem();
+            let (rx_pkt, tx_pkt) = parse_packets(&mem);
+
+            let stream = TestStream::new();
+            let conn = match conn_state {
+                ConnState::PeerInit => VsockConnection::<TestStream>::new_peer_init(
+                    stream,
+                    LOCAL_CID,
+                    PEER_CID,
+                    LOCAL_PORT,
+                    PEER_PORT,
+                    PEER_BUF_ALLOC,
+                ),
+                ConnState::LocalInit => VsockConnection::<TestStream>::new_local_init(
+                    stream, LOCAL_CID, PEER_CID, LOCAL_PORT, PEER_PORT,
+                ),
+                ConnState::Established => {
+                    let mut rx_pkt = rx_pkt;
+                    let mut conn = VsockConnection::<TestStream>::new_peer_init(
+                        stream,
+                        LOCAL_CID,
+                        PEER_CID,
+                        LOCAL_PORT,
+                        PEER_PORT,
+                        PEER_BUF_ALLOC,
+                    );
+                    assert!(conn.has_pending_rx());
+                    conn.recv_pkt(&mut rx_pkt).unwrap();
+                    assert_eq!(rx_pkt.hdr.op(), uapi::VSOCK_OP_RESPONSE);
+                    return Self {
+                        _mem: mem,
+                        rx_pkt,
+                        tx_pkt,
+                        conn,
+                    };
+                }
+                other => panic!("invalid ctx state: {other:?}"),
+            };
+            assert_eq!(conn.state, conn_state);
+            Self {
+                _mem: mem,
+                rx_pkt,
+                tx_pkt,
+                conn,
+            }
+        }
+
+        fn set_stream(&mut self, stream: TestStream) {
+            self.conn.stream = stream;
+        }
+
+        fn set_peer_credit(&mut self, credit: u32) {
+            assert!(credit < self.conn.peer_buf_alloc);
+            self.conn.peer_fwd_cnt = Wrapping(0);
+            self.conn.rx_cnt = Wrapping(self.conn.peer_buf_alloc - credit);
+            assert_eq!(self.conn.peer_avail_credit(), credit);
+        }
+
+        fn send(&mut self) {
+            self.conn.send_pkt(&self.tx_pkt);
+        }
+
+        fn recv(&mut self) {
+            self.conn.recv_pkt(&mut self.rx_pkt).unwrap();
+        }
+
+        fn notify_epollin(&mut self) {
+            self.conn.notify(EventSet::IN);
+            assert!(self.conn.has_pending_rx());
+        }
+
+        fn notify_epollout(&mut self) {
+            self.conn.notify(EventSet::OUT);
+        }
+
+        fn init_tx_pkt(&mut self, op: u16, len: u32) -> &mut VsockPacketTx {
+            init_pkt_hdr(&mut self.tx_pkt.hdr, op, len);
+            &mut self.tx_pkt
+        }
+
+        fn init_data_tx_pkt(&mut self, mut data: &[u8]) -> &VsockPacketTx {
+            assert!(data.len() <= self.tx_pkt.buf_size() as usize);
+            self.init_tx_pkt(uapi::VSOCK_OP_RW, u32::try_from(data.len()).unwrap());
+
+            let len = data.len();
+            self.rx_pkt
+                .read_at_offset_from(&mut data, 0, len.try_into().unwrap())
+                .unwrap();
+            &self.tx_pkt
+        }
+    }
+
+    /// Lays one RX (write-only) and one TX (read-only) descriptor chain out in
+    /// `mem`, both pointing at the shared header/data buffers, and parses a
+    /// packet view over each.
+    fn parse_packets(
+        mem: &crate::vstate::memory::GuestMemoryMmap,
+    ) -> (VsockPacketRx, VsockPacketTx) {
+        let rxq = VirtQueue::new(GuestAddress(0), mem, 16);
+        rxq.set_desc(
+            0,
+            HDR_ADDR,
+            VSOCK_PKT_HDR_SIZE,
+            VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
+            1,
+        );
+        rxq.set_desc(1, DATA_ADDR, PKT_BUF_SIZE, VIRTQ_DESC_F_WRITE, 0);
+        rxq.publish(0);
+        let mut rx_queue = rxq.create_queue();
+        let rx_head = rx_queue.pop().unwrap().unwrap();
+
+        let txq = VirtQueue::new(GuestAddress(0x1000), mem, 16);
+        txq.set_desc(0, HDR_ADDR, VSOCK_PKT_HDR_SIZE, VIRTQ_DESC_F_NEXT, 1);
+        txq.set_desc(1, DATA_ADDR, PKT_BUF_SIZE, 0, 0);
+        txq.publish(0);
+        let mut tx_queue = txq.create_queue();
+        let tx_head = tx_queue.pop().unwrap().unwrap();
+
+        let mut rx_pkt = VsockPacketRx::new().unwrap();
+        rx_pkt.parse(mem, rx_head).unwrap();
+        let mut tx_pkt = VsockPacketTx::default();
+        tx_pkt.parse(mem, tx_head).unwrap();
+        (rx_pkt, tx_pkt)
+    }
+
+    #[test]
+    fn test_peer_request() {
+        let mut ctx = CsmTestContext::new(ConnState::PeerInit);
+        assert!(ctx.conn.has_pending_rx());
+        ctx.recv();
+        // For peer-initiated requests, our connection should always yield a vsock reponse packet,
+        // in order to establish the connection.
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RESPONSE);
+        assert_eq!(ctx.rx_pkt.hdr.src_cid(), LOCAL_CID);
+        assert_eq!(ctx.rx_pkt.hdr.dst_cid(), PEER_CID);
+        assert_eq!(ctx.rx_pkt.hdr.src_port(), LOCAL_PORT);
+        assert_eq!(ctx.rx_pkt.hdr.dst_port(), PEER_PORT);
+        assert_eq!(ctx.rx_pkt.hdr.type_(), uapi::VSOCK_TYPE_STREAM);
+        assert_eq!(ctx.rx_pkt.hdr.len(), 0);
+        // After yielding the response packet, the connection should have transitioned to the
+        // established state.
+        assert_eq!(ctx.conn.state, ConnState::Established);
+    }
+
+    #[test]
+    fn test_local_request() {
+        let mut ctx = CsmTestContext::new(ConnState::LocalInit);
+        // Host-initiated connections should first yield a connection request packet.
+        assert!(ctx.conn.has_pending_rx());
+        // Before yielding the connection request packet, the timeout kill timer shouldn't be
+        // armed.
+        assert!(!ctx.conn.will_expire());
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_REQUEST);
+        // Since the request might time-out, the kill timer should now be armed.
+        assert!(ctx.conn.will_expire());
+        assert!(!ctx.conn.has_expired());
+        ctx.init_tx_pkt(uapi::VSOCK_OP_RESPONSE, 0);
+        ctx.send();
+        // Upon receiving a connection response, the connection should have transitioned to the
+        // established state, and the kill timer should've been disarmed.
+        assert_eq!(ctx.conn.state, ConnState::Established);
+        assert!(!ctx.conn.will_expire());
+    }
+
+    #[test]
+    fn test_local_request_timeout() {
+        let mut ctx = CsmTestContext::new(ConnState::LocalInit);
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_REQUEST);
+        assert!(ctx.conn.will_expire());
+        assert!(!ctx.conn.has_expired());
+        std::thread::sleep(std::time::Duration::from_millis(
+            defs::CONN_REQUEST_TIMEOUT_MS,
+        ));
+        assert!(ctx.conn.has_expired());
+    }
+
+    #[test]
+    fn test_rx_data() {
+        let mut ctx = CsmTestContext::new_established();
+        let data = &[1, 2, 3, 4];
+        ctx.set_stream(TestStream::new_with_read_buf(data));
+        assert_eq!(ctx.conn.as_raw_fd(), ctx.conn.stream.as_raw_fd());
+        ctx.notify_epollin();
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+        assert_eq!(ctx.rx_pkt.hdr.len() as usize, data.len());
+
+        let buf = read_packet_data(&ctx.tx_pkt, 4);
+        assert_eq!(&buf, data);
+
+        // There's no more data in the stream, so `recv_pkt` should yield `VsockError::NoData`.
+        match ctx.conn.recv_pkt(&mut ctx.rx_pkt) {
+            Err(VsockError::NoData) => (),
+            other => panic!("{other:?}"),
+        }
+
+        // A recv attempt in an invalid state should yield an instant reset packet.
+        ctx.conn.state = ConnState::LocalClosed;
+        ctx.notify_epollin();
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RST);
+    }
+
+    #[test]
+    fn test_polled_evset_drops_in_while_rw_pending() {
+        // Regression test for the guest-RX-starvation busy-spin.
+        // An Established connection with an undeliverable RW indication (host wrote data,
+        // guest has not provided RX buffers) must NOT keep advertising EPOLLIN, or the
+        // level-triggered muxer epoll fd busy-spins the event thread. IN must be re-armed
+        // once the guest posts an RX buffer and the pending packet is delivered.
+        let mut ctx = CsmTestContext::new_established();
+        // Fresh Established connection is interested in IN.
+        assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
+
+        ctx.set_stream(TestStream::new_with_read_buf(&[1, 2, 3, 4]));
+        ctx.notify_epollin(); // sets PendingRx::Rw
+        // With an undeliverable Rw queued, IN must be suppressed.
+        assert!(!ctx.conn.get_polled_evset().contains(EventSet::IN));
+
+        // The guest posts an RX buffer: the packet is delivered, but `Rw` stays pending for
+        // another read, so IN remains suppressed.
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+        assert!(ctx.conn.has_pending_rx());
+        assert!(!ctx.conn.get_polled_evset().contains(EventSet::IN));
+
+        // Once the stream drains (read returns `WouldBlock`), `Rw` is cleared and IN re-armed.
+        ctx.conn.recv_pkt(&mut ctx.rx_pkt).unwrap_err();
+        assert!(!ctx.conn.has_pending_rx());
+        assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
+    }
+
+    #[test]
+    fn test_rx_drains_multiple_packets_per_notification() {
+        // A single EPOLLIN notification must drain the whole host stream: `recv_pkt`
+        // keeps yielding RW packets across calls until a read would block.
+        let mut ctx = CsmTestContext::new_established();
+        let pkt_buf_size = ctx.rx_pkt.buf_size() as usize;
+        // More than one packet's worth of data, so draining needs several reads.
+        let data = vec![0xab_u8; pkt_buf_size + 1];
+        ctx.set_stream(TestStream::new_with_read_buf(&data));
+
+        // A single notification schedules the connection.
+        ctx.notify_epollin();
+
+        // First read fills a whole packet; `Rw` stays pending for the rest.
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+        assert_eq!(ctx.rx_pkt.hdr.len() as usize, pkt_buf_size);
+        assert!(ctx.conn.has_pending_rx());
+
+        // Second read drains the remaining byte, without another notification.
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+        assert_eq!(ctx.rx_pkt.hdr.len() as usize, 1);
+        assert!(ctx.conn.has_pending_rx());
+
+        // Stream now empty: the next read would block, clearing `Rw` and re-arming IN.
+        ctx.conn.recv_pkt(&mut ctx.rx_pkt).unwrap_err();
+        assert!(!ctx.conn.has_pending_rx());
+        assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
+    }
+
+    #[test]
+    fn test_polled_evset_drops_in_on_host_eof() {
+        // Same as `test_polled_evset_drops_in_while_rw_pending`, but the host closed its
+        // end (EOF) instead of writing data. The resulting undeliverable RW indication must
+        // still suppress EPOLLIN so the muxer epoll fd does not busy-spin the event thread.
+        let mut ctx = CsmTestContext::new_established();
+        assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
+
+        let mut stream = TestStream::new();
+        stream.read_state = StreamState::Closed;
+        ctx.set_stream(stream);
+        ctx.notify_epollin(); // sets PendingRx::Rw
+        assert!(!ctx.conn.get_polled_evset().contains(EventSet::IN));
+    }
+
+    #[test]
+    fn test_polled_evset_drops_out_when_killed() {
+        // A killed connection must not keep asking for EPOLLOUT: a peer-closed fd is
+        // writable forever while every write fails, which busy-spins the event thread.
+        let mut ctx = CsmTestContext::new_established();
+
+        // Buffer some guest data by making the host stream refuse writes.
+        let mut stream = TestStream::new();
+        stream.write_state = StreamState::WouldBlock;
+        ctx.set_stream(stream);
+        ctx.init_data_tx_pkt(&[1, 2, 3, 4]);
+        ctx.send();
+        assert!(ctx.conn.get_polled_evset().contains(EventSet::OUT));
+
+        // The host end goes away: flushing fails and kills the connection.
+        let mut stream = TestStream::new();
+        stream.write_state = StreamState::Closed;
+        ctx.set_stream(stream);
+        ctx.notify_epollout();
+        assert_eq!(ctx.conn.state, ConnState::Killed);
+
+        // Wanting no events is what makes the muxer drop the listener.
+        assert!(ctx.conn.tx_buf.is_empty());
+        assert!(ctx.conn.get_polled_evset().is_empty());
+    }
+
+    #[test]
+    fn test_polled_evset_keeps_out_while_flushable() {
+        // Only a kill forfeits the buffer. `LocalClosed` still drains: a 0-length read
+        // only means the host shut down its write side. `PeerClosed(true, true)` drains
+        // too, and sends its RST once done.
+        for state in [
+            ConnState::Established,
+            ConnState::LocalClosed,
+            ConnState::PeerClosed(true, true),
+        ] {
+            let mut ctx = CsmTestContext::new_established();
+            let mut stream = TestStream::new();
+            stream.write_state = StreamState::WouldBlock;
+            ctx.set_stream(stream);
+            ctx.init_data_tx_pkt(&[1, 2, 3, 4]);
+            ctx.send();
+
+            ctx.conn.state = state;
+            assert!(
+                ctx.conn.get_polled_evset().contains(EventSet::OUT),
+                "OUT must stay armed in {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_local_close() {
+        let mut ctx = CsmTestContext::new_established();
+        let mut stream = TestStream::new();
+        stream.read_state = StreamState::Closed;
+        ctx.set_stream(stream);
+        ctx.notify_epollin();
+        ctx.recv();
+        // When the host-side stream is closed, we can neither send not receive any more data.
+        // Therefore, the vsock shutdown packet that we'll deliver to the guest must contain both
+        // the no-more-send and the no-more-recv indications.
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_SHUTDOWN);
+        assert_ne!(ctx.rx_pkt.hdr.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_SEND, 0);
+        assert_ne!(ctx.rx_pkt.hdr.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_RCV, 0);
+
+        // The kill timer should now be armed.
+        assert!(ctx.conn.will_expire());
+        assert!(
+            ctx.conn.expiry().unwrap()
+                < Instant::now() + Duration::from_millis(defs::CONN_SHUTDOWN_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn test_peer_close() {
+        // Test that send/recv shutdown indications are handled correctly.
+        // I.e. once set, an indication cannot be reset.
+        {
+            let mut ctx = CsmTestContext::new_established();
+
+            let tx_pkt = ctx.init_tx_pkt(uapi::VSOCK_OP_SHUTDOWN, 0);
+            tx_pkt.hdr.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_RCV);
+            ctx.send();
+            assert_eq!(ctx.conn.state, ConnState::PeerClosed(true, false));
+
+            // Attempting to reset the no-more-recv indication should not work
+            // (we are only setting the no-more-send indication here).
+            ctx.tx_pkt.hdr.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
+            ctx.send();
+            assert_eq!(ctx.conn.state, ConnState::PeerClosed(true, true));
+        }
+
+        // Test case:
+        // - reading data from a no-more-send connection should work; and
+        // - writing data should have no effect.
+        {
+            let data = &[1, 2, 3, 4];
+            let mut ctx = CsmTestContext::new_established();
+            ctx.set_stream(TestStream::new_with_read_buf(data));
+            let tx_pkt = ctx.init_tx_pkt(uapi::VSOCK_OP_SHUTDOWN, 0);
+            tx_pkt.hdr.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
+            ctx.send();
+            ctx.notify_epollin();
+            ctx.recv();
+            assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+
+            let buf = read_packet_data(&ctx.tx_pkt, 4);
+            assert_eq!(&buf, data);
+
+            ctx.init_data_tx_pkt(data);
+            ctx.send();
+            assert_eq!(ctx.conn.stream.write_buf.len(), 0);
+            assert!(ctx.conn.tx_buf.is_empty());
+        }
+
+        // Test case:
+        // - writing data to a no-more-recv connection should work; and
+        // - attempting to read data from it should yield an RST packet.
+        {
+            let mut ctx = CsmTestContext::new_established();
+            let tx_pkt = ctx.init_tx_pkt(uapi::VSOCK_OP_SHUTDOWN, 0);
+            tx_pkt.hdr.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_RCV);
+            ctx.send();
+            let data = &[1, 2, 3, 4];
+            ctx.init_data_tx_pkt(data);
+            ctx.send();
+            assert_eq!(ctx.conn.stream.write_buf, data.to_vec());
+
+            ctx.notify_epollin();
+            ctx.recv();
+            assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RST);
+        }
+
+        // Test case: setting both no-more-send and no-more-recv indications should have the
+        // connection confirm termination (i.e. yield an RST).
+        {
+            let mut ctx = CsmTestContext::new_established();
+            let tx_pkt = ctx.init_tx_pkt(uapi::VSOCK_OP_SHUTDOWN, 0);
+            tx_pkt
+                .hdr
+                .set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_RCV | uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
+            ctx.send();
+            assert!(ctx.conn.has_pending_rx());
+            ctx.recv();
+            assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RST);
+        }
+    }
+
+    #[test]
+    fn test_local_read_error() {
+        let mut ctx = CsmTestContext::new_established();
+        let mut stream = TestStream::new();
+        stream.read_state = StreamState::Error(ErrorKind::PermissionDenied);
+        ctx.set_stream(stream);
+        ctx.notify_epollin();
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RST);
+    }
+
+    #[test]
+    fn test_credit_request_to_peer() {
+        let mut ctx = CsmTestContext::new_established();
+        ctx.set_peer_credit(0);
+        ctx.notify_epollin();
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_CREDIT_REQUEST);
+    }
+
+    #[test]
+    fn test_credit_request_from_peer() {
+        let mut ctx = CsmTestContext::new_established();
+        ctx.init_tx_pkt(uapi::VSOCK_OP_CREDIT_REQUEST, 0);
+        ctx.send();
+        assert!(ctx.conn.has_pending_rx());
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_CREDIT_UPDATE);
+        assert_eq!(ctx.rx_pkt.hdr.buf_alloc(), defs::CONN_TX_BUF_SIZE);
+        assert_eq!(ctx.rx_pkt.hdr.fwd_cnt(), ctx.conn.fwd_cnt.0);
+    }
+
+    #[test]
+    fn test_credit_update_to_peer() {
+        let mut ctx = CsmTestContext::new_established();
+
+        // Force a stale state, where the peer hasn't been updated on our credit situation.
+        ctx.conn.last_fwd_cnt_to_peer = Wrapping(0);
+
+        // Since a credit update token is sent when the fwd_cnt value exceeds
+        // CONN_TX_BUF_SIZE - CONN_CREDIT_UPDATE_THRESHOLD, we initialize
+        // fwd_cnt at 6 bytes below the threshold.
+        let initial_fwd_cnt = defs::CONN_TX_BUF_SIZE - defs::CONN_CREDIT_UPDATE_THRESHOLD - 6;
+        ctx.conn.fwd_cnt = Wrapping(initial_fwd_cnt);
+
+        // Use a 4-byte packet for triggering the credit update threshold.
+        let data = &[1, 2, 3, 4];
+
+        // Check that there is no pending RX.
+        ctx.init_data_tx_pkt(data);
+        ctx.send();
+        assert!(!ctx.conn.has_pending_rx());
+
+        // Send a packet again.
+        ctx.init_data_tx_pkt(data);
+        ctx.send();
+
+        // The CSM should now have a credit update available for the peer.
+        assert!(ctx.conn.has_pending_rx());
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_CREDIT_UPDATE);
+        assert_eq!(
+            ctx.rx_pkt.hdr.fwd_cnt() as usize,
+            initial_fwd_cnt as usize + data.len() * 2,
+        );
+        assert_eq!(ctx.conn.fwd_cnt, ctx.conn.last_fwd_cnt_to_peer);
+    }
+
+    #[test]
+    fn test_tx_buffering() {
+        // Test case:
+        // - when writing to the backing stream would block, TX data should end up in the TX buf
+        // - when the CSM is notified that it can write to the backing stream, it should flush the
+        //   TX buf.
+        {
+            let mut ctx = CsmTestContext::new_established();
+
+            let mut stream = TestStream::new();
+            stream.write_state = StreamState::WouldBlock;
+            ctx.set_stream(stream);
+
+            // Send some data through the connection. The backing stream is set to reject writes,
+            // so the data should end up in the TX buffer.
+            let data = &[1, 2, 3, 4];
+            ctx.init_data_tx_pkt(data);
+            ctx.send();
+
+            // When there's data in the TX buffer, the connection should ask to be notified when it
+            // can write to its backing stream.
+            assert!(ctx.conn.get_polled_evset().contains(EventSet::OUT));
+            assert_eq!(ctx.conn.tx_buf.len(), data.len());
+
+            // Unlock the write stream and notify the connection it can now write its bufferred
+            // data.
+            ctx.set_stream(TestStream::new());
+            ctx.conn.notify(EventSet::OUT);
+            assert!(ctx.conn.tx_buf.is_empty());
+            assert_eq!(ctx.conn.stream.write_buf, data);
+        }
+    }
+
+    #[test]
+    fn test_stream_write_error() {
+        // Test case: sending a data packet to a broken / closed backing stream should kill it.
+        {
+            let mut ctx = CsmTestContext::new_established();
+            let mut stream = TestStream::new();
+            stream.write_state = StreamState::Closed;
+            ctx.set_stream(stream);
+
+            let data = &[1, 2, 3, 4];
+            ctx.init_data_tx_pkt(data);
+            ctx.send();
+
+            assert_eq!(ctx.conn.state, ConnState::Killed);
+            assert!(ctx.conn.has_pending_rx());
+            ctx.recv();
+            assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RST);
+        }
+
+        // Test case: notifying a connection that it can flush its TX buffer to a broken stream
+        // should kill the connection.
+        {
+            let mut ctx = CsmTestContext::new_established();
+
+            let mut stream = TestStream::new();
+            stream.write_state = StreamState::WouldBlock;
+            ctx.set_stream(stream);
+
+            // Send some data through the connection. The backing stream is set to reject writes,
+            // so the data should end up in the TX buffer.
+            let data = &[1, 2, 3, 4];
+            ctx.init_data_tx_pkt(data);
+            ctx.send();
+
+            // Set the backing stream to error out on write.
+            let mut stream = TestStream::new();
+            stream.write_state = StreamState::Closed;
+            ctx.set_stream(stream);
+
+            assert!(ctx.conn.get_polled_evset().contains(EventSet::OUT));
+            ctx.notify_epollout();
+            assert_eq!(ctx.conn.state, ConnState::Killed);
+        }
+    }
+
+    #[test]
+    fn test_peer_credit_misbehavior() {
+        let mut ctx = CsmTestContext::new_established();
+
+        let mut stream = TestStream::new();
+        stream.write_state = StreamState::WouldBlock;
+        ctx.set_stream(stream);
+
+        // Fill up the TX buffer.
+        let data = vec![0u8; ctx.tx_pkt.buf_size() as usize];
+        ctx.init_data_tx_pkt(data.as_slice());
+        for _i in 0..(defs::CONN_TX_BUF_SIZE as usize / data.len()) {
+            ctx.send();
+        }
+
+        // Then try to send more data.
+        ctx.send();
+
+        // The connection should've committed suicide.
+        assert_eq!(ctx.conn.state, ConnState::Killed);
+        assert!(ctx.conn.has_pending_rx());
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RST);
+    }
+}

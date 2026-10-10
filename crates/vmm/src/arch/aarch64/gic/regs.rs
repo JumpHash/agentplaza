@@ -5,6 +5,14 @@
 // serde derives and the ITS register state belong to the snapshot format, which
 // this port does not have).
 
+// KVM-device boundary (see the allowlist in `lib.rs`): `kvm-ioctls` declares
+// `DeviceFd::get_device_attr` as an `unsafe fn` because the caller owns the
+// attribute's out-pointer (here `&mut val`, a correctly sized register slot);
+// there is no safe wrapper for it. (Note: the audit that opened this slice
+// assumed this call was safe — it is not, in `kvm-ioctls` 0.25, so this block is
+// irreducible and is documented, not removed.)
+#![allow(unsafe_code)]
+
 use std::fmt::Debug;
 use std::iter::StepBy;
 use std::ops::Range;

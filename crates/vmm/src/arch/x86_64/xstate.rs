@@ -4,6 +4,11 @@
 // Derived from Firecracker src/vmm/src/arch/x86_64/xstate.rs (trimmed: the
 // `logger::info!` diagnostics on older kernels are removed).
 
+// Syscall boundary (see the allowlist in `lib.rs`): the dynamic XSAVE feature
+// requests are `arch_prctl(2)` calls, which `vmm-sys-util` exposes as a raw
+// `syscall(2)` wrapper.
+#![allow(unsafe_code)]
+
 use vmm_sys_util::syscall::SyscallReturnCode;
 
 use crate::arch::x86_64::generated::arch_prctl;

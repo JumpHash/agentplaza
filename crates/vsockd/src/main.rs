@@ -19,12 +19,20 @@
 //! binary must still build, and there it refuses to run rather than pretend to
 //! have listened.
 
+// This crate is safe Rust only: `deny(unsafe_code)` makes any `unsafe` outside
+// the one enumerated module below a compile error. The single entry is
+//   * `sys` — the raw-syscall boundary (`poll(2)` and `sigaction(2)`), which
+//     safe Rust cannot call.
+#![deny(unsafe_code)]
+
 #[cfg(target_os = "linux")]
 mod line;
 #[cfg(target_os = "linux")]
 mod proto;
 #[cfg(target_os = "linux")]
 mod serve;
+#[cfg(target_os = "linux")]
+mod sys;
 
 use std::process::ExitCode;
 
@@ -37,7 +45,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 #[cfg(target_os = "linux")]
 use std::thread;
@@ -126,10 +134,6 @@ impl Drop for SessionGuard {
         self.0.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
-
-/// Set by the signal handler; the accept loop reads it.
-#[cfg(target_os = "linux")]
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
@@ -259,31 +263,11 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Polls `fd` for readability, returning `Ok(false)` on timeout. The timeout
-/// is the accept loop's shutdown-check cadence, mirroring the old AF_VSOCK
-/// `wait_readable`.
-#[cfg(target_os = "linux")]
-fn poll_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> std::io::Result<bool> {
-    // SAFETY: `pollfd` is fully initialised; `fd` is valid for the duration.
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: the pollfd pointer points to one valid entry.
-    let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-    if ret < 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(ret > 0)
-    }
-}
-
 /// Listens, serves every guest session on its own thread, and returns when a
 /// signal asks it to stop.
 #[cfg(target_os = "linux")]
 fn run(config: Config) -> Result<(), String> {
-    install_signal_handlers();
+    sys::install_signal_handlers();
     // The listeners live under `uds_dir` with deterministic names; create it
     // 0700 first, so another local user cannot squat a path or impersonate
     // the orchestrator (F4).
@@ -295,7 +279,6 @@ fn run(config: Config) -> Result<(), String> {
     })?;
     // Bind every listener first, so a taken path fails the daemon before it
     // serves any guest (rather than one CID up and one down).
-    let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
     let mut handles = Vec::new();
     let mut listener_paths = Vec::new();
@@ -365,8 +348,8 @@ fn clear_stale_listener(path: &Path, cid: u32) -> Result<(), String> {
 /// Accepts sessions for one guest CID and serves each on its own thread.
 #[cfg(target_os = "linux")]
 fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>) {
-    while !SHUTDOWN.load(Ordering::SeqCst) {
-        match poll_readable(listener.as_raw_fd(), ACCEPT_POLL_MS) {
+    while !sys::shutdown_requested() {
+        match sys::poll_readable(listener.as_raw_fd(), ACCEPT_POLL_MS) {
             Ok(false) => continue,
             // A connection, a shutdown request or a spurious wakeup: in every
             // case the loop re-checks the flag and tries to accept.
@@ -430,33 +413,6 @@ fn describe(err: &HostError) -> String {
         HostError::Io(io) => format!("connection failed ({io})"),
         HostError::Protocol(detail) => format!("protocol violation ({detail})"),
     }
-}
-
-/// Asks the process to stop on `SIGTERM`/`SIGINT`.
-///
-/// The handler only sets a flag (the async-signal-safe thing to do); the
-/// accept loop notices it within [`ACCEPT_POLL_MS`], and `SA_RESTART` is left
-/// off so an interrupted wait cannot hold the shutdown back.
-#[cfg(target_os = "linux")]
-fn install_signal_handlers() {
-    // SAFETY: `on_signal` only stores to a static `AtomicBool`, which is
-    // async-signal-safe; `sigaction` is given a fully initialised action whose
-    // handler stays alive for the process's lifetime.
-    unsafe {
-        let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = on_signal as usize;
-        libc::sigemptyset(&mut action.sa_mask);
-        action.sa_flags = 0;
-        for signal in [libc::SIGTERM, libc::SIGINT] {
-            libc::sigaction(signal, &action, std::ptr::null_mut());
-        }
-    }
-}
-
-/// The signal handler: request a clean stop.
-#[cfg(target_os = "linux")]
-extern "C" fn on_signal(_signal: libc::c_int) {
-    SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
 #[cfg(all(target_os = "linux", test))]

@@ -35,6 +35,12 @@
 //!   table, and the kernel refuses reserved CIDs (0, 1, 2) as well as CIDs
 //!   another transport already claims.
 
+// Syscall boundary (see the allowlist in `lib.rs`): the `/dev/vhost-vsock`
+// ioctl family. `vmm-sys-util` exposes the ioctl wrappers as `unsafe fn`s
+// because the kernel reads and writes the caller's buffers in place; each call
+// site below passes a fully initialised, correctly sized argument.
+#![allow(unsafe_code)]
+
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;

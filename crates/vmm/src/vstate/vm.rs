@@ -12,6 +12,11 @@
 // arch re-exports are cfg-selected because this tree's `arch/mod.rs`
 // declares the per-arch modules rather than re-exporting their items).
 
+// Syscall boundary (see the allowlist in `lib.rs`): `KVM_SET_USER_MEMORY_REGION`
+// passes a raw userspace pointer to the kernel, so the trait method that wraps
+// it is `unsafe` and the caller must have validated the region.
+#![allow(unsafe_code)]
+
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 

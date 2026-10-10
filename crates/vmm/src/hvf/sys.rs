@@ -22,6 +22,12 @@
 //! without it fails `hv_vm_create` with `HV_DENIED`.
 
 #![allow(non_camel_case_types)]
+// FFI boundary (see the allowlist in `lib.rs`): this module is nothing but the
+// `unsafe extern "C"` declarations of Hypervisor.framework and the thin
+// `hv_try!` wrapper that checks each `hv_return_t`. The `unsafe` of every call
+// is written in exactly one place — the macro below — so callers read as
+// ordinary error-returning code.
+#![allow(unsafe_code)]
 
 use std::ffi::c_void;
 use std::ptr;

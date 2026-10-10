@@ -272,29 +272,19 @@ fn set_serial_input_hook(runtime: &Arc<VmRuntime>, serial: &Arc<Mutex<SerialDevi
 /// Blocks until `evt` is signalled.
 ///
 /// The event fds are created with `EFD_NONBLOCK` (a plain `read` would return
-/// `EAGAIN` immediately), so this waits with `poll(2)` and then drains the
-/// counter.
+/// `EAGAIN` immediately), so this waits in [`crate::sys::poll_readable`] and
+/// then drains the counter.
 fn wait_for_event(evt: &EventFd) -> io::Result<()> {
     let fd = evt.as_raw_fd();
     loop {
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `pfd` points to one initialized `pollfd` for a file
-        // descriptor this process owns and keeps open for the duration of
-        // the call.
-        let ret = unsafe { libc::poll(&mut pfd, 1, -1) };
-        if ret < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted {
-                continue;
+        match crate::sys::poll_readable(fd, -1) {
+            Ok(_) => {
+                let _ = evt.read();
+                return Ok(());
             }
-            return Err(err);
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
         }
-        let _ = evt.read();
-        return Ok(());
     }
 }
 

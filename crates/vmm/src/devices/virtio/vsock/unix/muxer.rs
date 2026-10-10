@@ -33,7 +33,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Read;
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 
 use vmm_sys_util::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
@@ -614,51 +614,15 @@ impl VsockMuxer {
 
     /// Connect to the Unix socket at `path` without blocking; a full accept backlog
     /// fails with `EAGAIN`.
+    ///
+    /// `std::os::unix::net::UnixStream::connect` is the safe constructor: on Linux
+    /// it creates the socket with `SOCK_CLOEXEC` (so no descriptor leaks across an
+    /// `exec`), and reports a NUL byte in the path or a path too long for
+    /// `sockaddr_un` as `InvalidInput`, which is what the hand-rolled `socket(2)`
+    /// + `connect(2)` sequence below the boundary used to do.
     fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
-        // SAFETY: constant arguments; the return value is checked.
-        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: `fd` is valid and not owned by anything else.
-        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let stream = UnixStream::connect(path)?;
         stream.set_nonblocking(true)?;
-
-        let mut addr = libc::sockaddr_un {
-            sun_family: libc::sa_family_t::try_from(libc::AF_UNIX).unwrap(),
-            sun_path: [0; 108],
-        };
-        let path = path.as_bytes();
-        if path.contains(&0) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path must not contain null bytes",
-            ));
-        }
-        // Reserve one byte for the trailing NUL.
-        if path.len() >= addr.sun_path.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path must be shorter than SUN_LEN",
-            ));
-        }
-        for (dst, src) in addr.sun_path.iter_mut().zip(path) {
-            *dst = libc::c_char::from_ne_bytes([*src]);
-        }
-        let addr_len = std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
-        let addr_len = libc::socklen_t::try_from(addr_len).unwrap();
-
-        // SAFETY: valid fd, initialised `sockaddr_un` and its length; the return value is checked.
-        let ret = unsafe {
-            libc::connect(
-                stream.as_raw_fd(),
-                (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
-                addr_len,
-            )
-        };
-        if ret < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
         Ok(stream)
     }
 

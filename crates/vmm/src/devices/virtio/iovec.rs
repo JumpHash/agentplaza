@@ -5,6 +5,12 @@
 // snapshot-only `Serialize`/`Deserialize` on `ParsedDescriptorChain` and the
 // kani proofs are dropped; `displaydoc` becomes explicit `thiserror` messages).
 
+// Guest-memory boundary (see the allowlist in `lib.rs`): walking the guest's
+// descriptor chains means building `iovec`s over guest addresses, taking
+// `VolatileSlice`s from them, and asserting `Send` for the buffers a device
+// thread reads while the vCPU writes.
+#![allow(unsafe_code)]
+
 use std::io::ErrorKind;
 
 use libc::{c_void, iovec, size_t};

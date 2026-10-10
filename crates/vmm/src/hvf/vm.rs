@@ -27,6 +27,11 @@
 //! ever touched by it. The only cross-thread call is `hv_vcpus_exit`, which
 //! asks a vCPU to leave `hv_vcpu_run` (`HV_EXIT_REASON_CANCELED`).
 
+// FFI boundary (see the allowlist in `lib.rs`): `hv_vm_create`/`map`/`unmap`/
+// `destroy` — the memory mapping calls that make guest RAM visible to
+// Hypervisor.framework.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 use vm_memory::GuestMemoryBackend;

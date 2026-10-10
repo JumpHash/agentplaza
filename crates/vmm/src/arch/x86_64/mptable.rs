@@ -10,6 +10,11 @@
 // `vstate::resources::AddressAllocator` and `AllocPolicy`; the `logger::debug!`
 // call is dropped).
 
+// Device-ABI boundary (see the allowlist in `lib.rs`): the `ByteValued` impls
+// for the `mpspec` table structs are upstream Firecracker's, unchanged, and
+// are what let the tables be written into guest memory at all.
+#![allow(unsafe_code)]
+
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::mem::{self, size_of};

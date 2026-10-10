@@ -10,6 +10,7 @@
 
 use kvm_bindings::kvm_lapic_state;
 use kvm_ioctls::VcpuFd;
+use zerocopy::IntoBytes;
 
 /// Errors thrown while configuring the LAPIC.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -43,17 +44,17 @@ fn write_le_u32(bytes: &mut [u8], value: u32) {
 fn get_klapic_reg(klapic: &kvm_lapic_state, reg_offset: usize) -> u32 {
     let range = reg_offset..reg_offset + 4;
     let reg = klapic.regs.get(range).expect("get_klapic_reg range");
-    // SAFETY: the `regs` field is a plain `[c_char; 1024]` array, so viewing it
-    // as bytes only reinterprets the same POD memory.
-    read_le_u32(unsafe { std::slice::from_raw_parts(reg.as_ptr().cast(), reg.len()) })
+    // `regs` is a plain `[c_char; 1024]`, so `IntoBytes` (zerocopy) views the
+    // same POD memory as bytes without an unchecked cast.
+    read_le_u32(reg.as_bytes())
 }
 
 fn set_klapic_reg(klapic: &mut kvm_lapic_state, reg_offset: usize, value: u32) {
     let range = reg_offset..reg_offset + 4;
     let reg = klapic.regs.get_mut(range).expect("set_klapic_reg range");
-    // SAFETY: as in `get_klapic_reg`; the slice covers exactly the 4 bytes of
-    // the register inside the array, which is uniquely borrowed here.
-    write_le_u32(unsafe { std::slice::from_raw_parts_mut(reg.as_mut_ptr().cast(), reg.len()) }, value);
+    // As in `get_klapic_reg`; the slice covers exactly the 4 bytes of the
+    // register inside the array, which is uniquely borrowed here.
+    write_le_u32(reg.as_mut_bytes(), value);
 }
 
 fn set_apic_delivery_mode(reg: u32, mode: u32) -> u32 {

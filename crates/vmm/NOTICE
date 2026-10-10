@@ -69,17 +69,36 @@ src/vmm crate in part, and written for this port in part:
   Amazon.com, Inc. or its affiliates): the vsock connection state machine
   (`VsockConnection`), its TX ring buffer, and the Unix-domain-socket
   multiplexer (`VsockMuxer`) that mediates guest AF_VSOCK connections to
-  host AF_UNIX sockets. Trimmed to this port's needs: the event-manager test
+  host AF_UNIX sockets. Trimmed to this port's needs: the event-manager
   scaffolding is dropped, `displaydoc` becomes explicit `thiserror` messages,
   `crate::logger`/`crate::utils` are folded into local helpers, and
   `debug!`/`info!` calls are removed while `warn!`/`error!` become
   `eprintln!`.
 
-- crates/vmm/src/devices/virtio/vsock/{event_thread,mmio_device}.rs are
-  written for this port (Copyright 2026 AgentPlaza, Apache-2.0): the per-VM
-  vsock event thread (replacing Firecracker's event-manager subscriber) and
-  the `VirtioDevice` adapter that bridges the mmio transport's `QueueConfig`
-  to the userspace device's real virtqueues.
+  The test modules are also upstream's, adapted: the `tests` module of
+  `src/vmm/src/devices/virtio/vsock/csm/connection.rs` (all 18 cases: the
+  connection-request handshake, the shutdown matrix, the credit-request/
+  credit-update paths, TX buffering, stream write errors, and the EPOLLIN/
+  EPOLLOUT starvation regressions) and the packet assembly/accessor/bounds
+  cases of `vsock/packet.rs` are ported. Upstream's event-manager test harness
+  (`TestContext` + `create_event_handler_context`) is replaced by this port's
+  `VirtQueue` (which lays the descriptor chains out in guest memory directly),
+  `crate::vstate::memory::BitmapSlice` becomes `vm_memory::bitmap::BitmapSlice`,
+  and the `csm_defs` alias is dropped in favour of `csm::defs`; the assertions
+  and the cases themselves are unchanged.
+
+- crates/vmm/src/devices/virtio/vsock/{event_thread,mmio_device}.rs and
+  crates/vmm/src/sys.rs are written for this port (Copyright 2026 AgentPlaza,
+  Apache-2.0): the per-VM vsock event thread (replacing Firecracker's
+  event-manager subscriber), the `VirtioDevice` adapter that bridges the mmio
+  transport's `QueueConfig` to the userspace device's real virtqueues, and the
+  crate's raw-syscall boundary (`poll(2)`, `uname(2)`).
+
+- fuzz/ is written for this port (Copyright 2026 AgentPlaza, Apache-2.0); see
+  fuzz/README.md. Upstream Firecracker ships a `vsock_packet_fuzzer` in the same
+  spirit, but this port's packet API and descriptor-chain layout differ, so no
+  code was copied: the targets and the shared harness are new, and only the
+  directory layout follows upstream's.
 
 The Apache License, Version 2.0 text is in crates/vmm/LICENSE.
 

@@ -4,6 +4,13 @@
 //! nothing else — so this module is the harness's entire network surface: it
 //! can open one stream, to the host CID, and it can do nothing else.
 
+// Syscall boundary (see the allowlist in `main.rs`): AF_VSOCK is not exposed by
+// `std`, so the whole of this module is `socket(2)`/`connect(2)`/`poll(2)`/
+// `fcntl(2)`/`ioctl(2)`/`read(2)`/`write(2)`/`close(2)` on one descriptor. It
+// is the only module in this crate that needs `unsafe`, which is why it is the
+// only entry on the crate's allowlist.
+#![allow(unsafe_code)]
+
 use std::io::{self, Read, Write};
 use std::os::fd::RawFd;
 

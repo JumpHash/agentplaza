@@ -20,6 +20,12 @@
 //! binary must still build, and there it refuses to run rather than pretend to
 //! be a guest harness.
 
+// This crate is safe Rust only: `deny(unsafe_code)` makes any `unsafe` outside
+// the one enumerated module below a compile error. The single entry is
+//   * `vsock` — the AF_VSOCK syscall boundary (`socket`/`connect`/`poll`/
+//     `fcntl`/`ioctl`/`read`/`write`/`close`), which `std` does not expose.
+#![deny(unsafe_code)]
+
 #[cfg(target_os = "linux")]
 mod cmdline;
 #[cfg(target_os = "linux")]

@@ -1,0 +1,51 @@
+[package]
+name = "agentplaza-fuzz"
+description = "Fuzz targets for the guest-controlled vsock parsers (vmm crate)"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keep this crate out of the parent workspace: the targets build a different
+# dependency graph (LibFuzzer) and are not part of any product build.
+[workspace]
+members = ["."]
+
+[dependencies]
+vmm = { path = "../crates/vmm" }
+vm-memory = { version = "0.18", features = ["backend-mmap"] }
+vmm-sys-util = "0.15"
+
+[dependencies.libfuzzer-sys]
+version = "0.4"
+optional = true
+
+[features]
+# `cargo fuzz` passes `--cfg fuzzing`; this feature adds the LibFuzzer driver.
+# With it off, a plain `cargo check` / `cargo run` builds the same harness code
+# against a fixed input, so the targets stay compilable without the nightly-only
+# fuzzing toolchain.
+fuzzing = ["dep:libfuzzer-sys"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "vsock_packet"
+path = "fuzz_targets/vsock_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vsock_csm"
+path = "fuzz_targets/vsock_csm.rs"
+test = false
+doc = false
+bench = false

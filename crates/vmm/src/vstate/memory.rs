@@ -11,6 +11,11 @@
 // region) and src/utils/mod.rs + src/arch/mod.rs (numeric helpers,
 // `host_page_size` and the `align_up!`/`align_down!` macros folded in).
 
+// Syscall boundary (see the allowlist in `lib.rs`): `mmap`/`munmap`/`sysconf`
+// and the raw-pointer guest-region builder have no safe-Rust equivalent, and
+// the region owns its mapping, which is what the `Send`/`Sync` impls assert.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::ops::Deref;
 
@@ -469,6 +474,23 @@ pub fn anonymous(regions: &[(GuestAddress, usize)]) -> Result<Vec<GuestRegionMma
     memory_regions_from_ranges(regions)
 }
 
+/// Creates a [`GuestMemoryMmap`] from anonymous regions, each registered as a
+/// single plugged slot.
+///
+/// Unlike [`anonymous`], the result is usable as guest memory. This is the
+/// safe constructor for callers that need a guest memory object outside a
+/// booting VM: the in-crate unit tests, and the out-of-crate fuzz harnesses.
+pub fn guest_memory_from_ranges(
+    regions: &[(GuestAddress, usize)],
+) -> Result<GuestMemoryMmap, MemoryError> {
+    GuestRegionCollection::from_regions(
+        anonymous(regions)?
+            .into_iter()
+            .map(|region| GuestRegionMmapExt::dram_from_mmap_region(region, 0))
+            .collect(),
+    )
+    .map_err(|_| MemoryError::VmMemoryError)
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -480,34 +502,15 @@ pub(crate) mod tests {
         single_region_mem_at(0, region_size)
     }
 
-    pub(crate) fn single_region_mem_raw(region_size: usize) -> Vec<GuestRegionMmap> {
-        single_region_mem_at_raw(0, region_size)
-    }
-
     /// Creates a [`GuestMemoryMmap`] with a single region of the given size starting at the given
     /// guest physical address `at` and without dirty tracking.
     pub(crate) fn single_region_mem_at(at: u64, size: usize) -> GuestMemoryMmap {
         multi_region_mem(&[(GuestAddress(at), size)])
     }
 
-    pub(crate) fn single_region_mem_at_raw(at: u64, size: usize) -> Vec<GuestRegionMmap> {
-        multi_region_mem_raw(&[(GuestAddress(at), size)])
-    }
-
     /// Creates a [`GuestMemoryMmap`] with multiple regions and without dirty page tracking.
     pub(crate) fn multi_region_mem(regions: &[(GuestAddress, usize)]) -> GuestMemoryMmap {
-        GuestRegionCollection::from_regions(
-            anonymous(regions)
-                .expect("Cannot initialize memory")
-                .into_iter()
-                .map(|region| GuestRegionMmapExt::dram_from_mmap_region(region, 0))
-                .collect(),
-        )
-        .unwrap()
-    }
-
-    pub(crate) fn multi_region_mem_raw(regions: &[(GuestAddress, usize)]) -> Vec<GuestRegionMmap> {
-        anonymous(regions).expect("Cannot initialize memory")
+        guest_memory_from_ranges(regions).expect("Cannot initialize memory")
     }
 
     /// Returns the (start, end) of the VMA containing `addr` in `/proc/self/maps`, if any.
