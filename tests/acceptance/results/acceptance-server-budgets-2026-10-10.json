@@ -1,0 +1,425 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-10T22:31:27+0200",
+  "wall_seconds": 180.055,
+  "manifest": {
+    "suite": "budgets",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "49756a49eaf75f9d86d73e9077a8909b6d9d5a58",
+      "dirty": true,
+      "harness_tree_sha256": "44c46d5f0e6e294291c8731b52abd791792a23eedea54d67d426f027f717a6a6"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "765ef7f003f193c7eadbd4ef24d1c8ce31d641d44f4218636ef66862da76a35f"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-server-uzlit257",
+    "started_at": "2026-10-10T22:31:27+0200",
+    "binaries": {
+      "noded": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "3cf13d70302b73698e317678cf95cf314ab0bd96d1991ddff0be6885d875eca4"
+      },
+      "vsockd": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "f2908eddfe7ed0fa575656de10e176ffe65c03366286edf33d15b06742175ceb"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-boot-logs/noded.log",
+        "bytes": 4053385,
+        "sha256": "80ba1703a728f691db3a620a543d519ad7945432a607a564fbecbc721ce38170",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/80ba1703-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-lifecycle-logs/noded.log",
+        "bytes": 1576729,
+        "sha256": "834594a4f02a85727f941401dd51d93a87a5dd91328b00c261e36c73e64da9b4",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/834594a4-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-footprint-logs/noded.log",
+        "bytes": 420574,
+        "sha256": "6fdde7df5f04a9c3d512e82bffc5db80dd4ee5a5d1f6b115c14203e3f4604efd",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/6fdde7df-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-restore-a-logs/noded.log",
+        "bytes": 16324,
+        "sha256": "0284089fe46f94c4cdf0a8a6a5b48841baee2ae204e1280263f54ed4bd947c81",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/0284089f-noded.log",
+        "excerpt_bytes": 16324
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-restore-a-logs/vsockd.log",
+        "bytes": 2176,
+        "sha256": "7570f2c96c48f2eba513ff8b0a737984e0464d36bec2c30e678a0d612d3250f5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/7570f2c9-vsockd.log",
+        "excerpt_bytes": 2176
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-restore-b-logs/noded.log",
+        "bytes": 16381,
+        "sha256": "1b8acedacfaf14cf2100b02cd9fb4075d4bd39e568ee50863e87c72605a462f8",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/1b8aceda-noded.log",
+        "excerpt_bytes": 16381
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-uzlit257/budgets-restore-b-logs/vsockd.log",
+        "bytes": 2176,
+        "sha256": "5db06e0f9c55fcd226bde601e0e8da72015adc18dbb450271e4fa584302a78d4",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T222827/5db06e0f-vsockd.log",
+        "excerpt_bytes": 2176
+      }
+    ]
+  },
+  "suites_run": [
+    "budgets"
+  ],
+  "suites": [
+    {
+      "suite": "boot-restore-footprint-budgets",
+      "pass_bar": "footprint within the configured 8 GiB / 5% bars, restore reconciles, boot + lifecycle measured",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 4,
+      "cases_total": 4,
+      "cases": [
+        {
+          "name": "boot time (POST -> every VM running)",
+          "detail": "",
+          "vector": "1/8/50-VM boots, fixed sample counts, p50/p95/p99",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "every one of the 20 1-VM boots came up running",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "1-VM boot recorded at least 3 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "1-VM boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=0.008 p95=0.013 p99=0.013"
+            },
+            {
+              "name": "every one of the 20 8-VM boots came up running",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "8-VM boot recorded at least 3 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "8-VM boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=0.065 p95=0.091 p99=0.093"
+            },
+            {
+              "name": "every one of the 10 50-VM boots came up running",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "50-VM boot recorded at least 3 samples",
+              "ok": true,
+              "detail": "n=10"
+            },
+            {
+              "name": "50-VM boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=1.150 p95=1.401 p99=1.401"
+            }
+          ],
+          "notes": [
+            "1-VM boot: n=20 p50=8ms p95=13ms p99=13ms max=13ms",
+            "8-VM boot: n=20 p50=65ms p95=91ms p99=93ms max=93ms",
+            "50-VM boot: n=10 p50=1150ms p95=1401ms p99=1401ms max=1401ms",
+            "no boot-time threshold is configured in this repository (no in-repo boot budget exists), so these are measurements; pass --boot-p95-ms to enforce a bar"
+          ]
+        },
+        {
+          "name": "full lifecycle (POST -> done, beats=2)",
+          "detail": "",
+          "vector": "1/8/50-VM full runs, fixed sample counts, p50/p95/p99",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "every 1-VM lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "1-VM lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every 8-VM lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "8-VM lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every 50-VM lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "50-VM lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            }
+          ],
+          "notes": [
+            "1-VM lifecycle: n=5 p50=5.42s p95=5.44s p99=5.44s (guest beats every 5s)",
+            "8-VM lifecycle: n=5 p50=5.69s p95=5.74s p99=5.74s (guest beats every 5s)",
+            "50-VM lifecycle: n=3 p50=6.89s p95=6.94s p99=6.94s (guest beats every 5s)"
+          ]
+        },
+        {
+          "name": "50-VM footprint (RSS and steady-state CPU)",
+          "detail": "",
+          "vector": "50 x 1 vCPU x 128 MiB fleet; whole-daemon RSS and idle CPU",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the 50-VM fleet came up",
+              "ok": true,
+              "detail": "state=running vms=50"
+            },
+            {
+              "name": "whole-fleet RSS under the 8 GiB budget",
+              "ok": true,
+              "detail": "peak=5.58 GiB samples=[5709, 5709, 5709] MiB"
+            },
+            {
+              "name": "steady-state CPU under 5.0% of one core",
+              "ok": true,
+              "detail": "peak=4.250% samples=[4.0, 4.25, 3.0]"
+            },
+            {
+              "name": "the fleet self-terminates cleanly (beats=12)",
+              "ok": true,
+              "detail": "state=done"
+            }
+          ],
+          "notes": [
+            "50-VM boot (POST -> running): 1139ms",
+            "fleet 50: RSS baseline 4 MiB peak 5709 MiB; CPU [4.0, 4.25, 3.0]% of one core",
+            "CPU at n=2: 0.500% of one core (per-VM scaling evidence)"
+          ]
+        },
+        {
+          "name": "restore = daemon restart + register reconcile",
+          "detail": "",
+          "vector": "SIGTERM mid-run, restart on the same uds dir: fresh ids, new created_at, SSE identity, fresh run green",
+          "ok": true,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the daemon was killed mid-run",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the restarted daemon serves the machine view",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the register is empty after the restart (no stale runs)",
+              "ok": true,
+              "detail": "runs=[]"
+            },
+            {
+              "name": "a new run is a different run (new id sequence, new created_at)",
+              "ok": true,
+              "detail": "id=r1 created_at=1791664281637 vs 1791664279340"
+            },
+            {
+              "name": "the SSE stream carries the new run's identity",
+              "ok": true,
+              "detail": "frames=['data: {\"id\":\"r1\",\"state\":\"starting\"}', 'data: {\"id\":\"r1\",\"state\":\"running\"}', 'data: {\"run\":\"r1\",\"vm\":0,\"state\":\"running\"}']"
+            },
+            {
+              "name": "a fresh run completes cleanly on the restarted daemon",
+              "ok": true,
+              "detail": "done"
+            }
+          ],
+          "notes": [
+            "restore scope: there is no VM snapshot support in this MVP, so restore is the daemon restart plus this reconciliation, exactly as the SSE identity contract defines it"
+          ]
+        }
+      ],
+      "data": {
+        "boot_ms": {
+          "1": {
+            "n": 20,
+            "min": 0.0056853650021366775,
+            "p50": 0.008117489982396364,
+            "p95": 0.012978542014025152,
+            "p99": 0.013076879025902599,
+            "max": 0.013076879025902599,
+            "mean": 0.009077257243916392
+          },
+          "8": {
+            "n": 20,
+            "min": 0.06013935897499323,
+            "p50": 0.0652313229511492,
+            "p95": 0.09115044900681823,
+            "p99": 0.0926056940224953,
+            "max": 0.0926056940224953,
+            "mean": 0.06870875049789901
+          },
+          "50": {
+            "n": 10,
+            "min": 1.0988317689625546,
+            "p50": 1.1504127809894271,
+            "p95": 1.401130382961128,
+            "p99": 1.401130382961128,
+            "max": 1.401130382961128,
+            "mean": 1.1836163018888328
+          }
+        },
+        "lifecycle_s": {
+          "1": {
+            "n": 5,
+            "min": 5.36592648801161,
+            "p50": 5.416519251011778,
+            "p95": 5.440963752043899,
+            "p99": 5.440963752043899,
+            "max": 5.440963752043899,
+            "mean": 5.409907290199771
+          },
+          "8": {
+            "n": 5,
+            "min": 5.670267402019817,
+            "p50": 5.691056214971468,
+            "p95": 5.736158775980584,
+            "p99": 5.736158775980584,
+            "max": 5.736158775980584,
+            "mean": 5.69793199460255
+          },
+          "50": {
+            "n": 3,
+            "min": 6.871508762997109,
+            "p50": 6.886266938003246,
+            "p95": 6.935965841985308,
+            "p99": 6.935965841985308,
+            "max": 6.935965841985308,
+            "mean": 6.897913847661887
+          }
+        },
+        "footprint": {
+          "n": 50,
+          "beats": 12,
+          "rss_baseline_bytes": 4296704,
+          "rss_samples_bytes": [
+            5986385920,
+            5986385920,
+            5986385920
+          ],
+          "rss_peak_bytes": 5986385920,
+          "rss_budget_bytes": 8589934592,
+          "rss_after_bytes": 11083776,
+          "cpu_samples_pct": [
+            3.9998513605617436,
+            4.249917169089735,
+            2.9999420321397126
+          ],
+          "cpu_peak_pct": 4.249917169089735,
+          "cpu_budget_pct": 5.0,
+          "recorded_cpu_baseline_pct": 0.03,
+          "scale_cpu": {
+            "n": 2,
+            "cpu_pct": 0.4999729665861606
+          }
+        }
+      },
+      "notes": [
+        "boot budget: measured only \u2014 no configured threshold exists in-repo",
+        "budget regression check: comparing against acceptance-server-2026-10-10.json"
+      ],
+      "findings": [
+        {
+          "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
+          "classification": "baseline-discrepancy",
+          "detail": "measured peak 4.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.500%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+          "measured_cpu_pct": 4.249917169089735,
+          "measured_cpu_pct_at_scale": {
+            "n2": 0.4999729665861606
+          },
+          "recorded_baseline_pct": 0.03,
+          "budget_pct": 5.0
+        }
+      ],
+      "started_at": "2026-10-10T22:28:27+0200",
+      "duration_s": 180.039
+    }
+  ],
+  "findings": [
+    {
+      "suite": "boot-restore-footprint-budgets",
+      "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
+      "classification": "baseline-discrepancy",
+      "detail": "measured peak 4.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.500%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+      "measured_cpu_pct": 4.249917169089735,
+      "measured_cpu_pct_at_scale": {
+        "n2": 0.4999729665861606
+      },
+      "recorded_baseline_pct": 0.03,
+      "budget_pct": 5.0
+    }
+  ]
+}

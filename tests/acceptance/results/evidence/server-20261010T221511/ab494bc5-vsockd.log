@@ -1,0 +1,2 @@
+vsockd: listening on /tmp/apz-acceptance-server-bh38onhh/redteam-bounded-uds/vm10_5000 for guest CID 10
+vsockd: stop requested, closing the listeners
