@@ -658,6 +658,12 @@ impl Run {
         if inner.state.is_finished() {
             return;
         }
+        // `starting -> killed` and `running -> killed` are the only
+        // transitions left here, so this cannot be refused.
+        if let Err(refused) = inner.transition(RunState::Killed) {
+            eprintln!("noded: run {}: {refused}", self.id);
+            return;
+        }
         // The kill took: publish it before the handles are stopped, so a
         // stream sees the run's `killed` before any VM's `killed`.
         self.events.publish(Event::Run {
@@ -796,9 +802,12 @@ fn watch_run(run: &Run) {
             }
             if inner.all_vms_stopped() {
                 inner.finish();
+                // `finish` only moves a `running` run; publish what the run
+                // actually ended as — a kill that raced the last exit has
+                // already moved it, and the stream must not be told `done`.
                 run.events.publish(Event::Run {
                     id: run.id.clone(),
-                    state: RunState::Done.as_str(),
+                    state: inner.state.as_str(),
                 });
                 return;
             }
