@@ -266,6 +266,28 @@ where
                 }
                 source => {
                     let mut dev = lock(&device);
+                    // The device state is not this thread's to cache: the
+                    // transport's reset path (`VsockMmioDevice::reset` →
+                    // `Vsock::reset`, a driver status write of 0) clears
+                    // `activated`/`mem` without telling this thread, while the
+                    // queue event fds keep the poll registrations they got at
+                    // ACTIVATE. A kick written just before such a reset
+                    // therefore wakes this thread against an inactive device.
+                    // Upstream's event handler re-checked the live
+                    // `is_activated()` on every event; do the same here — drain
+                    // the queue events (so their counts do not accumulate) and
+                    // skip ring processing, which would otherwise hit
+                    // `process_rx`/`process_tx`'s inactive-device guard and
+                    // panic this thread (killing the VM's vsock for the rest of
+                    // its life). The check and the dispatch below hold the same
+                    // device lock the reset path needs, so no reset can land
+                    // between them.
+                    if !dev.is_activated() {
+                        for queue_event in dev.queue_events() {
+                            drain(queue_event);
+                        }
+                        continue;
+                    }
                     let used = match source {
                         RXQ => handle_rxq(&mut dev, event.event_set()),
                         TXQ => handle_txq(&mut dev, event.event_set()),
@@ -295,8 +317,23 @@ mod tests {
 
     /// A backend with no traffic: enough to build the device the event thread
     /// polls, and to observe the thread's exit behaviour without any guest.
-    #[derive(Debug, Default)]
-    struct IdleBackend;
+    #[derive(Debug)]
+    struct IdleBackend {
+        /// The fd the event thread registers as the backend's. A real, quiet
+        /// event fd (never written) rather than fd 0: a test that activates
+        /// the device makes the thread poll this fd, and fd 0 — a pipe or
+        /// `/dev/null` under the test harness — would be permanently readable
+        /// and spin the event loop.
+        poll: EventFd,
+    }
+
+    impl Default for IdleBackend {
+        fn default() -> Self {
+            Self {
+                poll: EventFd::new(libc::EFD_NONBLOCK).expect("an idle backend event fd"),
+            }
+        }
+    }
 
     impl VsockChannel for IdleBackend {
         fn recv_pkt(&mut self, _pkt: &mut VsockPacketRx) -> Result<(), VsockError> {
@@ -326,24 +363,43 @@ mod tests {
         fn reset(&mut self) {}
     }
 
-    // These tests never activate the device, so this fd is never polled.
     impl AsRawFd for IdleBackend {
         fn as_raw_fd(&self) -> RawFd {
-            0
+            self.poll.as_raw_fd()
         }
     }
 
     /// A device with three empty queues and an idle backend, never activated.
     fn idle_device(mem: &GuestMemoryMmap) -> Arc<Mutex<Vsock<IdleBackend>>> {
-        let vqs = [
+        Arc::new(Mutex::new(
+            Vsock::with_queues(3, IdleBackend::default(), three_empty_queues(mem))
+                .expect("an idle vsock device"),
+        ))
+    }
+
+    /// The same device, activated against `mem` (as the transport does when the
+    /// driver writes the last status byte): the event thread then registers the
+    /// three queue event fds and the backend fd and processes rings.
+    fn activated_device(mem: &GuestMemoryMmap) -> Arc<Mutex<Vsock<IdleBackend>>> {
+        let mut device = Vsock::with_queues(3, IdleBackend::default(), three_empty_queues(mem))
+            .expect("an idle vsock device");
+        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        device
+            .activate((*mem).clone(), irq)
+            .expect("the idle device activates");
+        Arc::new(Mutex::new(device))
+    }
+
+    /// Three empty queues (RX, TX, EV) laid out in `mem`.
+    fn three_empty_queues(mem: &GuestMemoryMmap) -> Vec<crate::devices::virtio::queue::Queue> {
+        [
             VirtQueue::new(GuestAddress(0), mem, 16),
             VirtQueue::new(GuestAddress(0x2000), mem, 16),
             VirtQueue::new(GuestAddress(0x4000), mem, 16),
-        ];
-        let queues = vqs.iter().map(VirtQueue::create_queue).collect();
-        Arc::new(Mutex::new(
-            Vsock::with_queues(3, IdleBackend, queues).expect("an idle vsock device"),
-        ))
+        ]
+        .iter()
+        .map(VirtQueue::create_queue)
+        .collect()
     }
 
     /// Joins `handle`, returning `false` if it is still running after
@@ -417,5 +473,72 @@ mod tests {
         exit_evt.write(1).unwrap();
 
         assert!(joined_within(handle, Duration::from_secs(2)));
+    }
+
+    /// P1 regression: a device reset that lands between a queue kick and the
+    /// event thread's wakeup must not panic the thread.
+    ///
+    /// The transport's reset path (`VsockMmioDevice::reset` → `Vsock::reset`,
+    /// a driver status write of 0) clears the device's `activated`/`mem` state
+    /// without notifying this thread, while the queue event fds keep their poll
+    /// registrations. A guest that kicks RX/TX and then resets the transport
+    /// therefore wakes the thread with a live event fd and a dead device;
+    /// upstream's event handler re-checked the device's live `is_activated()`
+    /// on every event, and this test pins that behaviour: the stale event is
+    /// drained, no `process_rx`/`process_tx` runs, and the thread keeps
+    /// running. Pre-fix, the thread panicked here (`process_tx`'s `mem` guard),
+    /// which killed the VM's vsock for the rest of its life and turned even a
+    /// clean ACPI S5 exit into `SpawnError::ThreadPanic`.
+    #[test]
+    fn a_stale_queue_kick_after_a_device_reset_does_not_panic_the_event_thread() {
+        let mem = default_mem();
+        let device = activated_device(&mem);
+        let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let exit_signalled = Arc::new(AtomicBool::new(false));
+        let handle = start_event_thread(
+            Arc::clone(&device),
+            exit_evt.try_clone().unwrap(),
+            Arc::clone(&exit_signalled),
+            0,
+        )
+        .expect("the event thread starts");
+
+        // Let the thread consume the activation event and settle into the
+        // source arm (the queue event fds are registered by then).
+        std::thread::sleep(Duration::from_millis(100));
+
+        // The reset, off the vCPU thread: the device goes inactive, and the
+        // thread is not told. Its queue event fds stay in the poll set.
+        let kick = {
+            let mut dev = lock(&device);
+            dev.reset();
+            assert!(!dev.is_activated(), "the reset deactivates the device");
+            dev.queue_events()[TXQ_INDEX]
+                .try_clone()
+                .expect("the tx queue event fd clones")
+        };
+
+        // The guest's stale kick: a TX queue notification the driver wrote just
+        // before resetting the transport.
+        kick.write(1).unwrap();
+
+        // The thread must survive it (pre-fix it panics in `process_tx`) and
+        // must have drained the event fd so the count does not accumulate.
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            !handle.is_finished(),
+            "the event thread died on a queue kick that raced a device reset"
+        );
+        assert!(
+            kick.read().is_err(),
+            "the stale queue event fd was left pending instead of being drained"
+        );
+
+        // ... and it must still exit cleanly once the VM stops.
+        exit_signalled.store(true, Ordering::SeqCst);
+        assert!(
+            joined_within(handle, Duration::from_secs(2)),
+            "the event thread did not exit cleanly after the reset window"
+        );
     }
 }

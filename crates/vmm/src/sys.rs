@@ -1,20 +1,23 @@
 // Copyright 2026 AgentPlaza
 // SPDX-License-Identifier: Apache-2.0
 //
-// Written for this port: the crate's raw-syscall boundary (the C `poll(2)` and
-// `uname(2)` calls, which safe Rust cannot make). Everything else in the crate
-// is safe Rust under a crate-level `#![deny(unsafe_code)]`.
+// Written for this port: the crate's raw-syscall boundary (the C `poll(2)`,
+// `uname(2)` and `socket(2)`/`connect(2)` calls, which safe Rust cannot make
+// with the semantics this crate needs). Everything else in the crate is safe
+// Rust under a crate-level `#![deny(unsafe_code)]`.
 
 // Syscall boundary: this module is one of the crate's enumerated
-// `#[allow(unsafe_code)]` modules (see `lib.rs`). It exists so that the two
-// one-line C calls the crate needs — `poll(2)` (the builder's exit-event wait)
-// and `uname(2)` (the aarch64 kernel-version check) — do not force an
+// `#[allow(unsafe_code)]` modules (see `lib.rs`). It exists so that the C calls
+// the crate needs — `poll(2)` (the builder's exit-event wait), `uname(2)` (the
+// aarch64 kernel-version check) and the non-blocking `socket(2)`+`connect(2)`
+// pair behind the vsock muxer's guest-initiated connects — do not force an
 // `#[allow(unsafe_code)]` onto the modules that call them, which are otherwise
 // entirely safe.
 #![allow(unsafe_code)]
 
 use std::io;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 
 /// Waits until `fd` is readable, or until `timeout_ms` elapses (`-1` waits
 /// forever). Returns `Ok(false)` on timeout.
@@ -54,4 +57,94 @@ pub fn uname_release() -> Option<String> {
     // SAFETY: `uname` guarantees `release` is a NUL-terminated C string.
     let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
     Some(release.to_string_lossy().into_owned())
+}
+
+/// Connect to the Unix domain socket at `path` **without blocking**.
+///
+/// The descriptor is put in non-blocking mode *before* `connect(2)`, so a
+/// listener whose accept backlog is full fails the connect immediately with
+/// `EAGAIN` (`ErrorKind::WouldBlock`) instead of parking the calling thread
+/// until the listener accepts. `std`'s `UnixStream::connect` cannot express
+/// that: it creates a blocking socket, connects, and only then restores
+/// non-blocking mode — so with it, a full backlog blocks the caller.
+///
+/// That distinction is load-bearing for the vsock muxer, whose caller is the
+/// VM's single vsock event thread: a blocked `connect(2)` there stops all
+/// vsock RX/TX for the VM for as long as the host listener does not accept
+/// (the muxer admits 1023 connections while the default listen backlog is
+/// 128), and the thread cannot be woken by the ordinary exit path because it
+/// is not inside `epoll_wait`. With this helper the muxer answers the guest
+/// with an RST instead.
+///
+/// Path errors keep the semantics the callers expect: a NUL byte or a path too
+/// long for `sockaddr_un` is `ErrorKind::InvalidInput`.
+pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
+    /// Bytes of `sockaddr_un::sun_path`. A pathname must be shorter: one byte
+    /// is reserved for its terminating NUL.
+    const SUN_PATH_LEN: usize =
+        std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path);
+
+    let bytes = path.as_bytes();
+    if bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path must not contain null bytes",
+        ));
+    }
+    if bytes.len() >= SUN_PATH_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path must be shorter than SUN_LEN",
+        ));
+    }
+
+    // SAFETY: constant, valid arguments; the returned descriptor is checked
+    // below before anything else touches it.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a freshly created, valid descriptor that nothing else
+    // owns; the `UnixStream` takes ownership and closes it on drop, including
+    // on the error paths below.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+
+    // Before `connect(2)`: a full accept backlog is then `EAGAIN` rather than a
+    // block. Nothing else can observe the descriptor in between.
+    stream.set_nonblocking(true)?;
+
+    // `AF_UNIX` fits `sa_family_t` and the path length (checked above) plus its
+    // NUL fits `socklen_t`; the conversions are still checked rather than
+    // asserted, so a pathological path fails closed with an error.
+    let family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "AF_UNIX does not fit sa_family_t")
+    })?;
+    let mut addr = libc::sockaddr_un {
+        sun_family: family,
+        sun_path: [0; SUN_PATH_LEN],
+    };
+    for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
+        *dst = libc::c_char::from_ne_bytes([*src]);
+    }
+    let addr_len = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    let addr_len = libc::socklen_t::try_from(addr_len).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "path does not fit socklen_t")
+    })?;
+
+    // SAFETY: `stream` owns a valid AF_UNIX descriptor, and `addr` is a fully
+    // initialised `sockaddr_un` (family, NUL-terminated path) that stays alive
+    // for the duration of the call; `addr_len` describes it. The return value
+    // is checked below.
+    let ret = unsafe {
+        libc::connect(
+            stream.as_raw_fd(),
+            (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
+            addr_len,
+        )
+    };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(stream)
 }

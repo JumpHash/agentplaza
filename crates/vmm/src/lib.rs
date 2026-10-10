@@ -30,7 +30,8 @@
 //
 // The allowlist (each module's `#![allow(unsafe_code)]` carries the reason
 // next to the code, and every `unsafe` block has its own `// SAFETY:` note):
-//   * `sys` — `poll(2)` and `uname(2)`; the crate's raw-syscall one-liners.
+//   * `sys` — `poll(2)`, `uname(2)` and the non-blocking `socket(2)`/`connect(2)`
+//     pair behind the vsock muxer's guest-initiated connects.
 //   * `vstate::memory` — `mmap`/`munmap`/`sysconf` and the raw-pointer guest
 //     region builder (`unsafe impl Send/Sync` for the owned mapping).
 //   * `vstate::vcpu` — `dup(2)` of the KVM fd and `create_vcpu_from_rawfd`.
@@ -55,7 +56,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod builder;
-// The crate's raw-syscall boundary (`poll(2)`, `uname(2)`).
+// The crate's raw-syscall boundary (`poll(2)`, `uname(2)`, `socket(2)`/`connect(2)`).
 #[cfg(target_os = "linux")]
 mod sys;
 pub mod devices;

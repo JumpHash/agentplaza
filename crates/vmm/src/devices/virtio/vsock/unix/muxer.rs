@@ -615,15 +615,17 @@ impl VsockMuxer {
     /// Connect to the Unix socket at `path` without blocking; a full accept backlog
     /// fails with `EAGAIN`.
     ///
-    /// `std::os::unix::net::UnixStream::connect` is the safe constructor: on Linux
-    /// it creates the socket with `SOCK_CLOEXEC` (so no descriptor leaks across an
-    /// `exec`), and reports a NUL byte in the path or a path too long for
-    /// `sockaddr_un` as `InvalidInput`, which is what the hand-rolled `socket(2)`
-    /// + `connect(2)` sequence below the boundary used to do.
+    /// The `socket(2)`+`connect(2)` pair lives behind the crate's audited
+    /// syscall boundary ([`crate::sys::connect_unix_nonblocking`]), because it
+    /// must create the descriptor non-blocking *before* connecting:
+    /// `std::os::unix::net::UnixStream::connect` connects blocking first and
+    /// only then sets `O_NONBLOCK`, which turns a full listener backlog into a
+    /// parked thread. That thread is the VM's vsock event thread — the muxer
+    /// admits up to `defs::MAX_CONNECTIONS` (1023) guest connections while a
+    /// host listener's default backlog is 128 — so the guest would lose all
+    /// vsock RX/TX until the listener accepted.
     fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
-        let stream = UnixStream::connect(path)?;
-        stream.set_nonblocking(true)?;
-        Ok(stream)
+        crate::sys::connect_unix_nonblocking(path)
     }
 
     /// Handle a new connection request comming from our peer (the guest vsock driver).
@@ -852,5 +854,99 @@ mod tests {
 
         drop(muxer);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A guest `REQUEST` packet, from `peer_port` to `local_port`, addressed to
+    /// the host CID — the packet shape that makes the muxer connect to
+    /// `{uds_path}_{local_port}`.
+    fn peer_request(local_port: u32, peer_port: u32) -> VsockPacketTx {
+        let mut pkt = VsockPacketTx::default();
+        pkt.hdr
+            .set_src_cid(3)
+            .set_dst_cid(uapi::VSOCK_HOST_CID)
+            .set_src_port(peer_port)
+            .set_dst_port(local_port)
+            .set_len(0)
+            .set_type(uapi::VSOCK_TYPE_STREAM)
+            .set_op(uapi::VSOCK_OP_REQUEST)
+            .set_flags(0)
+            .set_buf_alloc(0)
+            .set_fwd_cnt(0);
+        pkt
+    }
+
+    /// P1 regression: a guest-initiated connect that finds the host listener's
+    /// accept backlog full must fail — the guest gets an RST — instead of
+    /// blocking the muxer, which is the VM's vsock event thread.
+    ///
+    /// Adapted from Firecracker's `test_peer_connection_backlog_full`
+    /// (`src/vmm/src/devices/virtio/vsock/unix/muxer.rs`): the listener's queue
+    /// is filled with un-accepted connects, a guest `REQUEST` must then be
+    /// answered with an RST, and — once the queue has drained — a second
+    /// `REQUEST` must be accepted normally, proving the RST was the full queue
+    /// and not a broken helper. The muxer allows 1023 connections while
+    /// `UnixListener`'s default backlog is 128, so the pre-fix code (a
+    /// blocking `UnixStream::connect`) parked this thread inside `connect(2)`
+    /// for as long as the listener did not accept: no vsock RX/TX for the VM,
+    /// and `VmHandle::kill` timing out while the VM kept running. This test
+    /// hangs (it blocks inside the fill loop) without the non-blocking
+    /// pre-connect.
+    #[test]
+    fn a_full_listener_backlog_fails_the_peer_connect_instead_of_blocking() {
+        const LOCAL_PORT: u32 = 1026;
+        const PEER_PORT: u32 = 1025;
+
+        let path = format!("/tmp/plaza-test-muxer-backlog-{}", std::process::id());
+        let listener_path = format!("{path}_{LOCAL_PORT}");
+        // A listener at `{uds_path}_{port}` is the host service the guest's
+        // `connect(CID 2, LOCAL_PORT)` is translated into; it never accepts.
+        let listener = UnixListener::bind(&listener_path).expect("test listener binds");
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+
+        // Fill the accept queue (std's default backlog of 128) with connects
+        // nobody accepts. The next connect must report `WouldBlock`: it is the
+        // muxer's own helper, i.e. exactly what a guest `REQUEST` calls.
+        let mut pending = Vec::new();
+        loop {
+            match VsockMuxer::connect_nonblocking(&listener_path) {
+                Ok(stream) => pending.push(stream),
+                Err(err) => {
+                    assert_eq!(
+                        err.kind(),
+                        std::io::ErrorKind::WouldBlock,
+                        "filling the accept queue must end in EAGAIN, not {err:?}"
+                    );
+                    break;
+                }
+            }
+        }
+
+        // The guest connects into the full queue: no connection is created and
+        // the muxer answers with an RST.
+        muxer.send_pkt(&peer_request(LOCAL_PORT, PEER_PORT));
+        assert!(muxer.conn_map.is_empty());
+        let mut rx = VsockPacketRx::new().expect("an RX packet buffer");
+        muxer.recv_pkt(&mut rx).expect("the RST is pending for the guest");
+        assert_eq!(rx.hdr.op(), uapi::VSOCK_OP_RST);
+        assert_eq!(rx.hdr.src_port(), LOCAL_PORT);
+        assert_eq!(rx.hdr.dst_port(), PEER_PORT);
+
+        // Drain the queue, keeping the queued connects alive until they are
+        // accepted: the same `REQUEST` now connects, and the muxer answers with
+        // a RESPONSE.
+        for _ in &pending {
+            let _ = listener.accept();
+        }
+        muxer.send_pkt(&peer_request(LOCAL_PORT, PEER_PORT));
+        assert_eq!(muxer.conn_map.len(), 1);
+        let mut rx = VsockPacketRx::new().expect("an RX packet buffer");
+        muxer.recv_pkt(&mut rx).expect("the RESPONSE is pending for the guest");
+        assert_eq!(rx.hdr.op(), uapi::VSOCK_OP_RESPONSE);
+        assert_eq!(rx.hdr.src_port(), LOCAL_PORT);
+        assert_eq!(rx.hdr.dst_port(), PEER_PORT);
+
+        drop(muxer);
+        drop(pending);
+        let _ = std::fs::remove_file(&listener_path);
     }
 }

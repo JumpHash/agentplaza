@@ -90,9 +90,18 @@ src/vmm crate in part, and written for this port in part:
 - crates/vmm/src/devices/virtio/vsock/{event_thread,mmio_device}.rs and
   crates/vmm/src/sys.rs are written for this port (Copyright 2026 AgentPlaza,
   Apache-2.0): the per-VM vsock event thread (replacing Firecracker's
-  event-manager subscriber), the `VirtioDevice` adapter that bridges the mmio
-  transport's `QueueConfig` to the userspace device's real virtqueues, and the
-  crate's raw-syscall boundary (`poll(2)`, `uname(2)`).
+  event-manager subscriber, including upstream's per-event `is_activated()`
+  re-check), the `VirtioDevice` adapter that bridges the mmio transport's
+  `QueueConfig` to the userspace device's real virtqueues, and the crate's
+  raw-syscall boundary (`poll(2)`, `uname(2)`, and the non-blocking
+  `socket(2)`+`connect(2)` pair). One function of that boundary,
+  `sys::connect_unix_nonblocking`, is Firecracker's
+  `VsockMuxer::connect_nonblocking` from
+  src/vmm/src/devices/virtio/vsock/unix/muxer.rs (Apache-2.0, Copyright 2018
+  Amazon.com, Inc. or its affiliates), moved into this port's syscall boundary
+  and adapted only in its error reporting: the socket is created non-blocking
+  *before* `connect(2)`, so a full listener backlog is `EAGAIN` rather than a
+  blocked caller. The muxer's call site delegates to it.
 
 - fuzz/ is written for this port (Copyright 2026 AgentPlaza, Apache-2.0); see
   fuzz/README.md. Upstream Firecracker ships a `vsock_packet_fuzzer` in the same

@@ -232,7 +232,11 @@ where
             return Ok(false);
         }
 
-        // This is safe since we checked in the event handler that the device is activated.
+        // `mem` is `Some` exactly while the device is activated (`activate` and
+        // `reset` maintain the two together); the event thread re-checks the
+        // live `is_activated()` while holding this device's lock, immediately
+        // before it dispatches an event to here, so a reset cannot land between
+        // that check and this call.
         let mem = self.mem.as_ref().expect("vsock: process_rx on an inactive device");
 
         let queue = &mut self.queues[RXQ_INDEX];
@@ -286,7 +290,11 @@ where
     /// to the backend for processing. Return `true` if the guest needs to be notified (respecting
     /// notification suppression).
     pub fn process_tx(&mut self) -> Result<bool, InvalidAvailIdx> {
-        // This is safe since we checked in the event handler that the device is activated.
+        // `mem` is `Some` exactly while the device is activated (`activate` and
+        // `reset` maintain the two together); the event thread re-checks the
+        // live `is_activated()` while holding this device's lock, immediately
+        // before it dispatches an event to here, so a reset cannot land between
+        // that check and this call.
         let mem = self.mem.as_ref().expect("vsock: process_tx on an inactive device");
 
         let queue = &mut self.queues[TXQ_INDEX];
@@ -322,7 +330,10 @@ where
     // connections and the guest_cid configuration field is fetched again. Existing listen sockets
     // remain but their CID is updated to reflect the current guest_cid.
     pub fn send_transport_reset_event(&mut self) -> Result<(), DeviceError> {
-        // This is safe since we checked in the caller function that the device is activated.
+        // Requires an active device: `mem` is `Some` exactly while the device is
+        // activated, so a caller must hold the device and observe
+        // `is_activated()` first (`activate` and `reset` maintain the two
+        // together).
         let mem = self.mem.as_ref().expect("vsock: send_transport_reset_event on an inactive device");
 
         let queue = &mut self.queues[EVQ_INDEX];
