@@ -12,9 +12,10 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DETAIL, LIST, MACHINE, always, raw, replies};
+use common::{DETAIL, LIST, MACHINE, always, raw, replies, streams};
 
 use agentplaza_desktop::api::{ApiError, Client, CreateRun, Endpoint, RunState, VmState};
+use agentplaza_desktop::events;
 use agentplaza_desktop::exit::{ExitKind, exit_kind};
 
 /// A client for a stub on `port`, with a short timeout so a stall fails fast.
@@ -248,6 +249,101 @@ fn a_non_loopback_endpoint_is_refused_before_any_socket_is_opened() {
             .expect("localhost is loopback")
             .host(),
         "127.0.0.1"
+    );
+}
+
+#[test]
+fn the_stream_client_reads_the_daemons_frames_off_a_real_socket() {
+    let server = streams(vec![
+        "event: run\ndata: {\"id\":\"r1\",\"state\":\"starting\"}\n\n\
+         : heartbeat\n\n\
+         event: vm\ndata: {\"run\":\"r1\",\"vm\":0,\"state\":\"running\"}\n\n\
+         event: serial\ndata: {\"run\":\"r1\",\"vm\":0,\"offset\":13,\"text\":\"$ uname\\n\"}\n\n\
+         event: wat\ndata: {\"new\":true}\n\n",
+    ]);
+    let endpoint = Endpoint::loopback_at("127.0.0.1", server.port).expect("loopback");
+
+    let mut seen = Vec::new();
+    let delivered = events::follow(&endpoint, &mut |event| {
+        seen.push(event);
+        seen.len() < 3
+    });
+    assert_eq!(delivered, 3, "three events, and the heartbeat is not one");
+
+    assert_eq!(
+        seen,
+        vec![
+            events::Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Starting,
+            },
+            events::Event::Vm {
+                run: "r1".to_string(),
+                vm: 0,
+                state: VmState::Running,
+            },
+            events::Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 13,
+                text: "$ uname\n".to_string(),
+            },
+        ]
+    );
+
+    // The request the console sent is the one the daemon's endpoint wants.
+    let requests = server.requests();
+    let streamed = requests
+        .iter()
+        .find(|request| request.target == "/api/v0/events")
+        .expect("the console asked for the stream");
+    assert_eq!(streamed.method, "GET");
+    assert_eq!(streamed.header("Host"), Some("localhost"));
+}
+
+#[test]
+fn the_stream_client_reconnects_when_the_daemon_closes_the_stream() {
+    // One run event per connection: the caller stops after the second, so the
+    // second has to have come off a reconnected stream.
+    let server = streams(vec![
+        "event: run\ndata: {\"id\":\"r1\",\"state\":\"running\"}\n\n",
+        "event: run\ndata: {\"id\":\"r1\",\"state\":\"done\"}\n\n",
+    ]);
+    let endpoint = Endpoint::loopback_at("127.0.0.1", server.port).expect("loopback");
+    let started = std::time::Instant::now();
+
+    let mut seen = Vec::new();
+    let delivered = events::follow(&endpoint, &mut |event| {
+        seen.push(event);
+        seen.len() < 2
+    });
+    assert_eq!(delivered, 2);
+    assert_eq!(
+        seen,
+        vec![
+            events::Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Running,
+            },
+            events::Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            },
+        ],
+        "the second event came off a second connection"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(events::BACKOFF_MIN_MS),
+        "the reconnect waits before it asks again"
+    );
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.target == "/api/v0/events")
+            .count(),
+        2,
+        "two connections"
     );
 }
 

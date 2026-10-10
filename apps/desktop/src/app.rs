@@ -4,11 +4,17 @@
 //! Kept out of the binary so the same wiring can be driven headlessly (the
 //! render test in `tests/render.rs` runs this exact application).
 
-use crate::api::Client;
+use crate::api::{Client, Endpoint};
 use crate::cli::Config;
+use crate::events::{self, Event};
 use crate::export::{self, CsvCall, ExportCall};
 use crate::model::{ConsoleCall, Effect, KeyAction, Message, Model, title};
 use crate::{epoch_ms, theme, view};
+
+use std::pin::Pin;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll, Waker};
 
 use iced::keyboard::{self, Key};
 use iced::{Application, Program, Subscription, Task};
@@ -47,9 +53,9 @@ pub fn run(config: Config) -> iced::Result {
 }
 
 /// Everything the runtime listens for: the poll timer at the cadence the
-/// register was given, and the keys it binds.
+/// register was given, the keys it binds, and the daemon's event stream.
 fn subscriptions(model: &Model) -> Subscription<Message> {
-    Subscription::batch([bell(model), keys()])
+    Subscription::batch([bell(model), keys(), live(&model.endpoint)])
 }
 
 /// The poll timer, carrying the wall clock: a tick every `refresh_ms`, which
@@ -58,6 +64,96 @@ fn subscriptions(model: &Model) -> Subscription<Message> {
 fn bell(model: &Model) -> Subscription<Message> {
     iced::time::every(std::time::Duration::from_millis(model.refresh_ms))
         .map(|_| Message::Tick { at_ms: epoch_ms() })
+}
+
+/// `GET /api/v0/events`, as a subscription.
+///
+/// The endpoint is the subscription's identity, so the same daemon keeps the
+/// same stream for the register's whole life. iced does **not** restart a
+/// subscription whose stream has ended — its tracker keeps the recipe and
+/// never spawns it again — so the reconnect lives inside the consumer
+/// ([`events::follow`]) and this stream never completes on its own account.
+fn live(endpoint: &Endpoint) -> Subscription<Message> {
+    Subscription::run_with(endpoint.clone(), stream)
+}
+
+/// The stream the subscription runs: a thread following the daemon's events,
+/// and the channel it hands them over on.
+fn stream(endpoint: &Endpoint) -> EventStream {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+
+    let wanted = endpoint.clone();
+    let thread_waker = Arc::clone(&waker);
+    std::thread::spawn(move || {
+        events::follow(&wanted, &mut |event| {
+            // The frame's clock: the daemon's frames carry no time of their
+            // own, and when the console read it is what the register means by
+            // "now".
+            if sender.send((epoch_ms(), event)).is_err() {
+                // The subscription went away with the receiver: end the
+                // thread rather than keep a socket open for nobody.
+                return false;
+            }
+            if let Some(waker) = thread_waker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                waker.wake();
+            }
+            true
+        });
+    });
+
+    EventStream { receiver, waker }
+}
+
+/// The bridge between the reader thread and the runtime: `std::sync::mpsc`
+/// in, a [`Stream`](iced::futures::Stream) out.
+///
+/// The thread cannot wake an executor directly, so the poll stores the
+/// runtime's waker and the thread takes it after every send. A message that
+/// lands between the two looks in [`EventStream::poll_next`] is seen by the
+/// second one, so nothing is lost and nothing is delivered twice.
+struct EventStream {
+    /// Where the reader thread's events arrive.
+    receiver: Receiver<(u64, Event)>,
+    /// The runtime's waker, kept only while the stream is waiting.
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl EventStream {
+    /// The next message, if the thread has sent one.
+    fn take(&self) -> Option<Option<Message>> {
+        match self.receiver.try_recv() {
+            Ok((at_ms, event)) => Some(Some(Message::Event { at_ms, event })),
+            Err(TryRecvError::Disconnected) => Some(None),
+            Err(TryRecvError::Empty) => None,
+        }
+    }
+}
+
+impl iced::futures::Stream for EventStream {
+    type Item = Message;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Message>> {
+        let this = self.get_mut();
+        if let Some(message) = this.take() {
+            return Poll::Ready(message);
+        }
+        // Register first, then look again: the thread's send happens before
+        // its wake, so a message that lands in between is either caught by
+        // the second look or wakes the waker just stored.
+        *this
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(context.waker().clone());
+        match this.take() {
+            Some(message) => Poll::Ready(message),
+            None => Poll::Pending,
+        }
+    }
 }
 
 /// The register's keys. A focused text box captures its own, so typing a
@@ -236,6 +332,121 @@ fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::Sender;
+
+    use crate::api::RunState;
+    use iced::futures::Stream;
+
+    /// A waker that counts how many times the runtime was woken.
+    #[derive(Default)]
+    struct Wakes(AtomicUsize);
+
+    impl iced::futures::task::ArcWake for Wakes {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A bridge with a channel the test holds, so the reader thread's own
+    /// send-then-wake can be played out exactly.
+    fn bridge() -> (Sender<(u64, Event)>, EventStream) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        (
+            sender,
+            EventStream {
+                receiver,
+                waker: Arc::new(Mutex::new(None)),
+            },
+        )
+    }
+
+    fn parked(bridge: &mut EventStream, waker: &Waker) -> Poll<Option<Message>> {
+        let mut context = Context::from_waker(waker);
+        Pin::new(bridge).poll_next(&mut context)
+    }
+
+    #[test]
+    fn the_bridge_parks_with_the_runtimes_waker_and_reads_what_arrives() {
+        let (sender, mut bridge) = bridge();
+        let wakes = Arc::new(Wakes::default());
+        let waker = iced::futures::task::waker(Arc::clone(&wakes));
+
+        // Nothing has arrived: the stream parks, and it holds the waker.
+        assert!(parked(&mut bridge, &waker).is_pending());
+        assert!(
+            bridge
+                .waker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some(),
+            "the runtime's waker is kept while the stream waits"
+        );
+
+        // The reader thread's own sequence: send, then take the waker and
+        // wake, because the runtime has no other way to hear about it.
+        let event = Event::Run {
+            id: "r1".to_string(),
+            state: RunState::Starting,
+        };
+        sender.send((7, event.clone())).expect("the channel is open");
+        let taken = bridge
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        taken.expect("the waker the runtime left").wake();
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 1, "the runtime is woken");
+
+        assert_eq!(
+            parked(&mut bridge, &waker),
+            Poll::Ready(Some(Message::Event { at_ms: 7, event }))
+        );
+        assert!(
+            parked(&mut bridge, &waker).is_pending(),
+            "and then it parks again"
+        );
+    }
+
+    #[test]
+    fn a_message_that_arrives_before_the_waker_is_taken_is_still_delivered() {
+        // The race the two looks in `poll_next` exist for: the thread's send
+        // can land between the stream's look and the waker being stored, and
+        // an event must never be lost to it.
+        let (sender, mut bridge) = bridge();
+        let wakes = Arc::new(Wakes::default());
+        let waker = iced::futures::task::waker(Arc::clone(&wakes));
+
+        let event = Event::Vm {
+            run: "r1".to_string(),
+            vm: 2,
+            state: crate::api::VmState::Exited,
+        };
+        sender.send((9, event.clone())).expect("the channel is open");
+
+        assert_eq!(
+            parked(&mut bridge, &waker),
+            Poll::Ready(Some(Message::Event { at_ms: 9, event })),
+            "a message nobody woke the runtime for is still read"
+        );
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 0, "no wake was needed");
+    }
+
+    #[test]
+    fn the_stream_ends_when_its_reader_thread_goes_away() {
+        let (sender, mut bridge) = bridge();
+        let mut context = Context::from_waker(iced::futures::task::noop_waker_ref());
+        assert!(Pin::new(&mut bridge).poll_next(&mut context).is_pending());
+
+        // The thread ends when the subscription is gone, and the stream says
+        // so rather than parking forever.
+        drop(sender);
+        assert_eq!(
+            Pin::new(&mut bridge).poll_next(&mut context),
+            Poll::Ready(None)
+        );
+    }
 
     #[test]
     fn the_binding_keys_name_the_panes_and_the_console_arrows() {

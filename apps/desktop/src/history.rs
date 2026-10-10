@@ -168,6 +168,12 @@ impl SessionHistory {
             .retain(|id, _| runs.iter().any(|run| run.id == *id));
     }
 
+    /// Forgets one run's rings: a run id the daemon has begun again is a
+    /// different run, and its history is not this one's.
+    pub fn forget(&mut self, run: &str) {
+        self.per_vm.remove(run);
+    }
+
     /// One VM's rates, oldest first; empty when it was never observed.
     pub fn vm_series(&self, run: &str, vm: u32) -> &[f32] {
         self.per_vm

@@ -1524,6 +1524,166 @@ fn the_run_pane_charts_the_selected_vms_rate_and_keeps_the_numeric_column() {
     );
 }
 
+/// A JSON string literal for `text`, so the stream's frames below hold the
+/// daemon's own escaping rather than a hand-written one.
+fn quoted(text: &str) -> String {
+    let mut out = String::from("\"");
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The capture `DETAIL`'s first VM holds: what a poll reads whole.
+const STREAM_CAPTURE: &str = "login: plaza\r\n$ uname -a\r\nLinux plaza 7.2.8 x86_64\r\n";
+
+/// The bytes the guest writes after that capture: the stream's own, which the
+/// register must show without waiting for a poll.
+const STREAM_TAIL: &str = "$ halted\n";
+
+/// The daemon's `GET /api/v0/events` frames for this test: the run ends, and
+/// the VM's serial arrives whole — which is also exactly what a reconnecting
+/// console sees replayed, so the merge has to be idempotent about it.
+fn stream_frames() -> String {
+    format!(
+        "event: run\ndata: {{\"id\":\"r1\",\"state\":\"done\"}}\n\n\
+         : heartbeat\n\n\
+         event: serial\ndata: {{\"run\":\"r1\",\"vm\":0,\"offset\":0,\"text\":{}}}\n\n",
+        quoted(&format!("{STREAM_CAPTURE}{STREAM_TAIL}"))
+    )
+}
+
+/// The config a test asks for: the daemon to read and the cadence to poll at.
+fn config_at(port: u16, refresh_ms: u64) -> Config {
+    Config {
+        endpoint: Endpoint::loopback_at("127.0.0.1", port).expect("loopback"),
+        timeout: Duration::from_secs(5),
+        refresh_ms,
+    }
+}
+
+#[test]
+fn the_stream_settles_the_register_and_the_transcript_between_polls() {
+    // The list endpoint never says r1 ended: only the event stream does, and
+    // the cadence is the 30 s ceiling, so no second poll can run while this
+    // test does. Whatever moves the register and the transcript, it is the
+    // stream.
+    let frames = stream_frames();
+    let server = common::live(LIST, DETAIL, &frames);
+    let endpoint = Endpoint::loopback_at("127.0.0.1", server.port).expect("loopback");
+
+    // The capture a poll reads whole, straight off the stub, so the assertion
+    // below is about the merge and not about a fixture copied by hand.
+    let polled = Client::new(endpoint.clone())
+        .run("r1")
+        .expect("the stub answers the run")
+        .serial()
+        .to_string();
+    assert!(
+        format!("{STREAM_CAPTURE}{STREAM_TAIL}").starts_with(&polled),
+        "the frames must open with exactly the capture the poll reads"
+    );
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+
+    // The application's own subscriptions, its own stream thread and its own
+    // client: nothing here applies an event by hand.
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 1_200);
+
+    // Open the run: the pane's own fetch is what syncs a capture the stream
+    // can then extend.
+    emulator.update(&program, Message::Show(Pane::Run("r1".to_string())));
+    pump(&mut emulator, 1_500);
+
+    let frame = emulator.screenshot(&program, &theme::theme(), 1.0);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+
+    let (model, _) = emulator.into_state();
+    assert_eq!(model.polls, 1, "only the boot tick polled: nothing else asked");
+    assert_eq!(
+        model.runs[0].state,
+        agentplaza_desktop::api::RunState::Done,
+        "the run's state came off the stream, not off a poll"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+    assert_eq!(model.pane, Pane::Run("r1".to_string()));
+
+    let capture = model
+        .detail
+        .as_ref()
+        .expect("the open run")
+        .serial()
+        .to_string();
+    assert_eq!(
+        capture,
+        format!("{polled}{STREAM_TAIL}"),
+        "the transcript is the polled capture plus the streamed bytes, once"
+    );
+    assert_eq!(
+        model.serial.length("r1", 0),
+        capture.len() as u64,
+        "the feed's own bookkeeping agrees with the bytes it merged"
+    );
+    assert_eq!(
+        model.serial.lines("r1", 0),
+        Some(capture.bytes().filter(|byte| *byte == b'\n').count() as u64)
+    );
+
+    // And the sheet draws it: the ledger heading names the span, and the
+    // stream's own line is a row of it.
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says(&format!(
+            "Serial · vm 0 · {} line(s) · byte 0–{}",
+            capture.lines().count(),
+            capture.len()
+        )))
+        .is_ok(),
+        "the transcript names the bytes it drew"
+    );
+    assert!(ui.find(says("$ halted")).is_ok(), "the streamed line is drawn");
+    assert!(ui.find(says("DONE")).is_ok(), "the run's stamp moved too");
+
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("stream-frame.rgba");
+    std::fs::write(&path, frame.rgba.as_ref()).expect("the frame should be written");
+    println!(
+        "the stream's register frame: {} distinct colours, raw RGBA at {}",
+        distinct_colors(frame.rgba.as_ref()),
+        path.display()
+    );
+    println!(
+        "stream run: polls {}, r1 {:?}, transcript {} bytes ({} polled + {} streamed)",
+        model.polls,
+        model.runs[0].state,
+        capture.len(),
+        polled.len(),
+        STREAM_TAIL.len()
+    );
+}
+
 /// The colour covering the most pixels of a frame, and how many it covers.
 fn dominant(frame: &iced::window::Screenshot) -> ([u8; 4], usize) {
     use std::collections::HashMap;

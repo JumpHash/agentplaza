@@ -6,13 +6,15 @@
 //! display or a window. `main` turns an [`Effect`] into an iced [`Task`] and
 //! nothing more.
 
-use crate::api::{ApiError, CreateRun, Endpoint, Machine, Run, RunsPage};
+use crate::api::{ApiError, CreateRun, Endpoint, Machine, Run, RunState, RunsPage, VmState};
+use crate::events::Event;
 use crate::export::{
     self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_transcript, vm_transcript,
 };
 use crate::form::{Field, Preset, SpawnForm};
 use crate::history::{self, SessionHistory};
 use crate::map::Activity;
+use crate::serial::{Feed, Merge};
 
 /// How often a healthy daemon is polled unless `--refresh-ms` says otherwise.
 pub const DEFAULT_REFRESH_MS: u64 = 2_000;
@@ -440,10 +442,28 @@ pub enum Message {
     },
     /// Dismiss the notice line.
     DismissNotice,
+    /// The daemon's event stream delivered an event, at `at_ms` milliseconds
+    /// since the Unix epoch (when the console read it, since the frames carry
+    /// no clock of their own).
+    ///
+    /// This is the whole of the stream's surface: the events are the deltas
+    /// between polls, so they move the state the polls already move rather
+    /// than introducing a second kind of truth.
+    Event {
+        /// When the frame was read off the socket.
+        at_ms: u64,
+        /// What it carried.
+        event: Event,
+    },
 }
 
 impl Message {
     /// The wall-clock time this message carries, when it carries one.
+    ///
+    /// An event carries one: a frame read off the socket is the daemon
+    /// answering, so the register's clock moves with it and the stamp stays
+    /// fresh between polls. What it does *not* do is touch the poll's own
+    /// schedule or its failures — see [`Model::heard`].
     pub fn at_ms(&self) -> Option<u64> {
         match self {
             Message::Tick { at_ms }
@@ -454,7 +474,8 @@ impl Message {
             | Message::Killed { at_ms, .. }
             | Message::Spawned { at_ms, .. }
             | Message::Exported { at_ms, .. }
-            | Message::CsvExported { at_ms, .. } => Some(*at_ms),
+            | Message::CsvExported { at_ms, .. }
+            | Message::Event { at_ms, .. } => Some(*at_ms),
             Message::Show(_)
             | Message::Key(_)
             | Message::Select { .. }
@@ -511,6 +532,13 @@ pub struct Model {
     pub help: bool,
     /// Every VM's serial rate, from the deltas between polls.
     pub activity: Activity,
+    /// Every VM's capture, as the stream's serial deltas move it: what makes
+    /// an event's bytes land in the transcript exactly once.
+    pub serial: Feed,
+    /// Whether an event has already asked the register to be polled and the
+    /// answer has not landed: a burst of events naming a run the register has
+    /// not seen yet is one poll, not one per event.
+    pub stream_asked: bool,
     /// How often a healthy daemon is polled, in milliseconds.
     pub refresh_ms: u64,
     /// The spawn form's raw input.
@@ -554,6 +582,8 @@ impl Default for Model {
             telemetry_run: None,
             help: false,
             activity: Activity::default(),
+            serial: Feed::new(),
+            stream_asked: false,
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
             errors: Vec::new(),
@@ -629,6 +659,14 @@ impl Model {
     pub fn target_vm_in<'a>(&self, run: &'a Run) -> Option<&'a crate::api::Vm> {
         let vm = self.target_vm(&run.id);
         run.vms.iter().find(|candidate| candidate.id == vm)
+    }
+
+    /// The capture the register is holding for the VM the console targets:
+    /// where the stream's serial deltas land.
+    pub fn target_capture<'a>(&self, run: &'a Run) -> &'a str {
+        self.target_vm_in(run)
+            .and_then(|vm| vm.serial.as_deref())
+            .unwrap_or("")
     }
 
     /// How many VMs of the register are up.
@@ -717,8 +755,10 @@ impl Model {
             Message::Runs { at_ms, result } => {
                 match result {
                     Ok(page) => {
-                        self.runs = page.runs;
+                        self.absorb(page.runs);
+                        self.stream_asked = false;
                         self.activity.retain(&self.runs);
+                        self.serial.retain(&self.runs);
                         // A run that left the register takes its rings with it;
                         // the observations already written stay.
                         self.history.retain(&self.runs);
@@ -732,7 +772,12 @@ impl Model {
                         self.derive_csv();
                         self.succeeded(at_ms);
                     }
-                    Err(error) => self.failed(at_ms, &error),
+                    Err(error) => {
+                        // The register is still owed an answer, but this poll
+                        // is over: an event may ask for the next one.
+                        self.stream_asked = false;
+                        self.failed(at_ms, &error);
+                    }
                 }
                 Effect::none()
             }
@@ -955,6 +1000,7 @@ impl Model {
                 self.notice = None;
                 Effect::none()
             }
+            Message::Event { at_ms, event } => self.event(at_ms, event),
         }
     }
 
@@ -996,6 +1042,216 @@ impl Model {
     /// Every run in the register, by id: what the map's pulse is fed from.
     fn run_ids(&self) -> Vec<String> {
         self.runs.iter().map(|run| run.id.clone()).collect()
+    }
+
+    /// The stream answered: an event is the daemon talking, so it keeps the
+    /// register's clock and the age of its last answer current.
+    ///
+    /// It deliberately does not touch the poll's schedule or its failures: a
+    /// daemon that streams happily while refusing its polls still reads down,
+    /// and a stream that has gone quiet never makes a healthy daemon look
+    /// down. The stream accelerates; the poll is still the truth.
+    fn heard(&mut self, at_ms: u64) {
+        self.last_ok_ms = Some(at_ms);
+    }
+
+    /// Applies one event from `GET /api/v0/events`.
+    ///
+    /// The daemon's bus has no backlog, so an event that names a run the
+    /// register has not read yet is not an event to build a row from — the
+    /// frame carries an id and a state and nothing else, and the register
+    /// does not invent vcpu counts or memory. It asks for the register
+    /// instead, once, and the answer lands in about as long as a poll takes.
+    ///
+    /// The same is true of the other direction: an event that says a run the
+    /// register knows *ended* is live again. The same run never comes back —
+    /// either the event was written before the answer that settled it, or the
+    /// daemon restarted and began its run ids again. The register's answer,
+    /// with every run's creation time in it, is what tells those apart.
+    fn event(&mut self, at_ms: u64, event: Event) -> Effect {
+        self.heard(at_ms);
+        match event {
+            Event::Run { id, state } => {
+                if !self.registered(&id) {
+                    return self.ask_for_the_register();
+                }
+                if self.run_is_ended(&id) && !run_ended(state) {
+                    return self.ask_for_the_register();
+                }
+                self.move_run_state(&id, state);
+                Effect::none()
+            }
+            Event::Vm { run, vm, state } => {
+                if !self.registered(&run) {
+                    return self.ask_for_the_register();
+                }
+                if self.vm_is_stopped(&run, vm) && !vm_stopped(state) {
+                    return self.ask_for_the_register();
+                }
+                self.move_vm_state(&run, vm, state);
+                Effect::none()
+            }
+            Event::Serial {
+                run,
+                vm,
+                offset,
+                text,
+            } => {
+                if !self.registered(&run) {
+                    return self.ask_for_the_register();
+                }
+                self.merge_serial(at_ms, &run, vm, offset, &text)
+            }
+        }
+    }
+
+    /// Whether the register has read this run at all.
+    fn registered(&self, id: &str) -> bool {
+        self.runs.iter().any(|run| run.id == id)
+    }
+
+    /// Asks for the register, at most once per outstanding answer.
+    fn ask_for_the_register(&mut self) -> Effect {
+        if self.stream_asked {
+            return Effect::none();
+        }
+        self.stream_asked = true;
+        Effect::poll()
+    }
+
+    /// Takes a list answer into the register.
+    ///
+    /// The daemon's runs only ever move live to terminal, so a state the
+    /// register already knows has ended is never walked back by a snapshot:
+    /// an answer read before the transition, or an event that arrived after
+    /// the answer it was written before, describes an older fleet, and the
+    /// register keeps what it saw.
+    ///
+    /// A run is identified by its id *and* when it was created. A daemon that
+    /// restarts begins its run ids again, so `r1` after a restart is a
+    /// different run wearing a reused id: nothing the register remembered
+    /// about the old one — its settled state, the length of its serial
+    /// capture, its rates — applies to it.
+    fn absorb(&mut self, mut page: Vec<Run>) {
+        let mut restarted: Vec<String> = Vec::new();
+        for run in page.iter_mut() {
+            let Some(known) = self.runs.iter().find(|known| known.id == run.id) else {
+                continue;
+            };
+            if known.created_at != run.created_at {
+                restarted.push(run.id.clone());
+                continue;
+            }
+            run.state = moved_run_state(known.state, run.state);
+            if run.ended_at.is_none() {
+                run.ended_at = known.ended_at;
+            }
+            for vm in run.vms.iter_mut() {
+                if let Some(slot) = known.vms.iter().find(|slot| slot.id == vm.id) {
+                    vm.state = moved_vm_state(slot.state, vm.state);
+                }
+            }
+        }
+        self.runs = page;
+        for id in &restarted {
+            self.serial.forget(id);
+            self.activity.forget(id);
+            self.history.forget(id);
+        }
+    }
+
+    /// Whether the register's own row for this run is one that ended.
+    fn run_is_ended(&self, id: &str) -> bool {
+        self.runs
+            .iter()
+            .any(|run| run.id == id && run_ended(run.state))
+    }
+
+    /// Whether the register's own row for this VM is one that stopped.
+    fn vm_is_stopped(&self, id: &str, vm: u32) -> bool {
+        self.runs.iter().any(|run| {
+            run.id == id
+                && run
+                    .vms
+                    .iter()
+                    .any(|slot| slot.id == vm && vm_stopped(slot.state))
+        })
+    }
+
+    /// Moves a run's state, where the register and the open run both read it.
+    fn move_run_state(&mut self, id: &str, state: RunState) {
+        for run in self.runs.iter_mut().filter(|run| run.id == id) {
+            run.state = moved_run_state(run.state, state);
+        }
+        if let Some(detail) = self.detail.as_mut().filter(|run| run.id == id) {
+            detail.state = moved_run_state(detail.state, state);
+        }
+    }
+
+    /// Moves one VM's state, in the register and in the open run.
+    fn move_vm_state(&mut self, id: &str, vm: u32, state: VmState) {
+        if let Some(found) = self.runs.iter_mut().find(|run| run.id == id) {
+            if let Some(slot) = found.vms.iter_mut().find(|slot| slot.id == vm) {
+                slot.state = moved_vm_state(slot.state, state);
+            }
+        }
+        if let Some(found) = self.detail.as_mut().filter(|detail| detail.id == id) {
+            if let Some(slot) = found.vms.iter_mut().find(|slot| slot.id == vm) {
+                slot.state = moved_vm_state(slot.state, state);
+            }
+        }
+    }
+
+    /// Merges one serial event: into the register's transcript when it holds
+    /// that capture, and into the activity feed either way.
+    ///
+    /// The merge itself is [`Feed`]'s, so a replayed or clipped event appends
+    /// nothing rather than duplicating bytes. Only a gap asks for anything:
+    /// the capture the register holds is no longer contiguous with the
+    /// stream, so it is read again rather than filled in.
+    fn merge_serial(&mut self, at_ms: u64, run: &str, vm: u32, offset: u64, text: &str) -> Effect {
+        match self.serial.merge(run, vm, offset, text) {
+            Merge::Known => Effect::none(),
+            Merge::Append { skip, .. } => {
+                if let Some(capture) = self.held_capture(run, vm) {
+                    if let Some(tail) = text.get(skip..) {
+                        capture.push_str(tail);
+                    }
+                }
+                // The rate between polls: the map's pulse, the run pane's
+                // sparkline and the telemetry pane all read it.
+                if let Some(lines) = self.serial.lines(run, vm) {
+                    let lps = self
+                        .activity
+                        .observe(run, vm, usize::try_from(lines).unwrap_or(usize::MAX), at_ms);
+                    self.history.observe_vm(run, vm, lps);
+                }
+                Effect::none()
+            }
+            Merge::Gap { .. } if self.holds_capture(run, vm) => Effect::fetch(run),
+            Merge::Gap { .. } => Effect::none(),
+        }
+    }
+
+    /// The capture the register is holding for one VM: the open run's view is
+    /// the only one that carries captures (the list endpoint sends none).
+    fn held_capture(&mut self, run: &str, vm: u32) -> Option<&mut String> {
+        self.detail
+            .as_mut()
+            .filter(|detail| detail.id == run)?
+            .vms
+            .iter_mut()
+            .find(|slot| slot.id == vm)?
+            .serial
+            .as_mut()
+    }
+
+    /// Whether the register is showing that VM at all, and so whether a gap
+    /// is worth reading the run again for.
+    fn holds_capture(&self, run: &str, vm: u32) -> bool {
+        self.detail.as_ref().is_some_and(|detail| {
+            detail.id == run && detail.vms.iter().any(|slot| slot.id == vm)
+        })
     }
 
     /// A single-run answer, which also tells the register how to read the run.
@@ -1306,14 +1562,25 @@ impl Model {
     /// Feeds every VM's serial length into the activity tracker, so the map's
     /// pulse is the delta between this poll and the last, and records the
     /// smoothed rate in the VM's own ring for the run pane's sparkline.
+    ///
+    /// The length a capture is measured by is the feed's own count, synced
+    /// from this very capture: a poll and a stream of deltas then measure the
+    /// same capture the same way, and neither looks like growth to the other.
     fn observe(&mut self, run: &Run) {
         for vm in &run.vms {
             let Some(serial) = vm.serial.as_deref() else {
                 continue;
             };
-            let lps = self
-                .activity
-                .observe(&run.id, vm.id, serial.lines().count(), self.now_ms);
+            self.serial.sync(&run.id, vm.id, serial);
+            let Some(lines) = self.serial.lines(&run.id, vm.id) else {
+                continue;
+            };
+            let lps = self.activity.observe(
+                &run.id,
+                vm.id,
+                usize::try_from(lines).unwrap_or(usize::MAX),
+                self.now_ms,
+            );
             self.history.observe_vm(&run.id, vm.id, lps);
         }
     }
@@ -1398,6 +1665,41 @@ pub fn poll_interval_ms(refresh_ms: u64, failures: u32) -> u64 {
     (refresh_ms << shift).min(MAX_POLL_INTERVAL_MS)
 }
 
+/// Whether a run has ended, and so will never be live again.
+pub fn run_ended(state: RunState) -> bool {
+    matches!(state, RunState::Done | RunState::Failed | RunState::Killed)
+}
+
+/// Whether a VM has stopped, and so will never be up again.
+pub fn vm_stopped(state: VmState) -> bool {
+    matches!(state, VmState::Exited | VmState::Killed)
+}
+
+/// The state a run moves to, refusing to walk an ended one back.
+///
+/// The daemon's runs only ever move live to ended, so a view that says
+/// otherwise — a list answer read before a transition the register has
+/// already seen, or an event that was written before the answer it arrived
+/// after — is an older view of the same run, and the register keeps what it
+/// saw. A state this console does not know is not treated as ended: it is a
+/// newer daemon's word, not a settled one.
+pub fn moved_run_state(known: RunState, next: RunState) -> RunState {
+    if run_ended(known) && !run_ended(next) {
+        known
+    } else {
+        next
+    }
+}
+
+/// The same rule for a VM.
+pub fn moved_vm_state(known: VmState, next: VmState) -> VmState {
+    if vm_stopped(known) && !vm_stopped(next) {
+        known
+    } else {
+        next
+    }
+}
+
 /// The window title: the register's name and the sheet that is showing.
 pub fn title(model: &Model) -> String {
     match &model.pane {
@@ -1443,12 +1745,52 @@ pub fn preset_footprint(preset: Preset) -> String {
     )
 }
 
-/// The last `limit` lines of a serial capture, and how many lines were left
-/// out above them.
-pub fn serial_tail(capture: &str, limit: usize) -> (usize, Vec<&str>) {
-    let lines: Vec<&str> = capture.lines().collect();
-    let skipped = lines.len().saturating_sub(limit);
-    (skipped, lines[skipped..].to_vec())
+/// One line of a serial capture, as the transcript draws it: where the line
+/// starts in the capture, and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptLine<'a> {
+    /// The byte of the capture the line begins at, counted from its start.
+    pub offset: u64,
+    /// The line, without its terminator.
+    pub text: &'a str,
+}
+
+/// The last `limit` lines of a capture, and how many earlier ones were left
+/// out above them: each line with the byte it starts at.
+///
+/// The offset is the register's own ledger habit — the draft's transcript puts
+/// every row's sequence number in the margin — over the measure this console
+/// actually has: `serial` events carry the byte offset their text starts at,
+/// and this is the same number counted over a capture read whole. The margin's
+/// figures only ever go up, which is exactly what the offset-idempotent merge
+/// promises.
+pub fn serial_tail(capture: &str, limit: usize) -> (usize, Vec<TranscriptLine<'_>>) {
+    let mut rows: Vec<TranscriptLine<'_>> = Vec::new();
+    let mut offset = 0u64;
+    if !capture.is_empty() {
+        for line in capture.split_inclusive('\n') {
+            let text = match line.strip_suffix('\n') {
+                Some(rest) => rest.strip_suffix('\r').unwrap_or(rest),
+                None => line,
+            };
+            rows.push(TranscriptLine { offset, text });
+            offset += line.len() as u64;
+        }
+    }
+    let skipped = rows.len().saturating_sub(limit);
+    rows.drain(..skipped);
+    (skipped, rows)
+}
+
+/// The span of a capture the transcript is drawing: from the first drawn
+/// line's byte to the capture's end, as the heading over the margin numbers
+/// names it. An empty capture has no span to name.
+pub fn transcript_span<'a>(
+    capture: &str,
+    rows: &[TranscriptLine<'a>],
+) -> Option<(u64, u64)> {
+    let first = rows.first()?;
+    Some((first.offset, capture.len() as u64))
 }
 
 /// A duration as the register writes it: seconds, then minutes, then hours.
@@ -1478,7 +1820,7 @@ pub fn clock_label(epoch_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{RunState, Vm, VmState};
+    use crate::api::Vm;
 
     fn vm(id: u32, state: VmState, cid: Option<u64>, serial: Option<&str>) -> Vm {
         Vm {
@@ -1879,22 +2221,69 @@ mod tests {
     #[test]
     fn the_serial_tail_keeps_the_last_lines_and_counts_the_rest() {
         let capture = "one\ntwo\nthree\nfour\n";
-        let (skipped, lines) = serial_tail(capture, 2);
+        let (skipped, rows) = serial_tail(capture, 2);
         assert_eq!(skipped, 2);
-        assert_eq!(lines, vec!["three", "four"]);
+        assert_eq!(
+            rows,
+            vec![
+                TranscriptLine {
+                    offset: 8,
+                    text: "three"
+                },
+                TranscriptLine {
+                    offset: 14,
+                    text: "four"
+                },
+            ],
+            "each row carries the byte it starts at"
+        );
 
-        let (skipped, lines) = serial_tail(capture, SERIAL_TAIL_LINES);
+        let (skipped, rows) = serial_tail(capture, SERIAL_TAIL_LINES);
         assert_eq!(skipped, 0);
-        assert_eq!(lines.len(), 4);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].offset, 0, "nothing was left out, so the span opens at 0");
+        assert_eq!(transcript_span(capture, &rows), Some((0, capture.len() as u64)));
 
-        let (skipped, lines) = serial_tail("", 4);
-        assert_eq!((skipped, lines.len()), (0, 0));
+        let (skipped, rows) = serial_tail("", 4);
+        assert_eq!((skipped, rows.len()), (0, 0));
+        assert_eq!(transcript_span("", &rows), None, "an empty capture has no span");
     }
 
     #[test]
     fn a_serial_captures_carriage_returns_do_not_reach_the_lines() {
-        let (_, lines) = serial_tail("login: plaza\r\n$ uname\r\nLinux\r\n", 10);
-        assert_eq!(lines, vec!["login: plaza", "$ uname", "Linux"]);
+        let capture = "login: plaza\r\n$ uname\r\nLinux\r\n";
+        let (_, rows) = serial_tail(capture, 10);
+        assert_eq!(
+            rows.iter().map(|row| row.text).collect::<Vec<_>>(),
+            vec!["login: plaza", "$ uname", "Linux"]
+        );
+        // The offsets count the capture's own bytes, terminators and all.
+        assert_eq!(
+            rows.iter().map(|row| row.offset).collect::<Vec<_>>(),
+            vec![0, 14, 23]
+        );
+        assert_eq!(transcript_span(capture, &rows), Some((0, 30)));
+    }
+
+    #[test]
+    fn a_capture_the_guest_has_not_finished_writing_still_has_a_line() {
+        let capture = "one\ntwo";
+        let (_, rows) = serial_tail(capture, 10);
+        assert_eq!(
+            rows,
+            vec![
+                TranscriptLine {
+                    offset: 0,
+                    text: "one"
+                },
+                TranscriptLine {
+                    offset: 4,
+                    text: "two"
+                },
+            ],
+            "a trailing partial line is drawn where the guest left it"
+        );
+        assert_eq!(transcript_span(capture, &rows), Some((0, 7)));
     }
 
     #[test]
@@ -2981,5 +3370,543 @@ mod tests {
             "{:?}",
             model.notice
         );
+    }
+
+    /// A model whose register holds one running `r1`, with that run open on
+    /// the pane and its capture read whole — the shape every serial event
+    /// below is merged against.
+    fn watching(capture: &str) -> Model {
+        let mut model = Model::new();
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        let mut detail = run("r1", RunState::Running);
+        detail.vms[0].serial = Some(capture.to_string());
+        model.apply(Message::Show(Pane::Run("r1".to_string())));
+        model.apply(Message::Run {
+            at_ms: 2_000,
+            id: "r1".to_string(),
+            result: Ok(detail),
+        });
+        model
+    }
+
+    #[test]
+    fn an_event_moves_a_run_and_its_vms_in_place_without_a_poll() {
+        let mut model = watching("login: plaza\n");
+        let before = model.next_poll_at_ms;
+        let polls = model.polls;
+
+        let effect = model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Vm {
+                run: "r1".to_string(),
+                vm: 0,
+                state: VmState::Exited,
+            },
+        });
+        assert!(effect.is_idle(), "a known run's vm needs no call at all");
+        assert_eq!(model.runs[0].vms[0].state, VmState::Exited);
+        assert_eq!(
+            model.detail.as_ref().expect("the open run").vms[0].state,
+            VmState::Exited,
+            "the pane reads the same run"
+        );
+
+        model.apply(Message::Event {
+            at_ms: 3_100,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            },
+        });
+        assert_eq!(model.runs[0].state, RunState::Done);
+        assert_eq!(
+            model.detail.as_ref().expect("the open run").state,
+            RunState::Done
+        );
+
+        // The stream is not the schedule: the poll's own clock is untouched.
+        assert_eq!(model.next_poll_at_ms, before);
+        assert_eq!(model.polls, polls, "the event did not count as a poll");
+        assert_eq!(model.last_ok_ms, Some(3_100), "an event is the daemon answering");
+    }
+
+    #[test]
+    fn an_event_naming_a_run_the_register_has_not_read_asks_for_it_once() {
+        let mut model = Model::new();
+        let first = model.apply(Message::Event {
+            at_ms: 1_000,
+            event: Event::Run {
+                id: "r5".to_string(),
+                state: RunState::Starting,
+            },
+        });
+        assert!(first.poll_list, "the register is asked for the run it lacks");
+        assert!(!first.is_idle());
+
+        // A spawn publishes one event per VM as well: that must not be fifty
+        // more polls.
+        for _ in 0..50 {
+            assert!(
+                model
+                    .apply(Message::Event {
+                        at_ms: 1_010,
+                        event: Event::Vm {
+                            run: "r5".to_string(),
+                            vm: 0,
+                            state: VmState::Running,
+                        },
+                    })
+                    .is_idle(),
+                "one outstanding ask is enough"
+            );
+        }
+
+        // The answer lands: the register holds the run, and a later event
+        // moves it instead of asking again.
+        model.apply(Message::Runs {
+            at_ms: 1_020,
+            result: page(vec![run("r5", RunState::Running)]),
+        });
+        let effect = model.apply(Message::Event {
+            at_ms: 1_030,
+            event: Event::Run {
+                id: "r5".to_string(),
+                state: RunState::Done,
+            },
+        });
+        assert!(effect.is_idle());
+        assert_eq!(model.runs[0].state, RunState::Done);
+
+        // And an event for a run that is gone asks afresh.
+        assert!(
+            model
+                .apply(Message::Event {
+                    at_ms: 1_040,
+                    event: Event::Run {
+                        id: "r9".to_string(),
+                        state: RunState::Running,
+                    },
+                })
+                .poll_list
+        );
+    }
+
+    #[test]
+    fn an_event_that_wakes_an_ended_run_asks_the_register_instead_of_believing_it() {
+        let mut model = watching("login: plaza\n");
+        model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Killed,
+            },
+        });
+        model.apply(Message::Event {
+            at_ms: 3_010,
+            event: Event::Vm {
+                run: "r1".to_string(),
+                vm: 0,
+                state: VmState::Killed,
+            },
+        });
+        assert_eq!(model.runs[0].state, RunState::Killed);
+
+        // The same run never comes back. An event that says otherwise is
+        // either older than the answer that settled it or the daemon has
+        // begun its ids again: the register is asked, and its answer — which
+        // carries each run's creation time — decides.
+        let asks: Vec<bool> = [
+            Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Running,
+            },
+            Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Starting,
+            },
+            Event::Vm {
+                run: "r1".to_string(),
+                vm: 0,
+                state: VmState::Running,
+            },
+        ]
+        .into_iter()
+        .map(|event| model.apply(Message::Event { at_ms: 3_100, event }).poll_list)
+        .collect();
+        assert_eq!(
+            asks,
+            vec![true, false, false],
+            "one outstanding ask is enough for a burst"
+        );
+        assert_eq!(model.runs[0].state, RunState::Killed, "a killed run stays killed");
+        assert_eq!(model.runs[0].vms[0].state, VmState::Killed);
+        assert_eq!(model.detail.as_ref().expect("the run").state, RunState::Killed);
+    }
+
+    #[test]
+    fn a_list_answer_read_before_a_run_ended_does_not_walk_it_back() {
+        let mut model = watching("");
+        model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            },
+        });
+
+        // A poll whose answer was read before the run ended: still running,
+        // and with no end time of its own.
+        model.apply(Message::Runs {
+            at_ms: 3_100,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.runs[0].state, RunState::Done, "the register keeps what it saw");
+
+        // And a list answer that agrees is taken as it comes.
+        let mut ended = run("r1", RunState::Done);
+        ended.ended_at = Some(3_050);
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![ended]),
+        });
+        assert_eq!(model.runs[0].state, RunState::Done);
+        assert_eq!(model.runs[0].ended_at, Some(3_050));
+    }
+
+    #[test]
+    fn a_serial_event_lands_in_the_transcript_between_polls() {
+        let mut model = watching("login: plaza\n");
+        assert_eq!(model.serial.length("r1", 0), 13);
+
+        let effect = model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 13,
+                text: "$ uname\nLinux plaza\n".to_string(),
+            },
+        });
+        assert!(effect.is_idle(), "an append asks the daemon for nothing");
+        assert_eq!(
+            model.detail.as_ref().expect("the run").serial(),
+            "login: plaza\n$ uname\nLinux plaza\n",
+            "the console grew without a poll"
+        );
+        assert_eq!(model.serial.length("r1", 0), 33);
+
+        // A replayed event, and a clip of one already partly held: neither
+        // may duplicate a byte.
+        for (offset, text) in [(0, "login: plaza\n"), (13, "$ uname\n")] {
+            model.apply(Message::Event {
+                at_ms: 3_100,
+                event: Event::Serial {
+                    run: "r1".to_string(),
+                    vm: 0,
+                    offset,
+                    text: text.to_string(),
+                },
+            });
+        }
+        model.apply(Message::Event {
+            at_ms: 3_200,
+            event: Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 13,
+                text: "$ uname\nLinux plaza\n$ uptime\n".to_string(),
+            },
+        });
+        assert_eq!(
+            model.detail.as_ref().expect("the run").serial(),
+            "login: plaza\n$ uname\nLinux plaza\n$ uptime\n",
+            "the clip appended only the bytes that were new"
+        );
+    }
+
+    #[test]
+    fn the_transcript_the_stream_grew_is_the_capture_the_poll_reads() {
+        // The daemon publishes its capture in deltas; the polls read it whole.
+        // Merging the deltas must land on exactly the polled bytes.
+        let whole = "login: plaza\n$ uname -a\nLinux plaza 7.2.8 x86_64\n$ uptime\n";
+        let mut model = watching("");
+        let deltas = [
+            (0, "login: plaza\n"),
+            (13, "$ uname -a\n"),
+            (24, "Linux plaza 7.2.8"),
+            (41, " x86_64\n"),
+            (49, "$ uptime\n"),
+        ];
+        for (offset, text) in deltas {
+            model.apply(Message::Event {
+                at_ms: 3_000,
+                event: Event::Serial {
+                    run: "r1".to_string(),
+                    vm: 0,
+                    offset,
+                    text: text.to_string(),
+                },
+            });
+        }
+        assert_eq!(model.detail.as_ref().expect("the run").serial(), whole);
+        assert_eq!(model.serial.length("r1", 0), whole.len() as u64);
+
+        // The poll's own capture is byte-for-byte what the stream built, and
+        // applying it is not a change.
+        let mut polled = run("r1", RunState::Running);
+        polled.vms[0].serial = Some(whole.to_string());
+        model.apply(Message::Runs {
+            at_ms: 4_000,
+            result: page(vec![polled.clone()]),
+        });
+        model.apply(Message::Run {
+            at_ms: 4_100,
+            id: "r1".to_string(),
+            result: Ok(polled),
+        });
+        assert_eq!(model.detail.as_ref().expect("the run").serial(), whole);
+        assert_eq!(model.serial.lines("r1", 0), Some(4));
+    }
+
+    #[test]
+    fn a_gap_reads_the_open_run_again_and_a_quiet_one_not_at_all() {
+        let mut model = watching("login: plaza\n");
+        let effect = model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 900,
+                text: "a stretch nobody saw\n".to_string(),
+            },
+        });
+        assert_eq!(
+            effect.fetch_run,
+            Some("r1".to_string()),
+            "the open run's capture is no longer contiguous: read it again"
+        );
+        assert_eq!(
+            model.detail.as_ref().expect("the run").serial(),
+            "login: plaza\n",
+            "nothing was invented to fill the gap"
+        );
+
+        // The same gap for a run the register lists but is not showing: there
+        // is no capture to repair, so nothing is asked for.
+        let mut model = watching("");
+        model.apply(Message::Show(Pane::Fleet));
+        let effect = model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 900,
+                text: "…".to_string(),
+            },
+        });
+        assert!(effect.is_idle());
+        assert_eq!(model.serial.length("r1", 0), 903);
+    }
+
+    #[test]
+    fn a_serial_event_feeds_the_rate_the_register_draws() {
+        // The poll's capture is the baseline; the events that follow move the
+        // rate the map's pulse and the telemetry pane read.
+        let mut model = watching("login: plaza\n");
+        assert_eq!(model.activity.lps("r1", 0), 0.0, "one sighting is a baseline");
+
+        model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 13,
+                text: "$ uname\nLinux plaza\n".to_string(),
+            },
+        });
+        assert!(
+            model.activity.lps("r1", 0) > 0.0,
+            "the stream's own growth is the rate, with no poll in between"
+        );
+        assert_eq!(
+            model.history.vm_series("r1", 0).len(),
+            2,
+            "and it is in the VM's own ring"
+        );
+
+        // A run that is not being shown gets the same treatment: the map's
+        // pulse is every run's serial.
+        let mut model = Model::new();
+        let mut live = run("r2", RunState::Running);
+        live.vms[0].serial = Some("boot\n".to_string());
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![live.clone()]),
+        });
+        model.apply(Message::Run {
+            at_ms: 2_000,
+            id: "r2".to_string(),
+            result: Ok(live),
+        });
+        model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Serial {
+                run: "r2".to_string(),
+                vm: 0,
+                offset: 5,
+                text: "more\n".to_string(),
+            },
+        });
+        assert!(model.activity.lps("r2", 0) > 0.0);
+        assert_eq!(model.detail, None, "and nothing was fetched to do it");
+    }
+
+    #[test]
+    fn an_events_bytes_for_a_run_the_register_is_not_showing_stop_at_the_feed() {
+        let mut model = watching("login: plaza\n");
+        let open = model.detail.as_ref().expect("the run").serial().to_string();
+        let mut other = run("r7", RunState::Running);
+        other.vms[0].serial = Some("other\n".to_string());
+        model.apply(Message::Runs {
+            at_ms: 3_000,
+            result: page(vec![
+                run("r1", RunState::Running),
+                other.clone(),
+            ]),
+        });
+
+        model.apply(Message::Event {
+            at_ms: 3_100,
+            event: Event::Serial {
+                run: "r7".to_string(),
+                vm: 0,
+                offset: 6,
+                text: "more\n".to_string(),
+            },
+        });
+        assert_eq!(
+            model.detail.as_ref().expect("the run").serial(),
+            open,
+            "another run's bytes never reach the open transcript"
+        );
+        assert_eq!(model.serial.length("r7", 0), 11, "but they are tracked");
+    }
+
+    #[test]
+    fn a_serial_feed_forgets_a_run_that_left_the_register() {
+        let mut model = watching("login: plaza\n");
+        assert!(!model.serial.is_empty());
+        model.apply(Message::Runs {
+            at_ms: 3_000,
+            result: page(vec![]),
+        });
+        assert!(model.serial.is_empty(), "the run's captures went with it");
+    }
+
+    #[test]
+    fn a_run_id_the_daemon_began_again_is_a_different_run() {
+        // A daemon that restarts begins its run ids again: the register's r1
+        // and the r1 the new daemon is reporting are different runs, and the
+        // register must not read one into the other.
+        let mut model = watching("login: plaza\n");
+        assert_eq!(model.serial.length("r1", 0), 13);
+        assert!(!model.activity.is_empty());
+
+        // The old r1 ended.
+        model.apply(Message::Event {
+            at_ms: 2_500,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            },
+        });
+
+        // The new daemon's r1: same id, a creation time of its own.
+        let mut reborn = run("r1", RunState::Running);
+        reborn.created_at = 9_000_000;
+        reborn.vms[0].serial = Some(String::new());
+        model.apply(Message::Runs {
+            at_ms: 3_000,
+            result: page(vec![reborn]),
+        });
+        assert_eq!(
+            model.runs[0].state,
+            RunState::Running,
+            "the new run is not held to the old one's ending"
+        );
+        assert!(model.serial.is_empty(), "the old run's captures went with it");
+        assert!(model.activity.is_empty(), "and its rates");
+        assert!(model.history.vm_series("r1", 0).is_empty(), "and its rings");
+
+        // Its own bytes are then merged from the start, as any new capture is.
+        model.apply(Message::Run {
+            at_ms: 3_100,
+            id: "r1".to_string(),
+            result: Ok(model.runs[0].clone()),
+        });
+        model.apply(Message::Event {
+            at_ms: 3_200,
+            event: Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 0,
+                text: "login: plaza\n".to_string(),
+            },
+        });
+        assert_eq!(
+            model.detail.as_ref().expect("the run").serial(),
+            "login: plaza\n"
+        );
+        assert_eq!(model.serial.length("r1", 0), 13);
+    }
+
+    #[test]
+    fn an_event_keeps_the_stamp_fresh_without_hiding_a_refused_poll() {
+        let mut model = watching("login: plaza\n");
+        model.apply(Message::Runs {
+            at_ms: 3_000,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        assert_eq!(model.health(), Health::Down);
+
+        model.apply(Message::Event {
+            at_ms: 3_100,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            },
+        });
+        assert_eq!(
+            model.health(),
+            Health::Down,
+            "a stream that still talks does not hide a poll the daemon refused"
+        );
+        assert_eq!(model.last_ok_ms, Some(3_100), "but the answer is recent");
+    }
+
+    #[test]
+    fn an_unknown_state_from_the_stream_is_applied_as_unknown() {
+        let mut model = watching("");
+        model.apply(Message::Event {
+            at_ms: 3_000,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Unknown,
+            },
+        });
+        assert_eq!(model.runs[0].state, RunState::Unknown);
+        // Unknown is not ended: a newer daemon's word for a run may still be
+        // a live one, so it is not frozen.
+        model.apply(Message::Event {
+            at_ms: 3_100,
+            event: Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Running,
+            },
+        });
+        assert_eq!(model.runs[0].state, RunState::Running);
     }
 }

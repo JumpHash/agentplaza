@@ -272,6 +272,12 @@ impl Activity {
             .retain(|id, _| runs.iter().any(|run| run.id.as_str() == id));
     }
 
+    /// Forgets one run's samples: a run id the daemon has begun again is a
+    /// different run, and its rates are not this one's.
+    pub fn forget(&mut self, run: &str) {
+        self.runs.remove(run);
+    }
+
     /// How many VMs are being watched: the map's feed size.
     pub fn len(&self) -> usize {
         self.runs.values().map(Vec::len).sum()

@@ -112,6 +112,51 @@ pub fn response(status: u16, body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// The bytes of one event-stream answer: exactly the head `noded` writes
+/// (`crates/noded/src/events.rs`), then `body`'s frames.
+pub fn stream_head(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}"
+    )
+    .into_bytes()
+}
+
+/// A stub answering every event-stream connection with the next body in
+/// `bodies` — the last one repeating — and closing it, which is how the
+/// daemon's stream ends.
+///
+/// The stub reads the request first, like the daemon, so a console's own
+/// request is on the wire before the frames are.
+pub fn streams(bodies: Vec<&'static str>) -> Stub {
+    let mut next = 0usize;
+    spawn(Box::new(move |_, _| {
+        let body = bodies
+            .get(next)
+            .or_else(|| bodies.last())
+            .copied()
+            .unwrap_or("");
+        next += 1;
+        Some(stream_head(body))
+    }))
+}
+
+/// A whole stub daemon: the register's paths answer `list`/`detail`, the
+/// machine `MACHINE`, and `GET /api/v0/events` an event stream of `events`.
+pub fn live(list: &str, detail: &str, events: &str) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    spawn(Box::new(move |request, _| {
+        Some(match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => events.clone(),
+            ("GET", "/api/v0/machine") => response(200, MACHINE),
+            ("GET", "/api/v0/runs") => response(200, &list),
+            _ => response(200, &detail),
+        })
+    }))
+}
+
 /// A stub answering every request with `always`, however many arrive.
 pub fn always(status: u16, body: &str) -> Stub {
     let body = body.to_string();

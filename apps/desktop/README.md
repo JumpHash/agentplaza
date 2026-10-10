@@ -64,6 +64,17 @@ cargo run -- --refresh-ms 500
 * polls `GET /api/v0/runs` (and `GET /api/v0/machine` while the machine or the
   map is on the sheet) at `--refresh-ms`, backing off to a 30 s ceiling while
   calls fail, and reports the connection as a stamp: `LIVE`, `STALE`, `DOWN`;
+* **follows `GET /api/v0/events`** — the daemon's event stream — the whole time
+  it runs: run and VM state changes and each VM's serial deltas arrive as they
+  happen, so a run appears, moves to `DONE`/`KILLED` and writes its console
+  between polls. The bus has no backlog, so the stream's head is the
+  subscription and the polls still supply the initial state; a serial delta is
+  merged by its byte offset (append / clip / re-fetch on a gap), so a
+  reconnected stream cannot duplicate a byte of a transcript. A stream that
+  ends is reconnected with a bounded backoff (250 ms doubling to 30 s, reset by
+  any event), and a stream that is down is *not* a daemon that is down: the
+  polls remain the source of truth and the stream's events never clear a poll's
+  own failure;
 * the index column: the fleet entry, the **machine**, the **fleet map**, every
   run, the fleet tally (runs, VMs up, distinct guest CIDs, vsock runs), the
   **guest memory the live VMs have committed** against the host's total as the
@@ -90,7 +101,12 @@ cargo run -- --refresh-ms 500
   `reboot: Power down`, `RESET` from `machine restart`/`Restarting system`, a
   dash when the tail says nothing), serial rate, and the latest line each VM
   wrote; the run's facts; the guest's serial transcript (the last 400 lines of
-  the *selected* VM) with a follow toggle;
+  the *selected* VM) with a follow toggle. The transcript is drawn as a ledger:
+  every row carries the byte of the capture it starts at in the margin
+  (right-aligned, the same measure the stream's `serial` events carry), and the
+  heading over it names the line count and the byte span on the sheet —
+  `Serial · vm 0 · 3 line(s) · byte 0–52` — so a transcript that only ever grew
+  reads as offsets that only ever went up;
 * the **serial console**: an input line, `SEND`, the guest's own quick commands
   (`help`, `uname`, `cpu`, `mem`, `uptime`, `poweroff` — the same set the web
   console offers), and an up/down history. A line is written to the selected VM
@@ -151,6 +167,13 @@ cargo run -- --refresh-ms 500
 * The API client is a tiny blocking HTTP/1.1 client over `TcpStream`, loopback
   only, with no HTTP client dependency — the same shape
   `crates/noded/tests/common/mod.rs` uses to test the daemon.
+* The event stream (`src/events.rs`) is the same kind of thing: a raw
+  `TcpStream`, the request, the head that confirms the subscription, and a
+  server-sent-events parser fed by whatever the socket returns — a thread
+  follows it, reconnecting with a bounded backoff, and `src/app.rs` maps what
+  it reads into messages. `src/serial.rs` is the offset-idempotent merge of the
+  serial deltas and the capture bookkeeping it needs: both are pure, so the
+  frame matrix and the merge matrix are unit-tested without a socket.
 * The model (`src/model.rs`), the map's geometry and activity (`src/map.rs`),
   the exit kinds (`src/exit.rs`), the form and its presets (`src/form.rs`), the
   export (`src/export.rs`), the session's rolling history (`src/history.rs`),
@@ -178,12 +201,30 @@ cargo test
   matrix, the console's history walk, the spawn form's boundaries and the
   presets' fill + byte-for-byte bodies, the export path's token arithmetic and
   its write (bytes read back off the disk), the help sheet's toggling, the poll
-  schedule and backoff at more than one cadence, the serial tail, the key
-  bindings, the CLI.
+  schedule and backoff at more than one cadence, the serial tail (with the byte
+  each row starts at), the key bindings, the CLI.
+* the stream: the frame parser's whole matrix (the daemon's frames, a frame
+  split mid-line across reads, a heartbeat, CRLF frames, a leading blank line,
+  an unknown event kind, a data line with no kind, a malformed frame followed
+  by a good one, a state this console does not know, a serial frame's escaped
+  bytes), the head that confirms the subscription (a real socket, and three
+  heads that are not a stream), the reconnect ladder's bounds (`250 ms` doubling
+  to `30 s`, reset by any event), the offset merge's whole matrix (append,
+  clip, replay, gap, a clip that would split a character, per-VM independence,
+  retention), the bridge between the reader thread and the runtime (the waker it
+  parks on, a message that arrives without a wake, the stream ending when its
+  thread does), and every reducer path an event drives (a known run's state in
+  place, one poll for a run the register has not read, an ended state never
+  walked back, a list answer read before a run ended, a serial delta landing in
+  the transcript, the transcript landing on exactly the polled bytes, a gap
+  re-reading the open run, the rate the events feed, an event keeping the stamp
+  fresh without hiding a refused poll).
 * `tests/client.rs` — the client over real sockets against a `std::net` daemon
   stub (`tests/common/mod.rs`), asserting the exact request line, headers and
-  bodies (create **and** console write), and the malformed/refused/unreachable
-  paths.
+  bodies (create **and** console write), the malformed/refused/unreachable
+  paths, and the event stream: the frames off a real socket (the heartbeat is
+  not an event, an unknown kind is not an event) and a reconnect whose second
+  event comes off a second connection after the backoff.
 * `tests/render.rs` — headless rendering with iced's own harness: the register
   drawn with the stub's runs, a click on a run fetching it and rendering the
   guest's serial, a click on `New run` opening the form, the presets row and a
@@ -203,9 +244,16 @@ cargo test
   on an overcommitted RAM chart, and the CSV button writing the scale run's
   ramp — `0, 6,400, 6,400, 1,408, 0` MiB — whose rows are asserted byte-exact
   and read back off the disk, twice), the run pane's selected-VM rate chart
-  with its numeric column kept, and a full application frame written to
+  with its numeric column kept, the **whole application following the event
+  stream** (its own subscription, its own reader thread, its own client and its
+  own reducer against a stub that streams frames: with the cadence at the 30 s
+  ceiling and exactly one boot poll, the register moves a run the list still
+  calls `running` to `DONE`, the pane's transcript lands on exactly the polled
+  capture plus the streamed bytes once, the ledger heading names that span, and
+  the frame is drawn), and a full application frame written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
-  the telemetry pane's to `target/tmp/telemetry-frame.rgba`).
+  the telemetry pane's to `target/tmp/telemetry-frame.rgba`, the stream's to
+  `target/tmp/stream-frame.rgba`).
 
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
 read a running daemon (read-only: it reads the machine, lists runs, and reads

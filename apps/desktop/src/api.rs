@@ -27,7 +27,7 @@ pub const DEFAULT_PORT: u16 = 8899;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The most a status line and its headers may occupy, together.
-const MAX_HEAD: usize = 64 * 1024;
+pub(crate) const MAX_HEAD: usize = 64 * 1024;
 
 /// The most a response body may occupy. A run's serial transcript is the
 /// largest thing the daemon serves, and it is bounded in memory there, so this
@@ -251,7 +251,11 @@ pub struct CreateRun {
 }
 
 /// Where the daemon is. Loopback only, by construction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Hash` is what identifies the event stream's subscription: the same
+/// endpoint keeps the same stream running, and a different one starts a new
+/// one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Endpoint {
     /// The literal loopback host: always `127.0.0.1`.
     host: String,
@@ -638,7 +642,7 @@ fn read_reply(stream: &mut TcpStream) -> Result<Reply, ApiError> {
 }
 
 /// The first position of `needle` in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }

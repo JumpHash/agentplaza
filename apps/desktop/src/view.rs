@@ -20,6 +20,7 @@ use crate::mapview::{self, FleetMap};
 use crate::model::{
     Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, SERIAL_TAIL_LINES,
     clock_label, duration_label, memory_label, preset_footprint, serial_tail, tally_line,
+    transcript_span,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
@@ -1235,33 +1236,64 @@ fn export_line(model: &Model, run: &Run) -> String {
     }
 }
 
-/// The serial transcript: the last lines of the VM the console is aimed at.
+/// The serial transcript: the last lines of the VM the console is aimed at,
+/// every one of them numbered with the byte of the capture it starts at.
+///
+/// The margin's numbers are the register's own ledger habit — the draft's
+/// transcript puts each row's sequence number in the margin and names the
+/// span above it — over the figure this console has: the byte offsets the
+/// stream's `serial` events carry, counted over the capture the poll read
+/// whole. A transcript that only ever grows reads as offsets that only ever
+/// go up.
 fn serial_pane<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
-    let target = model.target_vm_in(run);
-    let capture = target.and_then(|vm| vm.serial.as_deref()).unwrap_or("");
-    let (skipped, lines) = serial_tail(capture, SERIAL_TAIL_LINES);
+    let target = model.target_vm(&run.id);
+    let capture = model.target_capture(run);
+    let (skipped, rows) = serial_tail(capture, SERIAL_TAIL_LINES);
 
-    let mut body: Vec<Element<'a, Message>> = Vec::with_capacity(lines.len() + 2);
+    let heading = match transcript_span(capture, &rows) {
+        Some((from, to)) => format!(
+            "Serial · vm {target} · {} line(s) · byte {from}–{to}",
+            rows.len()
+        ),
+        None => format!("Serial · vm {target} · no bytes yet"),
+    };
+
+    let mut body: Vec<Element<'a, Message>> = Vec::with_capacity(rows.len() + 2);
     if capture.is_empty() {
         body.push(serif("the guest has not written to its console yet", 12.0, INK_3).into());
     }
     if skipped > 0 {
         body.push(mono(format!("… {skipped} earlier line(s) not shown"), 10.0, INK_3).into());
     }
-    for line in lines {
-        body.push(mono(line, 11.0, INK).into());
+    for row in &rows {
+        body.push(
+            row![
+                mono(row.offset.to_string(), 9.5, INK_3)
+                    .width(Length::Fixed(58.0))
+                    .align_x(iced::alignment::Horizontal::Right),
+                mono(row.text, 11.0, INK),
+            ]
+            .spacing(8.0)
+            .into(),
+        );
     }
 
     let transcript = scrollable(Column::with_children(body).spacing(1.0).width(Length::Fill))
         .height(Length::Fill)
         .auto_scroll(model.follow);
 
-    container(transcript)
-        .style(theme::boxed)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(edge(10.0, 10.0, 10.0, 10.0))
-        .into()
+    Column::with_children(vec![
+        mono(heading, 10.5, INK_3).into(),
+        container(transcript)
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(edge(10.0, 10.0, 10.0, 10.0))
+            .into(),
+    ])
+    .spacing(4.0)
+    .height(Length::Fill)
+    .into()
 }
 
 /// The quick-boot presets: three buttons and the footprint each one asks the

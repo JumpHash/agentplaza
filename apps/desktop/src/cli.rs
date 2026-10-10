@@ -86,9 +86,13 @@ KEYS:
 The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
 GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
 POST /api/v0/runs/{id}/input, spawns runs with POST /api/v0/runs and kills
-them with DELETE /api/v0/runs/{id}. The spawn form's quick boots fill the
-form; the run pane exports a transcript, and the telemetry pane the session's
-CSV, to the path in its box with plain std::fs.
+them with DELETE /api/v0/runs/{id}. Between polls it follows
+GET /api/v0/events — the daemon's event stream: run and VM state changes and
+each VM's serial deltas — and reconnects to it with a bounded backoff. The
+polls stay the source of truth; the stream only moves the same state sooner.
+The spawn form's quick boots fill the form; the run pane exports a transcript,
+and the telemetry pane the session's CSV, to the path in its box with plain
+std::fs.
 ";
 
 /// Parses the arguments, with `env` standing in for the process environment.
@@ -265,10 +269,11 @@ mod tests {
         for key in ["r ", "m ", "f ", "t ", "? ", "Escape"] {
             assert!(HELP.contains(key), "the help should document {key:?}");
         }
-        // The two local behaviours the help names.
+        // The two local behaviours the help names, and the stream it follows.
         assert!(HELP.contains("quick boots fill the"));
         assert!(HELP.contains("exports a transcript"));
-        assert!(HELP.contains("the session's\nCSV"));
+        assert!(HELP.contains("the session's CSV"));
+        assert!(HELP.contains("GET /api/v0/events"));
     }
 
     #[test]

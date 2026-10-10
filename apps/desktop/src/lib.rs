@@ -10,6 +10,8 @@
 //! * [`api`] — the daemon's JSON API over a tiny blocking HTTP/1.1 client,
 //!   loopback only, no client dependency.
 //! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
+//! * [`events`] — the daemon's event stream: the server-sent frames, the
+//!   parser, and the connection that follows the stream.
 //! * [`exit`] — how a VM left the running state, read off its serial tail.
 //! * [`export`] — where a transcript goes, the bytes it holds, and the one
 //!   `std::fs` write that puts it there.
@@ -21,6 +23,8 @@
 //! * [`mapview`] — the map as an iced canvas, painting what [`map`] computes.
 //! * [`model`] — the panes, the reducer and the poll arithmetic: pure state,
 //!   no iced types.
+//! * [`serial`] — the offset-idempotent merge of the stream's serial deltas,
+//!   and the per-VM capture bookkeeping it needs.
 //! * [`telemetryview`] — the session's figures as iced canvases, painting what
 //!   [`chart`] and [`history`] compute.
 //! * [`theme`] — the register's palette, stamps and rulings.
@@ -32,6 +36,7 @@ pub mod api;
 pub mod app;
 pub mod chart;
 pub mod cli;
+pub mod events;
 pub mod exit;
 pub mod export;
 pub mod form;
@@ -39,6 +44,7 @@ pub mod history;
 pub mod map;
 pub mod mapview;
 pub mod model;
+pub mod serial;
 pub mod telemetryview;
 pub mod theme;
 pub mod view;
