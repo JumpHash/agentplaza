@@ -16,7 +16,6 @@ use std::io::{self, Write};
 
 use serde_json::json;
 
-use crate::cmdline::Config;
 use crate::line::LineTransport;
 use crate::proto::{GuestMessage, HostMessage, WELCOME_ECHO};
 
@@ -79,6 +78,20 @@ impl From<io::Error> for SessionError {
     }
 }
 
+/// Who this guest is: the CID the vsock device assigned it, and the VM index
+/// the command line gave it.
+///
+/// The CID is not a configuration value — see [`crate::cmdline`] — it is
+/// whatever the device says, which is what every packet this side sends
+/// carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    /// The guest CID the vsock device assigned this VM.
+    pub guest_cid: u32,
+    /// This VM's index within the spawn, from `plaza.vm` (default 0).
+    pub vm: u32,
+}
+
 /// Runs the frozen session over `transport`, writing the transcript (every
 /// line in both directions, and this side's notes) to `log`.
 ///
@@ -87,14 +100,14 @@ impl From<io::Error> for SessionError {
 pub fn run<T: LineTransport, W: Write>(
     transport: &mut T,
     log: &mut W,
-    config: &Config,
+    identity: &Identity,
 ) -> Result<u64, SessionError> {
     send(
         transport,
         log,
         &GuestMessage::Hello {
-            vm: config.vm,
-            guest_cid: config.cid,
+            vm: identity.vm,
+            guest_cid: identity.guest_cid,
         },
     )?;
 
@@ -108,7 +121,7 @@ pub fn run<T: LineTransport, W: Write>(
 
     // 1. `echo`: the orchestrator must say back exactly what was sent.
     calls += 1;
-    let text = echo_text(config.cid);
+    let text = echo_text(identity.guest_cid);
     let output = tool_call(transport, log, calls, "echo", json!({ "text": text }))?;
     if output != text {
         return Err(SessionError::Protocol(format!(
@@ -308,10 +321,9 @@ mod tests {
         )
     }
 
-    fn config() -> Config {
-        Config {
-            cid: 3,
-            port: 5000,
+    fn identity() -> Identity {
+        Identity {
+            guest_cid: 3,
             vm: 0,
         }
     }
@@ -351,7 +363,7 @@ mod tests {
 
         let mut guest = guest;
         let mut log = Vec::new();
-        let calls = run(&mut guest, &mut log, &config()).expect("session completes");
+        let calls = run(&mut guest, &mut log, &identity()).expect("session completes");
         assert_eq!(calls, 2);
 
         let lines = orchestrator.join().expect("the orchestrator thread finished");
@@ -419,7 +431,7 @@ mod tests {
 
         let mut guest = guest;
         let mut log = Vec::new();
-        let calls = run(&mut guest, &mut log, &config()).expect("session completes");
+        let calls = run(&mut guest, &mut log, &identity()).expect("session completes");
         assert_eq!(calls, 2);
         orchestrator.join().expect("the orchestrator thread finished");
     }
@@ -438,7 +450,7 @@ mod tests {
 
         let mut guest = guest;
         let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &config()).expect_err("the session fails");
+        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
         match err {
             SessionError::ToolFailed { call, output } => {
                 assert_eq!(call, 1);
@@ -459,7 +471,7 @@ mod tests {
         });
         let mut guest = guest;
         let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &config()).expect_err("the session fails");
+        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
         assert!(matches!(err, SessionError::HostClosed), "got {err:?}");
         orchestrator.join().expect("the orchestrator thread finished");
     }
@@ -474,7 +486,7 @@ mod tests {
         });
         let mut guest = guest;
         let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &config()).expect_err("the session fails");
+        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
         assert!(matches!(err, SessionError::Protocol(_)), "got {err:?}");
         orchestrator.join().expect("the orchestrator thread finished");
     }
@@ -494,7 +506,7 @@ mod tests {
         });
         let mut guest = guest;
         let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &config()).expect_err("the session fails");
+        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
         assert!(matches!(err, SessionError::Protocol(_)), "got {err:?}");
         orchestrator.join().expect("the orchestrator thread finished");
     }

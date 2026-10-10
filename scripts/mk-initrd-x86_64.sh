@@ -16,9 +16,16 @@
 #                    session that ends with the guest's `bye` reboots the guest
 #                    (the same clean-exit path plaza.beats uses); a failed one
 #                    is reported and the guest stays up for its transcript.
-#   plaza.cid=N      the guest's vsock CID, read by the harness itself.
 #   plaza.port=N     the orchestrator's vsock port (default 5000), read by the
 #                    harness itself.
+#   plaza.vm=N       this VM's index within the spawn (default 0), read by the
+#                    harness itself.
+#
+# The guest's CID is NOT on the command line: one command line is shared by
+# every VM of a spawn, while the VMM gives each VM its own CID through the
+# virtio-vsock device's configuration space. The harness asks the vsock stack
+# for the CID it was actually assigned (IOCTL_VM_SOCKETS_GET_LOCAL_CID), so
+# `hello` names the CID its packets carry.
 #
 # Guest ↔ orchestrator is vsock only (plaza rule 0010: no NIC). The guest's
 # half of the transport is four modules - the vsock core, the virtio transport

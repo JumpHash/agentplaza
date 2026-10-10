@@ -51,9 +51,9 @@ use cmdline::{Config, ConfigError};
 #[cfg(target_os = "linux")]
 use line::StreamLines;
 #[cfg(target_os = "linux")]
-use session::SessionError;
+use session::{Identity, SessionError};
 #[cfg(target_os = "linux")]
-use vsock::{HOST_CID, VsockStream};
+use vsock::{CID_ANY, HOST_CID, VsockStream, device_guest_cid};
 
 /// The kernel command line the VMM built for this guest.
 #[cfg(target_os = "linux")]
@@ -98,6 +98,10 @@ enum HarnessError {
     Flags(ConfigError),
     /// The orchestrator could not be reached: {0}
     Connect(io::Error),
+    /// The vsock device did not publish this VM's CID: {0}
+    GuestCid(io::Error),
+    /// The vsock device published no useful guest CID (it answered {0})
+    UnassignedCid(u32),
     /// The session did not complete: {0}
     Session(SessionError),
 }
@@ -109,6 +113,11 @@ impl fmt::Display for HarnessError {
             Self::Cmdline(err) => write!(f, "cannot read {CMDLINE_PATH}: {err}"),
             Self::Flags(err) => write!(f, "unusable kernel command line: {err}"),
             Self::Connect(err) => write!(f, "cannot reach the orchestrator: {err}"),
+            Self::GuestCid(err) => write!(f, "cannot read this VM's guest CID: {err}"),
+            Self::UnassignedCid(cid) => write!(
+                f,
+                "the vsock device published no guest CID (it answered {cid}): the VM has no CID to report"
+            ),
             Self::Session(err) => write!(f, "session failed: {err}"),
         }
     }
@@ -125,18 +134,41 @@ fn run() -> Result<(), HarnessError> {
     let mut out = io::stdout().lock();
     let _ = writeln!(
         out,
-        "agent-harness: guest CID {} vm {} -> host CID {} port {}",
-        config.cid, config.vm, HOST_CID, config.port
+        "agent-harness: vm {} -> host CID {} port {}",
+        config.vm, HOST_CID, config.port
     );
 
     let (stream, attempts) = connect(&config, &mut out).map_err(HarnessError::Connect)?;
     let _ = writeln!(out, "agent-harness: connected after {attempts} attempt(s)");
 
+    // The CID is the device's answer, never the command line's: one command
+    // line is shared by every VM of a spawn, while the device gives each VM
+    // its own CID and stamps that CID into every packet.
+    let guest_cid = device_guest_cid().map_err(HarnessError::GuestCid)?;
+    if guest_cid == CID_ANY || cid_is_reserved(guest_cid) {
+        return Err(HarnessError::UnassignedCid(guest_cid));
+    }
+    let _ = writeln!(
+        out,
+        "agent-harness: the vsock device assigned guest CID {guest_cid}"
+    );
+
+    let identity = Identity {
+        guest_cid,
+        vm: config.vm,
+    };
     let mut transport = StreamLines::new(stream);
-    session::run(&mut transport, &mut out, &config).map_err(HarnessError::Session)?;
+    session::run(&mut transport, &mut out, &identity).map_err(HarnessError::Session)?;
     let _ = writeln!(out, "agent-harness: closing the connection");
     let _ = out.flush();
     Ok(())
+}
+
+/// Whether `cid` is one the vsock stack reserves (0 `HYPERVISOR`, 1 `LOCAL`
+/// and 2 `HOST`), i.e. not a guest CID a session may be conducted under.
+#[cfg(target_os = "linux")]
+fn cid_is_reserved(cid: u32) -> bool {
+    cid <= HOST_CID
 }
 
 /// Connects to the orchestrator, retrying for a bounded window, and returns

@@ -10,6 +10,21 @@ use std::os::fd::RawFd;
 /// The orchestrator's CID (`VMADDR_CID_HOST`).
 pub const HOST_CID: u32 = libc::VMADDR_CID_HOST as u32;
 
+/// `VMADDR_CID_ANY`: what the vsock stack reports when a transport has no CID
+/// to report (a guest whose device never published one reads back this).
+pub const CID_ANY: u32 = libc::VMADDR_CID_ANY as u32;
+
+/// `IOCTL_VM_SOCKETS_GET_LOCAL_CID = _IO(7, 0xb9)` (`include/uapi/linux/vm_sockets.h`):
+/// asks the vsock stack for the local CID of the socket's transport — on a
+/// guest, the CID its virtio-vsock device published.
+const IOCTL_VM_SOCKETS_GET_LOCAL_CID: libc::c_ulong = ioctl_expr(7, 0xb9);
+
+/// Builds a `_IO(type, nr)` ioctl request, as `asm-generic/ioctl.h` does:
+/// direction none, `type` in bits 8-15, `nr` in bits 0-7, no argument size.
+const fn ioctl_expr(kind: u32, nr: u32) -> libc::c_ulong {
+    ((kind << 8) | nr) as libc::c_ulong
+}
+
 /// How long a read waits for the orchestrator before failing, in seconds.
 ///
 /// Every wait on the peer is bounded: a half-dead connection must not park the
@@ -160,6 +175,42 @@ impl VsockStream {
     }
 }
 
+/// The guest CID this VM was assigned, as the vsock stack itself reports it.
+///
+/// The CID is not, and cannot be, on the kernel command line: one command line
+/// is shared by every VM of a spawn, while the VMM gives each VM its own CID
+/// through the virtio-vsock device's configuration space — the guest's driver
+/// reads that CID back and stamps it into every packet it sends, and the host
+/// drops packets whose source CID it does not expect.
+///
+/// `IOCTL_VM_SOCKETS_GET_LOCAL_CID` is the vsock device's own way of saying
+/// which CID the registered transport has (the ioctl lives on `/dev/vsock`,
+/// which the loaded vsock module creates), so `hello` can name the CID the
+/// packets actually carry instead of a value from a shared command line that
+/// would disagree with them on every VM but one.
+pub fn device_guest_cid() -> io::Result<u32> {
+    // SAFETY: the path is a valid NUL-terminated C string and `open` only
+    // creates a new file descriptor; the result is checked below.
+    let fd = unsafe { libc::open(c"/dev/vsock".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut cid: libc::c_uint = 0;
+    // SAFETY: `cid` is a valid `u32` for the ioctl to write through and `fd` is
+    // the open `/dev/vsock` this function owns; the request takes no other
+    // argument.
+    let rc = unsafe { libc::ioctl(fd, IOCTL_VM_SOCKETS_GET_LOCAL_CID, &mut cid) };
+    // Read errno before `close`, which may overwrite it.
+    let err = io::Error::last_os_error();
+    // SAFETY: `fd` is the descriptor opened above and is closed exactly once,
+    // here.
+    unsafe { libc::close(fd) };
+    if rc < 0 {
+        return Err(err);
+    }
+    Ok(cid)
+}
+
 impl Read for VsockStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
@@ -205,5 +256,21 @@ impl Drop for VsockStream {
         // SAFETY: `self.fd` is the descriptor this type owns and closes
         // exactly once, here; nothing else may close it.
         unsafe { libc::close(self.fd) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The request number is an ABI: `IOCTL_VM_SOCKETS_GET_LOCAL_CID` is
+    /// `_IO(7, 0xb9)` in `include/uapi/linux/vm_sockets.h`, and a wrong number
+    /// would be answered by some other handler (or by none) rather than fail
+    /// loudly, so it is pinned here.
+    #[test]
+    fn the_local_cid_ioctl_request_is_the_headers() {
+        assert_eq!(IOCTL_VM_SOCKETS_GET_LOCAL_CID, 0x7b9);
+        assert_eq!(CID_ANY, 0xffff_ffff);
+        assert_eq!(HOST_CID, 2);
     }
 }

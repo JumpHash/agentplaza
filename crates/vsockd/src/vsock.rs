@@ -11,6 +11,11 @@ use std::os::fd::RawFd;
 /// The host's own CID (`VMADDR_CID_HOST`), the default listen CID.
 pub const HOST_CID: u32 = libc::VMADDR_CID_HOST as u32;
 
+/// `VMADDR_CID_ANY`: no CID. A transport that does not report the peer's
+/// address on `accept` answers this, and then there is nothing to check a
+/// guest's claimed CID against.
+pub const CID_ANY: u32 = libc::VMADDR_CID_ANY as u32;
+
 /// How many connections may be pending before `accept` starts refusing them.
 const LISTEN_BACKLOG: libc::c_int = 128;
 
