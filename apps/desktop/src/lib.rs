@@ -1,3 +1,7 @@
+// This crate is safe Rust only: `forbid(unsafe_code)` makes any future
+// `unsafe` block a compile error.
+#![forbid(unsafe_code)]
+
 //! AgentPlaza's desktop register: an iced + wgpu (WebGPU) dashboard for the
 //! node daemon's fleet API.
 //!
