@@ -138,7 +138,7 @@ pub fn run<T: LineTransport, W: Write>(
             "uptime call {calls} returned {output:?}, expected two fields"
         )));
     }
-    note(log, &format!("agent-harness: uptime call {calls}: {output}"));
+    note(log, &format!("agent-harness: uptime call {calls}: {}", escape_for_transcript(&output)));
 
     send(transport, log, &GuestMessage::Bye { calls })?;
     note(log, &format!("agent-harness: session complete after {calls} tool calls"));
@@ -167,7 +167,7 @@ fn receive<T: LineTransport, W: Write>(
         Ok(None) => return Err(SessionError::HostClosed),
         Err(err) => return Err(SessionError::from(err)),
     };
-    note(log, &format!("[vsock<-] {line}"));
+    note(log, &format!("[vsock<-] {}", escape_for_transcript(&line)));
     Ok(line)
 }
 
@@ -280,9 +280,27 @@ fn note<W: Write>(log: &mut W, text: &str) {
     let _ = writeln!(log, "{text}");
 }
 
+/// Escapes control characters in host-supplied text before it reaches the
+/// operator-visible serial transcript — the mirror of `vsockd`'s log sink: a
+/// hostile or buggy peer must not be able to forge transcript lines with
+/// carriage returns or terminal escape sequences.
+fn escape_for_transcript(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_control() {
+            out.push_str(&format!("\\x{:02x}", u32::from(ch)));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::sync::mpsc::{Receiver, Sender, channel};
     use std::thread;
 
@@ -509,5 +527,22 @@ mod tests {
         let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
         assert!(matches!(err, SessionError::Protocol(_)), "got {err:?}");
         orchestrator.join().expect("the orchestrator thread finished");
+    }
+}
+
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::escape_for_transcript;
+
+    #[test]
+    fn host_control_characters_are_escaped_in_the_transcript() {
+        // A hostile peer must not be able to forge transcript lines.
+        assert_eq!(
+            escape_for_transcript("ok\r\x1b[2Kvsockd: session ended"),
+            "ok\\x0d\\x1b[2Kvsockd: session ended"
+        );
+        assert_eq!(escape_for_transcript("plain line"), "plain line");
+        assert_eq!(escape_for_transcript("\n"), "\\x0a");
     }
 }

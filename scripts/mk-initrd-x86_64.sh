@@ -157,9 +157,15 @@ if [ ! -x "$harness" ]; then
     echo "mk-initrd: no agent harness binary at $harness" >&2
     exit 1
 fi
-if command -v file >/dev/null 2>&1 && ! file -b "$harness" | grep -q static; then
-    echo "mk-initrd: $harness is not statically linked; the guest has no dynamic loader" >&2
-    exit 1
+if command -v file >/dev/null 2>&1; then
+    if ! file -b "$harness" | grep -q static; then
+        echo "mk-initrd: $harness is not statically linked; the guest has no dynamic loader" >&2
+        exit 1
+    fi
+else
+    # file(1) is missing: the static-link check cannot run. A dynamic binary
+    # would only fail at guest exec, so say so instead of shipping silently.
+    echo "mk-initrd: warning: file(1) not found, cannot verify $harness is statically linked" >&2
 fi
 cp "$harness" "$root/agent-harness"
 if command -v strip >/dev/null 2>&1; then
