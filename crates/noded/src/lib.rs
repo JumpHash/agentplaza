@@ -24,6 +24,7 @@
 //! implements: see [`registry`].
 
 pub mod events;
+pub mod fleet;
 pub mod http;
 pub mod registry;
 pub mod static_files;
@@ -59,6 +60,17 @@ pub const DEFAULT_CONSOLE_DIR: &str = "apps/web/dist";
 /// VM `i`'s muxer binds `{DEFAULT_UDS_DIR}/vm{cid}`.
 pub const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
 
+/// The first guest CID of the initial role fleet unless `--agents-cid-base`
+/// says otherwise; role `i` (alphabetical) gets `DEFAULT_AGENTS_CID_BASE + i`.
+pub const DEFAULT_AGENTS_CID_BASE: u64 = 100;
+
+/// Guest memory per agent VM unless `--agents-memory-mib` says otherwise: the
+/// validated per-VM scale figure the plaza runs its agents at.
+pub const DEFAULT_AGENTS_MEMORY_MIB: u32 = 128;
+
+/// vCPUs per agent VM unless `--agents-vcpus` says otherwise.
+pub const DEFAULT_AGENTS_VCPUS: u32 = 1;
+
 /// How long a client has to send its request and to take its response.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -71,7 +83,7 @@ pub struct Config {
     pub kernel: PathBuf,
     /// The guest initrd every run boots.
     pub initrd: PathBuf,
-    /// The directory `GET /` and `GET /<file>` serve.
+    /// The directory `GET /` and `GET <file>` serve.
     pub console_dir: PathBuf,
     /// The directory holding the per-VM vsock Unix sockets; VM `i`'s muxer
     /// binds `{uds_dir}/vm{cid}`. With `workspace`, it also holds each run's
@@ -82,6 +94,17 @@ pub struct Config {
     /// image per VM, in the run's own directory under `uds_dir` — a writable
     /// volume is never shared between VMs.
     pub workspace: Option<PathBuf>,
+    /// The roles manifest of the initial agent fleet, when the daemon was asked
+    /// to boot one (`--agents`). `None` boots no fleet: the daemon serves the
+    /// API exactly as it did before agents existed.
+    pub agents: Option<PathBuf>,
+    /// The first guest CID of the fleet; role `i` (alphabetical) gets
+    /// `agents_cid_base + i`.
+    pub agents_cid_base: u64,
+    /// Guest memory per agent VM, in MiB.
+    pub agents_memory_mib: u32,
+    /// vCPUs per agent VM.
+    pub agents_vcpus: u32,
 }
 
 impl Default for Config {
@@ -93,6 +116,10 @@ impl Default for Config {
             console_dir: PathBuf::from(DEFAULT_CONSOLE_DIR),
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
             workspace: None,
+            agents: None,
+            agents_cid_base: DEFAULT_AGENTS_CID_BASE,
+            agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
+            agents_vcpus: DEFAULT_AGENTS_VCPUS,
         }
     }
 }
@@ -268,6 +295,9 @@ pub struct Server {
     port: u16,
     shutdown: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
+    /// The daemon's state, also held by the accept thread. The daemon's
+    /// startup (the initial role fleet) reaches the registry through this.
+    node: Arc<Node>,
 }
 
 impl Server {
@@ -278,12 +308,20 @@ impl Server {
         let node = Arc::new(Node::new(config));
         let shutdown = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&shutdown);
-        let accept = thread::spawn(move || accept_loop(&listener, &node, &flag));
+        let serving = Arc::clone(&node);
+        let accept = thread::spawn(move || accept_loop(&listener, &serving, &flag));
         Ok(Self {
             port,
             shutdown,
             accept: Some(accept),
+            node,
         })
+    }
+
+    /// The daemon's state (`registry`, event bus), for the startup that has to
+    /// reach it before the daemon is left to serve.
+    pub fn node(&self) -> &Arc<Node> {
+        &self.node
     }
 
     /// The port the daemon is listening on: `config.port`, or the ephemeral

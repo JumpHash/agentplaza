@@ -13,6 +13,9 @@
 
 use std::io::{self, Read, Write};
 use std::os::fd::RawFd;
+use std::time::Duration;
+
+use crate::line::WaitReadable;
 
 /// The orchestrator's CID (`VMADDR_CID_HOST`).
 pub const HOST_CID: u32 = libc::VMADDR_CID_HOST as u32;
@@ -216,6 +219,39 @@ pub fn device_guest_cid() -> io::Result<u32> {
         return Err(err);
     }
     Ok(cid)
+}
+
+/// The guest's AF_VSOCK stream answers framing's one question about
+/// readability with `poll(2)`: the keepalive session beats on a schedule, so a
+/// receive has to be able to end on time rather than block until the peer
+/// speaks.
+impl WaitReadable for VsockStream {
+    fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {
+        // A wait longer than `i32::MAX` milliseconds is not expressible to
+        // `poll`; the caller's waits are seconds at most, so clamping is
+        // honest rather than a silent truncation to a negative value.
+        let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let mut fds = [libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        // SAFETY: `fds` is a one-element array of a valid `pollfd` for the
+        // live socket `self.fd`.
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            // An interrupted wait is not an answer either way: say the socket
+            // may be readable, and let the read itself decide.
+            if err.kind() == io::ErrorKind::Interrupted {
+                return Ok(true);
+            }
+            return Err(err);
+        }
+        // Any reported event (POLLIN, and the error/hangup events) means a
+        // read returns promptly: the read reports what actually happened.
+        Ok(rc > 0)
+    }
 }
 
 impl Read for VsockStream {

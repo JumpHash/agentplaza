@@ -20,6 +20,15 @@
 #                    session that ends with the guest's `bye` reboots the guest
 #                    (the same clean-exit path plaza.beats uses); a failed one
 #                    is reported and the guest stays up for its transcript.
+#   plaza.keepalive=1  run the agent fleet's long-lived session: it implies
+#                    plaza.harness=1, and the reap path then NEVER reboots the
+#                    guest. The harness owns its reconnect loop, so an exit is
+#                    either the hub's `stop` or the harness giving up for good;
+#                    either way the VM stays up (inspectable and killable) and
+#                    the guest keeps serving its console. The guest's role
+#                    (plaza.role=<role>) and the keepalive flag are read by the
+#                    harness itself; the flag is read here too, because only
+#                    the guest knows whether an exit means "reboot".
 #   plaza.port=N     the orchestrator's vsock port (default 5000), read by the
 #                    harness itself.
 #   plaza.vm=N       this VM's index within the spawn (default 0), read by the
@@ -227,6 +236,11 @@ cat > "$out_dir/init.c" <<'EOF'
 // 5 s, serves the serial command loop and - when the kernel command line says
 // `plaza.harness=1` - loads the guest's virtio modules and runs the AgentPlaza
 // agent harness, which prints its whole session to this same console.
+//
+// `plaza.keepalive=1` implies the harness and changes what an exit means: the
+// agent fleet's sessions are long-lived and the harness owns its reconnect
+// loop, so this init never reboots such a guest - it reports the harness's end
+// and keeps the VM up, inspectable and killable.
 //
 // The same module load carries the workspace volume's transport: when the VMM
 // gave the VM a workspace image, its virtio-blk device appears as /dev/vda and
@@ -689,11 +703,18 @@ static pid_t start_harness(void)
     return pid;
 }
 
-// Reaps the harness once it has finished. A completed session reboots the
-// guest (RB_AUTOBOOT -> reset), the same clean path `plaza.beats` uses; the
-// serial `poweroff` command is the only ACPI S5 (shutdown) path. A failed
-// session is reported and the guest stays up, so its transcript can be read.
-static void reap_harness(pid_t *harness)
+// Reaps the harness once it has finished.
+//
+// Without keepalive (the v1 session), a completed session reboots the guest
+// (RB_AUTOBOOT -> reset), the same clean path `plaza.beats` uses; the serial
+// `poweroff` command is the only ACPI S5 (shutdown) path. A failed session is
+// reported and the guest stays up, so its transcript can be read.
+//
+// With keepalive (the agent fleet) the guest NEVER reboots: the harness owns
+// its own reconnect loop, so an exit means the hub stopped the agent or the
+// harness gave up for good - in both cases the VM stays up, inspectable and
+// killable, and this init keeps serving its console.
+static void reap_harness(pid_t *harness, int keepalive)
 {
     if (*harness <= 0)
         return;
@@ -702,13 +723,20 @@ static void reap_harness(pid_t *harness)
         return;
     *harness = -1;
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        if (keepalive) {
+            put("plaza guest: agent harness stopped by the hub; staying up\n");
+            return;
+        }
         put("plaza guest: agent harness session complete, rebooting\n");
         do_sync();
         reboot(RB_AUTOBOOT);
     }
     char msg[96];
     int len;
-    if (WIFEXITED(status)) {
+    if (keepalive) {
+        len = snprintf(msg, sizeof msg,
+                       "plaza guest: agent harness ended (status %d); staying up\n", status);
+    } else if (WIFEXITED(status)) {
         len = snprintf(msg, sizeof msg,
                        "plaza guest: agent harness failed (exit %d); staying up\n",
                        WEXITSTATUS(status));
@@ -730,7 +758,10 @@ int main(void)
 
     const unsigned long beats = parse_flag("plaza.beats=");
     const unsigned long halt = parse_flag("plaza.halt=");
-    const unsigned long harness = parse_flag("plaza.harness=");
+    const unsigned long keepalive = parse_flag("plaza.keepalive=");
+    // A keepalive agent is a harness by definition: the flag says "long-lived
+    // session", and the harness is what speaks it.
+    const unsigned long harness = parse_flag("plaza.harness=") || keepalive;
     pid_t harness_pid = -1;
 
     if (halt) {
@@ -752,7 +783,7 @@ int main(void)
         harness_pid = start_harness();
 
     for (unsigned long beat = 1;; beat++) {
-        reap_harness(&harness_pid);
+        reap_harness(&harness_pid, (int)keepalive);
 
         char line[160];
         int len = snprintf(line, sizeof line,

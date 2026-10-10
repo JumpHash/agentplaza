@@ -38,6 +38,9 @@ pub fn start(console_dir: PathBuf) -> Server {
         console_dir,
         uds_dir: PathBuf::from("/tmp/plaza-vsock"),
         workspace: None,
+        // No initial role fleet: these tests drive the API exactly as it was
+        // before agents existed.
+        ..Config::default()
     };
     Server::start(config).expect("the test daemon should bind")
 }

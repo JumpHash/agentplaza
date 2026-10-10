@@ -102,12 +102,17 @@ pub fn run<T: LineTransport, W: Write>(
     log: &mut W,
     identity: &Identity,
 ) -> Result<u64, SessionError> {
+    // The frozen v1 `hello`, with no role and no keepalive: those are the
+    // keepalive session's fields (see [`crate::keepalive`]), and a v1 session
+    // is byte-for-byte what it was before they existed.
     send(
         transport,
         log,
         &GuestMessage::Hello {
             vm: identity.vm,
             guest_cid: identity.guest_cid,
+            role: None,
+            keepalive: false,
         },
     )?;
 
@@ -146,7 +151,10 @@ pub fn run<T: LineTransport, W: Write>(
 }
 
 /// Sends one protocol line and logs it.
-fn send<T: LineTransport, W: Write>(
+///
+/// Shared with the keepalive session ([`crate::keepalive`]): the transcript of
+/// a frame is identical in both directions of the protocol.
+pub(crate) fn send<T: LineTransport, W: Write>(
     transport: &mut T,
     log: &mut W,
     message: &GuestMessage,
@@ -181,8 +189,8 @@ fn expect_welcome<T: LineTransport, W: Write>(
     loop {
         let line = receive(transport, log)?;
         match HostMessage::from_line(&line) {
-            Ok(HostMessage::Welcome { echo }) if echo == WELCOME_ECHO => return Ok(echo),
-            Ok(HostMessage::Welcome { echo }) => {
+            Ok(HostMessage::Welcome { echo, .. }) if echo == WELCOME_ECHO => return Ok(echo),
+            Ok(HostMessage::Welcome { echo, .. }) => {
                 return Err(SessionError::Protocol(format!(
                     "welcome echo {echo:?} is not {WELCOME_ECHO:?}"
                 )));
@@ -264,10 +272,15 @@ fn tool_call<T: LineTransport, W: Write>(
 }
 
 /// The message's protocol name, for log lines that name what was skipped.
-fn kind_of(message: &HostMessage) -> &'static str {
+///
+/// Shared with the keepalive session ([`crate::keepalive`]): both sessions
+/// speak the same protocol and write the same transcript.
+pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
     match message {
         HostMessage::Welcome { .. } => "welcome",
         HostMessage::ToolResult { .. } => "tool_result",
+        HostMessage::ToolCall { .. } => "tool_call",
+        HostMessage::Stop { .. } => "stop",
     }
 }
 
@@ -276,7 +289,7 @@ fn kind_of(message: &HostMessage) -> &'static str {
 /// The transcript is the serial console, which is how a human sees the loop;
 /// it is best-effort (a console that has gone away must not fail the
 /// protocol), so a write error is dropped rather than propagated.
-fn note<W: Write>(log: &mut W, text: &str) {
+pub(crate) fn note<W: Write>(log: &mut W, text: &str) {
     let _ = writeln!(log, "{text}");
 }
 
@@ -284,7 +297,7 @@ fn note<W: Write>(log: &mut W, text: &str) {
 /// operator-visible serial transcript — the mirror of `vsockd`'s log sink: a
 /// hostile or buggy peer must not be able to forge transcript lines with
 /// carriage returns or terminal escape sequences.
-fn escape_for_transcript(text: &str) -> String {
+pub(crate) fn escape_for_transcript(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         if ch.is_control() {
@@ -301,8 +314,11 @@ fn escape_for_transcript(text: &str) -> String {
 mod tests {
     use super::*;
 
-    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
     use std::thread;
+    use std::time::Duration;
+
+    use crate::line::Received;
 
     /// A [`LineTransport`] over a channel, so a test can put a scripted
     /// orchestrator on the other end without a socket.
@@ -318,8 +334,20 @@ mod tests {
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "peer gone"))
         }
 
-        fn recv_line(&mut self) -> io::Result<Option<String>> {
-            Ok(self.input.recv().ok())
+        fn recv_line_by(&mut self, timeout: Option<Duration>) -> io::Result<Received> {
+            // The v1 session never asks for a deadline; a test that wants one
+            // is in `keepalive`'s module, whose channel honours it.
+            match timeout {
+                None => Ok(self
+                    .input
+                    .recv()
+                    .map_or(Received::Closed, Received::Line)),
+                Some(wait) => match self.input.recv_timeout(wait) {
+                    Ok(line) => Ok(Received::Line(line)),
+                    Err(RecvTimeoutError::Timeout) => Ok(Received::TimedOut),
+                    Err(RecvTimeoutError::Disconnected) => Ok(Received::Closed),
+                },
+            }
         }
     }
 

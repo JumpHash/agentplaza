@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
+use crate::fleet::Fleet;
 use vmm::spawner::{
     self, MAX_GUEST_CID, MIN_GUEST_CID, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec,
     VsockConfig,
@@ -38,6 +39,9 @@ pub const MAX_VCPUS: u32 = 64;
 
 /// The least guest memory one VM may have, in MiB (`memory_mib`).
 pub const MIN_MEMORY_MIB: u32 = 128;
+
+/// The guest's console device: the first flag of every run's command line.
+const CONSOLE: &str = "console=ttyS0";
 
 /// How often the run watcher looks at its VMs. The watcher sleeps for this
 /// long *outside* the run's lock, so its polls stay non-blocking and no other
@@ -81,20 +85,15 @@ pub struct CreateRun {
 
 impl CreateRun {
     /// Checks the contract's ranges and turns the request into what the
-    /// spawner needs: the VMs' spec and how many of them to boot.
+    /// spawner needs: the VMs' template spec, how many of them to boot, and the
+    /// run's first guest CID.
     ///
     /// `n` is 1..=64, `vcpus` is 1..=64 and `memory_mib` is at least 128;
     /// anything else is refused with the reason, before any run exists.
     fn spec(&self, images: &VmImages) -> Result<(VmSpec, usize, Option<u64>), String> {
         let vms = checked_count("n", self.n, 1, MAX_VMS)?;
-        let vcpus = checked_count("vcpus", self.vcpus, 1, MAX_VCPUS)?;
-        if self.memory_mib < MIN_MEMORY_MIB {
-            return Err(format!("memory_mib must be at least {MIN_MEMORY_MIB}"));
-        }
-        let vcpus = u8::try_from(vcpus)
-            .map_err(|_| format!("vcpus must be between 1 and {MAX_VCPUS}"))?;
-        let memory_mib = usize::try_from(self.memory_mib)
-            .map_err(|_| "memory_mib is too large for this host".to_string())?;
+        let vcpus = spawner_vcpus(self.vcpus)?;
+        let memory_mib = spawner_memory_mib(self.memory_mib)?;
         let vsock_cid = match self.vsock_cid {
             Some(cid) => {
                 if cid < MIN_GUEST_CID {
@@ -128,10 +127,10 @@ impl CreateRun {
         // harness is the vsock client (handbook: every tool call goes over
         // vsock), and it exits by rebooting the guest when its session ends.
         let cmdline = match (self.beats, vsock_cid) {
-            (Some(beats), Some(_)) => format!("console=ttyS0 plaza.beats={beats} plaza.harness=1"),
-            (Some(beats), None) => format!("console=ttyS0 plaza.beats={beats}"),
-            (None, Some(_)) => "console=ttyS0 plaza.harness=1".to_string(),
-            (None, None) => "console=ttyS0".to_string(),
+            (Some(beats), Some(_)) => format!("{CONSOLE} plaza.beats={beats} plaza.harness=1"),
+            (Some(beats), None) => format!("{CONSOLE} plaza.beats={beats}"),
+            (None, Some(_)) => format!("{CONSOLE} plaza.harness=1"),
+            (None, None) => CONSOLE.to_string(),
         };
         let spec = VmSpec {
             kernel: images.kernel.clone(),
@@ -146,6 +145,49 @@ impl CreateRun {
         };
         Ok((spec, vms, vsock_cid))
     }
+}
+
+/// vCPUs per VM as the spawner wants them, or why the request is outside the
+/// contract's range.
+fn spawner_vcpus(vcpus: u32) -> Result<u8, String> {
+    let vcpus = checked_count("vcpus", vcpus, 1, MAX_VCPUS)?;
+    u8::try_from(vcpus).map_err(|_| format!("vcpus must be between 1 and {MAX_VCPUS}"))
+}
+
+/// Guest memory per VM, in MiB, as the spawner wants it, or why the request is
+/// outside the contract's range.
+fn spawner_memory_mib(memory_mib: u32) -> Result<usize, String> {
+    if memory_mib < MIN_MEMORY_MIB {
+        return Err(format!("memory_mib must be at least {MIN_MEMORY_MIB}"));
+    }
+    usize::try_from(memory_mib).map_err(|_| "memory_mib is too large for this host".to_string())
+}
+
+/// The run-level shape every VM of a run shares.
+#[derive(Debug, Clone, Copy)]
+struct RunMeta {
+    /// vCPUs per VM, as the API reports it.
+    vcpus: u32,
+    /// Guest memory per VM, in MiB, as the API reports it.
+    memory_mib: u32,
+    /// Heartbeats before a guest reboots itself, when the run churns.
+    beats: Option<u32>,
+}
+
+/// One VM of a run, as the creation paths build it: its own command line, its
+/// vsock CID when the run has vsock devices, and its role when it has one.
+///
+/// The per-VM plan is the only thing the two creation paths differ in — a
+/// request's VMs share `plaza.vm=<i>` and a CID span, the role fleet's VMs each
+/// carry their role — so everything else about a run's life is shared.
+#[derive(Debug, Clone)]
+struct VmPlan {
+    /// The VM's whole kernel command line.
+    cmdline: String,
+    /// The VM's guest CID, when the run has vsock devices.
+    vsock_cid: Option<u64>,
+    /// The role this VM's guest runs as, when it runs as one.
+    role: Option<String>,
 }
 
 /// Checks one of the create request's counts against its contract range and
@@ -348,6 +390,10 @@ pub struct VmView {
     /// no vsock devices.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guest_cid: Option<u64>,
+    /// The role this VM's guest runs as (the role fleet's VM rows carry one);
+    /// absent for a VM that was not started as a role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub state: &'static str,
     /// The VM's serial capture; present only in a single-run GET.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -391,7 +437,7 @@ impl Registry {
         }
     }
 
-    /// Creates and boots a run.
+    /// Creates and boots a run from a `POST /api/v0/runs` request.
     ///
     /// The run is registered in `starting` before its VMs are booted, so a
     /// concurrent GET can see it, and moves to `running` once they are up (or
@@ -399,7 +445,82 @@ impl Registry {
     /// booting moves the run to `killed`, and the VMs that come up afterwards
     /// are killed rather than left behind.
     pub fn create_run(&self, request: &CreateRun) -> Result<Arc<Run>, String> {
-        let (spec, vms, vsock_cid) = request.spec(&self.images)?;
+        let (template, vms, vsock_cid) = request.spec(&self.images)?;
+        // One plan per VM. One command line is shared by every VM of a spawn,
+        // so the per-VM index rides as a flag the guest harness can trust, and
+        // every VM's CID is the run's base plus its index.
+        let mut plans = Vec::with_capacity(vms);
+        for index in 0..vms {
+            let index = u32::try_from(index).map_err(|_| "n is too large".to_string())?;
+            plans.push(VmPlan {
+                cmdline: if vsock_cid.is_some() || self.images.workspace.is_some() {
+                    format!("{} plaza.vm={index}", template.cmdline)
+                } else {
+                    template.cmdline.clone()
+                },
+                vsock_cid: vsock_cid.map(|base| base + u64::from(index)),
+                role: None,
+            });
+        }
+        self.boot_run(
+            RunMeta {
+                vcpus: request.vcpus,
+                memory_mib: request.memory_mib,
+                beats: request.beats,
+            },
+            plans,
+        )
+    }
+
+    /// Boots the initial role fleet: one long-lived keepalive VM per role of
+    /// `fleet`, in the manifest's alphabetical role order, as one run whose VM
+    /// rows carry the roles.
+    ///
+    /// This is the service's initial setup, so it is booted exactly like a
+    /// requested run — the same states, events, workspace copies and kill
+    /// semantics — with `beats` unset: a keepalive agent does not exit on its
+    /// own, so the run stays `running` until it is killed, and only guests that
+    /// stop by themselves can end it. A fleet that cannot be booted ends as
+    /// `failed` with the VMs that had come up already stopped (the spawner's
+    /// all-or-nothing boot), and the caller reports that the setup does not
+    /// stand rather than serving a node without its agents.
+    pub fn create_agent_fleet(&self, fleet: &Fleet) -> Result<Arc<Run>, String> {
+        self.boot_run(
+            RunMeta {
+                vcpus: u32::from(fleet.vcpus()),
+                memory_mib: fleet.memory_mib(),
+                beats: None,
+            },
+            Self::fleet_plans(fleet),
+        )
+    }
+
+    /// The per-VM plans of a role fleet: the console device, then the role's own
+    /// flags, then the role itself and the CID the fleet gives its VM.
+    fn fleet_plans(fleet: &Fleet) -> Vec<VmPlan> {
+        fleet
+            .vms()
+            .into_iter()
+            .map(|vm| VmPlan {
+                cmdline: format!("{CONSOLE} {}", vm.flags),
+                vsock_cid: Some(vm.guest_cid),
+                role: Some(vm.role),
+            })
+            .collect()
+    }
+
+    /// Boots one run from its `plans`: reserves its id, lays out its per-VM
+    /// workspace copies, registers it in `starting`, spawns every VM, and moves
+    /// it to `running` (or `failed`).
+    ///
+    /// Every creation path goes through here, so a run's life is the same
+    /// however it was asked for; only the plans differ.
+    fn boot_run(&self, meta: RunMeta, plans: Vec<VmPlan>) -> Result<Arc<Run>, String> {
+        // The shape is checked here, at the one place every path passes, as
+        // well as at the edge where the request is read.
+        let vcpus = spawner_vcpus(meta.vcpus)?;
+        let memory_mib = spawner_memory_mib(meta.memory_mib)?;
+        let vms = plans.len();
         // A run's workspace volume is writable, so every VM of the run gets its
         // own copy of the base image: one copy per VM, in the run's own
         // directory under the daemon's UDS root. The directory is created
@@ -419,31 +540,30 @@ impl Registry {
             }
             None => None,
         };
-        let run = self.insert(id, request);
+        let run = self.insert(id, meta);
         let boot = spawner::spawn_each(vms, |i| {
-            let mut per_vm = spec.clone();
-            if vsock_cid.is_some() || workspaces.is_some() {
-                // One command line is shared by every VM of a spawn, so the
-                // per-VM index rides as a flag the guest harness can trust.
-                per_vm.cmdline = format!("{} plaza.vm={}", spec.cmdline, i);
-            }
-            if let Some(base) = vsock_cid {
-                let guest_cid = base + u64::from(i);
-                per_vm.vsock = Some(VsockConfig {
+            // `spawn_each` calls this exactly `vms` times with the ids
+            // `0..vms`, and `plans` has `vms` entries: the index is in range.
+            let plan = &plans[i as usize];
+            VmSpec {
+                kernel: self.images.kernel.clone(),
+                cmdline: plan.cmdline.clone(),
+                vcpus,
+                memory_mib,
+                initrd: Some(self.images.initrd.clone()),
+                gic: None,
+                vsock: plan.vsock_cid.map(|guest_cid| VsockConfig {
                     guest_cid,
                     uds_path: self.uds_dir.join(format!("vm{guest_cid}")),
-                });
+                }),
+                // One image per VM, in the order `materialize_workspaces`
+                // produced them: the spawn's ids are `0..vms` and the run has
+                // exactly `vms` copies.
+                workspace: workspaces
+                    .as_ref()
+                    .and_then(|images| images.get(i as usize))
+                    .cloned(),
             }
-            // One image per VM, in the order `materialize_workspaces` produced
-            // them: the spawn's ids are `0..vms` and the run has exactly `vms`
-            // copies.
-            per_vm.workspace = workspaces.as_ref().and_then(|images| {
-                usize::try_from(i)
-                    .ok()
-                    .and_then(|index| images.get(index))
-                    .cloned()
-            });
-            per_vm
         });
         match boot {
             Ok(handles) => {
@@ -461,14 +581,15 @@ impl Registry {
                     }
                     return Ok(run);
                 }
+                // Every handle's id is its index in the spawn, and the plans
+                // are one per VM in that same order.
                 inner.vms = handles
                     .into_iter()
                     .enumerate()
                     .map(|(index, handle)| VmSlot {
                         id: handle.id(),
-                        guest_cid: vsock_cid.map(|base| {
-                            base + u64::try_from(index).unwrap_or(u64::MAX)
-                        }),
+                        guest_cid: plans[index].vsock_cid,
+                        role: plans[index].role.clone(),
                         runtime: handle.runtime(),
                         handle: Some(handle),
                         state: VmState::Running,
@@ -540,13 +661,13 @@ impl Registry {
         format!("r{}", inner.next_seq)
     }
 
-    fn insert(&self, id: String, request: &CreateRun) -> Arc<Run> {
+    fn insert(&self, id: String, meta: RunMeta) -> Arc<Run> {
         let mut inner = self.lock();
         let run = Arc::new(Run {
             id,
-            vcpus: request.vcpus,
-            memory_mib: request.memory_mib,
-            beats: request.beats,
+            vcpus: meta.vcpus,
+            memory_mib: meta.memory_mib,
+            beats: meta.beats,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             inner: Mutex::new(RunInner {
@@ -600,6 +721,9 @@ struct VmSlot {
     id: u32,
     /// The VM's vsock guest CID, when the run has vsock devices.
     guest_cid: Option<u64>,
+    /// The role this VM's guest runs as, when it was started as one (the role
+    /// fleet's VMs are).
+    role: Option<String>,
     /// The VM's shared runtime: its serial capture and its console input.
     runtime: Arc<VmRuntime>,
     /// The VM's control handle (`wait`/`kill`), absent only while a kill has
@@ -665,6 +789,7 @@ impl Run {
                 .map(|slot| VmView {
                     id: slot.id,
                     guest_cid: slot.guest_cid,
+                    role: slot.role.clone(),
                     state: slot.state.as_str(),
                     serial: match detail {
                         Detail::Summary => None,
@@ -1162,5 +1287,77 @@ mod tests {
         };
         let (spec, _, _) = request.spec(&images()).expect("a request inside the ranges");
         assert_eq!(spec.cmdline, "console=ttyS0 plaza.beats=2");
+    }
+
+    /// A two-role manifest, as the daemon reads it.
+    fn manifest(roles: &[&str]) -> String {
+        let entries: Vec<String> = roles
+            .iter()
+            .map(|name| {
+                format!(
+                    r#""{name}":{{"role":"{name}","title":"The {name}","permits":[],"toolsets":[],"budget":1,"variant":null}}"#
+                )
+            })
+            .collect();
+        format!(r#"{{"roles":{{{}}}}}"#, entries.join(","))
+    }
+
+    #[test]
+    fn the_fleets_plans_are_one_keepalive_vm_per_role() {
+        let fleet = Fleet::parse(&manifest(&["reviewer", "builder"]), 100, 128, 1)
+            .expect("a two-role manifest");
+        let plans = Registry::fleet_plans(&fleet);
+        assert_eq!(plans.len(), 2);
+        // Alphabetical order is the boot order, and the CIDs follow it.
+        assert_eq!(
+            plans[0].cmdline,
+            "console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=0"
+        );
+        assert_eq!(plans[0].vsock_cid, Some(100));
+        assert_eq!(plans[0].role.as_deref(), Some("builder"));
+        assert_eq!(
+            plans[1].cmdline,
+            "console=ttyS0 plaza.role=reviewer plaza.keepalive=1 plaza.vm=1"
+        );
+        assert_eq!(plans[1].vsock_cid, Some(101));
+        assert_eq!(plans[1].role.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn a_fleet_that_cannot_boot_leaves_a_failed_run_and_claims_no_vm() {
+        // The boot fails here (this test has no guest kernel): the honest
+        // report is a `failed` run whose VMs are the ones that came up, which
+        // is none - the spawner stopped the ones it had started.
+        let dir = scratch("fleet-failed");
+        let base = dir.join("workspace.ext4");
+        std::fs::write(&base, b"workspace bytes").expect("the base image");
+        let uds_dir = dir.join("uds");
+        let images = VmImages {
+            kernel: PathBuf::from("no-such-kernel"),
+            initrd: PathBuf::from("no-such-initrd"),
+            workspace: Some(base),
+        };
+        let registry = Registry::new(images, uds_dir.clone(), EventBus::new());
+        let fleet = Fleet::parse(&manifest(&["builder", "reviewer"]), 100, 128, 1)
+            .expect("a two-role manifest");
+
+        let run = registry
+            .create_agent_fleet(&fleet)
+            .expect("the run exists even when its VMs cannot boot");
+        let view = run.view(Detail::Full);
+        assert_eq!(view.state, "failed", "{}", view.state);
+        assert!(view.ended_at.is_some());
+        assert_eq!(view.vms.len(), 0, "no VM is claimed to be up");
+        // The workspace copies were laid out before the boot, one per role,
+        // and are not deleted by a failed boot.
+        let run_dir = uds_dir.join(format!("run-{}", run.id));
+        assert_eq!(
+            std::fs::read_dir(&run_dir)
+                .expect("the run's directory")
+                .count(),
+            2
+        );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

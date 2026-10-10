@@ -1,17 +1,31 @@
-//! `agent-harness` — the AgentPlaza in-guest agent harness v0.
+//! `agent-harness` — the AgentPlaza in-guest agent harness.
 //!
 //! The harness is the guest end of the plaza's core loop: it runs inside the
 //! microVM `init` forked, reads its identity from the kernel command line
-//! (`plaza.cid=`, `plaza.port=`, `plaza.vm=`), opens the one AF_VSOCK
-//! connection to the orchestrator (`VMADDR_CID_HOST`, port 5000 by default)
-//! and performs the frozen session: `hello` → `welcome` → `echo` tool call →
-//! `uptime` tool call → `bye`. There is no NIC and no other network path: the
-//! plaza rule is that a guest reaches the orchestrator over vsock only.
+//! (`plaza.port=`, `plaza.vm=`, `plaza.role=`, `plaza.keepalive=1`), opens the
+//! one AF_VSOCK connection to the orchestrator (`VMADDR_CID_HOST`, port 5000 by
+//! default) and speaks one of the two sessions:
+//!
+//! * **v1** (no `plaza.keepalive=1`): the frozen one-shot session —
+//!   `hello` → `welcome` → `echo` tool call → `uptime` tool call → `bye`. The
+//!   guest's `init` acts on its exit status (a completed session reboots the
+//!   guest). This is byte-for-byte what the acceptance suites drive.
+//! * **keepalive** (`plaza.keepalive=1`, the agent fleet): the long-lived
+//!   session — `hello` (with the role) → `welcome` → a heartbeat every 5 s and
+//!   a `tool_result` for every `tool_call` the hub sends, until the hub says
+//!   `stop`, which is answered with `bye`. This mode never exits on its own
+//!   account: any failure is printed and retried with a jittered backoff, and
+//!   the guest's `init` keeps the VM up when it does end.
+//!
+//! There is no NIC and no other network path: the plaza rule is that a guest
+//! reaches the orchestrator over vsock only. The harness holds no secrets and
+//! decides nothing: it never opens a tool call, never picks an action and never
+//! ends a session of its own accord.
 //!
 //! Every line in both directions, and every step's outcome, is printed to
 //! standard output — which is the guest's serial console — so the whole loop
-//! is visible in the VM's transcript. The exit status is 0 only for a session
-//! that completed with `bye`; anything else prints the error and exits
+//! is visible in the VM's transcript. In v1 the exit status is 0 only for a
+//! session that completed with `bye`; anything else prints the error and exits
 //! non-zero. Malformed input from the orchestrator is logged and skipped
 //! (bounded), never a panic.
 //!
@@ -29,11 +43,15 @@
 #[cfg(target_os = "linux")]
 mod cmdline;
 #[cfg(target_os = "linux")]
+mod keepalive;
+#[cfg(target_os = "linux")]
 mod line;
 #[cfg(target_os = "linux")]
 mod proto;
 #[cfg(target_os = "linux")]
 mod session;
+#[cfg(target_os = "linux")]
+mod tools;
 #[cfg(target_os = "linux")]
 mod vsock;
 
@@ -50,7 +68,7 @@ use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::thread::sleep;
 #[cfg(target_os = "linux")]
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
 use cmdline::{Config, ConfigError};
@@ -65,11 +83,11 @@ use vsock::{CID_ANY, HOST_CID, VsockStream, device_guest_cid};
 #[cfg(target_os = "linux")]
 const CMDLINE_PATH: &str = "/proc/cmdline";
 
-/// How many times the harness tries to connect before giving up.
+/// How many times the v1 session tries to connect before giving up.
 #[cfg(target_os = "linux")]
 const CONNECT_ATTEMPTS: usize = 40;
 
-/// How long it waits between connect attempts.
+/// How long it waits between v1 connect attempts.
 #[cfg(target_os = "linux")]
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -144,12 +162,109 @@ fn run() -> Result<(), HarnessError> {
         config.vm, HOST_CID, config.port
     );
 
-    let (stream, attempts) = connect(&config, &mut out).map_err(HarnessError::Connect)?;
+    if config.keepalive {
+        keepalive(&config, &mut out)
+    } else {
+        one_shot(&config, &mut out)
+    }
+}
+
+/// Runs the frozen v1 session once and returns when it completed.
+///
+/// The caller (the guest's `init`) acts on how this ended: a completed session
+/// means the guest reboots, and a failure is reported with the guest left up.
+#[cfg(target_os = "linux")]
+fn one_shot(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
+    let (stream, attempts) = connect(config, out).map_err(HarnessError::Connect)?;
     let _ = writeln!(out, "agent-harness: connected after {attempts} attempt(s)");
 
-    // The CID is the device's answer, never the command line's: one command
-    // line is shared by every VM of a spawn, while the device gives each VM
-    // its own CID and stamps that CID into every packet.
+    let guest_cid = guest_cid(out)?;
+    let identity = Identity {
+        guest_cid,
+        vm: config.vm,
+    };
+    let mut transport = StreamLines::new(stream);
+    session::run(&mut transport, out, &identity).map_err(HarnessError::Session)?;
+    let _ = writeln!(out, "agent-harness: closing the connection");
+    let _ = out.flush();
+    Ok(())
+}
+
+/// Runs the long-lived keepalive agent until the hub stops it.
+///
+/// This is the one mode that does not end by itself: the hub's `stop` is the
+/// only clean end, and every other outcome — the vsock device not being up yet,
+/// a refused connection, a hub that went away mid-session, a hub that does not
+/// speak protocol v2 — is printed and retried with a jittered backoff. The
+/// agent stays up and tries again; it never decides that its work is done.
+#[cfg(target_os = "linux")]
+fn keepalive(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
+    let mut failures = 0u32;
+    loop {
+        match keepalive_once(config, out) {
+            Ok(calls) => {
+                let _ = writeln!(
+                    out,
+                    "agent-harness: the hub stopped the agent after {calls} tool call(s); \
+                     the guest stays up"
+                );
+                let _ = out.flush();
+                return Ok(());
+            }
+            Err((adopted, reason)) => {
+                // A successful welcome resets the schedule: the counter counts
+                // consecutive failures since the hub last accepted this agent,
+                // so a drop after adoption is a 250 ms hop, not a 30 s wait.
+                failures = if adopted {
+                    1
+                } else {
+                    failures.saturating_add(1)
+                };
+                let delay = keepalive::backoff_delay(failures, jitter_nanos());
+                let _ = writeln!(
+                    out,
+                    "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
+                    delay.as_millis()
+                );
+                let _ = out.flush();
+                sleep(delay);
+            }
+        }
+    }
+}
+
+/// One keepalive attempt: this VM's CID, the connection, and one session.
+///
+/// Fails with whether the hub had adopted the agent, and a one-line reason (the
+/// setup steps' or the session's own) — the reconnect loop is the only caller,
+/// and what it needs from a failure is those two things.
+#[cfg(target_os = "linux")]
+fn keepalive_once(config: &Config, out: &mut impl Write) -> Result<u64, (bool, String)> {
+    let guest_cid = guest_cid(out).map_err(|err| (false, err.to_string()))?;
+    let stream = VsockStream::connect(HOST_CID, config.port)
+        .map_err(|err| (false, format!("cannot reach the orchestrator: {err}")))?;
+    let identity = Identity {
+        guest_cid,
+        vm: config.vm,
+    };
+    let mut transport = StreamLines::new(stream);
+    keepalive::session(
+        &mut transport,
+        out,
+        &identity,
+        config.role.as_deref(),
+        keepalive::heartbeat_interval(),
+    )
+    .map_err(|failure| (failure.adopted, failure.to_string()))
+}
+
+/// Reads the guest CID the vsock device assigned this VM, logging it.
+///
+/// The CID is the device's answer, never the command line's: one command line
+/// is shared by every VM of a spawn, while the device gives each VM its own CID
+/// and stamps that CID into every packet.
+#[cfg(target_os = "linux")]
+fn guest_cid(out: &mut impl Write) -> Result<u32, HarnessError> {
     let guest_cid = device_guest_cid().map_err(HarnessError::GuestCid)?;
     if guest_cid == CID_ANY || cid_is_reserved(guest_cid) {
         return Err(HarnessError::UnassignedCid(guest_cid));
@@ -158,16 +273,7 @@ fn run() -> Result<(), HarnessError> {
         out,
         "agent-harness: the vsock device assigned guest CID {guest_cid}"
     );
-
-    let identity = Identity {
-        guest_cid,
-        vm: config.vm,
-    };
-    let mut transport = StreamLines::new(stream);
-    session::run(&mut transport, &mut out, &identity).map_err(HarnessError::Session)?;
-    let _ = writeln!(out, "agent-harness: closing the connection");
-    let _ = out.flush();
-    Ok(())
+    Ok(guest_cid)
 }
 
 /// Whether `cid` is one the vsock stack reserves (0 `HYPERVISOR`, 1 `LOCAL`
@@ -177,13 +283,27 @@ fn cid_is_reserved(cid: u32) -> bool {
     cid <= HOST_CID
 }
 
+/// A jitter source for the reconnect backoff.
+///
+/// The clock's sub-second field is enough to decorrelate a fleet of agents that
+/// lost the same hub (each VM has its own clock), and it costs no dependency —
+/// a harness that holds no secrets also takes no crates it does not need.
+#[cfg(target_os = "linux")]
+fn jitter_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| u64::from(since.subsec_nanos()))
+        .unwrap_or(0)
+}
+
 /// Connects to the orchestrator, retrying for a bounded window, and returns
 /// the stream together with the number of attempts it took.
 ///
 /// The vsock transport is registered by a kernel module the guest's `init`
 /// loads immediately before it starts this binary; the first connect can beat
 /// that registration by a moment, so a refused connection is retried rather
-/// than reported as a failure on the first try.
+/// than reported as a failure on the first try. The keepalive session leans on
+/// its own reconnect loop instead, which covers the same window and more.
 #[cfg(target_os = "linux")]
 fn connect(config: &Config, log: &mut impl Write) -> io::Result<(VsockStream, usize)> {
     let mut last_error: Option<io::Error> = None;

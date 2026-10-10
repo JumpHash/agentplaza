@@ -43,6 +43,8 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir: root.join(noded::DEFAULT_UDS_DIR),
         workspace: None,
+        // The smoke run is the churn path, not the fleet: no initial agents.
+        ..noded::Config::default()
     };
     let server = noded::Server::start(config).expect("the smoke daemon should bind");
     let port = server.port();
