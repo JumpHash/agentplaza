@@ -212,6 +212,31 @@ fn an_events_stream_carries_a_runs_life() {
 
 
 #[test]
+fn a_non_loopback_host_is_refused() {
+    // The DNS-rebinding guard: a page on any hostname that resolves to
+    // 127.0.0.1 can post simple requests here; a Host that is not loopback
+    // must be refused, and loopback or absent Hosts served as before.
+    let server = common::start(console_dir("host-guard"));
+    let port = server.port();
+
+    let refused = common::send(
+        port,
+        b"POST /api/v0/runs HTTP/1.1\r\nHost: evil.example:8899\r\nContent-Type: application/json\r\nContent-Length: 31\r\nConnection: close\r\n\r\n{\"n\":1,\"vcpus\":1,\"memory_mib\":128}",
+    );
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.contains("loopback"), "{}", refused.body);
+
+    // The loopback forms (and no Host at all) are served.
+    assert_eq!(
+        request(port, "GET", "/api/v0/runs", None).status,
+        200,
+        "Host: localhost is served"
+    );
+    let no_host = common::send(port, b"GET /api/v0/runs HTTP/1.1\r\nConnection: close\r\n\r\n");
+    assert_eq!(no_host.status, 200, "a Host-less probe is served");
+}
+
+#[test]
 fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
     let server = common::start(console_dir("failed"));
     let port = server.port();

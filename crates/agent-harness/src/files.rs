@@ -292,6 +292,23 @@ fn limit(reason: impl Into<String>) -> ToolError {
 
 /// A filesystem error in the tool taxonomy, with `what` naming the operation
 /// and the path it failed on.
+/// Refuses a write whose target is itself a symlink. `resolve` canonicalizes
+/// the deepest existing ANCESTOR, so a dangling link inside the workspace (the
+/// link exists, its target does not) passes the walk and `open` would then
+/// create the target outside the workspace; a live link would make the write
+/// land wherever it points. Reads may follow links that resolve inside; a
+/// write never follows one.
+fn refuse_symlink_target(path: &std::path::Path, label: &str) -> Result<(), ToolError> {
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && metadata.file_type().is_symlink()
+    {
+        return Err(denied(format!(
+            "{label} is a symlink; a write never follows one"
+        )));
+    }
+    Ok(())
+}
+
 fn io_tool_error(err: io::Error, what: impl fmt::Display) -> ToolError {
     match err.kind() {
         io::ErrorKind::NotFound => not_found(format!("{what}: {err}")),
@@ -459,6 +476,7 @@ pub fn write_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErr
         )));
     }
     let (path, label) = workspace.resolve(&raw)?;
+    refuse_symlink_target(&path, &label)?;
     if let Ok(metadata) = fs::metadata(&path)
         && metadata.is_dir()
     {
@@ -496,6 +514,7 @@ pub fn append_file(workspace: &Workspace, args: &Value) -> Result<String, ToolEr
         )));
     }
     let (path, label) = workspace.resolve(&raw)?;
+    refuse_symlink_target(&path, &label)?;
     let existing = match fs::metadata(&path) {
         Ok(metadata) if metadata.is_dir() => {
             return Err(invalid(format!(
@@ -560,6 +579,7 @@ pub fn edit_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
         )));
     }
     let (path, label) = workspace.resolve(&raw)?;
+    refuse_symlink_target(&path, &label)?;
     let content = read_text(&path, &label)?;
     let matches = content.matches(&find).count();
     if matches == 0 {
@@ -955,6 +975,40 @@ mod tests {
             assert!(matches!(err, ToolError::Denied { .. }), "{path}: {err:?}");
             assert!(err.to_string().contains("\"..\""), "{path}: {err}");
         }
+    }
+
+    #[test]
+    fn a_dangling_symlink_target_is_refused_by_every_write() {
+        // The escape the security review found: `resolve` canonicalizes the
+        // deepest EXISTING ancestor, so a link whose target does not exist yet
+        // passes the walk — and `open` would then create the target outside
+        // the workspace. Every mutating tool must refuse a symlink target.
+        let (workspace, outside) = scratch("symlink-dangling");
+        let target = outside.join("planted.txt");
+        symlink(&target, workspace.root().join("esc")).expect("a dangling symlink");
+
+        for (tool, args) in [
+            (
+                "append_file",
+                json!({ "path": "esc", "content": "escaped\n" }),
+            ),
+            ("write_file", json!({ "path": "esc", "content": "escaped\n" })),
+            (
+                "edit_file",
+                json!({ "path": "esc", "find": "x", "replace": "y" }),
+            ),
+        ] {
+            let err = refused(&workspace, tool, args);
+            assert!(
+                matches!(err, ToolError::Denied { .. }),
+                "{tool} through a dangling link: {err:?}"
+            );
+            assert!(err.to_string().contains("symlink"), "{tool}: {err}");
+        }
+        assert!(
+            !target.exists(),
+            "no write may have created the link's target"
+        );
     }
 
     #[test]

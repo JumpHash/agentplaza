@@ -42,10 +42,20 @@ impl std::error::Error for ParseError {}
 pub struct Request {
     method: String,
     target: String,
+    /// The `Host` header, when the client sent one. The loopback daemon must
+    /// check it: without that, a page served from any hostname that resolves
+    /// to 127.0.0.1 (DNS rebinding) could post simple requests here and the
+    /// browser would execute them, even though it could not read the answer.
+    host: Option<String>,
     body: Vec<u8>,
 }
 
 impl Request {
+    /// The `Host` header, when one arrived.
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
     /// The request method, as it arrived (`GET`, `POST`, ...).
     pub fn method(&self) -> &str {
         &self.method
@@ -101,6 +111,7 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
 
     let mut head_bytes = line.len() + 2;
     let mut content_length = None;
+    let mut host = None;
     loop {
         read_line(reader, MAX_HEAD, &mut line)?;
         head_bytes += line.len() + 2;
@@ -130,6 +141,8 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
                 return Err(ParseError("the request body is too large"));
             }
             content_length = Some(length);
+        } else if name.eq_ignore_ascii_case("host") {
+            host = Some(value.to_string());
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             // Refusing chunked bodies outright keeps a request from having two
             // readings of its own length.
@@ -150,6 +163,7 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
     Ok(Request {
         method,
         target,
+        host,
         body,
     })
 }

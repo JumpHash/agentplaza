@@ -157,6 +157,14 @@ pub fn read_request_body(
     })
 }
 
+/// Whether a `Host` header names loopback: `127.0.0.1` or `localhost`
+/// (case-insensitively), with any `:port` suffix. (A local copy of noded's
+/// guard: vsockd cannot depend on noded, so the two stay in step by hand.)
+fn host_names_loopback(host: &str) -> bool {
+    let name = host.split(':').next().unwrap_or(host);
+    name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost")
+}
+
 /// Reads a request's head — the request line and the headers, bounded
 /// together by [`MAX_HEAD`] — and returns `(method, target, body length)`.
 ///
@@ -193,6 +201,7 @@ fn read_head(reader: &mut impl BufRead, body: Body) -> Result<(String, String, u
 
     let mut head_bytes = line.len() + 2;
     let mut content_length = None;
+    let mut host = None;
     loop {
         read_line(reader, MAX_HEAD, &mut line)?;
         head_bytes += line.len() + 2;
@@ -233,9 +242,21 @@ fn read_head(reader: &mut impl BufRead, body: Body) -> Result<(String, String, u
                     content_length = Some(length);
                 }
             }
+        } else if name.eq_ignore_ascii_case("host") {
+            host = Some(value.to_string());
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             return Err(ParseError("chunked request bodies are not supported"));
         }
+    }
+    // The loopback guard: a page served from any hostname that resolves to
+    // 127.0.0.1 (DNS rebinding) can post a simple request and the browser
+    // executes it, even though the answer is unreadable. A Host that names
+    // anything but loopback is refused outright; a request with no Host at
+    // all (a raw probe, not a browser) is served as before.
+    if let Some(host) = &host
+        && !host_names_loopback(host)
+    {
+        return Err(ParseError("the Host header must name loopback"));
     }
     Ok((method, target, content_length.unwrap_or(0)))
 }
@@ -519,6 +540,34 @@ pub fn serve(listener: TcpListener, hub: Arc<Hub>, facts: Arc<NodeFacts>) {
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
             Err(err) => eprintln!("vsockd: status accept failed: {err}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use std::io::BufReader;
+
+    /// The rebinding guard: a `Host` naming anything but loopback is refused
+    /// while loopback forms and a Host-less request pass.
+    #[test]
+    fn only_loopback_hosts_are_served() {
+        let read = |request: &str| {
+            read_head(
+                &mut BufReader::new(request.as_bytes()),
+                Body::Forbidden,
+            )
+        };
+        let err = read("GET /status HTTP/1.1\r\nHost: evil.example:19080\r\n\r\n")
+            .expect_err("a rebinding Host is refused");
+        assert!(err.0.contains("loopback"), "{}", err.0);
+        for ok in [
+            "GET /status HTTP/1.1\r\nHost: 127.0.0.1:19080\r\n\r\n",
+            "GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /status HTTP/1.1\r\n\r\n",
+        ] {
+            read(ok).expect("a loopback or Host-less request is served");
         }
     }
 }

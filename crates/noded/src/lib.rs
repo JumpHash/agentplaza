@@ -418,6 +418,14 @@ fn accept_loop(listener: &TcpListener, node: &Arc<Node>, shutdown: &AtomicBool) 
     }
 }
 
+/// Whether a `Host` header names loopback: `127.0.0.1` or `localhost`
+/// (case-insensitively), with any `:port` suffix. Anything else — a rebinding
+/// hostname, a LAN address, a bracketed IPv6 form — is not this daemon's name.
+fn host_names_loopback(host: &str) -> bool {
+    let name = host.split(':').next().unwrap_or(host);
+    name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost")
+}
+
 /// Serves one connection: read one request, answer it, close. The events
 /// endpoint is the one exception — its answer is a stream that ends when the
 /// connection does, not a response.
@@ -428,14 +436,25 @@ fn handle_connection(stream: TcpStream, node: &Node) {
     let mut stream = BufReader::new(stream);
     let response = match http::read_request(&mut stream) {
         Ok(request) => {
-            if request.method() == "GET" && request.path() == "/api/v0/events" {
+            // The loopback guard: a page served from any hostname that
+            // resolves to 127.0.0.1 (DNS rebinding) can post a simple request
+            // here and the browser executes it, even though the answer is
+            // unreadable. A Host that names anything but loopback is refused;
+            // a request with no Host at all (a raw probe, not a browser) is
+            // served as before.
+            if let Some(host) = request.host()
+                && !host_names_loopback(host)
+            {
+                Response::error(403, "the Host header must name loopback")
+            } else if request.method() == "GET" && request.path() == "/api/v0/events" {
                 let receiver = node.events().subscribe();
                 if let Err(err) = events::stream(&receiver, stream.get_mut()) {
                     eprintln!("noded: an events stream ended: {err}");
                 }
                 return;
+            } else {
+                route(&request, node)
             }
-            route(&request, node)
         }
         Err(err) => Response::error(400, err.message()),
     };
