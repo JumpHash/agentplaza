@@ -33,7 +33,7 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::sync::{
     Arc,
@@ -236,6 +236,29 @@ fn uds_path(uds_dir: &PathBuf, cid: u32, port: u32) -> PathBuf {
     uds_dir.join(format!("vm{cid}_{port}"))
 }
 
+/// Creates the directory holding the per-CID listeners, with mode `0700`.
+///
+/// The listener names are deterministic (`{dir}/vm{cid}_{port}`, the fixed
+/// contract port) and the default directory is under world-writable `/tmp`, so
+/// without this another local user could squat a listener path (the daemon
+/// would fail to bind) or bind `{dir}/vm{cid}_{port}` first and answer as the
+/// orchestrator. The directory is created (with parents) `0700`, and an
+/// existing one is re-tightened to `0700`. (`vsockd` cannot depend on the
+/// `vmm` crate, so this is a local copy of `vmm::spawner::create_uds_dir`; the
+/// two must stay in step.)
+#[cfg(target_os = "linux")]
+fn create_uds_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    // `mode()` is masked by the process umask, so set the mode explicitly too
+    // (this also tightens a directory that already existed).
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
 /// Polls `fd` for readability, returning `Ok(false)` on timeout. The timeout
 /// is the accept loop's shutdown-check cadence, mirroring the old AF_VSOCK
 /// `wait_readable`.
@@ -261,6 +284,15 @@ fn poll_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> std::io::Result<boo
 #[cfg(target_os = "linux")]
 fn run(config: Config) -> Result<(), String> {
     install_signal_handlers();
+    // The listeners live under `uds_dir` with deterministic names; create it
+    // 0700 first, so another local user cannot squat a path or impersonate
+    // the orchestrator (F4).
+    create_uds_dir(&config.uds_dir).map_err(|err| {
+        format!(
+            "cannot create the socket directory {}: {err}",
+            config.uds_dir.display()
+        )
+    })?;
     // Bind every listener first, so a taken path fails the daemon before it
     // serves any guest (rather than one CID up and one down).
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
@@ -421,6 +453,35 @@ mod tests {
         assert!(parse_args(vec!["--cids".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--cids".to_string(), "".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
+    }
+
+    /// F4: the socket directory is created `0700`, and an existing wider one is
+    /// re-tightened - `0700` is what keeps another local user from squatting a
+    /// listener path or impersonating the orchestrator.
+    #[test]
+    fn the_uds_dir_is_created_and_tightened_to_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("plaza-vsockd-uds-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        create_uds_dir(&dir).expect("the socket directory is created");
+        let mode = std::fs::metadata(&dir)
+            .expect("the directory exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "a fresh socket directory must be 0700");
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("widen the directory for the test");
+        create_uds_dir(&dir).expect("an existing directory is accepted");
+        let mode = std::fs::metadata(&dir)
+            .expect("the directory exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "a pre-existing socket directory is tightened");
+
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     /// The session cap reserves at most `max` slots and refuses the next

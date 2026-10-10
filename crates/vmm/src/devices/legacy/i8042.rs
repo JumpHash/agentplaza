@@ -3,10 +3,14 @@
 //
 // Derived from Firecracker src/vmm/src/devices/legacy/i8042.rs (trimmed: the
 // metrics counters are dropped; the metric-counting test assertions are
-// adapted away).
+// adapted away. Local addition: the reset event fd is paired with the VM's
+// shared `exit_signalled` flag, published before the fd write, because this
+// port has a second - wakeup-only - observer of the exit event that must not
+// read it; upstream has no such observer).
 
 use std::io;
 use std::num::Wrapping;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 
 use vmm_sys_util::eventfd::EventFd;
@@ -64,6 +68,11 @@ pub struct I8042Device {
     /// CPU reset eventfd. We will set this event when the guest issues CMD_RESET_CPU.
     reset_evt: EventFd,
 
+    /// The VM's "exit signalled" flag, published before `reset_evt` is written
+    /// (see `VmCommon::exit_signalled`), so a second observer of the exit
+    /// event fd cannot lose the exit to the exit watcher's read.
+    exit_signalled: Arc<AtomicBool>,
+
     /// Keyboard interrupt event (IRQ 1).
     pub kbd_interrupt_evt: EventFd,
 
@@ -86,10 +95,15 @@ pub struct I8042Device {
 }
 
 impl I8042Device {
-    /// Constructs an i8042 device that will signal the given event when the guest requests it.
-    pub fn new(reset_evt: EventFd) -> Result<I8042Device, std::io::Error> {
+    /// Constructs an i8042 device that will signal the given event when the guest requests it,
+    /// publishing `exit_signalled` before that write so a shared wakeup cannot be lost.
+    pub fn new(
+        reset_evt: EventFd,
+        exit_signalled: Arc<AtomicBool>,
+    ) -> Result<I8042Device, std::io::Error> {
         Ok(I8042Device {
             reset_evt,
+            exit_signalled,
             kbd_interrupt_evt: EventFd::new(libc::EFD_NONBLOCK)?,
             control: CB_POST_OK | CB_KBD_INT,
             cmd: 0,
@@ -222,7 +236,10 @@ impl BusDevice for I8042Device {
             OFS_STATUS if data[0] == CMD_RESET_CPU => {
                 // The guest wants to assert the CPU reset line. We handle that by triggering
                 // our exit event fd. Meaning the VM will be exiting as soon as the watcher
-                // wakes up to handle this event.
+                // wakes up to handle this event. The exit state is published before the
+                // write, so the vsock event thread (which shares the fd for wakeup but never
+                // reads it) sees the exit even if the watcher consumed the count first.
+                self.exit_signalled.store(true, Ordering::SeqCst);
                 if let Err(err) = self.reset_evt.write(1) {
                     eprintln!("warning: failed to trigger i8042 reset event: {err:?}");
                 }
@@ -311,7 +328,11 @@ mod tests {
 
     #[test]
     fn test_i8042_read_write_and_event() {
-        let mut i8042 = I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap();
+        let mut i8042 = I8042Device::new(
+            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
         let reset_evt = i8042.reset_evt.try_clone().unwrap();
 
         // Check if reading in a 2-length array doesn't have side effects.
@@ -348,7 +369,11 @@ mod tests {
 
     #[test]
     fn test_i8042_commands() {
-        let mut i8042 = I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap();
+        let mut i8042 = I8042Device::new(
+            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
         let mut data = [1];
 
         // Test reading/writing the control register.
@@ -385,7 +410,11 @@ mod tests {
 
     #[test]
     fn test_i8042_buffer() {
-        let mut i8042 = I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap();
+        let mut i8042 = I8042Device::new(
+            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
 
         // Test push/pop.
         i8042.push_byte(52).unwrap();
@@ -409,7 +438,11 @@ mod tests {
 
     #[test]
     fn test_i8042_kbd() {
-        let mut i8042 = I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap();
+        let mut i8042 = I8042Device::new(
+            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
 
         fn expect_key(i8042: &mut I8042Device, key: u16) {
             let mut data = [1];

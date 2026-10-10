@@ -58,6 +58,10 @@ const OFS_RESET: u64 = 2;
 pub struct Pm1CntDevice {
     shutdown_evt: EventFd,
     guest_reset: Arc<AtomicBool>,
+    /// The VM's "exit signalled" flag, published before `shutdown_evt` is
+    /// written (see `VmCommon::exit_signalled`), so a second observer of the
+    /// exit event fd cannot lose the exit to the exit watcher's read.
+    exit_signalled: Arc<AtomicBool>,
     /// Set by the VM's exit watcher (through `KvmVm::shutdown_vcpus`) once the
     /// vCPUs are being stopped. The reset path spins on it so the guest cannot
     /// re-enter its reboot sequence and double-fault in the BIOS real-mode
@@ -68,20 +72,24 @@ pub struct Pm1CntDevice {
 impl Pm1CntDevice {
     /// Constructs a device that signals `shutdown_evt` when the guest requests
     /// a reset or S5, setting `guest_reset` first for a reset so the exit
-    /// watcher reports it as `reset=true`.
+    /// watcher reports it as `reset=true`, and publishing `exit_signalled`
+    /// before the write so a shared wakeup cannot be lost.
     pub fn new(
         shutdown_evt: EventFd,
         guest_reset: Arc<AtomicBool>,
+        exit_signalled: Arc<AtomicBool>,
         finish_requested: Arc<AtomicBool>,
     ) -> Self {
         Self {
             shutdown_evt,
             guest_reset,
+            exit_signalled,
             finish_requested,
         }
     }
 
     fn signal_exit(&self) {
+        self.exit_signalled.store(true, Ordering::SeqCst);
         if let Err(err) = self.shutdown_evt.write(1) {
             eprintln!("warning: failed to trigger ACPI exit event: {err:?}");
         }
@@ -168,8 +176,14 @@ mod tests {
         // Pre-set finish_requested so the reset path's stop-spin returns
         // immediately: a unit test has no exit watcher to set it.
         let finish = Arc::new(AtomicBool::new(true));
+        let exit_signalled = Arc::new(AtomicBool::new(false));
         (
-            Pm1CntDevice::new(evt.try_clone().unwrap(), Arc::clone(&reset), finish),
+            Pm1CntDevice::new(
+                evt.try_clone().unwrap(),
+                Arc::clone(&reset),
+                exit_signalled,
+                finish,
+            ),
             evt,
             reset,
         )

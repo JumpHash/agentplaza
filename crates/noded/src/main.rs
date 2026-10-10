@@ -46,6 +46,17 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     let config = parse_args(args)?;
+    // F4: the per-VM muxer binds `{uds_dir}/vm{cid}` with a deterministic
+    // name, and the default is under world-writable `/tmp`. Create the
+    // directory 0700 first, so another local user cannot squat a VM's path
+    // (the boot would fail with EADDRINUSE) or bind `vm{cid}_{port}` and
+    // impersonate the orchestrator.
+    vmm::spawner::create_uds_dir(&config.uds_dir).map_err(|err| {
+        format!(
+            "cannot create the vsock socket directory {}: {err}",
+            config.uds_dir.display()
+        )
+    })?;
     let server = Server::start(config.clone()).map_err(|err| format!("cannot listen: {err}"))?;
     println!(
         "noded: listening on http://127.0.0.1:{} (kernel {}, initrd {}, console {})",

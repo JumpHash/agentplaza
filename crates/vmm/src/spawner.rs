@@ -11,7 +11,7 @@
 //! once the VM is running; the spawner then owns the runtime and joins the
 //! backend's threads when the VM stops.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -47,9 +47,9 @@ pub enum GicVersion {
 /// The smallest CID a guest may be given.
 ///
 /// CID 0 is the hypervisor, 1 is loopback and 2 is the host itself, so guests
-/// start at 3. The userspace vsock device enforces the same reservation (a
-/// guest CID below it is refused), which is why a wrong CID is a boot failure
-/// rather than a VM that silently cannot be reached.
+/// start at 3. The spawner refuses a guest CID below it (or above
+/// [`MAX_GUEST_CID`]) before the VM is built, which is why a wrong CID is a
+/// boot failure rather than a VM that silently cannot be reached.
 pub const MIN_GUEST_CID: u64 = 3;
 
 /// The largest CID a guest may be given.
@@ -185,6 +185,16 @@ pub enum SpawnError {
     /// No backend is compiled in for this platform
     #[error("no VM backend is compiled in for this platform")]
     NoBackend,
+    /// Guest CID {guest_cid} is outside the supported range {min}..={max}
+    #[error("guest CID {guest_cid} is outside the supported range {min}..={max}")]
+    GuestCidOutOfRange {
+        /// The rejected guest CID.
+        guest_cid: u64,
+        /// The smallest CID a guest may be given ([`MIN_GUEST_CID`]).
+        min: u64,
+        /// The largest CID a guest may be given ([`MAX_GUEST_CID`]).
+        max: u64,
+    },
     /// VM {id} could not take the console input: {reason}
     #[error("VM {id} could not take the console input: {reason}")]
     SerialInput {
@@ -591,9 +601,57 @@ fn cleanup_after_boot_failure(boot: SpawnError, started: &mut [VmHandle]) -> Spa
 }
 
 fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
+    validate_spec(&spec)?;
     let runtime = Arc::new(VmRuntime::new(id));
     boot(&spec, Arc::clone(&runtime))?;
     Ok(VmHandle { id, runtime })
+}
+
+/// Rejects a [`VmSpec`] the spawner must not build.
+///
+/// Today that is only the guest CID range: the vsock device no longer checks
+/// it (the userspace device's CID is not a host resource), so the check lives
+/// here, once, on the path [`spawn`]/[`spawn_n`]/[`spawn_each`] share. A CID
+/// outside [`MIN_GUEST_CID`]..=[`MAX_GUEST_CID`] would boot a guest whose
+/// config space claims a reserved (or unconvertible) CID and that no host
+/// listener path can match, so it is refused before any VM is built.
+fn validate_spec(spec: &VmSpec) -> Result<(), SpawnError> {
+    if let Some(vsock) = &spec.vsock {
+        if !(MIN_GUEST_CID..=MAX_GUEST_CID).contains(&vsock.guest_cid) {
+            return Err(SpawnError::GuestCidOutOfRange {
+                guest_cid: vsock.guest_cid,
+                min: MIN_GUEST_CID,
+                max: MAX_GUEST_CID,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Creates the directory that holds a VM's (or the orchestrator's) host-side
+/// vsock Unix sockets, with mode `0700`.
+///
+/// The socket names under the directory are deterministic - `{dir}/vm{cid}`
+/// for a VM's muxer, `{dir}/vm{cid}_{port}` for the orchestrator - and the
+/// default directory is under world-writable `/tmp`. Without this, any local
+/// user could squat a path before it is bound (failing a boot or a daemon
+/// start with `EADDRINUSE`) or bind `{dir}/vm{cid}_{port}` first and answer as
+/// the orchestrator. The directory is created (with parents) `0700`, and an
+/// existing directory is re-tightened to `0700` - the sockets inside are a
+/// trust boundary, so a wider mode is not accepted. A directory that cannot be
+/// made `0700` (one owned by another user, say) is an error the caller reports
+/// rather than a reason to bind sockets in the open.
+#[cfg(unix)]
+pub fn create_uds_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    // `mode()` is masked by the process umask, so set the mode explicitly too
+    // (this also tightens a directory that already existed).
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
 /// Hands the VM to the backend of the current platform.
@@ -624,5 +682,85 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     {
         let _ = (spec, runtime);
         Err(SpawnError::NoBackend)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec_with_cid(guest_cid: u64) -> VmSpec {
+        VmSpec {
+            vsock: Some(VsockConfig {
+                guest_cid,
+                uds_path: PathBuf::from("/tmp/plaza-vsock/vm-test"),
+            }),
+            ..VmSpec::default()
+        }
+    }
+
+    /// F3: the CID range is enforced on the boot path, at both ends.
+    #[test]
+    fn guest_cids_outside_the_supported_range_are_refused() {
+        for cid in [0, 1, 2, MAX_GUEST_CID + 1, u64::MAX] {
+            assert!(
+                matches!(
+                    validate_spec(&spec_with_cid(cid)),
+                    Err(SpawnError::GuestCidOutOfRange { guest_cid, min, max })
+                        if guest_cid == cid && min == MIN_GUEST_CID && max == MAX_GUEST_CID
+                ),
+                "guest CID {cid} must be refused"
+            );
+        }
+    }
+
+    /// F3: the boundaries themselves are accepted.
+    #[test]
+    fn the_range_boundaries_are_accepted() {
+        assert!(validate_spec(&spec_with_cid(MIN_GUEST_CID)).is_ok());
+        assert!(validate_spec(&spec_with_cid(MAX_GUEST_CID)).is_ok());
+    }
+
+    /// A VM with no vsock device has no CID to validate.
+    #[test]
+    fn a_spec_without_vsock_is_accepted() {
+        assert!(validate_spec(&VmSpec::default()).is_ok());
+    }
+
+    /// F4: the vsock socket directory is created `0700`, and an existing wider
+    /// one is re-tightened - `0700` is what keeps another local user from
+    /// squatting or impersonating a path under it.
+    #[test]
+    #[cfg(unix)]
+    fn the_uds_dir_is_created_and_tightened_to_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("plaza-uds-dir-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A nested path also proves the parents are created.
+        let dir = root.join("nested").join("uds");
+        create_uds_dir(&dir).expect("the socket directory is created");
+        let mode = std::fs::metadata(&dir)
+            .expect("the directory exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "a fresh socket directory must be 0700");
+
+        // An existing, wider directory is re-tightened rather than accepted.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+            .expect("widen the directory for the test");
+        create_uds_dir(&dir).expect("an existing directory is accepted");
+        let mode = std::fs::metadata(&dir)
+            .expect("the directory exists")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "a pre-existing socket directory is tightened"
+        );
+
+        std::fs::remove_dir_all(&root).expect("clean up");
     }
 }

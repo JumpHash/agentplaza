@@ -9,8 +9,8 @@
 // PCI transport, the userspace vsock muxer (`csm`/`unix`) and the device
 // metrics are dropped or replaced by a local shim; there is no network device
 // by design). The userspace vsock core below is ported so the VMM can mediate
-// vsock itself instead of handing the rings to the kernel's vhost-vsock; the
-// vhost device stays on the boot path until the next slice cuts it over.
+// vsock itself instead of handing the rings to the kernel's vhost-vsock; that
+// vhost device is retired and is not on the boot path.
 
 //! Virtio devices on the MMIO transport.
 //!

@@ -316,15 +316,14 @@ impl VirtioMmioTransport {
     /// The interrupt status the driver reads in its interrupt handler.
     ///
     /// The status is reported as "the used ring has entries" unconditionally,
-    /// because this port's devices are backed by the host kernel, which raises
-    /// the interrupt through this transport's `irqfd` without telling the
-    /// transport which queue it was for. Reporting 0 instead would be read as a
-    /// spurious interrupt by the guest's `virtio_mmio` driver, which would then
-    /// never service the used ring — and 0x01 makes that driver look at every
-    /// queue, which is exactly what a backend that cannot report a per-queue
-    /// status needs. (Firecracker does the same for its vhost-user devices;
-    /// `VIRTIO_MMIO_INT_CONFIG` is never set, since no device here has a
-    /// configuration space to change.)
+    /// because the device's event thread raises the interrupt through this
+    /// transport's interrupt event fd without telling the transport which queue
+    /// it was for. Reporting 0 instead would be read as a spurious interrupt by
+    /// the guest's `virtio_mmio` driver, which would then never service the used
+    /// ring — and 0x01 makes that driver look at every queue, which is exactly
+    /// what a backend that cannot report a per-queue status needs. (Firecracker
+    /// does the same for its vhost-user devices; `VIRTIO_MMIO_INT_CONFIG` is
+    /// never set, since no device here has a configuration space to change.)
     fn interrupt_status(&self) -> u32 {
         VIRTIO_MMIO_INT_VRING
     }

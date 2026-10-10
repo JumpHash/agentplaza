@@ -190,6 +190,11 @@ pub struct Vcpu {
     /// Whether this vCPU's exit was a reset rather than a shutdown, published
     /// for the VM's exit watcher (which reports it to the spawner).
     guest_reset: Arc<AtomicBool>,
+    /// Whether the VM's exit has been signalled; shared with the VM and every
+    /// other path that writes `vcpus_exit_evt`. Published *before* the event
+    /// fd write (see `VmCommon::exit_signalled`), so an observer that only
+    /// shares the fd for wakeup cannot lose the exit.
+    exit_signalled: Arc<AtomicBool>,
     /// Whether the VM's vCPUs have been asked to finish; shared with the VM
     /// and with every handle (see `VmCommon::vcpu_finish_requested`). The run
     /// loop checks it on every exit from `KVM_RUN`, which is what makes a
@@ -228,6 +233,7 @@ impl Vcpu {
             event_sender: Some(event_sender),
             kvm_vcpu,
             guest_reset: Arc::clone(&vm.common.guest_reset),
+            exit_signalled: Arc::clone(&vm.common.exit_signalled),
             finish_requested: Arc::clone(&vm.common.vcpu_finish_requested),
         })
     }
@@ -380,7 +386,12 @@ impl Vcpu {
     /// devices) never depends on who requested the stop, or on that request
     /// having reached it any other way. It does not touch `guest_reset`: that
     /// flag belongs to the vCPU that *decided* to leave.
+    ///
+    /// The exit state is published before the event fd is written, so the
+    /// vsock event thread - which shares the fd for wakeup but must never read
+    /// it - sees the exit even when the watcher consumed the count first.
     fn signal_exit(&mut self) {
+        self.exit_signalled.store(true, Ordering::SeqCst);
         if let Err(err) = self.exit_evt.write(1) {
             eprintln!("warning: failed signaling vcpu exit event: {err}");
         }

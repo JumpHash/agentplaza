@@ -23,6 +23,7 @@
 
 use std::io;
 use std::os::fd::AsRawFd;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
@@ -172,7 +173,13 @@ fn start_exit_watcher<D: Send + 'static>(
     devices: D,
 ) -> io::Result<()> {
     let stop_evt = vm.vcpus_exit_evt().try_clone()?;
+    // Publish the exit state before the notify, exactly like the guest exit
+    // paths do, so the vsock event thread (a shared *observer* of the same
+    // event fd, never a reader) sees the exit even if the watcher consumes the
+    // count first.
+    let stop_signalled = Arc::clone(vm.exit_signalled());
     runtime.set_stop_control(move || {
+        stop_signalled.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Err(err) = stop_evt.write(1) {
             eprintln!("warning: failed to signal VM exit: {err}");
         }
@@ -228,15 +235,25 @@ fn start_exit_watcher<D: Send + 'static>(
 ///
 /// `exit_evt` is the VM's shared exit event; the thread observes its
 /// readability and exits *without* consuming it, because the exit watcher is
-/// the VM's only reader.
+/// the VM's only reader. `exit_signalled` is the shared flag every exit path
+/// sets before writing that event (the guest's vCPUs, the ACPI/i8042 reset
+/// ports, and the stop control), and is what the thread actually trusts: an
+/// event fd count the watcher consumed first is invisible to a level-triggered
+/// `epoll_wait`, so the flag - not the wakeup - is the source of truth.
 fn start_vsock_event_thread(
     exit_evt: &EventFd,
+    exit_signalled: &Arc<AtomicBool>,
     device: Arc<Mutex<Vsock<VsockUnixBackend>>>,
     runtime: &Arc<VmRuntime>,
 ) -> io::Result<()> {
     let exit_evt = exit_evt.try_clone()?;
-    let handle =
-        crate::devices::virtio::vsock::event_thread::start_event_thread(device, exit_evt, runtime.id)?;
+    let exit_signalled = Arc::clone(exit_signalled);
+    let handle = crate::devices::virtio::vsock::event_thread::start_event_thread(
+        device,
+        exit_evt,
+        exit_signalled,
+        runtime.id,
+    )?;
     runtime.add_thread(handle);
     Ok(())
 }
@@ -512,7 +529,8 @@ mod x86_64 {
             .try_clone()
             .map_err(BootError::EventFd)?;
         let i8042 = Arc::new(Mutex::new(
-            I8042Device::new(reset_evt).map_err(BootError::I8042)?,
+            I8042Device::new(reset_evt, Arc::clone(&vm.common.exit_signalled))
+                .map_err(BootError::I8042)?,
         ));
         // The PM1-control device: turns a guest ACPI S5 write (SLP_EN on the
         // sleep control register, port 0x604) into the VM's exit event as a
@@ -530,6 +548,7 @@ mod x86_64 {
         let pm1 = Arc::new(Mutex::new(Pm1CntDevice::new(
             shutdown_evt,
             Arc::clone(&vm.common.guest_reset),
+            Arc::clone(&vm.common.exit_signalled),
             Arc::clone(&vm.common.vcpu_finish_requested),
         )));
         // `Arc<Mutex<Device>>` unsizes into the bus's `Arc<Mutex<dyn BusDevice>>`
@@ -555,10 +574,11 @@ mod x86_64 {
         // transport in the layout's MMIO window, its interrupt registered as a
         // KVM irqfd on the layout's GSI, and the *userspace* vsock device
         // behind it (the VMM's own muxer, not the kernel's vhost-vsock). The
-        // muxer binds `uds_path`, so a taken path (or a reserved CID) fails the
-        // boot here — before the guest is started, instead of leaving it
-        // unreachable. Its ring processing runs on a dedicated event thread,
-        // never on the vCPU thread.
+        // muxer binds `uds_path`, so a taken path fails the boot here — before
+        // the guest is started, instead of leaving it unreachable. (A CID
+        // outside `MIN_GUEST_CID..=MAX_GUEST_CID` is refused even earlier, by
+        // the spawner, before any device is built.) Its ring processing runs
+        // on a dedicated event thread, never on the vCPU thread.
         let vsock = match &spec.vsock {
             Some(config) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
@@ -577,6 +597,7 @@ mod x86_64 {
                 ));
                 super::start_vsock_event_thread(
                     vm.vcpus_exit_evt(),
+                    vm.exit_signalled(),
                     Arc::clone(&device),
                     runtime,
                 )
@@ -659,6 +680,8 @@ mod x86_64 {
             // too (it is waiting for the VM's exit event, which nothing wrote
             // because these vCPUs never had a chance to leave the guest).
             vm.shutdown_vcpus();
+            vm.exit_signalled()
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = vm.vcpus_exit_evt().write(1);
             return Err(BootError::from(err));
         }
@@ -808,10 +831,11 @@ mod aarch64 {
         // device, whose transport sits on the MMIO bus at the layout's window
         // with its interrupt on the layout's GSI (registered as a KVM irqfd,
         // like the console's). The *userspace* device (the VMM's own muxer,
-        // not the kernel's vhost-vsock) binds `uds_path`, so a bad CID or a
-        // taken path fails the boot here, before the guest is started. Its
-        // ring processing runs on a dedicated event thread, never on the vCPU
-        // thread.
+        // not the kernel's vhost-vsock) binds `uds_path`, so a taken path
+        // fails the boot here, before the guest is started. (A CID outside
+        // `MIN_GUEST_CID..=MAX_GUEST_CID` is refused even earlier, by the
+        // spawner.) Its ring processing runs on a dedicated event thread,
+        // never on the vCPU thread.
         let vsock = match &spec.vsock {
             Some(config) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
@@ -830,6 +854,7 @@ mod aarch64 {
                 ));
                 super::start_vsock_event_thread(
                     vm.vcpus_exit_evt(),
+                    vm.exit_signalled(),
                     Arc::clone(&device),
                     runtime,
                 )
@@ -918,6 +943,8 @@ mod aarch64 {
             // about to free the VM and its guest memory, and a vCPU left
             // running would fault through memory that is no longer its own.
             vm.shutdown_vcpus();
+            vm.exit_signalled()
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = vm.vcpus_exit_evt().write(1);
             return Err(BootError::from(err));
         }

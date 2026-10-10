@@ -59,6 +59,20 @@ pub struct VmCommon {
     pub vcpus_handles: Mutex<Vec<VcpuHandle>>,
     /// Event fd written to by vCPUs on exit.
     pub vcpus_exit_evt: EventFd,
+    /// Whether the VM's exit has been signalled, published by every path that
+    /// writes [`vcpus_exit_evt`](Self::vcpus_exit_evt) **before** it notifies
+    /// the event fd.
+    ///
+    /// The event fd is a counter with a single reader — the VM's exit watcher
+    /// — and that reader is deliberately the only one: a second `read` would
+    /// steal its wakeup. But a second *observer*, the vsock event thread, may
+    /// share the fd for wakeup and must still see the exit: a level-triggered
+    /// `epoll_wait` revalidates readiness through the fd's poll callback, so a
+    /// count the watcher consumed first is simply lost to the observer. This
+    /// flag is that observer's source of truth. It is the same rule the vCPU
+    /// stop path follows: set the state you are notifying about before you
+    /// notify.
+    pub exit_signalled: Arc<AtomicBool>,
     /// Set by a vCPU whose exit was the guest asking for a *reset* rather than
     /// a shutdown; read by the VM's exit watcher, which reports it to the
     /// spawner. (The exit event fd cannot carry the difference: it is a
@@ -160,6 +174,7 @@ impl KvmVm {
             kvm,
             vcpus_handles: Mutex::new(Vec::new()),
             vcpus_exit_evt,
+            exit_signalled: Arc::new(AtomicBool::new(false)),
             guest_reset: Arc::new(AtomicBool::new(false)),
             vcpu_finish_requested: Arc::new(AtomicBool::new(false)),
         })
@@ -194,6 +209,13 @@ impl KvmVm {
     /// Returns a reference to the vCPU exit [`EventFd`].
     pub fn vcpus_exit_evt(&self) -> &EventFd {
         &self.common.vcpus_exit_evt
+    }
+
+    /// The VM's "exit signalled" flag, set before every write to
+    /// [`vcpus_exit_evt`](Self::vcpus_exit_evt) (see
+    /// [`VmCommon::exit_signalled`]).
+    pub fn exit_signalled(&self) -> &Arc<AtomicBool> {
+        &self.common.exit_signalled
     }
 
     /// Returns a locked reference to the vCPU handles.

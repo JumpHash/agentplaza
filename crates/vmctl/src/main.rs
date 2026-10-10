@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use vmm::spawner::{
     GicVersion, MAX_GUEST_CID, MIN_GUEST_CID, VmExit, VmHandle, VmRuntime, VmSpec, VsockConfig,
-    spawn_each,
+    create_uds_dir, spawn_each,
 };
 
 /// How often the printer polls the VMs' serial captures.
@@ -280,6 +280,19 @@ fn run(config: Config) -> ExitCode {
     // guests by CID and reaches each through its own socket.
     let vsock_cid = config.vsock_cid;
     let uds_dir = config.uds_dir;
+    // F4: the sockets live under `uds_dir` with deterministic names
+    // (`vm{cid}`), and it defaults under world-writable `/tmp`. Create it 0700
+    // first, so another local user cannot squat a path (EADDRINUSE) or bind
+    // `vm{cid}_{port}` and impersonate the orchestrator.
+    if vsock_cid.is_some() {
+        if let Err(err) = create_uds_dir(&uds_dir) {
+            eprintln!(
+                "vmctl: cannot create the vsock socket directory {}: {err}",
+                uds_dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     let mut vms = match spawn_each(config.count, |id| {
         let mut spec = base.clone();
         spec.vsock = vsock_cid.map(|base| {

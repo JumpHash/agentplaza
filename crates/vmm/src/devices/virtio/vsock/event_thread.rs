@@ -19,6 +19,7 @@
 
 use std::fmt::Debug;
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use vmm_sys_util::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
@@ -38,15 +39,34 @@ const EVQ: u64 = 3;
 const BACKEND: u64 = 4;
 const EXIT: u64 = 5;
 
+/// How long the event thread's `epoll_wait` blocks before re-checking the
+/// shared exit flag, in milliseconds.
+///
+/// The exit event fd is only a wakeup hint: the exit watcher is its sole
+/// reader, so a count the watcher consumed before this thread revalidated the
+/// fd (level-triggered `epoll_wait` re-polls the eventfd) is silently lost,
+/// and `-1` would then block forever. The flag checked after every wait is the
+/// source of truth; this bound is what guarantees the flag is seen even when
+/// the wakeup is lost. It bounds exit latency, not throughput: while events
+/// arrive the wait returns immediately.
+const EXIT_POLL_TIMEOUT_MS: i32 = 200;
+
 /// Spawns the event thread for a VM's vsock device.
 ///
 /// `exit_evt` is a clone of the VM's shared exit event: when a vCPU stops the
 /// VM (or the spawner's stop control does), the eventfd becomes readable and
 /// this thread exits *without* consuming it - the VM's exit watcher is the
 /// only reader, and a second reader would steal its wakeup.
+///
+/// `exit_signalled` is the shared flag every exit path sets before it writes
+/// that event. Because a shared wakeup can be consumed by the watcher before
+/// this thread revalidates the fd, the flag - not the event fd - is the source
+/// of truth: it is checked on every iteration of the run loop, so a lost
+/// wakeup costs at most one [`EXIT_POLL_TIMEOUT_MS`].
 pub fn start_event_thread<B>(
     device: Arc<Mutex<Vsock<B>>>,
     exit_evt: EventFd,
+    exit_signalled: Arc<AtomicBool>,
     vm_id: u32,
 ) -> std::io::Result<std::thread::JoinHandle<()>>
 where
@@ -54,7 +74,7 @@ where
 {
     std::thread::Builder::new()
         .name(format!("apz_vm{vm_id}_vsock"))
-        .spawn(move || run(device, exit_evt))
+        .spawn(move || run(device, exit_evt, exit_signalled))
 }
 
 fn lock<B>(device: &Arc<Mutex<Vsock<B>>>) -> std::sync::MutexGuard<'_, Vsock<B>> {
@@ -156,7 +176,7 @@ fn handle_backend<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSe
     used
 }
 
-fn run<B>(device: Arc<Mutex<Vsock<B>>>, exit_evt: EventFd)
+fn run<B>(device: Arc<Mutex<Vsock<B>>>, exit_evt: EventFd, exit_signalled: Arc<AtomicBool>)
 where
     B: VsockBackend + Debug,
 {
@@ -184,7 +204,19 @@ where
     let mut events = [EpollEvent::new(EventSet::empty(), 0); 8];
 
     loop {
-        let count = match epoll.wait(-1, &mut events) {
+        // The exit flag is the source of truth, checked before and after every
+        // wait: the exit watcher is the exit event fd's only reader, so a
+        // wakeup meant for this thread can be consumed before it revalidates
+        // the fd (a level-triggered epoll then reports nothing), and `-1`
+        // would strand the thread - and with it the muxer, its bound UDS path
+        // and its copy of the guest memory - until someone wrote the fd again.
+        // The bounded timeout is the backstop that makes a lost wakeup cost at
+        // most one iteration, whether this thread is inside or outside the
+        // wait when the exit lands.
+        if exit_signalled.load(Ordering::SeqCst) {
+            return;
+        }
+        let count = match epoll.wait(EXIT_POLL_TIMEOUT_MS, &mut events) {
             Ok(count) => count,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err) => {
@@ -192,6 +224,12 @@ where
                 return;
             }
         };
+        // Re-check before acting on the events: an exit that landed while this
+        // thread was returning from the wait must not be processed as a queue
+        // event.
+        if exit_signalled.load(Ordering::SeqCst) {
+            return;
+        }
 
         for event in &events[..count] {
             match event.data() {
@@ -241,5 +279,143 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::RawFd;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
+    use crate::devices::virtio::vsock::packet::{VsockPacketRx, VsockPacketTx};
+    use crate::devices::virtio::vsock::{VsockChannel, VsockEpollListener, VsockError};
+    use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
+
+    /// A backend with no traffic: enough to build the device the event thread
+    /// polls, and to observe the thread's exit behaviour without any guest.
+    #[derive(Debug, Default)]
+    struct IdleBackend;
+
+    impl VsockChannel for IdleBackend {
+        fn recv_pkt(&mut self, _pkt: &mut VsockPacketRx) -> Result<(), VsockError> {
+            Err(VsockError::NoData)
+        }
+
+        fn send_pkt(&mut self, _pkt: &VsockPacketTx) {}
+
+        fn has_pending_rx(&self) -> bool {
+            false
+        }
+    }
+
+    impl VsockEpollListener for IdleBackend {
+        fn get_polled_evset(&self) -> EventSet {
+            EventSet::IN
+        }
+
+        fn notify(&mut self, _evset: EventSet) {}
+    }
+
+    impl VsockBackend for IdleBackend {
+        fn activate(&mut self) -> Result<(), VsockError> {
+            Ok(())
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    // These tests never activate the device, so this fd is never polled.
+    impl AsRawFd for IdleBackend {
+        fn as_raw_fd(&self) -> RawFd {
+            0
+        }
+    }
+
+    /// A device with three empty queues and an idle backend, never activated.
+    fn idle_device(mem: &GuestMemoryMmap) -> Arc<Mutex<Vsock<IdleBackend>>> {
+        let vqs = [
+            VirtQueue::new(GuestAddress(0), mem, 16),
+            VirtQueue::new(GuestAddress(0x2000), mem, 16),
+            VirtQueue::new(GuestAddress(0x4000), mem, 16),
+        ];
+        let queues = vqs.iter().map(VirtQueue::create_queue).collect();
+        Arc::new(Mutex::new(
+            Vsock::with_queues(3, IdleBackend, queues).expect("an idle vsock device"),
+        ))
+    }
+
+    /// Joins `handle`, returning `false` if it is still running after
+    /// `timeout` (rather than blocking the test forever on a stuck thread).
+    fn joined_within(handle: std::thread::JoinHandle<()>, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        handle.join().is_ok()
+    }
+
+    /// F1 regression: a lost exit wakeup must not strand the thread.
+    ///
+    /// This is the exit watcher winning the race exactly as the review
+    /// describes: the exit path published the shared flag and notified the
+    /// event fd, but the watcher - the fd's only reader - consumed the count
+    /// before this thread revalidated it, so a level-triggered `epoll_wait`
+    /// reports nothing and the thread sees no exit event. Modelling the lost
+    /// count as "the fd is never written again", the thread must still observe
+    /// the exit through the flag within one poll timeout. With the pre-F1 code
+    /// (no flag, `epoll.wait(-1)`) it blocks forever.
+    #[test]
+    fn exit_is_observed_when_the_event_fd_wakeup_is_lost() {
+        let mem = default_mem();
+        let device = idle_device(&mem);
+        let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let exit_signalled = Arc::new(AtomicBool::new(false));
+        let handle = start_event_thread(
+            device,
+            exit_evt.try_clone().unwrap(),
+            Arc::clone(&exit_signalled),
+            0,
+        )
+        .expect("the event thread starts");
+
+        // Let the thread reach its wait, then run the exit path. Only the flag
+        // is set: the event fd's count was already consumed (by the watcher).
+        std::thread::sleep(Duration::from_millis(50));
+        exit_signalled.store(true, Ordering::SeqCst);
+
+        assert!(
+            joined_within(handle, Duration::from_secs(2)),
+            "the event thread did not observe the exit after its event-fd wakeup was consumed"
+        );
+    }
+
+    /// The event fd wakeup still ends the thread on its own: the normal path,
+    /// where this thread sees the readable fd before the watcher consumes it.
+    #[test]
+    fn the_event_fd_wakeup_ends_the_thread() {
+        let mem = default_mem();
+        let device = idle_device(&mem);
+        let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let exit_signalled = Arc::new(AtomicBool::new(false));
+        let handle = start_event_thread(
+            device,
+            exit_evt.try_clone().unwrap(),
+            Arc::clone(&exit_signalled),
+            0,
+        )
+        .expect("the event thread starts");
+
+        // Both halves of the exit path: the flag the watcher publishes, and
+        // the event fd write that wakes the thread's own poll.
+        std::thread::sleep(Duration::from_millis(50));
+        exit_signalled.store(true, Ordering::SeqCst);
+        exit_evt.write(1).unwrap();
+
+        assert!(joined_within(handle, Duration::from_secs(2)));
     }
 }
