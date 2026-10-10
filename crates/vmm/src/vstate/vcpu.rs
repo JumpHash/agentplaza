@@ -14,9 +14,9 @@
 // their items.
 
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{Ordering, fence};
+use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::{io, thread};
 
 use kvm_bindings::{KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN};
@@ -69,6 +69,9 @@ pub enum StartThreadedError {
     /// Failed to clone kvm Vcpu fd: {0}
     #[error("Failed to clone kvm Vcpu fd: {0}")]
     CopyFd(CopyKvmFdError),
+    /// Failed to install the kick signal handler: {0}
+    #[error("Failed to install the kick signal handler: {0}")]
+    SignalHandler(vmm_sys_util::errno::Error),
 }
 
 /// Error type for [`Vcpu::copy_kvm_vcpu_fd`].
@@ -80,6 +83,96 @@ pub enum CopyKvmFdError {
     /// Error creating the Vcpu from the duplicated Vcpu fd
     #[error("Error creating the Vcpu from the duplicated Vcpu fd")]
     CreateVcpuError(#[from] kvm_ioctls::Error),
+}
+
+/// The gate every vCPU thread waits on until the VM's vCPUs are all up.
+///
+/// Upstream synchronizes the vCPU threads with a `Barrier`, which cannot be
+/// released partially: when spawning vCPU *k* fails, the *k-1* threads already
+/// parked on it would wait forever, and `VcpuHandle::drop` (which joins them)
+/// would hang the failing `boot` instead of reporting the error. This gate is
+/// released once for every waiter, and can also be released in *abort* mode,
+/// in which the waiting threads return without ever running their vCPU - which
+/// is what lets `KvmVm::start_vcpus` drop (and so join) a partially started
+/// set.
+#[derive(Debug)]
+pub struct StartGate {
+    state: Mutex<GateState>,
+    condvar: Condvar,
+}
+
+/// What the gate has been released as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateState {
+    /// The vCPU threads are parked until `KvmVm::start_vcpus` releases them.
+    Closed,
+    /// Release them: they run their vCPU.
+    Open,
+    /// Release them: they return without running their vCPU.
+    Aborted,
+}
+
+impl StartGate {
+    pub(super) fn new() -> Self {
+        Self {
+            state: Mutex::new(GateState::Closed),
+            condvar: Condvar::new(),
+        }
+    }
+
+    /// Blocks until the gate is released. `false` means the VM was aborted and
+    /// this thread must not run its vCPU.
+    fn wait(&self) -> bool {
+        let mut state = lock(&self.state);
+        while *state == GateState::Closed {
+            state = self
+                .condvar
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *state == GateState::Open
+    }
+
+    /// Releases every waiting thread to run its vCPU.
+    pub(super) fn open(&self) {
+        self.release(GateState::Open);
+    }
+
+    /// Releases every waiting thread to return without running its vCPU.
+    pub(super) fn abort(&self) {
+        self.release(GateState::Aborted);
+    }
+
+    fn release(&self, state: GateState) {
+        *lock(&self.state) = state;
+        self.condvar.notify_all();
+    }
+}
+
+/// Locks a mutex, recovering from a peer thread's panic the way the rest of
+/// this tree does.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Registers the handler for the signal a vCPU's handle uses to kick it out of
+/// `KVM_RUN`.
+///
+/// A signal's disposition belongs to the process, not to a thread (only its
+/// mask is per-thread), so this is installed here - before the vCPU thread
+/// exists - rather than inside the thread. That is also what makes a failure
+/// reportable: upstream expects the registration to succeed, but a failure
+/// leaves `SIGRTMIN` at its default disposition (terminate the process), and
+/// `VcpuHandle::send_event`'s kick would then kill the VMM instead of
+/// interrupting the vCPU.
+fn install_kick_signal_handler() -> Result<(), StartThreadedError> {
+    extern "C" fn handle_signal(_: c_int, _: *mut siginfo_t, _: *mut c_void) {
+        // We write to the immediate_exit from other thread, so make sure the read in the
+        // KVM_RUN sees the up to date value
+        fence(Ordering::Acquire);
+    }
+    vmm_sys_util::signal::register_signal_handler(SIGRTMIN() + VCPU_RTSIG_OFFSET, handle_signal)
+        .map_err(StartThreadedError::SignalHandler)
 }
 
 /// A wrapper around creating and using a vcpu.
@@ -94,6 +187,9 @@ pub struct Vcpu {
     event_receiver: Receiver<VcpuEvent>,
     /// The transmitting end of the events channel which will be given to the handler.
     event_sender: Option<Sender<VcpuEvent>>,
+    /// Whether this vCPU's exit was a reset rather than a shutdown, published
+    /// for the VM's exit watcher (which reports it to the spawner).
+    guest_reset: Arc<AtomicBool>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -110,25 +206,6 @@ enum VcpuRunState {
 }
 
 impl Vcpu {
-    /// Registers a signal handler which kicks the vcpu running on the current thread, if there is
-    /// one.
-    fn register_kick_signal_handler(&mut self) {
-        extern "C" fn handle_signal(_: c_int, _: *mut siginfo_t, _: *mut c_void) {
-            // We write to the immediate_exit from other thread, so make sure the read in the
-            // KVM_RUN sees the up to date value
-            fence(Ordering::Acquire);
-        }
-        // The upstream equivalent lives in the `utils` crate; the no-op
-        // handler registration is inlined here (trimmed: no error logging
-        // on failure — a failed registration only costs the kick latency).
-        // SAFETY: `register_signal_handler` only installs the given handler
-        // for the given signal number.
-        let _ = vmm_sys_util::signal::register_signal_handler(
-            SIGRTMIN() + VCPU_RTSIG_OFFSET,
-            handle_signal,
-        );
-    }
-
     /// Constructs a new VCPU for `vm`.
     ///
     /// # Arguments
@@ -145,6 +222,7 @@ impl Vcpu {
             event_receiver,
             event_sender: Some(event_sender),
             kvm_vcpu,
+            guest_reset: Arc::clone(&vm.common.guest_reset),
         })
     }
 
@@ -169,8 +247,12 @@ impl Vcpu {
     pub fn start_threaded(
         mut self,
         vm: &KvmVm,
-        barrier: Arc<Barrier>,
+        gate: Arc<StartGate>,
     ) -> Result<VcpuHandle, StartThreadedError> {
+        // Before the thread exists: a kick signal that arrives before the
+        // handler is installed would have its default disposition, so this
+        // failure is reported to the caller rather than left to a thread.
+        install_kick_signal_handler()?;
         let event_sender = self.event_sender.take().expect("vCPU already started");
         let vcpu_fd = self
             .copy_kvm_vcpu_fd(vm)
@@ -178,10 +260,14 @@ impl Vcpu {
         let vcpu_thread = thread::Builder::new()
             .name(format!("apz_vcpu_{}", self.kvm_vcpu.index))
             .spawn(move || {
-                self.register_kick_signal_handler();
-                // Synchronization to make sure thread local data is initialized.
-                barrier.wait();
-                self.run();
+                // Synchronization to make sure thread local data is
+                // initialized - and that a VM whose vCPUs could not all be
+                // started never runs any of them: a gate released in abort
+                // mode returns `false` here, and the thread ends without ever
+                // entering `KVM_RUN`.
+                if gate.wait() {
+                    self.run();
+                }
             })
             .map_err(StartThreadedError::Spawn)?;
 
@@ -215,10 +301,10 @@ impl Vcpu {
                 Ok(VcpuEmulation::Handled) => (),
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
-                // The guest requested a SHUTDOWN or RESET.
-                Ok(VcpuEmulation::Stopped) => return self.exit(),
+                // The guest requested a SHUTDOWN or a RESET.
+                Ok(VcpuEmulation::Stopped { reset }) => return self.exit(reset),
                 // Emulation errors lead to vCPU exit.
-                Err(_) => return self.exit(),
+                Err(_) => return self.exit(false),
             }
         }
 
@@ -228,7 +314,7 @@ impl Vcpu {
             // Unhandled exit of the other end: the handle was dropped
             // without a Finish event; the thread cannot be controlled
             // anymore, so stop running the vCPU.
-            Err(TryRecvError::Disconnected) => self.exit(),
+            Err(TryRecvError::Disconnected) => self.exit(false),
             // No external event: continue running.
             Err(TryRecvError::Empty) => VcpuRunState::Running,
         }
@@ -236,9 +322,11 @@ impl Vcpu {
 
     // Transition to the exited state.
     //
-    // Signals the VM's exit event (watched by the per-VM exit watcher, which
-    // finishes the sibling vCPU threads) and finishes this thread's loop.
-    fn exit(&mut self) -> VcpuRunState {
+    // Publishes whether the guest asked for a reset before signalling the
+    // VM's exit event (watched by the per-VM exit watcher, which finishes the
+    // sibling vCPU threads) and finishes this thread's loop.
+    fn exit(&mut self, reset: bool) -> VcpuRunState {
+        self.guest_reset.store(reset, Ordering::SeqCst);
         if let Err(err) = self.exit_evt.write(1) {
             eprintln!("warning: failed signaling vcpu exit event: {err}");
         }
@@ -316,7 +404,12 @@ fn handle_kvm_exit(
                     eprintln!(
                         "info: received KVM_SYSTEM_EVENT: type: {event_type}, event: {event_flags:?}"
                     );
-                    Ok(VcpuEmulation::Stopped)
+                    // The guest ended the VM, by a reset or a shutdown. Both
+                    // stop it (this port has no re-boot path), and which one
+                    // it was is reported to the spawner.
+                    Ok(VcpuEmulation::Stopped {
+                        reset: event_type == KVM_SYSTEM_EVENT_RESET,
+                    })
                 }
                 _ => {
                     eprintln!(
@@ -437,6 +530,56 @@ pub enum VcpuEmulation {
     Handled,
     /// Interrupted.
     Interrupted,
-    /// Stopped.
-    Stopped,
+    /// The guest asked the VM to stop.
+    Stopped {
+        /// `true` when the guest asked for a reset rather than a shutdown.
+        /// Both stop the VM (this port has no re-boot path), and which one it
+        /// was is reported to the spawner.
+        reset: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::thread;
+
+    use super::StartGate;
+
+    /// A thread parked on the gate until the test releases it, and what the
+    /// gate told it (see [`StartGate::wait`]).
+    fn park(gate: &Arc<StartGate>) -> thread::JoinHandle<bool> {
+        let gate = Arc::clone(gate);
+        thread::spawn(move || gate.wait())
+    }
+
+    #[test]
+    fn an_opened_gate_releases_every_thread_to_run() {
+        // What the gate replaces - upstream's `Barrier` - cannot do: release a
+        // set of threads whose number is not known when it is created. A VM
+        // whose vCPU *k* cannot be spawned has *k-1* threads to release, and
+        // leaving them parked would hang the join that is supposed to report
+        // the failure.
+        let gate = Arc::new(StartGate::new());
+        let parked: Vec<_> = (0..3).map(|_| park(&gate)).collect();
+
+        gate.open();
+        for thread in parked {
+            assert!(thread.join().unwrap(), "an opened gate runs the vCPU");
+        }
+        // A thread that arrives after the release is not held back either.
+        assert!(gate.wait());
+    }
+
+    #[test]
+    fn an_aborted_gate_releases_the_threads_without_running_them() {
+        let gate = Arc::new(StartGate::new());
+        let parked: Vec<_> = (0..3).map(|_| park(&gate)).collect();
+
+        gate.abort();
+        for thread in parked {
+            assert!(!thread.join().unwrap(), "an aborted gate stops the vCPU");
+        }
+        assert!(!gate.wait());
+    }
 }

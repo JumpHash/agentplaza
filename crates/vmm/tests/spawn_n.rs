@@ -67,10 +67,9 @@ fn spawn_two_vms_boot_linux() {
                     vm.serial()
                 )
             });
-        assert_eq!(
-            exit,
-            VmExit::GuestExited,
-            "VM {} serial:\n{}",
+        assert!(
+            matches!(exit, VmExit::GuestExited { .. }),
+            "VM {} did not stop on its own (it reported {exit:?}); serial:\n{}",
             vm.id(),
             vm.serial()
         );

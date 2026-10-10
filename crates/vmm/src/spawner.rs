@@ -20,9 +20,14 @@ use std::time::{Duration, Instant};
 /// threads have all finished.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// How long [`VmHandle::kill`] waits for the VM's threads to finish after the
-/// stop control has been invoked.
+/// How long [`VmHandle::kill`] waits for the VM's threads to finish after each
+/// invocation of the stop control.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many times [`VmHandle::kill`] invokes the stop control: a request that
+/// did not reach a vCPU asleep on a condition variable is repeated once,
+/// rather than giving up on a VM that is still running.
+const KILL_ATTEMPTS: usize = 2;
 
 /// Interrupt controller (GIC) version for an `aarch64` guest.
 ///
@@ -75,8 +80,18 @@ impl Default for VmSpec {
 /// How a VM stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmExit {
-    /// The guest stopped the VM itself (shutdown, reset or a triple fault).
-    GuestExited,
+    /// The guest stopped the VM itself (a shutdown, a reset, or a triple
+    /// fault).
+    GuestExited {
+        /// `true` when the guest asked for a reset rather than a shutdown
+        /// (PSCI `SYSTEM_RESET` on the Hypervisor.framework path,
+        /// `KVM_SYSTEM_EVENT_RESET` on the KVM paths). Every backend stops the
+        /// VM either way - neither has a re-boot path - but a caller that
+        /// reports or accounts for exits can tell the two apart. A machine
+        /// reset taken through the x86_64 i8042 port is not distinguished from
+        /// a shutdown: the port signals the same shared exit event.
+        reset: bool,
+    },
     /// The VM was stopped by [`VmHandle::kill`].
     Killed,
 }
@@ -104,6 +119,14 @@ pub enum SpawnError {
     /// More VMs were requested than the 32-bit VM ids can name
     #[error("more VMs were requested than the 32-bit VM ids can name")]
     TooManyVms,
+    /// A VM failed to boot, and VMs {vms:?} could not be stopped afterwards
+    #[error("{boot}; the VMs {vms:?} had already started and could not be stopped")]
+    PartialCleanup {
+        /// The boot failure that started the cleanup.
+        boot: Box<SpawnError>,
+        /// Ids of the VMs that could not be stopped and are still running.
+        vms: Vec<u32>,
+    },
     /// No backend is compiled in for this platform
     #[error("no VM backend is compiled in for this platform")]
     NoBackend,
@@ -133,12 +156,16 @@ pub struct VmRuntime {
     /// VM handle reads it (see [`VmHandle::serial`]).
     pub serial: Arc<Mutex<Vec<u8>>>,
     /// Stop control installed by the backend in `boot`: asks the VM's vCPU
-    /// loop to finish. Invoked at most once, from [`VmHandle::kill`].
+    /// loop to finish. Left installed after it is invoked, so that
+    /// [`VmHandle::kill`] can invoke it again when the first request did not
+    /// stop the VM.
     stop: Mutex<Option<StopControl>>,
     /// Whether the stop control has been invoked.
     stop_requested: AtomicBool,
     /// Whether the guest ended the VM itself.
     guest_exited: AtomicBool,
+    /// Whether the guest exit was a reset rather than a shutdown.
+    guest_reset: AtomicBool,
     /// The backend's threads; every one of them must finish for the VM to be
     /// considered stopped.
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -172,6 +199,7 @@ impl VmRuntime {
             stop: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
             guest_exited: AtomicBool::new(false),
+            guest_reset: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
         }
     }
@@ -199,26 +227,38 @@ impl VmRuntime {
         self.guest_exited.store(true, Ordering::SeqCst);
     }
 
+    /// Marks the guest exit as a reset (a PSCI `SYSTEM_RESET`, or a KVM
+    /// `KVM_SYSTEM_EVENT_RESET`) rather than a shutdown. Called by the
+    /// backend's exit watcher alongside [`VmRuntime::mark_guest_exited`].
+    pub fn mark_guest_reset(&self) {
+        self.guest_reset.store(true, Ordering::SeqCst);
+        self.mark_guest_exited();
+    }
+
     /// Whether the stop control has been invoked for this VM.
     pub fn stop_requested(&self) -> bool {
         self.stop_requested.load(Ordering::SeqCst)
     }
 
-    /// Invokes the stop control (once) and records the request.
+    /// Invokes the stop control and records the request.
+    ///
+    /// The control stays installed, so that a stop that did not take (a wake
+    /// lost to a vCPU that was just parking, say) can be retried instead of
+    /// leaving a live VM behind; invoking it more than once is harmless, since
+    /// it only sets a flag and wakes the vCPUs.
     fn request_stop(&self) {
         self.stop_requested.store(true, Ordering::SeqCst);
         let stop = self
             .stop
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(stop) = stop {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(stop) = stop.as_ref() {
             stop();
         }
     }
 
     /// Whether every thread the backend registered has finished.
-    fn all_threads_finished(&self) -> bool {
+    pub(crate) fn all_threads_finished(&self) -> bool {
         self.threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -228,7 +268,11 @@ impl VmRuntime {
 
     /// Joins the backend's threads (draining the registry) and turns a
     /// panicked thread into an error.
-    fn join_threads(&self) -> Result<(), SpawnError> {
+    ///
+    /// The backends call this from their own error paths too, to make sure a
+    /// VM that failed to come up has no thread left behind: a vCPU thread
+    /// owns the VM and its guest memory.
+    pub(crate) fn join_threads(&self) -> Result<(), SpawnError> {
         let threads = std::mem::take(
             &mut *self
                 .threads
@@ -246,7 +290,9 @@ impl VmRuntime {
     /// How the VM stopped: guest-initiated unless it was killed.
     fn exit_reason(&self) -> VmExit {
         if self.guest_exited.load(Ordering::SeqCst) {
-            VmExit::GuestExited
+            VmExit::GuestExited {
+                reset: self.guest_reset.load(Ordering::SeqCst),
+            }
         } else {
             VmExit::Killed
         }
@@ -291,16 +337,21 @@ impl VmHandle {
 
     /// Asks the VM to stop and waits for it to stop.
     ///
-    /// Idempotent: killing a VM that already stopped returns `Ok(())`.
+    /// Idempotent: killing a VM that already stopped returns `Ok(())`. A stop
+    /// request that does not take within [`KILL_TIMEOUT`] is repeated once
+    /// (the stop control stays installed for exactly that) before the kill is
+    /// reported as a timeout.
     pub fn kill(&mut self) -> Result<(), SpawnError> {
-        self.runtime.request_stop();
-        match self.wait_timeout(KILL_TIMEOUT)? {
-            Some(_) => Ok(()),
-            None => Err(SpawnError::KillTimeout {
-                id: self.id,
-                secs: KILL_TIMEOUT.as_secs(),
-            }),
+        for _ in 0..KILL_ATTEMPTS {
+            self.runtime.request_stop();
+            if self.wait_timeout(KILL_TIMEOUT)?.is_some() {
+                return Ok(());
+            }
         }
+        Err(SpawnError::KillTimeout {
+            id: self.id,
+            secs: KILL_TIMEOUT.as_secs() * KILL_ATTEMPTS as u64,
+        })
     }
 
     /// The guest serial output captured so far (lossy UTF-8).
@@ -329,7 +380,8 @@ pub fn spawn(spec: VmSpec) -> Result<VmHandle, SpawnError> {
 /// Boots `n` microVMs, with ids `0..n`.
 ///
 /// If one VM fails to boot, the ones that did boot are killed before the
-/// error is returned.
+/// error is returned; when one of those cannot be stopped either, the returned
+/// error is a [`SpawnError::PartialCleanup`] that names it.
 pub fn spawn_n(spec: VmSpec, n: usize) -> Result<Vec<VmHandle>, SpawnError> {
     let mut handles = Vec::with_capacity(n.min(1024));
     for id in 0..n {
@@ -337,14 +389,39 @@ pub fn spawn_n(spec: VmSpec, n: usize) -> Result<Vec<VmHandle>, SpawnError> {
         match spawn_with_id(spec.clone(), id) {
             Ok(handle) => handles.push(handle),
             Err(err) => {
-                for handle in &mut handles {
-                    let _ = handle.kill();
-                }
+                let err = cleanup_after_boot_failure(err, &mut handles);
                 return Err(err);
             }
         }
     }
     Ok(handles)
+}
+
+/// Stops the VMs that did start after one of a batch failed to boot.
+///
+/// Returns the boot failure, or - when a VM could not be stopped either - an
+/// error that carries both it and the ids of the VMs left running, because a
+/// caller told only "the boot failed" would not know there are live VMs to
+/// reap.
+fn cleanup_after_boot_failure(boot: SpawnError, started: &mut [VmHandle]) -> SpawnError {
+    let mut unstoppable = Vec::new();
+    for handle in started.iter_mut() {
+        if let Err(err) = handle.kill() {
+            eprintln!(
+                "warning: VM {} could not be stopped while cleaning up after a boot failure: {err}",
+                handle.id()
+            );
+            unstoppable.push(handle.id());
+        }
+    }
+    if unstoppable.is_empty() {
+        boot
+    } else {
+        SpawnError::PartialCleanup {
+            boot: Box::new(boot),
+            vms: unstoppable,
+        }
+    }
 }
 
 fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
@@ -361,8 +438,9 @@ fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
 /// * append guest console output to `runtime.serial`,
 /// * install its stop control with [`VmRuntime::set_stop_control`],
 /// * register every thread it spawned with [`VmRuntime::add_thread`],
-/// * call [`VmRuntime::mark_guest_exited`] when the guest stopped the VM
-///   itself, and
+/// * call [`VmRuntime::mark_guest_exited`] (or
+///   [`VmRuntime::mark_guest_reset`], for a reset) when the guest stopped the
+///   VM itself, and
 /// * return once the VM is running (not when it stops).
 fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     #[cfg(target_os = "linux")]

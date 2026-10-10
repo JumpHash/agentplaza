@@ -186,25 +186,6 @@ impl Exception {
             class => Exception::Unhandled { class },
         }
     }
-
-    /// Whether the handler has to advance the guest's program counter by one
-    /// instruction after dealing with the exit.
-    ///
-    /// A data abort and a trapped `MRS`/`MSR` leave the PC *at* the faulting
-    /// instruction (the instruction did not execute, so the handler emulates
-    /// it and then steps over it), and so does a `WFI`/`WFE` trap and an
-    /// `SMC` - but an `HVC` is a call, so its exception return address already
-    /// points past it. Getting this wrong silently skips or repeats one
-    /// instruction of the guest.
-    pub const fn advances_pc(&self) -> bool {
-        match self {
-            Exception::Hvc { .. } | Exception::Unhandled { .. } => false,
-            Exception::Wait(_)
-            | Exception::Smc { .. }
-            | Exception::SysReg(_)
-            | Exception::Mmio(_) => true,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -245,21 +226,18 @@ mod tests {
             Exception::decode(esr(EC_WFX_TRAP, WFX_ISS_IS_WFE)),
             Exception::Wait(Wait { event: true })
         );
-        assert!(Exception::decode(esr(EC_WFX_TRAP, 0)).advances_pc());
     }
 
     #[test]
-    fn psci_conduit_calls_do_not_advance_the_program_counter() {
-        // `HVC #0` and `HVC #0x1234`.
+    fn the_psci_conduit_calls_decode_their_immediates() {
+        // `HVC #0x1234`.
         let hvc = Exception::decode(esr(EC_AA64_HVC, 0x1234));
         assert_eq!(hvc, Exception::Hvc { imm: 0x1234 });
-        assert!(!hvc.advances_pc(), "an HVC's return address is past it");
 
-        // An `SMC` is not the conduit this port declares, but the decode and
-        // the PC rule are still the ones a handler needs.
+        // An `SMC` is not the conduit this port declares (the device tree says
+        // `hvc`), but its immediate decodes the same way.
         let smc = Exception::decode(esr(EC_AA64_SMC, 7));
         assert_eq!(smc, Exception::Smc { imm: 7 });
-        assert!(smc.advances_pc());
     }
 
     #[test]
@@ -274,7 +252,6 @@ mod tests {
                 reg: ICC_IAR1_EL1,
             })
         );
-        assert!(iar.advances_pc());
 
         let pmr = Exception::decode(esr(EC_SYSREG_TRAP, sysreg_iss(false, 3, 3, 0, 4, 6, 0)));
         assert_eq!(
@@ -380,15 +357,13 @@ mod tests {
             }
             other => panic!("expected an MMIO access, got {other:?}"),
         }
-        assert!(decoded.advances_pc());
     }
 
     #[test]
-    fn anything_else_is_unhandled_and_does_not_step_the_guest() {
+    fn anything_else_is_unhandled() {
         for class in [0x00u8, EC_INSNABORT_LOWER, 0x26, 0x3f] {
             let decoded = Exception::decode(esr(class, 0x1234));
             assert_eq!(decoded, Exception::Unhandled { class });
-            assert!(!decoded.advances_pc());
         }
     }
 }

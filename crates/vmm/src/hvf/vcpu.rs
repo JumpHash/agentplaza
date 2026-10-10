@@ -34,7 +34,9 @@
 //!
 //! A halted vCPU takes its own slot lock and then the interrupt controller's
 //! lock, so the controller's lock is never held while a slot lock is taken: a
-//! path that changes the controller releases it before waking anybody.
+//! path that changes the controller goes through [`SharedVm::with_gic`], which
+//! releases it before waking anybody. `crate::hvf::wait` holds the other end
+//! of that rule.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -46,6 +48,7 @@ use crate::hvf::psci::{self, Action, Machine};
 use crate::hvf::sys::{self, HvfError};
 use crate::hvf::uart::SerialDevice;
 use crate::hvf::vm::HvfVm;
+use crate::hvf::wait::{self, Start, WaitSlot, wake_asserted};
 use crate::spawner::VmRuntime;
 use crate::vstate::bus::BusDevice;
 use crate::vstate::memory::GuestMemoryMmap;
@@ -58,13 +61,6 @@ const PSTATE_EL1H_MASKED: u64 = 0x3c5;
 /// set, so that `PSTATE.PAN` is not changed on exception entry (what the
 /// reference HVF backend boots with, from the Asahi Linux `m1n1` value).
 const SCTLR_EL1_BOOT: u64 = 0x3010_0180 | 0x0080_0000;
-
-/// `CNTV_CTL_EL0.ENABLE`.
-const CNTV_CTL_ENABLE: u64 = 1 << 0;
-/// `CNTV_CTL_EL0.IMASK`.
-const CNTV_CTL_IMASK: u64 = 1 << 1;
-/// `CNTV_CTL_EL0.ISTATUS`.
-const CNTV_CTL_ISTATUS: u64 = 1 << 2;
 
 /// The `GIC` field of `ID_AA64PFR0_EL1` (bits 27:24): 1 advertises the GICv3
 /// system-register interface, which is what the userspace controller
@@ -190,13 +186,20 @@ impl HvfVcpu {
         unsafe { (*self.exit).reason }
     }
 
-    /// The exception information of the last exit.
-    fn exception(&self) -> (u64, u64) {
+    /// The exception information of the last exit: the syndrome, the faulting
+    /// *virtual* address (what the guest's `FAR_EL1` has to hold) and the
+    /// faulting intermediate physical address (what this backend routes to its
+    /// devices).
+    fn exception(&self) -> (u64, u64, u64) {
         // SAFETY: as in `exit_reason`: the structure belongs to this vCPU and
         // this thread, and only describes the run that just returned.
         unsafe {
             let exception = (*self.exit).exception;
-            (exception.syndrome, exception.physical_address)
+            (
+                exception.syndrome,
+                exception.virtual_address,
+                exception.physical_address,
+            )
         }
     }
 
@@ -224,17 +227,17 @@ impl HvfVcpu {
     /// intermediate physical address size, so the guest never programs page
     /// tables the VM cannot translate.
     fn apply_id_registers(&self) -> Result<(), HvfError> {
-        // SAFETY: `hv_vcpu_config_create` returns an object owned by the
-        // caller; it is only read from, and the address is live for the call.
-        let config = unsafe { sys::hv_vcpu_config_create() };
-        let mut id_aa64pfr0 = feature_reg(config, sys::HV_FEATURE_REG_ID_AA64PFR0_EL1)?;
-        id_aa64pfr0 |= 1 << ID_AA64PFR0_GIC_SHIFT;
+        let (host_pfr0, host_mmfr0) = host_id_registers()?;
+
+        // `ID_AA64PFR0_EL1`: advertise the GICv3 system-register interface.
+        let id_aa64pfr0 = host_pfr0 | 1 << ID_AA64PFR0_GIC_SHIFT;
         self.set_sys_reg(sys::HV_SYS_REG_ID_AA64PFR0_EL1, id_aa64pfr0)?;
 
+        // `ID_AA64MMFR0_EL1`: clamp the physical address range to the VM's
+        // intermediate physical address size.
         let mut ipa_size = 0u32;
         sys::hv_try!(hv_vm_config_get_default_ipa_size(&mut ipa_size))?;
-        let mut id_aa64mmfr0 = feature_reg(config, sys::HV_FEATURE_REG_ID_AA64MMFR0_EL1)?;
-        id_aa64mmfr0 = (id_aa64mmfr0 & !0xf) | u64::from(parange_for_ipa_size(ipa_size));
+        let id_aa64mmfr0 = (host_mmfr0 & !0xf) | u64::from(parange_for_ipa_size(ipa_size));
         self.set_sys_reg(sys::HV_SYS_REG_ID_AA64MMFR0_EL1, id_aa64mmfr0)?;
         Ok(())
     }
@@ -285,14 +288,19 @@ impl HvfVcpu {
 
     /// Injects the data abort a guest gets for an address the VM has no
     /// memory or device at.
+    ///
+    /// `far` is the guest's *virtual* faulting address, which is what
+    /// `FAR_EL1` has to report to a data-abort handler; the intermediate
+    /// physical address is this backend's business (device routing) and must
+    /// not be handed to the guest in its place.
     fn inject_data_abort(
         &self,
-        ipa: u64,
+        far: u64,
         write: bool,
         return_address: u64,
     ) -> Result<(), HvfError> {
         let iss = DFSC_TRANSLATION_FAULT_0 | if write { DABORT_WNR } else { 0 };
-        self.inject(EC_DATAABORT_SAME_EL, iss, Some(ipa), return_address)
+        self.inject(EC_DATAABORT_SAME_EL, iss, Some(far), return_address)
     }
 
     /// Mirrors the guest's virtual timer into its interrupt line.
@@ -309,12 +317,13 @@ impl HvfVcpu {
             return Ok(());
         }
         let control = self.get_sys_reg(sys::HV_SYS_REG_CNTV_CTL_EL0)?;
-        let asserted = control & (CNTV_CTL_ENABLE | CNTV_CTL_IMASK | CNTV_CTL_ISTATUS)
-            == (CNTV_CTL_ENABLE | CNTV_CTL_ISTATUS);
-        if asserted {
-            shared.with_interrupts(|gic| gic.raise_private(index, gic::VIRTUAL_TIMER_PPI));
+        let armed = wait::CNTV_CTL_ENABLE | wait::CNTV_CTL_ISTATUS;
+        let masked =
+            control & (wait::CNTV_CTL_ENABLE | wait::CNTV_CTL_IMASK | wait::CNTV_CTL_ISTATUS);
+        if masked == armed {
+            shared.with_interrupts(|gic| gic.raise_virtual_timer(index));
         } else {
-            shared.with_interrupts(|gic| gic.lower_private(index, gic::VIRTUAL_TIMER_PPI));
+            shared.with_interrupts(|gic| gic.lower_virtual_timer(index));
             sys::hv_try!(hv_vcpu_set_vtimer_mask(self.id, false))?;
             self.vtimer_masked = false;
         }
@@ -322,22 +331,22 @@ impl HvfVcpu {
     }
 
     /// How long a halted vCPU may sleep before the guest's virtual timer is
-    /// due: `None` when no timer is programmed (sleep until something wakes
-    /// the vCPU anyway) and `Some(Duration::ZERO)` when it is already due.
-    fn vtimer_sleep(&self, vtimer_offset: u64) -> Result<Option<Duration>, HvfError> {
+    /// due: `None` when no timer is programmed, or when a timer that has fired
+    /// cannot reach the guest yet (see [`wait::idle_deadline`]).
+    fn vtimer_sleep(&self, index: usize, shared: &SharedVm) -> Result<Option<Duration>, HvfError> {
         let control = self.get_sys_reg(sys::HV_SYS_REG_CNTV_CTL_EL0)?;
-        if control & CNTV_CTL_ENABLE == 0 || control & CNTV_CTL_IMASK != 0 {
-            return Ok(None);
-        }
         let compare = self.get_sys_reg(sys::HV_SYS_REG_CNTV_CVAL_EL0)?;
-        let now = guest_counter(vtimer_offset);
-        if compare <= now {
-            return Ok(Some(Duration::ZERO));
-        }
-        let ticks = u128::from(compare - now);
-        let nanos = ticks * 1_000_000_000 / u128::from(counter_frequency());
-        let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
-        Ok(Some(Duration::from_nanos(nanos)))
+        let now = guest_counter(shared.vtimer_offset);
+        let deliverable = shared
+            .gic()
+            .delivers_private(index, gic::VIRTUAL_TIMER_INTID);
+        Ok(wait::idle_deadline(
+            control,
+            compare,
+            now,
+            deliverable,
+            counter_frequency,
+        ))
     }
 }
 
@@ -352,12 +361,40 @@ impl Drop for HvfVcpu {
     }
 }
 
+/// Reads the host's `ID_AA64PFR0_EL1` and `ID_AA64MMFR0_EL1` through one vCPU
+/// configuration object.
+///
+/// The object `hv_vcpu_config_create` returns is owned by the caller, so it is
+/// destroyed here on every path, including the failures: a VMM that started
+/// many vCPUs would otherwise leak one object per vCPU.
+fn host_id_registers() -> Result<(u64, u64), HvfError> {
+    // SAFETY: `hv_vcpu_config_create` returns an object owned by the caller;
+    // it is only read from before it is destroyed below.
+    let config = unsafe { sys::hv_vcpu_config_create() };
+    let registers =
+        feature_reg(config, sys::HV_FEATURE_REG_ID_AA64PFR0_EL1).and_then(|id_aa64pfr0| {
+            feature_reg(config, sys::HV_FEATURE_REG_ID_AA64MMFR0_EL1)
+                .map(|id_aa64mmfr0| (id_aa64pfr0, id_aa64mmfr0))
+        });
+    // SAFETY: `config` was created above, this process owns it, and it is
+    // destroyed exactly once.
+    let destroyed = sys::check("hv_vcpu_config_destroy", unsafe {
+        sys::hv_vcpu_config_destroy(config)
+    });
+    // A failed read is the more useful error; the failed destroy is only
+    // reported when both reads succeeded.
+    let registers = registers?;
+    destroyed?;
+    Ok(registers)
+}
+
 /// Reads a host feature register through a vCPU configuration object.
 fn feature_reg(config: sys::hv_vcpu_config_t, reg: sys::hv_feature_reg_t) -> Result<u64, HvfError> {
     let mut value = 0u64;
     // SAFETY: `config` was returned by `hv_vcpu_config_create` (never a null
-    // pointer, which the framework's own API contract makes non-null); the
-    // pointer to `value` is to a live local for the duration of the call.
+    // pointer, which the framework's own API contract makes non-null) and is
+    // live until its owner destroys it; the pointer to `value` is to a live
+    // local for the duration of the call.
     sys::check("hv_vcpu_config_get_feature_reg", unsafe {
         sys::hv_vcpu_config_get_feature_reg(config, reg, &mut value)
     })?;
@@ -437,24 +474,9 @@ struct VcpuSlot {
     /// The framework handle, published by the owning thread once the vCPU
     /// exists; zero before that.
     id: AtomicU64,
-    /// What the vCPU thread is doing.
-    state: Mutex<SlotState>,
-    /// Taken and notified whenever anything a vCPU could be waiting for
-    /// changes.
-    wake: Condvar,
-}
-
-/// The state of one vCPU, guarded by its slot's mutex.
-#[derive(Debug, Default)]
-struct SlotState {
-    /// Whether the vCPU is executing: false while it waits for a PSCI
-    /// `CPU_ON`.
-    running: bool,
-    /// The entry point and `X0` a `CPU_ON` handed it, for the owning thread
-    /// to apply.
-    start: Option<(u64, u64)>,
-    /// Whether the vCPU is idling after `WFI`/`WFE`/`CPU_SUSPEND`.
-    halted: bool,
+    /// The wake protocol: whether the vCPU is powered on, and how it is woken
+    /// (see [`crate::hvf::wait`]).
+    wait: WaitSlot,
 }
 
 /// What the vCPUs of one VM share, and what the devices and the spawner
@@ -485,8 +507,6 @@ pub struct SharedVm {
     slots: Vec<Arc<VcpuSlot>>,
     /// Set when the VM should stop.
     stop: AtomicBool,
-    /// Set when the guest stopped the VM itself.
-    guest_exited: AtomicBool,
     /// The first fatal backend error, for the report the spawner's caller
     /// gets after the VM has stopped.
     failure: Mutex<Option<String>>,
@@ -532,14 +552,9 @@ impl SharedVm {
             .map(|index| {
                 Arc::new(VcpuSlot {
                     id: AtomicU64::new(0),
-                    state: Mutex::new(SlotState {
-                        // Only the boot CPU starts running; the others wait
-                        // for a PSCI CPU_ON.
-                        running: index == 0,
-                        start: None,
-                        halted: false,
-                    }),
-                    wake: Condvar::new(),
+                    // Only the boot CPU starts running; the others wait for a
+                    // PSCI CPU_ON.
+                    wait: WaitSlot::new(index == 0),
                 })
             })
             .collect();
@@ -552,7 +567,6 @@ impl SharedVm {
             vtimer_offset,
             slots,
             stop: AtomicBool::new(false),
-            guest_exited: AtomicBool::new(false),
             failure: Mutex::new(None),
             started: Mutex::new(false),
             started_wake: Condvar::new(),
@@ -575,28 +589,42 @@ impl SharedVm {
         lock(&self.interrupts)
     }
 
-    /// Changes the interrupt controller and then wakes the vCPUs whose
-    /// interrupt line the change asserted.
+    /// Changes the interrupt controller under its lock, and then wakes the
+    /// vCPUs whose interrupt line the change asserted.
+    ///
+    /// Every path that can change the controller goes through here: the
+    /// console's trigger, the virtual timer, and the guest's own
+    /// system-register and MMIO writes. A change that asserts another vCPU's
+    /// line has to wake that vCPU - it may be halted, and nothing else would
+    /// tell it that an interrupt is now pending for it.
     ///
     /// The controller's lock is released before any vCPU is woken: a halted
-    /// vCPU takes its own lock and then the controller's, so holding the
-    /// controller while taking a slot lock would deadlock.
-    fn with_interrupts(&self, change: impl FnOnce(&mut Gic)) {
-        let mut asserted = 0u64;
-        {
+    /// vCPU takes its own slot's lock and then the controller's, so waking
+    /// while holding the controller would deadlock.
+    fn with_gic<R>(&self, change: impl FnOnce(&mut Gic) -> R) -> R {
+        let (result, asserted) = {
             let mut gic = self.gic();
-            change(&mut gic);
+            let result = change(&mut gic);
+            let mut asserted = 0u64;
             for index in 0..self.slots.len().min(MAX_VCPUS) {
                 if gic.irq_line(index) {
                     asserted |= 1 << index;
                 }
             }
-        }
-        for index in 0..self.slots.len().min(MAX_VCPUS) {
-            if asserted >> index & 1 == 1 {
-                self.wake(index);
-            }
-        }
+            (result, asserted)
+        };
+        wake_asserted(
+            self.slots.iter().map(|slot| &slot.wait),
+            asserted,
+            |index| self.kick(index),
+        );
+        result
+    }
+
+    /// Changes the interrupt controller and wakes the vCPUs whose line the
+    /// change asserted.
+    fn with_interrupts(&self, change: impl FnOnce(&mut Gic)) {
+        self.with_gic(change);
     }
 
     /// Wakes a vCPU: any thread waiting on its slot, and the vCPU itself if it
@@ -605,7 +633,15 @@ impl SharedVm {
         let Some(slot) = self.slots.get(index) else {
             return;
         };
-        slot.wake.notify_all();
+        slot.wait.wake();
+        self.kick(index);
+    }
+
+    /// Asks a vCPU that is inside `hv_vcpu_run` to leave it.
+    fn kick(&self, index: usize) {
+        let Some(slot) = self.slots.get(index) else {
+            return;
+        };
         let id = slot.id.load(Ordering::SeqCst);
         if id != 0 {
             // SAFETY: `id` is a handle this process published after
@@ -661,7 +697,7 @@ impl SharedVm {
     /// which the spawner's threads finish and the VM's memory and framework
     /// objects are released.
     pub fn stop(&self) {
-        self.request_stop(false);
+        self.request_stop(StopCause::Requested);
     }
 
     /// Whether the VM has been asked to stop.
@@ -671,13 +707,16 @@ impl SharedVm {
 
     /// Stops the VM: every vCPU is woken and leaves its run loop.
     ///
-    /// `guest_exited` distinguishes the guest stopping the VM itself
-    /// (shutdown or reset) from the spawner asking for it, which is what the
-    /// VM handle reports afterwards.
-    fn request_stop(&self, guest_exited: bool) {
-        if guest_exited {
-            self.guest_exited.store(true, Ordering::SeqCst);
-            self.runtime.mark_guest_exited();
+    /// The cause distinguishes the guest stopping the VM itself (a shutdown or
+    /// a reset) from the spawner asking for it, which is what the VM handle
+    /// reports afterwards.
+    fn request_stop(&self, cause: StopCause) {
+        match cause {
+            StopCause::Requested => {}
+            StopCause::GuestShutdown => self.runtime.mark_guest_exited(),
+            // A reset is still the guest ending the VM: this backend has no
+            // re-boot path, but the caller is told which of the two it was.
+            StopCause::GuestReset => self.runtime.mark_guest_reset(),
         }
         self.stop.store(true, Ordering::SeqCst);
         for index in 0..self.slots.len() {
@@ -688,44 +727,50 @@ impl SharedVm {
     /// Records the first fatal error of a vCPU and stops the VM.
     fn fail(&self, index: usize, error: &HvfError) {
         let message = format!("vCPU {index}: {error}");
-        let mut failure = lock(&self.failure);
-        if failure.is_none() {
-            eprintln!("VM {}: {message}", self.runtime.id);
-            *failure = Some(message);
+        {
+            // The `started` lock is held across the failure write and the
+            // notification: `wait_until_started` checks the failure under that
+            // lock, so a report that lands between its check and its wait is
+            // still seen (rather than making `boot` wait out its timeout).
+            let _started = lock(&self.started);
+            let mut failure = lock(&self.failure);
+            if failure.is_none() {
+                eprintln!("VM {}: {message}", self.runtime.id);
+                *failure = Some(message);
+            }
+            self.started_wake.notify_all();
         }
-        drop(failure);
-        self.started_wake.notify_all();
-        self.request_stop(false);
+        self.request_stop(StopCause::Requested);
     }
 
     /// Starts a vCPU at `entry` with `context_id` in `X0`, for a PSCI
     /// `CPU_ON`.
-    fn start_vcpu(&self, index: usize, entry: u64, context_id: u64) {
+    ///
+    /// Returns whether this call is what started it. The check and the state
+    /// write happen together under the slot's lock, so two concurrent
+    /// `CPU_ON`s of the same vCPU cannot both start it, the second silently
+    /// overwriting the first's entry point; the caller answers PSCI
+    /// `ALREADY_ON` when this returns `false`.
+    fn start_vcpu(&self, index: usize, entry: u64, context_id: u64) -> bool {
         let Some(slot) = self.slots.get(index) else {
-            return;
+            return false;
         };
-        {
-            let mut state = lock(&slot.state);
-            state.running = true;
-            state.start = Some((entry, context_id));
-        }
-        // The target may be waiting on its condition variable, or running
-        // inside `hv_vcpu_run` (if it was started twice, which the PSCI call
-        // checks against); wake it either way.
-        self.wake(index);
+        // A powered-off vCPU waits on its slot (never inside `hv_vcpu_run`),
+        // so starting it wakes it without a kick.
+        slot.wait.start(entry, context_id)
     }
 
     /// Whether a vCPU is powered on, as PSCI sees it.
     fn is_running(&self, index: usize) -> bool {
         self.slots
             .get(index)
-            .is_some_and(|slot| lock(&slot.state).running)
+            .is_some_and(|slot| slot.wait.is_running())
     }
 
     /// Marks a vCPU as powered off (a PSCI `CPU_OFF`).
     fn park(&self, index: usize) {
         if let Some(slot) = self.slots.get(index) {
-            lock(&slot.state).running = false;
+            slot.wait.park();
         }
     }
 
@@ -766,19 +811,21 @@ impl SharedVm {
     fn write_mmio(&self, ipa: u64, bytes: &[u8]) -> bool {
         let size = bytes.len() as u8;
         let value = to_u64(bytes);
-        {
-            let mut gic = self.gic();
-            match gic.decode_address(ipa) {
-                Some(GicMmio::Distributor { offset }) => {
-                    gic.dist_write(offset, size, value);
-                    return true;
-                }
-                Some(GicMmio::Redistributor { cpu, offset }) => {
-                    gic.redist_write(cpu, offset, size, value);
-                    return true;
-                }
-                None => {}
+        // A guest write to the controller goes through `with_gic`, so that a
+        // write which asserts another vCPU's line (an `ISPENDR`, or an
+        // `ISENABLER` of a pending interrupt) wakes it. The address is decoded
+        // first: a write to a device must not pay for that scan, and the
+        // controller's lock has to be released before the wake.
+        match self.gic().decode_address(ipa) {
+            Some(GicMmio::Distributor { offset }) => {
+                self.with_gic(|gic| gic.dist_write(offset, size, value));
+                return true;
             }
+            Some(GicMmio::Redistributor { cpu, offset }) => {
+                self.with_gic(|gic| gic.redist_write(cpu, offset, size, value));
+                return true;
+            }
+            None => {}
         }
         if let Some(range) = offset_in(ipa, SERIAL_BASE, SERIAL_LEN) {
             let mut serial = lock(&self.serial);
@@ -838,8 +885,21 @@ enum Outcome {
     Idle,
     /// Park the vCPU: it is powered off until a `CPU_ON` starts it.
     Park,
-    /// Stop the whole VM.
-    Stop,
+    /// Stop the whole VM, for the reason PSCI reported.
+    Stop(StopCause),
+}
+
+/// Why a VM is being stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopCause {
+    /// The spawner (or a backend failure) asked the VM to stop.
+    Requested,
+    /// The guest shut itself down (PSCI `SYSTEM_OFF`).
+    GuestShutdown,
+    /// The guest asked to reset (PSCI `SYSTEM_RESET`). This backend has no
+    /// re-boot path, so the VM stops either way; the caller is told which of
+    /// the two the guest asked for.
+    GuestReset,
 }
 
 /// Runs one vCPU until the VM stops.
@@ -885,8 +945,21 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
         // executed CPU_OFF) waits here for a PSCI CPU_ON. Register state is
         // applied on this thread, because Hypervisor.framework only accepts
         // register access from the vCPU's own thread.
-        if !wait_for_start(&vcpu, shared, &slot)? {
-            return Ok(());
+        match slot.wait.wait_for_start(|| shared.stop_requested()) {
+            Start::Stopped => return Ok(()),
+            Start::Running => {}
+            Start::At { entry, context_id } => {
+                // A freshly powered-on core presents reset register state, as
+                // the PSCI specification requires: the guest must not observe
+                // whatever a previous powering of this vCPU left in its
+                // registers.
+                for reg in 1..=30 {
+                    vcpu.set_reg(sys::HV_REG_X0 + reg, 0)?;
+                }
+                vcpu.set_reg(sys::HV_REG_PC, entry)?;
+                vcpu.set_reg(sys::HV_REG_X0, context_id)?;
+                vcpu.set_reg(sys::HV_REG_CPSR, PSTATE_EL1H_MASKED)?;
+            }
         }
 
         // The virtual timer can only be unmasked on the vCPU's own thread, and
@@ -906,7 +979,7 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
                 // timer's interrupt and let `sync_vtimer` unmask it once the
                 // guest has dealt with it.
                 vcpu.vtimer_masked = true;
-                shared.with_interrupts(|gic| gic.raise_private(index, gic::VIRTUAL_TIMER_PPI));
+                shared.with_interrupts(|gic| gic.raise_virtual_timer(index));
                 Outcome::Again
             }
             sys::HV_EXIT_REASON_EXCEPTION => handle_exception(&mut vcpu, index, shared)?,
@@ -927,83 +1000,23 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
         match outcome {
             Outcome::Again => {}
             Outcome::Idle => {
-                let sleep = vcpu.vtimer_sleep(shared.vtimer_offset)?;
-                halt(shared, &slot, index, sleep);
+                let sleep = vcpu.vtimer_sleep(index, shared)?;
+                // `halt` re-checks the predicate under the slot's lock, so an
+                // interrupt raised, or a stop requested, while this vCPU is
+                // deciding to sleep is not missed.
+                slot.wait.halt(sleep, || {
+                    shared.stop_requested() || shared.gic().irq_line(index)
+                });
             }
             Outcome::Park => {
                 shared.park(index);
             }
-            Outcome::Stop => {
-                shared.request_stop(true);
+            Outcome::Stop(cause) => {
+                shared.request_stop(cause);
                 return Ok(());
             }
         }
     }
-}
-
-/// Waits, for a vCPU that is powered off, until a `CPU_ON` starts it.
-///
-/// Returns `false` when the VM was asked to stop instead.
-fn wait_for_start(
-    vcpu: &HvfVcpu,
-    shared: &Arc<SharedVm>,
-    slot: &Arc<VcpuSlot>,
-) -> Result<bool, HvfError> {
-    let mut state = lock(&slot.state);
-    while !state.running {
-        if shared.stop_requested() {
-            return Ok(false);
-        }
-        state = slot
-            .wake
-            .wait(state)
-            .unwrap_or_else(PoisonError::into_inner);
-    }
-    if let Some((entry, context_id)) = state.start.take() {
-        vcpu.set_reg(sys::HV_REG_PC, entry)?;
-        vcpu.set_reg(sys::HV_REG_X0, context_id)?;
-        vcpu.set_reg(sys::HV_REG_CPSR, PSTATE_EL1H_MASKED)?;
-    }
-    Ok(true)
-}
-
-/// Idles a vCPU after `WFI`/`WFE`/`CPU_SUSPEND`.
-///
-/// `sleep` bounds the wait (`None` when no timer is programmed). Every wake -
-/// a raised interrupt, a kick, the timer's deadline - ends the wait, and the
-/// caller runs the vCPU again: if the interrupt arrived, the guest takes it;
-/// if the timer came due, the framework reports it; if the wake was spurious,
-/// the loop here checks again and goes back to sleep, so an idle guest is not
-/// resumed early.
-fn halt(shared: &Arc<SharedVm>, slot: &Arc<VcpuSlot>, index: usize, sleep: Option<Duration>) {
-    let mut state = lock(&slot.state);
-    state.halted = true;
-    loop {
-        if shared.stop_requested() || shared.gic().irq_line(index) {
-            break;
-        }
-        match sleep {
-            None => {
-                state = slot
-                    .wake
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-            Some(timeout) => {
-                let (guard, timed_out) = slot
-                    .wake
-                    .wait_timeout(state, timeout)
-                    .unwrap_or_else(PoisonError::into_inner);
-                state = guard;
-                if timed_out.timed_out() {
-                    // The timer is due: run the vCPU so the framework reports
-                    // it.
-                    break;
-                }
-            }
-        }
-    }
-    state.halted = false;
 }
 
 /// Answers one guest exception.
@@ -1012,7 +1025,7 @@ fn handle_exception(
     index: usize,
     shared: &Arc<SharedVm>,
 ) -> Result<Outcome, HvfError> {
-    let (syndrome, ipa) = vcpu.exception();
+    let (syndrome, virtual_address, ipa) = vcpu.exception();
     let exception = Exception::decode(syndrome);
     match exception {
         Exception::Wait(Wait { event: true }) => {
@@ -1030,7 +1043,7 @@ fn handle_exception(
                 Ok(Outcome::Idle)
             }
         }
-        Exception::Mmio(access) => handle_mmio(vcpu, shared, access, ipa),
+        Exception::Mmio(access) => handle_mmio(vcpu, shared, access, ipa, virtual_address),
         Exception::SysReg(reg) => handle_sys_reg(vcpu, index, shared, reg),
         Exception::Hvc { .. } => handle_psci(vcpu, shared),
         Exception::Smc { .. } => {
@@ -1056,11 +1069,16 @@ fn handle_exception(
 }
 
 /// Emulates a load or store to a device.
+///
+/// `ipa` is the guest physical address the access has to be routed to, and
+/// `virtual_address` the faulting virtual address, which is what an injected
+/// data abort reports to the guest in `FAR_EL1`.
 fn handle_mmio(
     vcpu: &mut HvfVcpu,
     shared: &Arc<SharedVm>,
     access: MmioAccess,
     ipa: u64,
+    virtual_address: u64,
 ) -> Result<Outcome, HvfError> {
     // A cache maintenance instruction that faulted is skipped by the
     // architecture's own rule.
@@ -1074,7 +1092,7 @@ fn handle_mmio(
     // for anything else (SIMD, SVE, or an instruction the framework could not
     // decode) the access cannot be emulated and the guest is faulted.
     if !access.valid || access.len > 8 || access.len == 0 {
-        vcpu.inject_data_abort(ipa, !access.read, pc)?;
+        vcpu.inject_data_abort(virtual_address, !access.read, pc)?;
         return Ok(Outcome::Again);
     }
 
@@ -1086,7 +1104,7 @@ fn handle_mmio(
     if access.read {
         let mut bytes = [0u8; 8];
         if !shared.read_mmio(ipa, &mut bytes[..len]) {
-            vcpu.inject_data_abort(ipa, false, pc)?;
+            vcpu.inject_data_abort(virtual_address, false, pc)?;
             return Ok(Outcome::Again);
         }
         if access.rt != 31 {
@@ -1103,7 +1121,7 @@ fn handle_mmio(
             vcpu.get_reg(rt)?
         };
         if !shared.write_mmio(ipa, &value.to_le_bytes()[..len]) {
-            vcpu.inject_data_abort(ipa, true, pc)?;
+            vcpu.inject_data_abort(virtual_address, true, pc)?;
             return Ok(Outcome::Again);
         }
     }
@@ -1136,7 +1154,9 @@ fn handle_sys_reg(
         let value = match reg.reg {
             // Acknowledging has a side effect on the interrupt state, so it
             // is not a plain register read.
-            icc::ICC_IAR0_EL1 | icc::ICC_IAR1_EL1 => u64::from(shared.gic().ack(index)),
+            icc::ICC_IAR0_EL1 | icc::ICC_IAR1_EL1 => {
+                u64::from(shared.with_gic(|gic| gic.ack(index)))
+            }
             icc::ICC_HPPIR0_EL1 | icc::ICC_HPPIR1_EL1 => shared.gic().hppir(index),
             other => match shared.gic().sysreg_read(index, other) {
                 Some(value) => value,
@@ -1162,13 +1182,16 @@ fn handle_sys_reg(
         } else {
             vcpu.get_reg(sys::HV_REG_X0 + sys::hv_reg_t::from(reg.rt))?
         };
+        // A guest write goes through `with_gic`: it can assert a line - of
+        // this vCPU or of another one (an SGI, an enable, a priority-mask
+        // change) - and the vCPUs whose line it asserts have to be woken.
         let handled = match reg.reg {
             icc::ICC_IAR0_EL1 | icc::ICC_IAR1_EL1 => {
-                shared.gic().ack(index);
+                shared.with_gic(|gic| gic.ack(index));
                 true
             }
             icc::ICC_HPPIR0_EL1 | icc::ICC_HPPIR1_EL1 => true,
-            other => shared.gic().sysreg_write(index, other, value),
+            other => shared.with_gic(|gic| gic.sysreg_write(index, other, value)),
         };
         if !handled {
             let pc = vcpu.get_reg(sys::HV_REG_PC)?;
@@ -1209,12 +1232,24 @@ fn handle_psci(vcpu: &mut HvfVcpu, shared: &Arc<SharedVm>) -> Result<Outcome, Hv
             entry,
             context_id,
         } => {
-            shared.start_vcpu(psci::affinity0(mpidr) as usize, entry, context_id);
-            vcpu.set_reg(sys::HV_REG_X0, psci::RET_SUCCESS)?;
+            // The running check above raced whatever else touched this vCPU's
+            // state; `start_vcpu` is the authoritative one, and reports
+            // whether it is what started it.
+            let returned = if shared.start_vcpu(psci::affinity0(mpidr) as usize, entry, context_id)
+            {
+                psci::RET_SUCCESS
+            } else {
+                psci::RET_ALREADY_ON
+            };
+            vcpu.set_reg(sys::HV_REG_X0, returned)?;
             Ok(Outcome::Again)
         }
         Action::CpuOff => Ok(Outcome::Park),
-        Action::SystemOff { .. } => Ok(Outcome::Stop),
+        Action::SystemOff { reset } => Ok(Outcome::Stop(if reset {
+            StopCause::GuestReset
+        } else {
+            StopCause::GuestShutdown
+        })),
         Action::Suspend => {
             vcpu.set_reg(sys::HV_REG_X0, psci::RET_SUCCESS)?;
             Ok(Outcome::Idle)

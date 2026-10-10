@@ -7,7 +7,9 @@ Amazon.com, Inc. or its affiliates, licensed under the Apache License,
 Version 2.0 (see LICENSE in this directory).
 
 Files under crates/vmm/src/{vstate,arch,devices,builder} are derived from
-Firecracker's src/vmm crate (tree/main) and adapted:
+Firecracker's src/vmm crate (tree/main), and crates/vmm/src/builder.rs
+additionally from Firecracker's src/device_manager/legacy.rs (outside src/vmm),
+and adapted:
 
 - trimmed to the multi-VM spawner base: removed metrics, the in-crate logger,
   seccomp, snapshots/persist, event-manager, mmds, pci, gdb, vhost-user,

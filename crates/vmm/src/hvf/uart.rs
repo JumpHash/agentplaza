@@ -1,10 +1,12 @@
 // Copyright 2026 AgentPlaza
 // SPDX-License-Identifier: Apache-2.0
 //
-// Written for this port. Firecracker's console wrapper
-// (`devices/legacy/serial.rs`) is Linux-only here because its interrupt
-// trigger rides on an `EventFd`, which macOS does not have; this is the same
-// device with the trigger pointed at the userspace interrupt controller
+// Written for this port. The wrapper shape - the bounded in-memory capture,
+// the `BusDevice` adaptation and the byte-only register handling - mirrors
+// `devices/legacy/serial.rs` (itself derived from Firecracker's
+// `src/vmm/src/devices/legacy/serial.rs`); what differs is the interrupt
+// trigger: this path cannot use the KVM path's `EventFd`, which macOS does not
+// have, so it points the trigger at the userspace interrupt controller
 // instead. The device itself is the `vm-superio` `Serial` both paths share.
 
 //! The serial console of an aarch64 VM on Hypervisor.framework: a 16550 UART
@@ -18,7 +20,7 @@
 //! raised differs.
 
 use std::io::{self, Write};
-use std::sync::{Arc, Barrier, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard, PoisonError, Weak};
 
 use vm_superio::Trigger;
 use vm_superio::serial::{NoEvents, Serial};
@@ -44,16 +46,26 @@ pub trait ConsoleLine: Send + Sync + std::fmt::Debug {
 }
 
 /// The `vm-superio` trigger over a [`ConsoleLine`].
+///
+/// The line is held **weakly**: in this backend the line *is* the VM, and the
+/// device lives in the VM's own state, so a strong reference would make the
+/// device and the VM keep each other alive - the VM, its vCPU threads and its
+/// guest memory would never be released after it stopped.
 #[derive(Debug)]
 pub struct GicTrigger {
-    line: Arc<dyn ConsoleLine>,
+    line: Weak<dyn ConsoleLine>,
 }
 
 impl Trigger for GicTrigger {
     type E = io::Error;
 
     fn trigger(&self) -> io::Result<()> {
-        self.line.raise()
+        match self.line.upgrade() {
+            Some(line) => line.raise(),
+            // The VM is gone, so there is no interrupt controller left to
+            // raise the console's interrupt in and nothing to report.
+            None => Ok(()),
+        }
     }
 }
 
@@ -101,8 +113,14 @@ pub struct SerialDevice {
 impl SerialDevice {
     /// Creates the console: `capture` receives the guest's output and `line`
     /// is asserted when the UART has an interrupt to raise.
-    pub fn new(capture: Arc<Mutex<Vec<u8>>>, line: Arc<dyn ConsoleLine>) -> Self {
-        let trigger = GicTrigger { line };
+    ///
+    /// Only a weak reference to `line` is kept (see [`GicTrigger`]): the
+    /// caller keeps ownership of the VM, and the device must not extend its
+    /// life.
+    pub fn new(capture: Arc<Mutex<Vec<u8>>>, line: &Arc<dyn ConsoleLine>) -> Self {
+        let trigger = GicTrigger {
+            line: Arc::downgrade(line),
+        };
         Self {
             uart: Serial::with_events(trigger, NoEvents, SharedSink::new(capture)),
         }
@@ -153,63 +171,116 @@ mod tests {
         }
     }
 
-    /// A console with a fresh capture and a line that counts raises.
-    fn console() -> (SerialDevice, Arc<Mutex<Vec<u8>>>, Arc<AtomicUsize>) {
+    /// A console with a fresh capture, a line that counts raises, and the line
+    /// itself - which the test keeps alive exactly as the VM keeps itself
+    /// alive, because the device only holds a weak reference to it.
+    struct Console {
+        device: SerialDevice,
+        capture: Arc<Mutex<Vec<u8>>>,
+        raises: Arc<AtomicUsize>,
+        /// Held for the test's duration: the device holds only a weak
+        /// reference, so dropping this is what makes the line go away.
+        _line: Arc<dyn ConsoleLine>,
+    }
+
+    fn console() -> Console {
         let capture = Arc::new(Mutex::new(Vec::new()));
         let raises = Arc::new(AtomicUsize::new(0));
         let line: Arc<dyn ConsoleLine> = Arc::new(CountingLine::new(Arc::clone(&raises)));
-        (
-            SerialDevice::new(Arc::clone(&capture), line),
+        let device = SerialDevice::new(Arc::clone(&capture), &line);
+        Console {
+            device,
             capture,
             raises,
-        )
+            _line: line,
+        }
     }
 
     #[test]
     fn the_console_appends_what_the_guest_writes() {
-        let (mut device, capture, raises) = console();
+        let mut console = console();
 
         // IER: enable the "transmitter holding register empty" interrupt, then
         // transmit a byte through the THR, as the 8250 driver does.
-        device.write(0, 1, &[0x02]);
-        device.write(0, 0, b"h");
+        console.device.write(0, 1, &[0x02]);
+        console.device.write(0, 0, b"h");
 
-        assert_eq!(&capture.lock().unwrap()[..], b"h");
+        assert_eq!(&console.capture.lock().unwrap()[..], b"h");
         assert_eq!(
-            raises.load(Ordering::SeqCst),
+            console.raises.load(Ordering::SeqCst),
             1,
             "the first byte raises the console's interrupt"
         );
 
         // The line stays asserted until the driver acknowledges it, so the
         // next transmitted byte raises nothing new ...
-        device.write(0, 0, b"i");
-        assert_eq!(raises.load(Ordering::SeqCst), 1);
+        console.device.write(0, 0, b"i");
+        assert_eq!(console.raises.load(Ordering::SeqCst), 1);
 
         // ... and once the driver has read the interrupt identification
         // register, the next byte does.
         let mut identification = [0u8; 1];
-        device.read(0, 2, &mut identification);
+        console.device.read(0, 2, &mut identification);
         assert_eq!(identification[0] & 1, 0, "an interrupt was pending");
-        device.write(0, 0, b"!");
-        assert_eq!(raises.load(Ordering::SeqCst), 2);
+        console.device.write(0, 0, b"!");
+        assert_eq!(console.raises.load(Ordering::SeqCst), 2);
 
-        assert_eq!(&capture.lock().unwrap()[..], b"hi!");
+        assert_eq!(&console.capture.lock().unwrap()[..], b"hi!");
+    }
+
+    #[test]
+    fn the_console_does_not_keep_the_vm_alive() {
+        // The line is the VM in this backend, and the device lives in the
+        // VM's own state: a device holding a *strong* reference to its line
+        // makes the two keep each other alive, so a stopped VM never releases
+        // its vCPU threads, its guest memory or its hypervisor VM.
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let raises = Arc::new(AtomicUsize::new(0));
+        let line: Arc<dyn ConsoleLine> = Arc::new(CountingLine::new(Arc::clone(&raises)));
+        let mut device = SerialDevice::new(Arc::clone(&capture), &line);
+
+        device.write(0, 1, &[0x02]);
+        device.write(0, 0, b"a");
+        assert_eq!(
+            raises.load(Ordering::SeqCst),
+            1,
+            "the line raises while the VM is alive"
+        );
+
+        // The VM goes away; the device must not have been holding it.
+        drop(line);
+
+        // Acknowledge the pending interrupt, so that another byte would raise
+        // the line again if the VM were still there.
+        let mut identification = [0u8; 1];
+        device.read(0, 2, &mut identification);
+        device.write(0, 0, b"b");
+        assert_eq!(
+            raises.load(Ordering::SeqCst),
+            1,
+            "a dropped VM's line can no longer be raised"
+        );
+        // ... and the console still captures the guest's output.
+        assert_eq!(&capture.lock().unwrap()[..], b"ab");
     }
 
     #[test]
     fn a_line_register_can_be_read_and_wide_accesses_are_dropped() {
-        let (mut device, _, raises) = console();
+        let mut console = console();
 
         let mut line_status = [0u8; 1];
-        device.read(0, 5, &mut line_status);
+        console.device.read(0, 5, &mut line_status);
 
         // A wider access is dropped, as in the KVM path's wrapper: the guest's
         // UART driver only ever does byte accesses.
         let mut wide = [0u8; 2];
-        device.read(0, 5, &mut wide);
+        console.device.read(0, 5, &mut wide);
         assert_eq!(wide, [0, 0]);
-        assert_eq!(raises.load(Ordering::SeqCst), 0, "a read raises nothing");
+        assert_eq!(
+            console.raises.load(Ordering::SeqCst),
+            0,
+            "a read raises nothing"
+        );
     }
 
     #[test]

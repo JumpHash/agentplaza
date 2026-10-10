@@ -12,8 +12,8 @@
 // arch re-exports are cfg-selected because this tree's `arch/mod.rs`
 // declares the per-arch modules rather than re-exporting their items).
 
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use kvm_bindings::kvm_userspace_memory_region;
 use kvm_ioctls::VmFd;
@@ -30,7 +30,7 @@ use crate::vstate::bus::{lock, Bus};
 use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::{GuestMemoryMmap, GuestRegionMmap, GuestRegionMmapExt, MemoryError};
 use crate::vstate::resources::ResourceAllocator;
-use crate::vstate::vcpu::{StartThreadedError, Vcpu, VcpuError, VcpuEvent, VcpuHandle};
+use crate::vstate::vcpu::{StartGate, StartThreadedError, Vcpu, VcpuError, VcpuEvent, VcpuHandle};
 
 /// Error type for [`KvmVm::start_vcpus`].
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +59,11 @@ pub struct VmCommon {
     pub vcpus_handles: Mutex<Vec<VcpuHandle>>,
     /// Event fd written to by vCPUs on exit.
     pub vcpus_exit_evt: EventFd,
+    /// Set by a vCPU whose exit was the guest asking for a *reset* rather than
+    /// a shutdown; read by the VM's exit watcher, which reports it to the
+    /// spawner. (The exit event fd cannot carry the difference: it is a
+    /// counter several writers share.)
+    pub guest_reset: Arc<AtomicBool>,
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -141,6 +146,7 @@ impl KvmVm {
             kvm,
             vcpus_handles: Mutex::new(Vec::new()),
             vcpus_exit_evt,
+            guest_reset: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -180,29 +186,48 @@ impl KvmVm {
         lock(&self.common.vcpus_handles)
     }
 
+    /// Whether the guest asked for a *reset* rather than a shutdown.
+    ///
+    /// The exit watcher reads this once the VM's exit event fires, and reports
+    /// it to the spawner; it is false for a VM that was stopped from outside.
+    pub fn guest_reset(&self) -> bool {
+        self.common.guest_reset.load(Ordering::SeqCst)
+    }
+
     /// Starts the microVM vCPUs.
     ///
-    /// Spawns a thread per vCPU and stores the resulting handles. The barrier
-    /// is used to synchronize signal-handler initialization across all vCPU
-    /// threads before returning. (Upstream also sets the controlling terminal
-    /// to raw mode here for the serial console; this port has no serial input,
-    /// so that is trimmed along with the seccomp filter parameter.)
+    /// Spawns a thread per vCPU and releases them together once every thread
+    /// is up. (Upstream also sets the controlling terminal to raw mode here
+    /// for the serial console; this port has no serial input, so that is
+    /// trimmed, along with the seccomp filter parameter.)
+    ///
+    /// A vCPU thread that cannot be spawned does not leave the earlier ones
+    /// running: the gate is released in abort mode, so every thread that did
+    /// start returns without ever entering `KVM_RUN`, and dropping their
+    /// handles joins them. The caller is about to free the VM and its guest
+    /// memory, and a vCPU left running would keep translating through memory
+    /// that is no longer its own.
     pub fn start_vcpus(self: &Arc<Self>, mut vcpus: Vec<Vcpu>) -> Result<(), StartVcpusError> {
-        let vcpu_count = vcpus.len();
-        let barrier = Arc::new(Barrier::new(vcpu_count + 1));
+        let gate = Arc::new(StartGate::new());
+        let mut started = Vec::with_capacity(vcpus.len());
 
-        let mut handles = self.vcpus_handles();
-        handles.reserve(vcpu_count);
         for mut vcpu in vcpus.drain(..) {
             vcpu.set_mmio_bus(self.common.mmio_bus.clone());
             #[cfg(target_arch = "x86_64")]
             vcpu.kvm_vcpu.set_pio_bus(self.pio_bus.clone());
 
-            handles.push(vcpu.start_threaded(self, barrier.clone())?);
+            match vcpu.start_threaded(self, Arc::clone(&gate)) {
+                Ok(handle) => started.push(handle),
+                Err(err) => {
+                    gate.abort();
+                    drop(started);
+                    return Err(StartVcpusError::VcpuHandle(err));
+                }
+            }
         }
-        drop(handles);
-        barrier.wait();
 
+        self.vcpus_handles().extend(started);
+        gate.open();
         Ok(())
     }
 

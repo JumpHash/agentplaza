@@ -7,9 +7,14 @@
 // published GICv3 architecture specification (Arm IHI 0069) and from the
 // register and field set the Linux driver `drivers/irqchip/irq-gic-v3.c` uses.
 //
-// License gate: QEMU's GICv3 model (`hw/intc/arm_gicv3*`) is GPL-2.0 and was
-// deliberately NOT consulted or copied; the register semantics below come from
-// the architecture specification and the kernel's documented register use.
+// License gate: QEMU's GICv3 *controller model* (`hw/intc/arm_gicv3*`) is
+// GPL-2.0 and was not consulted or copied; the register semantics below come
+// from the architecture specification and the kernel's documented register
+// use. The `ICC_*` system-register *encodings* (`sysreg(3, 0, 12, ...)` and
+// friends at the bottom of this file) were taken from the `SYSREG_ICC_*` table
+// in QEMU's `target/arm/helper.c`, as the backend's research notes record:
+// those are encoding constants, not code. The controller model, its state and
+// its delivery rules are written here.
 
 //! A userspace GICv3 for the Hypervisor.framework backend.
 //!
@@ -55,9 +60,25 @@ pub const RESET_PMR: u8 = 0x00;
 pub const DEFAULT_PRIORITY: u8 = 0xa0;
 /// The maintenance interrupt (PPI), declared by the device tree.
 pub const MAINTENANCE_PPI: u32 = 9;
-/// The virtual timer interrupt (PPI), declared by the device tree's timer
-/// node and raised by the vCPU loop when `CNTV_CTL_EL0.ISTATUS` sets.
+/// The virtual timer interrupt as the device tree's timer node numbers it, and
+/// as the vCPU loop's `CNTV_CTL_EL0` bookkeeping refers to it.
+///
+/// This is *not* the interrupt ID the timer reaches the guest as: see
+/// [`VIRTUAL_TIMER_INTID`].
 pub const VIRTUAL_TIMER_PPI: u32 = 11;
+/// The interrupt ID of the virtual timer (PPI) interrupt: the device tree's
+/// PPI number plus the 16 SGIs, which is what the guest enables and
+/// acknowledges.
+///
+/// The device tree declares a PPI by its number, `11` here, and the kernel
+/// translates a device tree PPI *n* into hardware interrupt `n + 16`
+/// (`drivers/irqchip/irq-gic-v3.c`), so a guest enables bit 27 of
+/// `GICR_ISENABLER0` and reads 27 back from `ICC_IAR1_EL1`. Raising the device
+/// tree's number instead would pend an SGI the guest never enabled, and a
+/// Linux guest - whose tick is the virtual timer under a hypervisor - would
+/// never take a timer interrupt. [`Gic::raise_virtual_timer`] and
+/// [`Gic::lower_virtual_timer`] are the only things that should touch it.
+pub const VIRTUAL_TIMER_INTID: u32 = VIRTUAL_TIMER_PPI + 16;
 /// The serial console's SPI, as the device tree's `uart` node numbers it.
 pub const UART_SPI: u32 = 2;
 /// The serial console's interrupt ID (`UART_SPI` offset by the SPI base).
@@ -345,7 +366,9 @@ pub struct Gic {
     ctlr: u32,
     /// The distributor's SPIs.
     spis: Interrupts<{ NUM_INTIDS - NUM_PRIVATE_INTIDS }>,
-    /// `GICD_IROUTER<n>`: the vCPU each SPI is routed to.
+    /// `GICD_IROUTER<n>`: the affinity each SPI is routed to, or an affinity
+    /// that names no vCPU of this machine (which leaves the interrupt
+    /// unrouted, see [`Gic::set_route`]).
     route: [usize; NUM_INTIDS],
     /// The per-vCPU redistributors and CPU interfaces.
     cpus: Vec<CpuInterface>,
@@ -519,6 +542,21 @@ impl Gic {
         }
     }
 
+    /// Raises the virtual timer's interrupt on `cpu`: what the vCPU loop does
+    /// when the guest's `CNTV_CTL_EL0` reports the timer has fired.
+    ///
+    /// The interrupt ID is [`VIRTUAL_TIMER_INTID`], not the device tree's PPI
+    /// number; see that constant.
+    pub fn raise_virtual_timer(&mut self, cpu: usize) {
+        self.raise_private(cpu, VIRTUAL_TIMER_INTID);
+    }
+
+    /// Lowers the virtual timer's interrupt on `cpu`, once the guest has
+    /// cleared the timer's condition.
+    pub fn lower_virtual_timer(&mut self, cpu: usize) {
+        self.lower_private(cpu, VIRTUAL_TIMER_INTID);
+    }
+
     // -- delivery ---------------------------------------------------------
 
     /// Whether this CPU's interrupt line into HVF is asserted: an enabled
@@ -526,6 +564,30 @@ impl Gic {
     /// pass the CPU's priority mask.
     pub fn irq_line(&self, cpu: usize) -> bool {
         self.best_pending(cpu).is_some()
+    }
+
+    /// Whether the private interrupt `intid` of `cpu` would reach the guest if
+    /// it became pending now: it is Group 1 and enabled in its redistributor,
+    /// and the CPU interface would accept its priority.
+    ///
+    /// This is [`Gic::irq_line`]'s condition for one interrupt without it
+    /// having to be pending, which is what the virtual timer needs: the
+    /// timer's PPI is raised only once Hypervisor.framework has reported the
+    /// timer, so a due timer is deliverable exactly when raising it would pass
+    /// these checks. A vCPU that waits for a *due* timer whose interrupt
+    /// cannot reach the guest would otherwise have to be run with a zero
+    /// deadline, and would spin without executing a guest instruction.
+    pub fn delivers_private(&self, cpu: usize, intid: u32) -> bool {
+        let index = intid as usize;
+        if index >= NUM_PRIVATE_INTIDS {
+            return false;
+        }
+        let Some(state) = self.cpus.get(cpu) else {
+            return false;
+        };
+        state.private.group1[index]
+            && state.private.enabled[index]
+            && state.accepts(state.private.priority[index])
     }
 
     /// Acknowledges the interrupt `cpu` should take (`ICC_IAR1_EL1`): the
@@ -642,11 +704,14 @@ impl Gic {
         } else {
             (affinity & 0xff) as usize
         };
-        // vCPUs are numbered by their affinity level 0 and the device tree's
-        // CPU nodes use that numbering; a route to a CPU that does not exist
-        // cannot be delivered, which is a configuration error the guest
-        // already made - keep the state consistent and pick CPU 0.
-        self.route[intid as usize] = if target < self.cpus.len() { target } else { 0 };
+        // Stored as written, including an affinity that names no vCPU of this
+        // machine (vCPUs are numbered by their affinity level 0 and the device
+        // tree's CPU nodes use that numbering). Such a route stays unrouted:
+        // no vCPU has that index, so `best_pending` never delivers the
+        // interrupt to anyone. Retargeting it to CPU 0 - which an earlier
+        // revision of this model did - would deliver an interrupt the guest
+        // routed elsewhere, on a CPU that enabled it.
+        self.route[intid as usize] = target;
     }
 
     // -- distributor MMIO -------------------------------------------------
@@ -1154,7 +1219,15 @@ const ICC_SGI1R_SGI_ID_SHIFT: u64 = 24;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
     use super::*;
+
+    /// Locks a mutex, recovering from a peer thread's panic the way the rest
+    /// of this tree does.
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     /// A controller for `n` vCPUs with Group 1 enabled in the distributor.
     fn gic(n: usize) -> Gic {
@@ -1368,25 +1441,207 @@ mod tests {
         let mut gic = gic(2);
         for cpu in 0..2 {
             unmask(&mut gic, cpu);
-            // The kernel enables SGIs and then PPIs through the redistributor.
-            gic.redist_write(cpu, GICV3_SGI_BASE_OFFSET + GICD_ISENABLER, 4, !0);
+            // The kernel enables the PPIs it uses through the redistributor.
+            // Only the virtual timer's PPI is enabled here - at its interrupt
+            // ID, which is what a guest enables (see
+            // `the_virtual_timer_is_raised_at_the_intid_the_guest_enables`) -
+            // so this test can tell that ID from the device tree's PPI number.
+            gic.redist_write(
+                cpu,
+                GICV3_SGI_BASE_OFFSET + GICD_ISENABLER,
+                4,
+                1 << VIRTUAL_TIMER_INTID,
+            );
         }
 
-        gic.raise_private(1, VIRTUAL_TIMER_PPI);
+        gic.raise_virtual_timer(1);
         assert!(!gic.irq_line(0), "PPIs belong to one CPU only");
         assert!(gic.irq_line(1));
-        assert_eq!(gic.ack(1), VIRTUAL_TIMER_PPI);
+        assert_eq!(gic.ack(1), VIRTUAL_TIMER_INTID);
         assert!(!gic.irq_line(1));
-        gic.eoi(1, VIRTUAL_TIMER_PPI);
+        gic.eoi(1, VIRTUAL_TIMER_INTID);
+
+        // The device tree's PPI number is not the interrupt ID: raising it
+        // raises an SGI, and the guest has not enabled that.
+        gic.raise_private(0, VIRTUAL_TIMER_PPI);
+        assert!(
+            !gic.irq_line(0),
+            "INTID {VIRTUAL_TIMER_PPI} is an SGI, not the timer's PPI"
+        );
 
         // The guest can also raise a PPI by writing its pending register.
         gic.redist_write(
             0,
             GICV3_SGI_BASE_OFFSET + GICD_ISPENDR,
             4,
-            1 << VIRTUAL_TIMER_PPI,
+            1 << VIRTUAL_TIMER_INTID,
         );
         assert!(gic.irq_line(0));
+    }
+
+    #[test]
+    fn the_virtual_timer_is_raised_at_the_intid_the_guest_enables() {
+        // The device tree declares the architected virtual timer as PPI 11
+        // (`arch::aarch64::fdt`), and the kernel translates a device tree PPI
+        // n into hardware interrupt n + 16 (`drivers/irqchip/irq-gic-v3.c`):
+        // the guest enables bit 27 of `GICR_ISENABLER0` and reads 27 from
+        // `ICC_IAR1_EL1`. Raising the device tree's number pends an SGI the
+        // guest never enabled, and a Linux guest never receives its tick.
+        assert_eq!(VIRTUAL_TIMER_PPI, 11, "the device tree's PPI number");
+        assert_eq!(VIRTUAL_TIMER_INTID, 27);
+
+        let mut gic = gic(1);
+        unmask(&mut gic, 0);
+        gic.redist_write(
+            0,
+            GICV3_SGI_BASE_OFFSET + GICD_ISENABLER,
+            4,
+            1 << VIRTUAL_TIMER_INTID,
+        );
+
+        gic.raise_virtual_timer(0);
+        assert!(gic.irq_line(0), "the enabled timer PPI delivers");
+        assert_eq!(gic.ack(0), VIRTUAL_TIMER_INTID, "the guest acks INTID 27");
+
+        // The line goes away again once the guest has cleared the timer.
+        gic.raise_virtual_timer(0);
+        gic.lower_virtual_timer(0);
+        assert!(!gic.irq_line(0));
+    }
+
+    #[test]
+    fn a_private_interrupt_is_deliverable_only_when_it_can_reach_the_guest() {
+        // What a due virtual timer asks: whether raising its PPI *now* would
+        // reach the guest. Group 1 has to be enabled in the CPU interface
+        // (`ICC_IGRPEN1_EL1`), the PPI has to be enabled in its redistributor,
+        // and the priority mask has to pass it (`ICC_PMR_EL1`, whose reset
+        // value is 0 - it masks everything).
+        let mut gic = gic(1);
+        assert!(
+            !gic.delivers_private(0, VIRTUAL_TIMER_INTID),
+            "Group 1 is off in the CPU interface"
+        );
+
+        gic.sysreg_write(0, ICC_IGRPEN1_EL1, 1);
+        assert!(
+            !gic.delivers_private(0, VIRTUAL_TIMER_INTID),
+            "the redistributor has not enabled the PPI"
+        );
+
+        gic.redist_write(
+            0,
+            GICV3_SGI_BASE_OFFSET + GICD_ISENABLER,
+            4,
+            1 << VIRTUAL_TIMER_INTID,
+        );
+        assert!(
+            !gic.delivers_private(0, VIRTUAL_TIMER_INTID),
+            "the reset priority mask (0x00) masks everything"
+        );
+
+        unmask(&mut gic, 0);
+        assert!(gic.delivers_private(0, VIRTUAL_TIMER_INTID));
+
+        // A mask at the interrupt's own priority masks it again, and one below
+        // it does not.
+        gic.sysreg_write(0, ICC_PMR_EL1, u64::from(DEFAULT_PRIORITY));
+        assert!(!gic.delivers_private(0, VIRTUAL_TIMER_INTID));
+        gic.sysreg_write(0, ICC_PMR_EL1, u64::from(DEFAULT_PRIORITY + 1));
+        assert!(gic.delivers_private(0, VIRTUAL_TIMER_INTID));
+
+        // An interrupt ID outside the private range is never deliverable this
+        // way (an SPI is routed through the distributor instead).
+        assert!(!gic.delivers_private(0, UART_INTID));
+        // ... and neither is a private interrupt of a vCPU that does not
+        // exist.
+        assert!(!gic.delivers_private(9, VIRTUAL_TIMER_INTID));
+    }
+
+    #[test]
+    fn an_spi_routed_to_an_absent_cpu_is_delivered_to_nobody() {
+        let mut gic = gic(2);
+        for cpu in 0..2 {
+            unmask(&mut gic, cpu);
+        }
+
+        // The guest routes the console's SPI to affinity 5, which names no
+        // vCPU of this machine. The architecture leaves such an interrupt
+        // unrouted: delivering it to CPU 0 would hand a CPU an interrupt the
+        // guest did not route to it (and that it may well have enabled).
+        enable_spi(&mut gic, UART_SPI, 5);
+        gic.raise_spi(UART_SPI);
+        assert!(!gic.irq_line(0), "CPU 0 was not the routing target");
+        assert!(!gic.irq_line(1), "CPU 1 was not the routing target");
+        assert_eq!(gic.ack(0), SPURIOUS_INTID);
+        assert_eq!(gic.ack(1), SPURIOUS_INTID);
+
+        // `GICD_IROUTER` reads back the affinity the guest wrote, and routing
+        // the SPI to a vCPU that exists delivers it there again.
+        assert_eq!(gic.dist_read(GICD_IROUTER + u64::from(UART_SPI) * 8, 8), 5);
+        gic.dist_write(GICD_IROUTER + u64::from(UART_SPI) * 8, 8, 1);
+        assert!(!gic.irq_line(0));
+        assert!(gic.irq_line(1));
+        assert_eq!(gic.ack(1), UART_INTID);
+    }
+
+    #[test]
+    fn a_guest_driven_change_wakes_the_peer_it_asserts() {
+        use std::sync::mpsc::channel;
+        use std::thread;
+        use std::time::Duration;
+
+        use crate::hvf::wait::{WaitSlot, wake_asserted};
+
+        // A guest exit that changes the controller - an SGI aimed at another
+        // vCPU, or a write to a redistributor's `ISPENDR`/`ISENABLER` - has to
+        // wake the vCPU it targeted. Without that, an SGI to an idle core
+        // leaves it asleep until an unrelated event (the console, the timer)
+        // happens to arrive, which hangs a multi-vCPU guest in normal
+        // operation.
+        let mut gic = gic(2);
+        for cpu in 0..2 {
+            unmask(&mut gic, cpu);
+            gic.redist_write(cpu, GICV3_SGI_BASE_OFFSET + GICD_ISENABLER, 4, !0);
+        }
+        let gic = Arc::new(Mutex::new(gic));
+
+        let slots: Vec<Arc<WaitSlot>> = (0..2).map(|_| Arc::new(WaitSlot::new(true))).collect();
+        let (woken, woken_rx) = channel();
+        let halted = {
+            let slot = Arc::clone(&slots[1]);
+            let gic = Arc::clone(&gic);
+            let woken = woken.clone();
+            thread::spawn(move || {
+                // The vCPU parks exactly as `vcpu_loop` does: until its own
+                // line is asserted. It cannot report before the SGI below,
+                // because nothing else asserts vCPU 1's line.
+                slot.halt(None, || lock(&gic).irq_line(1));
+                let _ = woken.send(1);
+            })
+        };
+
+        // vCPU 0 sends SGI 0 to vCPU 1 exactly as `handle_sys_reg` does, and
+        // the asserted lines are woken exactly as `SharedVm::with_gic` does.
+        let asserted = {
+            let mut gic = lock(&gic);
+            assert!(gic.sysreg_write(0, ICC_SGI1R_EL1, 1 << 1));
+            let mut asserted = 0u64;
+            for index in 0..slots.len() {
+                if gic.irq_line(index) {
+                    asserted |= 1 << index;
+                }
+            }
+            asserted
+        };
+        assert_eq!(asserted, 0b10, "only the targeted vCPU is asserted");
+        wake_asserted(slots.iter().map(Arc::as_ref), asserted, |_| ());
+
+        assert_eq!(
+            woken_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            1,
+            "the targeted vCPU woke"
+        );
+        halted.join().unwrap();
     }
 
     #[test]

@@ -22,11 +22,12 @@
 //! | power management | PSCI in the kernel | [`psci`]: PSCI in the VMM |
 //! | boot | `KVM_*` register ioctls | `vm` + `vcpu` register calls |
 //!
-//! The pure half - [`exit`] (ESR/ISS decoding), [`psci`], [`gic`] and [`uart`]
-//! - is target-independent: it has no FFI and no `crate::arch` dependency, so
-//! it compiles everywhere and its tests run on the host. Everything that talks
-//! to Hypervisor.framework is gated to `aarch64` macOS: `sys` (the FFI),
-//! `vm`, `vcpu` and `boot`.
+//! The pure half - [`exit`] (ESR/ISS decoding), [`psci`], [`gic`], [`uart`]
+//! and [`wait`] (the wake protocol of a halted or powered-off vCPU) - is
+//! target-independent: it has no FFI and no `crate::arch` dependency, so it
+//! compiles everywhere and its tests run on the host. Everything that talks to
+//! Hypervisor.framework is gated to `aarch64` macOS: `sys` (the FFI), `vm`,
+//! `vcpu` and `boot`.
 //!
 //! The device tree, the kernel image layout and the memory map are shared with
 //! the aarch64 KVM backend through `crate::arch::aarch64`: this backend
@@ -56,6 +57,7 @@ pub mod exit;
 pub mod gic;
 pub mod psci;
 pub mod uart;
+pub mod wait;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod boot;

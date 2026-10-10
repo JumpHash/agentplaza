@@ -215,6 +215,9 @@ unsafe extern "C" {
 
     /// Creates a vCPU configuration object.
     pub fn hv_vcpu_config_create() -> hv_vcpu_config_t;
+    /// Destroys a vCPU configuration object created by
+    /// [`hv_vcpu_config_create`]. The object is owned by the caller.
+    pub fn hv_vcpu_config_destroy(config: hv_vcpu_config_t) -> hv_return_t;
     /// Reads a feature register's host value.
     pub fn hv_vcpu_config_get_feature_reg(
         config: hv_vcpu_config_t,
@@ -323,6 +326,11 @@ mod tests {
         assert_eq!(HV_SYS_REG_VBAR_EL1, 0xc600);
         assert_eq!(HV_SYS_REG_CNTV_CTL_EL0, 0xdf19);
         assert_eq!(HV_SYS_REG_CNTV_CVAL_EL0, 0xdf1a);
+
+        // The feature-register identifiers the ID-register adjustment reads
+        // through a vCPU configuration object.
+        assert_eq!(HV_FEATURE_REG_ID_AA64MMFR0_EL1, 4, "ID_AA64MMFR0_EL1");
+        assert_eq!(HV_FEATURE_REG_ID_AA64PFR0_EL1, 7, "ID_AA64PFR0_EL1");
     }
 
     #[test]

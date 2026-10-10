@@ -108,7 +108,9 @@ fn guest_cmdline(requested: &str) -> String {
 /// Both architectures end here: whichever vCPU stops the VM (guest shutdown or
 /// reset, a vCPU fault, or an arch-specific reset source) writes the VM's exit
 /// event, and the watcher — the thread the spawner joins — stops and joins the
-/// vCPU threads, then drops `devices`.
+/// vCPU threads, then drops `devices`. It also reports whether the guest's exit
+/// was a reset rather than a shutdown, which the vCPU threads publish
+/// separately because the exit event itself is a shared counter.
 ///
 /// The bus only holds weak references, so the caller passes the strong handles
 /// of the devices it registered: the watcher is the VM's last thread, which
@@ -133,7 +135,14 @@ fn start_exit_watcher<D: Send + 'static>(
             match wait_for_event(&exit_evt) {
                 Ok(()) => {
                     if !watcher_runtime.stop_requested() {
-                        watcher_runtime.mark_guest_exited();
+                        // The guest ended the VM itself. A vCPU that left for
+                        // a reset published that before signalling the event,
+                        // so a reboot is not reported as a plain shutdown.
+                        if vm.guest_reset() {
+                            watcher_runtime.mark_guest_reset();
+                        } else {
+                            watcher_runtime.mark_guest_exited();
+                        }
                     }
                 }
                 Err(err) => {
@@ -386,14 +395,28 @@ mod x86_64 {
         )
         .map_err(BootError::from)?;
 
-        // Start the vCPUs and then the exit watcher: whichever vCPU stops the
-        // VM (guest shutdown/reset, a vCPU fault, or the i8042 reset port)
-        // writes `vcpus_exit_evt`, and the watcher — the only thread the
-        // spawner joins — stops and joins the vCPU threads.
+        // The exit watcher goes in before the vCPUs start: it is the VM's last
+        // thread (the one the spawner joins) and it owns the stop control, so
+        // whichever vCPU stops the VM - guest shutdown or reset, a vCPU
+        // fault, or the i8042 reset port - writes `vcpus_exit_evt` and the
+        // watcher stops and joins the vCPU threads, then drops the devices.
+        // It only polls the event fd until then, so it does not need the vCPUs
+        // to exist yet.
         let vm = Arc::new(vm);
-        vm.start_vcpus(vcpus).map_err(BootError::from)?;
+        super::start_exit_watcher(Arc::clone(&vm), runtime, legacy_devices)
+            .map_err(BootError::WaitExitEvent)?;
 
-        super::start_exit_watcher(vm, runtime, legacy_devices).map_err(BootError::WaitExitEvent)?;
+        if let Err(err) = vm.start_vcpus(vcpus) {
+            // A vCPU that started and then failed to be joined, or one left
+            // running, would fault through guest memory this function's caller
+            // is about to free. `start_vcpus` already stopped and joined the
+            // partial set; this makes sure of it, and lets the watcher finish
+            // too (it is waiting for the VM's exit event, which nothing wrote
+            // because these vCPUs never had a chance to leave the guest).
+            vm.shutdown_vcpus();
+            let _ = vm.vcpus_exit_evt().write(1);
+            return Err(BootError::from(err));
+        }
 
         Ok(())
     }
@@ -560,11 +583,22 @@ mod aarch64 {
             &serial_info,
         )?;
 
-        // Start the vCPUs and then the exit watcher, as on x86_64.
+        // The exit watcher goes in before the vCPUs start, exactly as on
+        // x86_64: it owns the stop control and is the thread the spawner
+        // joins, and it only polls the VM's exit event until the guest (or a
+        // fault) stops the VM.
         let vm = Arc::new(vm);
-        vm.start_vcpus(vcpus)?;
+        super::start_exit_watcher(Arc::clone(&vm), runtime, legacy_devices)
+            .map_err(BootError::WaitExitEvent)?;
 
-        super::start_exit_watcher(vm, runtime, legacy_devices).map_err(BootError::WaitExitEvent)?;
+        if let Err(err) = vm.start_vcpus(vcpus) {
+            // Stop and join whatever started before the failure: the caller is
+            // about to free the VM and its guest memory, and a vCPU left
+            // running would fault through memory that is no longer its own.
+            vm.shutdown_vcpus();
+            let _ = vm.vcpus_exit_evt().write(1);
+            return Err(BootError::from(err));
+        }
 
         Ok(())
     }

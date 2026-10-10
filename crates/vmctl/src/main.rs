@@ -178,7 +178,11 @@ fn run(config: Config) -> ExitCode {
         thread::spawn(move || stream_serial(&sinks, &printing))
     };
 
-    let deadline = config.timeout.map(|timeout| Instant::now() + timeout);
+    // A timeout so large that the deadline overflows `Instant` means "no
+    // timeout" (as `VmHandle::wait_timeout` treats it), instead of panicking.
+    let deadline = config
+        .timeout
+        .and_then(|timeout| Instant::now().checked_add(timeout));
     let mut exits: Vec<Option<VmExit>> = vec![None; vms.len()];
     let mut failure: Option<String> = None;
 
@@ -226,11 +230,12 @@ fn run(config: Config) -> ExitCode {
         eprintln!(
             "vmctl: vm {id}: {}",
             match exit {
-                VmExit::GuestExited => "guest exited",
+                VmExit::GuestExited { reset: false } => "guest exited",
+                VmExit::GuestExited { reset: true } => "guest exited (reset)",
                 VmExit::Killed => "killed",
             }
         );
-        if exit != VmExit::GuestExited {
+        if !matches!(exit, VmExit::GuestExited { .. }) {
             failure.get_or_insert_with(|| format!("VM {id} was killed instead of exiting"));
         }
     }

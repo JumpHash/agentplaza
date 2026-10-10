@@ -196,7 +196,7 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
         },
     );
     let console: Arc<dyn ConsoleLine> = shared.clone();
-    shared.install_serial(SerialDevice::new(Arc::clone(&runtime.serial), console));
+    shared.install_serial(SerialDevice::new(Arc::clone(&runtime.serial), &console));
 
     // The stop control goes in before the vCPUs start, so that a VM which
     // fails to come up can still be stopped (and so `VmHandle::kill` works
@@ -220,11 +220,18 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
     }
 
     // Report a backend that could not start its vCPUs instead of pretending
-    // the VM is up. On failure the VM is already stopping itself; the threads
-    // are detached (the spawner never got a handle to join) and exit as soon
-    // as they observe the stop.
+    // the VM is up. The vCPUs have to be stopped *and joined* before the error
+    // is returned: they own the VM and its guest memory, and this caller never
+    // gets a handle that could stop them, so a thread left behind would keep
+    // running until the process exits.
     if let Some(failure) = shared.wait_until_started(START_TIMEOUT) {
-        return Err(BootError::Startup(failure));
+        shared.stop();
+        return Err(match runtime.join_threads() {
+            Ok(()) => BootError::Startup(failure),
+            Err(err) => BootError::Startup(format!(
+                "{failure}, and stopping the vCPUs left behind failed: {err}"
+            )),
+        });
     }
     Ok(())
 }
