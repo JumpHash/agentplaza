@@ -190,6 +190,50 @@ pub struct RunsPage {
     pub runs: Vec<Run>,
 }
 
+/// `GET /api/v0/machine`: the node's machine, as `noded` reports it
+/// (`noded::MachineView`; `core.machines`'s fields plus the vsock transport).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Machine {
+    /// The host's hostname.
+    pub name: String,
+    /// The host architecture (`x86_64`/`aarch64`).
+    pub arch: String,
+    /// The VMM backend (`kvm`/`hvf`).
+    pub backend: String,
+    /// The interrupt controller in use (`ioapic`, `vgicv2`, …).
+    pub irqchip: String,
+    /// The machine class per the schema (`server`/`apple`/…).
+    pub class: String,
+    /// The host's CPU count.
+    pub cpus: u32,
+    /// The host's total memory, in MiB.
+    pub memory_mib: u64,
+    /// The vsock transport (`uds-muxer`).
+    pub vsock_mode: String,
+    /// When the daemon started, in milliseconds since the Unix epoch.
+    pub started_at_ms: u64,
+}
+
+impl Machine {
+    /// The machine model as one line: what the substrate is made of.
+    pub fn model_label(&self) -> String {
+        format!(
+            "{} · {}/{} · {} cpus · {} MiB",
+            self.name, self.arch, self.backend, self.cpus, self.memory_mib
+        )
+    }
+}
+
+/// `POST /api/v0/runs/{id}/input`: the body writes one line to one VM's
+/// console, in exactly the fields `noded` accepts (`noded::InputRequest`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputRequest {
+    /// The line (or bytes) to write to the VM's console.
+    pub data: String,
+    /// The index of the VM to write to.
+    pub vm: u32,
+}
+
 /// `POST /api/v0/runs`: the body sends exactly the fields `noded` accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateRun {
@@ -385,9 +429,29 @@ impl Client {
         self.json("GET", "/api/v0/runs", None)
     }
 
+    /// `GET /api/v0/machine`: the node as a machine.
+    pub fn machine(&self) -> Result<Machine, ApiError> {
+        self.json("GET", "/api/v0/machine", None)
+    }
+
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
     pub fn run(&self, id: &str) -> Result<Run, ApiError> {
         self.json("GET", &format!("/api/v0/runs/{}", checked_id(id)?), None)
+    }
+
+    /// `POST /api/v0/runs/{id}/input`: writes `data` to VM `vm`'s serial
+    /// console. The daemon terminates the line when the caller did not.
+    pub fn input(&self, id: &str, vm: u32, data: &str) -> Result<Run, ApiError> {
+        let body = serde_json::to_string(&InputRequest {
+            data: data.to_string(),
+            vm,
+        })
+        .map_err(|err| ApiError::Malformed(format!("cannot serialize the input request: {err}")))?;
+        self.json(
+            "POST",
+            &format!("/api/v0/runs/{}/input", checked_id(id)?),
+            Some(&body),
+        )
     }
 
     /// `DELETE /api/v0/runs/{id}`: kills the run's VMs.
@@ -775,5 +839,56 @@ mod tests {
         let error = ApiError::Connect("http://127.0.0.1:8899: refused".to_string());
         assert!(error.is_unreachable());
         assert_eq!(error.to_string(), "cannot reach http://127.0.0.1:8899: refused");
+    }
+
+    #[test]
+    fn a_machine_body_parses_into_the_nodes_machine() {
+        let machine: Machine = from_body(
+            r#"{"name":"zarathos-pc","arch":"x86_64","backend":"kvm","irqchip":"ioapic",
+                "class":"server","cpus":24,"memory_mib":128320,"vsock_mode":"uds-muxer",
+                "started_at_ms":1791650569674}"#,
+        );
+        assert_eq!(machine.name, "zarathos-pc");
+        assert_eq!(machine.arch, "x86_64");
+        assert_eq!(machine.backend, "kvm");
+        assert_eq!(machine.irqchip, "ioapic");
+        assert_eq!(machine.class, "server");
+        assert_eq!(machine.cpus, 24);
+        assert_eq!(machine.memory_mib, 128_320);
+        assert_eq!(machine.vsock_mode, "uds-muxer");
+        assert_eq!(machine.started_at_ms, 1_791_650_569_674);
+        assert_eq!(
+            machine.model_label(),
+            "zarathos-pc · x86_64/kvm · 24 cpus · 128320 MiB"
+        );
+    }
+
+    #[test]
+    fn a_machine_body_is_taken_as_the_daemon_sends_it() {
+        // The daemon fills every field; a body missing one is a parse error
+        // rather than a machine with invented values.
+        let body = r#"{"name":"pi","arch":"aarch64","backend":"kvm"}"#;
+        assert!(serde_json::from_str::<Machine>(body).is_err());
+    }
+
+    #[test]
+    fn an_input_body_carries_exactly_the_daemons_fields() {
+        let request = InputRequest {
+            data: "uname\n".to_string(),
+            vm: 1,
+        };
+        let body = serde_json::to_value(&request).expect("serializable");
+        assert_eq!(body, serde_json::json!({ "data": "uname\n", "vm": 1 }));
+        assert_eq!(
+            serde_json::to_string(&request).expect("serializable"),
+            r#"{"data":"uname\n","vm":1}"#
+        );
+        let parsed: InputRequest = from_body(&body.to_string());
+        assert_eq!(parsed, request);
+    }
+
+    #[test]
+    fn an_input_id_that_is_not_plain_is_refused_before_it_reaches_a_path() {
+        assert!(Client::default().input("r1/../r2", 0, "uname\n").is_err());
     }
 }

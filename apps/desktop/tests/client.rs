@@ -12,9 +12,10 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DETAIL, LIST, always, raw, replies};
+use common::{DETAIL, LIST, MACHINE, always, raw, replies};
 
 use agentplaza_desktop::api::{ApiError, Client, CreateRun, Endpoint, RunState, VmState};
+use agentplaza_desktop::exit::{ExitKind, exit_kind};
 
 /// A client for a stub on `port`, with a short timeout so a stall fails fast.
 fn client(port: u16) -> Client {
@@ -78,6 +79,79 @@ fn killing_a_run_deletes_the_runs_path() {
     let requests = server.requests();
     assert_eq!(requests[0].method, "DELETE");
     assert_eq!(requests[0].target, "/api/v0/runs/r1");
+}
+
+#[test]
+fn reading_the_machine_follows_the_machines_path() {
+    let server = always(200, MACHINE);
+    let machine = client(server.port)
+        .machine()
+        .expect("the machine should parse");
+
+    assert_eq!(machine.name, "plaza-node");
+    assert_eq!(machine.arch, "x86_64");
+    assert_eq!(machine.vsock_mode, "uds-muxer");
+    assert_eq!(machine.cpus, 24);
+    assert_eq!(machine.memory_mib, 128_320);
+    assert_eq!(machine.started_at_ms, 1_760_000_000_000);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/machine");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn a_daemon_without_the_machine_endpoint_is_a_recognizable_404() {
+    let server = always(404, r#"{"error":"no such endpoint"}"#);
+    let error = client(server.port)
+        .machine()
+        .expect_err("an older daemon has no machine endpoint");
+    assert!(error.is_not_found());
+    assert_eq!(error.to_string(), "404: no such endpoint");
+}
+
+/// The exact bytes the daemon parses out of a console write.
+const INPUT_BODY: &str = r#"{"data":"uname\n","vm":1}"#;
+
+#[test]
+fn writing_to_a_console_posts_exactly_the_daemons_input_body() {
+    let server = replies(vec![(200, DETAIL.to_string())]);
+    let run = client(server.port)
+        .input("r1", 1, "uname\n")
+        .expect("the answer should parse");
+    assert_eq!(run.id, "r1");
+    assert_eq!(run.serial().lines().count(), 3);
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/api/v0/runs/r1/input");
+    assert_eq!(requests[0].header("Content-Type"), Some("application/json"));
+    assert_eq!(
+        requests[0].header("Content-Length"),
+        Some(INPUT_BODY.len().to_string().as_str())
+    );
+    assert_eq!(
+        requests[0].body, INPUT_BODY,
+        "the body is the daemon's own field set, byte for byte"
+    );
+}
+
+#[test]
+fn a_refused_console_write_carries_the_daemons_own_words() {
+    let server = replies(vec![(
+        409,
+        r#"{"error":"the run is killed: console input needs a running run"}"#.to_string(),
+    )]);
+    let error = client(server.port)
+        .input("r1", 0, "uname\n")
+        .expect_err("a killed run refuses input");
+    assert_eq!(error.status(), Some(409));
+    assert_eq!(
+        error.to_string(),
+        "409: the run is killed: console input needs a running run"
+    );
 }
 
 #[test]
@@ -187,6 +261,18 @@ fn a_live_daemon_reads_when_one_is_named() {
     };
     let endpoint = Endpoint::from_url(&url).expect("a loopback URL");
     let client = Client::new(endpoint.clone());
+    let machine = client.machine().expect("the live daemon should report its machine");
+    println!(
+        "live {}: machine {} · {}/{} · {} · {} cpus · {} MiB · vsock {}",
+        endpoint.url(),
+        machine.name,
+        machine.arch,
+        machine.backend,
+        machine.class,
+        machine.cpus,
+        machine.memory_mib,
+        machine.vsock_mode
+    );
     let page = client.runs().expect("the live daemon should answer");
     println!("live {}: {} run(s)", endpoint.url(), page.runs.len());
     for run in &page.runs {
@@ -205,5 +291,16 @@ fn a_live_daemon_reads_when_one_is_named() {
             detail.serial().len(),
             detail.vms.len()
         );
+        for vm in &detail.vms {
+            let kind = vm.serial.as_deref().map(exit_kind);
+            println!(
+                "    vm {} {} · cid {:?} · serial {:?} bytes · exit {}",
+                vm.id,
+                vm.state.label(),
+                vm.guest_cid,
+                vm.serial.as_deref().map(str::len),
+                kind.unwrap_or(ExitKind::Unknown).label()
+            );
+        }
     }
 }

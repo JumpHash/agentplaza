@@ -34,6 +34,9 @@ pub const OK: Color = Color::from_rgb8(0x2e, 0x6a, 0x40);
 pub const TAINT: Color = Color::from_rgb8(0xef, 0xe2, 0xbd);
 /// A hovered row.
 pub const HOVER: Color = Color::from_rgb8(0xe6, 0xea, 0xe2);
+/// The machine's substrate region on the fleet map: a hair off the sheet, so
+/// the bounded region reads as bounded without becoming a filled block.
+pub const SUBSTRATE: Color = Color::from_rgb8(0xee, 0xf1, 0xe9);
 
 /// The monospace voice: ids, states, counts, serial.
 pub const MONO: Font = Font::MONOSPACE;

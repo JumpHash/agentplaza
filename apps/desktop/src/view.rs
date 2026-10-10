@@ -12,12 +12,18 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::api::{Run, RunState, Vm, VmState};
+use crate::exit::{ExitKind, exit_kind};
 use crate::form::Field;
+use crate::mapview::{self, FleetMap};
 use crate::model::{
-    Health, Message, Model, Notice, NoticeKind, Pane, SERIAL_TAIL_LINES, clock_label,
-    duration_label, serial_tail,
+    Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, SERIAL_TAIL_LINES,
+    clock_label, duration_label, serial_tail, tally_line,
 };
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
+
+/// The guest's command set, as the node's console offers it: the quick buttons
+/// beside the serial input, mirroring the web console.
+pub const QUICK_COMMANDS: [&str; 6] = ["help", "uname", "cpu", "mem", "uptime", "poweroff"];
 
 /// The whole register.
 pub fn view(model: &Model) -> Element<'_, Message> {
@@ -28,10 +34,14 @@ pub fn view(model: &Model) -> Element<'_, Message> {
         .into()
 }
 
-/// The index column: the brand, the fleet, the runs, and where the register
-/// stands with the daemon.
+/// The index column: the brand, the fleet, the machine, the map, the runs, the
+/// keys, and where the register stands with the daemon.
 fn index(model: &Model) -> Container<'_, Message> {
-    let (runs, vms) = model.fleet_tally();
+    let (runs, _) = model.fleet_tally();
+    let machine_detail = match &model.machine {
+        Some(machine) => format!("{} · {}/{}", machine.name, machine.arch, machine.backend),
+        None => "not reported yet".to_string(),
+    };
     let mut entries: Vec<Element<'_, Message>> = vec![
         mono("AgentPlaza register", 13.0, INK).into(),
         mono("fleet · noded", 10.0, INK_3).into(),
@@ -42,8 +52,22 @@ fn index(model: &Model) -> Container<'_, Message> {
             model,
             "0",
             "Fleet",
-            format!("{runs} run(s) · {vms} vm(s) up"),
+            format!(
+                "{runs} run(s) · {} vm(s) up",
+                model.running_vms()
+            ),
             Pane::Fleet,
+        ),
+        index_entry(model, "1", "Machine", machine_detail, Pane::Machine),
+        index_entry(
+            model,
+            "2",
+            "Fleet map",
+            format!(
+                "{runs} lane(s) · {} cell(s)",
+                model.runs.iter().map(|run| run.vms.len()).sum::<usize>()
+            ),
+            Pane::Map,
         ),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
@@ -82,20 +106,41 @@ fn index(model: &Model) -> Container<'_, Message> {
             .width(Length::Fill)
             .into(),
     );
-    entries.push(vertical(16.0));
+    entries.push(vertical(14.0));
+    entries.push(rule_heading());
+    entries.push(mono(tally_line(model), 10.0, INK_2).into());
+    entries.push(
+        mono(
+            format!(
+                "poll {} ms · polls {} · {}",
+                model.refresh_ms,
+                model.polls,
+                model.health().label()
+            ),
+            10.0,
+            INK_3,
+        )
+        .into(),
+    );
+    entries.push(vertical(12.0));
+    entries.push(mono("Keys", 10.5, INK_3).into());
+    entries.push(rule_heading());
+    for (key, what) in KEYS {
+        entries.push(
+            row![
+                mono(key, 10.0, INK).width(38),
+                mono(what, 10.0, INK_3),
+            ]
+            .spacing(4.0)
+            .into(),
+        );
+    }
+    entries.push(vertical(12.0));
     entries.push(rule_heading());
     entries.push(
         mono(model.endpoint.url(), 10.0, INK_2)
             .wrapping(Wrapping::None)
             .into(),
-    );
-    entries.push(
-        mono(
-            format!("polls {} · {}", model.polls, model.health().label()),
-            10.0,
-            INK_3,
-        )
-        .into(),
     );
     if let Some(age) = model.age_ms() {
         entries.push(mono(format!("last answer {} ago", duration_label(age)), 10.0, INK_3).into());
@@ -110,6 +155,14 @@ fn index(model: &Model) -> Container<'_, Message> {
         .height(Length::Fill)
         .padding(edge(18.0, 14.0, 18.0, 18.0))
 }
+
+/// The register's keyboard shortcuts, as the index prints them.
+const KEYS: [(&str, &str); 4] = [
+    ("r", "register"),
+    ("m", "machine"),
+    ("f", "fleet map"),
+    ("esc", "back"),
+];
 
 /// One index entry: the number in the margin, the name, and what it holds.
 fn index_entry<'a>(
@@ -144,6 +197,8 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Fleet => body.push(fleet(model)),
         Pane::Run(id) => body.push(run_pane(model, id)),
         Pane::Spawn => body.push(spawn_pane(model)),
+        Pane::Machine => body.push(machine_pane(model)),
+        Pane::Map => body.push(map_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
         .style(theme::sheet)
@@ -161,6 +216,17 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         ),
         Pane::Run(id) => (id.clone(), format!("one run · {}", model.endpoint.url())),
         Pane::Spawn => ("New run".to_string(), "POST /api/v0/runs".to_string()),
+        Pane::Machine => (
+            "Machine".to_string(),
+            match &model.machine {
+                Some(machine) => format!("{} · GET /api/v0/machine", machine.model_label()),
+                None => "GET /api/v0/machine".to_string(),
+            },
+        ),
+        Pane::Map => (
+            "Fleet map".to_string(),
+            "the machine's substrate, its runs as lanes, its VMs as cells".to_string(),
+        ),
     };
     let health = model.health();
     column![
@@ -299,16 +365,207 @@ fn fleet_row<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
     .into()
 }
 
-/// One run: its facts, its VMs, its controls, and its serial.
+/// The machine: the node's own model, as a ruled sheet of the daemon's
+/// columns, with its uptime ticking and its vsock transport named.
+fn machine_pane(model: &Model) -> Element<'_, Message> {
+    let Some(machine) = model.machine.as_ref() else {
+        let message = if model.health() == Health::Down {
+            "the machine endpoint did not answer; the index carries the daemon's own words"
+        } else {
+            "asking the daemon for its machine…"
+        };
+        return container(serif(message, 12.5, INK_2))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .padding(edge(16.0, 14.0, 16.0, 14.0))
+            .into();
+    };
+
+    let uptime = model.machine_uptime_ms().unwrap_or(0);
+    let mut rows: Vec<Element<'_, Message>> = vec![
+        column![
+            mono(machine.model_label(), 15.0, INK),
+            serif(
+                "the node's own model: the substrate every run of this daemon is booted on",
+                12.0,
+                INK_2,
+            ),
+        ]
+        .spacing(4.0)
+        .into(),
+        rule::horizontal(1.0).style(theme::rule_ink).into(),
+        lead(vec![
+            ("uptime", duration_label(uptime)),
+            ("vsock_mode", machine.vsock_mode.clone()),
+            ("class", machine.class.clone()),
+            ("irqchip", machine.irqchip.clone()),
+        ]),
+        vertical(6.0),
+        rule::horizontal(1.0).style(theme::rule).into(),
+        row![
+            mono("column", 10.0, INK_3).width(Length::Fixed(150.0)),
+            mono("value", 10.0, INK_3).width(Length::Fixed(220.0)),
+            mono("what the daemon reports", 10.0, INK_3),
+        ]
+        .spacing(12.0)
+        .into(),
+        rule_heading(),
+    ];
+    for (column, value, note) in [
+        ("name", machine.name.clone(), "the host's hostname"),
+        ("arch", machine.arch.clone(), "x86_64 / aarch64"),
+        (
+            "backend",
+            machine.backend.clone(),
+            "the VMM backend its VMs are booted with",
+        ),
+        (
+            "irqchip",
+            machine.irqchip.clone(),
+            "the interrupt controller in use",
+        ),
+        (
+            "class",
+            machine.class.clone(),
+            "server / apple / pi4 / pi5",
+        ),
+        ("cpus", machine.cpus.to_string(), "the host's cores"),
+        (
+            "memory_mib",
+            format!("{} MiB", machine.memory_mib),
+            "the host's total memory",
+        ),
+        (
+            "vsock_mode",
+            machine.vsock_mode.clone(),
+            "the transport every VM's vsock is wired through",
+        ),
+        (
+            "started_at",
+            clock_label(machine.started_at_ms),
+            "when the daemon started",
+        ),
+        (
+            "uptime",
+            duration_label(uptime),
+            "time since the daemon started, ticking with the poll",
+        ),
+    ] {
+        rows.push(machine_row(column, value, note));
+    }
+    Column::with_children(rows).spacing(5.0).into()
+}
+
+/// One machine column: its name, the daemon's value, and what it holds.
+fn machine_row<'a>(
+    column: &'static str,
+    value: String,
+    note: &'static str,
+) -> Element<'a, Message> {
+    row![
+        mono(column, 11.0, INK).width(Length::Fixed(150.0)),
+        mono(value, 11.5, INK_2).width(Length::Fixed(220.0)),
+        mono(note, 9.5, INK_3),
+    ]
+    .spacing(12.0)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The fleet map: the plate itself, and the legend that names what it draws.
+fn map_pane(model: &Model) -> Element<'_, Message> {
+    let selected = model
+        .selection
+        .as_ref()
+        .map(|selection| (selection.run.as_str(), selection.vm));
+    let plate = container(mapview::widget(FleetMap {
+        runs: &model.runs,
+        activity: &model.activity,
+        machine: model.machine.as_ref(),
+        selected,
+    }))
+    .style(theme::boxed)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(edge(4.0, 4.0, 4.0, 4.0));
+
+    let cells: usize = model.runs.iter().map(|run| run.vms.len()).sum();
+    let status = if model.runs.is_empty() {
+        "the plate is blank: no run has been booted on this node".to_string()
+    } else {
+        format!(
+            "{} lane(s) · {cells} cell(s) · press a cell to open its run with that vm selected",
+            model.runs.len()
+        )
+    };
+
+    Column::with_children(vec![
+        serif(
+            "The machine is the bounded substrate. A run is a lane, a VM is a cell, placed \
+             by index. Up is a filled dot, exited a square, killed a diamond; the line through \
+             a mark is the VM's vsock device, and the bar beside it is its serial rate in \
+             lines per second, measured between polls.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+        plate.into(),
+        mono(status, 10.5, INK_3).into(),
+        mono(map_status(model), 10.5, INK_2).into(),
+    ])
+    .spacing(10.0)
+    .height(Length::Fill)
+    .into()
+}
+
+/// What the plate is drawing: the substrate's model, and the pressed cell's
+/// real state.
+fn map_status(model: &Model) -> String {
+    let mut text = match &model.machine {
+        Some(machine) => format!("substrate · {}", machine.model_label()),
+        None => "substrate · the machine has not been reported yet".to_string(),
+    };
+    if let Some(selection) = &model.selection {
+        let vm = model
+            .runs
+            .iter()
+            .find(|run| run.id == selection.run)
+            .and_then(|run| run.vms.iter().find(|vm| vm.id == selection.vm));
+        text.push_str(&format!(" · selected {} vm {}", selection.run, selection.vm));
+        if let Some(vm) = vm {
+            text.push_str(&format!(" · {}", vm.state.label()));
+            if let Some(cid) = vm.guest_cid {
+                text.push_str(&format!(" · cid {cid}"));
+            }
+            if let Some(serial) = vm.serial.as_deref() {
+                text.push_str(&format!(" · {} serial bytes", serial.len()));
+            }
+        }
+    }
+    text
+}
+
+/// One run: its facts, its VMs, its controls, its console and its serial.
 fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
     let Some(run) = model.detail.as_ref().filter(|run| run.id == id) else {
         return serif("fetching the run…", 12.5, INK_2).into();
     };
 
-    let mut vm_rows: Vec<Element<'a, Message>> =
-        vec![rule::horizontal(1.0).style(theme::rule).into()];
+    let mut vm_rows: Vec<Element<'a, Message>> = vec![
+        row![
+            mono("vm", 10.0, INK_3).width(Length::Fixed(46.0)),
+            mono("state", 10.0, INK_3).width(Length::Fixed(90.0)),
+            mono("guest cid", 10.0, INK_3).width(Length::Fixed(96.0)),
+            mono("exit", 10.0, INK_3).width(Length::Fixed(70.0)),
+            mono("rate", 10.0, INK_3).width(Length::Fixed(84.0)),
+            mono("serial", 10.0, INK_3),
+        ]
+        .spacing(8.0)
+        .into(),
+        rule::horizontal(1.0).style(theme::rule_ink).into(),
+    ];
     for vm in &run.vms {
-        vm_rows.push(vm_row(vm));
+        vm_rows.push(vm_row(model, run, vm));
     }
 
     Column::with_children(vec![
@@ -343,6 +600,7 @@ fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
         ]),
         controls(model, run),
         Column::with_children(vm_rows).spacing(4.0).into(),
+        console(model, run),
         serial_pane(model, run),
     ])
     .spacing(12.0)
@@ -382,30 +640,140 @@ fn controls<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
     controls.into()
 }
 
-/// One VM's line.
-fn vm_row(vm: &Vm) -> Element<'_, Message> {
-    let serial = match vm.serial.as_deref() {
-        Some(serial) => format!("serial · {} bytes", serial.len()),
-        None => "serial · in the run pane".to_string(),
-    };
+/// One VM's line: its state, its guest CID, how it left, its serial rate and
+/// the last line it wrote. Pressing it aims the console at that VM.
+fn vm_row<'a>(model: &'a Model, run: &'a Run, vm: &'a Vm) -> Element<'a, Message> {
     let cid = match vm.guest_cid {
         Some(cid) => format!("cid {cid}"),
         None => "no vsock".to_string(),
     };
-    row![
-        mono(format!("vm {:02}", vm.id), 11.0, INK).width(60),
-        stamp(vm.state.stamp_label(), tone_for_vm(vm.state)).width(90),
-        mono(cid, 10.5, INK_2).width(110),
-        mono(serial, 10.5, INK_3),
-    ]
-    .spacing(10.0)
-    .align_y(Alignment::Center)
-    .into()
+    let serial = match vm.serial.as_deref() {
+        Some(serial) => format!("{} bytes", serial.len()),
+        None => "in the run pane".to_string(),
+    };
+    let rate = model.activity.lps(&run.id, vm.id);
+    let rate = if rate > 0.02 {
+        format!("{rate:.1} ln/s")
+    } else {
+        "—".to_string()
+    };
+    // A VM that is still up has no exit to read; the tail belongs to its
+    // session in progress.
+    let exit = if vm.state == VmState::Running {
+        None
+    } else {
+        vm.serial.as_deref().map(exit_kind)
+    };
+    let target = model.target_vm(&run.id) == vm.id;
+
+    let mut cells: Vec<Element<'a, Message>> = vec![
+        mono(format!("vm {:02}", vm.id), 11.0, INK).width(Length::Fixed(46.0)).into(),
+        stamp(vm.state.stamp_label(), tone_for_vm(vm.state)).width(Length::Fixed(90.0)).into(),
+        mono(cid, 10.5, INK_2).width(Length::Fixed(96.0)).into(),
+    ];
+    cells.push(match exit {
+        Some(kind) => stamp(kind.stamp_label(), tone_for_exit(kind))
+            .width(Length::Fixed(70.0))
+            .into(),
+        None => mono("—", 10.5, INK_3).width(Length::Fixed(70.0)).into(),
+    });
+    cells.push(mono(rate, 10.5, INK_2).width(Length::Fixed(84.0)).into());
+    let latest = model
+        .latest_line(vm)
+        .map(|line| format!("{serial} · {line}"))
+        .unwrap_or(serial);
+    cells.push(mono(latest, 10.5, INK_3).wrapping(Wrapping::None).into());
+
+    button(Row::with_children(cells).spacing(8.0).align_y(Alignment::Center))
+        .on_press(Message::SelectVm(vm.id))
+        .style(theme::register_row(target))
+        .padding(edge(4.0, 6.0, 4.0, 4.0))
+        .width(Length::Fill)
+        .into()
 }
 
-/// The serial transcript: the last lines of the run's first VM, boxed.
+/// The console: a line for the guest, the guest's own commands as buttons, and
+/// the history the arrows walk.
+fn console<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
+    let target = model.target_vm(&run.id);
+    let mut rows: Vec<Element<'a, Message>> = vec![
+        row![
+            mono("Write to the serial console", 10.5, INK_3),
+            space::horizontal(),
+            mono(
+                match run.vms.iter().find(|vm| vm.id == target).and_then(|vm| vm.guest_cid) {
+                    Some(cid) => format!("vm {target} · cid {cid}"),
+                    None => format!("vm {target} · no vsock"),
+                },
+                10.0,
+                INK_2,
+            ),
+        ]
+        .align_y(Alignment::Center)
+        .into(),
+    ];
+
+    let mut quick: Vec<Element<'a, Message>> = Vec::with_capacity(QUICK_COMMANDS.len());
+    for command in QUICK_COMMANDS {
+        quick.push(
+            button(mono(command, 10.0, INK))
+                .on_press(Message::ConsoleQuick(command))
+                .style(theme::primary_button)
+                .padding(edge(4.0, 9.0, 4.0, 9.0))
+                .into(),
+        );
+    }
+    rows.push(Row::with_children(quick).spacing(6.0).into());
+
+    let input = text_input("a line for the guest, newline added", model.console.line.as_str())
+        .on_input(Message::ConsoleEdit)
+        .on_submit(Message::ConsoleSend)
+        .font(MONO)
+        .size(12.0)
+        .padding(edge(7.0, 9.0, 7.0, 9.0))
+        .width(Length::Fill)
+        .style(theme::input);
+    rows.push(
+        row![
+            input,
+            button(mono("SEND", 10.5, INK))
+                .on_press(Message::ConsoleSend)
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+            button(mono("↑", 11.5, INK_2))
+                .on_press(Message::ConsoleHistory(HistoryStep::Prev))
+                .style(theme::primary_button)
+                .padding(edge(6.0, 10.0, 6.0, 10.0)),
+            button(mono("↓", 11.5, INK_2))
+                .on_press(Message::ConsoleHistory(HistoryStep::Next))
+                .style(theme::primary_button)
+                .padding(edge(6.0, 10.0, 6.0, 10.0)),
+        ]
+        .spacing(6.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    rows.push(serif(
+        if run.state.is_live() {
+            "The guest takes one line at a time and answers between heartbeats; the reply \
+             lands in the transcript below. It understands: help, uname, cpu, mem, uptime, \
+             echo <text>, poweroff."
+        } else {
+            "The run is not running: the daemon refuses console input, and says so in the \
+             notice line."
+        },
+        11.5,
+        INK_3,
+    )
+    .into());
+
+    Column::with_children(rows).spacing(6.0).into()
+}
+
+/// The serial transcript: the last lines of the VM the console is aimed at.
 fn serial_pane<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
-    let capture = run.serial();
+    let target = model.target_vm_in(run);
+    let capture = target.and_then(|vm| vm.serial.as_deref()).unwrap_or("");
     let (skipped, lines) = serial_tail(capture, SERIAL_TAIL_LINES);
 
     let mut body: Vec<Element<'a, Message>> = Vec::with_capacity(lines.len() + 2);
@@ -564,6 +932,16 @@ fn tone_for_vm(state: VmState) -> Tone {
     }
 }
 
+/// The tone a VM's exit kind is stamped in: a clean sleep finished well, a
+/// reset is worth watching, and an unread tail says nothing.
+fn tone_for_exit(kind: ExitKind) -> Tone {
+    match kind {
+        ExitKind::Slept => Tone::Ok,
+        ExitKind::Reset => Tone::Warn,
+        ExitKind::Unknown => Tone::Neutral,
+    }
+}
+
 /// The tone the connection is stamped in.
 fn tone_for_health(health: Health) -> Tone {
     match health {
@@ -579,6 +957,20 @@ mod tests {
     use super::*;
     use crate::api::Vm;
     use crate::form::SpawnForm;
+
+    fn machine() -> crate::api::Machine {
+        crate::api::Machine {
+            name: "zarathos-pc".to_string(),
+            arch: "x86_64".to_string(),
+            backend: "kvm".to_string(),
+            irqchip: "ioapic".to_string(),
+            class: "server".to_string(),
+            cpus: 24,
+            memory_mib: 128_320,
+            vsock_mode: "uds-muxer".to_string(),
+            started_at_ms: 1_760_000_000_000,
+        }
+    }
 
     fn run() -> Run {
         Run {
@@ -624,6 +1016,10 @@ mod tests {
             assert!(!health.stamp_label().is_empty());
             let _ = tone_for_health(health);
         }
+        for kind in [ExitKind::Slept, ExitKind::Reset, ExitKind::Unknown] {
+            assert!(!kind.stamp_label().is_empty());
+            let _ = tone_for_exit(kind);
+        }
     }
 
     #[test]
@@ -631,12 +1027,45 @@ mod tests {
         let mut model = Model::new();
         model.runs = vec![run()];
         model.detail = Some(run());
+        model.machine = Some(machine());
+        model.selection = Some(crate::model::Selection {
+            run: "r1".to_string(),
+            vm: 0,
+        });
         model.polls = 3;
 
-        for pane in [Pane::Fleet, Pane::Run("r1".to_string()), Pane::Spawn] {
+        for pane in [
+            Pane::Fleet,
+            Pane::Run("r1".to_string()),
+            Pane::Spawn,
+            Pane::Machine,
+            Pane::Map,
+        ] {
             model.pane = pane;
             let _: Element<'_, Message> = view(&model);
         }
+    }
+
+    #[test]
+    fn the_machine_and_map_panes_build_with_and_without_a_machine() {
+        let mut model = Model::new();
+        for pane in [Pane::Machine, Pane::Map] {
+            model.pane = pane;
+            let _ = view(&model);
+            model.machine = Some(machine());
+            let _ = view(&model);
+        }
+        // A refused console line and a run with a tail both render.
+        model.pane = Pane::Run("r1".to_string());
+        let mut detail = run();
+        detail.vms[0].state = VmState::Exited;
+        detail.vms[0].serial = Some("$ poweroff\nreboot: Power down\n".to_string());
+        model.detail = Some(detail);
+        model.notice = Some(Notice {
+            kind: NoticeKind::Failed,
+            text: "console r1 vm 0: 409: the run is killed".to_string(),
+        });
+        let _ = view(&model);
     }
 
     #[test]

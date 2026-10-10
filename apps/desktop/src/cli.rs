@@ -8,12 +8,16 @@
 use std::time::Duration;
 
 use crate::api::{DEFAULT_TIMEOUT, Endpoint};
+use crate::model::{DEFAULT_REFRESH_MS, MAX_REFRESH_MS, MIN_REFRESH_MS};
 
 /// The environment variable naming the daemon.
 pub const URL_ENV: &str = "APZ_DESKTOP_URL";
 
 /// The environment variable bounding one call, in seconds.
 pub const TIMEOUT_ENV: &str = "APZ_DESKTOP_TIMEOUT_SECS";
+
+/// The environment variable setting the poll cadence, in milliseconds.
+pub const REFRESH_ENV: &str = "APZ_DESKTOP_REFRESH_MS";
 
 /// The longest `--timeout-secs` may be.
 pub const MAX_TIMEOUT_SECS: u64 = 600;
@@ -27,13 +31,25 @@ pub enum Invocation {
     Run(Config),
 }
 
-/// Where the dashboard reads from, and how long it waits.
+/// Where the dashboard reads from, how often, and how long it waits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// The daemon.
     pub endpoint: Endpoint,
     /// The bound on one call.
     pub timeout: Duration,
+    /// How often a healthy daemon is polled, in milliseconds.
+    pub refresh_ms: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            endpoint: Endpoint::default(),
+            timeout: DEFAULT_TIMEOUT,
+            refresh_ms: DEFAULT_REFRESH_MS,
+        }
+    }
 }
 
 /// The usage text.
@@ -41,22 +57,34 @@ pub const HELP: &str = "\
 agentplaza-desktop — the AgentPlaza fleet register
 
 USAGE:
-    agentplaza-desktop [--url <url>] [--timeout-secs <seconds>]
+    agentplaza-desktop [--url <url>] [--refresh-ms <milliseconds>]
+                       [--timeout-secs <seconds>]
 
 OPTIONS:
     --url <url>            the node daemon to read; http://127.0.0.1:8899 by
                            default. Only a loopback host is accepted.
+    --refresh-ms <n>       how often a healthy daemon is polled, 250–30000;
+                           2000 by default. A failing daemon backs off from
+                           here, doubling to a 30 s ceiling.
     --timeout-secs <n>     how long one call may take, 1–600; 5 by default
     -h, --help             print this help
 
 ENVIRONMENT:
     APZ_DESKTOP_URL           the same as --url
+    APZ_DESKTOP_REFRESH_MS    the same as --refresh-ms
     APZ_DESKTOP_TIMEOUT_SECS  the same as --timeout-secs
 
-The dashboard polls GET /api/v0/runs every two seconds (backing off to 30 s
-while the daemon refuses or is unreachable), follows GET /api/v0/runs/{id} for
-the selected run, spawns runs with POST /api/v0/runs and kills them with
-DELETE /api/v0/runs/{id}.
+KEYS:
+    r                      the fleet register
+    m                      the machine (GET /api/v0/machine)
+    f                      the fleet map
+    Escape                 back to the register
+    up / down              walk the console's command history
+
+The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
+GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
+POST /api/v0/runs/{id}/input, spawns runs with POST /api/v0/runs and kills
+them with DELETE /api/v0/runs/{id}.
 ";
 
 /// Parses the arguments, with `env` standing in for the process environment.
@@ -67,6 +95,9 @@ where
 {
     let mut url = env(URL_ENV);
     let mut timeout_secs = env(TIMEOUT_ENV).map(|value| parse_secs(&value)).transpose()?;
+    let mut refresh_ms = env(REFRESH_ENV)
+        .map(|value| parse_refresh_ms(&value))
+        .transpose()?;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -81,6 +112,10 @@ where
             timeout_secs = Some(parse_secs(&value)?);
             continue;
         }
+        if let Some(value) = value_of(&arg, "--refresh-ms", &mut args)? {
+            refresh_ms = Some(parse_refresh_ms(&value)?);
+            continue;
+        }
         return Err(format!("unknown argument {arg:?}"));
     }
 
@@ -92,7 +127,11 @@ where
         Some(secs) => Duration::from_secs(secs),
         None => DEFAULT_TIMEOUT,
     };
-    Ok(Invocation::Run(Config { endpoint, timeout }))
+    Ok(Invocation::Run(Config {
+        endpoint,
+        timeout,
+        refresh_ms: refresh_ms.unwrap_or(DEFAULT_REFRESH_MS),
+    }))
 }
 
 /// The value of `--name value` or `--name=value`, if `arg` is that option.
@@ -129,6 +168,20 @@ fn parse_secs(value: &str) -> Result<u64, String> {
     Ok(secs)
 }
 
+/// A whole number of milliseconds inside the cadence's range.
+fn parse_refresh_ms(value: &str) -> Result<u64, String> {
+    let ms = value
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("{value:?} is not a whole number of milliseconds"))?;
+    if !(MIN_REFRESH_MS..=MAX_REFRESH_MS).contains(&ms) {
+        return Err(format!(
+            "a refresh must be between {MIN_REFRESH_MS} and {MAX_REFRESH_MS} milliseconds"
+        ));
+    }
+    Ok(ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +206,61 @@ mod tests {
         let config = config(&[]);
         assert_eq!(config.endpoint.url(), "http://127.0.0.1:8899");
         assert_eq!(config.timeout, DEFAULT_TIMEOUT);
+        assert_eq!(config.refresh_ms, DEFAULT_REFRESH_MS);
+    }
+
+    #[test]
+    fn the_refresh_argument_takes_both_spellings_and_the_bounds() {
+        assert_eq!(config(&["--refresh-ms", "500"]).refresh_ms, 500);
+        assert_eq!(config(&["--refresh-ms=1000"]).refresh_ms, 1_000);
+        assert_eq!(config(&["--refresh-ms", "250"]).refresh_ms, MIN_REFRESH_MS);
+        assert_eq!(
+            config(&["--refresh-ms", "30000"]).refresh_ms,
+            MAX_REFRESH_MS
+        );
+        for value in ["0", "249", "30001", "-1", "soon", ""] {
+            let error = parse(args(&["--refresh-ms", value]), &no_env)
+                .expect_err("must be refused");
+            assert!(!error.is_empty(), "{value}");
+        }
+        assert_eq!(
+            parse(args(&["--refresh-ms"]), &no_env).expect_err("needs a value"),
+            "--refresh-ms needs a value"
+        );
+    }
+
+    #[test]
+    fn the_refresh_environment_names_the_cadence_and_an_argument_wins() {
+        let env = |name: &str| match name {
+            REFRESH_ENV => Some("750".to_string()),
+            _ => None,
+        };
+        let Invocation::Run(config) = parse(args(&[]), &env).expect("parses") else {
+            panic!("not help")
+        };
+        assert_eq!(config.refresh_ms, 750);
+
+        let Invocation::Run(config) =
+            parse(args(&["--refresh-ms", "1500"]), &env).expect("parses")
+        else {
+            panic!("not help")
+        };
+        assert_eq!(config.refresh_ms, 1_500);
+
+        let broken = |name: &str| match name {
+            REFRESH_ENV => Some("fast".to_string()),
+            _ => None,
+        };
+        assert!(parse(args(&[]), &broken).is_err());
+    }
+
+    #[test]
+    fn the_help_documents_the_cadence_and_the_keys() {
+        assert!(HELP.contains("--refresh-ms"));
+        assert!(HELP.contains("250–30000"));
+        for key in ["r ", "m ", "f ", "Escape"] {
+            assert!(HELP.contains(key), "the help should document {key:?}");
+        }
     }
 
     #[test]

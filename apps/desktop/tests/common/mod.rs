@@ -33,6 +33,20 @@ pub const DETAIL: &str = r#"{"id":"r1","state":"running","vcpus":2,"memory_mib":
     "vms":[{"id":0,"guest_cid":50,"state":"running",
             "serial":"login: plaza\r\n$ uname -a\r\nLinux plaza 7.2.8 x86_64\r\n"}]}"#;
 
+/// A single-run body whose VMs have both left the running state: vm 0 slept
+/// through ACPI S5, vm 1 was reset by the guest's own reboot.
+pub const EXITS: &str = r#"{"id":"r1","state":"done","vcpus":1,"memory_mib":256,
+    "beats":3,"created_at":1760000000000,"ended_at":1760000060000,
+    "vms":[{"id":0,"guest_cid":40,"state":"exited",
+            "serial":"$ poweroff\r\n[   12.4] reboot: Power down\r\n"},
+           {"id":1,"guest_cid":41,"state":"killed",
+            "serial":"$ reboot\r\n[   12.4] machine restart\r\n"}]}"#;
+
+/// A machine body as `GET /api/v0/machine` sends it.
+pub const MACHINE: &str = r#"{"name":"plaza-node","arch":"x86_64","backend":"kvm",
+    "irqchip":"ioapic","class":"server","cpus":24,"memory_mib":128320,
+    "vsock_mode":"uds-muxer","started_at_ms":1760000000000}"#;
+
 /// One request as the stub read it.
 #[derive(Debug)]
 pub struct Request {
@@ -120,16 +134,21 @@ pub fn raw(head: &str) -> Stub {
     spawn(Box::new(move |_, _| head.take()))
 }
 
-/// A stub with the daemon's two read endpoints: `GET /api/v0/runs` answers
-/// `list`, and any single run answers `detail`.
+/// A stub with the daemon's whole read path and its console write path:
+/// `GET /api/v0/runs` answers `list`, `GET /api/v0/machine` answers
+/// [`MACHINE`], and any single run answers `detail` — including the answer to
+/// `POST /api/v0/runs/{id}/input`, which the daemon also answers with the run.
+///
+/// Every request is recorded, so a test can assert exactly what the console
+/// put on the wire.
 pub fn fleet(list: &str, detail: &str) -> Stub {
     let list = list.to_string();
     let detail = detail.to_string();
     spawn(Box::new(move |request, _| {
-        let body = if request.target == "/api/v0/runs" {
-            list.as_str()
-        } else {
-            detail.as_str()
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/machine") => MACHINE,
+            _ => detail.as_str(),
         };
         Some(response(200, body))
     }))
