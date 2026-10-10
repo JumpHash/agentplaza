@@ -353,6 +353,8 @@ pub struct RunsView<'a> {
 /// The daemon's runs, in creation order.
 pub struct Registry {
     images: VmImages,
+    /// Directory holding the per-VM vsock Unix sockets (`{uds_dir}/vm{cid}`).
+    uds_dir: PathBuf,
     inner: Mutex<RegistryInner>,
 }
 
@@ -362,10 +364,12 @@ struct RegistryInner {
 }
 
 impl Registry {
-    /// A registry with no runs that boots every run from `images`.
-    pub fn new(images: VmImages) -> Self {
+    /// A registry with no runs that boots every run from `images` and lays the
+    /// runs' vsock sockets out under `uds_dir`.
+    pub fn new(images: VmImages, uds_dir: PathBuf) -> Self {
         Self {
             images,
+            uds_dir,
             inner: Mutex::new(RegistryInner {
                 next_seq: 0,
                 runs: Vec::new(),
@@ -389,8 +393,10 @@ impl Registry {
                 // One command line is shared by every VM of a spawn, so the
                 // per-VM index rides as a flag the guest harness can trust.
                 per_vm.cmdline = format!("{} plaza.vm={}", spec.cmdline, i);
+                let guest_cid = base + u64::from(i);
                 per_vm.vsock = Some(VsockConfig {
-                    guest_cid: base + u64::from(i),
+                    guest_cid,
+                    uds_path: self.uds_dir.join(format!("vm{guest_cid}")),
                 });
                 per_vm
             }),

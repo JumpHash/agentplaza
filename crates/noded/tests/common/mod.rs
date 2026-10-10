@@ -36,6 +36,7 @@ pub fn start(console_dir: PathBuf) -> Server {
         kernel: missing_kernel(),
         initrd: missing_kernel(),
         console_dir,
+        uds_dir: PathBuf::from("/tmp/plaza-vsock"),
     };
     Server::start(config).expect("the test daemon should bind")
 }

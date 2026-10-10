@@ -29,6 +29,8 @@ impl SharedIncMetric {
 pub trait IncMetric {
     /// Increment by one.
     fn inc(&self);
+    /// Add `value` to the counter.
+    fn add(&self, value: u64);
     /// Current value.
     fn count(&self) -> u64;
 }
@@ -36,6 +38,10 @@ pub trait IncMetric {
 impl IncMetric for SharedIncMetric {
     fn inc(&self) {
         self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn add(&self, value: u64) {
+        self.0.fetch_add(value, Ordering::Relaxed);
     }
 
     fn count(&self) -> u64 {

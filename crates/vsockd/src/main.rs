@@ -25,11 +25,15 @@ mod line;
 mod proto;
 #[cfg(target_os = "linux")]
 mod serve;
-#[cfg(target_os = "linux")]
-mod vsock;
 
 use std::process::ExitCode;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::sync::{
     Arc,
@@ -44,13 +48,15 @@ use std::time::{Duration, Instant};
 use line::StreamLines;
 #[cfg(target_os = "linux")]
 use serve::{HostError, SessionLimits, StdoutLog, handle_connection};
-#[cfg(target_os = "linux")]
-use vsock::{HOST_CID, VsockListener};
 
-/// The port the orchestrator listens on (`VMADDR_PORT_ANY` is `u32::MAX`; the
-/// contract fixes 5000).
+/// The port the orchestrator listens on (the contract fixes 5000).
 #[cfg(target_os = "linux")]
 const DEFAULT_PORT: u32 = 5000;
+
+/// Where the per-VM vsock Unix sockets live unless `--uds-dir` says otherwise;
+/// guest CID `c` reaches the daemon at `{DEFAULT_UDS_DIR}/vm{c}_{port}`.
+#[cfg(target_os = "linux")]
+const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
 
 /// How long the accept loop waits for a connection before checking whether it
 /// was asked to stop, in milliseconds.
@@ -127,21 +133,28 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: vsockd [--cid N] [--port P]
+usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P]
 
-  --cid N    CID to listen on (default 2, VMADDR_CID_HOST)
-  --port P   port to listen on (default 5000)
-  -h, --help print this help
+  --uds-dir DIR  directory for the per-VM vsock Unix sockets
+                 (default /tmp/plaza-vsock)
+  --cids LIST    comma-separated guest CIDs to serve, one listener per CID
+                 (default 3)
+  --port P       vsock port to listen on for each CID (default 5000)
+  -h, --help     print this help
 
-Listens on AF_VSOCK and serves the plaza's frozen guest protocol: hello ->
-welcome, tool_call (echo, uptime) -> tool_result, bye -> close. Every line in
-both directions is logged; SIGTERM or SIGINT stops the daemon.";
+For each guest CID `c` the daemon listens on the Unix socket
+`{DIR}/vm{c}_{port}` (the path the VMM's vsock muxer connects to when guest
+`c` dials CID 2 port `port`). The guest's `hello.guest_cid` is checked against
+the CID parsed from that socket path — identity by configuration, since the
+muxer carries no peer address. Serves the plaza's frozen guest protocol:
+hello -> welcome, tool_call (echo, uptime) -> tool_result, bye -> close. Every
+line in both directions is logged; SIGTERM or SIGINT stops the daemon.";
 
-/// On a host without AF_VSOCK there is nothing to listen on: say so and fail,
-/// rather than starting a daemon that cannot accept a guest.
+/// On a host without Unix sockets there is nothing to listen on: say so and
+/// fail, rather than starting a daemon that cannot accept a guest.
 #[cfg(not(target_os = "linux"))]
 fn main() -> ExitCode {
-    eprintln!("vsockd: AF_VSOCK is Linux-only; this host cannot accept guests");
+    eprintln!("vsockd: the UDS muxer backend is Linux-only; this host cannot accept guests");
     ExitCode::FAILURE
 }
 
@@ -163,11 +176,13 @@ fn main() -> ExitCode {
 
 /// Everything `vsockd` accepts on its command line.
 #[cfg(target_os = "linux")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Config {
-    /// The CID to listen on.
-    cid: u32,
-    /// The port to listen on.
+    /// Directory holding the per-VM vsock Unix sockets.
+    uds_dir: PathBuf,
+    /// The guest CIDs to serve, one listener per CID.
+    cids: Vec<u32>,
+    /// The vsock port each listener answers on.
     port: u32,
 }
 
@@ -175,13 +190,14 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            cid: HOST_CID,
+            uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
+            cids: vec![3],
             port: DEFAULT_PORT,
         }
     }
 }
 
-/// Reads `--cid` and `--port`, leaving the rest at its default.
+/// Reads `--uds-dir`, `--cids` and `--port`, leaving the rest at its default.
 #[cfg(target_os = "linux")]
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
@@ -189,10 +205,19 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     while let Some(argument) = args.next() {
         let mut value = |flag: &str| args.next().ok_or_else(|| format!("missing value for {flag}"));
         match argument.as_str() {
-            "--cid" => {
-                config.cid = value("--cid")?
-                    .parse()
-                    .map_err(|err| format!("--cid: {err}"))?;
+            "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
+            "--cids" => {
+                config.cids = value("--cids")?
+                    .split(',')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| {
+                        part.parse::<u32>()
+                            .map_err(|err| format!("--cids: invalid CID {part}: {err}"))
+                    })
+                    .collect::<Result<Vec<u32>, String>>()?;
+                if config.cids.is_empty() {
+                    return Err("--cids: at least one CID is required".to_string());
+                }
             }
             "--port" => {
                 config.port = value("--port")?
@@ -205,28 +230,70 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     Ok(config)
 }
 
+/// The socket path the muxer connects to when guest `cid` dials CID 2 `port`.
+#[cfg(target_os = "linux")]
+fn uds_path(uds_dir: &PathBuf, cid: u32, port: u32) -> PathBuf {
+    uds_dir.join(format!("vm{cid}_{port}"))
+}
+
+/// Polls `fd` for readability, returning `Ok(false)` on timeout. The timeout
+/// is the accept loop's shutdown-check cadence, mirroring the old AF_VSOCK
+/// `wait_readable`.
+#[cfg(target_os = "linux")]
+fn poll_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> std::io::Result<bool> {
+    // SAFETY: `pollfd` is fully initialised; `fd` is valid for the duration.
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: the pollfd pointer points to one valid entry.
+    let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    if ret < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(ret > 0)
+    }
+}
+
 /// Listens, serves every guest session on its own thread, and returns when a
 /// signal asks it to stop.
 #[cfg(target_os = "linux")]
 fn run(config: Config) -> Result<(), String> {
     install_signal_handlers();
-    let listener = VsockListener::bind(config.cid, config.port).map_err(|err| {
-        format!(
-            "cannot listen on AF_VSOCK CID {} port {}: {err}",
-            config.cid, config.port
-        )
-    })?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|err| format!("cannot make the listener non-blocking: {err}"))?;
-    println!(
-        "vsockd: listening on AF_VSOCK CID {} port {}",
-        config.cid, config.port
-    );
+    // Bind every listener first, so a taken path fails the daemon before it
+    // serves any guest (rather than one CID up and one down).
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
+    let mut handles = Vec::new();
+    for cid in &config.cids {
+        let cid = *cid;
+        let path = uds_path(&config.uds_dir, cid, config.port);
+        let listener = UnixListener::bind(&path).map_err(|err| {
+            format!("cannot listen on {} for guest CID {cid}: {err}", path.display())
+        })?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| format!("cannot make {0} non-blocking: {err}", path.display()))?;
+        println!(
+            "vsockd: listening on {} for guest CID {}",
+            path.display(),
+            cid
+        );
+        let limiter = Arc::clone(&limiter);
+        handles.push(thread::spawn(move || accept_loop(cid, listener, limiter)));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    println!("vsockd: stop requested, closing the listeners");
+    Ok(())
+}
 
+/// Accepts sessions for one guest CID and serves each on its own thread.
+#[cfg(target_os = "linux")]
+fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>) {
     while !SHUTDOWN.load(Ordering::SeqCst) {
-        match listener.wait_readable(ACCEPT_POLL_MS) {
+        match poll_readable(listener.as_raw_fd(), ACCEPT_POLL_MS) {
             Ok(false) => continue,
             // A connection, a shutdown request or a spurious wakeup: in every
             // case the loop re-checks the flag and tries to accept.
@@ -234,19 +301,19 @@ fn run(config: Config) -> Result<(), String> {
             Err(err) => eprintln!("vsockd: poll failed: {err}"),
         }
         match listener.accept() {
-            Ok((stream, peer_cid)) => match limiter.try_acquire() {
+            Ok((stream, _addr)) => match limiter.try_acquire() {
                 None => {
                     println!(
-                        "vsockd: refusing a connection from cid {peer_cid}: {MAX_SESSIONS} \
+                        "vsockd: refusing a connection from cid {cid}: {MAX_SESSIONS} \
                          sessions are already running"
                     );
                     // `stream` is dropped here, closing the connection.
                 }
                 Some(guard) => {
-                    println!("vsockd: accepted a connection from cid {peer_cid}");
+                    println!("vsockd: accepted a connection from cid {cid}");
                     thread::spawn(move || {
                         let _guard = guard;
-                        serve_guest(stream, peer_cid);
+                        serve_guest(stream, cid);
                     });
                 }
             },
@@ -254,15 +321,12 @@ fn run(config: Config) -> Result<(), String> {
             Err(err) => eprintln!("vsockd: accept failed: {err}"),
         }
     }
-
-    println!("vsockd: stop requested, closing the listener");
-    Ok(())
 }
 
 /// Serves one guest session and reports how it ended.
 #[cfg(target_os = "linux")]
-fn serve_guest(stream: vsock::VsockStream, peer_cid: u32) {
-    if let Err(err) = stream.set_read_timeout(RECV_TIMEOUT) {
+fn serve_guest(stream: UnixStream, peer_cid: u32) {
+    if let Err(err) = stream.set_read_timeout(Some(RECV_TIMEOUT)) {
         println!(
             "vsockd: session with cid {peer_cid} dropped: cannot set a read timeout ({err})"
         );
@@ -329,20 +393,24 @@ mod tests {
     #[test]
     fn the_defaults_are_the_contracts_defaults() {
         let config = parse_args(Vec::new()).expect("no arguments is valid");
-        assert_eq!(config.cid, 2);
+        assert_eq!(config.uds_dir, PathBuf::from(DEFAULT_UDS_DIR));
+        assert_eq!(config.cids, vec![3]);
         assert_eq!(config.port, 5000);
     }
 
     #[test]
     fn explicit_flags_override_their_defaults() {
         let config = parse_args(vec![
-            "--cid".to_string(),
-            "3".to_string(),
+            "--uds-dir".to_string(),
+            "/tmp/x".to_string(),
+            "--cids".to_string(),
+            "3,4,5".to_string(),
             "--port".to_string(),
             "6000".to_string(),
         ])
         .expect("explicit flags parse");
-        assert_eq!(config.cid, 3);
+        assert_eq!(config.uds_dir, PathBuf::from("/tmp/x"));
+        assert_eq!(config.cids, vec![3, 4, 5]);
         assert_eq!(config.port, 6000);
     }
 
@@ -350,6 +418,8 @@ mod tests {
     fn bad_arguments_are_reported() {
         assert!(parse_args(vec!["--port".to_string()]).is_err());
         assert!(parse_args(vec!["--port".to_string(), "x".to_string()]).is_err());
+        assert!(parse_args(vec!["--cids".to_string(), "x".to_string()]).is_err());
+        assert!(parse_args(vec!["--cids".to_string(), "".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
     }
 

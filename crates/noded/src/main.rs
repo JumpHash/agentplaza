@@ -16,11 +16,13 @@ use std::process::ExitCode;
 use noded::{Config, Server};
 
 const USAGE: &str = "\
-usage: noded [--port PORT] [--kernel PATH] [--initrd PATH]
+usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
 
   --port PORT    port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH  guest kernel image (default /boot/vmlinuz-linux)
   --initrd PATH  guest initrd (default target/guest/initrd.x86_64.gz)
+  --uds-dir DIR  directory for the per-VM vsock Unix sockets
+                 (default /tmp/plaza-vsock; VM i's muxer binds DIR/vm{cid})
   -h, --help     print this help
 
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
@@ -69,6 +71,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--kernel" => config.kernel = PathBuf::from(value("--kernel")?),
             "--initrd" => config.initrd = PathBuf::from(value("--initrd")?),
+            "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }

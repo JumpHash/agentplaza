@@ -47,10 +47,9 @@ pub enum GicVersion {
 /// The smallest CID a guest may be given.
 ///
 /// CID 0 is the hypervisor, 1 is loopback and 2 is the host itself, so guests
-/// start at 3. The host's vsock stack enforces the same reservation (a
-/// `vhost-vsock` device refuses to claim a CID below it), which is why a wrong
-/// CID is a boot failure rather than a VM that silently cannot be reached. It
-/// is re-exported from the device that talks to that stack.
+/// start at 3. The userspace vsock device enforces the same reservation (a
+/// guest CID below it is refused), which is why a wrong CID is a boot failure
+/// rather than a VM that silently cannot be reached.
 pub const MIN_GUEST_CID: u64 = 3;
 
 /// The largest CID a guest may be given.
@@ -63,24 +62,31 @@ pub const MAX_GUEST_CID: u64 = u32::MAX as u64 - 1;
 
 /// Configuration of a VM's vsock device.
 ///
-/// A VM with a vsock device talks to the host over `AF_VSOCK`: the guest is
-/// given [`guest_cid`](VsockConfig::guest_cid), and the host side (the
-/// orchestrator) listens on CID 2 — the host itself — at a port the two ends
-/// agree on. This is the *only* channel a guest has: this VMM has no network
-/// device at all, by design.
+/// A VM with a vsock device talks to the host over the **userspace** vsock
+/// device: the guest is given [`guest_cid`](VsockConfig::guest_cid), and the
+/// VMM's own muxer mediates every connection to a host Unix-domain socket
+/// derived from [`uds_path`](VsockConfig::uds_path). A guest `connect(2, port)`
+/// becomes a host `UnixStream::connect("{uds_path}_{port}")`, and the host
+/// side connects to `{uds_path}` itself to initiate a connection back into the
+/// guest (`connect <port>\n`). There is no kernel vsock routing anywhere: no
+/// `/dev/vhost-vsock`, no `AF_VSOCK` listener, and no cross-guest path.
 ///
-/// **The caller assigns CIDs.** The spawner never invents one (not even in
-/// [`spawn_n`]), because the host side has to know which CID to expect for each
-/// VM; a caller that boots several VMs derives each CID itself (see
-/// [`spawn_each`]). A guest CID is at least [`MIN_GUEST_CID`], and two running
-/// VMs must not share one: the kernel refuses a CID another backend already
-/// claims, which makes the VM whose device cannot claim it fail to boot rather
-/// than boot unreachable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// **The caller assigns CIDs and UDS paths.** The spawner never invents either
+/// (not even in [`spawn_n`]), because the host side has to know which CID and
+/// which socket path to expect for each VM; a caller that boots several VMs
+/// derives each itself (see [`spawn_each`]). A guest CID is at least
+/// [`MIN_GUEST_CID`], and two running VMs must not share one: the two muxers
+/// would both try to bind `{uds_path}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VsockConfig {
     /// The CID the guest's `AF_VSOCK` sockets carry: at least 3, and unique
     /// among the running VMs on the host.
     pub guest_cid: u64,
+    /// The base path of this VM's host-side Unix socket: the muxer binds it,
+    /// and a guest `connect(2, port)` reaches the host through
+    /// `"{uds_path}_{port}"`. One path per VM, so the caller derives it (for
+    /// example `{dir}/vm{cid}`).
+    pub uds_path: PathBuf,
 }
 
 /// Specification of the microVMs to spawn.
@@ -107,7 +113,7 @@ pub struct VmSpec {
     ///
     /// Unsupported on Apple Silicon: a spec that sets it makes the boot fail
     /// with an explicit error rather than boot a VM the host can never reach
-    /// (Hypervisor.framework has no `vhost-vsock`, and this port has no
+    /// (Hypervisor.framework has no vsock device, and this port has no
     /// network device to fall back to).
     pub vsock: Option<VsockConfig>,
 }

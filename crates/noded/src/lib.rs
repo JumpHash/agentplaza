@@ -50,6 +50,10 @@ pub const DEFAULT_INITRD: &str = "target/guest/initrd.x86_64.gz";
 /// directory.
 pub const DEFAULT_CONSOLE_DIR: &str = "apps/web";
 
+/// Where the per-VM vsock Unix sockets live unless `--uds-dir` says otherwise;
+/// VM `i`'s muxer binds `{DEFAULT_UDS_DIR}/vm{cid}`.
+pub const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
+
 /// How long a client has to send its request and to take its response.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -64,6 +68,9 @@ pub struct Config {
     pub initrd: PathBuf,
     /// The directory `GET /` and `GET /<file>` serve.
     pub console_dir: PathBuf,
+    /// The directory holding the per-VM vsock Unix sockets; VM `i`'s muxer
+    /// binds `{uds_dir}/vm{cid}`.
+    pub uds_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -73,6 +80,7 @@ impl Default for Config {
             kernel: PathBuf::from(DEFAULT_KERNEL),
             initrd: PathBuf::from(DEFAULT_INITRD),
             console_dir: PathBuf::from(DEFAULT_CONSOLE_DIR),
+            uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
         }
     }
 }
@@ -88,10 +96,13 @@ impl Node {
     /// run from `config`'s images.
     pub fn new(config: Config) -> Self {
         Self {
-            registry: Registry::new(VmImages {
-                kernel: config.kernel,
-                initrd: config.initrd,
-            }),
+            registry: Registry::new(
+                VmImages {
+                    kernel: config.kernel,
+                    initrd: config.initrd,
+                },
+                config.uds_dir,
+            ),
             console_dir: config.console_dir,
         }
     }

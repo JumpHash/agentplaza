@@ -32,19 +32,54 @@ src/vmm crate in part, and written for this port in part:
   `Box<dyn VirtioDevice>` instead of `Arc<Mutex<dyn VirtioDevice>>`, and a
   `VirtioDevice` trait of this port's own that also carries the device
   configuration space, which upstream reads through its queue machinery).
-- crates/vmm/src/devices/virtio/vsock.rs and
+- crates/vmm/src/devices/virtio/vhost_device.rs and
   crates/vmm/src/devices/virtio/vhost.rs are written for this port
-  (Copyright 2026 AgentPlaza, Apache-2.0). Firecracker's vsock device
-  implements virtio-vsock in userspace (a packet parser and a Unix-socket
-  muxer), which is not what the plaza needs: the orchestrator listens on
-  `AF_VSOCK` CID 2, so the guest has to speak to the host kernel's vsock stack.
-  `vhost.rs` is the binding to that stack — the ioctl sequence and memory table
+  (Copyright 2026 AgentPlaza, Apache-2.0). `vhost.rs` is the binding to the
+  host kernel's `/dev/vhost-vsock` stack — the ioctl sequence and memory table
   QEMU's `vhost_dev_init`/`vhost_virtqueue_start` perform — reimplemented from
   the kernel's `include/uapi/linux/vhost.h` and `drivers/vhost/vsock.c`; the
-  `vhost` crate Firecracker uses for this interface is not a dependency of this
-  tree, and no code was copied from Firecracker, QEMU or that crate for it.
+  `vhost` crate Firecracker uses for this interface is not a dependency of
+  this tree, and no code was copied from Firecracker, QEMU or that crate for
+  it. `vhost_device.rs` is the virtio-mmio wrapper around that backend. Both
+  are now **retired**: the boot path uses the userspace vsock device (above),
+  and nothing constructs `VsockDevice` or opens `/dev/vhost-vsock`. They
+  survive only for their tests and for the `ack_feature_page`/
+  `read_guest_cid_config` helpers the userspace device's `mmio_device`
+  adapter reuses.
   What was measured on real hardware is recorded in
   crates/vmm/src/devices/virtio/FACTS.md.
+
+- crates/vmm/src/devices/virtio/queue.rs, iovec.rs, iov_deque.rs,
+  test_utils.rs and vsock/{mod,packet,device,metrics}.rs are derived from
+  Firecracker's src/vmm/src/devices/virtio/{queue.rs,iovec.rs,iov_deque.rs,
+  test_utils.rs,vsock/{mod,packet,device,metrics}.rs} (Apache-2.0, Copyright
+  2018-2024 Amazon.com, Inc. or its affiliates): the userspace virtqueue
+  processing core (descriptor-chain walking, used/avail rings), the
+  scatter/gather iovec buffers, the virtio-vsock packet model and the
+  userspace vsock device frontend (the `VsockChannel`/`VsockEpollListener`/
+  `VsockBackend` interface and `Vsock<B>`). Trimmed to this port's needs:
+  the event-manager and snapshot/persist support are dropped, `displaydoc`
+  becomes explicit `thiserror` messages, the `memfd` crate becomes raw `libc`
+  calls, and Firecracker's metrics become a local no-op atomic shim.
+
+- crates/vmm/src/devices/virtio/vsock/csm/{mod,connection,txbuf}.rs and
+  vsock/unix/{mod,muxer,muxer_killq,muxer_rxq}.rs are derived from Firecracker
+  src/vmm/src/devices/virtio/vsock/{csm/{mod,connection,txbuf},unix/
+  {mod,muxer,muxer_killq,muxer_rxq}}.rs (Apache-2.0, Copyright 2018-2024
+  Amazon.com, Inc. or its affiliates): the vsock connection state machine
+  (`VsockConnection`), its TX ring buffer, and the Unix-domain-socket
+  multiplexer (`VsockMuxer`) that mediates guest AF_VSOCK connections to
+  host AF_UNIX sockets. Trimmed to this port's needs: the event-manager test
+  scaffolding is dropped, `displaydoc` becomes explicit `thiserror` messages,
+  `crate::logger`/`crate::utils` are folded into local helpers, and
+  `debug!`/`info!` calls are removed while `warn!`/`error!` become
+  `eprintln!`.
+
+- crates/vmm/src/devices/virtio/vsock/{event_thread,mmio_device}.rs are
+  written for this port (Copyright 2026 AgentPlaza, Apache-2.0): the per-VM
+  vsock event thread (replacing Firecracker's event-manager subscriber) and
+  the `VirtioDevice` adapter that bridges the mmio transport's `QueueConfig`
+  to the userspace device's real virtqueues.
 
 The Apache License, Version 2.0 text is in crates/vmm/LICENSE.
 

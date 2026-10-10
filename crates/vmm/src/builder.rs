@@ -29,7 +29,9 @@ use std::thread;
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::devices::legacy::SerialDevice;
-use crate::spawner::{SpawnError, VmRuntime, VmSpec, VsockConfig};
+use crate::devices::virtio::vsock::unix::VsockUnixBackend;
+use crate::devices::virtio::vsock::Vsock;
+use crate::spawner::{SpawnError, VmRuntime, VmSpec};
 use crate::vstate::vm::KvmVm;
 
 /// Boots the VM described by `spec` and returns once its vCPUs are running.
@@ -97,7 +99,7 @@ pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
 /// This is deliberate and documented, not a hidden rewrite: the appended
 /// strings are constants derived from the port's own layout, never host state
 /// (no environment variable, token or path can reach the guest this way).
-fn guest_cmdline(requested: &str, vsock: Option<VsockConfig>) -> String {
+fn guest_cmdline(requested: &str, has_vsock: bool) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
     #[cfg(target_arch = "x86_64")]
@@ -132,7 +134,7 @@ fn guest_cmdline(requested: &str, vsock: Option<VsockConfig>) -> String {
     // constants, and the guest needs them only when it has a vsock device to
     // find.
     #[cfg(target_arch = "x86_64")]
-    if vsock.is_some() && !sets(&VIRTIO_MMIO_ARGS) {
+    if has_vsock && !sets(&VIRTIO_MMIO_ARGS) {
         use crate::arch::x86_64::layout::{MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START};
         defaults.push(format!(
             "virtio_mmio.device={MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}"
@@ -140,7 +142,7 @@ fn guest_cmdline(requested: &str, vsock: Option<VsockConfig>) -> String {
     }
     // On `aarch64` the device tree describes the transport.
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = vsock;
+    let _ = has_vsock;
 
     if defaults.is_empty() {
         return requested.to_string();
@@ -219,6 +221,26 @@ fn start_exit_watcher<D: Send + 'static>(
 /// stopped, silently accepting input that no guest will ever read. With a weak
 /// reference, input sent to a stopped VM fails with "the VM has stopped",
 /// which is what a caller that keeps a console open needs to know.
+/// Spawns the VM's vsock event thread: the one thread that processes the
+/// userspace device's virtqueues. It is registered with the runtime so the
+/// spawner joins it on stop, and it polls the device's queue/activate
+/// eventfds, the muxer's nested epoll fd and the VM's exit event.
+///
+/// `exit_evt` is the VM's shared exit event; the thread observes its
+/// readability and exits *without* consuming it, because the exit watcher is
+/// the VM's only reader.
+fn start_vsock_event_thread(
+    exit_evt: &EventFd,
+    device: Arc<Mutex<Vsock<VsockUnixBackend>>>,
+    runtime: &Arc<VmRuntime>,
+) -> io::Result<()> {
+    let exit_evt = exit_evt.try_clone()?;
+    let handle =
+        crate::devices::virtio::vsock::event_thread::start_event_thread(device, exit_evt, runtime.id)?;
+    runtime.add_thread(handle);
+    Ok(())
+}
+
 fn set_serial_input_hook(runtime: &Arc<VmRuntime>, serial: &Arc<Mutex<SerialDevice>>) {
     let serial = Arc::downgrade(serial);
     runtime.set_input_hook(move |data| match serial.upgrade() {
@@ -274,15 +296,15 @@ mod tests {
     #[test]
     fn guest_cmdline_appends_console_defaults() {
         assert_eq!(
-            guest_cmdline("console=ttyS0 panic=-1", None),
+            guest_cmdline("console=ttyS0 panic=-1", false),
             format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("", None),
+            guest_cmdline("", false),
             format!("pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("  panic=-1  ", None),
+            guest_cmdline("  panic=-1  ", false),
             format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
     }
@@ -290,28 +312,28 @@ mod tests {
     #[test]
     fn guest_cmdline_respects_the_callers_settings() {
         assert_eq!(
-            guest_cmdline("quiet", None),
+            guest_cmdline("quiet", false),
             format!("quiet pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("debug", None),
+            guest_cmdline("debug", false),
             format!("debug pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("loglevel=3 ignore_loglevel", None),
+            guest_cmdline("loglevel=3 ignore_loglevel", false),
             format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=off loglevel=9", None),
+            guest_cmdline("pci=off loglevel=9", false),
             format!("pci=off loglevel=9{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=nocrs", None),
+            guest_cmdline("pci=nocrs", false),
             format!("pci=nocrs loglevel=7{REBOOT_ACPI}")
         );
         // A caller-chosen reboot mode is left alone.
         assert_eq!(
-            guest_cmdline("reboot=k", None),
+            guest_cmdline("reboot=k", false),
             "reboot=k pci=off loglevel=7"
         );
     }
@@ -324,22 +346,20 @@ mod tests {
     #[test]
     fn guest_cmdline_registers_the_x86_64_vsock_transport() {
         use crate::arch::x86_64::layout::{MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START};
-        use crate::spawner::VsockConfig;
 
-        let vsock = Some(VsockConfig { guest_cid: 3 });
         let expected = format!("{MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}");
         assert_eq!(
-            guest_cmdline("console=ttyS0", vsock),
+            guest_cmdline("console=ttyS0", true),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={expected}")
         );
         // A VM without a vsock device registers no transport...
         assert_eq!(
-            guest_cmdline("console=ttyS0", None),
+            guest_cmdline("console=ttyS0", false),
             "console=ttyS0 pci=off loglevel=7 reboot=acpi"
         );
         // ...and a caller that registered one itself keeps its own.
         assert_eq!(
-            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", vsock),
+            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true),
             "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
         );
     }
@@ -349,12 +369,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn guest_cmdline_adds_nothing_for_the_vsock_device() {
-        use crate::spawner::VsockConfig;
-
-        let vsock = Some(VsockConfig { guest_cid: 3 });
         assert_eq!(
-            guest_cmdline("console=ttyS0", vsock),
-            guest_cmdline("console=ttyS0", None)
+            guest_cmdline("console=ttyS0", true),
+            guest_cmdline("console=ttyS0", false)
         );
     }
 }
@@ -378,7 +395,9 @@ mod x86_64 {
     };
     use crate::devices::virtio::VirtioError;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
-    use crate::devices::virtio::vsock::VsockDevice;
+    use crate::devices::virtio::vsock::VsockError;
+    use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
+    use crate::devices::virtio::vsock::unix::VsockUnixBackend;
     use crate::spawner::{SpawnError, VmRuntime, VmSpec};
     use crate::vstate::kvm::{Kvm, KvmError};
     use crate::vstate::memory::{MemoryError, anonymous, mib_to_bytes};
@@ -534,16 +553,36 @@ mod x86_64 {
 
         // The vsock device, when the caller configured one: a virtio-mmio
         // transport in the layout's MMIO window, its interrupt registered as a
-        // KVM irqfd on the layout's GSI, and the host's vhost-vsock backend
-        // behind it. Creating the device is what claims the guest CID, so a
-        // reserved or already-taken CID fails the boot here — before the guest
-        // is started, instead of leaving it unreachable.
+        // KVM irqfd on the layout's GSI, and the *userspace* vsock device
+        // behind it (the VMM's own muxer, not the kernel's vhost-vsock). The
+        // muxer binds `uds_path`, so a taken path (or a reserved CID) fails the
+        // boot here — before the guest is started, instead of leaving it
+        // unreachable. Its ring processing runs on a dedicated event thread,
+        // never on the vCPU thread.
         let vsock = match &spec.vsock {
             Some(config) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
                 vm.register_irq(&irq, VSOCK_GSI).map_err(BootError::Irq)?;
+                let backend = VsockUnixBackend::new(
+                    config.guest_cid,
+                    config.uds_path.to_string_lossy().into_owned(),
+                )
+                .map_err(VsockError::from)
+                .map_err(VirtioError::from)
+                .map_err(BootError::Vsock)?;
+                let device = Arc::new(Mutex::new(
+                    super::Vsock::new(config.guest_cid, backend)
+                        .map_err(VirtioError::from)
+                        .map_err(BootError::Vsock)?,
+                ));
+                super::start_vsock_event_thread(
+                    vm.vcpus_exit_evt(),
+                    Arc::clone(&device),
+                    runtime,
+                )
+                .map_err(BootError::EventFd)?;
                 let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
-                    Box::new(VsockDevice::new(config.guest_cid).map_err(BootError::Vsock)?),
+                    Box::new(VsockMmioDevice::new(device)),
                     vm.guest_memory().clone(),
                     irq,
                 )));
@@ -586,7 +625,7 @@ mod x86_64 {
             None => None,
         };
         let cmdline = Cmdline::try_from(
-            super::guest_cmdline(&spec.cmdline, spec.vsock).as_str(),
+            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some()).as_str(),
             CMDLINE_MAX_SIZE,
         )?;
         configure_system_for_boot(
@@ -654,7 +693,9 @@ mod aarch64 {
     use crate::devices::legacy::{SerialDevice, SerialOut};
     use crate::devices::virtio::VirtioError;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
-    use crate::devices::virtio::vsock::VsockDevice;
+    use crate::devices::virtio::vsock::VsockError;
+    use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
+    use crate::devices::virtio::vsock::unix::VsockUnixBackend;
     use crate::spawner::{GicVersion, SpawnError, VmRuntime, VmSpec};
     use crate::vstate::kvm::{Kvm, KvmError};
     use crate::vstate::memory::{MemoryError, anonymous, mib_to_bytes};
@@ -766,14 +807,35 @@ mod aarch64 {
         // The guest's other device, when the caller configured one: the vsock
         // device, whose transport sits on the MMIO bus at the layout's window
         // with its interrupt on the layout's GSI (registered as a KVM irqfd,
-        // like the console's). Creating the device claims the guest CID, so a
-        // bad CID fails the boot here, before the guest is started.
+        // like the console's). The *userspace* device (the VMM's own muxer,
+        // not the kernel's vhost-vsock) binds `uds_path`, so a bad CID or a
+        // taken path fails the boot here, before the guest is started. Its
+        // ring processing runs on a dedicated event thread, never on the vCPU
+        // thread.
         let vsock = match &spec.vsock {
             Some(config) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
                 vm.register_irq(&irq, VSOCK_GSI).map_err(BootError::Irq)?;
+                let backend = VsockUnixBackend::new(
+                    config.guest_cid,
+                    config.uds_path.to_string_lossy().into_owned(),
+                )
+                .map_err(VsockError::from)
+                .map_err(VirtioError::from)
+                .map_err(BootError::Vsock)?;
+                let device = Arc::new(Mutex::new(
+                    super::Vsock::new(config.guest_cid, backend)
+                        .map_err(VirtioError::from)
+                        .map_err(BootError::Vsock)?,
+                ));
+                super::start_vsock_event_thread(
+                    vm.vcpus_exit_evt(),
+                    Arc::clone(&device),
+                    runtime,
+                )
+                .map_err(BootError::EventFd)?;
                 let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
-                    Box::new(VsockDevice::new(config.guest_cid).map_err(BootError::Vsock)?),
+                    Box::new(VsockMmioDevice::new(device)),
                     vm.guest_memory().clone(),
                     irq,
                 )));
@@ -825,7 +887,7 @@ mod aarch64 {
             None => None,
         };
         let cmdline = Cmdline::try_from(
-            super::guest_cmdline(&spec.cmdline, spec.vsock).as_str(),
+            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some()).as_str(),
             CMDLINE_MAX_SIZE,
         )?;
         let serial_info = SerialFdtInfo {

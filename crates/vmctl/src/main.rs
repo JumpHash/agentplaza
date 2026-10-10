@@ -37,6 +37,10 @@ const PRINTER_INTERVAL: Duration = Duration::from_millis(20);
 /// take whole, so a read never asks for more than that.
 const CONSOLE_INPUT_CHUNK: usize = 64;
 
+/// Where the per-VM vsock Unix sockets live unless `--uds-dir` says otherwise;
+/// VM `i`'s muxer binds `{DEFAULT_UDS_DIR}/vm{cid}`.
+const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
+
 /// How long the console has to stay quiet (no new guest output) before the
 /// reader considers the guest's console live and starts forwarding its input.
 ///
@@ -77,6 +81,8 @@ usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
   --gic v2|v3        aarch64 interrupt controller (ignored on x86_64)
   --vsock-cid BASE   give the VMs vsock devices, VM i getting CID BASE+i (default:
                      no vsock device; BASE is a guest CID, so at least 3)
+  --uds-dir DIR      directory for the per-VM vsock Unix sockets (default
+                     /tmp/plaza-vsock; VM i's muxer binds DIR/vm{BASE+i})
   --console          forward this tool's stdin to VM 0's serial console
   -h, --help         print this help
 
@@ -134,6 +140,9 @@ struct Config {
     /// Guest CID of VM 0; VM `i` gets `vsock_cid + i`. `None` spawns VMs with
     /// no vsock device.
     vsock_cid: Option<u64>,
+    /// Directory holding the per-VM vsock Unix sockets; VM `i`'s muxer binds
+    /// `{uds_dir}/vm{cid}`. Ignored when `vsock_cid` is `None`.
+    uds_dir: PathBuf,
     /// Forward this process's stdin to VM 0's serial console.
     console: bool,
 }
@@ -150,6 +159,7 @@ impl Config {
         let mut timeout = Some(Duration::from_secs(120));
         let mut gic = None;
         let mut vsock_cid = None;
+        let mut uds_dir = PathBuf::from(DEFAULT_UDS_DIR);
         let mut console = false;
 
         let mut args = args.iter();
@@ -210,6 +220,7 @@ impl Config {
                     vsock_cid = Some(base);
                 }
                 "--console" => console = true,
+                "--uds-dir" => uds_dir = PathBuf::from(value("--uds-dir")?),
                 other => return Err(format!("unknown argument: {other}")),
             }
         }
@@ -243,6 +254,7 @@ impl Config {
             timeout,
             gic,
             vsock_cid,
+            uds_dir,
             console,
         })
     }
@@ -258,14 +270,20 @@ fn run(config: Config) -> ExitCode {
         gic: config.gic,
         vsock: None,
     };
-    // Every VM's vsock device carries its own CID: VM `id` gets the base the
-    // caller gave plus its id, because the host side identifies guests by CID
-    // and the spawner assigns none itself.
+    // Every VM's vsock device carries its own CID and its own host Unix socket
+    // path: VM `id` gets the base CID plus its id, and the muxer binds
+    // `{uds_dir}/vm{cid}`, because the host side (the orchestrator) identifies
+    // guests by CID and reaches each through its own socket.
     let vsock_cid = config.vsock_cid;
+    let uds_dir = config.uds_dir;
     let mut vms = match spawn_each(config.count, |id| {
         let mut spec = base.clone();
-        spec.vsock = vsock_cid.map(|base| VsockConfig {
-            guest_cid: base + u64::from(id),
+        spec.vsock = vsock_cid.map(|base| {
+            let guest_cid = base + u64::from(id);
+            VsockConfig {
+                guest_cid,
+                uds_path: uds_dir.join(format!("vm{guest_cid}")),
+            }
         });
         spec
     }) {

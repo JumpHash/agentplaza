@@ -6,21 +6,45 @@
 // found in the THIRD-PARTY file.
 //
 // Derived from Firecracker src/vmm/src/devices/virtio/vsock/mod.rs (trimmed:
-// the `csm`/`unix` muxer backend and `event_handler` land with the next slice;
 // `persist`/snapshot support is dropped, so `VsockError` loses its
-// `VirtioState`/`VsockUdsBackend` variants, to be re-added with the backend;
-// `displaydoc` becomes explicit `thiserror` messages). The traits below are
-// the frozen interface the muxer backend implements.
+// `VirtioState` variant; `displaydoc` becomes explicit `thiserror` messages;
+// the `event_handler` subscriber logic becomes the dedicated
+// [`event_thread`] module). The traits below are the frozen interface the
+// muxer backend implements.
 
 //! The Firecracker vsock device aims to provide full virtio-vsock support to
 //! software running inside the guest VM, while bypassing vhost kernel code on the
 //! host. To that end, Firecracker implements the virtio-vsock device model, and
 //! mediates communication between AF_UNIX sockets (on the host end) and AF_VSOCK
 //! sockets (on the guest end).
+//!
+//! # Security property (F2)
+//!
+//! This is the *userspace* vsock device: the guest's packets never reach the
+//! host kernel's vsock stack. The [`unix::VsockUnixBackend`] muxer mediates
+//! every connection against the VM's own Unix-domain socket path (`uds_path`):
+//!
+//! * a guest `connect(CID 2, port P)` becomes a host
+//!   `UnixStream::connect("{uds_path}_{P}")` — the guest can reach **only**
+//!   the host listeners the operator chose to put at that path prefix, and
+//!   nothing else;
+//! * a packet addressed to any CID other than `VSOCK_HOST_CID` (2) is dropped,
+//!   so cross-guest routing is structurally impossible — the kernel never
+//!   routes a vsock packet;
+//! * the host side initiates a connection back into the guest by connecting to
+//!   `{uds_path}` and writing `connect <port>\n`.
+//!
+//! There is no `/dev/vhost-vsock` and no `AF_VSOCK` listener anywhere on the
+//! boot path: the only host surface a guest can reach is the set of sockets
+//! the caller laid out under `{uds_path}_`.
 
+pub mod csm;
 mod device;
+pub mod event_thread;
 pub mod metrics;
+pub mod mmio_device;
 mod packet;
+pub mod unix;
 
 use std::os::unix::io::AsRawFd;
 
@@ -32,12 +56,6 @@ pub use self::device::{ActivateError, Vsock};
 use self::packet::{VsockPacketRx, VsockPacketTx};
 use super::iov_deque::IovDequeError;
 use crate::devices::virtio::iovec::IoVecError;
-
-/// The vhost-backed vsock device (the boot path's MMIO device), re-exported
-/// here so the existing `vsock::VsockDevice` import keeps resolving while the
-/// two device flavours coexist. The next slice wires in [`Vsock`] and removes
-/// this re-export together with the vhost device.
-pub use crate::devices::virtio::vhost_device::VsockDevice;
 
 mod defs {
     use crate::devices::virtio::queue::FIRECRACKER_MAX_QUEUE_SIZE;
@@ -147,6 +165,15 @@ pub enum VsockError {
     /// Tried to push to full IovDeque.
     #[error("tried to push to a full iov deque")]
     IovDequeOverflow,
+    /// Vsock UDS backend error: {0}.
+    #[error("vsock UDS backend error: {0}")]
+    VsockUdsBackend(crate::devices::virtio::vsock::unix::VsockUnixBackendError),
+}
+
+impl From<crate::devices::virtio::vsock::unix::VsockUnixBackendError> for VsockError {
+    fn from(value: crate::devices::virtio::vsock::unix::VsockUnixBackendError) -> Self {
+        VsockError::VsockUdsBackend(value)
+    }
 }
 
 impl From<IoVecError> for VsockError {

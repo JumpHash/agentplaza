@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use crate::line::LineTransport;
 use crate::proto::{GuestMessage, HostMessage, WELCOME_ECHO};
-use crate::vsock::{CID_ANY, HOST_CID};
 
 /// Where the session's log lines go.
 pub trait SessionLog {
@@ -87,11 +86,12 @@ impl From<io::Error> for HostError {
 
 /// Runs one guest session to its `bye`, answering every tool call.
 ///
-/// `peer_cid` is the CID the accepted connection reported; the guest reports
-/// its own CID again in `hello`, and the two are logged together so a
-/// disagreement is visible rather than assumed away. `limits` bounds the
-/// session: a tool-call budget the host will not exceed, and a deadline the
-/// session may not run past.
+/// `peer_cid` is the guest CID this session was accepted for — the one the
+/// listener's socket path encodes (`{uds_dir}/vm{cid}_{port}`). The guest
+/// reports its own CID again in `hello`, and the two are checked against each
+/// other: identity is by configuration, because the UDS muxer carries no peer
+/// address on the wire. `limits` bounds the session: a tool-call budget the
+/// host will not exceed, and a deadline the session may not run past.
 pub fn handle_connection<T: LineTransport>(
     transport: &mut T,
     peer_cid: u32,
@@ -136,26 +136,19 @@ pub fn handle_connection<T: LineTransport>(
                     )));
                 }
                 // The guest's claim about its own CID is checked against the
-                // address the kernel reported for the accepted connection:
-                // that address is the CID the packets really carried, so a
+                // CID the accepted socket path encodes. The muxer carries no
+                // peer address, so this is identity by configuration: a
                 // disagreement means the guest is not who it says it is, and
                 // its session is dropped rather than served under a name it
                 // has not earned.
-                if peer_cid_is_usable(peer_cid) {
-                    if guest_cid != peer_cid {
-                        return Err(HostError::Protocol(format!(
-                            "hello claims guest_cid {guest_cid}, but the connection was accepted from cid {peer_cid}"
-                        )));
-                    }
-                } else {
-                    log.line(&format!(
-                        "vsockd: the transport reported no peer CID for this connection (accepted as {peer_cid}); \
-                         the hello's guest_cid {guest_cid} cannot be checked against it"
-                    ));
+                if guest_cid != peer_cid {
+                    return Err(HostError::Protocol(format!(
+                        "hello claims guest_cid {guest_cid}, but the connection was accepted on the socket for cid {peer_cid}"
+                    )));
                 }
                 guest = Some((guest_cid, vm));
                 log.line(&format!(
-                    "vsockd: guest {guest_cid} vm {vm} says hello (accepted from cid {peer_cid})"
+                    "vsockd: guest {guest_cid} vm {vm} says hello (accepted on the socket for cid {peer_cid})"
                 ));
                 send(
                     transport,
@@ -264,8 +257,7 @@ fn host_uptime() -> io::Result<String> {
 fn inbound_prefix(guest: Option<(u32, u32)>, peer_cid: u32) -> String {
     match guest {
         Some((cid, vm)) => format!("[guest {cid} vm{vm} ->]"),
-        None if peer_cid_is_usable(peer_cid) => format!("[guest {peer_cid} vm? ->]"),
-        None => "[guest cid? vm? ->]".to_string(),
+        None => format!("[guest {peer_cid} vm? ->]"),
     }
 }
 
@@ -287,13 +279,6 @@ fn sanitize_for_log(line: &str) -> String {
         }
     }
     sanitized
-}
-
-/// Whether a CID the kernel reported for an accepted connection can be checked
-/// against: 0/1/2 are the vsock stack's own (hypervisor, local, host) and
-/// [`CID_ANY`] means the transport reported no address at all.
-fn peer_cid_is_usable(peer_cid: u32) -> bool {
-    peer_cid > HOST_CID && peer_cid != CID_ANY
 }
 
 /// Sends one host line and logs it.
@@ -569,39 +554,11 @@ mod tests {
         let err = handle_connection(&mut host, 3, limits(), &log).expect_err("the session is dropped");
         assert!(
             matches!(&err, HostError::Protocol(detail)
-                if detail.contains("claims guest_cid 4") && detail.contains("accepted from cid 3")),
+                if detail.contains("claims guest_cid 4") && detail.contains("accepted on the socket for cid 3")),
             "got {err:?}"
         );
         let log = log.text();
         assert!(log.contains("[guest 3 vm? ->]"), "log: {log}");
-    }
-
-    #[test]
-    fn a_transport_that_reports_no_peer_cid_is_not_a_mismatch() {
-        // `accept` on a transport that does not fill the peer address answers
-        // VMADDR_CID_ANY; there is then nothing to check the claim against, and
-        // the session is served (with a note) rather than failed on a
-        // comparison that cannot be made.
-        let (mut guest, mut host) = pair();
-        let log = Recording::default();
-        let script = thread::spawn(move || {
-            guest
-                .send_line(r#"{"type":"hello","vm":0,"guest_cid":7}"#)
-                .expect("hello sends");
-            let _welcome = next(&mut guest);
-            guest
-                .send_line(r#"{"type":"bye","calls":0}"#)
-                .expect("bye sends");
-        });
-        let summary = handle_connection(&mut host, CID_ANY, limits(), &log).expect("the session completes");
-        assert_eq!(summary.guest_cid, 7);
-        assert_eq!(summary.peer_cid, CID_ANY);
-        script.join().expect("the scripted guest finished");
-        assert!(
-            log.text().contains("cannot be checked against it"),
-            "log: {}",
-            log.text()
-        );
     }
 
     #[test]
