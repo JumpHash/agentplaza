@@ -17,6 +17,11 @@ use std::fmt;
 /// The orchestrator's vsock port when the command line does not name one.
 pub const DEFAULT_PORT: u32 = 5000;
 
+/// The smallest CID a guest may be given: 0 is `VMADDR_CID_ANY`, 1 is
+/// `VMADDR_CID_LOCAL` and 2 is `VMADDR_CID_HOST`, all reserved by the vsock
+/// stack, so a caller assigns a guest CID of 3 or more.
+pub const MIN_GUEST_CID: u32 = 3;
+
 /// Everything the harness needs to open its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -40,6 +45,8 @@ pub enum ConfigError {
         /// The value that did not parse.
         value: String,
     },
+    /// CID {0} is reserved: a guest CID is [`MIN_GUEST_CID`] or more
+    ReservedCid(u32),
 }
 
 impl fmt::Display for ConfigError {
@@ -49,6 +56,10 @@ impl fmt::Display for ConfigError {
             Self::BadValue { flag, value } => {
                 write!(f, "{flag}={value} is not a number")
             }
+            Self::ReservedCid(cid) => write!(
+                f,
+                "plaza.cid={cid} is reserved (0 is VMADDR_CID_ANY, 1 VMADDR_CID_LOCAL and 2 VMADDR_CID_HOST); a guest CID is {MIN_GUEST_CID} or more"
+            ),
         }
     }
 }
@@ -79,6 +90,9 @@ impl Config {
         // The CID is the only flag that is not optional, so it is parsed
         // first; a bad CID is reported even if the other flags are missing.
         let cid = number("plaza.cid", cid)?;
+        if cid < MIN_GUEST_CID {
+            return Err(ConfigError::ReservedCid(cid));
+        }
         let port = match value_of("plaza.port=") {
             Some(value) => number("plaza.port", value)?,
             None => DEFAULT_PORT,
@@ -133,6 +147,19 @@ mod tests {
                 value: "three".to_string()
             })
         );
+    }
+
+    #[test]
+    fn a_reserved_cid_is_refused() {
+        // 0/1/2 belong to the vsock stack, not to a guest.
+        for reserved in [0, 1, 2] {
+            assert_eq!(
+                Config::parse(&format!("plaza.cid={reserved}")),
+                Err(ConfigError::ReservedCid(reserved)),
+                "cid {reserved}"
+            );
+        }
+        assert!(Config::parse("plaza.cid=3").is_ok());
     }
 
     #[test]
