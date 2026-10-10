@@ -133,6 +133,13 @@ for spec, name, never in WITNESSES:
     if f"MODULE {spec}_{name} " not in out: sys.exit(f"witness {spec}_{name}: module rename failed")
     out = out.replace("\n=============", f"\nNeverHappens == {never}\n=============", 1)
     open(f"mutants/{spec}_{name}.tla", "w").write(out)
-    cfg = open(f"{spec}.cfg").read().split("INVARIANTS")[0] + "INVARIANTS\n  NeverHappens\n"
+    # Replace only the invariant list, keeping any sections after it (PROPERTIES,
+    # CHECK_DEADLOCK, ...). Dropping a spec's own CHECK_DEADLOCK FALSE makes TLC report a
+    # reachable deadlock instead of the violation the witness exists to find.
+    head, _, tail = open(f"{spec}.cfg").read().partition("INVARIANTS\n")
+    rest = tail.split("\n")
+    j = 0
+    while j < len(rest) and rest[j].startswith("  "): j += 1
+    cfg = head + "INVARIANTS\n  NeverHappens\n" + "\n".join(rest[j:])
     open(f"mutants/{spec}_{name}.cfg", "w").write(cfg)
 print(f"{len(MUTANTS)} mutants and {len(WITNESSES)} witnesses written")
