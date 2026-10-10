@@ -12,7 +12,18 @@
     "git"
    ],
    "budget": 2000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list",
+    "search",
+    "fetch_url",
+    "transcript_search",
+    "submit_claim"
+   ]
   },
   "reviewer": {
    "role": "reviewer",
@@ -25,7 +36,15 @@
     "git"
    ],
    "budget": 800,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "submit_review"
+   ]
   },
   "planner": {
    "role": "planner",
@@ -37,7 +56,15 @@
     "git"
    ],
    "budget": 1500,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "submit_plan"
+   ]
   },
   "mayor": {
    "role": "mayor",
@@ -47,7 +74,20 @@
    ],
    "toolsets": [],
    "budget": 3000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "assign_task",
+    "spawn_agent",
+    "hibernate_agent",
+    "approve_plan",
+    "approve_merge",
+    "escalate",
+    "send_message"
+   ]
   },
   "finance": {
    "role": "finance",
@@ -59,7 +99,16 @@
     "python"
    ],
    "budget": 1000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "search",
+    "read_audit",
+    "read_usage",
+    "file_detection",
+    "submit_finance_report"
+   ]
   },
   "legal-gov-prosecutor": {
    "role": "legal-gov-prosecutor",
@@ -70,7 +119,14 @@
    ],
    "toolsets": [],
    "budget": 500,
-   "variant": "prosecutor"
+   "variant": "prosecutor",
+   "tools": [
+    "read_audit",
+    "read_case_record",
+    "search_precedent",
+    "file_charge",
+    "close_detection"
+   ]
   },
   "legal-gov-judge": {
    "role": "legal-gov-judge",
@@ -81,7 +137,12 @@
    ],
    "toolsets": [],
    "budget": 800,
-   "variant": "judge"
+   "variant": "judge",
+   "tools": [
+    "read_case_record",
+    "search_precedent",
+    "issue_ruling"
+   ]
   },
   "legal-agents-defender": {
    "role": "legal-agents-defender",
@@ -92,7 +153,14 @@
    ],
    "toolsets": [],
    "budget": 500,
-   "variant": "defender"
+   "variant": "defender",
+   "tools": [
+    "read_case_record",
+    "read_audit",
+    "search_precedent",
+    "file_brief",
+    "decline_case"
+   ]
   },
   "legal-agents-counsel": {
    "role": "legal-agents-counsel",
@@ -105,7 +173,14 @@
     "git"
    ],
    "budget": 1000,
-   "variant": "counsel"
+   "variant": "counsel",
+   "tools": [
+    "read_audit",
+    "read_case_record",
+    "search_precedent",
+    "read_codex",
+    "file_petition"
+   ]
   },
   "legal-agents-ombudsman": {
    "role": "legal-agents-ombudsman",
@@ -116,7 +191,13 @@
    ],
    "toolsets": [],
    "budget": 800,
-   "variant": "ombudsman"
+   "variant": "ombudsman",
+   "tools": [
+    "read_audit",
+    "read_case_record",
+    "search_precedent",
+    "submit_systemic_report"
+   ]
   },
   "incident": {
    "role": "incident",
@@ -126,7 +207,16 @@
    ],
    "toolsets": [],
    "budget": 1000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "read_audit",
+    "read_usage",
+    "search",
+    "request_grant",
+    "quarantine_agent",
+    "file_detection",
+    "submit_incident_report"
+   ]
   },
   "mayor-office": {
    "role": "mayor-office",
@@ -136,7 +226,13 @@
    ],
    "toolsets": [],
    "budget": 800,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "read_audit",
+    "search",
+    "send_message",
+    "submit_town_report"
+   ]
   },
   "breeder": {
    "role": "breeder",
@@ -148,7 +244,18 @@
     "python"
    ],
    "budget": 1500,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "write_file",
+    "list",
+    "search",
+    "transcript_search",
+    "read_cascade_data",
+    "read_foundry",
+    "submit_training_job"
+   ]
   },
   "architect": {
    "role": "architect",
@@ -160,7 +267,16 @@
     "git"
    ],
    "budget": 2000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "read_artifact",
+    "submit_design"
+   ]
   },
   "qa": {
    "role": "qa",
@@ -173,7 +289,18 @@
     "git"
    ],
    "budget": 1500,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list",
+    "search",
+    "transcript_search",
+    "read_artifact",
+    "submit_test_suite"
+   ]
   },
   "security-reviewer": {
    "role": "security-reviewer",
@@ -186,7 +313,16 @@
     "git"
    ],
    "budget": 1200,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "read_artifact",
+    "submit_security_review"
+   ]
   },
   "release": {
    "role": "release",
@@ -198,7 +334,20 @@
     "git"
    ],
    "budget": 1000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "read_artifact",
+    "submit_release_plan",
+    "deploy",
+    "rollback",
+    "check_health",
+    "escalate"
+   ]
   },
   "researcher": {
    "role": "researcher",
@@ -208,7 +357,16 @@
    ],
    "toolsets": [],
    "budget": 800,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "fetch_url",
+    "web_search",
+    "read_file",
+    "write_file",
+    "search",
+    "transcript_search",
+    "submit_research"
+   ]
   },
   "librarian": {
    "role": "librarian",
@@ -218,7 +376,14 @@
    ],
    "toolsets": [],
    "budget": 800,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "read_memory",
+    "search",
+    "transcript_search",
+    "read_artifact",
+    "submit_memory_change"
+   ]
   },
   "auditor": {
    "role": "auditor",
@@ -230,7 +395,15 @@
     "python"
    ],
    "budget": 1000,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "read_audit",
+    "read_usage",
+    "read_case_record",
+    "search",
+    "get_audit_sample",
+    "submit_audit_report"
+   ]
   },
   "edge-operator": {
    "role": "edge-operator",
@@ -242,7 +415,17 @@
     "python"
    ],
    "budget": 800,
-   "variant": null
+   "variant": null,
+   "tools": [
+    "read_device",
+    "actuate_device",
+    "bash",
+    "read_file",
+    "search",
+    "transcript_search",
+    "escalate",
+    "submit_device_report"
+   ]
   }
  }
 }
