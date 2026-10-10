@@ -4,10 +4,11 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getMachine, getRun, listRuns } from './api';
+import { getHub, getMachine, getRun, listRuns } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { RunSlice } from './models/history';
 import { SessionHistory } from './models/history';
+import type { HubStatus } from './models/hub';
 import type { Machine } from './models/machine';
 import type { Run, RunState, VmState } from './models/run';
 import { isOpen, seqOf } from './models/run';
@@ -32,6 +33,9 @@ declare global {
       readonly renders: number;
       readonly wire: { readonly run: number; readonly vm: number; readonly serial: number };
       readonly stream: StreamState;
+      /** What the hub line reads from: whether the hub is reachable, its
+          agent and session counts, and the error when it is not. */
+      readonly hub: { readonly reachable: boolean; readonly agents: number; readonly sessions: number; readonly error: string | null };
       /** The 3D camera's position and target, when the scene has booted. */
       readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
       /** What the 3D plot holds — platforms, blocks, live arcs — and the
@@ -67,6 +71,7 @@ const TICK_MS =
     ? window.__PLAZA_TICK_MS__
     : 1000; // detail cadence; the list polls every 2 ticks
 const MACHINE_EVERY = 15; // ticks between machine polls
+const HUB_EVERY = 15; // ticks between hub polls (the hub's status is frozen and slow)
 const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
 const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
 const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
@@ -76,6 +81,11 @@ export class Store {
   /* daemon state */
   machine: Machine | null = null;
   machineError: string | null = null;
+  /** The hub's frozen status (through the daemon's proxy), or the reason it
+      is unreadable. Its own upstream: a hub down is NOT the daemon down, so
+      neither success nor failure here feeds `health`. */
+  hub: HubStatus | null = null;
+  hubError: string | null = null;
   runs: Run[] = []; // newest first
   runsError: string | null = null;
   /** Every run fetched with serial, by id (map/3D poll each open run). */
@@ -196,6 +206,7 @@ export class Store {
     const wantList = first || this.ticks % 2 === 0 || this.runsError != null || this.runs.length === 0;
     if (wantList) jobs.push(this.pollList());
     if (first || this.ticks % MACHINE_EVERY === 0 || route.name === 'machine') jobs.push(this.pollMachine());
+    if (first || this.ticks % HUB_EVERY === 0) jobs.push(this.pollHub());
 
     if (route.name === 'run' && this.detailId) {
       jobs.push(this.pollDetail(this.detailId));
@@ -265,6 +276,20 @@ export class Store {
     } catch (err) {
       this.machineError = err instanceof Error ? err.message : String(err);
       this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Poll the hub's status through the daemon's proxy. The hub is its own
+      upstream: an unreachable hub is recorded as `hubError` for the hub
+      line, and never feeds the daemon-health mark (the polls own that) — a
+      hub down leaves the register exactly as it was. */
+  private async pollHub(): Promise<void> {
+    try {
+      this.hub = await getHub();
+      this.hubError = null;
+    } catch (err) {
+      this.hubError = err instanceof Error ? err.message : String(err);
     }
     this.scheduleRender();
   }

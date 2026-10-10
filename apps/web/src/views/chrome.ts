@@ -3,6 +3,7 @@
 
 import { byId, el, toast } from '../dom';
 import { fmtNum } from '../format';
+import { hubLine } from '../models/hub';
 import type { RunState, VmState } from '../models/run';
 import type { Theme } from '../store';
 import { roleOf, seqOf } from '../models/run';
@@ -33,6 +34,16 @@ export function vmStateMk(state: VmState | undefined): HTMLElement {
     field is the fleet's alone, and no placeholder is ever invented for it. */
 export function roleChip(role: string | null): HTMLElement | null {
   return role == null ? null : el('span', 'chip role', role);
+}
+
+/** The hub line, into whichever element asks. The register's fleet-status
+    marginalia and the roster both read the one builder, and both turn amber
+    when the hub is unreachable — a state distinct from an empty hub, which
+    still names its zeroes. */
+export function renderHubLine(id: string): void {
+  const node = byId(id);
+  node.textContent = hubLine(store.hub, store.hubError);
+  node.classList.toggle('warn', store.hubError != null);
 }
 
 /* ------------------------------------------------------------ theme */

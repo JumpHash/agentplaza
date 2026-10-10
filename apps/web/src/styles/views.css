@@ -20,6 +20,12 @@ canvas.tchart { display: block; width: 100%; height: 150px; box-sizing: border-b
 td.sparkcell { padding-top: 6px; padding-bottom: 6px; }
 canvas.spark { display: block; width: 96px; height: 20px; }
 
+/* the hub line: the fleet's transport as the register writes it — mono, terse;
+   amber only when the hub cannot be read, which is not the same as an empty
+   hub (that still names its served CIDs and its zeroes) */
+.hubline { margin-top: 12px; font: 500 11.5px var(--mono); letter-spacing: .04em; color: var(--ink-2); }
+.hubline.warn { color: var(--warn); }
+
 /* the roster: one ruled band per role, the role's agents beneath it. The band
    overrides the table's numbered first column, since it spans the row. */
 #roster-table tr.grp td { width: auto; text-align: left; padding: 16px 12px 6px; border-bottom: 1px solid var(--rule); color: var(--ink-3); font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; }

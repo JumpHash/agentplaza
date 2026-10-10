@@ -19,10 +19,10 @@
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-4J65LCPQ.css">
-<script type="module" src="main-D2LLHJBT.js"></script>
+<link rel="stylesheet" href="main-CDLE5NLP.css">
+<script type="module" src="main-B5UAHZWH.js"></script>
 </head>
-<body data-bundle-hash="c6a31e0335a86785642fbb5f19d7ffd7a7dcf4bafbd2ffa7be217630cfcad1ba">
+<body data-bundle-hash="8a767f52218936a746a819e3472fbd3f6cb031a5fcf15da5158c14d82ef7a332">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -39,7 +39,7 @@
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">c6a31e0335a86785642fbb5f19d7ffd7a7dcf4bafbd2ffa7be217630cfcad1ba</code></span>
+      <span>Bundle <code id="colo-hash">8a767f52218936a746a819e3472fbd3f6cb031a5fcf15da5158c14d82ef7a332</code></span>
       <span id="colo-wire">The wire · opening…</span>
       <span>Keys 0–6 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
@@ -96,6 +96,7 @@
           <div class="tally"><div class="figure" id="t-vcpus">0</div><div class="tcap">vCPUs in use</div></div>
           <div class="tally"><div class="figure" id="t-mem">0</div><div class="tcap">MiB in use</div></div>
         </div>
+        <p class="hubline" id="hub-line">hub · reading…</p>
       </div></div>
 
       <div class="parts"><div class="body">
@@ -476,11 +477,12 @@
           <div class="tally"><div class="figure" id="t-register-vms">0</div><div class="tcap">VMs on the register</div></div>
         </div>
         <p class="example" id="roster-empty" hidden></p>
+        <p class="hubline" id="roster-hub-line">hub · reading…</p>
       </div></div>
 
       <div class="group bb0" id="roster-group"><div class="hd">The fleet, by role <span class="c" id="roster-c"></span></div></div>
       <div class="tablewrap"><table id="roster-table" hidden>
-        <thead><tr><th>No.</th><th>Role</th><th>Place</th><th>Guest CID</th><th>State</th><th class="num">Serial lines</th><th class="num">Lines / s</th><th>Up</th></tr></thead>
+        <thead><tr><th>No.</th><th>Role</th><th>Place</th><th>Guest CID</th><th>Hub</th><th>State</th><th class="num">Serial lines</th><th class="num">Lines / s</th><th>Up</th></tr></thead>
         <tbody id="roster-body"></tbody>
       </table></div>
     </div>

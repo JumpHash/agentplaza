@@ -16,6 +16,7 @@ import {
 } from '../src/serial';
 import { runReportText, runTranscriptText } from '../src/export';
 import { fmtDateTime, fmtDur, fmtStamp } from '../src/format';
+import { hubLine, joinHub, parseHubStatus } from '../src/models/hub';
 import type { Run, Vm, VmState } from '../src/models/run';
 import { cidRange, roleOf } from '../src/models/run';
 import { sessionOf, sessionSummary } from '../src/models/session';
@@ -31,6 +32,22 @@ function eq(actual: unknown, expected: unknown, name: string): void {
   else {
     failures++;
     console.error(`FAIL — ${name}\n  expected ${e}\n  actual   ${a}`);
+  }
+}
+
+/** Assert that `fn` throws and the message names `fragment`. */
+function throws(fn: () => unknown, fragment: string, name: string): void {
+  try {
+    fn();
+    failures++;
+    console.error(`FAIL — ${name}\n  expected a throw containing ${fragment}, none thrown`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes(fragment)) console.log('ok — ' + name);
+    else {
+      failures++;
+      console.error(`FAIL — ${name}\n  expected message containing ${fragment}\n  actual   ${msg}`);
+    }
   }
 }
 
@@ -433,6 +450,93 @@ eq(
   'each agent carries its place, state, lines and rate',
 );
 eq(readRoster([fleetRun('r1', [fleetVm(0, undefined, 'running', 10)])], () => 0, () => 0), { groups: [], agents: 0, running: 0, roles: 0 }, 'a register with no roles reads as an empty roster');
+
+/* ==================== the hub: parse, line, and the connected join ======
+   The hub's status comes through the daemon's proxy and is read through a
+   defensive parse (the relay is untrusted): a missing field is an error
+   naming it, unknown extras are tolerated. The line must read the same
+   whether the hub is empty or merely unreadable — and the join must never
+   merge the two sides silently. */
+
+const HUB_FIXTURE = {
+  node: { cids: [10, 11, 100, 101], port: 5000, uptime_s: 3840, max_sessions: 64, keepalive_idle_s: 300 },
+  agents: [
+    { cid: 100, role: 'architect', connected_at_ms: 1000, last_heartbeat_ms: 4200, calls: 3 },
+    { cid: 101, role: 'auditor', connected_at_ms: 1100, last_heartbeat_ms: 4000, calls: 0 },
+  ],
+  sessions_active: 2,
+};
+
+eq(parseHubStatus(HUB_FIXTURE), HUB_FIXTURE, 'a well-formed hub status parses unchanged');
+eq(
+  parseHubStatus({ ...HUB_FIXTURE, extra: 1, node: { ...HUB_FIXTURE.node, extra: 2 } }),
+  HUB_FIXTURE,
+  'unknown extra fields are tolerated and dropped',
+);
+throws(() => parseHubStatus(null), 'hub is missing or not an object', 'a non-object status is rejected by name');
+throws(() => parseHubStatus({ agents: [], sessions_active: 0 }), 'hub.node', 'a missing node is an error naming it');
+throws(() => parseHubStatus({ node: HUB_FIXTURE.node, sessions_active: 0 }), 'hub.agents', 'a missing agents array is an error naming it');
+throws(
+  () => parseHubStatus({ node: { cids: [10], uptime_s: 1, max_sessions: 1, keepalive_idle_s: 1 }, agents: [], sessions_active: 0 }),
+  'hub.node.port',
+  'a missing node.port names the field',
+);
+throws(() => parseHubStatus({ ...HUB_FIXTURE, agents: [{ role: 'x', connected_at_ms: 1, last_heartbeat_ms: 2, calls: 0 }] }), 'hub.agents[0].cid', 'a missing agent field names its path');
+throws(() => parseHubStatus({ ...HUB_FIXTURE, node: { ...HUB_FIXTURE.node, cids: ['x'] } }), 'hub.node.cids[0]', 'a non-integer cid names its index');
+throws(() => parseHubStatus({ ...HUB_FIXTURE, sessions_active: 'two' }), 'hub.sessions_active', 'a mistyped count is an error naming it');
+eq(parseHubStatus(HUB_FIXTURE) instanceof Error, false, 'a good parse is a value, not a throw');
+
+/* the hub line's voice: the register's own numerals and durations */
+const parsedFixture = parseHubStatus(HUB_FIXTURE);
+eq(
+  hubLine(parsedFixture, null),
+  'hub · 4 cid(s) served · 2 agent(s) connected · 2 session(s) active · up 1 h 04 m',
+  'the hub line reads the fleet in the register voice',
+);
+const emptyHub = parseHubStatus({ node: { cids: [1, 2], port: 5000, uptime_s: 5, max_sessions: 8, keepalive_idle_s: 300 }, agents: [], sessions_active: 0 });
+const emptyLine = hubLine(emptyHub, null);
+eq(emptyLine, 'hub · 2 cid(s) served · 0 agent(s) connected · 0 session(s) active · up 5 s', 'an empty hub still names its CIDs and its zeroes');
+const deadLine = hubLine(null, 'hub unreachable: cannot connect to 127.0.0.1:19080: Connection refused');
+eq(deadLine, 'hub · unreachable — hub unreachable: cannot connect to 127.0.0.1:19080: Connection refused', 'an unreadable hub says so and why');
+eq(hubLine(null, null), 'hub · reading…', 'before the first poll the line reads');
+eq(emptyLine !== deadLine, true, 'an empty hub and an unreadable hub are distinct readings');
+
+/* the join: keyed by guest CID, honest about who knows whom */
+{
+  const registered = [
+    { cid: 100, role: 'architect' },
+    { cid: 102, role: 'builder' },
+    { cid: null, role: 'no-vsock' },
+  ];
+  const connected = parseHubStatus(HUB_FIXTURE).agents.concat([
+    { cid: 120, role: 'ghost', connected_at_ms: 5000, last_heartbeat_ms: 5100, calls: 0 },
+  ]);
+  const join = joinHub(registered, connected);
+  eq(join.map((r) => r.cid), [100, 101, 102, 120, null], 'the join is ordered by CID, the CID-less row last');
+  eq(
+    join.map((r) => r.presence),
+    ['both', 'connected-only', 'registered-only', 'connected-only', 'registered-only'],
+    'each row is honest about which side knows it',
+  );
+  eq(join[0]?.role, 'architect', 'a matched row carries the register role');
+  eq(join[0]?.connected?.calls, 3, 'a matched row carries the hub facts');
+  eq(join[1]?.role, 'auditor', 'a hub-only row is named by the hub');
+  eq(join[1]?.registered, null, 'a hub-only row has no register entry');
+  eq(join[2]?.connected, null, 'a register-only row has no hub facts');
+  eq(join[3]?.role, 'ghost', 'a second hub-only row is named by the hub too');
+  eq(join[4]?.cid, null, 'a role row without a vsock CID stays its own register-only row');
+  eq(joinHub([], []).length, 0, 'two empty sides join to nothing');
+  eq(
+    joinHub([], parseHubStatus(HUB_FIXTURE).agents).map((r) => r.presence),
+    ['connected-only', 'connected-only'],
+    'a register that knows none of the hub still shows every connected agent',
+  );
+}
+{
+  const j = joinHub([{ cid: 5, role: 'register-role' }], [{ cid: 5, role: 'hub-role', connected_at_ms: 1, last_heartbeat_ms: 2, calls: 0 }]);
+  eq(j[0]?.role, 'register-role', 'when both know the CID the register names the role');
+  eq(j[0]?.connected?.role, 'hub-role', 'the hub’s role stays available for the view to flag');
+}
 
 if (failures > 0) {
   console.error(`\n${failures} assertion(s) failed`);

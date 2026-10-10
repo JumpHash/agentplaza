@@ -8,7 +8,7 @@ import { fmtDur, fmtNum, fmtStamp, fmtTime, pad } from '../format';
 import type { Run } from '../models/run';
 import { hasVsock, isOpen, modeText, roleOf, seqOf } from '../models/run';
 import { store } from '../store';
-import { runStateMk } from './chrome';
+import { runStateMk, renderHubLine } from './chrome';
 
 interface RunRow {
   run: Run;
@@ -23,6 +23,7 @@ export function renderRegister(): void {
   renderNotice();
   renderMachinePanel();
   renderTallies();
+  renderHubLine('hub-line');
   renderRuns();
 }
 

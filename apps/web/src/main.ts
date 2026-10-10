@@ -165,6 +165,15 @@ window.__PLAZA_DIAG__ = {
   get renders() { return store.renders; },
   get wire() { return { ...store.wire }; },
   get stream() { return store.stream; },
+  get hub() {
+    const readable = store.hub != null && store.hubError == null;
+    return {
+      reachable: readable,
+      agents: readable ? (store.hub?.agents.length ?? 0) : 0,
+      sessions: readable ? (store.hub?.sessions_active ?? 0) : 0,
+      error: store.hubError,
+    };
+  },
   get camera3d() { return cameraState(); },
   get district3d() { return districtState(); },
 };

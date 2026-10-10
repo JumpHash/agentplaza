@@ -96,6 +96,7 @@
           <div class="tally"><div class="figure" id="t-vcpus">0</div><div class="tcap">vCPUs in use</div></div>
           <div class="tally"><div class="figure" id="t-mem">0</div><div class="tcap">MiB in use</div></div>
         </div>
+        <p class="hubline" id="hub-line">hub · reading…</p>
       </div></div>
 
       <div class="parts"><div class="body">
@@ -476,11 +477,12 @@
           <div class="tally"><div class="figure" id="t-register-vms">0</div><div class="tcap">VMs on the register</div></div>
         </div>
         <p class="example" id="roster-empty" hidden></p>
+        <p class="hubline" id="roster-hub-line">hub · reading…</p>
       </div></div>
 
       <div class="group bb0" id="roster-group"><div class="hd">The fleet, by role <span class="c" id="roster-c"></span></div></div>
       <div class="tablewrap"><table id="roster-table" hidden>
-        <thead><tr><th>No.</th><th>Role</th><th>Place</th><th>Guest CID</th><th>State</th><th class="num">Serial lines</th><th class="num">Lines / s</th><th>Up</th></tr></thead>
+        <thead><tr><th>No.</th><th>Role</th><th>Place</th><th>Guest CID</th><th>Hub</th><th>State</th><th class="num">Serial lines</th><th class="num">Lines / s</th><th>Up</th></tr></thead>
         <tbody id="roster-body"></tbody>
       </table></div>
     </div>
