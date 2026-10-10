@@ -1,9 +1,10 @@
 /* Chrome: the index nav, the running header, the colophon, the theme switch,
    and the state marks every view shares. */
 
-import { byId, el } from '../dom';
+import { byId, el, toast } from '../dom';
 import { fmtNum } from '../format';
 import type { RunState, VmState } from '../models/run';
+import type { Theme } from '../store';
 import { seqOf } from '../models/run';
 import { store } from '../store';
 
@@ -60,6 +61,15 @@ export function initTheme(): void {
   applyTheme(store.theme);
 }
 
+/** The `t` key: system, then light, then dark, then system again. */
+export function cycleTheme(): void {
+  const order: readonly Theme[] = ['system', 'light', 'dark'];
+  const next = order[(order.indexOf(store.theme) + 1) % order.length] ?? 'system';
+  store.theme = next;
+  applyTheme(next);
+  toast('Theme: ' + next);
+}
+
 /* ------------------------------------------------------------ colophon */
 export function initColophon(): void {
   byId('colo-origin').textContent = 'Node ' + location.host;
@@ -102,10 +112,13 @@ export function renderChrome(): void {
   health.className = HEALTH_MARK[store.health] ?? 'mk';
   health.textContent = store.health;
 
+  const cmp = store.route.compare;
   const cmd =
     store.route.name === 'run' && store.detailId
       ? `apz run ${store.detailId} --follow`
-      : `apz ${store.route.name === 'register' ? 'register' : store.route.name} --follow`;
+      : store.route.name === 'compare' && cmp
+        ? `apz compare ${cmp.a}/${cmp.avm} ${cmp.b}/${cmp.bvm} --follow`
+        : `apz ${store.route.name === 'register' ? 'register' : store.route.name} --follow`;
   const prompt = byId('prompt');
   const firstNode = prompt.firstChild;
   if (firstNode) firstNode.nodeValue = '$ ' + cmd;

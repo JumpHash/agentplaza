@@ -13,13 +13,22 @@ import type { SerialCache } from './serial';
 import { linesOf } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
+
+/** The pair a #compare route names: run a's vm avm against run b's vm bvm. */
+export interface CompareTarget {
+  a: string;
+  avm: number;
+  b: string;
+  bvm: number;
+}
 
 export interface Route {
   name: ViewName;
   param: string | null;
+  compare: CompareTarget | null;
 }
 
 const TICK_MS = 1000; // detail cadence; the list polls every 2 ticks
@@ -41,7 +50,7 @@ export class Store {
   vm = 0; // selected VM index within the open run
   follow = true; // transcript tail-follow
   theme: Theme = 'system';
-  route: Route = { name: 'register', param: null };
+  route: Route = { name: 'register', param: null, compare: null };
 
   /* derived caches */
   readonly serial = new Map<string, SerialCache>(); // "r3/0" -> lines
@@ -116,6 +125,11 @@ export class Store {
 
     if (route.name === 'run' && this.detailId) {
       jobs.push(this.pollDetail(this.detailId));
+    } else if (route.name === 'compare' && route.compare) {
+      /* both sides of the pair, with serial; quiet — a run that left the
+         register shows in its pane, never a redirect */
+      jobs.push(this.pollDetail(route.compare.a, true));
+      if (route.compare.b !== route.compare.a) jobs.push(this.pollDetail(route.compare.b, true));
     } else if (route.name === 'map' || route.name === 'view3d') {
       /* The map and 3D view pulse with serial activity, which only the
          single-run GET carries: poll every open run's detail. */

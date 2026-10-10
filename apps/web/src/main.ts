@@ -6,9 +6,11 @@ import './styles/views.css';
 
 import { KEY_ROUTES, NAV_OF, parseRoute } from './router';
 import { store } from './store';
-import { initColophon, initTheme, renderChrome } from './views/chrome';
+import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
+import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
+import { initKeys, keysOpen, toggleKeys } from './views/keys';
 import { initRegister, renderRegister } from './views/register';
-import { initRun, renderRun, resetRunView, selectVm } from './views/run';
+import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from './views/run';
 import { renderMachine } from './views/machine';
 import { renderMap, syncMapVisibility } from './views/map2d';
 import { sync3d } from './views/view3d';
@@ -62,6 +64,20 @@ document.addEventListener('click', (e) => {
     go(g.getAttribute('data-go') ?? '#register');
     return;
   }
+  /* a VM row's compare link: this row's VM against the one being viewed
+     (viewing that very row? compare it against a neighbour instead) */
+  const cmp = t.closest<HTMLElement>('[data-cmp-vm]');
+  if (cmp) {
+    e.preventDefault();
+    const run = store.openRun;
+    if (!run || run.vms.length < 2) return;
+    const right = Number(cmp.getAttribute('data-cmp-vm'));
+    if (!Number.isInteger(right)) return;
+    let left = store.vm;
+    if (left === right) left = right === 0 ? 1 : 0;
+    go(`#compare/${run.id}/${left}/${run.id}/${right}`);
+    return;
+  }
   const s = t.closest<HTMLElement>('tr[data-sel-vm]');
   if (s) selectVm(Number(s.getAttribute('data-sel-vm')));
 });
@@ -81,6 +97,22 @@ document.addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey) return;
   if (t instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
   if (t instanceof HTMLCanvasElement) return; // canvases own their arrows/enter
+  if (keysOpen()) return; // the sheet owns Escape, Tab and ? while open
+  if (e.key === '?') {
+    e.preventDefault();
+    toggleKeys();
+    return;
+  }
+  if (e.key === 't') {
+    cycleTheme();
+    return;
+  }
+  if (e.key === 'f' || e.key === 'j') {
+    const on = e.key === 'f';
+    if (store.route.name === 'run') (on ? followKey : jumpKey)();
+    else if (store.route.name === 'compare') (on ? cmpFollowKey : cmpJumpKey)();
+    return;
+  }
   if (e.key === 'Enter' && t instanceof HTMLElement && t.matches('tr[data-sel-vm]')) {
     selectVm(Number(t.getAttribute('data-sel-vm')));
     return;
@@ -94,6 +126,8 @@ initTheme();
 initColophon();
 initRegister();
 initRun();
+initCompare();
+initKeys();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -103,6 +137,7 @@ store.onRender(() => {
     case 'machine': renderMachine(); break;
     case 'map': renderMap(); break;
     case 'view3d': sync3d(); break;
+    case 'compare': renderCompare(); break;
   }
 });
 

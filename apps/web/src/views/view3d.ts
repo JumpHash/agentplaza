@@ -48,8 +48,12 @@ interface VmObject {
 interface RunObject {
   group: Group;
   platform: Mesh;
+  pedges: LineSegments;
   label: Sprite;
   vms: Map<number, VmObject>;
+  /* the platform's block grid; reshaped when a run's VM count changes */
+  cols: number;
+  rows: number;
 }
 
 interface Palette {
@@ -312,6 +316,7 @@ export function sync3d(): void {
   runs.forEach((run, rowIdx) => {
     seen.add(run.id);
     const ro = runObjects.get(run.id) ?? addRun(run, p);
+    reshapePlatform(ro, run.vms.length);
     ro.group.position.set(0, 0, (rowIdx - (rows - 1) / 2) * 9);
     retextureLabel(ro.label, runLabelText(run), run.state === 'running' ? p.ink : p.ink3);
     const platMat = ro.platform.material;
@@ -334,13 +339,42 @@ function runLabelText(run: Run): string {
   return `${run.id} · ${run.vms.length} VMs × ${run.vcpus} vCPU · ${fmtNum(run.memory_mib)} MiB · ${run.state}`;
 }
 
+/** The block grid a run's VMs take on its platform: near-square, so a
+    50-VM run is a district (8 × 7), not a 130-unit queue off the plot. */
+function gridOf(n: number): { cols: number; rows: number } {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, n))));
+  return { cols, rows: Math.max(1, Math.ceil(Math.max(1, n) / cols)) };
+}
+
+/** Platform length/depth for a grid, with the one-block margin the old
+    single-row platform had. */
+function platformSize(cols: number, rows: number): { len: number; dep: number } {
+  return { len: cols * CELL_PITCH, dep: rows * CELL_PITCH + 1.8 };
+}
+
+/** Reshape a run's platform when its VM count changes (VM handles land
+    after 'starting'); geometry is disposed, never leaked. */
+function reshapePlatform(ro: RunObject, n: number): void {
+  const THREE = three();
+  const { cols, rows } = gridOf(n);
+  if (ro.cols === cols && ro.rows === rows) return;
+  ro.cols = cols;
+  ro.rows = rows;
+  const { len, dep } = platformSize(cols, rows);
+  ro.platform.geometry.dispose();
+  ro.platform.geometry = new THREE.BoxGeometry(len, 0.6, dep);
+  ro.pedges.geometry.dispose();
+  ro.pedges.geometry = new THREE.EdgesGeometry(ro.platform.geometry);
+  /* the run label hangs off the platform's left end, clear of the blocks */
+  ro.label.position.set(-len / 2 - 1.2 - ro.label.scale.x / 2, 1.0, 0);
+}
+
 function addRun(run: Run, p: Palette): RunObject {
   const THREE = three();
   if (!scene) throw new Error('the 3D scene has not booted');
   const group = new THREE.Group();
-  const len = Math.max(CELL_PITCH, run.vms.length * CELL_PITCH);
   const platform = new THREE.Mesh(
-    new THREE.BoxGeometry(len, 0.6, 4.4),
+    new THREE.BoxGeometry(CELL_PITCH, 0.6, CELL_PITCH + 1.8),
     new THREE.MeshLambertMaterial({ color: p.paper }),
   );
   platform.position.y = 0.3;
@@ -352,11 +386,10 @@ function addRun(run: Run, p: Palette): RunObject {
   pedges.position.copy(platform.position);
   group.add(pedges);
   const label = makeLabel(runLabelText(run), p.ink);
-  /* left of the platform, clear of the blocks: right edge at the platform end */
-  label.position.set(-len / 2 - 1.2 - label.scale.x / 2, 1.0, 0);
   group.add(label);
   scene.add(group);
-  const ro: RunObject = { group, platform, label, vms: new Map() };
+  const ro: RunObject = { group, platform, pedges, label, vms: new Map(), cols: 0, rows: 0 };
+  reshapePlatform(ro, run.vms.length);
   runObjects.set(run.id, ro);
   return ro;
 }
@@ -380,10 +413,13 @@ function syncVm(ro: RunObject, run: Run, vm: Vm, index: number, p: Palette): voi
     ro.group.add(mesh);
     ro.group.add(label);
   }
-  /* place on the platform by VM index */
-  const len = Math.max(CELL_PITCH, run.vms.length * CELL_PITCH);
-  const x = -len / 2 + CELL_PITCH / 2 + index * CELL_PITCH;
-  vo.mesh.position.set(x, 0.6, 0);
+  /* place on the platform's grid by VM index */
+  const { len, dep } = platformSize(ro.cols, ro.rows);
+  const col = index % ro.cols;
+  const row = Math.floor(index / ro.cols);
+  const x = -len / 2 + CELL_PITCH / 2 + col * CELL_PITCH;
+  const z = -(dep - 1.8) / 2 + CELL_PITCH / 2 + row * CELL_PITCH;
+  vo.mesh.position.set(x, 0.6, z);
 
   /* state is height and edge: running stands and glows, exited settles,
      killed falls flat in crit ink */
@@ -395,7 +431,7 @@ function syncVm(ro: RunObject, run: Run, vm: Vm, index: number, p: Palette): voi
     vo.state = vm.state;
     retextureLabel(vo.label, vmLabelText(vm), p.ink2);
   }
-  vo.label.position.set(x, vo.mesh.position.y + vo.mesh.scale.y / 2 + 0.7, 0);
+  vo.label.position.set(x, vo.mesh.position.y + vo.mesh.scale.y / 2 + 0.7, z);
 
   const glow = vm.state === 'running'
     ? Math.min(1, 0.25 + lps / 3) * (REDUCED ? 1 : 0.7 + 0.3 * Math.sin(pulse))

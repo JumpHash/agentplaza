@@ -145,6 +145,20 @@ input[type="checkbox"] { accent-color: var(--signal); }
 .check { display: inline-flex; align-items: center; gap: 8px; font: 400 11px var(--mono); color: var(--ink-2); text-transform: none; letter-spacing: 0; cursor: pointer; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 24px; max-width: 780px; }
 .fields .f label { display: block; margin-bottom: 2px; }
+
+/* quick entries: preset buttons beside the spawn form, each with its
+   expected footprint as a static hint */
+.presets { display: grid; gap: 10px; }
+.presets .phd { font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.preset { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.preset .btn { flex: none; }
+.preset .phint { font: italic 12.5px var(--serif); color: var(--ink-3); flex: 1; min-width: 230px; }
+
+/* inline text-action buttons (a VM row's compare link, the colophon's key
+   sheet invitation): the register's link voice, not a slab */
+.tlink { background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink); font: inherit; text-decoration: underline; text-decoration-color: var(--ink-3); text-underline-offset: 3px; }
+.tlink:hover { color: var(--signal-ink); }
+td .tlink { font: 500 10.5px var(--mono); letter-spacing: .04em; }
 .stamp { display: inline-block; font: 700 13px var(--mono); font-stretch: 75%; letter-spacing: .1em; text-transform: uppercase; padding: 6px 12px; border: 2px solid currentColor; outline: 1px solid currentColor; outline-offset: 2px; transform: rotate(-3deg); color: var(--ok); }
 .stamp.deny { color: var(--crit); }
 .stamp.sm { font-size: 10px; padding: 3px 8px; }
@@ -178,6 +192,44 @@ tr.sel td:first-child { color: var(--signal-ink); font-weight: 700; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .toast { position: fixed; right: 22px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); background: var(--sheet); color: var(--ink); border: 1px solid var(--ink); box-shadow: var(--print); padding: 10px 14px; font: 600 11.5px var(--mono); z-index: 3; max-width: min(420px, calc(100vw - 44px)); }
 
+/* key caps: the kept Jumphash "keys" metaphor — square, ink-bordered,
+   printed, one for every shortcut the console answers to */
+kbd { display: inline-block; font: 600 10px/1.6 var(--mono); color: var(--ink); background: var(--sheet); border: 1px solid var(--ink); box-shadow: 1.5px 1.5px 0 var(--ink); padding: 0 5px; margin: 1px 3px 1px 0; white-space: nowrap; }
+.index-list a .k { border: 1px solid var(--ink-3); padding: 0 3px; margin-right: 2px; font-size: 9.5px; line-height: 1.6; }
+.index-list a[aria-current="page"] .k { border-color: var(--signal-ink); }
+
+/* the keyboard sheet: a dialog over the register */
+.keyswrap { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; padding: 22px; background: color-mix(in srgb, var(--paper) 84%, transparent); }
+.keyssheet { width: min(600px, 100%); max-height: 84vh; overflow-y: auto; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print); padding: 18px 22px 20px; outline: none; }
+.keyshead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--ink); padding-bottom: 10px; margin-bottom: 4px; }
+.keyshead h2 { font: 700 17px var(--mono); font-stretch: 78%; letter-spacing: -.01em; text-transform: uppercase; margin: 0; }
+table.keys td { border-bottom: 1px solid var(--rule-faint); padding: 8px 10px 8px 0; white-space: normal; font-size: 13.5px; }
+table.keys td.kc { width: 1%; white-space: nowrap; padding-right: 14px; }
+table.keys tr:last-child td { border-bottom: 0; }
+.keyssheet .example { margin-top: 10px; }
+
+/* compare: two transcript windows, one pair form, one diff summary */
+.cmpfields { max-width: 860px; }
+.cmpgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-left: 62px; border-bottom: 1px solid var(--rule); }
+.cmppane { min-width: 0; border-left: 1px solid var(--rule); }
+.cmppane:first-child { border-left: 0; }
+.cmphead { display: flex; gap: 8px 12px; align-items: baseline; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+.cmphead .cmplines { margin-left: auto; font: 400 10.5px var(--mono); color: var(--ink-3); }
+.cmptx { max-height: 56vh; }
+.cmpfoot { padding: 8px 12px; border-top: 1px solid var(--rule); font: 10.5px var(--mono); }
+.diffbody { display: grid; gap: 8px; }
+.diffbody .diffpair { display: grid; gap: 4px; border: 1px solid var(--rule); padding: 10px 12px; }
+.diffbody .diffpair .m { color: var(--ink-3); }
+.diffbody pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 var(--mono); }
+/* pane transcripts take the phone's two-column row shape at every width —
+   the half-width windows have no room for the full margin grid */
+.cmppane .tx .row { grid-template-columns: 40px minmax(0, 1fr); }
+.cmppane .tx .seq { padding-right: 6px; }
+.cmppane .tx .kind, .cmppane .tx pre, .cmppane .tx .marg { grid-column: 2; padding-left: 14px; text-align: left; }
+.cmppane .tx .kind { padding-top: 8px; padding-bottom: 0; }
+.cmppane .tx pre { padding-top: 0; }
+.cmppane .tx .marg:empty { display: none; }
+
 @media (max-width: 760px) {
   .app { grid-template-columns: minmax(0, 1fr); }
   nav.index { border-right: 0; border-bottom: 1px solid var(--rule); padding: 12px 16px; gap: 8px; }
@@ -206,4 +258,10 @@ tr.sel td:first-child { color: var(--signal-ink); font-weight: 700; }
   .parts .body { padding: 14px 14px 16px 14px; }
   .tallies { gap: 24px; }
   .tally .figure { font-size: 26px; }
+  .preset .phint { min-width: 0; flex-basis: 100%; }
+  .cmpgrid { margin-left: 34px; grid-template-columns: minmax(0, 1fr); }
+  .cmppane { border-left: 0; }
+  .cmppane:first-child { border-bottom: 1px solid var(--rule); }
+  .keyswrap { padding: 14px; }
+  .keyssheet { padding: 14px 16px 16px; }
 }

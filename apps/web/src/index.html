@@ -11,6 +11,8 @@
      Talks to the frozen /api/v0 contract on the same origin:
        GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
        POST /api/v0/runs/{id}/input
+     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm};
+     keys 0–4 walk the first five, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
      a civic register — ruled rows, entry numbers in the margin, red double margin rule,
      Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
@@ -36,7 +38,7 @@
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
       <span>Bundle <code id="colo-hash">{{BUNDLE_HASH}}</code></span>
-      <span>Keys 0–4 walk the register</span>
+      <span>Keys 0–4 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
@@ -95,6 +97,21 @@
 
       <div class="parts"><div class="body">
         <h2>Enter a run</h2>
+        <div class="presets">
+          <div class="phd">Quick entries — one press fills the form; adjust anything, then Spawn the run</div>
+          <div class="preset">
+            <button type="button" class="btn sm" data-preset="vsock">2 VMs + vsock session</button>
+            <span class="phint">2 × 512 MiB ≈ 1 GiB guest RAM · vsock cids 10–11 · the full session demo — hello, welcome, echo and bye land in the transcript; the run closes itself in about ten seconds</span>
+          </div>
+          <div class="preset">
+            <button type="button" class="btn sm" data-preset="churn">8 VMs churn</button>
+            <span class="phint">8 × 512 MiB = 4 GiB guest RAM · 12 beats each, then the guests power themselves off — the fleet demo, about a minute</span>
+          </div>
+          <div class="preset">
+            <button type="button" class="btn sm" data-preset="scale">50-VM scale</button>
+            <span class="phint">50 × 128 MiB ≈ 6.4 GiB guest RAM · 1 vCPU each · 12 beats — the validated scale scenario; the node accepts up to 64</span>
+          </div>
+        </div>
         <form id="spawn" novalidate>
           <div class="fields">
             <div class="f"><label for="f-n">VMs · n</label><input id="f-n" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></div>
@@ -176,7 +193,7 @@
 
       <div class="group bb0"><div class="hd">Virtual machines <span class="c" id="d-vm-count"></span></div></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>No.</th><th>VM</th><th>State</th><th>Exit</th><th class="num">Serial lines</th><th class="num">Serial bytes</th><th class="num">Lines / s</th><th>Transcript</th></tr></thead>
+        <thead><tr><th>No.</th><th>VM</th><th>State</th><th>Exit</th><th class="num">Serial lines</th><th class="num">Serial bytes</th><th class="num">Lines / s</th><th>Transcript</th><th>Compare</th></tr></thead>
         <tbody id="vm-body"></tbody>
       </table></div>
 
@@ -189,6 +206,8 @@
         <div class="actions">
           <label class="check" for="tx-follow"><input type="checkbox" id="tx-follow" checked> Follow new lines</label>
           <button type="button" class="btn sm" id="tx-jump">Jump to the latest line</button>
+          <button type="button" class="btn sm" id="tx-export-vm">Export vm — transcript</button>
+          <button type="button" class="btn sm" id="tx-export-run">Export the whole run</button>
         </div>
       </div></div>
 
@@ -303,9 +322,95 @@
       </div></div>
     </div>
 
+    <!-- ============================================================ COMPARE -->
+    <div data-view="compare" data-cmd="apz compare" hidden>
+      <div class="title">
+        <span class="folio">f. 5</span>
+        <div class="crumbs"><a href="#register">Register</a> / <span>Compare</span></div>
+        <h1>Compare</h1>
+        <span class="aside mk ok" id="cmp-live" hidden>live</span>
+        <p class="lede">Two transcripts, folio by folio — the same serial windows as the run entries, side by side. The address carries the pair (<span class="m">#compare/r1/0/r2/0</span>), so a comparison can be bookmarked or dictated; where the two part, the first differing line is named below.</p>
+      </div>
+
+      <div class="parts" id="cmp-notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="cmp-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <h2>The pair</h2>
+        <form id="cmp-form" novalidate>
+          <div class="fields cmpfields">
+            <div class="f"><label for="cmp-a">Left · run</label><input id="cmp-a" type="text" list="cmp-runs" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="r1"></div>
+            <div class="f"><label for="cmp-avm">Left · vm</label><input id="cmp-avm" type="number" min="0" step="1" value="0" inputmode="numeric"></div>
+            <div class="f"><label for="cmp-b">Right · run</label><input id="cmp-b" type="text" list="cmp-runs" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="r2"></div>
+            <div class="f"><label for="cmp-bvm">Right · vm</label><input id="cmp-bvm" type="number" min="0" step="1" value="0" inputmode="numeric"></div>
+          </div>
+          <datalist id="cmp-runs"></datalist>
+          <div class="actions mt">
+            <button type="submit" class="btn sm" id="cmp-apply">Compare this pair</button>
+            <button type="button" class="btn sm" id="cmp-swap">Swap the two sides</button>
+            <label class="check" for="cmp-follow"><input type="checkbox" id="cmp-follow" checked> Follow new lines in both</label>
+            <span class="err" id="cmp-err" role="alert"></span>
+          </div>
+        </form>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The first divergence</div></div>
+      <div class="parts"><div class="body">
+        <div class="diffbody" id="cmp-diff">
+          <p class="example">Name two runs above — or open a run entry and use a VM row's compare link.</p>
+        </div>
+      </div></div>
+
+      <div class="cmpgrid">
+        <section class="cmppane" aria-label="Left transcript">
+          <div class="cmphead" id="cmp-head-a"></div>
+          <div class="txwrap cmptx" id="cmp-wrap-a">
+            <div class="tx" id="cmp-tx-a" role="log" aria-live="off" aria-label="Left serial transcript"></div>
+          </div>
+          <div class="cmpfoot"><a href="#register" id="cmp-open-a" data-go="#register">open the entry →</a></div>
+        </section>
+        <section class="cmppane" aria-label="Right transcript">
+          <div class="cmphead" id="cmp-head-b"></div>
+          <div class="txwrap cmptx" id="cmp-wrap-b">
+            <div class="tx" id="cmp-tx-b" role="log" aria-live="off" aria-label="Right serial transcript"></div>
+          </div>
+          <div class="cmpfoot"><a href="#register" id="cmp-open-b" data-go="#register">open the entry →</a></div>
+        </section>
+      </div>
+    </div>
+
     </div>
   </main>
 </div>
+
+<!-- the keyboard sheet: '?' toggles, Escape / click-out / Close dismisses -->
+<div class="keyswrap" id="keys" hidden>
+  <div class="keyssheet" id="keys-sheet" role="dialog" aria-modal="true" aria-labelledby="keys-h" tabindex="-1">
+    <div class="keyshead">
+      <h2 id="keys-h">The keys of the register</h2>
+      <button type="button" class="btn sm" id="keys-close">Close · esc</button>
+    </div>
+    <table class="keys">
+      <tbody>
+        <tr><td class="kc"><kbd>0</kbd></td><td>Register — every run on this node</td></tr>
+        <tr><td class="kc"><kbd>1</kbd></td><td>Run — the selected entry, else the newest open run</td></tr>
+        <tr><td class="kc"><kbd>2</kbd></td><td>Machine — the node's own sheet</td></tr>
+        <tr><td class="kc"><kbd>3</kbd></td><td>Map — the fleet as a surveyor's plan</td></tr>
+        <tr><td class="kc"><kbd>4</kbd></td><td>3D view — the same register, raised</td></tr>
+        <tr><td class="kc"><kbd>?</kbd></td><td>This sheet — press again, Escape, or click outside to close</td></tr>
+        <tr><td class="kc"><kbd>f</kbd></td><td>Follow new transcript lines — run and compare views</td></tr>
+        <tr><td class="kc"><kbd>j</kbd></td><td>Jump to the latest line — run and compare views</td></tr>
+        <tr><td class="kc"><kbd>t</kbd></td><td>Theme — system, then light, then dark</td></tr>
+        <tr><td class="kc"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></td><td>Walk the VMs on the map</td></tr>
+        <tr><td class="kc"><kbd>Enter</kbd></td><td>Open the focused VM's entry on the map · select a VM row on a run</td></tr>
+      </tbody>
+    </table>
+    <p class="example">Keys never fire while you are typing in a field, and the canvases keep their own arrows.</p>
+  </div>
+</div>
+
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="sr-only" role="status" id="sr-status"></div>
 </body>

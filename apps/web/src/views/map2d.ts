@@ -31,6 +31,7 @@ const CELL = 30;
 const CELL_GAP = 12;
 const GUTTER = 108;
 const TOP = 82;
+const ROW_PITCH = 54; // a wrapped row of cells within one lane
 const REDUCED = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 let cells: Cell[] = [];
@@ -56,20 +57,32 @@ function palette(): Palette {
 }
 
 /* ------------------------------------------------------------ layout */
-function layout(width: number): number {
+interface Lane {
+  run: Run;
+  y: number;
+  rows: number;
+}
+
+/* A lane wraps its cells at the plot's right edge onto as many rows as the
+   run needs — a 50-VM run takes three rows at desktop width, ten on a phone,
+   and every cell stays inside the plot. */
+function layout(width: number): { height: number; lanes: Lane[] } {
   cells = [];
+  const lanes: Lane[] = [];
   const runs = store.runs.slice().sort((a, b) => seqOf(a.id) - seqOf(b.id));
+  const perRow = Math.max(1, Math.floor((width - GUTTER - 30) / (CELL + CELL_GAP)));
   let y = TOP;
   for (const run of runs) {
-    let x = GUTTER;
+    const rows = Math.max(1, Math.ceil(run.vms.length / perRow));
+    lanes.push({ run, y, rows });
     run.vms.forEach((vm, index) => {
-      cells.push({ run, vm, index, x, y });
-      x += CELL + CELL_GAP;
+      const row = Math.floor(index / perRow);
+      const col = index % perRow;
+      cells.push({ run, vm, index, x: GUTTER + col * (CELL + CELL_GAP), y: y + row * ROW_PITCH });
     });
-    y += LANE_H;
-    void width;
+    y += LANE_H + (rows - 1) * ROW_PITCH;
   }
-  return Math.max(420, y + 24);
+  return { height: Math.max(420, y + 24), lanes };
 }
 
 /* ------------------------------------------------------------ drawing */
@@ -89,7 +102,7 @@ export function renderMap(): void {
 
   const c = canvas;
   const cssWidth = c.clientWidth || c.parentElement?.clientWidth || 800;
-  const cssHeight = layout(cssWidth);
+  const { height: cssHeight, lanes } = layout(cssWidth);
   if (c.style.height !== `${cssHeight}px`) c.style.height = `${cssHeight}px`;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.round(cssWidth * dpr);
@@ -128,22 +141,21 @@ export function renderMap(): void {
   g.fillRect(cssWidth - 28, 28, 6, 6);
 
   /* lanes and cells */
-  let laneY = TOP;
-  const runs = store.runs.slice().sort((a, b) => seqOf(a.id) - seqOf(b.id));
-  for (const run of runs) {
+  for (const lane of lanes) {
+    const run = lane.run;
     g.font = mono;
     g.fillStyle = run.state === 'running' ? p.ink : p.ink3;
-    g.fillText(run.id, 24, laneY - 12);
+    g.fillText(run.id, 24, lane.y - 12);
     g.font = monoSm;
     g.fillStyle = p.ink3;
-    g.fillText(`${run.vms.length}×${run.vcpus} vCPU`, 24, laneY + 2);
-    g.fillText(`${fmtNum(run.memory_mib)} MiB`, 24, laneY + 16);
+    g.fillText(`${run.vms.length}×${run.vcpus} vCPU`, 24, lane.y + 2);
+    g.fillText(`${fmtNum(run.memory_mib)} MiB`, 24, lane.y + 16);
     g.strokeStyle = p.rule;
+    const sepY = lane.y + (lane.rows - 1) * ROW_PITCH + 38.5;
     g.beginPath();
-    g.moveTo(GUTTER - 12, laneY + 38.5);
-    g.lineTo(cssWidth - 24, laneY + 38.5);
+    g.moveTo(GUTTER - 12, sepY);
+    g.lineTo(cssWidth - 24, sepY);
     g.stroke();
-    laneY += LANE_H;
   }
 
   for (const cell of cells) drawCell(g, cell, p);
@@ -247,7 +259,7 @@ function updateStatus(): void {
     status.textContent = `${cells.length} VMs on the plot. Arrow keys walk them; Enter opens the entry.`;
     return;
   }
-  const lps = store.activity.get(vmKey(target.run.id, target.vm.id));
+  const lps = target.vm.state === 'running' ? store.activity.get(vmKey(target.run.id, target.vm.id)) : 0;
   status.textContent =
     `${target.run.id} · vm ${target.vm.id} · ${target.vm.state}` +
     (target.vm.guest_cid != null ? ` · cid ${target.vm.guest_cid}` : '') +

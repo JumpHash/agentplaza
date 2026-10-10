@@ -4,6 +4,7 @@
 
 import { deleteRun, sendInput } from '../api';
 import { announce, byId, el, toast } from '../dom';
+import { downloadText, runTranscriptText, vmTranscriptText } from '../export';
 import { fmtDur, fmtNum, fmtTime, pad } from '../format';
 import type { Run, Vm } from '../models/run';
 import { exitKind, exitKindText, isOpen, modeText, seqOf } from '../models/run';
@@ -179,6 +180,17 @@ function renderVms(run: Run | null): void {
       tr.appendChild(bytesTd);
       tr.appendChild(lpsTd);
       tr.appendChild(viewTd);
+      /* compare: this VM against the viewed one — the pair is resolved at
+         click time (main.ts), so a re-selected view never stale-dates it */
+      const cmpTd = el('td', 'm');
+      if (vms.length >= 2) {
+        const cmpBtn = el('button', 'tlink', 'compare');
+        cmpBtn.type = 'button';
+        cmpBtn.setAttribute('data-cmp-vm', String(i));
+        cmpBtn.setAttribute('aria-label', `Compare vm ${v.id} against the viewed vm`);
+        cmpTd.appendChild(cmpBtn);
+      }
+      tr.appendChild(cmpTd);
       tb.appendChild(tr);
       vmRows.push({ tr, vm: v, linesTd, bytesTd, lpsTd, exitTd, viewTd });
     });
@@ -223,6 +235,7 @@ function renderSerial(run: Run | null): void {
 
   if (!vm) {
     hd.textContent = run ? 'the VMs are starting' : '—';
+    byId('tx-export-vm').textContent = 'Export vm — transcript';
     tx.textContent = '';
     tx.appendChild(txRow(0, run ? '— the run is starting; VM handles land here shortly.' : '— nothing to show yet.', 'elide'));
     txFrom = txTo = 0;
@@ -234,6 +247,7 @@ function renderSerial(run: Run | null): void {
 
   const lines = store.linesFor(run?.id ?? '', vm.id, vm.serial);
   hd.textContent = `vm ${vm.id} · ${fmtNum(lines.length)} ${lines.length === 1 ? 'line' : 'lines'}`;
+  byId('tx-export-vm').textContent = `Export vm ${vm.id} transcript`;
 
   if (lines.length === 0) {
     if (txEmpty !== 'boot') {
@@ -385,4 +399,48 @@ export function initRun(): void {
     byId<HTMLInputElement>('tx-follow').checked = true;
     store.follow = true;
   });
+
+  /* export: the viewed VM's transcript, or the whole run sectioned by VM —
+     plain text, Blob download, nothing touches the DOM as markup */
+  byId('tx-export-vm').addEventListener('click', () => {
+    const run = store.openRun;
+    const vm = currentVm();
+    if (!run || !vm) return;
+    const lines = store.linesFor(run.id, vm.id, vm.serial);
+    if (lines.length === 0) {
+      toast(`No serial captured for vm ${vm.id} yet`);
+      return;
+    }
+    downloadText(`agentplaza-${run.id}-vm${vm.id}.txt`, vmTranscriptText(lines));
+    toast(`vm ${vm.id} transcript exported — ${fmtNum(lines.length)} lines`);
+  });
+  byId('tx-export-run').addEventListener('click', () => {
+    const run = store.openRun;
+    if (!run || run.vms.length === 0) return;
+    downloadText(
+      `agentplaza-${run.id}.txt`,
+      runTranscriptText(run, (vm) => store.linesFor(run.id, vm.id, vm.serial)),
+    );
+    toast(`Run ${run.id} exported — ${run.vms.length} VM ${run.vms.length === 1 ? 'section' : 'sections'}`);
+  });
+}
+
+/* ------------------------------------------------------------ key helpers
+   `f` toggles tail-follow, `j` jumps to the latest line (main.ts routes the
+   keys here); both mirror the checkbox and button exactly. */
+export function followKey(): void {
+  store.follow = !store.follow;
+  byId<HTMLInputElement>('tx-follow').checked = store.follow;
+  if (store.follow) {
+    const wrap = byId('txwrap');
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+  toast(store.follow ? 'Following new lines' : 'Follow paused');
+}
+
+export function jumpKey(): void {
+  byId<HTMLInputElement>('tx-follow').checked = true;
+  store.follow = true;
+  const wrap = byId('txwrap');
+  wrap.scrollTop = wrap.scrollHeight;
 }

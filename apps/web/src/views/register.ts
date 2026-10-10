@@ -125,6 +125,28 @@ function renderRuns(): void {
 }
 
 /* ------------------------------------------------------------ spawn form */
+/* Quick entries: one press fills the manual form with a known-good shape
+   (the user sees exactly what will boot and can adjust it); spawning still
+   goes through the form's own validation and POST path. */
+interface Preset {
+  n: number;
+  vcpus: number;
+  mem: number;
+  beats: number | null;
+  vsock: number | null;
+}
+
+const PRESETS: Readonly<Record<string, Preset>> = {
+  /* the full session demo: two guests on vsock cids 10–11; the orchestrator
+     stand-in speaks hello/welcome/echo/bye and the run closes itself */
+  vsock: { n: 2, vcpus: 2, mem: 512, beats: null, vsock: 10 },
+  /* the fleet demo: eight guests heartbeat a dozen times, then power off */
+  churn: { n: 8, vcpus: 2, mem: 512, beats: 12, vsock: null },
+  /* the validated scale scenario: 50 × 128 MiB (≈ 6.4 GiB guest RAM), 12
+     beats, all fifty exit cleanly inside a minute */
+  scale: { n: 50, vcpus: 1, mem: 128, beats: 12, vsock: null },
+};
+
 function readInt(id: string): number | null {
   const raw = byId<HTMLInputElement>(id).value.trim();
   if (raw === '') return null;
@@ -132,6 +154,24 @@ function readInt(id: string): number | null {
 }
 
 export function initRegister(): void {
+  document.querySelectorAll<HTMLElement>('[data-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const p = PRESETS[btn.dataset['preset'] ?? ''];
+      if (!p) return;
+      byId<HTMLInputElement>('f-n').value = String(p.n);
+      byId<HTMLInputElement>('f-vcpus').value = String(p.vcpus);
+      byId<HTMLInputElement>('f-mem').value = String(p.mem);
+      byId<HTMLInputElement>('f-beats').value = p.beats == null ? '' : String(p.beats);
+      byId<HTMLInputElement>('f-vsock').value = p.vsock == null ? '' : String(p.vsock);
+      byId('spawn-err').textContent = '';
+      byId<HTMLButtonElement>('spawn-btn').focus();
+      const shape = `${p.n} ${p.n === 1 ? 'VM' : 'VMs'} × ${p.vcpus} vCPUs · ${fmtNum(p.mem)} MiB each` +
+        (p.beats != null ? ` · ${p.beats} beats` : ' · steady') + (p.vsock != null ? ` · vsock cid ${p.vsock}` : '');
+      toast(`Form filled: ${shape} — press Spawn the run to boot`);
+      announce(`Form filled for ${p.n} VMs. Review the fields, then press Spawn the run.`);
+    });
+  });
+
   byId('spawn').addEventListener('submit', (e) => {
     e.preventDefault();
     const errEl = byId('spawn-err');
