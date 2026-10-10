@@ -543,18 +543,21 @@ function tick() {
   Promise.all(jobs).then(function () { busy = false; }, function () { busy = false; });
 }
 function startPolling() { if (timer == null) { tick(); timer = setInterval(tick, TICK_MS); } }
-function stopPolling() { if (timer != null) { clearInterval(timer); timer = null; } }
-document.addEventListener('visibilitychange', function () {
-  if (document.hidden) stopPolling(); else startPolling();
-});
+/* Polling never pauses: two tiny localhost GETs a second are cheap, and a
+   page that stops fetching while hidden strands any view opened in it (and
+   any environment whose visibility reporting is unreliable). */
 
 /* ============================================================ rendering.
-   Polls hand new store state to the DOM at most once per animation frame. */
+   Polls hand new store state to the DOM as soon as they settle, coalesced
+   through a microtask. Rendering must not wait on animation frames: a
+   hidden tab gets none, and a view that cannot paint data it already has
+   looks broken. The 1 Hz poll cadence is the batching; the patches are
+   cheap. */
 var renderQueued = false;
 function scheduleRender() {
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(function () { renderQueued = false; render(); });
+  queueMicrotask(function () { renderQueued = false; render(); });
 }
 function render() {
   renderChrome();
@@ -1032,7 +1035,7 @@ document.getElementById('colo-origin').textContent = 'Node ' + location.host;
 })();
 
 show();
-if (!document.hidden) startPolling(); /* when opened hidden, visibilitychange starts us */
+startPolling();
 })();
 </script>
 </body>
