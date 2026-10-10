@@ -320,19 +320,32 @@ pub(crate) fn read_cache_config(
     Ok(())
 }
 
+// The CLIDR_EL1 merging below exists because KVM (host kernels >= 6.3)
+// fabricates CLIDR_EL1 instead of passing the host's value through; the
+// Hypervisor.framework backend shares this module but exposes the host's real
+// CLIDR, so the whole block is Linux-only.
+
 // CLIDR_EL1 field positions
 // https://developer.arm.com/documentation/ddi0595/2021-12/AArch64-Registers/CLIDR-EL1--Cache-Level-ID-Register
+#[cfg(target_os = "linux")]
 const CLIDR_CTYPE_SHIFT: u8 = 3; // Each Ctype field is 3 bits
+#[cfg(target_os = "linux")]
 const CLIDR_LOC_SHIFT: u8 = 24;
 
 // CLIDR_EL1 Ctype field values
+#[cfg(target_os = "linux")]
 const CLIDR_CTYPE_NO_CACHE: u64 = 0;
+#[cfg(target_os = "linux")]
 const CLIDR_CTYPE_INSTRUCTION: u64 = 1;
+#[cfg(target_os = "linux")]
 const CLIDR_CTYPE_DATA: u64 = 2;
+#[cfg(target_os = "linux")]
 const CLIDR_CTYPE_SEPARATE: u64 = 3;
+#[cfg(target_os = "linux")]
 const CLIDR_CTYPE_UNIFIED: u64 = 4;
 
 /// Classify a set of cache entries at the same level into a CLIDR Ctype value.
+#[cfg(target_os = "linux")]
 fn ctype_for_entries<'a>(entries: impl Iterator<Item = &'a CacheEntry>) -> u64 {
     let (mut has_data, mut has_inst, mut has_unified) = (false, false, false);
     let mut any = false;
@@ -372,6 +385,7 @@ fn ctype_for_entries<'a>(entries: impl Iterator<Item = &'a CacheEntry>) -> u64 {
 /// This function builds a CLIDR_EL1 value that matches the host's real cache
 /// topology so it can be written to each vCPU, making CLIDR_EL1 consistent
 /// with the FDT.
+#[cfg(target_os = "linux")]
 pub(crate) fn build_clidr_from_caches(
     l1_caches: &[CacheEntry],
     non_l1_caches: &[CacheEntry],
@@ -408,6 +422,7 @@ pub(crate) fn build_clidr_from_caches(
 /// This ensures that on pre-6.3 kernels (where CLIDR already matches sysfs),
 /// the write is effectively a no-op, and fields we can't derive from sysfs
 /// (like LoUU, LoUIS, ICB) are never clobbered.
+#[cfg(target_os = "linux")]
 pub(crate) fn merge_clidr(current: u64, sysfs: u64) -> u64 {
     // Ctype fields: bits [20:0] (7 levels × 3 bits each = 21 bits)
     // LoC field: bits [26:24]
@@ -682,7 +697,32 @@ mod tests {
         assert_eq!(l1_caches.len(), 2);
     }
 
+    /// A host with no sysfs cache information at all — macOS, where the
+    /// Hypervisor.framework backend uses this same, OS-neutral FDT generator,
+    /// or a container without `/sys/devices/system/cpu/cpu0/cache` — reports
+    /// the first unreadable attribute as a missing cache level, and
+    /// `read_cache_config` stops there instead of failing: the cache lists
+    /// stay empty and the resulting device tree simply has no cache nodes
+    /// (they are informational; the kernel boots without them). This is what
+    /// keeps [`super::super::fdt::create_fdt`] working on hosts without sysfs.
     #[test]
+    fn missing_sysfs_store_yields_no_cache_entries() {
+        let engine = CacheEngine {
+            store: Box::new(HostCacheStore {
+                cache_dir: PathBuf::from("/nonexistent/apz/sysfs/cpu0/cache"),
+            }),
+        };
+
+        for index in 0..=MAX_CACHE_LEVEL {
+            assert!(matches!(
+                CacheEntry::from_index(index, engine.store.as_ref()),
+                Err(CacheInfoError::MissingCacheLevel)
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn test_build_clidr_from_caches() {
         // L1 Separate (Data + Instruction) + L2 Unified + L3 Unified
         let l1 = vec![
@@ -742,6 +782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_merge_clidr() {
         // CLIDR_EL1 layout:
         //   [20:0]  Ctype1..Ctype7 (7 × 3 bits)

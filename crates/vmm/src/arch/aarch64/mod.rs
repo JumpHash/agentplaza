@@ -447,6 +447,7 @@ fn host_kernel_release_at_least(major: u8, minor: u8) -> bool {
 ///
 /// Missing or non-numeric components count as 0, as upstream's
 /// `parse_kernel_release` does.
+#[cfg(target_os = "linux")]
 fn kernel_release_at_least(release: &str, major: u8, minor: u8) -> bool {
     let mut components = release.split(|c: char| !c.is_ascii_digit());
     let host_major = components
@@ -519,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_kernel_release_at_least() {
         assert!(kernel_release_at_least("6.10.0", 6, 10));
         assert!(kernel_release_at_least("6.10.0-rc1", 6, 10));
