@@ -95,7 +95,9 @@ impl Target {
         })
     }
 
-    /// The target's address, always the literal loopback.
+    /// The target's address, always the literal loopback — what the `Host`
+    /// header must carry (the loopback daemons' rebinding guard refuses
+    /// anything but a loopback name, and the URL form is not one).
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
@@ -163,15 +165,17 @@ impl Answer {
 
 /// Sends one `GET {path}` and reads the whole answer.
 pub fn get(target: &Target, path: &str, timeout: Duration) -> Result<Answer, String> {
-    let head = format!("GET {path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n");
+    let addr = target.addr();
+    let head = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     exchange(target, &head, &[], timeout)
 }
 
 /// Sends one `POST {path}` with `body` as its JSON payload, and reads the
 /// whole answer.
 pub fn post(target: &Target, path: &str, body: &[u8], timeout: Duration) -> Result<Answer, String> {
+    let addr = target.addr();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {target}\r\nContent-Type: application/json\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
