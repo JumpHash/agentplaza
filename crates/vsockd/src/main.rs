@@ -1,14 +1,19 @@
-//! `vsockd` — the AgentPlaza orchestrator stand-in.
+//! `vsockd` — the plaza's hub: the host end of the agent protocol.
 //!
 //! ```text
-//! vsockd [--cid N] [--port P]
+//! vsockd [--uds-dir DIR] [--cids LIST] [--port P]
 //! ```
 //!
-//! Listens on AF_VSOCK (`VMADDR_CID_HOST`, port 5000 by contract), accepts
-//! one connection per guest VM, runs the frozen host side of the protocol
-//! (`welcome`, `echo`, `uptime`, `bye`) and logs every line in both directions
-//! to standard output. It runs until `SIGTERM` or `SIGINT`; a guest that sends
-//! something this side cannot answer is logged and dropped, never guessed at.
+//! Listens on one Unix socket per guest CID (`{DIR}/vm{cid}_{port}`, the path
+//! the VMM's vsock muxer dials when its guest connects to CID 2 port 5000),
+//! accepts a session per connection, and serves the plaza's agent protocol on
+//! it: the frozen one-shot session (`welcome`, `tool_call`, `bye`) and the
+//! keepalive agent session a `hello` with `"keepalive": true` opens —
+//! heartbeats, the hub's own tool calls, and the `stop` that ends it. Every
+//! line in both directions is logged, along with the keepalive registry's
+//! transitions (`vsockd: agent <cid> ...`). It runs until `SIGTERM` or
+//! `SIGINT`; a guest that sends something this side cannot answer is logged
+//! and dropped, never guessed at.
 //!
 //! This is a stand-in for the real orchestrator: it exists so the plaza's core
 //! loop can be exercised end to end against a real VM. It holds no policy
@@ -25,6 +30,8 @@
 //     safe Rust cannot call.
 #![deny(unsafe_code)]
 
+#[cfg(target_os = "linux")]
+mod hub;
 #[cfg(target_os = "linux")]
 mod line;
 #[cfg(target_os = "linux")]
@@ -53,9 +60,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
+use hub::Hub;
+#[cfg(target_os = "linux")]
 use line::StreamLines;
 #[cfg(target_os = "linux")]
-use serve::{HostError, SessionLimits, StdoutLog, handle_connection};
+use serve::{HostError, SessionLimits, SystemClock, StdoutLog, handle_session};
 
 /// The port the orchestrator listens on (the contract fixes 5000).
 #[cfg(target_os = "linux")]
@@ -89,8 +98,24 @@ const MAX_BIND_ATTEMPTS: u32 = 8;
 const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The most time one guest session may live, from accept to close.
+///
+/// This bounds the frozen v1 session; a keepalive session is long-lived by
+/// design and is bounded by [`KEEPALIVE_IDLE_SECS`] instead.
 #[cfg(target_os = "linux")]
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a keepalive agent may go without a heartbeat before the hub reaps
+/// its session. Staying up is the point of a keepalive session, so this — not
+/// [`SESSION_TIMEOUT`] — is its liveness bound: an agent that keeps beating
+/// may live forever, and an agent that stops is reaped rather than leaked.
+#[cfg(target_os = "linux")]
+const KEEPALIVE_IDLE_SECS: u64 = 300;
+
+/// How long one read on a keepalive session waits before the session re-checks
+/// its idle deadline and its outbound work. A keepalive session has to wake up
+/// on its own account; a v1 session keeps [`RECV_TIMEOUT`].
+#[cfg(target_os = "linux")]
+const KEEPALIVE_READ_SLICE: Duration = Duration::from_secs(1);
 
 /// The most tool calls one guest session may make before it is dropped.
 #[cfg(target_os = "linux")]
@@ -156,8 +181,12 @@ For each guest CID `c` the daemon listens on the Unix socket
 `c` dials CID 2 port `port`). The guest's `hello.guest_cid` is checked against
 the CID parsed from that socket path — identity by configuration, since the
 muxer carries no peer address. Serves the plaza's frozen guest protocol:
-hello -> welcome, tool_call (echo, uptime) -> tool_result, bye -> close. Every
-line in both directions is logged; SIGTERM or SIGINT stops the daemon.";
+hello -> welcome, tool_call (echo, uptime) -> tool_result, bye -> close, and
+the keepalive agent protocol a hello with \"keepalive\": true opts into: the
+hub dispatches tool_calls at will, the agent answers tool_results and beats
+with a heartbeat every 5 s, and the session ends on the hub's stop (or on the
+agent's bye) or is reaped after 300 s without a heartbeat. Every line in both
+directions is logged; SIGTERM or SIGINT stops the daemon.";
 
 /// On a host without Unix sockets there is nothing to listen on: say so and
 /// fail, rather than starting a daemon that cannot accept a guest.
@@ -285,6 +314,9 @@ fn run(config: Config) -> Result<(), String> {
     // Bind every listener first, so a taken path fails the daemon before it
     // serves any guest (rather than one CID up and one down).
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
+    // One hub for the whole daemon: the registry of connected keepalive
+    // agents, shared by every session thread.
+    let hub = Arc::new(Hub::new(Arc::new(StdoutLog)));
     let mut handles = Vec::new();
     let mut listener_paths = Vec::new();
     for cid in &config.cids {
@@ -301,7 +333,8 @@ fn run(config: Config) -> Result<(), String> {
         );
         listener_paths.push(path);
         let limiter = Arc::clone(&limiter);
-        handles.push(thread::spawn(move || accept_loop(cid, listener, limiter)));
+        let hub = Arc::clone(&hub);
+        handles.push(thread::spawn(move || accept_loop(cid, listener, limiter, hub)));
     }
     for handle in handles {
         let _ = handle.join();
@@ -430,7 +463,7 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
 
 /// Accepts sessions for one guest CID and serves each on its own thread.
 #[cfg(target_os = "linux")]
-fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>) {
+fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, hub: Arc<Hub>) {
     while !sys::shutdown_requested() {
         match sys::poll_readable(listener.as_raw_fd(), ACCEPT_POLL_MS) {
             Ok(false) => continue,
@@ -450,9 +483,10 @@ fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>) {
                 }
                 Some(guard) => {
                     println!("vsockd: accepted a connection from cid {cid}");
+                    let hub = Arc::clone(&hub);
                     thread::spawn(move || {
                         let _guard = guard;
-                        serve_guest(stream, cid);
+                        serve_guest(stream, cid, &hub);
                     });
                 }
             },
@@ -464,7 +498,7 @@ fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>) {
 
 /// Serves one guest session and reports how it ended.
 #[cfg(target_os = "linux")]
-fn serve_guest(stream: UnixStream, peer_cid: u32) {
+fn serve_guest(stream: UnixStream, peer_cid: u32, hub: &Hub) {
     if let Err(err) = stream.set_read_timeout(Some(RECV_TIMEOUT)) {
         println!(
             "vsockd: session with cid {peer_cid} dropped: cannot set a read timeout ({err})"
@@ -476,12 +510,19 @@ fn serve_guest(stream: UnixStream, peer_cid: u32) {
     let limits = SessionLimits {
         max_calls: MAX_TOOL_CALLS,
         deadline,
+        keepalive_idle: Some(Duration::from_secs(KEEPALIVE_IDLE_SECS)),
+        keepalive_read_slice: KEEPALIVE_READ_SLICE,
     };
-    match handle_connection(&mut transport, peer_cid, limits, &StdoutLog) {
+    match handle_session(&mut transport, peer_cid, limits, &StdoutLog, hub, &SystemClock) {
+        // A keepalive session logs its own transitions and its own end
+        // (`vsockd: agent <cid> ...`), so there is nothing to add here.
+        Ok(summary) if summary.keepalive => {}
         Ok(summary) => println!(
             "vsockd: session with guest {} vm {} ended cleanly after {} tool calls",
             summary.guest_cid, summary.vm, summary.calls
         ),
+        // The hub logged the reap with its reason.
+        Err(HostError::Reaped) => {}
         Err(err) => println!(
             "vsockd: session with cid {peer_cid} dropped: {}",
             describe(&err)
@@ -495,6 +536,7 @@ fn describe(err: &HostError) -> String {
     match err {
         HostError::Io(io) => format!("connection failed ({io})"),
         HostError::Protocol(detail) => format!("protocol violation ({detail})"),
+        HostError::Reaped => "reaped: the agent stopped heartbeating".to_string(),
     }
 }
 

@@ -1,5 +1,5 @@
-//! Newline-delimited UTF-8 JSON framing: the byte-level half of the frozen
-//! guest↔host protocol.
+//! Newline-delimited UTF-8 JSON framing: the byte-level half of the guest↔host
+//! protocol.
 //!
 //! One protocol message is one line. A line is `\n`-terminated and every byte
 //! before the terminator is UTF-8. Reading is bounded by [`MAX_LINE_BYTES`]:
@@ -11,12 +11,44 @@
 //! implements; the two are independent binaries with no shared library.
 
 use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 /// The largest line this side will assemble, in bytes (1 MiB).
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 
 /// How many bytes one read takes from the underlying stream.
 const READ_CHUNK: usize = 4096;
+
+/// What one read of a line produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inbound {
+    /// A whole line, without its terminator.
+    Line(String),
+    /// The peer closed — cleanly, or mid-line, in which case the partial line
+    /// was returned as a [`Inbound::Line`] first.
+    Closed,
+    /// Nothing arrived within the transport's read slice. A partial line, if
+    /// one was already read, stays buffered and the next read continues it.
+    Idle,
+}
+
+/// A stream whose individual reads can be bounded by a slice of time.
+///
+/// A keepalive session has to wake up regularly to check its idle deadline and
+/// its outbound work, so its socket is given a short read slice and a read that
+/// finds nothing reports [`Inbound::Idle`] rather than blocking the worker
+/// thread forever.
+pub trait ReadSlice {
+    /// Sets how long one read waits before reporting idle.
+    fn set_read_slice(&mut self, slice: Duration) -> io::Result<()>;
+}
+
+impl ReadSlice for UnixStream {
+    fn set_read_slice(&mut self, slice: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(slice))
+    }
+}
 
 /// A two-way line channel.
 ///
@@ -35,6 +67,23 @@ pub trait LineTransport {
     /// A last line without a terminator is returned before the
     /// end-of-stream, so no bytes of a closed peer are lost.
     fn recv_line(&mut self) -> io::Result<Option<String>>;
+
+    /// Receives one line, or reports that the peer sent nothing within this
+    /// transport's read slice ([`Inbound::Idle`]). The default never reports
+    /// idle — it blocks for a line, the behaviour of a transport with no read
+    /// slice.
+    fn recv_line_idle(&mut self) -> io::Result<Inbound> {
+        Ok(match self.recv_line()? {
+            Some(line) => Inbound::Line(line),
+            None => Inbound::Closed,
+        })
+    }
+
+    /// Bounds this transport's individual reads to `slice`; a transport with
+    /// no read slice ignores it.
+    fn set_read_slice(&mut self, _slice: Duration) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// A [`LineTransport`] over any byte stream.
@@ -56,7 +105,15 @@ impl<S> StreamLines<S> {
     }
 }
 
-impl<S: Read + Write> LineTransport for StreamLines<S> {
+/// Whether a read error means "the read slice elapsed with nothing to read".
+fn is_idle(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+impl<S: Read + Write + ReadSlice> LineTransport for StreamLines<S> {
     fn send_line(&mut self, line: &str) -> io::Result<()> {
         if line.as_bytes().contains(&b'\n') {
             return Err(io::Error::new(
@@ -93,9 +150,26 @@ impl<S: Read + Write> LineTransport for StreamLines<S> {
                 Ok(0) => self.eof = true,
                 Ok(read) => self.buf.extend_from_slice(&chunk[..read]),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                // A read slice elapsing is reported to the caller, which
+                // decides whether the session may continue waiting. Any
+                // partial line stays in `buf` for the next read.
+                Err(err) if is_idle(&err) => return Err(err),
                 Err(err) => return Err(err),
             }
         }
+    }
+
+    fn recv_line_idle(&mut self) -> io::Result<Inbound> {
+        match self.recv_line() {
+            Ok(Some(line)) => Ok(Inbound::Line(line)),
+            Ok(None) => Ok(Inbound::Closed),
+            Err(err) if is_idle(&err) => Ok(Inbound::Idle),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn set_read_slice(&mut self, slice: Duration) -> io::Result<()> {
+        self.inner.set_read_slice(slice)
     }
 }
 
@@ -167,6 +241,65 @@ mod tests {
         }
     }
 
+    impl ReadSlice for Stub {
+        fn set_read_slice(&mut self, _slice: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A stream that yields a script of bytes, idles, and bytes, then EOF —
+    /// what a socket with a read slice looks like to the framing layer.
+    #[derive(Debug)]
+    struct Scripted {
+        steps: Vec<Step>,
+    }
+
+    #[derive(Debug)]
+    enum Step {
+        Bytes(Vec<u8>),
+        /// The read slice elapses with nothing to read.
+        Idle,
+        Eof,
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.steps.first_mut() {
+                None | Some(Step::Eof) => Ok(0),
+                Some(Step::Idle) => {
+                    self.steps.remove(0);
+                    Err(io::Error::from(io::ErrorKind::WouldBlock))
+                }
+                Some(Step::Bytes(bytes)) => {
+                    let take = bytes.len().min(buf.len());
+                    buf[..take].copy_from_slice(&bytes[..take]);
+                    bytes.copy_within(take.., 0);
+                    bytes.truncate(bytes.len() - take);
+                    let drained = bytes.is_empty();
+                    if drained {
+                        self.steps.remove(0);
+                    }
+                    Ok(take)
+                }
+            }
+        }
+    }
+
+    impl Write for Scripted {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ReadSlice for Scripted {
+        fn set_read_slice(&mut self, _slice: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn a_line_split_across_reads_is_reassembled() {
         let (stub, _written) = Stub::new(vec![
@@ -201,5 +334,36 @@ mod tests {
         let mut lines = StreamLines::new(stub);
         let err = lines.recv_line().expect_err("over-long line is refused");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// A read slice elapsing mid-line is `Idle`, not a lost line: the bytes
+    /// already read stay buffered and the next read finishes the line.
+    #[test]
+    fn an_elapsed_slice_reports_idle_and_keeps_the_partial_line() {
+        let scripted = Scripted {
+            steps: vec![
+                Step::Bytes(b"{\"type\":\"heart".to_vec()),
+                Step::Idle,
+                Step::Bytes(b"beat\",\"seq\":1}\n".to_vec()),
+            ],
+        };
+        let mut lines = StreamLines::new(scripted);
+        assert_eq!(lines.recv_line_idle().expect("read succeeds"), Inbound::Idle);
+        assert_eq!(
+            lines.recv_line_idle().expect("read succeeds"),
+            Inbound::Line(r#"{"type":"heartbeat","seq":1}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn a_closed_peer_is_reported_as_closed() {
+        let scripted = Scripted {
+            steps: vec![Step::Eof],
+        };
+        let mut lines = StreamLines::new(scripted);
+        assert_eq!(
+            lines.recv_line_idle().expect("read succeeds"),
+            Inbound::Closed
+        );
     }
 }
