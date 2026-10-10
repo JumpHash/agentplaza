@@ -10,17 +10,27 @@
 //! * `GET /api/v0/hub`         - the hub's `/status`, byte for byte
 //! * `GET /api/v0/hub/healthz` - the hub's `/healthz`
 //!
-//! The surface is loopback-only, and so is this client: exactly `127.0.0.1` or
-//! `localhost` is accepted ([`HubStatus::parse`]), and the address it holds is
-//! the literal loopback - no name is ever resolved through DNS here - so
-//! everything else is refused before a socket is opened. A hub that cannot be
-//! reached, or that answers something this client cannot read, is an error the
-//! caller reports as a 502 rather than an empty registry: the console must be
-//! able to tell a down hub from a quiet one.
+//! `noded --hub-admin <host:port>` names the hub's *admin* surface (its
+//! `--admin-port`, 19081 on the live stack) - the one loopback endpoint that
+//! drives a connected agent - and this module is also the daemon's one path to
+//! it. [`tell`] sends the `POST /tell` the read-through needs
+//! (`POST /api/v0/tasks/{id}/artifact`, in [`crate`]): the console asks this
+//! daemon to read a file a task's agent wrote, and the daemon asks the hub to
+//! drive the agent's `read_file`.
+//!
+//! Both surfaces are loopback-only, and so is this client: exactly `127.0.0.1`
+//! or `localhost` is accepted ([`HubStatus::parse`], [`HubAdmin::parse`], one
+//! shared [`parse_loopback`]), and the address it holds is the literal
+//! loopback - no name is ever resolved through DNS here - so everything else
+//! is refused before a socket is opened. A hub that cannot be reached, or that
+//! answers something this client cannot read, is an error the caller reports
+//! as a 502 rather than an empty registry: the console must be able to tell a
+//! down hub from a quiet one.
 //!
 //! Like [`crate::http`] on the serving side, this is the smallest HTTP/1.1 the
-//! job needs - one `GET`, `Connection: close`, a bounded head and body, no
-//! keep-alive - and the whole exchange is bounded by [`TIMEOUT`]: each read
+//! job needs - one request, `Connection: close`, a bounded head and body, no
+//! keep-alive - and the whole exchange is bounded by its budget ([`TIMEOUT`]
+//! for the status surface, [`ADMIN_TIMEOUT`] for the admin one): each read
 //! consults what is left of the budget and the socket carries that budget as
 //! its read timeout, so a hub that accepts a connection and then goes silent
 //! cannot hold a daemon thread.
@@ -36,10 +46,34 @@ pub const DEFAULT_HUB_STATUS: &str = "127.0.0.1:19080";
 /// The port of [`DEFAULT_HUB_STATUS`]: the live stack's `--status-port`.
 pub const DEFAULT_HUB_STATUS_PORT: u16 = 19080;
 
-/// How long the whole exchange may take - connecting, sending, and reading the
-/// answer. What is left of it is the socket's read timeout before every read,
-/// so a hub that has gone quiet fails the read instead of holding the thread.
+/// The hub's admin surface unless `--hub-admin` says otherwise, as
+/// `--hub-admin` spells it.
+pub const DEFAULT_HUB_ADMIN: &str = "127.0.0.1:19081";
+
+/// The port of [`DEFAULT_HUB_ADMIN`]: the live stack's `--admin-port`.
+pub const DEFAULT_HUB_ADMIN_PORT: u16 = 19081;
+
+/// How long the whole status exchange may take - connecting, sending, and
+/// reading the answer. What is left of it is the socket's read timeout before
+/// every read, so a hub that has gone quiet fails the read instead of holding
+/// the thread.
 const TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a whole `/tell` may take. The hub waits up to [`TELL_TIMEOUT_MS`]
+/// for the agent's answer before it writes its own 504, and the hub's admin
+/// surface bounds one connection at 10s, so this client's budget is that same
+/// 10s: long enough for the hub to give up on its own terms, short enough that
+/// a hub which accepts the connection and then says nothing cannot hold a
+/// daemon thread.
+const ADMIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The longest a `/tell` may wait for its agent: the hub's own maximum
+/// (`vsockd`'s `MAX_TELL_TIMEOUT_MS`), so a caller never cuts a call off
+/// before the hub itself would have given up.
+pub const TELL_TIMEOUT_MS: u64 = 5_000;
+
+/// The tool the read-through drives on the agent: the harness's `read_file`.
+pub const READ_FILE: &str = "read_file";
 
 /// The most a status line and the headers may occupy, together.
 const MAX_HEAD: usize = 16 * 1024;
@@ -68,28 +102,8 @@ impl HubStatus {
     /// and `[::1]` are all refused - and the host is never resolved through
     /// DNS.
     pub fn parse(value: &str) -> Result<Self, String> {
-        let Some((host, port)) = value.rsplit_once(':') else {
-            return Err(format!(
-                "{value:?} names no port: the hub's status surface is `host:port`"
-            ));
-        };
-        let host = match host {
-            "127.0.0.1" | "localhost" => Ipv4Addr::LOCALHOST,
-            other => {
-                return Err(format!(
-                    "{other:?} is not a loopback host: the hub's status surface is reached on \
-                     127.0.0.1 only"
-                ));
-            }
-        };
-        let port: u16 = port
-            .parse()
-            .map_err(|_| format!("{port:?} is not a port"))?;
-        if port == 0 {
-            return Err("port 0 is not a port to reach the hub's status surface on".to_string());
-        }
         Ok(Self {
-            addr: SocketAddr::V4(SocketAddrV4::new(host, port)),
+            addr: parse_loopback(value, "the hub's status surface")?,
         })
     }
 
@@ -113,6 +127,82 @@ impl std::fmt::Display for HubStatus {
     }
 }
 
+/// Where the hub's admin surface (`vsockd --admin-port`) is, once its address
+/// has been checked to be the loopback.
+///
+/// The surface that can make an agent act is reached on the loopback only, and
+/// this type holds the literal `127.0.0.1` exactly as [`HubStatus`] does: there
+/// is nothing left to resolve when a socket is opened, and a name that merely
+/// looks like the loopback cannot redirect the daemon once it has been refused
+/// by [`parse_loopback`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HubAdmin {
+    addr: SocketAddr,
+}
+
+impl HubAdmin {
+    /// Parses `127.0.0.1:PORT` or `localhost:PORT`, by the same exact-matcher
+    /// as [`HubStatus::parse`]: the admin surface is one more loopback surface,
+    /// and its lookalikes (`127.0.0.1.`, `LOCALHOST`, `127.0.0.1.evil.tld`,
+    /// `10.0.0.1`, `[::1]`) are refused the same way, before a socket is
+    /// opened.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        Ok(Self {
+            addr: parse_loopback(value, "the hub's admin surface")?,
+        })
+    }
+
+    /// The endpoint's address, always the literal loopback.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+}
+
+impl Default for HubAdmin {
+    fn default() -> Self {
+        Self {
+            addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, DEFAULT_HUB_ADMIN_PORT)),
+        }
+    }
+}
+
+impl std::fmt::Display for HubAdmin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.addr)
+    }
+}
+
+/// Parses `127.0.0.1:PORT` or `localhost:PORT` for the loopback surface named
+/// by `what` (its error messages name the surface the caller asked for).
+///
+/// The one place the loopback policy lives, shared by [`HubStatus::parse`] and
+/// [`HubAdmin::parse`]: exact equality on `127.0.0.1` or `localhost`
+/// (normalized to the literal `127.0.0.1`) plus a nonzero port. The parsed
+/// address is a literal [`SocketAddrV4`], so no name is ever resolved: a
+/// lookalike is refused here, before a socket is opened.
+fn parse_loopback(value: &str, what: &str) -> Result<SocketAddr, String> {
+    let Some((host, port)) = value.rsplit_once(':') else {
+        return Err(format!(
+            "{value:?} names no port: {what} is `host:port`"
+        ));
+    };
+    let host = match host {
+        "127.0.0.1" | "localhost" => Ipv4Addr::LOCALHOST,
+        other => {
+            return Err(format!(
+                "{other:?} is not a loopback host: {what} is reached on 127.0.0.1 only"
+            ));
+        }
+    };
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("{port:?} is not a port"))?;
+    if port == 0 {
+        return Err(format!("port 0 is not a port to reach {what} on"));
+    }
+    Ok(SocketAddr::V4(SocketAddrV4::new(host, port)))
+}
+
 /// The hub's answer: the status it answered with, the content type it declared
 /// and its body.
 #[derive(Debug)]
@@ -133,34 +223,174 @@ impl Answer {
     pub fn into_parts(self) -> (u16, String, Vec<u8>) {
         (self.status, self.content_type, self.body)
     }
+
+    /// The answer's body as text, for the JSON the admin surface answers with.
+    /// A body that is not UTF-8 is an error naming that, never a lossy read.
+    pub fn body_text(&self) -> Result<&str, String> {
+        std::str::from_utf8(&self.body).map_err(|err| format!("the hub's answer is not UTF-8: {err}"))
+    }
 }
 
-/// Sends one `GET {path}` to the hub and reads its whole answer.
+/// Sends one `GET {path}` to the hub's status surface and reads its whole
+/// answer.
 ///
 /// Every step is bounded by what is left of [`TIMEOUT`], the head by
 /// [`MAX_HEAD`] and the body by [`MAX_BODY`]; anything the hub answers that is
 /// not a well-formed HTTP/1.x response is an error string, never a panic.
 pub fn get(hub: &HubStatus, path: &str) -> Result<Answer, String> {
-    let deadline = Instant::now() + TIMEOUT;
-    // The address is the checked literal loopback: no resolution happens here,
-    // which is where the loopback policy is enforced for good.
-    let mut stream = TcpStream::connect_timeout(&hub.addr, remaining(deadline)?)
-        .map_err(|err| format!("cannot connect to {hub}: {err}"))?;
+    exchange(hub.addr(), TIMEOUT, "GET", path, None)
+}
+
+/// Drives one tool call on the agent connected as `cid`, through the hub's
+/// admin surface: `POST /tell {"cid","name","args","timeout_ms"}`.
+///
+/// The answer is the hub's own: a 200 carries the agent's `ok` and `output`,
+/// and any other status carries the hub's `{"error": "..."}` - a role policy
+/// refusal, an unserved or unconnected CID, a timeout - which the caller
+/// surfaces unchanged. A hub that cannot be reached, or that answers something
+/// this client cannot read, is [`TellOutcome::Unreachable`], which the caller
+/// reports as a 502: a transport failure is never dressed up as the agent's
+/// word.
+pub fn tell(
+    admin: &HubAdmin,
+    cid: u64,
+    name: &str,
+    args: serde_json::Value,
+    timeout_ms: u64,
+) -> TellOutcome {
+    let body = serde_json::json!({
+        "cid": cid,
+        "name": name,
+        "args": args,
+        "timeout_ms": timeout_ms,
+    })
+    .to_string();
+    let answer = match exchange(
+        admin.addr(),
+        ADMIN_TIMEOUT,
+        "POST",
+        "/tell",
+        Some(body.as_bytes()),
+    ) {
+        Ok(answer) => answer,
+        Err(reason) => return TellOutcome::Unreachable(reason),
+    };
+    let status = answer.status();
+    match answer.body_text() {
+        Ok(text) => tell_outcome(status, text),
+        Err(reason) => TellOutcome::Unreachable(reason),
+    }
+}
+
+/// The agent's answer to a `/tell`, or why there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TellOutcome {
+    /// The agent answered: the hub's 200 with the agent's own `ok` and
+    /// `output`. `ok: false` is still an answer - the agent refused the call -
+    /// and its words are data, not a transport failure.
+    Answered {
+        /// The agent's own `ok`.
+        ok: bool,
+        /// The agent's own `output` (its answer, or its refusal's reason).
+        output: String,
+    },
+    /// The hub refused, in its own words and with its own status: the admin
+    /// surface's `{"error": "..."}` for a role policy, an unserved or
+    /// unconnected CID, or a timeout. The caller surfaces both unchanged.
+    Refused {
+        /// The status the hub answered with.
+        status: u16,
+        /// The hub's own message.
+        message: String,
+    },
+    /// The admin surface could not be reached, or answered something this
+    /// client cannot read. The caller reports it as a 502.
+    Unreachable(String),
+}
+
+/// The `/tell` answer's envelope, as the admin surface writes it.
+#[derive(Debug, serde::Deserialize)]
+struct TellAnswer {
+    ok: bool,
+    output: String,
+}
+
+/// Reads one `/tell` answer's body: a 200 is the agent's `{"ok","output"}`, and
+/// any other status is the hub's `{"error":"..."}`. A body that is not the
+/// envelope it claims to be is not guessed at.
+fn tell_outcome(status: u16, body: &str) -> TellOutcome {
+    if status == 200 {
+        return match serde_json::from_str::<TellAnswer>(body) {
+            Ok(TellAnswer { ok, output }) => TellOutcome::Answered { ok, output },
+            Err(err) => TellOutcome::Unreachable(format!(
+                "the hub's /tell answer is not the admin surface's JSON: {err}"
+            )),
+        };
+    }
+    TellOutcome::Refused {
+        status,
+        message: error_message(body),
+    }
+}
+
+/// The hub's own message from an error answer: its `{"error": "..."}` when the
+/// body is that object, and the body itself otherwise (still the hub's words,
+/// never one this client invents).
+fn error_message(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.trim().to_string())
+}
+
+/// Sends one HTTP/1.1 request to `addr` and reads its whole answer: one
+/// request per connection, `Connection: close`, the whole exchange bounded by
+/// `budget`.
+///
+/// The address is the checked literal loopback ([`parse_loopback`]), so no
+/// resolution happens here - which is where the loopback policy is enforced
+/// for good.
+fn exchange(
+    addr: SocketAddr,
+    budget: Duration,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<Answer, String> {
+    let deadline = Instant::now() + budget;
+    let mut stream = TcpStream::connect_timeout(&addr, remaining(deadline, budget)?)
+        .map_err(|err| format!("cannot connect to {addr}: {err}"))?;
     // The backstop: a read that outlives the budget fails as a timeout even if
     // it is the first read and no deadline check has run yet.
     stream
-        .set_read_timeout(Some(TIMEOUT))
+        .set_read_timeout(Some(budget))
         .map_err(|err| format!("the hub connection could not be bounded: {err}"))?;
     stream
-        .set_write_timeout(Some(remaining(deadline)?))
+        .set_write_timeout(Some(remaining(deadline, budget)?))
         .map_err(|err| format!("the hub connection could not be bounded: {err}"))?;
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {hub}\r\nConnection: close\r\n\r\n");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    if let Some(body) = body {
+        request.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        ));
+    }
+    request.push_str("\r\n");
+    let mut wire = request.into_bytes();
+    if let Some(body) = body {
+        wire.extend_from_slice(body);
+    }
     stream
-        .write_all(request.as_bytes())
+        .write_all(&wire)
         .and_then(|()| stream.flush())
         .map_err(|err| format!("cannot send the request: {err}"))?;
     let mut reader = BufReader::with_capacity(MAX_HEAD + 1, stream);
-    read_response(&mut reader, deadline)
+    read_response(&mut reader, deadline, budget)
 }
 
 /// Reads one response: the status line, the headers (bounded together by
@@ -170,9 +400,13 @@ pub fn get(hub: &HubStatus, path: &str) -> Result<Answer, String> {
 /// header without a `:`, a chunked body, a head or body that is too large, a
 /// body shorter than its `Content-Length`, a connection that ends mid-head -
 /// is an error, never a panic.
-fn read_response<R: Read>(reader: &mut BufReader<R>, deadline: Instant) -> Result<Answer, String> {
+fn read_response<R: Read>(
+    reader: &mut BufReader<R>,
+    deadline: Instant,
+    budget: Duration,
+) -> Result<Answer, String> {
     let mut line = Vec::new();
-    read_line(reader, deadline, MAX_HEAD, &mut line)?;
+    read_line(reader, deadline, MAX_HEAD, &mut line, budget)?;
     let status_line =
         std::str::from_utf8(&line).map_err(|_| "the hub's status line is not ASCII".to_string())?;
     let mut parts = status_line.split(' ');
@@ -198,7 +432,7 @@ fn read_response<R: Read>(reader: &mut BufReader<R>, deadline: Instant) -> Resul
     let mut content_length = None;
     let mut content_type = None;
     loop {
-        read_line(reader, deadline, MAX_HEAD, &mut line)?;
+        read_line(reader, deadline, MAX_HEAD, &mut line, budget)?;
         head_bytes += line.len() + 2;
         if head_bytes > MAX_HEAD {
             return Err("the hub's answer headers are too large".to_string());
@@ -236,13 +470,13 @@ fn read_response<R: Read>(reader: &mut BufReader<R>, deadline: Instant) -> Resul
     }
 
     let mut body = Vec::new();
-    remaining(deadline)?;
+    remaining(deadline, budget)?;
     match content_length {
         Some(length) => {
             (&mut *reader)
                 .take(length as u64)
                 .read_to_end(&mut body)
-                .map_err(read_error)?;
+                .map_err(|err| read_error(err, budget))?;
             if body.len() != length {
                 return Err("the hub's answer ended before its Content-Length".to_string());
             }
@@ -252,7 +486,7 @@ fn read_response<R: Read>(reader: &mut BufReader<R>, deadline: Instant) -> Resul
             (&mut *reader)
                 .take(MAX_BODY as u64 + 1)
                 .read_to_end(&mut body)
-                .map_err(read_error)?;
+                .map_err(|err| read_error(err, budget))?;
             if body.len() > MAX_BODY {
                 return Err("the hub's answer is too large".to_string());
             }
@@ -293,13 +527,14 @@ fn read_line<R: Read>(
     deadline: Instant,
     limit: usize,
     line: &mut Vec<u8>,
+    budget: Duration,
 ) -> Result<(), String> {
     line.clear();
-    remaining(deadline)?;
+    remaining(deadline, budget)?;
     let read = (&mut *reader)
         .take(limit as u64 + 1)
         .read_until(b'\n', line)
-        .map_err(read_error)?;
+        .map_err(|err| read_error(err, budget))?;
     if read == 0 || line.last() != Some(&b'\n') {
         return Err("the hub's answer ended before it was complete".to_string());
     }
@@ -314,20 +549,20 @@ fn read_line<R: Read>(
 }
 
 /// The time left before `deadline`, or an error once the budget is spent.
-fn remaining(deadline: Instant) -> Result<Duration, String> {
+fn remaining(deadline: Instant, budget: Duration) -> Result<Duration, String> {
     match deadline.checked_duration_since(Instant::now()) {
         Some(left) if !left.is_zero() => Ok(left),
-        _ => Err(format!("the hub did not answer within {}s", TIMEOUT.as_secs())),
+        _ => Err(format!("the hub did not answer within {}s", budget.as_secs())),
     }
 }
 
 /// Why a read of the hub's answer failed. A read that ran out the socket's
 /// timeout is reported as one - the kernel hands it back as `WouldBlock` - so
 /// a 502 can say the hub went quiet rather than blaming a malformed answer.
-fn read_error(err: io::Error) -> String {
+fn read_error(err: io::Error, budget: Duration) -> String {
     match err.kind() {
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
-            format!("the hub did not answer within {}s", TIMEOUT.as_secs())
+            format!("the hub did not answer within {}s", budget.as_secs())
         }
         _ => format!("the hub's answer could not be read: {err}"),
     }
@@ -347,7 +582,11 @@ mod tests {
     }
 
     fn read(raw: &[u8]) -> Result<Answer, String> {
-        read_response(&mut BufReader::new(Cursor::new(raw.to_vec())), roomy())
+        read_response(
+            &mut BufReader::new(Cursor::new(raw.to_vec())),
+            roomy(),
+            TIMEOUT,
+        )
     }
 
     /// Only the literal loopback is a hub: every lookalike, every other
@@ -534,17 +773,149 @@ mod tests {
         let error = read_response(
             &mut BufReader::new(Cursor::new(b"HTTP/1.1 200 OK\r\n".to_vec())),
             Instant::now(),
+            TIMEOUT,
         )
         .expect_err("a deadline in the past");
         assert!(error.contains("did not answer within"), "{error}");
 
         assert_eq!(
-            read_error(io::Error::from(io::ErrorKind::WouldBlock)),
+            read_error(io::Error::from(io::ErrorKind::WouldBlock), TIMEOUT),
             "the hub did not answer within 5s"
         );
+        assert_eq!(
+            read_error(io::Error::from(io::ErrorKind::WouldBlock), ADMIN_TIMEOUT),
+            "the hub did not answer within 10s",
+            "the admin budget names its own bound"
+        );
         assert!(
-            read_error(io::Error::from(io::ErrorKind::Other)).contains("could not be read"),
+            read_error(io::Error::from(io::ErrorKind::Other), TIMEOUT)
+                .contains("could not be read"),
             "another error keeps its own reason"
         );
+    }
+
+    /// The admin surface is the loopback's too, by the same exact matcher: the
+    /// positives normalize to the literal loopback, and every lookalike that
+    /// is not the status surface is not the admin surface either.
+    #[test]
+    fn only_the_loopback_is_an_admin_surface() {
+        assert_eq!(
+            HubAdmin::parse("localhost:19081").expect("localhost is loopback"),
+            HubAdmin::parse("127.0.0.1:19081").expect("the loopback"),
+        );
+        assert_eq!(
+            HubAdmin::parse("127.0.0.1:19081").expect("the loopback").addr(),
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 19081)),
+        );
+        for value in [
+            "",
+            "127.0.0.1",
+            "localhost",
+            "127.0.0.1:",
+            "127.0.0.1:0",
+            "127.0.0.1.",
+            "127.0.0.1.:19081",
+            "127.0.0.1.evil.tld:19081",
+            "localhost.evil.tld:19081",
+            "api.127.0.0.1:19081",
+            "LOCALHOST:19081",
+            "Localhost:19081",
+            "127.0.0.1:19081 ",
+            "127.0.0.1 :19081",
+            "10.0.0.1:19081",
+            "0.0.0.0:19081",
+            "[::1]:19081",
+            "::1:19081",
+            "example.com:19081",
+            "http://127.0.0.1:19081",
+            "http://localhost:19081/tell",
+            "127.0.0.1:19081/tell",
+            "127.0.0.1:19081?q=1",
+            "127.0.0.1:notaport",
+            "127.0.0.1:70000",
+            "127.0.0.1:-1",
+            "off",
+        ] {
+            assert!(
+                HubAdmin::parse(value).is_err(),
+                "{value:?} must not be an admin surface"
+            );
+        }
+    }
+
+    /// The admin default is the live `--admin-port`, so the help text, the
+    /// config default and the live stack cannot drift.
+    #[test]
+    fn the_admin_default_is_the_documented_surface() {
+        assert_eq!(
+            HubAdmin::default(),
+            HubAdmin::parse(DEFAULT_HUB_ADMIN).expect("the documented default")
+        );
+        assert_eq!(HubAdmin::default().addr().port(), DEFAULT_HUB_ADMIN_PORT);
+        assert_eq!(
+            HubAdmin::default().addr(),
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 19081))
+        );
+    }
+
+    /// The `/tell` envelope: a 200 is the agent's own `ok`/`output`, and any
+    /// other status is the hub's own message, from its `{"error": "..."}` or,
+    /// failing that, its body. A 200 that is not the envelope is not guessed
+    /// at: it is unreadable, and the caller reports a 502.
+    #[test]
+    fn a_tell_answer_is_read_as_the_hub_wrote_it() {
+        assert_eq!(
+            tell_outcome(200, r#"{"ok":true,"output":"{\"size\":3}"}"#),
+            TellOutcome::Answered {
+                ok: true,
+                output: r#"{"size":3}"#.to_string(),
+            }
+        );
+        assert_eq!(
+            tell_outcome(200, r#"{"ok":false,"output":"denied: ../escape"}"#),
+            TellOutcome::Answered {
+                ok: false,
+                output: "denied: ../escape".to_string(),
+            }
+        );
+        assert_eq!(
+            tell_outcome(403, r#"{"error":"role librarian does not grant read_file"}"#),
+            TellOutcome::Refused {
+                status: 403,
+                message: "role librarian does not grant read_file".to_string(),
+            }
+        );
+        assert_eq!(
+            tell_outcome(409, r#"{"error":"agent with guest CID 100 is not connected"}"#),
+            TellOutcome::Refused {
+                status: 409,
+                message: "agent with guest CID 100 is not connected".to_string(),
+            }
+        );
+        assert_eq!(
+            tell_outcome(504, r#"{"error":"agent did not answer within 5000 ms"}"#),
+            TellOutcome::Refused {
+                status: 504,
+                message: "agent did not answer within 5000 ms".to_string(),
+            }
+        );
+        // A refusal whose body is not the hub's JSON still carries the hub's
+        // own words rather than an invented message.
+        assert_eq!(
+            tell_outcome(502, "bad gateway"),
+            TellOutcome::Refused {
+                status: 502,
+                message: "bad gateway".to_string(),
+            }
+        );
+        // A 200 that is not `{"ok","output"}` is unreadable, never a guess.
+        assert!(matches!(
+            tell_outcome(200, "not json"),
+            TellOutcome::Unreachable(_)
+        ));
+        assert!(matches!(
+            tell_outcome(200, r#"{"ok":true}"#),
+            TellOutcome::Unreachable(_)
+        ));
     }
 }

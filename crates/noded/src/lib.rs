@@ -22,6 +22,7 @@
 //! * `GET    /api/v0/tasks/{id}`       - one task
 //! * `POST   /api/v0/tasks/{id}/claim` - claim an open task as a live agent
 //! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`)
+//! * `POST   /api/v0/tasks/{id}/artifact` - read a file the task's agent wrote
 //! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
 //! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
@@ -53,7 +54,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::http::Response;
-use crate::hub::HubStatus;
+use crate::hub::{HubAdmin, HubStatus, TellOutcome};
 use crate::registry::{CreateRun, Detail, Registry, VmImages};
 use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
 
@@ -104,6 +105,12 @@ pub struct Config {
     /// a daemon not told where the hub is cannot know its state and must not
     /// pretend the registry is empty.
     pub hub_status: Option<HubStatus>,
+    /// Where the hub's admin surface is, when `--hub-admin` named one. `Some`
+    /// serves `POST /api/v0/tasks/{id}/artifact`, which drives the task's
+    /// agent's `read_file` through it; `None` (`--hub-admin off`) answers that
+    /// endpoint with a 503, because a daemon not told where the admin surface
+    /// is cannot ask any agent to read anything.
+    pub hub_admin: Option<HubAdmin>,
     /// The directory `GET /` and `GET <file>` serve.
     pub console_dir: PathBuf,
     /// The directory holding the per-VM vsock Unix sockets; VM `i`'s muxer
@@ -135,6 +142,7 @@ impl Default for Config {
             kernel: PathBuf::from(DEFAULT_KERNEL),
             initrd: PathBuf::from(DEFAULT_INITRD),
             hub_status: Some(HubStatus::default()),
+            hub_admin: Some(HubAdmin::default()),
             console_dir: PathBuf::from(DEFAULT_CONSOLE_DIR),
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
             workspace: None,
@@ -154,6 +162,7 @@ pub struct Node {
     tasks: TaskLedger,
     console_dir: PathBuf,
     hub_status: Option<HubStatus>,
+    hub_admin: Option<HubAdmin>,
     started_at_ms: u64,
 }
 
@@ -200,6 +209,7 @@ impl Node {
             tasks: TaskLedger::new(events),
             console_dir: config.console_dir,
             hub_status: config.hub_status,
+            hub_admin: config.hub_admin,
             started_at_ms: epoch_ms(),
         }
     }
@@ -245,6 +255,12 @@ impl Node {
     /// told (`--hub-status off`).
     pub fn hub_status(&self) -> Option<&HubStatus> {
         self.hub_status.as_ref()
+    }
+
+    /// Where the hub's admin surface is, or `None` when the daemon was not
+    /// told (`--hub-admin off`).
+    pub fn hub_admin(&self) -> Option<&HubAdmin> {
+        self.hub_admin.as_ref()
     }
 }
 
@@ -531,6 +547,17 @@ fn task_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
         }
         return finish_task(node, id, request.body());
     }
+    if let Some(id) = rest.strip_suffix("/artifact") {
+        // The read-through is a POST, not a GET, and deliberately so: it
+        // drives the task's agent - a tool call with a real cost, a real
+        // refusal mode and a real effect on the agent's turn - so a request
+        // that can be replayed by a prefetch, a retry or a crawler must not be
+        // advertised as safe to repeat. The console posts it.
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return read_artifact(node, id, request.body());
+    }
     if rest.is_empty() || rest.contains('/') {
         return no_such_endpoint();
     }
@@ -727,6 +754,159 @@ fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
         Ok(()) => json_response(200, &task.view()),
         Err(refused) => Response::error(409, &refused.to_string()),
     }
+}
+
+/// The `POST /api/v0/tasks/{id}/artifact` body.
+#[derive(Debug, Deserialize)]
+struct ArtifactRequest {
+    /// The path of the file to read, as the task's agent wrote it.
+    path: String,
+}
+
+/// The most an artifact path may occupy, in bytes.
+const MAX_ARTIFACT_PATH: usize = 1024;
+
+/// The harness's `read_file` output, as the agent's own tool writes it:
+/// `{"path","size","bytes","truncated","content"}`. The view keeps the size
+/// and the truncation the tool reported beside the content, so a caller can
+/// tell a whole file from a window the cap cut short.
+#[derive(Debug, Deserialize)]
+struct ReadFileOutput {
+    /// The file's size on disk, in bytes.
+    size: u64,
+    /// Whether the cap, rather than the end of the file, ended the content.
+    truncated: bool,
+    /// The text returned.
+    content: String,
+}
+
+/// `POST /api/v0/tasks/{id}/artifact`: reads one file the task's agent wrote
+/// into its own workspace, by driving that agent's `read_file` through the
+/// hub's admin surface.
+///
+/// The read-through exists because the dispatcher finishes a task with a note
+/// naming the artifacts its agent wrote (`artifacts: index.txt (3 tool
+/// call(s))`) and there is otherwise no way to read them without shelling into
+/// the guest: this daemon resolves the task's assignee to its guest CID, asks
+/// the hub to drive the agent's `read_file`, and returns what the agent read -
+/// the console's one-origin path, like the hub proxy above.
+///
+/// It is a POST, not a GET, and deliberately so: it drives the agent's session
+/// (a tool call with a cost and a refusal mode, and an effect on the agent's
+/// turn), so it must not be advertised as safe for a prefetch, a retry or a
+/// crawler to replay. The console posts it.
+///
+/// The status mapping, in one place:
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the agent read the file: `{"task","agent_cid","path","content","size","truncated"}` |
+/// | 400 | the body or the path is outside this endpoint's contract |
+/// | 403 | the hub's own refusal (a role the policy forbids the tool) |
+/// | 404 | no task with that id, or the hub does not serve the agent's CID |
+/// | 409 | the task has no assignee yet, or the hub's agent is not connected |
+/// | 422 | the agent answered and refused the read (its own words are the reason) |
+/// | 502 | the hub could not be reached, or answered something unreadable, or the agent's `read_file` output is not the tool's JSON |
+/// | 503 | `--hub-admin off`: the daemon was never told where the admin surface is |
+///
+/// The ledger names the agent by the CID it recorded at claim time; whether
+/// that CID is connected *now* is the hub's to say, and it says it in its own
+/// words (a 409), which this endpoint surfaces unchanged rather than checking a
+/// second time (`GET /status`) and racing its own answer.
+///
+/// The path is validated only for what this transport cannot carry - non-empty,
+/// at most [`MAX_ARTIFACT_PATH`] bytes, no NUL - and not for where it points:
+/// **the agent's harness enforces the real path discipline**, refusing a path
+/// that escapes the workspace, a directory, a non-UTF-8 file and every other
+/// case, with its own reason. Duplicating that here would be a second, weaker
+/// copy of a rule the agent already owns; a refusal comes back as the agent's
+/// own words with a 422.
+fn read_artifact(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Some(admin) = node.hub_admin() else {
+        return Response::error(503, "hub admin is not configured");
+    };
+    let request: ArtifactRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid artifact request: {err}")),
+    };
+    let path = request.path.as_str();
+    if let Err(reason) = checked_artifact_path(path) {
+        return Response::error(400, &reason);
+    }
+    let Some(task) = node.tasks().find(id) else {
+        return Response::error(404, &format!("no task with id {id}"));
+    };
+    let Some(agent_cid) = task.view().agent_cid else {
+        return Response::error(409, &format!("task {id} has no assignee yet"));
+    };
+    let args = serde_json::json!({ "path": path });
+    match hub::tell(admin, agent_cid, hub::READ_FILE, args, hub::TELL_TIMEOUT_MS) {
+        TellOutcome::Answered { ok: true, output } => {
+            match serde_json::from_str::<ReadFileOutput>(&output) {
+                Ok(read) => json_response(
+                    200,
+                    &ArtifactView {
+                        task: id,
+                        agent_cid,
+                        path,
+                        content: read.content,
+                        size: read.size,
+                        truncated: read.truncated,
+                    },
+                ),
+                Err(err) => Response::error(
+                    502,
+                    &format!("the agent's read_file answer is not the tool's JSON: {err}"),
+                ),
+            }
+        }
+        // The agent answered and refused - a path it will not read, a
+        // directory, a file that is not text - so the request was understood
+        // and denied: its own words are the reason.
+        TellOutcome::Answered { ok: false, output } => Response::error(422, &output),
+        // The hub's own words and its own status: a role policy (403), an
+        // unserved CID (404), an unconnected CID (409) or a timeout (504).
+        TellOutcome::Refused { status, message } => Response::error(status, &message),
+        TellOutcome::Unreachable(reason) => {
+            Response::error(502, &format!("hub admin unreachable: {reason}"))
+        }
+    }
+}
+
+/// The path check this endpoint owns: non-empty, at most
+/// [`MAX_ARTIFACT_PATH`] bytes, and with no NUL byte. Not a path *policy* -
+/// the agent's harness decides what a path means and what it reaches (see
+/// [`read_artifact`]).
+fn checked_artifact_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("path must not be empty".to_string());
+    }
+    if path.len() > MAX_ARTIFACT_PATH {
+        return Err(format!("path must be at most {MAX_ARTIFACT_PATH} bytes"));
+    }
+    if path.contains('\0') {
+        return Err("path must not contain a NUL byte".to_string());
+    }
+    Ok(())
+}
+
+/// A task's artifact as the API reports it: which task's agent read which
+/// path, and what the agent's own `read_file` returned.
+#[derive(Debug, Serialize)]
+struct ArtifactView<'a> {
+    /// The task whose agent read the file.
+    task: &'a str,
+    /// The guest CID of the agent that read it (the task's assignee).
+    agent_cid: u64,
+    /// The path the caller asked for, as it sent it.
+    path: &'a str,
+    /// The text the agent read.
+    content: String,
+    /// The file's size on disk, in bytes, as the agent reported it.
+    size: u64,
+    /// Whether the agent's read cap, rather than the end of the file, ended
+    /// the content.
+    truncated: bool,
 }
 
 /// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended.
