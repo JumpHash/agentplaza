@@ -10,19 +10,21 @@
      hashed js/css) — hostable on any static host, no server build, no framework.
      Talks to the frozen /api/v0 contract on the same origin:
        GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
-       POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial deltas)
-     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #roster;
-     keys 0–6 walk the seven index destinations, '?' opens the key sheet.
+       POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial/task deltas)
+       GET/POST /api/v0/tasks · GET/DELETE /api/v0/tasks/{id}
+       POST /api/v0/tasks/{id}/claim · POST /api/v0/tasks/{id}/finish (the ledger)
+     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster;
+     keys 0–7 walk the eight index destinations, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
      a civic register — ruled rows, entry numbers in the margin, red double margin rule,
      Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-CDLE5NLP.css">
-<script type="module" src="main-B5UAHZWH.js"></script>
+<link rel="stylesheet" href="main-AKSNRUH5.css">
+<script type="module" src="main-TYMRIV7Q.js"></script>
 </head>
-<body data-bundle-hash="8a767f52218936a746a819e3472fbd3f6cb031a5fcf15da5158c14d82ef7a332">
+<body data-bundle-hash="4302aa1d95aaa522eeae1c6606feeafaec5939501c78c074b083cc8af0de3c75">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -34,14 +36,15 @@
       <a href="#map" data-nav="map" aria-keyshortcuts="3"><span class="k">3</span><span>Map</span><span class="dots"></span><span class="n" id="nav-map">—</span></a>
       <a href="#view3d" data-nav="view3d" aria-keyshortcuts="4"><span class="k">4</span><span>3D view</span><span class="dots"></span><span class="n" id="nav-3d">—</span></a>
       <a href="#telemetry" data-nav="telemetry" aria-keyshortcuts="5"><span class="k">5</span><span>Telemetry</span><span class="dots"></span><span class="n" id="nav-telemetry">—</span></a>
-      <a href="#roster" data-nav="roster" aria-keyshortcuts="6"><span class="k">6</span><span>Roster</span><span class="dots"></span><span class="n" id="nav-roster">—</span></a>
+      <a href="#ledger" data-nav="ledger" aria-keyshortcuts="6"><span class="k">6</span><span>Ledger</span><span class="dots"></span><span class="n" id="nav-ledger">—</span></a>
+      <a href="#roster" data-nav="roster" aria-keyshortcuts="7"><span class="k">7</span><span>Roster</span><span class="dots"></span><span class="n" id="nav-roster">—</span></a>
     </div>
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">8a767f52218936a746a819e3472fbd3f6cb031a5fcf15da5158c14d82ef7a332</code></span>
+      <span>Bundle <code id="colo-hash">4302aa1d95aaa522eeae1c6606feeafaec5939501c78c074b083cc8af0de3c75</code></span>
       <span id="colo-wire">The wire · opening…</span>
-      <span>Keys 0–6 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
+      <span>Keys 0–7 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
@@ -455,10 +458,94 @@
       </div></div>
     </div>
 
+    <!-- ============================================================ LEDGER -->
+    <div data-view="ledger" data-cmd="apz ledger --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 7</span>
+        <h1>Ledger</h1>
+        <span class="aside mk ok" id="ledger-live" hidden>live</span>
+        <p class="lede">The plaza's account-book: every task this node holds, newest first — its folio number in the margin, its goal, the role it was entered for, its budget in credits and the dollars they stand for, and its state as a stamp or a mark. A live agent claims one by its guest CID; the agent that did reports it done or failed, and the owner may withdraw one that has not ended. The node keeps no transition history, so a sheet shows the task's present state and invents no journal.</p>
+      </div>
+
+      <div class="parts" id="ledger-notice" hidden><div class="body">
+        <span class="mk warn">ledger unreachable</span>
+        <p class="example" id="ledger-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <div class="tallies">
+          <div class="tally"><div class="figure" id="t-ledger">0</div><div class="tcap">tasks on the ledger</div></div>
+          <div class="tally"><div class="figure" id="t-ltasks-open">0</div><div class="tcap">open · unclaimed</div></div>
+          <div class="tally"><div class="figure" id="t-ltasks-claimed">0</div><div class="tcap">claimed</div></div>
+          <div class="tally"><div class="figure" id="t-ltasks-settled">0</div><div class="tcap">settled</div></div>
+        </div>
+      </div></div>
+
+      <div class="parts"><div class="body">
+        <h2>Enter a task</h2>
+        <form id="ledger-create" novalidate>
+          <div class="fields">
+            <div class="f"><label for="lt-goal">Goal</label><input id="lt-goal" type="text" autocomplete="off" placeholder="write the plaza handbooks"></div>
+            <div class="f"><label for="lt-acceptance">Acceptance · how it is judged</label><input id="lt-acceptance" type="text" autocomplete="off" placeholder="all 21 handbooks present"></div>
+            <div class="f"><label for="lt-budget">Budget · credits</label><input id="lt-budget" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></div>
+            <div class="f"><label for="lt-role">Role · optional, free text</label><input id="lt-role" type="text" autocomplete="off" placeholder="librarian"></div>
+          </div>
+          <p class="example mt">A task is claimable by any live agent of this node that holds the guest CID it presents — v0 records the role but does not gate a claim on it. The role field is free text: the fleet's role list is not served by the API, so no list is drawn and no invented role is offered. Budgets are whole credits (1 credit = $0.001 of real spend).</p>
+          <div class="actions mt">
+            <button type="submit" class="btn owner" id="lt-enter">Enter the task</button>
+            <span class="err" id="ledger-create-err" role="alert"></span>
+          </div>
+        </form>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The ledger <span class="c" id="ledger-count"></span></div></div>
+      <div class="parts bb0" id="ledger-empty" hidden><div class="body">
+        <p class="example" id="ledger-empty-text"></p>
+      </div></div>
+      <div class="tablewrap"><table id="ledger-table">
+        <thead><tr><th>No.</th><th>Task</th><th>Role</th><th class="num">Budget</th><th>State</th><th>Assignee</th><th>Entered</th><th>Changed</th></tr></thead>
+        <tbody id="ledger-body"></tbody>
+      </table></div>
+
+      <div class="parts" id="ledger-detail" hidden><div class="body">
+        <h2>Task <span class="m" id="ld-id">—</span> <span id="ld-state"></span></h2>
+        <p class="ledprose" id="ld-goal"></p>
+        <p class="example" id="ld-acceptance-line"></p>
+        <dl id="ld-facts"></dl>
+        <p class="example" id="ld-note-line"></p>
+        <p class="example">The node keeps no transition history — a task's present state is all it records, so this sheet shows the present, not a journal.</p>
+        <div class="ldacts">
+          <form id="ld-claim" novalidate>
+            <label for="ld-cid">Claim for the agent at guest CID</label>
+            <div class="lrow">
+              <input id="ld-cid" type="number" min="0" step="1" inputmode="numeric" placeholder="112">
+              <button type="submit" class="btn sm" id="ld-claim-btn">Claim this task for that agent</button>
+            </div>
+            <span class="err" id="ld-claim-err" role="alert"></span>
+          </form>
+          <form id="ld-finish" novalidate>
+            <label for="ld-finish-note">Finish the task as</label>
+            <div class="lrow">
+              <label class="check" for="ld-done"><input type="radio" id="ld-done" name="ld-outcome" value="done" checked> done — accepted</label>
+              <label class="check" for="ld-failed"><input type="radio" id="ld-failed" name="ld-outcome" value="failed"> failed</label>
+              <input id="ld-finish-note" type="text" autocomplete="off" placeholder="note · optional">
+              <button type="submit" class="btn sm" id="ld-finish-btn">Finish this task</button>
+            </div>
+            <span class="err" id="ld-finish-err" role="alert"></span>
+          </form>
+          <div class="lrow">
+            <button type="button" class="btn sm danger" id="ld-withdraw">Withdraw this task</button>
+            <span class="err" id="ld-withdraw-err" role="alert"></span>
+          </div>
+        </div>
+        <p class="example">A refusal is the daemon's own message, shown as it writes it — for a claim from a CID no running VM holds, or a transition the task's state does not allow.</p>
+      </div></div>
+    </div>
+
     <!-- ============================================================ ROSTER -->
     <div data-view="roster" data-cmd="apz roster --follow" hidden>
       <div class="title">
-        <span class="folio">f. 7</span>
+        <span class="folio">f. 8</span>
         <h1>Roster</h1>
         <span class="aside mk ok" id="roster-live" hidden>live</span>
         <p class="lede">Who is running right now: every VM the register names a role for — the long-running role agents a node boots at its initial setup, one per role of the codex's list — grouped under its role, with its guest CID, its state and the same serial figures the run entry and the map read. A VM the register gives no role is not a roster row, and a register that names none says so rather than drawing a fleet that is not there.</p>
@@ -506,7 +593,8 @@
         <tr><td class="kc"><kbd>3</kbd></td><td>Map — the fleet as a surveyor's plan</td></tr>
         <tr><td class="kc"><kbd>4</kbd></td><td>3D view — the same register, raised</td></tr>
         <tr><td class="kc"><kbd>5</kbd></td><td>Telemetry — the session's figures, one observation per poll</td></tr>
-        <tr><td class="kc"><kbd>6</kbd></td><td>Roster — the role agents, grouped by role</td></tr>
+        <tr><td class="kc"><kbd>6</kbd></td><td>Ledger — the plaza's tasks: claim, finish and withdraw them</td></tr>
+        <tr><td class="kc"><kbd>7</kbd></td><td>Roster — the role agents, grouped by role</td></tr>
         <tr><td class="kc"><kbd>?</kbd></td><td>This sheet — press again, Escape, or click outside to close</td></tr>
         <tr><td class="kc"><kbd>f</kbd></td><td>Follow new transcript lines — run and compare views</td></tr>
         <tr><td class="kc"><kbd>j</kbd></td><td>Jump to the latest line — run and compare views</td></tr>

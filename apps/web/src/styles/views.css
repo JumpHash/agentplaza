@@ -26,6 +26,18 @@ canvas.spark { display: block; width: 96px; height: 20px; }
 .hubline { margin-top: 12px; font: 500 11.5px var(--mono); letter-spacing: .04em; color: var(--ink-2); }
 .hubline.warn { color: var(--warn); }
 
+/* the ledger: a task's goal is prose in a table of figures, so its column
+   wraps (every other column stays tabular); a row opens the sheet below it */
+#ledger-table td.goal { white-space: normal; min-width: 200px; max-width: 440px; }
+#ledger-detail h2 { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+#ledger-detail h2 .m { text-transform: none; letter-spacing: 0; color: var(--ink); }
+.ledprose { font: 16px/1.4 var(--serif); margin: 0; max-width: 68ch; }
+.ldacts { display: grid; gap: 14px; }
+.ldacts form { display: grid; gap: 4px; }
+.lrow { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.lrow input[type="number"] { width: 8ch; }
+.lrow input[type="text"] { width: min(34ch, 100%); }
+
 /* the roster: one ruled band per role, the role's agents beneath it. The band
    overrides the table's numbered first column, since it spans the row. */
 #roster-table tr.grp td { width: auto; text-align: left; padding: 16px 12px 6px; border-bottom: 1px solid var(--rule); color: var(--ink-3); font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; }

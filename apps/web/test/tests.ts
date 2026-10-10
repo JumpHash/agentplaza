@@ -15,10 +15,11 @@ import {
   type SerialCache,
 } from '../src/serial';
 import { runReportText, runTranscriptText } from '../src/export';
-import { fmtDateTime, fmtDur, fmtStamp } from '../src/format';
+import { fmtDateTime, fmtDur, fmtMoney, fmtStamp } from '../src/format';
 import { hubLine, joinHub, parseHubStatus } from '../src/models/hub';
 import type { Run, Vm, VmState } from '../src/models/run';
 import { cidRange, roleOf } from '../src/models/run';
+import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq } from '../src/models/task';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
 import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
@@ -141,7 +142,7 @@ store.applyRunEvent('r1', 'done');
 eq(store.details.get('r1')?.state, 'done', 'a run event patches the cached run');
 store.applyVmEvent('r1', 0, 'exited');
 eq(store.details.get('r1')?.vms[0]?.state, 'exited', 'a vm event patches the cached vm');
-eq(store.wire, { run: 1, vm: 1, serial: 6 }, 'the wire tallies every frame');
+eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0 }, 'the wire tallies every frame');
 
 /* ------- run ids restart with the daemon: identity is (id, created_at) ---- */
 function runShaped(id: string, createdAt: number, state: 'running' | 'done', serial: string) {
@@ -536,6 +537,114 @@ eq(emptyLine !== deadLine, true, 'an empty hub and an unreadable hub are distinc
   const j = joinHub([{ cid: 5, role: 'register-role' }], [{ cid: 5, role: 'hub-role', connected_at_ms: 1, last_heartbeat_ms: 2, calls: 0 }]);
   eq(j[0]?.role, 'register-role', 'when both know the CID the register names the role');
   eq(j[0]?.connected?.role, 'hub-role', 'the hub’s role stays available for the view to flag');
+}
+
+/* ==================== the ledger: parse, money, and the store's copy ======
+   The task ledger comes off the daemon's API and is read through a defensive
+   parse (the relay is untrusted): every field is checked, a missing or
+   mistyped one is an error naming its path, unknown extras are tolerated. The
+   store holds the ledger as ONE copy, and the wire's task events patch it in
+   place — with the register's identity guard (ids restart with the daemon). */
+
+const TASK_FIXTURE = {
+  id: 't1',
+  goal: 'write the plaza handbooks',
+  acceptance: 'all 21 role handbooks present',
+  budget: 2000,
+  role: 'librarian',
+  state: 'done',
+  outcome: 'accepted',
+  assignee_id: 'librarian',
+  verifier_id: null,
+  agent_cid: 112,
+  note: '21 handbooks committed',
+  created_at: 1791671813178,
+  updated_at: 1791671813568,
+};
+const UNCLAIMED = {
+  ...TASK_FIXTURE,
+  state: 'open',
+  outcome: null,
+  assignee_id: null,
+  agent_cid: null,
+  note: null,
+};
+
+eq(parseTask(TASK_FIXTURE), TASK_FIXTURE, 'a well-formed task parses unchanged');
+eq(parseTask({ ...TASK_FIXTURE, extra: 1, party: 'x' }), TASK_FIXTURE, 'unknown extra fields are tolerated and dropped');
+eq(parseTask(UNCLAIMED), UNCLAIMED, 'an unclaimed task reads every nullable column as null');
+throws(() => parseTask(null), 'task is missing or not an object', 'a non-object task is rejected by name');
+throws(() => parseTask({ ...TASK_FIXTURE, id: 7 }), 'task.id', 'a mistyped id names the field');
+throws(() => parseTask({ ...TASK_FIXTURE, budget: 1.5 }), 'task.budget', 'a non-integer budget names the field');
+throws(() => parseTask({ ...TASK_FIXTURE, state: 'pending' }), 'task.state', 'an unknown state is refused by name');
+throws(() => parseTask({ ...TASK_FIXTURE, outcome: 'maybe' }), 'task.outcome', 'an unknown outcome is refused by name');
+throws(() => parseTask({ ...TASK_FIXTURE, note: 5 }), 'task.note is not a string or null', 'a mistyped note names it');
+throws(() => parseTask({ ...TASK_FIXTURE, agent_cid: 'x' }), 'task.agent_cid', 'a mistyped agent CID names it');
+{
+  const missing: Record<string, unknown> = { ...TASK_FIXTURE };
+  delete missing['updated_at'];
+  throws(() => parseTask(missing), 'task.updated_at', 'a missing required field names the path');
+}
+
+eq(parseTasksView({ tasks: [TASK_FIXTURE] }), [TASK_FIXTURE], 'the list endpoint parses its tasks');
+eq(parseTasksView({ tasks: [] }), [], 'an empty ledger parses to nothing');
+throws(() => parseTasksView({}), 'ledger.tasks is missing or not an array', 'a body without tasks names the field');
+throws(() => parseTasksView({ tasks: [{ ...TASK_FIXTURE, goal: 1 }] }), 'ledger.tasks[0].goal', 'a bad row names its index and field');
+
+eq(taskSeq('t12'), 12, 'the task folio is its number');
+eq(taskSeq('r3'), 0, 'a run id is not a task folio');
+eq(isOpenTask({ ...TASK_FIXTURE, state: 'open' }), true, 'an open task is in flight');
+eq(isOpenTask({ ...TASK_FIXTURE, state: 'claimed' }), true, 'a claimed task is in flight');
+eq(isFinishedTask({ ...TASK_FIXTURE, state: 'done' }), true, 'a done task has ended');
+eq(isFinishedTask({ ...TASK_FIXTURE, state: 'withdrawn' }), true, 'a withdrawn task has ended');
+
+/* money reads both ways off the codex's own rate (1 credit = $0.001) */
+eq(fmtMoney(2000), '2,000 cr · $2.00', 'a budget reads in credits and dollars');
+eq(fmtMoney(0), '0 cr · $0.00', 'a zero budget reads plainly');
+eq(fmtMoney(1500), '1,500 cr · $1.50', 'the dollar column follows the codex rate');
+
+/* the store's ledger: one copy, newest first, patched in place by the wire */
+{
+  const s = new Store();
+  s.mergeTask(parseTask({ ...UNCLAIMED, id: 't1' }));
+  s.mergeTask(parseTask({ ...UNCLAIMED, id: 't2' }));
+  eq(s.tasks.map((t) => t.id), ['t2', 't1'], 'the ledger reads newest first');
+  eq(s.taskOf(null), null, 'no id, no task');
+  s.applyTaskEvent('t1', 'claimed', 'librarian');
+  eq(s.taskOf('t1')?.state, 'claimed', 'a task event patches the ledger in place');
+  eq(s.taskOf('t1')?.assignee_id, 'librarian', 'the event carries the assignee');
+  eq(s.wire.task, 1, 'the wire tallies the task frame');
+  s.mergeTask(parseTask({ ...TASK_FIXTURE, id: 't1' })); // the reconciling list row
+  eq(s.tasks.map((t) => t.id), ['t2', 't1'], 'a merged task keeps its place');
+  eq(s.taskOf('t1')?.note, '21 handbooks committed', 'a merged task replaces the patched row');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.tasksError, 'string', 'the event asked the ledger to reconcile');
+}
+
+/* an event for a task the console has never seen asks the ledger, coalesced */
+{
+  const s = new Store();
+  s.applyTaskEvent('t9', 'open', null);
+  eq(s.tasks.length, 0, 'no row is invented for an unknown task');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.tasksError, 'string', 'the ledger was asked for the truth');
+}
+
+/* a finished task is never woken by an event: ids restart with the daemon */
+{
+  const s = new Store();
+  s.mergeTask(parseTask(TASK_FIXTURE)); // t1, done/accepted
+  s.applyTaskEvent('t1', 'claimed', 'librarian');
+  eq(s.taskOf('t1')?.state, 'done', 'an ended task is not woken by an event');
+  eq(s.taskOf('t1')?.assignee_id, 'librarian', 'the event did not touch the ended row');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 30);
+  await settled;
+  eq(typeof s.tasksError, 'string', 'the ledger was asked at once for identity');
 }
 
 if (failures > 0) {

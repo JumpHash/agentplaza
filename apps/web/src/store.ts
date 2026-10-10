@@ -4,7 +4,7 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getHub, getMachine, getRun, listRuns } from './api';
+import { getHub, getMachine, getRun, getTask, listRuns, listTasks } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { RunSlice } from './models/history';
 import { SessionHistory } from './models/history';
@@ -12,11 +12,13 @@ import type { HubStatus } from './models/hub';
 import type { Machine } from './models/machine';
 import type { Run, RunState, VmState } from './models/run';
 import { isOpen, seqOf } from './models/run';
+import type { Task, TaskState } from './models/task';
+import { isFinishedTask, seqOf as taskSeq } from './models/task';
 import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry' | 'roster';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry' | 'roster' | 'ledger';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 /** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
@@ -31,11 +33,19 @@ declare global {
     /** Read-only counters for the verification harness; the app never reads them. */
     __PLAZA_DIAG__?: {
       readonly renders: number;
-      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number };
+      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number; readonly task: number };
       readonly stream: StreamState;
       /** What the hub line reads from: whether the hub is reachable, its
           agent and session counts, and the error when it is not. */
       readonly hub: { readonly reachable: boolean; readonly agents: number; readonly sessions: number; readonly error: string | null };
+      /** The ledger as the store holds it: how many tasks, how many still in
+          flight, which one is pinned, and the error when it is unreadable. */
+      readonly tasks: {
+        readonly count: number;
+        readonly open: number;
+        readonly detail: string | null;
+        readonly error: string | null;
+      };
       /** The 3D camera's position and target, when the scene has booted. */
       readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
       /** What the 3D plot holds — platforms, blocks, live arcs — and the
@@ -72,6 +82,7 @@ const TICK_MS =
     : 1000; // detail cadence; the list polls every 2 ticks
 const MACHINE_EVERY = 15; // ticks between machine polls
 const HUB_EVERY = 15; // ticks between hub polls (the hub's status is frozen and slow)
+const TASKS_EVERY = 2; // ticks between task-ledger polls (the ledger is small and changes fast)
 const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
 const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
 const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
@@ -88,6 +99,14 @@ export class Store {
   hubError: string | null = null;
   runs: Run[] = []; // newest first
   runsError: string | null = null;
+  /** The ledger's own copy of every task, newest first (the daemon lists them
+      oldest first; the console reads them the way the register reads runs).
+      The SSE `task` events patch these in place, exactly as the run events
+      patch `runs`. */
+  tasks: Task[] = []; // newest first
+  tasksError: string | null = null;
+  /** The task the ledger sheet is pinned to (`#ledger/{id}`), or null. */
+  taskDetailId: string | null = null;
   /** Every run fetched with serial, by id (map/3D poll each open run). */
   readonly details = new Map<string, Run>();
   detailError: string | null = null;
@@ -113,7 +132,7 @@ export class Store {
   /* the live wire (GET /api/v0/events): its own liveness and tallies —
      informational only; daemon health stays with the polls */
   stream: StreamState = 'connecting';
-  readonly wire = { run: 0, vm: 0, serial: 0 };
+  readonly wire = { run: 0, vm: 0, serial: 0, task: 0 };
   /** Render passes flushed; the harness asserts a burst cannot storm the paint path. */
   renders = 0;
 
@@ -128,6 +147,7 @@ export class Store {
   private liveRenderAt = 0;
   private liveRenderTimer: number | null = null;
   private listRefreshTimer: number | null = null;
+  private tasksRefreshTimer: number | null = null;
   private readonly detailRefreshPending = new Set<string>();
   private readonly vmPushAt = new Map<string, number>();
 
@@ -205,9 +225,15 @@ export class Store {
     const jobs: Array<Promise<void>> = [];
     const wantList = first || this.ticks % 2 === 0 || this.runsError != null || this.runs.length === 0;
     if (wantList) jobs.push(this.pollList());
+    const wantTasks = first || this.ticks % TASKS_EVERY === 0 || this.tasksError != null || this.tasks.length === 0;
+    if (wantTasks) jobs.push(this.pollTasks());
     if (first || this.ticks % MACHINE_EVERY === 0 || route.name === 'machine') jobs.push(this.pollMachine());
     if (first || this.ticks % HUB_EVERY === 0) jobs.push(this.pollHub());
 
+    if (route.name === 'ledger' && route.param) {
+      /* the pinned task's own GET keeps it fresh even when the list poll lags */
+      jobs.push(this.pollTaskDetail(route.param));
+    }
     if (route.name === 'run' && this.detailId) {
       jobs.push(this.pollDetail(this.detailId));
     } else if (route.name === 'compare' && route.compare) {
@@ -292,6 +318,58 @@ export class Store {
       this.hubError = err instanceof Error ? err.message : String(err);
     }
     this.scheduleRender();
+  }
+
+  /** Poll the task ledger. The list is the whole copy — a task carries every
+      fact the console shows, so the ledger's table and its detail pane both
+      read the one array. */
+  private async pollTasks(): Promise<void> {
+    try {
+      const tasks = (await listTasks()).slice();
+      tasks.sort((a, b) => taskSeq(b.id) - taskSeq(a.id)); // newest first
+      this.tasks = tasks;
+      this.tasksError = null;
+      this.noteOk();
+    } catch (err) {
+      this.tasksError = err instanceof Error ? err.message : String(err);
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Fetch one task by id and merge it into the ledger's copy. A pinned task
+      that has left the ledger (a daemon that no longer holds it) unpins the
+      sheet and says so, rather than showing a task that is not there. */
+  async pollTaskDetail(id: string): Promise<void> {
+    try {
+      this.mergeTask(await getTask(id));
+      this.noteOk();
+    } catch (err) {
+      const status = err && typeof err === 'object' && 'status' in err ? err.status : null;
+      if (status === 404 && this.taskDetailId === id) {
+        toast(`Task ${id} is not on the ledger`);
+        this.taskDetailId = null;
+        if (location.hash !== '#ledger') location.hash = '#ledger';
+      }
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Merge a freshly fetched task into the ledger's copy, newest first. */
+  mergeTask(task: Task): void {
+    const idx = this.tasks.findIndex((t) => t.id === task.id);
+    if (idx >= 0) {
+      this.tasks[idx] = task;
+      return;
+    }
+    this.tasks.push(task);
+    this.tasks.sort((a, b) => taskSeq(b.id) - taskSeq(a.id));
+  }
+
+  /** The store's copy of a task, or null. */
+  taskOf(id: string | null | undefined): Task | null {
+    return id ? (this.tasks.find((t) => t.id === id) ?? null) : null;
   }
 
   /** One fleet observation, derived from what the client already holds: the
@@ -473,6 +551,51 @@ export class Store {
       this.history.pushVm(key, lps);
     }
     this.scheduleLiveRender();
+  }
+
+  /** A task changed state (or was created, as `open`). The event carries only
+      the id, the state and the assignee; the ledger's full row (its outcome,
+      note, agent CID and updated_at) comes from a debounced list GET, exactly
+      as a run's closed time comes from its detail.
+
+      Task ids restart with the daemon, so the register's identity guard
+      applies in spirit: an event for a task the console has never seen asks
+      the ledger for the truth rather than guessing at a row, and an event that
+      would wake an ENDED task is never believed — that is a new task wearing
+      the id, so the ledger is asked at once. */
+  applyTaskEvent(id: string, state: TaskState, assignee: string | null): void {
+    this.wire.task++;
+    const task = this.tasks.find((t) => t.id === id);
+    if (!task) {
+      this.queueTasksRefresh();
+      return;
+    }
+    if (isFinishedTask(task) && (state === 'open' || state === 'claimed')) {
+      this.queueTasksRefresh(true);
+      return;
+    }
+    task.state = state;
+    task.assignee_id = assignee;
+    this.scheduleRender();
+    this.queueTasksRefresh();
+  }
+
+  /** One ledger GET shortly after task events land; a burst collapses into it.
+      An identity question (an ended task supposedly waking) asks NOW. */
+  private queueTasksRefresh(immediate = false): void {
+    if (immediate) {
+      if (this.tasksRefreshTimer != null) {
+        clearTimeout(this.tasksRefreshTimer);
+        this.tasksRefreshTimer = null;
+      }
+      void this.pollTasks();
+      return;
+    }
+    if (this.tasksRefreshTimer != null) return;
+    this.tasksRefreshTimer = setTimeout(() => {
+      this.tasksRefreshTimer = null;
+      void this.pollTasks();
+    }, EVENT_REFRESH_MS);
   }
 
   /** One list GET shortly after run events land; a burst collapses into it.

@@ -7,6 +7,7 @@ import { hubLine } from '../models/hub';
 import type { RunState, VmState } from '../models/run';
 import type { Theme } from '../store';
 import { roleOf, seqOf } from '../models/run';
+import { isOpenTask } from '../models/task';
 import { store } from '../store';
 
 /* The register's marks: one filled colour (the owner's orange); every other
@@ -106,10 +107,10 @@ const HEALTH_MARK: Record<string, string> = { live: 'mk ok', stale: 'mk warn', d
    carried, kept honest about being transport — daemon health is the polls'. */
 function renderWire(): void {
   const w = store.wire;
-  const total = w.run + w.vm + w.serial;
+  const total = w.run + w.vm + w.serial + w.task;
   byId('colo-wire').textContent =
     store.stream === 'live'
-      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial)`
+      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task)`
       : store.stream === 'reconnecting'
         ? 'The wire · down — reconnecting; the polls carry the register'
         : 'The wire · opening…';
@@ -134,6 +135,11 @@ export function renderChrome(): void {
     }
   }
   byId('nav-roster').textContent = roleAgents === 0 ? '—' : fmtNum(roleRunning);
+  /* the ledger answers one question — how many tasks still need an agent's
+     hand (open, unclaimed, or claimed and not yet settled) */
+  let tasksInFlight = 0;
+  for (const task of store.tasks) if (isOpenTask(task)) tasksInFlight++;
+  byId('nav-ledger').textContent = store.tasksError != null ? '—' : fmtNum(tasksInFlight);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 

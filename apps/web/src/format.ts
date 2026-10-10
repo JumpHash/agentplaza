@@ -38,6 +38,19 @@ export function fmtDur(ms: number): string {
   return d + ' d ' + pad(hh, 2) + ' h ' + pad(mm, 2) + ' m';
 }
 
+/** An amount of credits as money: the ledger's own unit and the dollar spend
+    it stands for. Amounts are whole credits and 1 credit = $0.001 of real
+    spend (docs/treasury-draft/schema.sql, statute 0109), so a figure is always
+    shown both ways and no rate is invented. */
+export function fmtMoney(credits: number | null | undefined): string {
+  const c = Number(credits ?? 0);
+  const dollars = (c / 1000).toLocaleString('en-GB', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${fmtNum(c)} cr · $${dollars}`;
+}
+
 /** A moment as the register stamps it in a ruled row: the clock time when it
     falls on `today`'s day, else the date and time — so a fleet opened
     yesterday never reads as though it opened this morning. The year joins

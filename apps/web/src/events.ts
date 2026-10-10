@@ -16,10 +16,19 @@
      serial paths the polls use; every view renders it as text, never markup. */
 
 import type { RunState, VmState } from './models/run';
+import type { TaskState } from './models/task';
 import { store } from './store';
 
 const RUN_STATES: ReadonlySet<string> = new Set(['starting', 'running', 'done', 'failed', 'killed']);
 const VM_STATES: ReadonlySet<string> = new Set(['running', 'exited', 'killed']);
+/* A static membership table, so a hostile frame's state can be refused whole. */
+const TASK_STATES: Readonly<Record<string, true>> = {
+  open: true,
+  claimed: true,
+  done: true,
+  failed: true,
+  withdrawn: true,
+};
 
 /** The frame's JSON, or null when it is not an object we can use — a
     malformed frame (a hostile or broken relay) is dropped, never fatal. */
@@ -77,5 +86,16 @@ export function startEvents(): void {
       return;
     }
     store.applySerialEvent(data['run'], data['vm'], data['offset'], data['text']);
+  });
+  source.addEventListener('task', (e) => {
+    const data = frame(e);
+    const state = data?.['state'];
+    if (!data || typeof data['id'] !== 'string' || typeof state !== 'string' || TASK_STATES[state] !== true) {
+      return;
+    }
+    /* the assignee is the schema's assignee_id, null while nobody has one; a
+       hostile non-string is read as "no assignee", never as a name */
+    const assignee = data['assignee'];
+    store.applyTaskEvent(data['id'], state as TaskState, typeof assignee === 'string' ? assignee : null);
   });
 }

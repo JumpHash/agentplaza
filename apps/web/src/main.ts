@@ -10,6 +10,7 @@ import { store } from './store';
 import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
 import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
 import { initKeys, keysOpen, toggleKeys } from './views/keys';
+import { initLedger, renderLedger } from './views/ledger';
 import { initRegister, renderRegister } from './views/register';
 import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from './views/run';
 import { renderMachine } from './views/machine';
@@ -38,6 +39,7 @@ function show(): void {
       resetRunView();
     }
   }
+  if (route.name === 'ledger') store.taskDetailId = route.param;
   window.scrollTo(0, 0);
   /* the first fetch of any view fires even in a hidden tab */
   store.ensurePolled();
@@ -125,6 +127,15 @@ document.addEventListener('keydown', (e) => {
     selectVm(Number(t.getAttribute('data-sel-vm')));
     return;
   }
+  /* a focused ruled row (the ledger's, the roster's) opens like a click */
+  if (e.key === 'Enter' && t instanceof HTMLElement && t.matches('tr[data-go]')) {
+    const dest = t.getAttribute('data-go');
+    if (dest) {
+      e.preventDefault();
+      go(dest);
+      return;
+    }
+  }
   const dest = KEY_ROUTES[e.key];
   if (dest) navigate(dest);
 });
@@ -139,6 +150,7 @@ initKeys();
 initTelemetry();
 initView3d();
 initRoster();
+initLedger();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -151,6 +163,7 @@ store.onRender(() => {
     case 'compare': renderCompare(); break;
     case 'telemetry': renderTelemetry(); break;
     case 'roster': renderRoster(); break;
+    case 'ledger': renderLedger(); break;
   }
 });
 
@@ -165,6 +178,14 @@ window.__PLAZA_DIAG__ = {
   get renders() { return store.renders; },
   get wire() { return { ...store.wire }; },
   get stream() { return store.stream; },
+  get tasks() {
+    return {
+      count: store.tasks.length,
+      open: store.tasks.filter((t) => t.state === 'open' || t.state === 'claimed').length,
+      detail: store.taskDetailId,
+      error: store.tasksError,
+    };
+  },
   get hub() {
     const readable = store.hub != null && store.hubError == null;
     return {
