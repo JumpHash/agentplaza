@@ -35,6 +35,7 @@ use std::fmt::Debug;
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 
 use vmm_sys_util::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 
@@ -320,9 +321,44 @@ impl VsockBackend for VsockMuxer {
     }
 }
 
+/// Makes `path` bindable: a socket file left by a dead daemon (a `SIGTERM`
+/// runs no `Drop`, so the unlink in the muxer's `Drop` never happened) makes
+/// `bind` fail although nothing listens on it. The probe distinguishes
+/// exactly — the same rule `vsockd` applies to its listeners: a REFUSED
+/// connection (`ECONNREFUSED`) is a dead socket and a path that is NOT FOUND
+/// (`ENOENT`) is a plain leftover file, both stale and removed; a connection
+/// that is ANSWERED, or one that fails because the listener's backlog is full
+/// (`EAGAIN`), means a live listener owns the path — this muxer refuses to
+/// take it over.
+fn clear_stale_host_socket(path: &str) -> Result<(), VsockUnixBackendError> {
+    let path = Path::new(path);
+    if !path.exists() {
+        return Ok(());
+    }
+    let stale = match UnixStream::connect(path) {
+        Ok(_) => false,
+        Err(err) => matches!(
+            err.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+        ),
+    };
+    if !stale {
+        return Err(VsockUnixBackendError::UnixBind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "another listener is already serving this host socket",
+        )));
+    }
+    std::fs::remove_file(path).map_err(VsockUnixBackendError::UnixBind)
+}
+
 impl VsockMuxer {
     /// Muxer constructor.
+    ///
+    /// A socket file left by a dead daemon is cleared first: it would make
+    /// `bind` fail although nothing listens on it, wedging the CID until an
+    /// operator removes the file by hand.
     pub fn new(cid: u64, host_sock_path: String) -> Result<Self, VsockUnixBackendError> {
+        clear_stale_host_socket(&host_sock_path)?;
         // Open/bind on the host Unix socket, so we can accept host-initiated
         // connections.
         let host_sock = UnixListener::bind(&host_sock_path)
@@ -821,6 +857,58 @@ impl Drop for VsockMuxer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stale host socket file (what a `SIGTERM`ed daemon leaves — no `Drop`
+    /// runs) is cleared so the next muxer over the same path binds; a LIVE
+    /// listener on the path keeps it and the takeover is refused.
+    #[test]
+    fn a_stale_host_socket_is_cleared_but_a_live_one_is_kept() {
+        let path = format!("/tmp/plaza-test-muxer-stale-{}", std::process::id());
+        let _ = std::fs::remove_file(&path);
+
+        // Absent: the muxer binds and owns a live socket, and a CLEAN drop
+        // unlinks it (the Drop path doing its job).
+        let muxer = VsockMuxer::new(30, path.clone()).expect("an absent path binds");
+        drop(muxer);
+        assert!(
+            !Path::new(&path).exists(),
+            "a clean drop unlinks the socket file"
+        );
+
+        // Stale: a socket file whose listener is gone without an unlink —
+        // the SIGTERM state (close does not unlink; only the muxer's Drop
+        // does). `bind` alone fails on it.
+        let leaked = UnixListener::bind(&path).expect("a listener binds for the stale case");
+        drop(leaked);
+        assert!(
+            Path::new(&path).exists(),
+            "closing a listener leaves its socket file"
+        );
+        let muxer = VsockMuxer::new(30, path.clone()).expect("a stale file is cleared and bound");
+        drop(muxer);
+        assert!(
+            !Path::new(&path).exists(),
+            "the stale file was cleared and the new socket unlinked on drop"
+        );
+
+        // Live: another listener owns the path; the takeover is refused. The
+        // listener answers the probe, so it is not removed.
+        let listener = UnixListener::bind(&path).expect("a live listener binds");
+        let answer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the probe connects");
+            drop(stream);
+        });
+        let refusal = VsockMuxer::new(30, path.clone()).expect_err("a live listener is kept");
+        assert!(
+            refusal
+                .to_string()
+                .contains("another listener is already serving"),
+            "the refusal says why: {refusal}"
+        );
+        answer.join().expect("the probe connection is answered");
+        assert!(Path::new(&path).exists(), "the live listener's path is kept");
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// The F2 security property: a guest packet addressed to any CID other
     /// than the host (2) is dropped, not routed — cross-guest traffic is
