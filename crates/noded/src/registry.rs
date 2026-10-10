@@ -445,6 +445,11 @@ pub struct Registry {
     images: VmImages,
     /// Directory holding the per-VM vsock Unix sockets (`{uds_dir}/vm{cid}`).
     uds_dir: PathBuf,
+    /// When this daemon started, in milliseconds since the Unix epoch: part of
+    /// a run's workspace-directory name, because run ids restart with the
+    /// daemon (a bare `run-{id}` would collide with the previous daemon's
+    /// retained copies).
+    epoch_ms: u64,
     /// Where the registry's run, VM and serial-delta events are published.
     events: Arc<EventBus>,
     inner: Mutex<RegistryInner>,
@@ -463,12 +468,20 @@ impl Registry {
         Self {
             images,
             uds_dir,
+            epoch_ms: now_ms(),
             events,
             inner: Mutex::new(RegistryInner {
                 next_seq: 0,
                 runs: Vec::new(),
             }),
         }
+    }
+
+    /// The directory a run's workspace copies live in: `run-{id}-{epoch_ms}`.
+    /// Run ids restart with the daemon, so the start stamp is what keeps a
+    /// new `r1` from copying over the previous daemon's `r1` workspace.
+    fn run_dir(&self, id: &str) -> PathBuf {
+        self.uds_dir.join(format!("run-{id}-{}", self.epoch_ms))
     }
 
     /// Creates and boots a run from a `POST /api/v0/runs` request.
@@ -565,7 +578,12 @@ impl Registry {
         let id = self.reserve_run_id();
         let workspaces = match &self.images.workspace {
             Some(base) => {
-                let run_dir = self.uds_dir.join(format!("run-{id}"));
+                // The directory name carries the daemon's start stamp as well
+                // as the run id: run ids restart with the daemon, so a bare
+                // `run-{id}` would let a new `r1` overwrite the workspace
+                // copies the previous `r1` left behind (`materialize_workspaces`
+                // copies over same-named images).
+                let run_dir = self.run_dir(&id);
                 Some(
                     spawner::materialize_workspaces(base, &run_dir, vms).map_err(|err| {
                         format!("cannot prepare the run's workspace images: {err}")
@@ -695,10 +713,14 @@ impl Registry {
     /// begins (`core.check_run`).
     /// Reserves the next run id (`r{seq}`), consuming it.
     ///
-    /// A run's id names its own directory under the UDS root (`run-{id}`, which
-    /// holds the run's workspace-image copies), so an id is never handed out
-    /// twice: a caller that reserves one and then fails leaves a gap in the
-    /// numbering rather than letting a later run share its directory.
+    /// A run's id names its own directory under the UDS root
+    /// (`run-{id}-{epoch_ms}`, which holds the run's workspace-image copies),
+    /// so an id is never handed out twice within one daemon's life: a caller
+    /// that reserves one and then fails leaves a gap in the numbering rather
+    /// than letting a later run share its directory. Across a restart the id
+    /// sequence begins again, which is exactly why the directory name carries
+    /// the daemon's start stamp too — a new `r1` must not copy over the
+    /// previous daemon's `r1` workspace.
     fn reserve_run_id(&self) -> String {
         let mut inner = self.lock();
         inner.next_seq += 1;
@@ -1165,7 +1187,7 @@ mod tests {
             })
             .expect("the run exists even when its VMs cannot boot");
 
-        let run_dir = uds_dir.join(format!("run-{}", run.id));
+        let run_dir = registry.run_dir(&run.id);
         for index in 0..2 {
             let image = run_dir.join(format!("workspace-{index}.ext4"));
             assert_eq!(
@@ -1536,7 +1558,7 @@ mod tests {
         assert_eq!(view.vms.len(), 0, "no VM is claimed to be up");
         // The workspace copies were laid out before the boot, one per role,
         // and are not deleted by a failed boot.
-        let run_dir = uds_dir.join(format!("run-{}", run.id));
+        let run_dir = registry.run_dir(&run.id);
         assert_eq!(
             std::fs::read_dir(&run_dir)
                 .expect("the run's directory")
