@@ -5,26 +5,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 //
-// Derived from Firecracker src/vmm/src/devices/virtio/mod.rs (trimmed: this
-// port has exactly one virtio device family — the vhost-vsock device behind
-// the MMIO transport — so the PCI transport, the userspace vsock muxer
-// (`csm`/`unix`), the queue/iovec/event-manager machinery (every virtqueue is
-// processed by the kernel's vhost backend, never by this process), the device
-// metrics and every other device family are dropped; there is no network
-// device by design).
+// Derived from Firecracker src/vmm/src/devices/virtio/mod.rs (trimmed: the
+// PCI transport, the userspace vsock muxer (`csm`/`unix`) and the device
+// metrics are dropped or replaced by a local shim; there is no network device
+// by design). The userspace vsock core below is ported so the VMM can mediate
+// vsock itself instead of handing the rings to the kernel's vhost-vsock; the
+// vhost device stays on the boot path until the next slice cuts it over.
 
 //! Virtio devices on the MMIO transport.
-//!
-//! Three pieces, in the order a guest sees them:
 //!
 //! * [`mmio`] — the transport: the register set a driver programs, the device
 //!   status state machine, and the [`mmio::VirtioDevice`] trait the transport
 //!   drives.
-//! * [`vsock`] — the device: the virtio-vsock identity (device id 19, its
-//!   queues and features) and the translation from the rings the driver
-//!   programmed to the addresses the backend is given.
-//! * [`vhost`] — the backend binding: `/dev/vhost-vsock`, the ioctl sequence
-//!   that hands the virtqueues to the host kernel, and the CIDs.
+//! * [`queue`], [`iovec`], [`iov_deque`] — the userspace virtqueue substrate:
+//!   descriptor-chain walking and scatter/gather buffers over guest memory
+//!   (unused by the vhost path, which lets the kernel walk the rings).
+//! * [`vhost`] — the `/dev/vhost-vsock` ioctl backend; [`vhost_device`] — the
+//!   MMIO wrapper around it (`VsockDevice`). This is the vsock device the
+//!   boot path uses today.
+//! * [`vsock`] — the userspace virtio-vsock device core: the
+//!   [`vsock::VsockBackend`] interface, the packet model, and the
+//!   [`vsock::Vsock`] device frontend. It lives outside the [`mmio::VirtioDevice`]
+//!   trait (which stays `QueueConfig`-shaped for the vhost device); the next
+//!   slice hand-wires it through the transport and replaces the vhost device.
 //!
 //! Splitting the transport from the backend is what makes the device testable
 //! without a hypervisor: the transport's tests drive a mock
@@ -32,9 +35,17 @@
 //! kernel interface (see `FACTS.md` next to this module for what was measured
 //! on a real host).
 
+pub mod iov_deque;
+pub mod iovec;
 pub mod mmio;
+pub mod queue;
 pub mod vhost;
+pub mod vhost_device;
 pub mod vsock;
+
+/// Test helpers (guest-side virtqueues over real guest memory), test-only.
+#[cfg(test)]
+pub mod test_utils;
 
 /// When the driver initializes the device, it lets the device know about the
 /// completed stages using the Device Status Field.

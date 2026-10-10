@@ -49,7 +49,7 @@ use vmm_sys_util::ioctl::{
 };
 
 use crate::devices::virtio::mmio::QueueConfig;
-use crate::devices::virtio::vsock::{MIN_GUEST_CID, VIRTIO_F_VERSION_1, VSOCK_FEATURES};
+use crate::devices::virtio::vhost_device::{MIN_GUEST_CID, VIRTIO_F_VERSION_1, VSOCK_FEATURES};
 use crate::vstate::memory::{Address, GuestAddress, GuestMemoryMmap, GuestMemoryRegion};
 
 /// The vhost character device that backs a vsock device.

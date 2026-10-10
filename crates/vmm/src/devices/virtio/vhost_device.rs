@@ -7,6 +7,11 @@
 // host kernel's vhost-vsock backend ([`super::vhost`]) instead, so what is left
 // here is the device's identity (type id, queues, features) and the device
 // model the MMIO transport drives.
+//
+// This was `vsock.rs` before the userspace vsock core landed; the module was
+// renamed so `vsock` could become the userspace device. The vhost device keeps
+// booting (the boot-path cutover to the userspace device is the next slice),
+// so the two device flavours coexist until then.
 
 //! The virtio-vsock device: the guest's `AF_VSOCK` endpoint.
 //!
