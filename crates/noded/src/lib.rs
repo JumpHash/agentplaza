@@ -23,6 +23,7 @@
 //! `docs/orchestrator-draft/schema.sql`), restricted to the states noded v0
 //! implements: see [`registry`].
 
+pub mod events;
 pub mod http;
 pub mod registry;
 pub mod static_files;
@@ -122,9 +123,11 @@ pub struct MachineView {
 }
 
 impl Node {
-    /// A node with no runs that serves `config.console_dir` and boots every
-    /// run from `config`'s images.
+    /// A node with no runs that serves `config.console_dir`, boots every run
+    /// from `config`'s images, and publishes every state transition and
+    /// serial delta to its event bus.
     pub fn new(config: Config) -> Self {
+        let events = events::EventBus::new();
         Self {
             registry: Registry::new(
                 VmImages {
@@ -132,6 +135,7 @@ impl Node {
                     initrd: config.initrd,
                 },
                 config.uds_dir,
+                events,
             ),
             console_dir: config.console_dir,
             started_at_ms: epoch_ms(),
@@ -156,6 +160,11 @@ impl Node {
     /// The node's runs.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// The node's event bus (`GET /api/v0/events` streams it).
+    pub fn events(&self) -> &events::EventBus {
+        self.registry.events_bus()
     }
 }
 
@@ -325,14 +334,25 @@ fn accept_loop(listener: &TcpListener, node: &Arc<Node>, shutdown: &AtomicBool) 
     }
 }
 
-/// Serves one connection: read one request, answer it, close.
+/// Serves one connection: read one request, answer it, close. The events
+/// endpoint is the one exception — its answer is a stream that ends when the
+/// connection does, not a response.
 fn handle_connection(stream: TcpStream, node: &Node) {
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
     let mut stream = BufReader::new(stream);
     let response = match http::read_request(&mut stream) {
-        Ok(request) => route(&request, node),
+        Ok(request) => {
+            if request.method() == "GET" && request.path() == "/api/v0/events" {
+                let receiver = node.events().subscribe();
+                if let Err(err) = events::stream(&receiver, stream.get_mut()) {
+                    eprintln!("noded: an events stream ended: {err}");
+                }
+                return;
+            }
+            route(&request, node)
+        }
         Err(err) => Response::error(400, err.message()),
     };
     if let Err(err) = response.write_to(stream.get_mut()) {

@@ -23,6 +23,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+use crate::events::{Event, EventBus};
 use vmm::spawner::{
     self, MAX_GUEST_CID, MIN_GUEST_CID, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec,
     VsockConfig,
@@ -349,12 +351,13 @@ pub struct RunsView<'a> {
     /// Every run, oldest first.
     pub runs: Vec<RunView<'a>>,
 }
-
 /// The daemon's runs, in creation order.
 pub struct Registry {
     images: VmImages,
     /// Directory holding the per-VM vsock Unix sockets (`{uds_dir}/vm{cid}`).
     uds_dir: PathBuf,
+    /// Where the registry's run, VM and serial-delta events are published.
+    events: Arc<EventBus>,
     inner: Mutex<RegistryInner>,
 }
 
@@ -364,12 +367,14 @@ struct RegistryInner {
 }
 
 impl Registry {
-    /// A registry with no runs that boots every run from `images` and lays the
-    /// runs' vsock sockets out under `uds_dir`.
-    pub fn new(images: VmImages, uds_dir: PathBuf) -> Self {
+    /// A registry with no runs that boots every run from `images`, lays the
+    /// runs' vsock sockets out under `uds_dir`, and publishes every state
+    /// transition and serial delta to `events`.
+    pub fn new(images: VmImages, uds_dir: PathBuf, events: Arc<EventBus>) -> Self {
         Self {
             images,
             uds_dir,
+            events,
             inner: Mutex::new(RegistryInner {
                 next_seq: 0,
                 runs: Vec::new(),
@@ -429,8 +434,25 @@ impl Registry {
                         runtime: handle.runtime(),
                         handle: Some(handle),
                         state: VmState::Running,
+                        // The capture was empty at boot (the serial delta
+                        // ticker starts at the first byte the guest writes).
+                        serial_seen: 0,
                     })
                     .collect();
+                // The run is `running` and every VM with it: published under
+                // the run's lock so a stream sees the run and its VMs appear
+                // together, in order.
+                run.events.publish(Event::Run {
+                    id: run.id.clone(),
+                    state: RunState::Running.as_str(),
+                });
+                for slot in inner.vms.iter() {
+                    run.events.publish(Event::Vm {
+                        run: run.id.clone(),
+                        vm: slot.id,
+                        state: VmState::Running.as_str(),
+                    });
+                }
                 drop(inner);
                 watch(Arc::clone(&run));
             }
@@ -439,11 +461,22 @@ impl Registry {
                 let mut inner = run.lock();
                 if let Err(refused) = inner.transition(RunState::Failed) {
                     eprintln!("noded: run {}: {refused} (a kill raced the failed boot)", run.id);
+                } else {
+                    run.events.publish(Event::Run {
+                        id: run.id.clone(),
+                        state: RunState::Failed.as_str(),
+                    });
                 }
             }
         }
         Ok(run)
     }
+
+    /// The registry's event bus, so a stream endpoint can subscribe to it.
+    pub fn events_bus(&self) -> &EventBus {
+        &self.events
+    }
+
 
     /// The run with that id, if there is one.
     pub fn find(&self, id: &str) -> Option<Arc<Run>> {
@@ -466,6 +499,7 @@ impl Registry {
             memory_mib: request.memory_mib,
             beats: request.beats,
             created_at: now_ms(),
+            events: Arc::clone(&self.events),
             inner: Mutex::new(RunInner {
                 state: RunState::Starting,
                 ended_at: None,
@@ -473,6 +507,13 @@ impl Registry {
             }),
         });
         inner.runs.push(Arc::clone(&run));
+        // The run is registered in `starting`: the first event a stream
+        // carries for it. Registered under the registry's lock, so a
+        // subscriber sees the run appear exactly once and in order.
+        self.events.publish(Event::Run {
+            id: run.id.clone(),
+            state: RunState::Starting.as_str(),
+        });
         run
     }
 
@@ -490,6 +531,8 @@ pub struct Run {
     memory_mib: u32,
     beats: Option<u32>,
     created_at: u64,
+    /// Where this run's state, VM and serial-delta events are published.
+    events: Arc<EventBus>,
     inner: Mutex<RunInner>,
 }
 
@@ -515,6 +558,10 @@ struct VmSlot {
     handle: Option<VmHandle>,
     /// How the VM stopped (read and written under the run's lock).
     state: VmState,
+    /// How much of the serial capture the event bus has already published
+    /// (read and written under the run's lock): the serial-delta ticker's
+    /// bookmark.
+    serial_seen: usize,
 }
 
 impl RunInner {
@@ -611,12 +658,12 @@ impl Run {
         if inner.state.is_finished() {
             return;
         }
-        // `starting -> killed` and `running -> killed` are the only
-        // transitions left here, so this cannot be refused.
-        if let Err(refused) = inner.transition(RunState::Killed) {
-            eprintln!("noded: run {}: {refused}", self.id);
-            return;
-        }
+        // The kill took: publish it before the handles are stopped, so a
+        // stream sees the run's `killed` before any VM's `killed`.
+        self.events.publish(Event::Run {
+            id: self.id.clone(),
+            state: RunState::Killed.as_str(),
+        });
         // Take the live handles out of the run before stopping them: a VM that
         // will not stop must not hold the run's lock, or every GET of the run
         // would wait behind it.
@@ -642,11 +689,22 @@ impl Run {
                 continue;
             };
             slot.handle = Some(handle);
-            match outcome {
-                Ok(()) => slot.state = VmState::Killed,
+            let next_state = match outcome {
+                Ok(()) => Some(VmState::Killed),
                 // The VM is still running: the run is over either way, but
                 // saying the VM stopped when it did not would hide a leak.
-                Err(err) => eprintln!("noded: run {}: VM {} did not stop: {err}", self.id, slot.id),
+                Err(err) => {
+                    eprintln!("noded: run {}: VM {} did not stop: {err}", self.id, slot.id);
+                    None
+                }
+            };
+            if let Some(next_state) = next_state {
+                slot.state = next_state;
+                self.events.publish(Event::Vm {
+                    run: self.id.clone(),
+                    vm: slot.id,
+                    state: next_state.as_str(),
+                });
             }
         }
     }
@@ -695,6 +753,11 @@ fn watch_run(run: &Run) {
                 return;
             }
             for slot in inner.vms.iter_mut() {
+                // The serial delta first, for every VM and whatever its
+                // state: a VM that stopped between two passes grew its
+                // capture one last time, and that last stretch is exactly
+                // what the run's transcript wants.
+                publish_serial_delta(&run.events, &run.id, slot);
                 if slot.state != VmState::Running {
                     continue;
                 }
@@ -708,7 +771,14 @@ fn watch_run(run: &Run) {
                 // and nothing else: a GET or a kill of the run never waits
                 // behind the watcher.
                 match handle.wait_timeout(Duration::ZERO) {
-                    Ok(Some(exit)) => slot.state = VmState::from_exit(exit),
+                    Ok(Some(exit)) => {
+                        slot.state = VmState::from_exit(exit);
+                        run.events.publish(Event::Vm {
+                            run: run.id.clone(),
+                            vm: slot.id,
+                            state: slot.state.as_str(),
+                        });
+                    }
                     Ok(None) => {}
                     Err(err) => {
                         eprintln!(
@@ -716,11 +786,20 @@ fn watch_run(run: &Run) {
                             run.id, slot.id
                         );
                         slot.state = VmState::Killed;
+                        run.events.publish(Event::Vm {
+                            run: run.id.clone(),
+                            vm: slot.id,
+                            state: VmState::Killed.as_str(),
+                        });
                     }
                 }
             }
             if inner.all_vms_stopped() {
                 inner.finish();
+                run.events.publish(Event::Run {
+                    id: run.id.clone(),
+                    state: RunState::Done.as_str(),
+                });
                 return;
             }
         }
@@ -730,6 +809,31 @@ fn watch_run(run: &Run) {
         // for longer than it holds it.
         thread::sleep(WATCH_INTERVAL);
     }
+}
+
+/// Publishes the part of the VM's serial capture that grew since the last
+/// look, as a `serial` event whose `offset` is the capture byte the `text`
+/// starts at. The capture is bounded, and so are the events: once the capture
+/// stops growing, no further events fire for it.
+fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
+    let buffer = slot
+        .runtime
+        .serial
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if buffer.len() <= slot.serial_seen {
+        return;
+    }
+    let offset = slot.serial_seen;
+    let text = String::from_utf8_lossy(&buffer[offset..]).into_owned();
+    slot.serial_seen = buffer.len();
+    drop(buffer);
+    events.publish(Event::Serial {
+        run: run.to_string(),
+        vm: slot.id,
+        offset: offset as u64,
+        text,
+    });
 }
 
 /// The current time in milliseconds since the Unix epoch.

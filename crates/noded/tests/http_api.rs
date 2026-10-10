@@ -10,6 +10,8 @@
 mod common;
 
 use std::fs;
+use std::io::BufRead as _;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use common::request;
@@ -95,6 +97,119 @@ fn create_requests_outside_the_contract_are_400() {
         serde_json::json!({ "runs": [] })
     );
 }
+
+#[test]
+fn an_events_stream_carries_a_runs_life() {
+    let server = common::start(console_dir("events"));
+    let port = server.port();
+
+    // Subscribe before the run exists: the events a stream carries start at
+    // the subscription, so this stream sees the whole life.
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("the events stream connects");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("the stream gets a read timeout");
+    stream
+        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .expect("the events request is sent");
+    let mut stream = std::io::BufReader::new(stream);
+
+    // The subscription must be confirmed before the run is created: the bus
+    // carries no backlog, so events published before this stream subscribed
+    // are gone. The head is written after the subscribe, so reading it is the
+    // proof the subscription is live.
+    let mut head = String::new();
+    stream
+        .read_line(&mut head)
+        .expect("the stream head is read");
+    assert!(
+        head.starts_with("HTTP/1.1 200"),
+        "the stream answers 200: {head}"
+    );
+    for _ in 0..3 {
+        let mut header = String::new();
+        stream.read_line(&mut header).expect("a header line is read");
+    }
+    let mut blank = String::new();
+    stream.read_line(&mut blank).expect("the head ends");
+    assert_eq!(blank, "\r\n");
+
+    let reply = request(
+        port,
+        "POST",
+        "/api/v0/runs",
+        Some(r#"{"n":1,"vcpus":1,"memory_mib":128}"#),
+    );
+    assert_eq!(reply.status, 201, "{}", reply.body);
+
+    // The frames: the run was registered `starting`, and the missing kernel
+    // fails its boot. Read the stream's bytes until the run's terminal state.
+    // (A raw read, not `BufReader::read_line`: over a socket carrying a
+    // read deadline, the buffered line reader in this harness's thread
+    // would-blocks where the raw read observes the bytes — the daemon
+    // writes both frames during the POST, as the probes established.)
+    use std::io::Read as _;
+    let mut sock = stream.into_inner();
+    let mut raw = Vec::new();
+
+    for _ in 0..64 {
+        let mut chunk = [0u8; 4096];
+        match sock.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&chunk[..n]),
+            Err(e) => {
+                println!("RAW READ ERROR: {e}");
+                break;
+            }
+        }
+        if String::from_utf8_lossy(&raw).contains("\"state\":\"failed\"") {
+            break;
+        }
+    }
+    println!(
+        "RAW DUMP TOTAL ({} bytes): {:?}",
+        raw.len(),
+        String::from_utf8_lossy(&raw)
+    );
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for frame in text.split("\n\n") {
+        let mut lines = frame.lines();
+        let (Some(name), Some(data)) = (lines.next(), lines.next()) else {
+            continue;
+        };
+        let Some(data) = data.strip_prefix("data: ") else {
+            continue;
+        };
+        let state = data
+            .split(',')
+            .find_map(|part| part.strip_prefix("\"state\":\""))
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default()
+            .to_string();
+        seen.push((name.trim().to_string(), state.clone()));
+        if state == "failed" {
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![
+            ("event: run".to_string(), "starting".to_string()),
+            ("event: run".to_string(), "failed".to_string()),
+        ],
+        "the stream carries the run's whole short life"
+    );
+
+    // The stream is still open (no event ends it): the run list still
+    // answers on its own connection.
+    assert_eq!(
+        request(port, "GET", "/api/v0/runs", None).json()["runs"][0]["state"],
+        "failed"
+    );
+}
+
 
 #[test]
 fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
