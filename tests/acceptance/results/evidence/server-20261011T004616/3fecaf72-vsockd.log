@@ -1,0 +1,22 @@
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm20_5000 for guest CID 20
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm21_5000 for guest CID 21
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm22_5000 for guest CID 22
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm23_5000 for guest CID 23
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm24_5000 for guest CID 24
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm25_5000 for guest CID 25
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm26_5000 for guest CID 26
+vsockd: listening on /tmp/apz-acceptance-server-h2c791o5/kill-sigterm-uds/vm27_5000 for guest CID 27
+vsockd: accepted a connection from cid 21
+[guest 21 vm? ->] {"type":"hello","vm":1,"guest_cid":21}
+vsockd: guest 21 vm 1 says hello (accepted on the socket for cid 21)
+[<-] guest 21 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 21 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-21-hello"}}
+[<-] guest 21 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-21-hello"}
+vsockd: answered call 1 (echo) for guest 21 vm 1
+[guest 21 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 21 vm1 {"type":"tool_result","call":2,"ok":true,"output":"281720.62 6007764.86"}
+vsockd: answered call 2 (uptime) for guest 21 vm 1
+[guest 21 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 21 vm 1 said bye after 2 tool calls
+vsockd: session with guest 21 vm 1 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

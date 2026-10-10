@@ -69,27 +69,59 @@ INJECTION_LINES = (
 INJECTION_WINDOW_S = 10.0
 
 
+#: The MVP's virtio-mmio device set: the mmio-adapter constructors that name
+#: the device a transport serves (the transport's own argument list carries the
+#: adapter; the backend above it is a fallback). The scan below is fail-closed —
+#: a transport serving a device this table does not know fails the case — so a
+#: new device (or a net device) cannot slip in silently.
+VIRTIO_TRANSPORT_DEVICES = (
+    ("vsock", ("VsockMmioDevice::new", "VsockUnixBackend::new")),
+    ("block (the workspace volume)", ("BlockMmioDevice::new",)),
+)
+
+
+def _transport_device(lines: list[str], number: int) -> str:
+    """Which MVP device the ``VirtioMmioTransport::new`` at ``number`` serves.
+
+    Two shapes exist in the boot path: the adapter is passed in the transport's
+    own argument list (both devices), and the backend that adapter wraps is
+    built above it (the vsock's). The transport's own statement is read first,
+    then the 30 lines above it, and a transport that names no known device is
+    reported ``unknown`` — which fails the case rather than passing quietly.
+    """
+    for text in ("\n".join(lines[number : number + 8]), "\n".join(lines[max(0, number - 30) : number])):
+        for name, constructors in VIRTIO_TRANSPORT_DEVICES:
+            if any(constructor in text for constructor in constructors):
+                return name
+    return "unknown"
+
+
 def _vmm_source_scan() -> dict:
     """Read the VMM's device set: which virtio-mmio devices it builds.
 
     There is no runtime API that exposes a VM's device set, so the code-level
     half of the confinement proof is this bounded scan of the crate the
     binaries were built from (the same revision the manifest records). The
-    boot path is ``builder.rs``; each virtio-mmio transport it builds must be
-    backed by the vsock device, and no net-device type may exist anywhere.
+    boot path is ``builder.rs``; every virtio-mmio transport it builds must
+    serve one of the MVP's own devices (the vsock muxer, the workspace
+    volume's block device) and be network-backed by none, and no net-device
+    type may exist anywhere in the crate.
     """
     crate = Path(__file__).resolve().parents[2] / "crates" / "vmm" / "src"
     builder = crate / "builder.rs"
     lines = builder.read_text(errors="replace").splitlines()
+    net_backed = re.compile(r"VirtioNet|NetDevice|virtio-net|virtio_net|TunTap|tap_device")
     transports: list[dict] = []
     for number, line in enumerate(lines):
         if "VirtioMmioTransport::new" not in line or "fn " in line:
             continue
-        context = "\n".join(lines[max(0, number - 30) : number])
         transports.append(
             {
                 "at": f"builder.rs:{number + 1}",
-                "vsock_backed": "VsockUnixBackend::new" in context,
+                "device": _transport_device(lines, number),
+                "net_backed": bool(
+                    net_backed.search("\n".join(lines[max(0, number - 30) : number + 8]))
+                ),
             }
         )
     net_pattern = re.compile(r"VirtioNet|NetDevice|virtio-net|virtio_net|TunTap|tap_device")
@@ -152,8 +184,13 @@ def _case_no_nic(suite: Suite, ctx, source: dict) -> None:
         else:
             case.note("PCI-bus check skipped: it is the x86_64 cmdline's 'pci=off'")
         case.invariant(
-            "every virtio-mmio transport the boot path builds is the vsock device",
-            len(source["transports"]) == 2 and all(item["vsock_backed"] for item in source["transports"]),
+            "every virtio-mmio transport the boot path builds serves a known MVP device",
+            bool(source["transports"]) and all(item["device"] != "unknown" for item in source["transports"]),
+            f"transports={source['transports']} known={[name for name, _ in VIRTIO_TRANSPORT_DEVICES]}",
+        )
+        case.invariant(
+            "no virtio-mmio transport the boot path builds is network-backed",
+            not any(item["net_backed"] for item in source["transports"]),
             f"transports={source['transports']}",
         )
         case.invariant(

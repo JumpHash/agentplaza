@@ -1,0 +1,1045 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-11T00:46:13+0200",
+  "wall_seconds": 549.363,
+  "manifest": {
+    "suite": "budgets",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "592e1286251d52023abc6d38cf41bc25ec18d858",
+      "dirty": true,
+      "harness_tree_sha256": "bd8571ece7cc29d7a4df545e8b629a1b2c42c7503f1652ec85c7169da799caab"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/tmp/apz-pinned-fff1222/initrd.x86_64.gz",
+      "initrd_sha256": "d022899f3a21b8bd4c5132f5a5f1d45f34ce0c90cd6d710201d8ed45b399e014",
+      "workspace": "/tmp/apz-pinned-fff1222/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-server-f67i2kr0",
+    "started_at": "2026-10-11T00:46:13+0200",
+    "binaries": {
+      "noded": {
+        "path": "/tmp/apz-pinned-fff1222/noded",
+        "sha256": "7e16364a6058f905ebe7279c5fd0ef17398ce34b5acfdecf98a44bdbb8beeba4"
+      },
+      "vsockd": {
+        "path": "/tmp/apz-pinned-fff1222/vsockd",
+        "sha256": "bc8757d28a936a0d6bd5a34801a4f2a3d06392275c08c3af8253b005a90adf07"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-boot-logs/noded.log",
+        "bytes": 4062574,
+        "sha256": "796c3fca3d866e739b2034a78ae6defb371fa85ff164675119ca70a97ed96c1c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/796c3fca-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-lifecycle-logs/noded.log",
+        "bytes": 1576719,
+        "sha256": "16d69624c27bf1945d25addc0e6b19cfaab7c526d7e52c3269e02d3a515b5b98",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/16d69624-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-footprint-logs/noded.log",
+        "bytes": 420564,
+        "sha256": "9ff1410ac02e4b9e01edb12d906700179e2193b5f7d3a08dfc41c970e865de8d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/9ff1410a-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-a-logs/noded.log",
+        "bytes": 16314,
+        "sha256": "7e73045d880bbbcd74fd47f31b4ccb243efcd4f27b7f2dd02f847a2cfd57ae97",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/7e73045d-noded.log",
+        "excerpt_bytes": 16314
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-a-logs/vsockd.log",
+        "bytes": 470,
+        "sha256": "2dab05689f4cba689a5cddbf88babdbbb5e245b430efacb92f054825a07119b3",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/2dab0568-vsockd.log",
+        "excerpt_bytes": 470
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-b-logs/noded.log",
+        "bytes": 16371,
+        "sha256": "193a9725a029b6e424ad7c2dd4a9679095c9a460d08e6e31592b6baeae9c834f",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/193a9725-noded.log",
+        "excerpt_bytes": 16371
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-b-logs/vsockd.log",
+        "bytes": 2176,
+        "sha256": "61f709bab27cf139bf1b925824d4b34dba0172adcb58017d88b65b326c76df71",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/61f709ba-vsockd.log",
+        "excerpt_bytes": 2176
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-logs/noded.log",
+        "bytes": 8153439,
+        "sha256": "5b2757a98259ce3cd7ea0c581558899671ad14af1870b425ec9ac19493efc905",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/5b2757a9-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-lifecycle-logs/noded.log",
+        "bytes": 1576719,
+        "sha256": "6aa7c7a30f253d309fe0929bea7449e2e303d019fef115ed9c0cd639fc64ad36",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/6aa7c7a3-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-footprint-logs/noded.log",
+        "bytes": 404394,
+        "sha256": "c7dcb3e4b7856c4ada599e4e9b0eed34e169268fa9a1470fc45d7347798c2c24",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/c7dcb3e4-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-logs/noded.log",
+        "bytes": 8229,
+        "sha256": "e41e9321d1e8b8f7bd5031391518e23dcedc0c4bd70b45feb3f3673facfc70e6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/e41e9321-noded.log",
+        "excerpt_bytes": 8229
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persistence/budgets-workspace-persist-a-console.txt",
+        "bytes": 258,
+        "sha256": "71b2dab492f84d3ad9aea77f6ffbf19e7bae828eac6812a3140e99d55115a690",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/71b2dab4-budgets-workspace-persist-a-console.txt",
+        "excerpt_bytes": 258
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-b-logs/noded.log",
+        "bytes": 8229,
+        "sha256": "5457389c8b3881d1858ff81e764fba44ca21e51c1cf9a873514d89a103b094d7",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/5457389c-noded.log",
+        "excerpt_bytes": 8229
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persistence/budgets-workspace-persist-b-console.txt",
+        "bytes": 175,
+        "sha256": "bfee5a3d52809f53960a8c919bb211de614884e72c4db248a9995b47c3d770f5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/bfee5a3d-budgets-workspace-persist-b-console.txt",
+        "excerpt_bytes": 175
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-logs/noded.log",
+        "bytes": 8229,
+        "sha256": "6643e474d3c516fb7969cd42d870e613811b861214996524df102d2b88b21c92",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/6643e474-noded.log",
+        "excerpt_bytes": 8229
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-b-logs/noded.log",
+        "bytes": 144,
+        "sha256": "8192ce97846a9c35ae26e914f8fbd9ad5426d2cc6bdcce46a13c8339b5cc6bcb",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/8192ce97-noded.log",
+        "excerpt_bytes": 144
+      }
+    ]
+  },
+  "suites_run": [
+    "budgets"
+  ],
+  "suites": [
+    {
+      "suite": "boot-restore-footprint-budgets",
+      "pass_bar": "footprint within the configured 8 GiB / 5% bars, restore reconciles, boot + lifecycle measured; with --workspace the same bars are enforced against the block device and the copy-retention + guest-persistence contracts are asserted",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 9,
+      "cases_total": 9,
+      "cases": [
+        {
+          "name": "boot time (POST -> every VM running)",
+          "detail": "",
+          "vector": "1/8/50-VM boots, fixed sample counts, p50/p95/p99",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "every one of the 20 1-VM boots came up (no VM failed)",
+              "ok": true,
+              "detail": "run=running vms={'running': 1}"
+            },
+            {
+              "name": "1-VM boot recorded at least 3 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "1-VM boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=0.018 p95=0.032 p99=0.038"
+            },
+            {
+              "name": "every one of the 20 8-VM boots came up (no VM failed)",
+              "ok": true,
+              "detail": "run=running vms={'running': 8}"
+            },
+            {
+              "name": "8-VM boot recorded at least 3 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "8-VM boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=0.211 p95=0.248 p99=0.264"
+            },
+            {
+              "name": "every one of the 10 50-VM boots came up (no VM failed)",
+              "ok": true,
+              "detail": "run=running vms={'running': 50}"
+            },
+            {
+              "name": "50-VM boot recorded at least 3 samples",
+              "ok": true,
+              "detail": "n=10"
+            },
+            {
+              "name": "50-VM boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=2.232 p95=2.496 p99=2.496"
+            }
+          ],
+          "notes": [
+            "1-VM boot: n=20 p50=18ms p95=32ms p99=38ms max=38ms",
+            "8-VM boot: n=20 p50=211ms p95=248ms p99=264ms max=264ms",
+            "50-VM boot: n=10 p50=2232ms p95=2496ms p99=2496ms max=2496ms",
+            "the sweep boots a long-lived guest (beats unset) so 'every VM came up running' is a stable contract; a self-rebooting guest can have already finished its beats when the POST reply is read, which is churn rather than a boot failure, and the console line that would tell the two apart races the guest reset it precedes",
+            "no boot-time threshold is configured in this repository (no in-repo boot budget exists), so these are measurements; pass --boot-p95-ms to enforce a bar"
+          ]
+        },
+        {
+          "name": "full lifecycle (POST -> done, beats=2)",
+          "detail": "",
+          "vector": "1/8/50-VM full runs, fixed sample counts, p50/p95/p99",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "every 1-VM lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "1-VM lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every 8-VM lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "8-VM lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every 50-VM lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "50-VM lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            }
+          ],
+          "notes": [
+            "1-VM lifecycle: n=5 p50=7.63s p95=7.73s p99=7.73s (guest beats every 5s)",
+            "8-VM lifecycle: n=5 p50=8.46s p95=8.56s p99=8.56s (guest beats every 5s)",
+            "50-VM lifecycle: n=3 p50=11.49s p95=11.55s p99=11.55s (guest beats every 5s)"
+          ]
+        },
+        {
+          "name": "50-VM footprint (RSS and steady-state CPU)",
+          "detail": "",
+          "vector": "50 x 1 vCPU x 128 MiB fleet; whole-daemon RSS and idle CPU",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the 50-VM fleet came up",
+              "ok": true,
+              "detail": "state=running vms=50"
+            },
+            {
+              "name": "whole-fleet RSS under the 8 GiB budget",
+              "ok": true,
+              "detail": "peak=5.57 GiB samples=[5707, 5707, 5707] MiB"
+            },
+            {
+              "name": "steady-state CPU under 5.0% of one core",
+              "ok": true,
+              "detail": "peak=2.500% samples=[2.5, 2.25, 2.25]"
+            },
+            {
+              "name": "the fleet self-terminates cleanly (beats=12)",
+              "ok": true,
+              "detail": "state=done"
+            }
+          ],
+          "notes": [
+            "50-VM boot (POST -> running): 2297ms",
+            "fleet 50: RSS baseline 4 MiB peak 5707 MiB; CPU [2.5, 2.25, 2.25]% of one core",
+            "CPU at n=2: 0.250% of one core (per-VM scaling evidence)"
+          ]
+        },
+        {
+          "name": "restore = daemon restart + register reconcile",
+          "detail": "",
+          "vector": "SIGTERM mid-run, restart on the same uds dir: fresh ids, new created_at, SSE identity, fresh run green",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the daemon was killed mid-run",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the restarted daemon serves the machine view",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the register is empty after the restart (no stale runs)",
+              "ok": true,
+              "detail": "runs=[]"
+            },
+            {
+              "name": "a new run is a different run (new id sequence, new created_at)",
+              "ok": true,
+              "detail": "id=r1 created_at=1791672077942 vs 1791672075692"
+            },
+            {
+              "name": "the SSE stream carries the new run's identity",
+              "ok": true,
+              "detail": "frames=['data: {\"id\":\"r1\",\"state\":\"starting\"}', 'data: {\"id\":\"r1\",\"state\":\"running\"}', 'data: {\"run\":\"r1\",\"vm\":0,\"state\":\"running\"}']"
+            },
+            {
+              "name": "a fresh run completes cleanly on the restarted daemon",
+              "ok": true,
+              "detail": "done"
+            }
+          ],
+          "notes": [
+            "restore scope: there is no VM snapshot support in this MVP, so restore is the daemon restart plus this reconciliation, exactly as the SSE identity contract defines it"
+          ]
+        },
+        {
+          "name": "boot time with --workspace (POST -> every VM running, block device attached)",
+          "detail": "",
+          "vector": "1/8/50-VM boots with one workspace copy per VM, 20 samples per size, p50/p95/p99",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the 1-VM run laid out one workspace copy per VM, each the base image's size (16 MiB)",
+              "ok": true,
+              "detail": "copies=1 expected=1 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-uds/run-r1"
+            },
+            {
+              "name": "every VM of the 1-VM run mounted its /workspace volume",
+              "ok": true,
+              "detail": "1/1 guests mounted /workspace"
+            },
+            {
+              "name": "every one of the 20 1-VM --workspace boots came up (no VM failed)",
+              "ok": true,
+              "detail": "run=running vms={'running': 1}"
+            },
+            {
+              "name": "1-VM --workspace boot recorded the fixed 20 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "1-VM --workspace boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=0.019 p95=0.037 p99=0.040"
+            },
+            {
+              "name": "the 8-VM run laid out one workspace copy per VM, each the base image's size (16 MiB)",
+              "ok": true,
+              "detail": "copies=8 expected=8 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-uds/run-r21"
+            },
+            {
+              "name": "every VM of the 8-VM run mounted its /workspace volume",
+              "ok": true,
+              "detail": "8/8 guests mounted /workspace"
+            },
+            {
+              "name": "every one of the 20 8-VM --workspace boots came up (no VM failed)",
+              "ok": true,
+              "detail": "run=running vms={'running': 8}"
+            },
+            {
+              "name": "8-VM --workspace boot recorded the fixed 20 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "8-VM --workspace boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=0.241 p95=0.289 p99=0.314"
+            },
+            {
+              "name": "the 50-VM run laid out one workspace copy per VM, each the base image's size (16 MiB)",
+              "ok": true,
+              "detail": "copies=50 expected=50 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-uds/run-r41"
+            },
+            {
+              "name": "every VM of the 50-VM run mounted its /workspace volume",
+              "ok": true,
+              "detail": "50/50 guests mounted /workspace"
+            },
+            {
+              "name": "every one of the 20 50-VM --workspace boots came up (no VM failed)",
+              "ok": true,
+              "detail": "run=running vms={'running': 50}"
+            },
+            {
+              "name": "50-VM --workspace boot recorded the fixed 20 samples",
+              "ok": true,
+              "detail": "n=20"
+            },
+            {
+              "name": "50-VM --workspace boot percentiles are ordered",
+              "ok": true,
+              "detail": "p50=2.521 p95=3.082 p99=3.779"
+            }
+          ],
+          "notes": [
+            "1-VM --workspace boot: n=20 p50=19ms p95=37ms p99=40ms; delta vs this run's without-workspace numbers: p50=+1ms p95=+5ms",
+            "8-VM --workspace boot: n=20 p50=241ms p95=289ms p99=314ms; delta vs this run's without-workspace numbers: p50=+29ms p95=+40ms",
+            "50-VM --workspace boot: n=20 p50=2521ms p95=3082ms p99=3779ms; delta vs this run's without-workspace numbers: p50=+289ms p95=+586ms",
+            "the sweep boots a long-lived guest (beats unset), as the without-workspace sweep does, so 'every VM came up running' is a stable contract for both sets of numbers",
+            "no boot-time threshold is configured in this repository, so these are measurements; pass --boot-p95-ms to enforce a bar (it is applied to the workspace boot too)"
+          ]
+        },
+        {
+          "name": "full lifecycle with --workspace (POST -> done, beats=2)",
+          "detail": "",
+          "vector": "1/8/50-VM full runs with a workspace volume, copies retained after done",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "every 1-VM --workspace lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every finished 1-VM --workspace run's copies are still on disk",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "1-VM --workspace lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every 8-VM --workspace lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every finished 8-VM --workspace run's copies are still on disk",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "8-VM --workspace lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every 50-VM --workspace lifecycle run reached done",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every finished 50-VM --workspace run's copies are still on disk",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "50-VM --workspace lifecycle percentiles are ordered",
+              "ok": true,
+              "detail": ""
+            }
+          ],
+          "notes": [
+            "1-VM --workspace lifecycle: n=5 p50=5.81s p95=6.21s p99=6.21s; delta vs this run's without-workspace p95: -1.52s",
+            "a lifecycle run is dominated by the guest's fixed 2-beat schedule (two 5 s windows) plus the guest's own boot, so this delta is indicative only and a negative one is host noise rather than an improvement; the boot cell's per-VM copy + mount cost is the block device's own contribution to a boot",
+            "8-VM --workspace lifecycle: n=5 p50=6.57s p95=6.70s p99=6.70s; delta vs this run's without-workspace p95: -1.86s",
+            "a lifecycle run is dominated by the guest's fixed 2-beat schedule (two 5 s windows) plus the guest's own boot, so this delta is indicative only and a negative one is host noise rather than an improvement; the boot cell's per-VM copy + mount cost is the block device's own contribution to a boot",
+            "50-VM --workspace lifecycle: n=3 p50=9.19s p95=10.63s p99=10.63s; delta vs this run's without-workspace p95: -0.92s",
+            "a lifecycle run is dominated by the guest's fixed 2-beat schedule (two 5 s windows) plus the guest's own boot, so this delta is indicative only and a negative one is host noise rather than an improvement; the boot cell's per-VM copy + mount cost is the block device's own contribution to a boot"
+          ]
+        },
+        {
+          "name": "50-VM footprint with --workspace (RSS, CPU, host cache)",
+          "detail": "",
+          "vector": "50 x 1 vCPU x 128 MiB fleet with a 16 MiB workspace volume per VM",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the 50-VM --workspace fleet came up",
+              "ok": true,
+              "detail": "state=running vms=50"
+            },
+            {
+              "name": "the fleet holds one workspace copy per VM (50 x 16 MiB of image)",
+              "ok": true,
+              "detail": "copies=50 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-footprint-uds/run-r1"
+            },
+            {
+              "name": "whole-fleet RSS under the 8 GiB budget with a workspace volume",
+              "ok": true,
+              "detail": "peak=5.74 GiB samples=[5880, 5880, 5880] MiB"
+            },
+            {
+              "name": "steady-state CPU under 5.0% of one core with a workspace volume",
+              "ok": true,
+              "detail": "peak=2.500% samples=[2.25, 2.5, 2.25]"
+            },
+            {
+              "name": "the --workspace fleet self-terminates cleanly (beats=12)",
+              "ok": true,
+              "detail": "state=done"
+            },
+            {
+              "name": "the finished fleet's 50 workspace copies are still there",
+              "ok": true,
+              "detail": "copies=50"
+            }
+          ],
+          "notes": [
+            "50-VM --workspace boot (POST -> running): 3180ms",
+            "fleet 50 with workspace: RSS baseline 4 MiB peak 5880 MiB; CPU [2.25, 2.5, 2.25]% of one core",
+            "the 800 MiB of copies are host memory, not guest RSS: this host's harness work directory is under /tmp (tmpfs), so their pages are charged to Shmem \u2014 which went 4974 -> 5779 MiB (4 MiB off the copies' 800 MiB) while the fleet ran. Host-wide Cached (44039 -> 44869 MiB) moved for the whole host's reasons and is not attributed to the fleet. noded's RSS is what the 8 GiB criterion measures and does not carry the copies, so a fleet's true host cost is that RSS plus them \u2014 recorded here so it is not understated",
+            "steady-state CPU with the volume attached is 2.500% of one core versus 2.4999586269339846% without it in this run: the guest's ext4 journal adds no measurable steady-state cost here (the case without a workspace carries the 0.03%-baseline finding)"
+          ]
+        },
+        {
+          "name": "workspace persistence (write -> poweroff -> reboot the same copy -> read back)",
+          "detail": "",
+          "vector": "console `wspace <token>` in a workspace VM, ACPI S5 poweroff, then a second boot built from the retained copy",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the workspace VM mounted /workspace",
+              "ok": true,
+              "detail": "plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0s"
+            },
+            {
+              "name": "the console accepts the write",
+              "ok": true,
+              "detail": "status=200"
+            },
+            {
+              "name": "the guest appended the token to /workspace/notes.txt and printed it back",
+              "ok": true,
+              "detail": "token echoed in 258 bytes"
+            },
+            {
+              "name": "the guest synced its filesystems",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the run's workspace directory is private (0700) and holds one copy per VM",
+              "ok": true,
+              "detail": "mode=700 copies=['workspace-0.ext4'] at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1"
+            },
+            {
+              "name": "the token is in the run's own image copy on the host while the guest still runs",
+              "ok": true,
+              "detail": "debugfs cat /notes.txt -> 'apz-workspace-073d6dd38474'"
+            },
+            {
+              "name": "a new run gets fresh copies, never the old run's",
+              "ok": true,
+              "detail": "new=['/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r2/workspace-0.ext4'] leaked=False"
+            },
+            {
+              "name": "the new run left the earlier run's copy and its data alone",
+              "ok": true,
+              "detail": "copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4"
+            },
+            {
+              "name": "the guest powered off (S5) and the run reported done with its VM exited",
+              "ok": true,
+              "detail": "state=done vms=['exited']"
+            },
+            {
+              "name": "the finished run's workspace copy is still there after the run ended",
+              "ok": true,
+              "detail": "copies=['/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4']"
+            },
+            {
+              "name": "the run's workspace copy and its data survive the daemon being killed",
+              "ok": true,
+              "detail": "debugfs cat /notes.txt -> 'apz-workspace-073d6dd38474' path=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4"
+            },
+            {
+              "name": "a second boot built from the retained copy mounted its filesystem",
+              "ok": true,
+              "detail": "plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0s"
+            },
+            {
+              "name": "the token is not in the second boot's transcript until the guest is asked for it",
+              "ok": true,
+              "detail": "transcript_bytes=143"
+            },
+            {
+              "name": "the guest reads the previous boot's token back from /workspace",
+              "ok": true,
+              "detail": "token=present in 175 bytes; plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0swspaceapz-workspace-073d6dd38474"
+            },
+            {
+              "name": "the second boot's image is derived from the retained copy, not the pristine base image",
+              "ok": true,
+              "detail": "copy=['/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-b-uds/run-r1/workspace-0.ext4'] base_sha=a6d7281595cd"
+            }
+          ],
+          "notes": [
+            "poweroff -> done in 0.16s",
+            "the second boot's base image is the retained copy at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4 (deterministic: {uds_dir}/run-r1/workspace-0.ext4, sha256 de910579a0f2); noded copies it for the new run, so the guest mounts those bytes, not the base image's"
+          ]
+        },
+        {
+          "name": "restore with --workspace (restart on the same uds dir, run-dir retention)",
+          "detail": "",
+          "vector": "SIGTERM a workspace daemon, restart it on its own uds dir: run-{id} survives, a fresh run gets fresh copies",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the mid-run workspace VM mounted /workspace",
+              "ok": true,
+              "detail": "plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0s"
+            },
+            {
+              "name": "the mid-run guest wrote and synced its workspace",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the running run's workspace copy is on disk",
+              "ok": true,
+              "detail": "copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4 sha256=05a3e86874eb"
+            },
+            {
+              "name": "the daemon was killed mid-run",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the killed daemon's run directory and copy survive it",
+              "ok": true,
+              "detail": "copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4"
+            },
+            {
+              "name": "the restarted workspace daemon serves the machine view",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the register is empty after the restart (no stale runs)",
+              "ok": true,
+              "detail": "runs=[]"
+            },
+            {
+              "name": "the killed run's copy survives the restart, with its data",
+              "ok": true,
+              "detail": "debugfs cat /notes.txt -> 'apz-workspace-073d6dd38474' copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4"
+            },
+            {
+              "name": "a fresh run is running on the restarted daemon",
+              "ok": true,
+              "detail": "id=r1 state=running"
+            },
+            {
+              "name": "the fresh run gets fresh copies, never the old run's",
+              "ok": true,
+              "detail": "dir=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 copies=['workspace-0.ext4'] leaked=False"
+            }
+          ],
+          "notes": [
+            "the fresh run is r1 in /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1; the killed daemon's copies were at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1"
+          ]
+        }
+      ],
+      "data": {
+        "boot_ms": {
+          "1": {
+            "n": 20,
+            "min": 0.008823032025247812,
+            "p50": 0.017514140985440463,
+            "p95": 0.03243416897021234,
+            "p99": 0.03817557299043983,
+            "max": 0.03817557299043983,
+            "mean": 0.020419182602199725
+          },
+          "8": {
+            "n": 20,
+            "min": 0.16078106896020472,
+            "p50": 0.21149340900592506,
+            "p95": 0.24838069395627826,
+            "p99": 0.26372661598725244,
+            "max": 0.26372661598725244,
+            "mean": 0.20886572330782655
+          },
+          "50": {
+            "n": 10,
+            "min": 1.9514091120217927,
+            "p50": 2.2316909109940752,
+            "p95": 2.4957946100039408,
+            "p99": 2.4957946100039408,
+            "max": 2.4957946100039408,
+            "mean": 2.2016229711065534
+          }
+        },
+        "boot_guest": "beats=None (long-lived fleet: every VM must be running at the POST reply)",
+        "lifecycle_s": {
+          "1": {
+            "n": 5,
+            "min": 7.62236361700343,
+            "p50": 7.628163603018038,
+            "p95": 7.729818403953686,
+            "p99": 7.729818403953686,
+            "max": 7.729818403953686,
+            "mean": 7.657602466794197
+          },
+          "8": {
+            "n": 5,
+            "min": 8.379276957013644,
+            "p50": 8.455912982986774,
+            "p95": 8.557328838040121,
+            "p99": 8.557328838040121,
+            "max": 8.557328838040121,
+            "mean": 8.460514055611565
+          },
+          "50": {
+            "n": 3,
+            "min": 10.904672241013031,
+            "p50": 11.488160487962887,
+            "p95": 11.55022461595945,
+            "p99": 11.55022461595945,
+            "max": 11.55022461595945,
+            "mean": 11.314352448311789
+          }
+        },
+        "footprint": {
+          "n": 50,
+          "beats": 12,
+          "rss_baseline_bytes": 4718592,
+          "rss_samples_bytes": [
+            5984735232,
+            5984739328,
+            5984739328
+          ],
+          "rss_peak_bytes": 5984739328,
+          "rss_budget_bytes": 8589934592,
+          "rss_after_bytes": 11358208,
+          "cpu_samples_pct": [
+            2.4999586269339846,
+            2.249513480279659,
+            2.2499643476159297
+          ],
+          "cpu_peak_pct": 2.4999586269339846,
+          "cpu_budget_pct": 5.0,
+          "recorded_cpu_baseline_pct": 0.03,
+          "scale_cpu": {
+            "n": 2,
+            "cpu_pct": 0.2499608307631828
+          }
+        },
+        "workspace": {
+          "image": {
+            "path": "/tmp/apz-pinned-fff1222/workspace.ext4",
+            "bytes": 16777216,
+            "sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031",
+            "provenance": "built by scripts/mk-workspace-image.sh: a 16 MiB ext4 with a pinned label, UUID and superblock time. Identity is stable across builds; the bytes are not reproducible (mke2fs randomises the journal UUID and this e2fsprogs has no -J uuid=), which is the block slice's own note"
+          },
+          "boot_ms": {
+            "1": {
+              "n": 20,
+              "min": 0.011464690032880753,
+              "p50": 0.018689567979890853,
+              "p95": 0.03696565900463611,
+              "p99": 0.039672987011726946,
+              "max": 0.039672987011726946,
+              "mean": 0.022143922102986834
+            },
+            "8": {
+              "n": 20,
+              "min": 0.19382535998011008,
+              "p50": 0.24067261902382597,
+              "p95": 0.2888448599842377,
+              "p99": 0.31400623795343563,
+              "max": 0.31400623795343563,
+              "mean": 0.24395286209473852
+            },
+            "50": {
+              "n": 20,
+              "min": 2.25409009604482,
+              "p50": 2.5206056630122475,
+              "p95": 3.081805693975184,
+              "p99": 3.779298006033059,
+              "max": 3.779298006033059,
+              "mean": 2.5828470482607373
+            }
+          },
+          "boot_delta_ms": {
+            "1": {
+              "p50_ms": 1.1754269944503903,
+              "p95_ms": 4.5314900344237685
+            },
+            "8": {
+              "p50_ms": 29.179210017900914,
+              "p95_ms": 40.464166027959436
+            },
+            "50": {
+              "p50_ms": 288.9147520181723,
+              "p95_ms": 586.0110839712434
+            }
+          },
+          "lifecycle_s": {
+            "1": {
+              "n": 5,
+              "min": 5.605239181022625,
+              "p50": 5.814764189999551,
+              "p95": 6.209904653020203,
+              "p99": 6.209904653020203,
+              "max": 6.209904653020203,
+              "mean": 5.866572549403645
+            },
+            "8": {
+              "n": 5,
+              "min": 6.411425427009817,
+              "p50": 6.566926826955751,
+              "p95": 6.700277060037479,
+              "p99": 6.700277060037479,
+              "max": 6.700277060037479,
+              "mean": 6.565319144004024
+            },
+            "50": {
+              "n": 3,
+              "min": 9.0096585029969,
+              "p50": 9.186522634990979,
+              "p95": 10.633172334986739,
+              "p99": 10.633172334986739,
+              "max": 10.633172334986739,
+              "mean": 9.609784490991538
+            }
+          },
+          "lifecycle_delta_s": {
+            "1": {
+              "p50_s": -1.8133994130184874,
+              "p95_s": -1.5199137509334832
+            },
+            "8": {
+              "p50_s": -1.8889861560310237,
+              "p95_s": -1.857051778002642
+            },
+            "50": {
+              "p50_s": -2.3016378529719077,
+              "p95_s": -0.9170522809727117
+            }
+          },
+          "boot_reaped_run_dirs": 60,
+          "footprint": {
+            "n": 50,
+            "beats": 12,
+            "workspace_image_bytes": 16777216,
+            "workspace_copies_bytes": 838860800,
+            "rss_baseline_bytes": 4329472,
+            "rss_samples_bytes": [
+              6165934080,
+              6165934080,
+              6165934080
+            ],
+            "rss_peak_bytes": 6165934080,
+            "rss_budget_bytes": 8589934592,
+            "rss_after_bytes": 56455168,
+            "cpu_samples_pct": [
+              2.2495352392726655,
+              2.499856127018785,
+              2.2498695351225315
+            ],
+            "cpu_peak_pct": 2.499856127018785,
+            "cpu_budget_pct": 5.0,
+            "host_cached_bytes": {
+              "before": 46178938880,
+              "busy": 47048564736,
+              "after_done": 47068368896
+            },
+            "host_shmem_bytes": {
+              "before": 5216169984,
+              "busy": 6059798528,
+              "after_done": 6073495552
+            },
+            "reaped_run_dirs": 1
+          },
+          "persistence": {
+            "token": "apz-workspace-073d6dd38474",
+            "first_run": {
+              "run": "r1",
+              "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4",
+              "sha256": "de910579a0f2e04c030634e6ad4c60c8426fc7d01568c2dbe40a6804349f4a92"
+            },
+            "second_run": {
+              "run": "r1",
+              "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-b-uds/run-r1/workspace-0.ext4",
+              "sha256": "36f84828ccc264a67635ca998252ce2ff651be28267d8205315887ecfa7326bb"
+            },
+            "base_image_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+          }
+        }
+      },
+      "notes": [
+        "boot budget: measured only \u2014 no configured threshold exists in-repo",
+        "budget regression check: comparing against acceptance-server-budgets-2026-10-11.json",
+        "budget regression check: the boot sweeps' guest configuration changed since acceptance-server-budgets-2026-10-11.json (was None, now 'beats=None (long-lived fleet: every VM must be running at the POST reply)'), so the boot p95s are not compared against it (a different guest is a different measurement)"
+      ],
+      "findings": [
+        {
+          "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
+          "classification": "baseline-discrepancy",
+          "detail": "measured peak 2.500% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.250%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+          "measured_cpu_pct": 2.4999586269339846,
+          "measured_cpu_pct_at_scale": {
+            "n2": 0.2499608307631828
+          },
+          "recorded_baseline_pct": 0.03,
+          "budget_pct": 5.0
+        },
+        {
+          "title": "a restarted daemon reuses run-r1 and overwrites the previous instance's workspace copy",
+          "classification": "product-defect",
+          "severity": "medium",
+          "affected_cell": "budgets: restore with --workspace (run-directory retention)",
+          "detail": "noded's run ids restart with the daemon (`Registry::new` sets `next_seq = 0`), so the first run after a restart is `r1` again and its workspace directory is /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 \u2014 the very directory the killed daemon's run r1 was using. `materialize_workspaces` copies the base image onto that path with `std::fs::copy`, which truncates the existing copy in place, so the previous instance's retained volume (sha256 05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285) is replaced (sha256 a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031) and its /workspace/notes.txt marker is gone. The block slice's contract that a run's copies stay after the run (they hold the agent's work) therefore holds only within one daemon lifetime: restarting on the same --uds-dir destroys the retained volumes of the runs whose ids the new daemon re-issues. Both behaviours are deliberate on their own (run ids are per-daemon; copies are kept), which is the conflict this cell records.",
+          "observed": "run r1 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 overwrote /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
+          "expected": "the retained copy of a finished/killed run keeps its bytes across a daemon restart (or the new run is given a path that cannot collide with one)",
+          "reproducer": "noded --workspace IMG --uds-dir D; POST {n:1,beats:40}; console `wspace TOKEN`; `sync`; SIGTERM noded; noded --workspace IMG --uds-dir D; POST {n:1} -> the new run is r1 and D/run-r1/workspace-0.ext4 no longer contains TOKEN",
+          "suspected_component": "crates/noded/src/registry.rs (reserve_run_id / boot_run run-dir path) + crates/vmm/src/spawner.rs (materialize_workspaces copies in place)",
+          "artifacts": {
+            "uds_dir": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds",
+            "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
+            "before_sha256": "05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285",
+            "after_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031",
+            "noded_log": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-b-logs/noded.log"
+          }
+        }
+      ],
+      "started_at": "2026-10-11T00:37:03+0200",
+      "duration_s": 549.333
+    }
+  ],
+  "findings": [
+    {
+      "suite": "boot-restore-footprint-budgets",
+      "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
+      "classification": "baseline-discrepancy",
+      "detail": "measured peak 2.500% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.250%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+      "measured_cpu_pct": 2.4999586269339846,
+      "measured_cpu_pct_at_scale": {
+        "n2": 0.2499608307631828
+      },
+      "recorded_baseline_pct": 0.03,
+      "budget_pct": 5.0
+    },
+    {
+      "suite": "boot-restore-footprint-budgets",
+      "title": "a restarted daemon reuses run-r1 and overwrites the previous instance's workspace copy",
+      "classification": "product-defect",
+      "severity": "medium",
+      "affected_cell": "budgets: restore with --workspace (run-directory retention)",
+      "detail": "noded's run ids restart with the daemon (`Registry::new` sets `next_seq = 0`), so the first run after a restart is `r1` again and its workspace directory is /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 \u2014 the very directory the killed daemon's run r1 was using. `materialize_workspaces` copies the base image onto that path with `std::fs::copy`, which truncates the existing copy in place, so the previous instance's retained volume (sha256 05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285) is replaced (sha256 a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031) and its /workspace/notes.txt marker is gone. The block slice's contract that a run's copies stay after the run (they hold the agent's work) therefore holds only within one daemon lifetime: restarting on the same --uds-dir destroys the retained volumes of the runs whose ids the new daemon re-issues. Both behaviours are deliberate on their own (run ids are per-daemon; copies are kept), which is the conflict this cell records.",
+      "observed": "run r1 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 overwrote /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
+      "expected": "the retained copy of a finished/killed run keeps its bytes across a daemon restart (or the new run is given a path that cannot collide with one)",
+      "reproducer": "noded --workspace IMG --uds-dir D; POST {n:1,beats:40}; console `wspace TOKEN`; `sync`; SIGTERM noded; noded --workspace IMG --uds-dir D; POST {n:1} -> the new run is r1 and D/run-r1/workspace-0.ext4 no longer contains TOKEN",
+      "suspected_component": "crates/noded/src/registry.rs (reserve_run_id / boot_run run-dir path) + crates/vmm/src/spawner.rs (materialize_workspaces copies in place)",
+      "artifacts": {
+        "uds_dir": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds",
+        "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
+        "before_sha256": "05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285",
+        "after_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031",
+        "noded_log": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-b-logs/noded.log"
+      }
+    }
+  ]
+}

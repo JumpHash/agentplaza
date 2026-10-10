@@ -76,6 +76,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--bin-dir", default=str(apz.DEFAULT_BIN_DIR), help="where noded/vsockd live")
     parser.add_argument("--kernel", default=str(apz.DEFAULT_KERNEL), help="guest kernel image")
     parser.add_argument("--initrd", default=str(apz.DEFAULT_INITRD), help="guest initrd image")
+    parser.add_argument(
+        "--workspace-image",
+        default=str(apz.DEFAULT_WORKSPACE),
+        help=(
+            "the base image of the guests' writable /workspace volume (the budgets suite's "
+            "--workspace cells build it with scripts/mk-workspace-image.sh when it is absent)"
+        ),
+    )
     parser.add_argument("--results-dir", default=str(apz.RESULTS_DIR), help="where the results JSON goes")
     parser.add_argument("--artifacts", default=None, help="artifact root (default: a fresh mktemp -d)")
     parser.add_argument("--keep", action="store_true", help="keep the artifact tree even on success")
@@ -113,6 +121,9 @@ def print_suite(suite: apz.Suite) -> None:
     for note in suite.notes:
         print(f"         note: {note}")
     for case in suite.cases:
+        if case.blocked_reason:
+            print(f"         case BLOCKED: {case.name}")
+            print(f"           reason: {case.blocked_reason}")
         if case.ok:
             continue
         print(f"         case FAILED: {case.name}")

@@ -53,6 +53,11 @@ RESULTS_DIR = HERE / "results"
 DEFAULT_BIN_DIR = REPO / "target" / "debug"
 DEFAULT_KERNEL = Path("/boot/vmlinuz-linux")
 DEFAULT_INITRD = REPO / "target" / "guest" / "initrd.x86_64.gz"
+#: The base image of the guests' writable ``/workspace`` volume
+#: (``crates/vmm/src/devices/virtio/block``), built by
+#: ``scripts/mk-workspace-image.sh``. The budgets suite's ``--workspace`` cells
+#: build it when it is absent.
+DEFAULT_WORKSPACE = REPO / "target" / "guest" / "workspace.ext4"
 
 #: The runner's own version line, recorded in every manifest.
 HARNESS_VERSION = "tests/acceptance 1"
@@ -197,6 +202,25 @@ def git_revision() -> dict:
     }
 
 
+def meminfo_bytes(field: str) -> int | None:
+    """A ``/proc/meminfo`` field in bytes, or ``None`` where the host has none.
+
+    ``Cached`` (and ``Shmem``) is what a workspace volume's image copies cost
+    the *host*: each copy is written once and its pages then live in the page
+    cache (for a file under a tmpfs root, in ``Shmem`` and so also in
+    ``Cached``), not in the daemon's resident set. The field is a whole-host
+    figure, so the suite samples it as a delta around a synchronised point and
+    reports the raw numbers rather than attributing them.
+    """
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith(f"{field}:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def child_processes(pid: int) -> list[int]:
     """Every live child of ``pid`` (noded spawns none: its VMs are threads)."""
     children = []
@@ -312,6 +336,7 @@ class Lab:
         *,
         canary_env: dict[str, str] | None = None,
         uds_dir: Path | None = None,
+        workspace: Path | None = None,
     ):
         self.ctx = ctx
         self.tag = tag
@@ -325,6 +350,9 @@ class Lab:
         self.log_dir = ctx.new_dir(f"{tag}-logs")
         self.cids = list(cids)
         self.canary_env = dict(canary_env or {})
+        # The base image of every run's writable workspace volume, or `None`
+        # for a daemon that boots no block device (`noded --workspace`).
+        self.workspace = Path(workspace) if workspace is not None else None
         self.noded: subprocess.Popen | None = None
         self.vsockd: subprocess.Popen | None = None
         self.port: int = 0
@@ -350,6 +378,10 @@ class Lab:
             "--initrd",
             str(self.ctx.initrd),
         ]
+        if self.workspace is not None:
+            # The daemon gives every VM of every run its own copy of this base
+            # image and boots it as the guest's writable `/workspace` volume.
+            argv_noded += ["--workspace", str(self.workspace)]
         if self.cids:
             self.vsockd = self._spawn(
                 "vsockd",
@@ -523,6 +555,26 @@ class Lab:
     def listener_marker(self, cid: int, port: int = VSOCK_PORT) -> Path:
         """The path ``vsockd`` listens on for guest ``cid`` (``{uds}_{port}``)."""
         return self.uds_dir / f"vm{cid}_{port}"
+    def run_dir(self, run_id: str) -> Path:
+        """A run's private directory under the UDS root (``{uds}/run-{id}``).
+
+        ``noded`` lays the run's per-VM workspace copies out here before its
+        VMs boot and keeps the directory when the run ends (it holds the
+        guests' work), so an operator addresses a finished run's volumes by
+        this deterministic path.
+        """
+        return self.uds_dir / f"run-{run_id}"
+
+    def workspace_copies(self, run_id: str) -> list[Path]:
+        """A run's workspace copies, in VM order (``workspace-{i}.ext4``)."""
+        directory = self.run_dir(run_id)
+        if not directory.is_dir():
+            return []
+        return sorted(
+            (entry for entry in directory.iterdir() if entry.name.startswith("workspace-")),
+            key=lambda path: path.name,
+        )
+
     def rss(self) -> int:
         """``noded``'s resident set size, in bytes (its VMs are threads of it)."""
         for line in Path(f"/proc/{self.noded.pid}/status").read_text().splitlines():
@@ -592,8 +644,17 @@ class Case:
         self.tasks: list[dict] = []
         self.invariants: list[dict] = []
         self.notes: list[str] = []
+        #: Why this one case could not run (its input is missing, say). A
+        #: blocked case is never a pass: `ok` is false and the suite reports
+        #: BLOCKED, so a required input that is absent is visible in the
+        #: verdict instead of being read as green.
+        self.blocked_reason: str | None = None
     def note(self, text: str) -> None:
         self.notes.append(text)
+    def blocked(self, reason: str) -> None:
+        """Record that this case cannot run here, and why."""
+        self.blocked_reason = reason
+        self.notes.append(f"BLOCKED: {reason}")
     def task(self, name: str, ok: bool, detail: str = "") -> bool:
         self.tasks.append({"name": name, "ok": bool(ok), "detail": detail})
         return bool(ok)
@@ -610,6 +671,8 @@ class Case:
         return 0 if not self.tasks else len(self.tasks)
     @property
     def ok(self) -> bool:
+        if self.blocked_reason is not None:
+            return False
         return self.tasks_passed >= self.required and all(item["ok"] for item in self.invariants)
     def view(self) -> dict:
         return {
@@ -617,6 +680,7 @@ class Case:
             "detail": self.detail,
             "vector": self.vector,
             "ok": self.ok,
+            "blocked_reason": self.blocked_reason,
             "tasks_passed": self.tasks_passed,
             "tasks_required": self.required,
             "tasks_total": len(self.tasks),
@@ -653,14 +717,21 @@ class Suite:
         self.blocked_reason = reason
     @property
     def ok(self) -> bool:
-        if self.blocked_reason is not None:
-            return False
-        return bool(self.cases) and all(case.ok for case in self.cases)
+        return self.status == "PASS"
     @property
     def status(self) -> str:
         if self.blocked_reason is not None:
             return "BLOCKED"
-        return "PASS" if self.ok else "FAIL"
+        if not self.cases:
+            return "FAIL"
+        # A failure outranks a blocked case: the suite only reports BLOCKED
+        # when everything it did run passed and something it could not run is
+        # named.
+        if any(not case.ok and case.blocked_reason is None for case in self.cases):
+            return "FAIL"
+        if any(case.blocked_reason is not None for case in self.cases):
+            return "BLOCKED"
+        return "PASS"
     def view(self) -> dict:
         return {
             "suite": self.name,
@@ -685,6 +756,7 @@ class Ctx:
         self.bin_dir = Path(args.bin_dir).resolve()
         self.kernel = Path(args.kernel).resolve()
         self.initrd = Path(args.initrd).resolve()
+        self.workspace_image = Path(args.workspace_image).resolve()
         self.results_dir = Path(args.results_dir).resolve()
         self.machine_class = args.machine_class
         self.host_os, self.host_arch = host_platform()
@@ -742,6 +814,13 @@ class Ctx:
             "initrd": str(self.initrd),
             "initrd_sha256": sha256_file(self.initrd),
         }
+        if self.workspace_image.is_file():
+            # The base image of the writable `/workspace` volume: the budgets
+            # suite's `--workspace` cells boot copies of it, so its digest is
+            # part of the manifest exactly as the kernel's and initrd's are.
+            images["workspace"] = str(self.workspace_image)
+            images["workspace_bytes"] = self.workspace_image.stat().st_size
+            images["workspace_sha256"] = sha256_file(self.workspace_image)
         cpus, mem = os.cpu_count(), 0
         try:
             for line in Path("/proc/meminfo").read_text().splitlines():

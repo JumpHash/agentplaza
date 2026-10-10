@@ -11,6 +11,12 @@
 #
 #   cargo build --workspace && scripts/mk-initrd-x86_64.sh
 #
+# The budgets suite's `--workspace` cells additionally need the base image of
+# the guests' writable workspace volume (target/guest/workspace.ext4); the
+# suite builds it with scripts/mk-workspace-image.sh when it is absent and
+# reports those cells BLOCKED, with the reason, when mkfs.ext4 is not
+# installed. Override the path with --workspace-image.
+#
 # Exit status: 0 all executed suites passed, 1 a suite failed, 2 blocked.
 set -euo pipefail
 
