@@ -54,8 +54,10 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
   -h, --help       print this help
 
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
-POST /api/v0/runs/{id}/input, GET /api/v0/hub[/healthz] and the web app's
-files from apps/web.";
+POST /api/v0/runs/{id}/input, GET/POST /api/v0/tasks,
+GET/DELETE /api/v0/tasks/{id}, POST /api/v0/tasks/{id}/claim and
+/api/v0/tasks/{id}/finish, GET /api/v0/hub[/healthz] and the web app's files
+from apps/web.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

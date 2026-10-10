@@ -406,6 +406,40 @@ pub struct RunsView<'a> {
     /// Every run, oldest first.
     pub runs: Vec<RunView<'a>>,
 }
+
+/// A live agent of the fleet: a VM row of a run that is up right now.
+///
+/// The register is the node's answer to "which agents are connected?" - a VM
+/// that is running under a run that is running. (The hub's session registry in
+/// `vsockd` - heartbeats, and their absence - is the stronger signal a later
+/// slice can add; at v0 a running VM is what a task claim needs.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectedAgent {
+    /// The agent's vsock guest CID.
+    pub cid: u64,
+    /// The role the VM was started as, when it was started as one (the role
+    /// fleet's VMs are).
+    pub role: Option<String>,
+    /// The run whose VM the agent is.
+    pub run: String,
+    /// The VM's index in that run, as the run's API reports it.
+    pub vm: u32,
+}
+
+impl ConnectedAgent {
+    /// The schema's `assignee_id` for this agent at v0: the role name the hub
+    /// accepted as the agent's identity, or `cid:<n>` for a VM the node booted
+    /// without a role. (`core.tasks.assignee_id` references `core.agents.id`;
+    /// noded v0 has no agent table - the fleet is a roles manifest - so the
+    /// role stands in for it, and a roleless VM is named by its CID.)
+    pub fn assignee_id(&self) -> String {
+        match &self.role {
+            Some(role) => role.clone(),
+            None => format!("cid:{}", self.cid),
+        }
+    }
+}
+
 /// The daemon's runs, in creation order.
 pub struct Registry {
     images: VmImages,
@@ -647,6 +681,16 @@ impl Registry {
         self.lock().runs.clone()
     }
 
+    /// The live agent with that guest CID, when the node has one: a VM row
+    /// that is running under a run that is running.
+    ///
+    /// `None` means the node knows no agent with that CID - it never booted
+    /// one, or its VM has stopped - and either way it is not an agent to accept
+    /// a task claim from.
+    pub fn connected_agent(&self, cid: u64) -> Option<ConnectedAgent> {
+        self.list().iter().find_map(|run| run.live_agent(cid))
+    }
+
     /// Registers a new run in `starting`, which is where the schema says a run
     /// begins (`core.check_run`).
     /// Reserves the next run id (`r{seq}`), consuming it.
@@ -798,6 +842,25 @@ impl Run {
                 })
                 .collect(),
         }
+    }
+
+    /// The agent this run's VM with that guest CID is, when the run and that
+    /// VM are both running right now.
+    fn live_agent(&self, cid: u64) -> Option<ConnectedAgent> {
+        let inner = self.lock();
+        if inner.state != RunState::Running {
+            return None;
+        }
+        inner
+            .vms
+            .iter()
+            .find(|slot| slot.guest_cid == Some(cid) && slot.state == VmState::Running)
+            .map(|slot| ConnectedAgent {
+                cid,
+                role: slot.role.clone(),
+                run: self.id.clone(),
+                vm: slot.id,
+            })
     }
 
     /// Sends `data` to one of the run's VMs (`vm` is the VM's index).
@@ -1020,7 +1083,7 @@ fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
 }
 
 /// The current time in milliseconds since the Unix epoch.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
@@ -1199,6 +1262,129 @@ mod tests {
         assert_eq!(VmState::Killed.as_str(), "killed");
         assert!(!RunState::Starting.is_finished());
         assert!(!RunState::Running.is_finished());
+    }
+
+    #[test]
+    fn an_agents_assignee_id_is_its_role_or_its_cid() {
+        let with_role = ConnectedAgent {
+            cid: 100,
+            role: Some("builder".to_string()),
+            run: "r1".to_string(),
+            vm: 3,
+        };
+        assert_eq!(with_role.assignee_id(), "builder");
+
+        let without_role = ConnectedAgent {
+            cid: 100,
+            role: None,
+            run: "r1".to_string(),
+            vm: 3,
+        };
+        assert_eq!(without_role.assignee_id(), "cid:100");
+    }
+
+    #[test]
+    fn a_registry_with_no_live_vm_has_no_connected_agent() {
+        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new());
+        assert_eq!(registry.connected_agent(100), None);
+        // A run whose VMs never came up is not an agent, either: the fleet run
+        // here fails its boot, so its CIDs are not connected.
+        let fleet = Fleet::parse(&manifest(&["builder"]), 100, 128, 1)
+            .expect("a one-role manifest");
+        let run = registry
+            .create_agent_fleet(&fleet)
+            .expect("the run exists even when its VMs cannot boot");
+        assert_eq!(run.view(Detail::Summary).state, "failed");
+        assert_eq!(registry.connected_agent(100), None);
+    }
+
+    /// A run with one VM row, built by hand: the tests here have no hypervisor
+    /// to boot a real one, and this is the shape a booted run is in anyway.
+    fn run_with_one_vm(
+        run_state: RunState,
+        vm_state: VmState,
+        cid: Option<u64>,
+        role: Option<&str>,
+    ) -> Arc<Run> {
+        Arc::new(Run {
+            id: "r1".to_string(),
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            created_at: now_ms(),
+            events: EventBus::new(),
+            inner: Mutex::new(RunInner {
+                state: run_state,
+                ended_at: None,
+                vms: vec![VmSlot {
+                    id: 0,
+                    guest_cid: cid,
+                    role: role.map(str::to_string),
+                    runtime: Arc::new(VmRuntime::new(0)),
+                    handle: None,
+                    state: vm_state,
+                    serial_seen: 0,
+                }],
+            }),
+        })
+    }
+
+    #[test]
+    fn a_connected_agent_is_a_running_vm_of_a_running_run() {
+        // The one reading that is an agent: the run and its VM are both up.
+        let live = run_with_one_vm(RunState::Running, VmState::Running, Some(100), Some("builder"))
+            .live_agent(100)
+            .expect("a running VM of a running run is an agent");
+        assert_eq!(
+            live,
+            ConnectedAgent {
+                cid: 100,
+                role: Some("builder".to_string()),
+                run: "r1".to_string(),
+                vm: 0,
+            }
+        );
+
+        // A roleless VM is an agent too: it is named by its CID instead.
+        let roleless = run_with_one_vm(RunState::Running, VmState::Running, Some(100), None)
+            .live_agent(100)
+            .expect("a running VM is an agent, role or no role");
+        assert_eq!(roleless.role, None);
+        assert_eq!(roleless.assignee_id(), "cid:100");
+
+        // Every other reading is not: the VM has stopped, the run has, the VM
+        // has no CID, or it is a different CID.
+        for (label, run) in [
+            (
+                "the VM has stopped",
+                run_with_one_vm(RunState::Running, VmState::Exited, Some(100), Some("builder")),
+            ),
+            (
+                "the VM was killed",
+                run_with_one_vm(RunState::Running, VmState::Killed, Some(100), Some("builder")),
+            ),
+            (
+                "the run is starting",
+                run_with_one_vm(RunState::Starting, VmState::Running, Some(100), Some("builder")),
+            ),
+            (
+                "the run has ended",
+                run_with_one_vm(RunState::Done, VmState::Running, Some(100), Some("builder")),
+            ),
+            (
+                "the run was killed",
+                run_with_one_vm(RunState::Killed, VmState::Running, Some(100), Some("builder")),
+            ),
+            (
+                "the VM has no vsock device",
+                run_with_one_vm(RunState::Running, VmState::Running, None, Some("builder")),
+            ),
+        ] {
+            assert_eq!(run.live_agent(100), None, "{label}");
+        }
+        // A live agent answers only for its own CID.
+        let run = run_with_one_vm(RunState::Running, VmState::Running, Some(100), Some("builder"));
+        assert!(run.live_agent(101).is_none());
     }
 
     #[test]

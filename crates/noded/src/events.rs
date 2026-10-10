@@ -4,10 +4,11 @@
 //! The node's event bus: the live half of the console's data layer.
 //!
 //! The registry publishes run and VM state transitions and each VM's serial
-//! deltas as they happen; `GET /api/v0/events` streams every event to a
-//! connected console as server-sent events, so a console sees a run's life
-//! between its polls. Polling stays the source of truth for a full snapshot
-//! (the register and a run's whole serial capture); the stream is the deltas.
+//! deltas as they happen, and the task ledger publishes every task transition,
+//! to `GET /api/v0/events`, which streams every event to a connected console as
+//! server-sent events, so a console sees a run's or a task's life between its
+//! polls. Polling stays the source of truth for a full snapshot (the register,
+//! the ledger, and a run's whole serial capture); the stream is the deltas.
 //!
 //! The frames:
 //!
@@ -20,6 +21,9 @@
 //!
 //! event: serial
 //! data: {"run":"r1","vm":0,"offset":120,"text":"[    0.000000] Linux version…"}
+//!
+//! event: task
+//! data: {"id":"t1","state":"claimed","assignee":"builder"}
 //!
 //! : heartbeat
 //!
@@ -55,6 +59,14 @@ pub enum Event {
         offset: u64,
         text: String,
     },
+    /// A task changed state (or the task was created, as `open`): `assignee`
+    /// is the schema's `assignee_id` once a claimed agent has one, and `null`
+    /// while nobody does.
+    Task {
+        id: String,
+        state: &'static str,
+        assignee: Option<String>,
+    },
 }
 
 impl Event {
@@ -83,11 +95,21 @@ impl Event {
                 offset,
                 quote(text)
             ),
+            Event::Task { id, state, assignee } => format!(
+                "{{\"id\":{},\"state\":{},\"assignee\":{}}}",
+                quote(id),
+                quote(state),
+                match assignee {
+                    Some(assignee) => quote(assignee),
+                    None => "null".to_string(),
+                }
+            ),
         };
         let name = match self {
             Event::Run { .. } => "run",
             Event::Vm { .. } => "vm",
             Event::Serial { .. } => "serial",
+            Event::Task { .. } => "task",
         };
         format!("event: {name}\ndata: {data}\n\n")
     }
@@ -220,6 +242,41 @@ mod tests {
             .frame(),
             "event: serial\ndata: {\"run\":\"r1\",\"vm\":0,\"offset\":120,\"text\":\"hello\"}\n\n"
         );
+        assert_eq!(
+            Event::Task {
+                id: "t1".to_string(),
+                state: "open",
+                assignee: None,
+            }
+            .frame(),
+            "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null}\n\n"
+        );
+        assert_eq!(
+            Event::Task {
+                id: "t1".to_string(),
+                state: "claimed",
+                assignee: Some("builder".to_string()),
+            }
+            .frame(),
+            "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn a_role_name_is_escaped_into_the_json_string() {
+        // A role is the manifest's, but a frame is built from whatever string
+        // the identity carries: nothing here may break out of the frame.
+        let frame = Event::Task {
+            id: "t1".to_string(),
+            state: "claimed",
+            assignee: Some("a\"b\\c\nd".to_string()),
+        }
+        .frame();
+        assert!(
+            frame.contains("\"assignee\":\"a\\\"b\\\\c\\nd\""),
+            "the frame escapes the assignee: {frame}"
+        );
+        assert_eq!(frame.matches("data: ").count(), 1);
     }
 
     #[test]

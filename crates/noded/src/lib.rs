@@ -17,13 +17,21 @@
 //! * `GET    /api/v0/runs/{id}`        - one run, with every VM's serial
 //! * `POST   /api/v0/runs/{id}/input`  - write to one VM's serial console
 //! * `DELETE /api/v0/runs/{id}`        - kill a run's VMs
+//! * `GET    /api/v0/tasks`            - every task, oldest first
+//! * `POST   /api/v0/tasks`            - create a task, `open`
+//! * `GET    /api/v0/tasks/{id}`       - one task
+//! * `POST   /api/v0/tasks/{id}/claim` - claim an open task as a live agent
+//! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`)
+//! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
 //! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
 //! * `GET    /` and `GET /<file>`      - the console's static files
 //!
 //! Run states and transitions are the schema's (`core.run_transitions`,
 //! `docs/orchestrator-draft/schema.sql`), restricted to the states noded v0
-//! implements: see [`registry`].
+//! implements: see [`registry`]. The task ledger is `core.tasks` restricted
+//! the same way, and only ever accepts a claim from an agent the register
+//! shows connected right now: see [`tasks`].
 
 pub mod events;
 pub mod fleet;
@@ -31,6 +39,7 @@ pub mod http;
 pub mod hub;
 pub mod registry;
 pub mod static_files;
+pub mod tasks;
 
 use std::borrow::Cow;
 use std::io::BufReader;
@@ -46,6 +55,7 @@ use serde::{Deserialize, Serialize};
 use crate::http::Response;
 use crate::hub::HubStatus;
 use crate::registry::{CreateRun, Detail, Registry, VmImages};
+use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
 
 /// The port the daemon listens on unless `--port` says otherwise.
 pub const DEFAULT_PORT: u16 = 8899;
@@ -136,10 +146,12 @@ impl Default for Config {
     }
 }
 
-/// The daemon's state: its runs, the console directory it serves, the hub's
-/// status surface it proxies, and when it started (the machine view's uptime).
+/// The daemon's state: its runs, its task ledger, the console directory it
+/// serves, the hub's status surface it proxies, and when it started (the
+/// machine view's uptime).
 pub struct Node {
     registry: Registry,
+    tasks: TaskLedger,
     console_dir: PathBuf,
     hub_status: Option<HubStatus>,
     started_at_ms: u64,
@@ -170,9 +182,9 @@ pub struct MachineView {
 }
 
 impl Node {
-    /// A node with no runs that serves `config.console_dir`, boots every run
-    /// from `config`'s images, and publishes every state transition and
-    /// serial delta to its event bus.
+    /// A node with no runs and no tasks that serves `config.console_dir`,
+    /// boots every run from `config`'s images, and publishes every state
+    /// transition, serial delta and task transition to its event bus.
     pub fn new(config: Config) -> Self {
         let events = events::EventBus::new();
         Self {
@@ -183,8 +195,9 @@ impl Node {
                     workspace: config.workspace,
                 },
                 config.uds_dir,
-                events,
+                Arc::clone(&events),
             ),
+            tasks: TaskLedger::new(events),
             console_dir: config.console_dir,
             hub_status: config.hub_status,
             started_at_ms: epoch_ms(),
@@ -209,6 +222,11 @@ impl Node {
     /// The node's runs.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// The node's task ledger.
+    pub fn tasks(&self) -> &TaskLedger {
+        &self.tasks
     }
 
     /// The node's event bus (`GET /api/v0/events` streams it).
@@ -456,17 +474,51 @@ fn route(request: &http::Request, node: &Node) -> Response {
             "POST" => create_run(node, request.body()),
             _ => method_not_allowed("GET, POST"),
         },
+        "/api/v0/tasks" => match request.method() {
+            "GET" => list_tasks(node),
+            "POST" => create_task(node, request.body()),
+            _ => method_not_allowed("GET, POST"),
+        },
         "/" => match request.method() {
             "GET" => static_files::serve(node.console_dir(), static_files::INDEX),
             _ => method_not_allowed("GET"),
         },
         _ => match path.strip_prefix("/api/v0/runs/") {
             Some(rest) => run_endpoint(rest, request, node),
-            None => match request.method() {
-                "GET" => static_files::serve(node.console_dir(), path.strip_prefix('/').unwrap_or(path)),
-                _ => method_not_allowed("GET"),
+            None => match path.strip_prefix("/api/v0/tasks/") {
+                Some(rest) => task_endpoint(rest, request, node),
+                None => match request.method() {
+                    "GET" => {
+                        static_files::serve(node.console_dir(), path.strip_prefix('/').unwrap_or(path))
+                    }
+                    _ => method_not_allowed("GET"),
+                },
             },
         },
+    }
+}
+
+/// Routes a request under `/api/v0/tasks/`.
+fn task_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
+    if let Some(id) = rest.strip_suffix("/claim") {
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return claim_task(node, id, request.body());
+    }
+    if let Some(id) = rest.strip_suffix("/finish") {
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return finish_task(node, id, request.body());
+    }
+    if rest.is_empty() || rest.contains('/') {
+        return no_such_endpoint();
+    }
+    match request.method() {
+        "GET" => get_task(node, rest),
+        "DELETE" => withdraw_task(node, rest),
+        _ => method_not_allowed("GET, DELETE"),
     }
 }
 
@@ -573,6 +625,99 @@ fn delete_run(node: &Node, id: &str) -> Response {
             json_response(200, &run.view(Detail::Full))
         }
         None => Response::error(404, &format!("no run with id {id}")),
+    }
+}
+
+/// `GET /api/v0/tasks`: every task, oldest first.
+fn list_tasks(node: &Node) -> Response {
+    let tasks = node.tasks().list();
+    let view = TasksView {
+        tasks: tasks.iter().map(|task| task.view()).collect(),
+    };
+    json_response(200, &view)
+}
+
+/// `POST /api/v0/tasks`: creates a task in `open`.
+///
+/// The ledger checks the request and its cap before an id is handed out, so a
+/// refused create is a 400 (outside the contract) or a 409 (the ledger is
+/// full) and leaves the ledger as it was.
+fn create_task(node: &Node, body: &[u8]) -> Response {
+    let request: CreateTask = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid create request: {err}")),
+    };
+    match node.tasks().create(&request) {
+        Ok(task) => json_response(201, &task.view()),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `GET /api/v0/tasks/{id}`: one task.
+fn get_task(node: &Node, id: &str) -> Response {
+    match node.tasks().find(id) {
+        Some(task) => json_response(200, &task.view()),
+        None => Response::error(404, &format!("no task with id {id}")),
+    }
+}
+
+/// `POST /api/v0/tasks/{id}/claim`: binds an open task to a live agent.
+///
+/// The claim is only accepted from an agent the node's register shows
+/// connected right now - a VM that is running, reached by its guest CID - so
+/// an unknown or stopped CID is refused before the task is touched. That
+/// check is made here, against the register, and the ledger then refuses the
+/// claim itself when the task is not open: one enforcement point per rule.
+fn claim_task(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Some(task) = node.tasks().find(id) else {
+        return Response::error(404, &format!("no task with id {id}"));
+    };
+    let request: ClaimRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid claim request: {err}")),
+    };
+    let Some(agent) = node.registry().connected_agent(request.agent_cid) else {
+        let refused = ClaimError::AgentNotConnected {
+            cid: request.agent_cid,
+        };
+        return Response::error(refused.status(), &refused.to_string());
+    };
+    match task.claim(&agent) {
+        Ok(()) => json_response(200, &task.view()),
+        Err(refused) => {
+            let refused = ClaimError::Refused(refused);
+            Response::error(refused.status(), &refused.to_string())
+        }
+    }
+}
+
+/// `POST /api/v0/tasks/{id}/finish`: ends a claimed task as `done` or
+/// `failed`.
+fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Some(task) = node.tasks().find(id) else {
+        return Response::error(404, &format!("no task with id {id}"));
+    };
+    let request: FinishRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid finish request: {err}")),
+    };
+    if let Err(reason) = request.checked() {
+        return Response::error(400, &reason);
+    }
+    match task.finish(request.outcome, request.note) {
+        Ok(()) => json_response(200, &task.view()),
+        Err(refused) => Response::error(409, &refused.to_string()),
+    }
+}
+
+/// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended.
+fn withdraw_task(node: &Node, id: &str) -> Response {
+    match node.tasks().find(id) {
+        Some(task) => match task.withdraw() {
+            Ok(()) => json_response(200, &task.view()),
+            Err(refused) => Response::error(409, &refused.to_string()),
+        },
+        None => Response::error(404, &format!("no task with id {id}")),
     }
 }
 
