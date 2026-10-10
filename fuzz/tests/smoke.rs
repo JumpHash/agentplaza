@@ -14,7 +14,7 @@
 //! check — this is not a replacement for the targets, only a portable proof that
 //! they are wired to something that runs.
 
-use agentplaza_fuzz::{drive_csm, drive_packet};
+use agentplaza_fuzz::{BlockCoverage, RejectPath, drive_block_request, drive_csm, drive_packet};
 
 /// xorshift64: deterministic, dependency-free, good enough to smear input bytes.
 struct XorShift64(u64);
@@ -57,5 +57,67 @@ fn the_csm_harness_survives_pseudo_random_inputs() {
             rng.fill(&mut buf);
             drive_csm(&buf);
         }
+    }
+}
+
+/// The block-request corpus, with the coverage measurement: 10 lengths × 512
+/// inputs = 5120 inputs, and every parser gate must be reached.
+#[test]
+fn the_block_request_harness_survives_pseudo_random_inputs() {
+    let mut rng = XorShift64(0xbf58_476d_1ce4_e5b9);
+    let mut coverage = BlockCoverage::new();
+    for len in INPUT_LENGTHS {
+        for _ in 0..512 {
+            let mut buf = vec![0u8; len];
+            rng.fill(&mut buf);
+            coverage.record(drive_block_request(&buf));
+        }
+    }
+
+    assert_eq!(coverage.total(), 5120);
+
+    // Report what the corpus reached, then hold it to it: an input that parses
+    // outright, every request type, and at least one input for every gate the
+    // parser can fail.
+    for (label, count) in coverage.report() {
+        eprintln!("block_request coverage: {label:>18} = {count}");
+    }
+    let types: Vec<(&str, u64)> = coverage.type_report().collect();
+    for (label, count) in &types {
+        eprintln!("block_request type:     {label:>18} = {count}");
+    }
+
+    assert!(
+        coverage.parsed() > 0,
+        "no input reached a real parse of the request parser"
+    );
+    assert_eq!(
+        coverage.unbuilt(),
+        0,
+        "the harness could not lay a chain out for some input"
+    );
+    for (label, count) in &types {
+        assert!(
+            *count > 0,
+            "the corpus never reached a {label} request"
+        );
+    }
+    for path in [
+        RejectPath::ChainTooShort,
+        RejectPath::HeadWriteOnly,
+        RejectPath::DataWriteOnly,
+        RejectPath::DataReadOnly,
+        RejectPath::StatusReadOnly,
+        RejectPath::HeaderUnreadable,
+        RejectPath::DiscardUnreadable,
+        RejectPath::InvalidDataLength,
+        RejectPath::InvalidOffset,
+        RejectPath::StatusTooSmall,
+    ] {
+        assert!(
+            coverage.rejected(path) > 0,
+            "the corpus never reached the {} gate",
+            path.label()
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "agentplaza-fuzz"
-description = "Fuzz targets for the guest-controlled vsock parsers (vmm crate)"
+description = "Fuzz targets for the guest-controlled vsock and virtio-block parsers (vmm crate)"
 version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -46,6 +46,13 @@ bench = false
 [[bin]]
 name = "vsock_csm"
 path = "fuzz_targets/vsock_csm.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "block_request"
+path = "fuzz_targets/block_request.rs"
 test = false
 doc = false
 bench = false
