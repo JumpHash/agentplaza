@@ -1,28 +1,63 @@
 //! The scripted workflows: what a role family *does* with a task, and how the
 //! dispatcher drives it.
 //!
-//! A workflow is a function from a task and a [`Driver`] to the artifact paths
-//! the agent's workspace holds when it is done. The driver is the only thing a
-//! workflow talks to, and it has exactly one method: run one tool call on the
-//! agent and answer with the tool's own output. So a workflow is a *script* —
-//! a sequence of tool calls whose arguments may depend on earlier answers —
-//! and the transport (the hub's `POST /tell`, an agent's session, a tool
-//! implementation inside a guest) is entirely behind the driver. That is what
-//! makes the scripts unit-testable: a fake driver stands in for a whole agent
-//! and records the sequence.
+//! A workflow is a function from a task and a [`Driver`] to what the run left
+//! behind ([`Report`]). The driver is the only thing a workflow talks to, and
+//! it has exactly one method: run one tool call on the agent and answer with
+//! the tool's own output. So a workflow is a *script* — a sequence of tool
+//! calls whose arguments may depend on earlier answers — and the transport (the
+//! hub's `POST /tell`, an agent's session, a tool implementation inside a
+//! guest) is entirely behind the driver. That is what makes the scripts
+//! unit-testable: a fake driver stands in for a whole agent and records the
+//! sequence.
 //!
-//! The role → workflow table is keyed like the harness's own `TOOLS` table:
-//! one entry per role family, adding one is one entry plus its function. A
-//! role with no entry gets [`default_workflow`], so a fleet never has a role
-//! the dispatcher cannot work with — only one it works with generically.
+//! # What a role grants is what a workflow may drive
 //!
-//! Every workflow *proves* what it did rather than asserting it: each writes
-//! and then reads its artifact back, and a read that does not match what was
-//! written is a failure, not a success with a hopeful note. The finish note
-//! names the artifacts and the number of tool calls it took.
+//! The codex grants each role its tools (the manifest `--roles` names), and the
+//! hub enforces those grants: a call a role does not grant answers `403` and
+//! never reaches the agent. The dispatcher therefore does not *knowingly*
+//! attempt one — [`plan_for`] is that decision. It takes the role, finds the
+//! family's script, and checks every tool that script drives
+//! ([`Family::tools`]) against the manifest:
+//!
+//! * the family's own script, when every tool it drives is granted;
+//! * otherwise [`read_only_workflow`], when the role may `search` — a role whose
+//!   grants exclude the write a family's script would make still has something
+//!   real to do;
+//! * otherwise nothing at all: the task is left alone
+//!   ([`Plan::Skipped`]), which is what a role whose declared tools the harness
+//!   does not implement looks like from here.
+//!
+//! With no manifest there is no grant to check, so the family's script is
+//! driven exactly as it was before the policy existed — and the hub has no
+//! manifest either, so nothing can be refused.
+//!
+//! The **librarian** is why this is not hypothetical: the codex grants it
+//! `read_memory`, `search`, `transcript_search`, `read_artifact` and
+//! `submit_memory_change`, of which the harness implements one — `search` — so
+//! its script is read-only and the note it finishes with *is* the artifact it
+//! leaves.
+//!
+//! # The role → workflow table
+//!
+//! Keyed like the harness's own `TOOLS` table: one entry per role family, and
+//! adding one is one entry plus its function and the tools it drives. A role
+//! with no entry gets [`default_workflow`], so a fleet never has a role the
+//! dispatcher cannot work with — only one it works with generically.
+//!
+//! Every write workflow *proves* what it did rather than asserting it: it
+//! writes and then reads its artifact back, and a read that does not match what
+//! was written is a failure, not a success with a hopeful note. A read-only
+//! workflow has nothing to read back and no read grant to read it with, so its
+//! proof is the same shape of thing: the answer must be the tool's own — a
+//! rendering of an answer that is not that shape is a failure, and the note
+//! quotes the tool's own counts and first match rather than claiming anything
+//! on its own. Either way the finish note names what the run left and how many
+//! tool calls it took.
 
 use serde_json::json;
 
+use crate::roles::Manifest;
 use crate::views::Task;
 
 /// The most of a tool's output a note or a log line carries. A tool that
@@ -30,8 +65,45 @@ use crate::views::Task;
 /// nothing a guest says can grow a task's note past the ledger's own bound.
 pub const MAX_NOTE_DETAIL: usize = 512;
 
-/// The artifacts a workflow left behind, or the reason it could not finish.
-pub type Run = Result<Vec<String>, DriveError>;
+/// The most a read-only run's search token may occupy, in characters.
+///
+/// The token comes from the task's own goal, which is free text — so it is cut
+/// here, well under the harness's own `search` needle cap, rather than asking
+/// the agent for a pattern its tool would refuse. A refused call is not a
+/// read-only outcome.
+pub const MAX_PATTERN_CHARS: usize = 128;
+
+/// What a workflow produced, or the reason it could not finish.
+pub type Run = Result<Report, DriveError>;
+
+/// What a workflow left behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Report {
+    /// Artifact paths the agent's workspace now holds.
+    Artifacts(Vec<String>),
+    /// The workflow wrote nothing — its role's grants exclude every write — so
+    /// this one line, the script's own summary of what it read, *is* the task's
+    /// note: the note is the artifact.
+    Summary(String),
+}
+
+impl Report {
+    /// The artifacts the workspace holds; empty for a read-only run.
+    pub fn artifacts(&self) -> &[String] {
+        match self {
+            Self::Artifacts(paths) => paths,
+            Self::Summary(_) => &[],
+        }
+    }
+
+    /// The one line a read-only run carries, when it carries one.
+    pub fn summary(&self) -> Option<&str> {
+        match self {
+            Self::Artifacts(_) => None,
+            Self::Summary(line) => Some(line),
+        }
+    }
+}
 
 /// A workflow: the task to do and the driver that talks to the agent.
 pub type Workflow = fn(&Task, &mut dyn Driver) -> Run;
@@ -121,19 +193,134 @@ pub fn bounded(text: &str) -> String {
     out
 }
 
+/// One role family: the script its tasks run, and every harness tool that
+/// script drives — the list [`plan_for`] checks against the role's grants
+/// before anything is driven.
+///
+/// A family is a `const`, so a plan can carry `&'static Family` and be compared
+/// by name: two families are the same script exactly when they are the same
+/// name, which is what [`Plan`]'s equality means.
+#[derive(Debug, Clone, Copy)]
+pub struct Family {
+    /// The role the family is filed under; the empty string is the generic
+    /// default every unmatched role falls to.
+    pub role: &'static str,
+    /// The family's name, unique among the table's entries.
+    pub name: &'static str,
+    /// The script.
+    pub workflow: Workflow,
+    /// Every harness tool the script runs. A script that drove a tool not
+    /// listed here would be a script the plan cannot vouch for, so the list is
+    /// part of the entry rather than a comment beside it.
+    pub tools: &'static [&'static str],
+}
+
+/// The tools a read-only run drives.
+pub const READ_ONLY_TOOLS: &[&str] = &["search"];
+
+/// The generic default: the round trip into `notes.txt`.
+const DEFAULT_FAMILY: Family = Family {
+    role: "",
+    name: "default",
+    workflow: default_workflow,
+    tools: &["write_file", "read_file"],
+};
+
+/// A builder's: the round trip into `build-notes.txt`.
+const BUILDER_FAMILY: Family = Family {
+    role: "builder",
+    name: "builder",
+    workflow: builder_workflow,
+    tools: &["write_file", "read_file"],
+};
+
+/// A read-only family's: the workspace searched, nothing written. It is the
+/// librarian's own script and the fallback for any other role whose grants
+/// exclude the write a family's script would make.
+const READ_ONLY_FAMILY: Family = Family {
+    role: "librarian",
+    name: "read-only",
+    workflow: read_only_workflow,
+    tools: READ_ONLY_TOOLS,
+};
+
 /// The role → workflow table, keyed exactly like the harness's `TOOLS`: a role
 /// family is one entry, and its function is the script it runs.
-pub const WORKFLOWS: &[(&str, Workflow)] = &[
-    ("builder", builder_workflow),
-    ("librarian", librarian_workflow),
-];
+pub const WORKFLOWS: &[Family] = &[BUILDER_FAMILY, READ_ONLY_FAMILY];
 
-/// The workflow a role gets: its family's own, or the generic default.
-pub fn workflow_for(role: &str) -> Workflow {
+/// The family a role gets: its own, or the generic default.
+pub fn workflow_for(role: &str) -> &'static Family {
     WORKFLOWS
         .iter()
-        .find(|(name, _)| *name == role)
-        .map_or(default_workflow, |(_, workflow)| *workflow)
+        .find(|family| family.role == role)
+        .unwrap_or(&DEFAULT_FAMILY)
+}
+
+/// What the dispatcher may do with a task of one role, under the grants it was
+/// started with.
+#[derive(Clone, Copy)]
+pub enum Plan {
+    /// Drive this family's script: every tool it runs is granted.
+    Drive(&'static Family),
+    /// Do not touch the task at all — not claim it, not drive it. The reason
+    /// completes the dispatcher's log line.
+    Skipped(&'static str),
+}
+
+impl PartialEq for Plan {
+    /// Two plans are the same when they name the same script (or carry the same
+    /// reason). Function pointers are compared by what they *are*, not by the
+    /// address the compiler happens to give one, which is not something a
+    /// decision about a fleet should depend on.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Drive(mine), Self::Drive(theirs)) => mine.name == theirs.name,
+            (Self::Skipped(mine), Self::Skipped(theirs)) => mine == theirs,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Plan {}
+
+impl std::fmt::Debug for Plan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Drive(family) => write!(formatter, "Drive({})", family.name),
+            Self::Skipped(reason) => write!(formatter, "Skipped({reason:?})"),
+        }
+    }
+}
+
+/// The plan for a task of `role`, under `roles` (the manifest `--roles` named,
+/// or `None` when the dispatcher was started without one).
+///
+/// See the module note: the family's script is checked against the grants, the
+/// read-only script is the fallback for a role that may search but not write,
+/// and a role with nothing drivable at all is skipped — never claimed, never
+/// driven, and left open for a dispatcher whose manifest allows it.
+pub fn plan_for(role: &str, roles: Option<&Manifest>) -> Plan {
+    let family = workflow_for(role);
+    let Some(manifest) = roles else {
+        // No manifest, no grants to check: the family's script runs, exactly as
+        // it did before `--roles` existed.
+        return Plan::Drive(family);
+    };
+    if !manifest.knows(role) {
+        return Plan::Skipped("the role is not in the manifest");
+    }
+    if granted(manifest, role, family.tools) {
+        return Plan::Drive(family);
+    }
+    if granted(manifest, role, READ_ONLY_TOOLS) {
+        return Plan::Drive(&READ_ONLY_FAMILY);
+    }
+    Plan::Skipped("the role grants no tool this dispatcher may drive")
+}
+
+/// Whether the manifest grants every tool of `tools` for `role`.
+fn granted(manifest: &Manifest, role: &str, tools: &[&str]) -> bool {
+    tools.iter().all(|tool| manifest.grants(role, tool))
 }
 
 /// The generic default: write the task's own line into `notes.txt` and read it
@@ -142,7 +329,7 @@ pub fn workflow_for(role: &str) -> Workflow {
 pub fn default_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
     const ARTIFACT: &str = "notes.txt";
     write_then_read(driver, ARTIFACT, &task_line(task))?;
-    Ok(vec![ARTIFACT.to_string()])
+    Ok(Report::Artifacts(vec![ARTIFACT.to_string()]))
 }
 
 /// A builder's: the same round trip, into `build-notes.txt` — the notes a
@@ -150,31 +337,55 @@ pub fn default_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
 pub fn builder_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
     const ARTIFACT: &str = "build-notes.txt";
     write_then_read(driver, ARTIFACT, &task_line(task))?;
-    Ok(vec![ARTIFACT.to_string()])
+    Ok(Report::Artifacts(vec![ARTIFACT.to_string()]))
 }
 
-/// A librarian's: **list** the workspace first, then write the index from what
-/// the listing actually holds — so the index is of the workspace as it is, not
-/// as the dispatcher assumed — and read it back.
-pub fn librarian_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
-    const ARTIFACT: &str = "index.txt";
-    let listing = driver.call("list", json!({ "path": "." }))?;
-    // A listing the workflow cannot read is the agent's answer, not an
-    // artifact: the index would be a lie rather than a smaller index.
-    let rendered = render_listing(&listing)?;
-    let content = format!("{}\n{}", task_line(task), rendered);
-    write_then_read(driver, ARTIFACT, &content)?;
-    Ok(vec![ARTIFACT.to_string()])
+/// A read-only family's: the workspace **searched** for the token the task is
+/// about, with what the search found rendered into the task's note.
+///
+/// This is the codex librarian's whole reach, and the fallback for any role
+/// whose grants exclude the write a family's script would make. Nothing is
+/// written, so there is nothing to read back and no read grant to read it with;
+/// what the script proves is that the answer is the `search` tool's own — the
+/// note quotes its counts and its first match, and a search that matched
+/// nothing is reported as matching nothing rather than as an empty artifact.
+pub fn read_only_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
+    let pattern = search_pattern(task);
+    let output = driver.call("search", json!({ "pattern": pattern, "path": "." }))?;
+    Ok(Report::Summary(render_search(&output)?))
+}
+
+/// The token the workspace is searched for: the first word of the task's goal,
+/// or the task's id when the goal has none.
+///
+/// A goal is free text ("summarize the handbook"), and its first word names the
+/// thing the task is about — which is what a role that may only read can look
+/// for. The token is cut to [`MAX_PATTERN_CHARS`], so a goal that is one
+/// enormous word cannot ask the harness for a pattern past its own cap.
+pub fn search_pattern(task: &Task) -> String {
+    let word = task.goal.split_whitespace().next().unwrap_or("");
+    let word = if word.is_empty() {
+        task.id.as_str()
+    } else {
+        word
+    };
+    word.chars().take(MAX_PATTERN_CHARS).collect()
 }
 
 /// The note a task is finished with when its workflow completed: the artifact
-/// paths its workspace now holds and how many tool calls it took.
-pub fn done_note(artifacts: &[String], calls: u64) -> String {
-    format!("artifacts: {} ({calls} tool call(s))", artifacts.join(", "))
+/// paths its workspace now holds — or, for a run that wrote nothing, the line
+/// the script itself carries — and how many tool calls it took.
+pub fn done_note(report: &Report, calls: u64) -> String {
+    match report {
+        Report::Artifacts(paths) => {
+            format!("artifacts: {} ({calls} tool call(s))", paths.join(", "))
+        }
+        Report::Summary(line) => format!("{line} ({calls} tool call(s))"),
+    }
 }
 
-/// The line a workflow writes: the task's id and goal, on one line (a goal is
-/// free text and may be many lines; the artifact is a line either way).
+/// The line a write workflow writes: the task's id and goal, on one line (a
+/// goal is free text and may be many lines; the artifact is a line either way).
 fn task_line(task: &Task) -> String {
     format!("task {}: {}", task.id, one_line(&task.goal))
 }
@@ -217,41 +428,60 @@ fn read_content(output: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The `entries` of a `list` result, rendered as the index's body: one line
-/// per entry, in the order the agent reported them (the harness sorts by
-/// name), with the size for files.
-fn render_listing(output: &str) -> Result<String, DriveError> {
+/// A `search` result, rendered as the one line a read-only run finishes with:
+/// the token, how many lines matched over how many files, whether the tool says
+/// its own answer was cut short, and the first match as the evidence.
+///
+/// The whole line is bounded ([`bounded`]) so nothing a guest says can grow a
+/// task's note past the ledger's own bound.
+fn render_search(output: &str) -> Result<String, DriveError> {
     let bad = |reason: String| DriveError::BadOutput {
-        name: "list".to_string(),
+        name: "search".to_string(),
         reason,
     };
     let value: serde_json::Value = serde_json::from_str(output)
-        .map_err(|err| bad(format!("the listing is not JSON: {err}")))?;
-    let entries = value
-        .get("entries")
+        .map_err(|err| bad(format!("the search result is not JSON: {err}")))?;
+    let pattern = value
+        .get("pattern")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| bad("the search result carries no `pattern`".to_string()))?;
+    let matches = value
+        .get("matches")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| bad("the listing carries no `entries` array".to_string()))?;
-    let mut lines = Vec::with_capacity(entries.len() + 1);
-    lines.push(format!(
-        "workspace: {} entr{}",
-        entries.len(),
-        if entries.len() == 1 { "y" } else { "ies" }
-    ));
-    for entry in entries {
-        let name = entry
-            .get("name")
+        .ok_or_else(|| bad("the search result carries no `matches` array".to_string()))?;
+    let files = value
+        .get("files_scanned")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let mut line = format!(
+        "read-only: search {pattern:?} matched {} line(s) in {files} file(s) scanned",
+        matches.len()
+    );
+    if value
+        .get("truncated")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        // The tool caps its own answer, so a capped answer says so rather than
+        // reading as a whole workspace's worth of matches.
+        line.push_str(", the tool says its answer was cut short");
+    }
+    if let Some(first) = matches.first() {
+        let file = first
+            .get("file")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("<unnamed>");
-        let kind = entry
-            .get("kind")
+        let number = first
+            .get("line")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let text = first
+            .get("text")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("?");
-        match entry.get("size").and_then(serde_json::Value::as_u64) {
-            Some(size) => lines.push(format!("{name}\t{kind}\t{size}")),
-            None => lines.push(format!("{name}\t{kind}")),
-        }
+            .unwrap_or("");
+        line.push_str(&format!("; first: {file}:{number}: {}", bounded(text)));
     }
-    Ok(lines.join("\n"))
+    Ok(bounded(&line))
 }
 
 #[cfg(test)]
@@ -271,10 +501,25 @@ mod tests {
     }
 
     /// Runs a workflow against a fresh fake agent.
-    fn run(role: &str, task: &Task) -> (Result<Vec<String>, DriveError>, FakeAgent) {
+    fn run(role: &str, task: &Task) -> (Result<Report, DriveError>, FakeAgent) {
         let mut agent = FakeAgent::default();
-        let run = workflow_for(role)(task, &mut agent);
+        let run = (workflow_for(role).workflow)(task, &mut agent);
         (run, agent)
+    }
+
+    /// A manifest built from a role → tools table.
+    fn manifest(roles: &[(&str, &[&str])]) -> Manifest {
+        let text = json!({
+            "roles": roles
+                .iter()
+                .map(|(role, tools)| (
+                    (*role).to_string(),
+                    json!({ "role": role, "tools": tools }),
+                ))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
+        })
+        .to_string();
+        Manifest::parse(&text).expect("a well-formed test manifest")
     }
 
     /// The table is keyed by role, so each family runs its own script and every
@@ -282,7 +527,7 @@ mod tests {
     /// a duplicate would silently shadow the entry behind it.
     #[test]
     fn the_workflow_table_is_keyed_by_role() {
-        let mut keys: Vec<&str> = WORKFLOWS.iter().map(|(name, _)| *name).collect();
+        let mut keys: Vec<&str> = WORKFLOWS.iter().map(|family| family.role).collect();
         keys.sort_unstable();
         let count = keys.len();
         keys.dedup();
@@ -291,21 +536,156 @@ mod tests {
         let (builder, _) = run("builder", &task("t1", "g", "builder"));
         assert_eq!(
             builder.expect("the builder workflow runs"),
-            vec!["build-notes.txt".to_string()]
+            Report::Artifacts(vec!["build-notes.txt".to_string()])
         );
         let (librarian, _) = run("librarian", &task("t1", "g", "librarian"));
         assert_eq!(
             librarian.expect("the librarian workflow runs"),
-            vec!["index.txt".to_string()]
+            Report::Summary(
+                "read-only: search \"g\" matched 0 line(s) in 0 file(s) scanned".to_string()
+            )
         );
         for generic in ["architect", "builderx", "Builder", ""] {
             let (run, _) = run(generic, &task("t1", "g", generic));
             assert_eq!(
                 run.expect("the default workflow runs"),
-                vec!["notes.txt".to_string()],
+                Report::Artifacts(vec!["notes.txt".to_string()]),
                 "{generic:?} has no family of its own"
             );
         }
+    }
+
+    /// Each family declares the tools its script drives, and those lists are the
+    /// scripts' own: the table is what the plan vouches for.
+    #[test]
+    fn every_family_declares_the_tools_it_drives() {
+        for family in WORKFLOWS {
+            assert!(!family.tools.is_empty(), "{} drives something", family.role);
+            // What the declared list is checked against below: the calls the
+            // script actually makes, recorded by the fake agent.
+            let mut agent = FakeAgent::default();
+            (family.workflow)(&task("t1", "g", family.role), &mut agent).expect("the script runs");
+            let driven = agent.sequence();
+            for tool in &driven {
+                assert!(
+                    family.tools.contains(tool),
+                    "{} drives {tool:?}, which its entry does not declare: {driven:?}",
+                    family.role
+                );
+            }
+            for tool in family.tools {
+                assert!(
+                    driven.contains(tool),
+                    "{} declares {tool:?} but its script never drives it: {driven:?}",
+                    family.role
+                );
+            }
+        }
+    }
+
+    /// The plan with no manifest: the family's script is driven and nothing is
+    /// checked — the dispatcher behaves exactly as it did before `--roles`.
+    #[test]
+    fn without_a_manifest_every_role_is_driven() {
+        for role in ["builder", "librarian", "architect", "intruder", ""] {
+            let plan = plan_for(role, None);
+            assert_eq!(
+                plan,
+                Plan::Drive(workflow_for(role)),
+                "{role:?} is driven by its own family's script"
+            );
+        }
+    }
+
+    /// The plan with a manifest is the grants: a builder writes, a librarian
+    /// only searches, a role that may read but not write falls back to the
+    /// read-only script, and a role with nothing drivable is left alone.
+    #[test]
+    fn the_plan_is_the_roles_grants() {
+        let roles = manifest(&[
+            (
+                "builder",
+                &[
+                    "bash",
+                    "read_file",
+                    "write_file",
+                    "edit_file",
+                    "list",
+                    "search",
+                ],
+            ),
+            ("librarian", &["read_memory", "search", "transcript_search"]),
+            ("architect", &["bash", "read_file", "list", "search"]),
+            ("auditor", &["read_audit", "read_usage", "search"]),
+            (
+                "legal-gov-judge",
+                &["read_case_record", "search_precedent", "issue_ruling"],
+            ),
+            ("mayor", &["read_file", "list", "search"]),
+        ]);
+        let roles = Some(&roles);
+
+        // Granted: the family's own script.
+        assert_eq!(
+            plan_for("builder", roles),
+            Plan::Drive(&BUILDER_FAMILY),
+            "a builder's shell and file tools cover its round trip"
+        );
+        assert_eq!(
+            plan_for("librarian", roles),
+            Plan::Drive(&READ_ONLY_FAMILY),
+            "a librarian's script is already read-only"
+        );
+        // The codex's architect declares no `write_file` — but it does declare
+        // `bash`, and a shell can write, so its round trip is granted through
+        // the shell. (This is the implication stated in the mapping, taken
+        // literally.)
+        assert_eq!(
+            plan_for("architect", roles),
+            Plan::Drive(&DEFAULT_FAMILY),
+            "a shell grant covers the default's write"
+        );
+        // A role that may read and search but has no write *and* no shell — the
+        // mayor — falls back to the read-only script.
+        assert_eq!(
+            plan_for("mayor", roles),
+            Plan::Drive(&READ_ONLY_FAMILY),
+            "no write grant and no shell: the read-only fallback"
+        );
+        // A role the harness implements nothing for cannot be driven at all.
+        assert_eq!(
+            plan_for("legal-gov-judge", roles),
+            Plan::Skipped("the role grants no tool this dispatcher may drive")
+        );
+        // A role the manifest does not carry at all: the hub would refuse every
+        // call, so nothing is driven.
+        assert_eq!(
+            plan_for("intruder", roles),
+            Plan::Skipped("the role is not in the manifest")
+        );
+        assert_eq!(
+            plan_for("", roles),
+            Plan::Skipped("the role is not in the manifest"),
+            "an unnamed agent is not in the manifest either"
+        );
+    }
+
+    /// A `builder` whose manifest entry grants no write still falls back: the
+    /// plan reads the grants, not the family's name.
+    #[test]
+    fn a_family_whose_grants_exclude_its_script_falls_back() {
+        let roles = manifest(&[("builder", &["read_file", "list", "search"])]);
+        assert_eq!(
+            plan_for("builder", Some(&roles)),
+            Plan::Drive(&READ_ONLY_FAMILY)
+        );
+
+        // And with no search either, there is nothing left to drive.
+        let roles = manifest(&[("builder", &["read_file", "list"])]);
+        assert_eq!(
+            plan_for("builder", Some(&roles)),
+            Plan::Skipped("the role grants no tool this dispatcher may drive")
+        );
     }
 
     /// The default workflow's script: write the task's own line, read it back.
@@ -316,7 +696,7 @@ mod tests {
         let (run, agent) = run("architect", &task("t7", "draft\nthe handbook", "architect"));
         assert_eq!(
             run.expect("the workflow runs"),
-            vec!["notes.txt".to_string()]
+            Report::Artifacts(vec!["notes.txt".to_string()])
         );
         assert_eq!(agent.sequence(), vec!["write_file", "read_file"]);
         assert_eq!(agent.arg(0, "path"), "notes.txt");
@@ -331,7 +711,7 @@ mod tests {
         let (run, agent) = run("builder", &task("t3", "raise the plaza", "builder"));
         assert_eq!(
             run.expect("the workflow runs"),
-            vec!["build-notes.txt".to_string()]
+            Report::Artifacts(vec!["build-notes.txt".to_string()])
         );
         assert_eq!(agent.sequence(), vec!["write_file", "read_file"]);
         assert_eq!(agent.arg(0, "path"), "build-notes.txt");
@@ -339,41 +719,84 @@ mod tests {
         assert_eq!(agent.calls(), 2);
     }
 
-    /// The librarian's script: list first, then write an index of what the
-    /// workspace actually holds (the task's line, then the listing), then read
-    /// it back.
+    /// The librarian's script writes nothing at all: it searches for the token
+    /// the task is about, and the note it finishes with carries what the search
+    /// found. This is the codex's librarian — `search` and nothing else.
     #[test]
-    fn the_librarian_workflow_lists_the_workspace_into_an_index() {
-        let (run, agent) = run("librarian", &task("t5", "index the plaza", "librarian"));
-        assert_eq!(
-            run.expect("the workflow runs"),
-            vec!["index.txt".to_string()]
-        );
-        assert_eq!(agent.sequence(), vec!["list", "write_file", "read_file"]);
+    fn the_librarian_workflow_reads_and_never_writes() {
+        let mut agent = FakeAgent::default()
+            .with_file("handbook.md", "the plaza's handbook\nmemory curation\n");
+        let run = read_only_workflow(&task("t5", "memory curation", "librarian"), &mut agent)
+            .expect("the workflow runs");
+
+        // One call, and it is a read: nothing was written to the workspace.
+        assert_eq!(agent.sequence(), vec!["search"]);
+        assert_eq!(agent.arg(0, "pattern"), "memory");
         assert_eq!(agent.arg(0, "path"), ".");
-        assert_eq!(agent.arg(1, "path"), "index.txt");
-        let index = agent.arg(1, "content");
-        assert!(
-            index.starts_with("task t5: index the plaza\nworkspace: 0 entries"),
-            "{index:?}"
+        assert_eq!(
+            agent.files().keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["handbook.md"],
+            "the workspace holds exactly what it held before"
         );
-        assert_eq!(agent.arg(2, "path"), "index.txt");
-        assert_eq!(agent.calls(), 3);
+
+        // The note is the artifact: the tool's own counts and its first match.
+        let Report::Summary(line) = &run else {
+            panic!("a read-only run reports a summary, not artifacts: {run:?}");
+        };
+        assert_eq!(
+            line,
+            "read-only: search \"memory\" matched 1 line(s) in 1 file(s) scanned; \
+             first: handbook.md:2: memory curation"
+        );
+        assert!(run.artifacts().is_empty());
+        assert_eq!(
+            done_note(&run, agent.calls()),
+            format!("{line} (1 tool call(s))")
+        );
     }
 
-    /// The index is of the workspace as it is: an entry already there shows up
-    /// in the listing the index is written from.
+    /// A search that matched nothing is reported as matching nothing: the note
+    /// quotes the tool, it does not invent a finding.
     #[test]
-    fn the_librarians_index_is_of_the_workspace_it_found() {
-        let mut agent = FakeAgent::default().with_file("handbook.md", "the plaza's handbook");
-        let run = librarian_workflow(&task("t5", "index", "librarian"), &mut agent)
+    fn a_read_only_run_that_found_nothing_says_so() {
+        let mut agent = FakeAgent::default();
+        let run = read_only_workflow(&task("t5", "nothing here", "librarian"), &mut agent)
             .expect("the workflow runs");
-        assert_eq!(run, vec!["index.txt".to_string()]);
-        let index = agent
-            .file("index.txt")
-            .expect("the index was written to the agent's workspace");
-        assert!(index.contains("workspace: 1 entry"), "{index:?}");
-        assert!(index.contains("handbook.md\tfile\t20"), "{index:?}");
+        assert_eq!(
+            run,
+            Report::Summary(
+                "read-only: search \"nothing\" matched 0 line(s) in 0 file(s) scanned".to_string()
+            )
+        );
+        // And an answer that is not a search result is a failure, not an empty
+        // note.
+        let mut agent = FakeAgent::answering("the tool said something else");
+        let err = read_only_workflow(&task("t5", "memory", "librarian"), &mut agent)
+            .expect_err("not a search result");
+        assert!(matches!(err, DriveError::BadOutput { .. }), "{err:?}");
+        assert!(!err.is_retryable());
+    }
+
+    /// The search token: the first word of the goal, the task's id when the goal
+    /// is blank, and never longer than the cap a `search` call can take.
+    #[test]
+    fn the_search_token_comes_from_the_task_and_is_bounded() {
+        assert_eq!(
+            search_pattern(&task("t5", "memory curation", "librarian")),
+            "memory"
+        );
+        assert_eq!(
+            search_pattern(&task("t5", "  \n memory\tcuration ", "librarian")),
+            "memory"
+        );
+        assert_eq!(search_pattern(&task("t5", "", "librarian")), "t5");
+        assert_eq!(search_pattern(&task("t5", "   ", "librarian")), "t5");
+        let long = search_pattern(&task(
+            "t5",
+            &"é".repeat(MAX_PATTERN_CHARS + 40),
+            "librarian",
+        ));
+        assert_eq!(long.chars().count(), MAX_PATTERN_CHARS);
     }
 
     /// A read-back that does not match what was written is a failure, not a
@@ -388,37 +811,6 @@ mod tests {
         assert!(!err.is_retryable());
         assert!(err.note().contains("read back"), "{}", err.note());
         assert_eq!(agent.calls(), 2);
-    }
-
-    /// A listing the workflow cannot read is the agent's answer, not an
-    /// artifact: the index is not written from a guess.
-    #[test]
-    fn a_listing_that_is_not_a_listing_is_a_bad_output() {
-        // The renderer's rule, on the shapes a broken agent would send.
-        let err = render_listing("not json at all").expect_err("not a listing");
-        assert!(matches!(err, DriveError::BadOutput { .. }), "{err:?}");
-        let err = render_listing(r#"{"path":"."}"#).expect_err("no entries array");
-        assert!(matches!(err, DriveError::BadOutput { .. }), "{err:?}");
-        assert!(!err.is_retryable());
-
-        // And a real listing renders deterministically.
-        let listing = render_listing(
-            r#"{"path":".","entries":[{"name":"a.txt","kind":"file","size":3},
-                {"name":"sub","kind":"dir","size":null}],"truncated":false,"skipped":0}"#,
-        )
-        .expect("a listing renders");
-        assert_eq!(listing, "workspace: 2 entries\na.txt\tfile\t3\nsub\tdir");
-
-        // An agent that answers `list` with something else writes no index.
-        let mut agent = FakeAgent::listing("not a listing");
-        let err = librarian_workflow(&task("t5", "index", "librarian"), &mut agent)
-            .expect_err("the listing is not a listing");
-        assert!(matches!(err, DriveError::BadOutput { .. }), "{err:?}");
-        assert_eq!(agent.sequence(), vec!["list"]);
-        assert!(
-            agent.files().is_empty(),
-            "no index was written from a guess"
-        );
     }
 
     /// A refusal is the agent's own answer and is not retryable; a call that
@@ -458,16 +850,75 @@ mod tests {
     #[test]
     fn the_done_note_names_the_artifacts_and_the_call_count() {
         let mut agent = FakeAgent::default();
-        let artifacts = builder_workflow(&task("t3", "raise the plaza", "builder"), &mut agent)
+        let report = builder_workflow(&task("t3", "raise the plaza", "builder"), &mut agent)
             .expect("the workflow runs");
         assert_eq!(
-            done_note(&artifacts, agent.calls()),
+            done_note(&report, agent.calls()),
             "artifacts: build-notes.txt (2 tool call(s))"
         );
-        assert_eq!(done_note(&[], 0), "artifacts:  (0 tool call(s))");
         assert_eq!(
-            done_note(&["a.txt".to_string(), "b/index.txt".to_string()], 7),
+            done_note(&Report::Artifacts(vec![]), 0),
+            "artifacts:  (0 tool call(s))"
+        );
+        assert_eq!(
+            done_note(
+                &Report::Artifacts(vec!["a.txt".to_string(), "b/index.txt".to_string()]),
+                7
+            ),
             "artifacts: a.txt, b/index.txt (7 tool call(s))"
+        );
+        assert_eq!(
+            done_note(&Report::Summary("read-only: 3 match(es)".to_string()), 1),
+            "read-only: 3 match(es) (1 tool call(s))"
+        );
+    }
+
+    /// The search rendering, on the shapes a broken agent would send: only the
+    /// `search` shape renders, a cut-short answer says so, and a guest's match
+    /// text cannot grow the note past its bound.
+    #[test]
+    fn the_search_rendering_is_the_tools_own_answer() {
+        for bad in [
+            "not json at all",
+            r#"{"pattern":"x"}"#,
+            r#"{"matches":[]}"#,
+            r#"{"pattern":"x","matches":"none"}"#,
+        ] {
+            let err = render_search(bad).expect_err("not a search result");
+            assert!(
+                matches!(err, DriveError::BadOutput { .. }),
+                "{bad}: {err:?}"
+            );
+        }
+
+        let rendered = render_search(
+            r#"{"pattern":"p","path":".","matches":[{"file":"a.txt","line":3,"text":"p here"}],
+                "files_scanned":2,"bytes_scanned":9,"skipped":0,"truncated":false}"#,
+        )
+        .expect("a search result renders");
+        assert_eq!(
+            rendered,
+            "read-only: search \"p\" matched 1 line(s) in 2 file(s) scanned; first: a.txt:3: p here"
+        );
+
+        let cut = render_search(
+            r#"{"pattern":"p","matches":[{"file":"a.txt","line":1,"text":"p"}],
+                "files_scanned":9,"truncated":true}"#,
+        )
+        .expect("a search result renders");
+        assert!(cut.contains("cut short"), "{cut}");
+        assert!(cut.contains("9 file(s)"), "{cut}");
+
+        // A guest's enormous match text is bounded, and so is the whole line.
+        let huge = render_search(&format!(
+            r#"{{"pattern":"p","matches":[{{"file":"a.txt","line":1,"text":"{}"}}],"files_scanned":1}}"#,
+            "x".repeat(100_000)
+        ))
+        .expect("a search result renders");
+        assert!(
+            huge.chars().count() <= MAX_NOTE_DETAIL + 1,
+            "{} chars",
+            huge.chars().count()
         );
     }
 

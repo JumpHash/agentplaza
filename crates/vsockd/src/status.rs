@@ -376,6 +376,7 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -476,7 +477,8 @@ fn status_json(snapshot: &Snapshot, facts: &NodeFacts, uptime_s: u64) -> String 
     };
     // The view is integers and strings, so serialising cannot fail; if it ever
     // did, the surface still must not panic.
-    serde_json::to_string(&body).unwrap_or_else(|_| r#"{"error":"cannot serialise the status"}"#.to_string())
+    serde_json::to_string(&body)
+        .unwrap_or_else(|_| r#"{"error":"cannot serialise the status"}"#.to_string())
 }
 
 /// Answers one parsed request.
@@ -553,12 +555,8 @@ mod guard_tests {
     /// while loopback forms and a Host-less request pass.
     #[test]
     fn only_loopback_hosts_are_served() {
-        let read = |request: &str| {
-            read_head(
-                &mut BufReader::new(request.as_bytes()),
-                Body::Forbidden,
-            )
-        };
+        let read =
+            |request: &str| read_head(&mut BufReader::new(request.as_bytes()), Body::Forbidden);
         let err = read("GET /status HTTP/1.1\r\nHost: evil.example:19080\r\n\r\n")
             .expect_err("a rebinding Host is refused");
         assert!(err.0.contains("loopback"), "{}", err.0);
@@ -590,7 +588,7 @@ mod tests {
 
     /// A hub whose instants are translated against `epoch_ms` at `anchor`.
     fn anchored(anchor: Instant, epoch_ms: u64) -> Hub {
-        Hub::started_at(Arc::new(Quiet), anchor, epoch_ms)
+        Hub::started_at(Arc::new(Quiet), None, anchor, epoch_ms)
     }
 
     /// The daemon's facts, with a caller-chosen start for the uptime.
@@ -603,8 +601,7 @@ mod tests {
     }
 
     fn get(path: &str) -> Request {
-        read(&format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"))
-            .expect("a well-formed GET")
+        read(&format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n")).expect("a well-formed GET")
     }
 
     /// An empty registry is an empty `agents` list, and the host facts are the
@@ -640,7 +637,10 @@ mod tests {
         assert_eq!(value["agents"][0]["cid"], 10);
         assert_eq!(value["agents"][0]["role"], "builder");
         assert_eq!(value["agents"][0]["connected_at_ms"], 1_700_000_000_250u64);
-        assert_eq!(value["agents"][0]["last_heartbeat_ms"], 1_700_000_005_250u64);
+        assert_eq!(
+            value["agents"][0]["last_heartbeat_ms"],
+            1_700_000_005_250u64
+        );
         assert_eq!(value["agents"][0]["calls"], 3);
     }
 
@@ -703,7 +703,11 @@ mod tests {
             &facts,
         );
         assert_eq!(posted.status(), 405);
-        assert_eq!(route(&get("/healthz"), &hub, &facts).status(), 200, "GET still works");
+        assert_eq!(
+            route(&get("/healthz"), &hub, &facts).status(),
+            200,
+            "GET still works"
+        );
     }
 
     /// A malformed request is a 400 at the parser, never a panic: a head that
@@ -794,7 +798,9 @@ mod tests {
     /// Sends one raw request and reads the response up to the server's close.
     fn request_over_tcp(addr: std::net::SocketAddr, raw: &str) -> String {
         let mut stream = TcpStream::connect(addr).expect("the client connects");
-        stream.write_all(raw.as_bytes()).expect("the request is written");
+        stream
+            .write_all(raw.as_bytes())
+            .expect("the request is written");
         let mut response = String::new();
         stream
             .read_to_string(&mut response)

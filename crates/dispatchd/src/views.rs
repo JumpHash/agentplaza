@@ -140,6 +140,15 @@ pub enum Tell {
         /// The tool's output.
         output: String,
     },
+    /// The hub refused to forward the call: the role's grants do not include it
+    /// (`403`). The agent never saw the call, so this is the *policy's* answer
+    /// rather than the agent's own, and it is final — another pass would be
+    /// refused just the same.
+    Refused {
+        /// The hub's own words (`role <r> does not grant <tool>`, or which
+        /// agent it could not name at all).
+        reason: String,
+    },
     /// The hub waited and the agent did not answer. The session is untouched.
     TimedOut {
         /// How long the dispatcher was willing to wait.

@@ -78,6 +78,16 @@ impl Operator for Hub {
             504 => Ok(Tell::TimedOut {
                 waited_ms: timeout_ms,
             }),
+            // The grants refused it: the body is the admin surface's own
+            // `{"ok":false,"output":"role <r> does not grant <tool>"}`, so the
+            // reason is the hub's words and the dispatcher reports them.
+            403 => {
+                let refusal: TellView = serde_json::from_slice(answer.body())
+                    .map_err(|err| format!("the hub's refusal could not be read: {err}"))?;
+                Ok(Tell::Refused {
+                    reason: refusal.output,
+                })
+            }
             other => Err(format!("the hub answered {other}: {}", answer.refusal())),
         }
     }
@@ -218,6 +228,34 @@ mod tests {
             .tell(300, "echo", &args, 5_000)
             .expect_err("the hub broke");
         assert_eq!(err, "the hub answered 500: boom");
+        served.join().expect("the stub surface finishes");
+    }
+
+    /// The grants refusal is its own verdict: the `403`'s body is the admin
+    /// surface's `{"ok":false,"output":"role <r> does not grant <tool>"}`, and
+    /// the reason comes back verbatim so a pass can report the hub's own words
+    /// rather than paraphrasing them.
+    #[test]
+    fn a_forbidden_tell_is_the_hubs_own_reason() {
+        let (target, _requests, served) = stub(vec![(
+            403,
+            r#"{"ok":false,"output":"role librarian does not grant write_file"}"#,
+        )]);
+        let hub = Hub { target };
+        let answer = hub
+            .tell(
+                310,
+                "write_file",
+                &serde_json::json!({ "path": "index.txt" }),
+                5_000,
+            )
+            .expect("the refusal is an answer");
+        assert_eq!(
+            answer,
+            Tell::Refused {
+                reason: "role librarian does not grant write_file".to_string(),
+            }
+        );
         served.join().expect("the stub surface finishes");
     }
 

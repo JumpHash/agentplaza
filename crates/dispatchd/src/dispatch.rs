@@ -5,24 +5,32 @@
 //! log says which in the dispatcher's own voice:
 //!
 //! * **skip** — the task names no role, or the role it names has no CONNECTED
-//!   agent, or its claim was refused. A task nobody is addressed to stays
-//!   `open`; the dispatcher does not invent an agent for it.
-//! * **claim** — the task is `open` and a connected agent of its role exists:
-//!   bind it (`POST /tasks/{id}/claim`) and drive it.
-//! * **drive** — run the role family's workflow ([`crate::workflow`]) through
+//!   agent, or the role's grants do not cover any script this dispatcher may
+//!   drive ([`crate::workflow::plan_for`]), or its claim was refused. A task
+//!   nobody is addressed to, or a role nothing may be driven for, stays `open`;
+//!   the dispatcher does not invent an agent, and does not knowingly attempt a
+//!   call the hub would refuse.
+//! * **claim** — the task is `open`, a connected agent of its role exists, and
+//!   its role can be driven: bind it (`POST /tasks/{id}/claim`) and drive it.
+//! * **drive** — run the planned workflow ([`crate::workflow`]) through
 //!   the hub's `POST /tell`, one tool call at a time, and finish the task
-//!   `done` with its artifacts — or `failed` with the reason.
+//!   `done` with its artifacts (or, for a read-only run, with the line the
+//!   script read out) — or `failed` with the reason.
 //! * **retry** — the agent could not be reached: leave the task claimed and
 //!   try again on later passes, up to [`MAX_ATTEMPTS`], then finish it
 //!   `failed` with the evidence.
 //!
 //! What is retried and what is not is a deliberate split. An agent that
-//! **answered** — a tool refusal, a listing the workflow cannot read, a
+//! **answered** — a tool refusal, an answer the workflow cannot read, a
 //! read-back that did not match — has said something final, and the next pass
 //! would hear the same thing: that task is finished `failed` at once, with the
 //! agent's own words. An agent that **could not be reached** (not connected,
 //! no answer in time, the call could not be made at all) is a condition that
-//! may pass, so it is retried — bounded — before being given up on.
+//! may pass, so it is retried — bounded — before being given up on. A hub that
+//! **refused** the call on the role's grants is neither: it is the policy's
+//! answer, final in the same way an agent's refusal is, and `403` is
+//! recognised as exactly that ([`Tell::Refused`]) rather than read as a
+//! transport failure.
 //!
 //! The bound is stated rather than implied: **a pass drives every actionable
 //! task, one at a time** — never two tool calls in flight, anywhere — and the
@@ -32,8 +40,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::roles::Manifest;
 use crate::views::{Agent, Outcome, Task, Tell};
-use crate::workflow::{self, DriveError, Driver};
+use crate::workflow::{self, DriveError, Driver, Plan};
 
 /// How many passes a task whose agent could not be reached is retried for
 /// before it is finished `failed` with the evidence. Attempts are counted per
@@ -129,12 +138,18 @@ struct Attempt {
     attempts: u32,
 }
 
-/// The dispatcher: the ledger and the hub, and the one bit of state that only
-/// concerns retries.
+/// The dispatcher: the ledger and the hub, the codex's grants it was started
+/// with, and the one bit of state that only concerns retries.
 pub struct Dispatcher<L: Ledger, O: Operator> {
     ledger: L,
     operator: O,
     log: Arc<dyn Logger + Send + Sync>,
+    /// The codex's tool grants (`--roles`), when a manifest was named: what
+    /// each role may be driven with, read so the dispatcher does not knowingly
+    /// attempt a call the hub would refuse (see
+    /// [`crate::workflow::plan_for`]). `None` is the dispatcher without a
+    /// manifest: every role drives its family's script.
+    roles: Option<Manifest>,
     /// Retries, by task id. Nothing else is remembered: the ledger holds the
     /// tasks and their states, and this only bounds how many passes a task
     /// whose agent is unreachable is tried for.
@@ -143,12 +158,24 @@ pub struct Dispatcher<L: Ledger, O: Operator> {
 }
 
 impl<L: Ledger, O: Operator> Dispatcher<L, O> {
-    /// A dispatcher over `ledger` and `operator`, logging to `log`.
+    /// A dispatcher over `ledger` and `operator`, logging to `log`, with no
+    /// grant policy: every role drives its family's script.
     pub fn new(ledger: L, operator: O, log: Arc<dyn Logger + Send + Sync>) -> Self {
+        Self::with_roles(ledger, operator, log, None)
+    }
+
+    /// A dispatcher that holds `roles` as the grants it plans against.
+    pub fn with_roles(
+        ledger: L,
+        operator: O,
+        log: Arc<dyn Logger + Send + Sync>,
+        roles: Option<Manifest>,
+    ) -> Self {
         Self {
             ledger,
             operator,
             log,
+            roles,
             retries: HashMap::new(),
             passes: 0,
         }
@@ -198,7 +225,25 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                 self.start(task, role, &agents, &mut report);
             } else if task.is_claimed() {
                 match self.retries.get(&task.id).map(|attempt| attempt.cid) {
-                    Some(cid) => self.drive(task, role, cid, &mut report),
+                    Some(cid) => {
+                        // A task this dispatcher claimed on an earlier pass: an
+                        // interruptible wait stopped before the tool result
+                        // landed. The plan is re-decided from the same manifest
+                        // it was claimed under, so a resumed retry drives exactly
+                        // what the claim was made for. (A `Skipped` plan here
+                        // means a claim made under an earlier manifest; it is
+                        // reported, never driven into a refusal.)
+                        match workflow::plan_for(role, self.roles.as_ref()) {
+                            Plan::Drive(family) => self.drive(task, role, family, cid, &mut report),
+                            Plan::Skipped(reason) => {
+                                report.skipped += 1;
+                                log.line(&format!(
+                                    "dispatchd: task {} (role {role}) is claimed but {reason}; skipped",
+                                    task.id
+                                ));
+                            }
+                        }
+                    }
                     None => {
                         // Claimed by nobody this dispatcher knows: another
                         // dispatcher's, or one claimed before a restart.
@@ -230,10 +275,27 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
         Ok(report)
     }
 
-    /// Starts an open task: find a connected agent of its role, claim the task
-    /// for it, and drive it.
+    /// Starts an open task: decide what may be driven for its role, find a
+    /// connected agent of that role, claim the task for it, and drive it.
+    ///
+    /// The plan comes first, before any agent is looked for and before the task
+    /// is claimed: a role whose grants cover no script this dispatcher may drive
+    /// is *not claimed* — claiming a task only to leave it would take it out of
+    /// the hands of a dispatcher whose manifest does allow it, and the ledger
+    /// has no way back to `open`.
     fn start(&mut self, task: &Task, role: &str, agents: &[Agent], report: &mut Reporter) {
         let log = Arc::clone(&self.log);
+        let family = match workflow::plan_for(role, self.roles.as_ref()) {
+            Plan::Drive(family) => family,
+            Plan::Skipped(reason) => {
+                report.skipped += 1;
+                log.line(&format!(
+                    "dispatchd: task {} (role {role}): {reason}; skipped",
+                    task.id
+                ));
+                return;
+            }
+        };
         let Some(agent) = pick_agent(agents, role) else {
             report.skipped += 1;
             log.line(&format!(
@@ -252,7 +314,7 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                 ));
                 self.retries
                     .insert(task.id.clone(), Attempt { cid, attempts: 0 });
-                self.drive(task, role, cid, report);
+                self.drive(task, role, family, cid, report);
             }
             Err(reason) => {
                 report.skipped += 1;
@@ -264,32 +326,41 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
         }
     }
 
-    /// Drives one claimed task through its role family's workflow and finishes
+    /// Drives one claimed task through its planned family's script and finishes
     /// it, whichever way it goes.
-    fn drive(&mut self, task: &Task, role: &str, cid: u64, report: &mut Reporter) {
+    fn drive(
+        &mut self,
+        task: &Task,
+        role: &str,
+        family: &'static workflow::Family,
+        cid: u64,
+        tally: &mut Reporter,
+    ) {
         let log = Arc::clone(&self.log);
         let attempts = self.note_attempt(&task.id, cid);
-        let workflow = workflow::workflow_for(role);
         // The driver borrows the hub for the length of the run; the ledger and
         // the retry map are separate fields, so finishing the task afterwards
         // needs no lock and no re-borrow.
         let outcome = {
             let mut driver = AgentDriver::new(&self.operator, cid, TELL_TIMEOUT_MS);
-            workflow(task, &mut driver).map(|artifacts| (artifacts, driver.calls()))
+            (family.workflow)(task, &mut driver).map(|report| (report, driver.calls()))
         };
         match outcome {
-            Ok((artifacts, calls)) => {
-                let note = workflow::done_note(&artifacts, calls);
+            Ok((report, calls)) => {
+                // A run that wrote files names them; a read-only run carries the
+                // line its script read out, and that line is the note. Either
+                // way the note is what the run actually did.
+                let note = workflow::done_note(&report, calls);
                 match self.ledger.finish(&task.id, Outcome::Done, &note) {
                     Ok(()) => {
-                        report.done += 1;
+                        tally.done += 1;
                         log.line(&format!(
                             "dispatchd: task {} (role {role}) -> agent cid {cid} finished done: {note}",
                             task.id
                         ));
                     }
                     Err(reason) => {
-                        report.failed += 1;
+                        tally.failed += 1;
                         log.line(&format!(
                             "dispatchd: task {} (role {role}) -> agent cid {cid}: the ledger refused to finish it done: {reason}",
                             task.id
@@ -300,14 +371,15 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
             Err(err) => {
                 let note = err.note();
                 if err.is_retryable() && attempts < MAX_ATTEMPTS {
-                    report.deferred += 1;
+                    tally.deferred += 1;
                     log.line(&format!(
                         "dispatchd: task {} (role {role}) -> agent cid {cid}: {note} (attempt {attempts} of {MAX_ATTEMPTS}); leaving it claimed",
                         task.id
                     ));
                 } else {
-                    // Either the agent answered (and this is final), or the
-                    // attempts are spent: the task ends with the evidence.
+                    // Either the agent answered (and this is final), the grants
+                    // refused it (final the same way), or the attempts are
+                    // spent: the task ends with the evidence.
                     let note = if err.is_retryable() {
                         format!("{note} (after {attempts} attempt(s))")
                     } else {
@@ -315,7 +387,7 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                     };
                     match self.ledger.finish(&task.id, Outcome::Failed, &note) {
                         Ok(()) => {
-                            report.failed += 1;
+                            tally.failed += 1;
                             log.line(&format!(
                                 "dispatchd: task {} (role {role}) -> agent cid {cid} finished failed: {note}",
                                 task.id
@@ -397,6 +469,13 @@ impl<O: Operator> Driver for AgentDriver<'_, O> {
                 name: name.to_string(),
                 output,
             }),
+            // The hub's grants refused it: the policy's own answer, and final —
+            // another pass would be refused just the same. The note is `refused`
+            // rather than `unavailable`, and it is not retried.
+            Ok(Tell::Refused { reason }) => Err(DriveError::Refused {
+                name: name.to_string(),
+                output: reason,
+            }),
             Ok(Tell::TimedOut { waited_ms }) => Err(unavailable(format!(
                 "the agent did not answer within {waited_ms} ms"
             ))),
@@ -436,6 +515,245 @@ mod tests {
             Arc::clone(&log) as Arc<dyn Logger + Send + Sync>,
         );
         (dispatcher, log)
+    }
+
+    /// A dispatcher holding the codex's grants, so its plans are the ones a
+    /// `--roles` run would make.
+    fn dispatcher_with_roles(
+        ledger: FakeLedger,
+        operator: FakeOperator,
+        roles: &[(&str, &[&str])],
+    ) -> (Dispatcher<FakeLedger, FakeOperator>, Arc<Recording>) {
+        let log = Arc::new(Recording::default());
+        let manifest = crate::roles::Manifest::parse(
+            &serde_json::json!({
+                "roles": roles
+                    .iter()
+                    .map(|(role, tools)| (
+                        (*role).to_string(),
+                        serde_json::json!({ "role": role, "tools": tools }),
+                    ))
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+            })
+            .to_string(),
+        )
+        .expect("a well-formed test manifest");
+        let dispatcher = Dispatcher::with_roles(
+            ledger,
+            operator,
+            Arc::clone(&log) as Arc<dyn Logger + Send + Sync>,
+            Some(manifest),
+        );
+        (dispatcher, log)
+    }
+
+    /// The codex's own grants for the roles these tests drive.
+    const GRANTS: &[(&str, &[&str])] = &[
+        (
+            "builder",
+            &[
+                "bash",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list",
+                "search",
+            ],
+        ),
+        ("librarian", &["read_memory", "search", "transcript_search"]),
+        ("architect", &["bash", "read_file", "list", "search"]),
+        (
+            "mayor",
+            &[
+                "read_file",
+                "list",
+                "search",
+                "transcript_search",
+                "assign_task",
+                "spawn_agent",
+                "hibernate_agent",
+                "approve_plan",
+                "approve_merge",
+                "escalate",
+                "send_message",
+            ],
+        ),
+        (
+            "legal-gov-judge",
+            &["read_case_record", "search_precedent", "issue_ruling"],
+        ),
+    ];
+
+    /// With the grants loaded, a pass still drives a builder to write and a
+    /// librarian to read — the librarian through the read-only script, because
+    /// that is all its grants (and the harness) allow.
+    #[test]
+    fn a_grants_aware_pass_drives_the_read_only_script_for_a_librarian() {
+        let ledger = FakeLedger::with_tasks(vec![
+            task("t1", "open", Some("builder")),
+            task("t2", "open", Some("librarian")),
+        ])
+        .with_agent(300, "builder")
+        .with_agent(310, "librarian");
+        let operator = FakeOperator::default()
+            .with_agent(300, FakeAgent::default())
+            .with_agent(
+                310,
+                FakeAgent::default().with_file("handbook.md", "do the plaza's work\n"),
+            );
+        let (mut dispatcher, log) = dispatcher_with_roles(ledger, operator, GRANTS);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.done), (2, 2));
+
+        // The builder writes; the librarian only searches. Both complete.
+        assert_eq!(
+            dispatcher.operator.sequence(),
+            vec![
+                (300, "write_file".to_string()),
+                (300, "read_file".to_string()),
+                (310, "search".to_string()),
+            ]
+        );
+        let finishes = dispatcher.ledger.finishes.borrow();
+        assert_eq!(finishes[0].1, Outcome::Done);
+        assert_eq!(finishes[0].2, "artifacts: build-notes.txt (2 tool call(s))");
+        assert_eq!(finishes[1].1, Outcome::Done);
+        assert!(
+            finishes[1].2.starts_with("read-only: search"),
+            "{}",
+            finishes[1].2
+        );
+        drop(finishes);
+        assert!(log.text().contains("finished done"), "log: {}", log.text());
+        // Nothing was skipped: both roles could be driven.
+        assert_eq!(report.skipped, 0, "{}", log.text());
+    }
+
+    /// A role that may read and search but not write (and has no shell) falls
+    /// back to the read-only script, exactly as a librarian does — the plan is
+    /// the grants, not the family name.
+    #[test]
+    fn a_role_without_a_write_grant_runs_the_read_only_script() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("mayor"))).with_agent(320, "mayor");
+        let operator = FakeOperator::default()
+            .with_agent(320, FakeAgent::default().with_file("design.md", "do it\n"));
+        let (mut dispatcher, _log) = dispatcher_with_roles(ledger, operator, GRANTS);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.done), (1, 1));
+        assert_eq!(
+            dispatcher.operator.sequence(),
+            vec![(320, "search".to_string())],
+            "a mayor may not write, so it does not"
+        );
+        assert!(
+            dispatcher
+                .ledger
+                .finishes
+                .borrow()
+                .iter()
+                .all(|(_, outcome, note)| *outcome == Outcome::Done
+                    && note.starts_with("read-only:"))
+        );
+    }
+
+    /// A role whose grants cover no tool this dispatcher may drive is never
+    /// claimed and never driven: the task stays `open`, and the log says why.
+    #[test]
+    fn a_role_the_dispatcher_may_not_drive_is_left_open() {
+        let ledger = FakeLedger::with_tasks(vec![
+            task("t1", "open", Some("builder")),
+            task("t2", "open", Some("legal-gov-judge")),
+            task("t3", "open", Some("intruder")),
+        ])
+        .with_agent(300, "builder")
+        .with_agent(310, "legal-gov-judge")
+        .with_agent(320, "intruder");
+        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+        let (mut dispatcher, log) = dispatcher_with_roles(ledger, operator, GRANTS);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        // Only the builder was driveable.
+        assert_eq!(report.considered, 3);
+        assert_eq!((report.claimed, report.done, report.skipped), (1, 1, 2));
+
+        // The two undriveable tasks are untouched — not claimed, not driven,
+        // not finished — so a dispatcher whose manifest allows them can take
+        // them later.
+        assert_eq!(
+            dispatcher.ledger.claims.borrow().as_slice(),
+            &[("t1".to_string(), 300)],
+            "only the builder's task was claimed, for the builder's agent"
+        );
+        assert_eq!(dispatcher.ledger.task("t2").state, "open");
+        assert_eq!(dispatcher.ledger.task("t3").state, "open");
+        assert!(
+            dispatcher
+                .operator
+                .calls
+                .borrow()
+                .iter()
+                .all(|(cid, _, _)| *cid == 300),
+            "only the builder's agent was driven"
+        );
+        let text = log.text();
+        assert!(
+            text.contains(
+                "dispatchd: task t2 (role legal-gov-judge): the role grants no tool this dispatcher may drive; skipped"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "dispatchd: task t3 (role intruder): the role is not in the manifest; skipped"
+            ),
+            "{text}"
+        );
+    }
+
+    /// A hub that refuses a call on the role's grants is final, not a retry: the
+    /// task ends `failed` at once with the hub's own words. This is the
+    /// backstop's echo — a dispatcher whose manifest disagrees with the hub's
+    /// policy, or a hub started with a different manifest, still ends honestly.
+    #[test]
+    fn a_hub_refusal_finishes_the_task_at_once() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::answering(Tell::Refused {
+            reason: "role builder does not grant write_file".to_string(),
+        });
+        let (mut dispatcher, log) = dispatcher(ledger, operator);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!(
+            report,
+            Reporter {
+                considered: 1,
+                claimed: 1,
+                done: 0,
+                failed: 1,
+                skipped: 0,
+                deferred: 0,
+            },
+            "a refusal is final, not deferred"
+        );
+        let finishes = dispatcher.ledger.finishes.borrow();
+        assert_eq!(finishes.len(), 1);
+        assert_eq!(finishes[0].1, Outcome::Failed);
+        assert_eq!(
+            finishes[0].2,
+            "tool write_file refused: role builder does not grant write_file"
+        );
+        drop(finishes);
+        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+        assert!(
+            log.text()
+                .contains("finished failed: tool write_file refused:"),
+            "{}",
+            log.text()
+        );
     }
 
     /// The whole loop, once: an open roled task whose agent is connected is
@@ -498,8 +816,13 @@ mod tests {
         }
     }
 
-    /// A pass drives **every** actionable task, in turn: two roles, two tasks,
-    /// both done — which is the shape `--once` has to satisfy.
+    /// A pass drives **every** actionable task, in turn: three roles, three
+    /// tasks, all done — which is the shape `--once` has to satisfy.
+    ///
+    /// With no manifest there is no grant policy, so each role drives its own
+    /// family's script — and the librarian's script is read-only, because the
+    /// codex's librarian grants (and the harness's tools) leave it nothing to
+    /// write with.
     #[test]
     fn a_pass_dispatches_every_actionable_task_in_turn() {
         let ledger = FakeLedger::with_tasks(vec![
@@ -514,7 +837,7 @@ mod tests {
             .with_agent(300, FakeAgent::default())
             .with_agent(
                 310,
-                FakeAgent::default().with_file("handbook.md", "the handbook"),
+                FakeAgent::default().with_file("handbook.md", "do the plaza's work\n"),
             )
             .with_agent(320, FakeAgent::default());
         let (mut dispatcher, _log) = dispatcher(ledger, operator);
@@ -523,15 +846,14 @@ mod tests {
         assert_eq!(report.considered, 3);
         assert_eq!((report.claimed, report.done), (3, 3));
 
-        // Each role ran its own family's script, on its own agent.
+        // Each role ran its own family's script, on its own agent. The
+        // librarian's is one read (a search) and no write at all.
         assert_eq!(
             dispatcher.operator.sequence(),
             vec![
                 (300, "write_file".to_string()),
                 (300, "read_file".to_string()),
-                (310, "list".to_string()),
-                (310, "write_file".to_string()),
-                (310, "read_file".to_string()),
+                (310, "search".to_string()),
                 (320, "write_file".to_string()),
                 (320, "read_file".to_string()),
             ]
@@ -539,9 +861,10 @@ mod tests {
         assert_eq!(
             dispatcher
                 .operator
-                .agent_file(310, "index.txt")
-                .expect("the librarian's index"),
-            "task t2: do t2\nworkspace: 1 entry\nhandbook.md\tfile\t12"
+                .agent_file(310, "handbook.md")
+                .expect("the librarian's workspace is untouched"),
+            "do the plaza's work\n",
+            "a read-only run writes nothing"
         );
         assert_eq!(
             dispatcher
@@ -562,7 +885,12 @@ mod tests {
                     Outcome::Done,
                     "artifacts: build-notes.txt (2 tool call(s))"
                 ),
-                ("t2", Outcome::Done, "artifacts: index.txt (3 tool call(s))"),
+                (
+                    "t2",
+                    Outcome::Done,
+                    "read-only: search \"do\" matched 1 line(s) in 1 file(s) scanned; \
+                     first: handbook.md:1: do the plaza's work (1 tool call(s))"
+                ),
                 ("t3", Outcome::Done, "artifacts: notes.txt (2 tool call(s))"),
             ]
         );

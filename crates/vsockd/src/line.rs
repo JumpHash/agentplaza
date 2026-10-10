@@ -348,7 +348,10 @@ mod tests {
             ],
         };
         let mut lines = StreamLines::new(scripted);
-        assert_eq!(lines.recv_line_idle().expect("read succeeds"), Inbound::Idle);
+        assert_eq!(
+            lines.recv_line_idle().expect("read succeeds"),
+            Inbound::Idle
+        );
         assert_eq!(
             lines.recv_line_idle().expect("read succeeds"),
             Inbound::Line(r#"{"type":"heartbeat","seq":1}"#.to_string())

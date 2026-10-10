@@ -235,7 +235,9 @@ mod tests {
 
     #[test]
     fn a_guest_line_of_the_other_direction_does_not_parse() {
-        assert!(GuestMessage::from_line(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#).is_err());
+        assert!(
+            GuestMessage::from_line(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#).is_err()
+        );
     }
 
     #[test]
@@ -255,8 +257,10 @@ mod tests {
         // An empty role is a role: a guest with no `plaza.role=` still says
         // keepalive, and the hub echoes the emptiness it accepted.
         assert_eq!(
-            GuestMessage::from_line(r#"{"type":"hello","vm":0,"guest_cid":3,"role":"","keepalive":true}"#)
-                .expect("the empty role parses"),
+            GuestMessage::from_line(
+                r#"{"type":"hello","vm":0,"guest_cid":3,"role":"","keepalive":true}"#
+            )
+            .expect("the empty role parses"),
             GuestMessage::Hello {
                 vm: 0,
                 guest_cid: 3,
@@ -285,7 +289,8 @@ mod tests {
             GuestMessage::from_line(r#"{"type":"hello","vm":0,"guest_cid":3,"role":7}"#).is_err()
         );
         assert!(
-            GuestMessage::from_line(r#"{"type":"hello","vm":0,"guest_cid":3,"role":["a"]}"#).is_err()
+            GuestMessage::from_line(r#"{"type":"hello","vm":0,"guest_cid":3,"role":["a"]}"#)
+                .is_err()
         );
         assert!(
             GuestMessage::from_line(r#"{"type":"hello","vm":0,"guest_cid":3,"keepalive":"yes"}"#)

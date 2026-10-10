@@ -44,6 +44,7 @@ pub mod dispatch;
 pub mod http;
 pub mod hub;
 pub mod noded;
+pub mod roles;
 #[cfg(test)]
 mod testing;
 pub mod views;
@@ -52,5 +53,6 @@ pub mod workflow;
 pub use dispatch::{Dispatcher, Ledger, Logger, Operator, Reporter, StdoutLog};
 pub use hub::Hub;
 pub use noded::Noded;
+pub use roles::Manifest;
 pub use views::{Agent, Task, Tell};
 pub use workflow::{DriveError, Driver};

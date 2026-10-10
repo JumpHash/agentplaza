@@ -274,7 +274,10 @@ fn run_v1_body<T: LineTransport>(
     let mut calls = 0u64;
 
     loop {
-        if limits.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if limits
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             return Err(HostError::Protocol("session deadline exceeded".to_string()));
         }
         let inbound = match transport.recv_line() {
@@ -752,7 +755,8 @@ mod tests {
     impl Scripted {
         /// The scripted lines, then a closed connection.
         fn script(lines: &[&str]) -> Self {
-            let mut steps: VecDeque<Step> = lines.iter().map(|l| Step::Line(l.to_string())).collect();
+            let mut steps: VecDeque<Step> =
+                lines.iter().map(|l| Step::Line(l.to_string())).collect();
             steps.push_back(Step::Closed);
             Self {
                 steps: Mutex::new(steps),
@@ -901,7 +905,11 @@ mod tests {
             assert_eq!(uptime["ok"], serde_json::json!(true));
             // The host's own /proc/uptime first two fields.
             assert_eq!(
-                uptime["output"].as_str().expect("output is a string").split_whitespace().count(),
+                uptime["output"]
+                    .as_str()
+                    .expect("output is a string")
+                    .split_whitespace()
+                    .count(),
                 2
             );
 
@@ -963,7 +971,8 @@ mod tests {
         let summary = handle_session(&mut host, 3, limits(), &*log, &hub, &SystemClock)
             .expect("the session completes");
         let refused = script.join().expect("the scripted guest finished");
-        let refused: serde_json::Value = serde_json::from_str(&refused).expect("the result is JSON");
+        let refused: serde_json::Value =
+            serde_json::from_str(&refused).expect("the result is JSON");
         assert_eq!(refused["call"], serde_json::json!(1));
         assert_eq!(refused["ok"], serde_json::json!(false));
         assert!(
@@ -998,7 +1007,8 @@ mod tests {
         let summary = handle_session(&mut host, 4, limits(), &*log, &hub, &SystemClock)
             .expect("the session completes");
         let refused = script.join().expect("the scripted guest finished");
-        let refused: serde_json::Value = serde_json::from_str(&refused).expect("the result is JSON");
+        let refused: serde_json::Value =
+            serde_json::from_str(&refused).expect("the result is JSON");
         assert_eq!(refused["ok"], serde_json::json!(false));
         assert_eq!(refused["output"], serde_json::json!("unknown tool: rm_rf"));
         assert_eq!(summary.calls, 1);
@@ -1184,8 +1194,14 @@ mod tests {
         let logged = log.text();
         assert!(logged.contains("\\x1b"), "ESC must be escaped: {logged}");
         assert!(logged.contains("\\x0d"), "CR must be escaped: {logged}");
-        assert!(!logged.contains('\u{1b}'), "raw ESC must not reach the log: {logged}");
-        assert!(!logged.contains('\r'), "raw CR must not reach the log: {logged}");
+        assert!(
+            !logged.contains('\u{1b}'),
+            "raw ESC must not reach the log: {logged}"
+        );
+        assert!(
+            !logged.contains('\r'),
+            "raw CR must not reach the log: {logged}"
+        );
     }
 
     /// A hello that asks for keepalive on a daemon configured for one-shot
@@ -1444,7 +1460,10 @@ mod tests {
         guest
             .send_line(r#"{"type":"heartbeat","seq":9}"#)
             .expect("a heartbeat sends");
-        assert_eq!(strand(&mut guest), r#"{"type":"stop","reason":"slice proof"}"#);
+        assert_eq!(
+            strand(&mut guest),
+            r#"{"type":"stop","reason":"slice proof"}"#
+        );
         guest
             .send_line(r#"{"type":"bye","calls":2}"#)
             .expect("bye sends");

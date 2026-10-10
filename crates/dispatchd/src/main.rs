@@ -1,15 +1,16 @@
 //! `dispatchd` — the fleet dispatcher's entry point.
 //!
 //! ```text
-//! dispatchd [--noded URL] [--hub URL] [--once] [--interval-secs N]
+//! dispatchd [--noded URL] [--hub URL] [--roles MANIFEST] [--once] [--interval-secs N]
 //! ```
 //!
 //! Each pass reads the ledger and the fleet register, claims every open task
-//! whose role has a connected agent, drives that agent through its role
-//! family's workflow, and finishes the task with the artifacts its workspace
-//! now holds — or with the reason it could not. See [`dispatchd`] (the
-//! library) for what a pass does and [`dispatchd::dispatch`] for the retry and
-//! finish semantics.
+//! whose role has a connected agent and a script the role's grants allow
+//! (`--roles`), drives that agent through the planned workflow, and finishes the
+//! task with the artifacts its workspace now holds — or, for a read-only
+//! workflow, with the line the script read out — or with the reason it could
+//! not. See [`dispatchd`] (the library) for what a pass does and
+//! [`dispatchd::dispatch`] for the retry and finish semantics.
 //!
 //! `--once` runs exactly one pass and exits, which is the shape a test or a
 //! cron wants: it reports a failure the pass could not read the ledger, so a
@@ -18,11 +19,13 @@
 //! ordinary way, and it installs no handler of its own, so a stop is
 //! immediate.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use dispatchd::roles::Manifest;
 use dispatchd::{Dispatcher, Hub, Noded, StdoutLog};
 
 /// The node daemon's loopback address unless `--noded` says otherwise.
@@ -35,33 +38,44 @@ const DEFAULT_HUB: &str = "http://127.0.0.1:19080";
 const DEFAULT_INTERVAL_SECS: u64 = 5;
 
 const USAGE: &str = "\
-usage: dispatchd [--noded URL] [--hub URL] [--once] [--interval-secs N]
+usage: dispatchd [--noded URL] [--hub URL] [--roles MANIFEST] [--once]
+                 [--interval-secs N]
 
   --noded URL        the node daemon (the ledger and the fleet register)
                      (default http://127.0.0.1:8899)
   --hub URL          the hub's admin surface (POST /tell — the way into an
                      agent's session) (default http://127.0.0.1:19080)
+  --roles MANIFEST   the roles manifest the codex's tool grants are read from
+                     (docs/agents/initial-roles.json): a task whose role cannot
+                     be driven with the tools its family's script needs — a
+                     librarian, whose codex grants give it `search` and nothing
+                     else — runs the read-only workflow instead, and a role with
+                     nothing drivable at all is left open and logged rather than
+                     driven into a refusal. Default: off, and then every role
+                     drives its family's script.
   --once             run exactly one pass and exit
   --interval-secs N  how long to wait between passes when looping (default 5,
                      at least 1)
   -h, --help         print this help
 
 A pass reads GET {noded}/api/v0/tasks and GET {noded}/api/v0/hub, and for each
-open task that names a role: finds a CONNECTED agent of that role, claims the
-task for it (POST /api/v0/tasks/{id}/claim), drives it through its role
-family's scripted workflow (one tool call at a time, through POST
+open task that names a role: decides what the role's grants allow (the
+manifest's script, the read-only fallback, or nothing), finds a CONNECTED agent
+of that role, claims the task for it (POST /api/v0/tasks/{id}/claim), drives it
+through the planned workflow (one tool call at a time, through POST
 {hub}/tell), and finishes it (POST /api/v0/tasks/{id}/finish) with the note
-naming the artifacts its workspace now holds. A task whose role has no
-connected agent is left open and logged. An agent that answers and refuses
-finishes the task failed at once; an agent that cannot be reached is retried
-for at most 3 passes, then finished failed with the evidence. Every URL is a
-loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.";
+naming what the run left. A task whose role has no connected agent, or whose
+role cannot be driven, is left open and logged. An agent that answers and
+refuses finishes the task failed at once; an agent that cannot be reached is
+retried for at most 3 passes, then finished failed with the evidence. Every URL
+is a loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.";
 
 /// Everything `dispatchd` accepts on its command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     noded: String,
     hub: String,
+    roles: Option<PathBuf>,
     once: bool,
     interval: Duration,
 }
@@ -71,14 +85,15 @@ impl Default for Config {
         Self {
             noded: DEFAULT_NODED.to_string(),
             hub: DEFAULT_HUB.to_string(),
+            roles: None,
             once: false,
             interval: Duration::from_secs(DEFAULT_INTERVAL_SECS),
         }
     }
 }
 
-/// Reads `--noded`, `--hub`, `--once` and `--interval-secs`, leaving the rest
-/// at its default.
+/// Reads `--noded`, `--hub`, `--roles`, `--once` and `--interval-secs`, leaving
+/// the rest at its default.
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut args = args.into_iter();
@@ -90,6 +105,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         match argument.as_str() {
             "--noded" => config.noded = value("--noded")?,
             "--hub" => config.hub = value("--hub")?,
+            "--roles" => config.roles = Some(PathBuf::from(value("--roles")?)),
             "--once" => config.once = true,
             "--interval-secs" => {
                 let seconds: u64 = value("--interval-secs")?
@@ -135,7 +151,20 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut dispatcher = Dispatcher::new(ledger, hub, Arc::new(StdoutLog));
+    // The codex's tool grants, when a manifest was named: read and checked
+    // before the first pass, so a dispatcher that cannot read the policy it was
+    // given fails here rather than driving the fleet as if it had none.
+    let roles = match &config.roles {
+        Some(path) => match Manifest::load(path) {
+            Ok(manifest) => Some(manifest),
+            Err(err) => {
+                eprintln!("dispatchd: --roles: {err}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    let mut dispatcher = Dispatcher::with_roles(ledger, hub, Arc::new(StdoutLog), roles);
 
     if config.once {
         return match dispatcher.pass() {
@@ -167,6 +196,7 @@ mod tests {
         let config = parse_args(Vec::new()).expect("no arguments is valid");
         assert_eq!(config.noded, DEFAULT_NODED);
         assert_eq!(config.hub, DEFAULT_HUB);
+        assert_eq!(config.roles, None, "no manifest, no grant policy");
         assert!(!config.once, "the daemon loops unless asked for one pass");
         assert_eq!(config.interval, Duration::from_secs(5));
     }
@@ -178,6 +208,8 @@ mod tests {
             "http://127.0.0.1:8901".to_string(),
             "--hub".to_string(),
             "http://localhost:19082".to_string(),
+            "--roles".to_string(),
+            "docs/agents/initial-roles.json".to_string(),
             "--once".to_string(),
             "--interval-secs".to_string(),
             "30".to_string(),
@@ -185,6 +217,10 @@ mod tests {
         .expect("explicit flags parse");
         assert_eq!(config.noded, "http://127.0.0.1:8901");
         assert_eq!(config.hub, "http://localhost:19082");
+        assert_eq!(
+            config.roles,
+            Some(PathBuf::from("docs/agents/initial-roles.json"))
+        );
         assert!(config.once);
         assert_eq!(config.interval, Duration::from_secs(30));
     }
@@ -193,10 +229,20 @@ mod tests {
     fn bad_arguments_are_reported() {
         assert!(parse_args(vec!["--noded".to_string()]).is_err());
         assert!(parse_args(vec!["--hub".to_string()]).is_err());
+        assert!(parse_args(vec!["--roles".to_string()]).is_err());
         assert!(parse_args(vec!["--interval-secs".to_string()]).is_err());
         assert!(parse_args(vec!["--interval-secs".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--interval-secs".to_string(), "0".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
+    }
+
+    /// A manifest that cannot be read is refused before the first pass — the
+    /// same rule `vsockd --roles` follows: a daemon that cannot read the policy
+    /// it was given must not go on as if it had none.
+    #[test]
+    fn a_manifest_outside_the_contract_is_refused_before_any_pass() {
+        assert!(Manifest::load(std::path::Path::new("/no/such/dispatchd-roles.json")).is_err());
+        assert!(Manifest::parse(r#"{"roles": {"builder": {"role": "builder"}}}"#).is_err());
     }
 
     /// `--once` is a flag, not a value: it takes no argument, and everything

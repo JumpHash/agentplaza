@@ -10,6 +10,12 @@
 //!   `{"ok": <bool>, "output": "<the tool's output>"}`.
 //!   * a CID the daemon does not serve → **404** (it can never connect);
 //!   * a served CID with no live session → **409** (not connected);
+//!   * a tool the session's role does not grant, under the manifest the daemon
+//!     was started with (`--roles`) → **403** `{"ok":false,"output":"role <r>
+//!     does not grant <tool>"}` (or `role <r> is not in the manifest`, or `no
+//!     role was accepted for cid N`). The refusal is the hub's own
+//!     ([`Hub::admit`]) and it is decided *before* anything is dispatched: the
+//!     agent's session is untouched, so the guest never sees the call at all;
 //!   * an agent that does not answer in time → **504** with the honest
 //!     `agent did not answer within N ms` (the session is untouched: it is
 //!     still alive and may still answer, later and to nobody);
@@ -40,7 +46,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::hub::{Hub, TellOutcome};
+use crate::hub::{Admission, Hub, TellOutcome};
 use crate::status::{MAX_HEAD, NodeFacts, Request, Response, read_request_body};
 use crate::{ACCEPT_POLL_MS, sys};
 
@@ -118,9 +124,10 @@ fn route(request: &Request, hub: &Hub, facts: &NodeFacts) -> Response {
 /// `POST /tell`: validates the request, then hands it to the hub.
 ///
 /// Every refusal names what was wrong with the *request* (400), which CID the
-/// hub does not serve (404) or does not have connected (409), or the honest
-/// timeout (504). A tool that ran and refused is a 200 with `ok: false`: the
-/// agent answered, and its answer is data.
+/// hub does not serve (404) or does not have connected (409), or which role
+/// does not grant the tool (403 — the codex's grants, decided before anything
+/// reaches the agent). A tool that ran and refused is a 200 with `ok: false`:
+/// the agent answered, and its answer is data.
 fn tell(hub: &Hub, facts: &NodeFacts, body: &[u8]) -> Response {
     let request: TellRequest = match serde_json::from_slice(body) {
         Ok(request) => request,
@@ -154,6 +161,16 @@ fn tell(hub: &Hub, facts: &NodeFacts, body: &[u8]) -> Response {
     };
     if !facts.cids().contains(&cid) {
         return Response::error(404, &format!("no agent with guest CID {cid}"));
+    }
+    match hub.admit(cid, &request.name) {
+        // The role's grants refuse the tool: the hub's answer is the 403's own
+        // body (`ok: false` plus the reason), and nothing was dispatched — the
+        // agent's session is untouched.
+        Admission::Refused { reason } => return Response::json(403, tell_body(false, &reason)),
+        Admission::NoSession => {
+            return Response::error(409, &format!("agent with guest CID {cid} is not connected"));
+        }
+        Admission::Allowed => {}
     }
     match hub.tell(
         cid,
@@ -275,6 +292,49 @@ mod tests {
                 let _ = channel.send(reply);
             }
         })
+    }
+
+    /// A stub agent that answers nothing and reports whether it was ever
+    /// dispatched to: the proof that a refused `/tell` never reached the guest.
+    fn muted_agent(steering: Receiver<Command>) -> thread::JoinHandle<bool> {
+        thread::spawn(move || steering.recv_timeout(Duration::from_millis(150)).is_ok())
+    }
+
+    /// A manifest built from a role → tools table.
+    fn roles_manifest(roles: &[(&str, &[&str])]) -> Arc<crate::roles::Manifest> {
+        let text = serde_json::json!({
+            "roles": roles
+                .iter()
+                .map(|(role, tools)| (
+                    (*role).to_string(),
+                    serde_json::json!({ "role": role, "tools": tools }),
+                ))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
+        })
+        .to_string();
+        Arc::new(crate::roles::Manifest::parse(&text).expect("a well-formed test manifest"))
+    }
+
+    /// A hub holding the codex's librarian and builder grants: a librarian may
+    /// `search` and nothing else; a builder may write.
+    fn gated_hub() -> Hub {
+        Hub::with_roles(
+            Arc::new(Quiet),
+            roles_manifest(&[
+                (
+                    "builder",
+                    &[
+                        "bash",
+                        "read_file",
+                        "write_file",
+                        "edit_file",
+                        "list",
+                        "search",
+                    ],
+                ),
+                ("librarian", &["read_memory", "search", "transcript_search"]),
+            ]),
+        )
     }
 
     fn json(body: &[u8]) -> serde_json::Value {
@@ -548,5 +608,215 @@ mod tests {
             .read_to_string(&mut response)
             .expect("the response is read");
         response
+    }
+
+    /// The grants gate: a tool the session's role does not grant is a 403 whose
+    /// body is the hub's own reason — and the **agent never sees the call**.
+    /// The stub here is muted and reports whether it was ever dispatched to, so
+    /// "the guest was untouched" is asserted, not assumed.
+    #[test]
+    fn an_ungranted_tool_is_refused_and_the_agent_never_sees_it() {
+        let hub = gated_hub();
+        let facts = facts(vec![310]);
+        let (_token, steering) = hub.connect(310, "librarian", Instant::now());
+        let muted = muted_agent(steering);
+
+        for (tool, reason) in [
+            ("write_file", "role librarian does not grant write_file"),
+            ("list", "role librarian does not grant list"),
+            ("read_file", "role librarian does not grant read_file"),
+            ("read_memory", "role librarian does not grant read_memory"),
+        ] {
+            let body = format!(r#"{{"cid":310,"name":"{tool}","args":{{"path":"index.txt"}}}}"#);
+            let response = route(&post("/tell", &body), &hub, &facts);
+            assert_eq!(response.status(), 403, "{tool}");
+            assert_eq!(
+                json(response.body()),
+                serde_json::json!({ "ok": false, "output": reason }),
+                "{tool}"
+            );
+        }
+
+        // Nothing was ever dispatched into the session, and the session is
+        // still live: a refusal is not a teardown.
+        assert!(
+            !muted.join().expect("the stub agent finishes"),
+            "the guest must never see a call its role does not grant"
+        );
+        assert_eq!(hub.agent_count(), 1, "the session is untouched");
+    }
+
+    /// The same gate, the other way round: a granted tool is still driven to
+    /// the agent, and the agent's own answer comes back — the policy narrows
+    /// what may be driven, it does not replace the dispatch.
+    #[test]
+    fn a_granted_tool_is_still_driven_to_the_agent() {
+        let hub = gated_hub();
+        let facts = facts(vec![300, 310]);
+        let (_token, steering) = hub.connect(310, "librarian", Instant::now());
+        let stub = stub_agent(
+            steering,
+            ToolReply {
+                ok: true,
+                output: r#"{"pattern":"memory","matches":[],"files_scanned":0}"#.to_string(),
+            },
+        );
+        let response = route(
+            &post(
+                "/tell",
+                r#"{"cid":310,"name":"search","args":{"pattern":"memory"}}"#,
+            ),
+            &hub,
+            &facts,
+        );
+        assert_eq!(response.status(), 200);
+        assert_eq!(json(response.body())["ok"], serde_json::json!(true));
+        stub.join().expect("the stub agent finishes");
+
+        // A builder, in the same daemon, is driven with the file tools it
+        // grants — and a shell grant is a source, not a tool.
+        let (_token2, steering2) = hub.connect(300, "builder", Instant::now());
+        let stub2 = stub_agent(
+            steering2,
+            ToolReply {
+                ok: true,
+                output: r#"{"path":"build-notes.txt"}"#.to_string(),
+            },
+        );
+        assert_eq!(
+            route(
+                &post(
+                    "/tell",
+                    r#"{"cid":300,"name":"write_file","args":{"path":"build-notes.txt"}}"#
+                ),
+                &hub,
+                &facts
+            )
+            .status(),
+            200
+        );
+        assert_eq!(
+            route(
+                &post("/tell", r#"{"cid":300,"name":"bash","args":{}}"#),
+                &hub,
+                &facts
+            )
+            .status(),
+            403,
+            "the harness serves no shell, so a shell grant drives nothing"
+        );
+        stub2.join().expect("the stub agent finishes");
+    }
+
+    /// The two role refusals: an agent whose session accepted no role, and one
+    /// whose role the manifest does not carry. Both are 403s with their own
+    /// words, and neither reaches the agent.
+    #[test]
+    fn a_role_less_agent_and_an_unknown_role_are_refused_with_their_own_reason() {
+        let hub = gated_hub();
+        let facts = facts(vec![320, 330]);
+
+        let (_token, steering) = hub.connect(320, "", Instant::now());
+        let muted = muted_agent(steering);
+        let response = route(
+            &post("/tell", r#"{"cid":320,"name":"echo","args":{"text":"hi"}}"#),
+            &hub,
+            &facts,
+        );
+        assert_eq!(response.status(), 403);
+        assert_eq!(
+            json(response.body()),
+            serde_json::json!({
+                "ok": false,
+                "output": "no role was accepted for cid 320",
+            })
+        );
+        assert!(!muted.join().expect("the stub agent finishes"));
+
+        // Even a diagnostic is refused to a role-less agent: with a manifest
+        // loaded there is no unnamed agent to drive.
+        let (_token2, steering2) = hub.connect(330, "intruder", Instant::now());
+        let muted2 = muted_agent(steering2);
+        let response = route(
+            &post("/tell", r#"{"cid":330,"name":"uptime","args":{}}"#),
+            &hub,
+            &facts,
+        );
+        assert_eq!(response.status(), 403);
+        assert_eq!(
+            json(response.body()),
+            serde_json::json!({
+                "ok": false,
+                "output": "role intruder is not in the manifest",
+            })
+        );
+        assert!(!muted2.join().expect("the stub agent finishes"));
+    }
+
+    /// The gate over the real wire: a refused `/tell` is a 403 with the
+    /// surface's body and reason phrase, and the agent's session never saw it.
+    #[test]
+    fn a_refusal_crosses_the_socket_as_a_403() {
+        let hub = Arc::new(gated_hub());
+        let facts = Arc::new(facts(vec![310]));
+        let (_token, steering) = hub.connect(310, "librarian", Instant::now());
+        let muted = muted_agent(steering);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the test binds a port");
+        let addr = listener.local_addr().expect("a bound address");
+        let served = {
+            let hub = Arc::clone(&hub);
+            let facts = Arc::clone(&facts);
+            thread::spawn(move || {
+                let (stream, _peer) = listener.accept().expect("the client connects");
+                handle_connection(stream, &hub, &facts);
+            })
+        };
+
+        let body = r#"{"cid":310,"name":"write_file","args":{"path":"x","content":"y"}}"#;
+        let response = request_over_tcp(
+            addr,
+            &format!(
+                "POST /tell HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{response}"
+        );
+        assert!(
+            response.contains(r#""ok":false,"output":"role librarian does not grant write_file""#),
+            "{response}"
+        );
+        served.join().expect("the server thread finished");
+        assert!(!muted.join().expect("the stub agent finishes"));
+    }
+
+    /// With no manifest the surface is exactly what it was: every tool of a
+    /// live session is driven. This is the off-by-default path, kept honest by
+    /// a test rather than by the absence of one.
+    #[test]
+    fn without_a_manifest_the_surface_is_unchanged() {
+        let hub = hub();
+        let facts = facts(vec![310]);
+        let (_token, steering) = hub.connect(310, "", Instant::now());
+        let stub = stub_agent(
+            steering,
+            ToolReply {
+                ok: true,
+                output: "written".to_string(),
+            },
+        );
+        let response = route(
+            &post(
+                "/tell",
+                r#"{"cid":310,"name":"write_file","args":{"path":"x"}}"#,
+            ),
+            &hub,
+            &facts,
+        );
+        assert_eq!(response.status(), 200, "no manifest, no grant to check");
+        stub.join().expect("the stub agent finishes");
     }
 }

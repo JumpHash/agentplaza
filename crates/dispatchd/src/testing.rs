@@ -39,9 +39,9 @@ pub struct FakeAgent {
     /// When set, `read_file` answers with this content whatever was written —
     /// the agent whose workspace did not take the write.
     corrupt_read: Option<String>,
-    /// When set, `list` answers with this text whatever the workspace holds —
-    /// the agent whose listing is not a listing.
-    listing: Option<String>,
+    /// When set, every tool answers this text instead of doing its work — the
+    /// agent whose answer is not the shape the workflow needs.
+    answer: Option<String>,
 }
 
 impl FakeAgent {
@@ -61,10 +61,10 @@ impl FakeAgent {
         }
     }
 
-    /// An agent whose `list` answers with `text` whatever the workspace holds.
-    pub fn listing(text: &str) -> Self {
+    /// An agent whose every tool answers `text` instead of its own output.
+    pub fn answering(text: &str) -> Self {
         Self {
-            listing: Some(text.to_string()),
+            answer: Some(text.to_string()),
             ..Self::default()
         }
     }
@@ -111,6 +111,9 @@ impl Driver for FakeAgent {
         if let Some(failure) = self.failure.clone() {
             return Err(failure);
         }
+        if let Some(answer) = self.answer.clone() {
+            return Ok(answer);
+        }
         let path = args
             .get("path")
             .and_then(serde_json::Value::as_str)
@@ -153,9 +156,6 @@ impl Driver for FakeAgent {
                 }
             }
             "list" => {
-                if let Some(listing) = self.listing.clone() {
-                    return Ok(listing);
-                }
                 let entries: Vec<serde_json::Value> = self
                     .files
                     .iter()
@@ -168,6 +168,45 @@ impl Driver for FakeAgent {
                     "entries": entries,
                     "truncated": false,
                     "skipped": 0,
+                })
+                .to_string())
+            }
+            "search" => {
+                // The harness's own shape: the pattern, the files it scanned
+                // and one entry per matching line, sorted by file name (the
+                // workspace is a BTreeMap, so the walk already is).
+                let pattern = args
+                    .get("pattern")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if pattern.is_empty() {
+                    return Err(DriveError::Refused {
+                        name: "search".to_string(),
+                        output: "invalid input: \"pattern\" must not be empty".to_string(),
+                    });
+                }
+                let mut matches = Vec::new();
+                let mut bytes = 0;
+                for (name, content) in &self.files {
+                    bytes += content.len();
+                    for (index, line) in content.lines().enumerate() {
+                        if line.contains(pattern) {
+                            matches.push(json!({
+                                "file": name,
+                                "line": index + 1,
+                                "text": line,
+                            }));
+                        }
+                    }
+                }
+                Ok(json!({
+                    "pattern": pattern,
+                    "path": ".",
+                    "matches": matches,
+                    "files_scanned": self.files.len(),
+                    "bytes_scanned": bytes,
+                    "skipped": 0,
+                    "truncated": false,
                 })
                 .to_string())
             }

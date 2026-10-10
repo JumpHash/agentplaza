@@ -26,9 +26,18 @@
 //! asks for. It is off unless asked for, and it is how the dispatcher
 //! (`dispatchd`) drives the fleet — see [`admin`].
 //!
+//! `--roles <manifest>` adds the codex's tool grants ([`roles`]): the manifest
+//! (`docs/agents/initial-roles.json`) names, per role, the tools that role may
+//! use, and the hub refuses — `403`, before anything is dispatched — any
+//! `POST /tell` for a tool the session's role does not grant. A manifest the
+//! daemon cannot read is a startup error, never a fleet served under a policy
+//! nobody can name. It is off unless asked for: with no manifest the surface is
+//! exactly what it was.
+//!
 //! This is a stand-in for the real orchestrator: it exists so the plaza's core
 //! loop can be exercised end to end against a real VM. It holds no policy
-//! beyond the two tools the frozen slice contract defines, and no secrets.
+//! beyond the two tools the frozen slice contract defines and, when `--roles`
+//! names a manifest, the codex's per-role tool grants — and no secrets.
 //!
 //! AF_VSOCK exists on Linux only, so the crate's code is Linux-gated: the
 //! workspace is also type-checked for `aarch64-apple-darwin`, where this
@@ -49,6 +58,8 @@ mod hub;
 mod line;
 #[cfg(target_os = "linux")]
 mod proto;
+#[cfg(target_os = "linux")]
+mod roles;
 #[cfg(target_os = "linux")]
 mod serve;
 #[cfg(target_os = "linux")]
@@ -81,7 +92,7 @@ use hub::Hub;
 #[cfg(target_os = "linux")]
 use line::StreamLines;
 #[cfg(target_os = "linux")]
-use serve::{HostError, SessionLimits, SystemClock, StdoutLog, handle_session};
+use serve::{HostError, SessionLimits, StdoutLog, SystemClock, handle_session};
 #[cfg(target_os = "linux")]
 use status::NodeFacts;
 
@@ -187,7 +198,7 @@ impl Drop for SessionGuard {
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
-              [--admin-port P]
+              [--admin-port P] [--roles MANIFEST]
 
   --uds-dir DIR  directory for the per-VM vsock Unix sockets
                  (default /tmp/plaza-vsock)
@@ -201,6 +212,14 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
                  (POST /tell — send one tool_call into a connected agent's
                  session and answer with its tool_result; GET /healthz;
                  default: off)
+  --roles MANIFEST  enforce the codex's per-role tool grants from MANIFEST
+                 (docs/agents/initial-roles.json): a POST /tell for a tool the
+                 agent's role does not grant answers 403 and never reaches the
+                 guest. The manifest is read and checked at startup — one that
+                 is malformed (a role that declares no tools, or none; a role
+                 that does not call itself by its key) stops the daemon rather
+                 than serving under a policy nobody can name. Default: off,
+                 and then every tool the surface accepts is driven.
   -h, --help     print this help
 
 For each guest CID `c` the daemon listens on the Unix socket
@@ -212,7 +231,8 @@ hello -> welcome, tool_call (echo, uptime) -> tool_result, bye -> close, and
 the keepalive agent protocol a hello with \"keepalive\": true opts into: the
 hub dispatches tool_calls at will, the agent answers tool_results and beats
 with a heartbeat every 5 s, and the session ends on the hub's stop (or on the
-agent's bye) or is reaped after 300 s without a heartbeat. Every line in both
+agent's bye) or is reaped after 300 s without a heartbeat. With --roles the
+hub drives only the tools the agent's role grants. Every line in both
 directions is logged; SIGTERM or SIGINT stops the daemon.";
 
 /// On a host without Unix sockets there is nothing to listen on: say so and
@@ -255,6 +275,10 @@ struct Config {
     /// The loopback TCP port the admin surface (`POST /tell`) answers on,
     /// when `--admin-port` asks for it.
     admin_port: Option<u16>,
+    /// The roles manifest the admin surface's tool grants are enforced from,
+    /// when `--roles` names one. `None` is the daemon with no policy: every
+    /// tool the surface accepts is driven.
+    roles: Option<PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
@@ -266,20 +290,25 @@ impl Default for Config {
             port: DEFAULT_PORT,
             status_port: None,
             admin_port: None,
+            roles: None,
         }
     }
 }
 
-/// Reads `--uds-dir`, `--cids`, `--port`, `--status-port` and `--admin-port`,
-/// leaving the rest at its default.
+/// Reads `--uds-dir`, `--cids`, `--port`, `--status-port`, `--admin-port` and
+/// `--roles`, leaving the rest at its default.
 #[cfg(target_os = "linux")]
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
-        let mut value = |flag: &str| args.next().ok_or_else(|| format!("missing value for {flag}"));
+        let mut value = |flag: &str| {
+            args.next()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
         match argument.as_str() {
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
+            "--roles" => config.roles = Some(PathBuf::from(value("--roles")?)),
             "--cids" => {
                 config.cids = value("--cids")?
                     .split(',')
@@ -352,6 +381,18 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(target_os = "linux")]
 fn run(config: Config) -> Result<(), String> {
     let started = Instant::now();
+    // The codex's tool grants, when a manifest was named: read and checked
+    // *first*, before a socket is bound or a directory created. A daemon that
+    // cannot enforce the policy it was given must not serve at all — a
+    // malformed manifest, or one that is not there, fails the startup with what
+    // it read (the same rule `noded --agents` follows for the fleet it boots).
+    let roles = config
+        .roles
+        .as_ref()
+        .map(|path| roles::Manifest::load(path))
+        .transpose()
+        .map_err(|err| format!("--roles: {err}"))?
+        .map(Arc::new);
     sys::install_signal_handlers();
     // The listeners live under `uds_dir` with deterministic names; create it
     // 0700 first, so another local user cannot squat a path or impersonate
@@ -366,8 +407,20 @@ fn run(config: Config) -> Result<(), String> {
     // serves any guest (rather than one CID up and one down).
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
     // One hub for the whole daemon: the registry of connected keepalive
-    // agents, shared by every session thread.
-    let hub = Arc::new(Hub::new(Arc::new(StdoutLog)));
+    // agents, shared by every session thread — and, when `--roles` named a
+    // manifest, the tool-grant ceiling every dispatch passes (Hub::admit).
+    let hub = match &roles {
+        Some(manifest) => Hub::with_roles(Arc::new(StdoutLog), Arc::clone(manifest)),
+        None => Hub::new(Arc::new(StdoutLog)),
+    };
+    let hub = Arc::new(hub);
+    if let (Some(path), Some(manifest)) = (&config.roles, &roles) {
+        println!(
+            "vsockd: role tool grants enforced from {} ({} roles)",
+            path.display(),
+            manifest.len()
+        );
+    }
     let mut handles = Vec::new();
     // The host facts both loopback surfaces report are the daemon's own, so
     // they are built once and shared.
@@ -416,7 +469,9 @@ fn run(config: Config) -> Result<(), String> {
         listener_paths.push(path);
         let limiter = Arc::clone(&limiter);
         let hub = Arc::clone(&hub);
-        handles.push(thread::spawn(move || accept_loop(cid, listener, limiter, hub)));
+        handles.push(thread::spawn(move || {
+            accept_loop(cid, listener, limiter, hub)
+        }));
     }
     for handle in handles {
         let _ = handle.join();
@@ -429,10 +484,7 @@ fn run(config: Config) -> Result<(), String> {
     for path in &listener_paths {
         if let Err(err) = std::fs::remove_file(path) {
             if err.kind() != std::io::ErrorKind::NotFound {
-                println!(
-                    "vsockd: warning: cannot remove {}: {err}",
-                    path.display()
-                );
+                println!("vsockd: warning: cannot remove {}: {err}", path.display());
             }
         }
     }
@@ -445,6 +497,11 @@ fn run(config: Config) -> Result<(), String> {
 /// Anything else — a connection that would block because the listener's
 /// accept backlog is full (`EAGAIN`), a permission problem, an unexplained
 /// failure — is treated as live: the path is kept and the takeover refused.
+///
+/// The probe exists for the UDS listener path, which is Linux-only, so the
+/// verdict and its classifier are gated with it (and so is the test that pins
+/// them).
+#[cfg(target_os = "linux")]
 #[derive(Debug, PartialEq, Eq)]
 enum ProbeVerdict {
     Stale,
@@ -479,7 +536,6 @@ fn probe_verdict(err: &std::io::Error) -> ProbeVerdict {
 /// error rather than looping forever.
 #[cfg(target_os = "linux")]
 fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
-
     for _attempt in 1..=MAX_BIND_ATTEMPTS {
         if path.exists() {
             match UnixStream::connect(path) {
@@ -489,17 +545,17 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
                         path.display()
                     ));
                 }
-                Err(err) => match err.kind() {
+                Err(err) => match probe_verdict(&err) {
                     // A dead socket (`ECONNREFUSED`) or a leftover
                     // non-socket file in the daemon's own 0700 directory
                     // (`ENOENT` on Linux when the path is no socket):
                     // nothing answers, the path is stale.
-                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => {}
+                    ProbeVerdict::Stale => {}
                     // A listener is there but its accept backlog is full
                     // (`EAGAIN`), or the probe failed in a way this daemon
                     // does not understand: treat the path as live and
                     // refuse — never remove a file a live listener may own.
-                    _ => {
+                    ProbeVerdict::Live => {
                         return Err(format!(
                             "the listener at {} for guest CID {cid} does not answer ({err}) — refusing to take it over",
                             path.display()
@@ -603,9 +659,7 @@ fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, h
 #[cfg(target_os = "linux")]
 fn serve_guest(stream: UnixStream, peer_cid: u32, hub: &Hub) {
     if let Err(err) = stream.set_read_timeout(Some(RECV_TIMEOUT)) {
-        println!(
-            "vsockd: session with cid {peer_cid} dropped: cannot set a read timeout ({err})"
-        );
+        println!("vsockd: session with cid {peer_cid} dropped: cannot set a read timeout ({err})");
         return;
     }
     let deadline = Instant::now().checked_add(SESSION_TIMEOUT);
@@ -616,7 +670,14 @@ fn serve_guest(stream: UnixStream, peer_cid: u32, hub: &Hub) {
         keepalive_idle: Some(Duration::from_secs(KEEPALIVE_IDLE_SECS)),
         keepalive_read_slice: KEEPALIVE_READ_SLICE,
     };
-    match handle_session(&mut transport, peer_cid, limits, &StdoutLog, hub, &SystemClock) {
+    match handle_session(
+        &mut transport,
+        peer_cid,
+        limits,
+        &StdoutLog,
+        hub,
+        &SystemClock,
+    ) {
         // A keepalive session logs its own transitions and its own end
         // (`vsockd: agent <cid> ...`), so there is nothing to add here.
         Ok(summary) if summary.keepalive => {}
@@ -662,6 +723,7 @@ mod tests {
             config.admin_port, None,
             "the admin surface is off unless asked for"
         );
+        assert_eq!(config.roles, None, "no manifest, no policy");
     }
 
     #[test]
@@ -677,6 +739,8 @@ mod tests {
             "9101".to_string(),
             "--admin-port".to_string(),
             "9102".to_string(),
+            "--roles".to_string(),
+            "docs/agents/initial-roles.json".to_string(),
         ])
         .expect("explicit flags parse");
         assert_eq!(config.uds_dir, PathBuf::from("/tmp/x"));
@@ -684,6 +748,10 @@ mod tests {
         assert_eq!(config.port, 6000);
         assert_eq!(config.status_port, Some(9101));
         assert_eq!(config.admin_port, Some(9102));
+        assert_eq!(
+            config.roles,
+            Some(PathBuf::from("docs/agents/initial-roles.json"))
+        );
     }
 
     #[test]
@@ -698,7 +766,50 @@ mod tests {
         assert!(parse_args(vec!["--admin-port".to_string()]).is_err());
         assert!(parse_args(vec!["--admin-port".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--admin-port".to_string(), "70000".to_string()]).is_err());
+        assert!(parse_args(vec!["--roles".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
+    }
+
+    /// A manifest the daemon cannot read stops it *before* anything is bound or
+    /// created: a daemon that cannot enforce the policy it was given must not
+    /// serve (the rule `noded --agents` follows for its fleet).
+    #[test]
+    fn a_manifest_that_cannot_be_read_stops_the_daemon_before_it_binds() {
+        let dir = std::env::temp_dir().join(format!(
+            "plaza-vsockd-roles-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let never = dir.join("never-created");
+        let manifest = dir.join("roles.json");
+        std::fs::create_dir_all(&dir).expect("a directory for the test's manifest");
+
+        // Not there at all.
+        let config = Config {
+            uds_dir: never.clone(),
+            roles: Some(dir.join("absent.json")),
+            ..Config::default()
+        };
+        let err = run(config).expect_err("a missing manifest stops the daemon");
+        assert!(err.starts_with("--roles: cannot read"), "{err}");
+        assert!(err.contains("absent.json"), "{err}");
+        assert!(!never.exists(), "nothing was bound or created: {err}");
+
+        // There, and not a policy: a role that declares no tools.
+        std::fs::write(&manifest, r#"{"roles": {"builder": {"role": "builder"}}}"#)
+            .expect("the test writes a malformed manifest");
+        let config = Config {
+            uds_dir: never.clone(),
+            roles: Some(manifest.clone()),
+            ..Config::default()
+        };
+        let err = run(config).expect_err("a malformed manifest stops the daemon");
+        assert!(err.starts_with("--roles: role \"builder\""), "{err}");
+        assert!(err.contains("declares no tools"), "{err}");
+        assert!(!never.exists(), "nothing was bound or created: {err}");
+
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     /// The status surface binds loopback only, and a port that is taken is an
@@ -707,10 +818,15 @@ mod tests {
     fn the_status_listener_binds_loopback_and_refuses_a_taken_port() {
         let listener = bind_status_listener(0).expect("an ephemeral port binds");
         let addr = listener.local_addr().expect("a bound address");
-        assert!(addr.ip().is_loopback(), "the status surface is loopback only");
+        assert!(
+            addr.ip().is_loopback(),
+            "the status surface is loopback only"
+        );
         let taken = bind_status_listener(addr.port());
         assert!(
-            taken.expect_err("a taken port is an error").contains("status surface"),
+            taken
+                .expect_err("a taken port is an error")
+                .contains("status surface"),
             "the error names the surface"
         );
     }
@@ -742,7 +858,8 @@ mod tests {
     fn the_uds_dir_is_created_and_tightened_to_0700() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join(format!("plaza-vsockd-uds-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("plaza-vsockd-uds-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         create_uds_dir(&dir).expect("the socket directory is created");
@@ -759,7 +876,11 @@ mod tests {
             .expect("the directory exists")
             .permissions()
             .mode();
-        assert_eq!(mode & 0o777, 0o700, "a pre-existing socket directory is tightened");
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "a pre-existing socket directory is tightened"
+        );
 
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
@@ -772,7 +893,8 @@ mod tests {
     /// gives up with the honest race error instead.
     #[test]
     fn stale_listener_files_are_cleared_but_live_listeners_are_kept() {
-        let dir = std::env::temp_dir().join(format!("plaza-vsockd-stale-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("plaza-vsockd-stale-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         create_uds_dir(&dir).expect("the socket directory is created");
 
@@ -795,7 +917,9 @@ mod tests {
         // refused (the probe connection is closed immediately).
         let live = dir.join("vm32_5000");
         let listener = UnixListener::bind(&live).expect("a live listener binds");
-        let answer = std::thread::spawn(move || {
+        // The thread answers exactly one probe and ends; nothing joins it,
+        // because the refusal this test asserts does not wait on it.
+        let _probe = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("the probe connects");
             drop(stream);
         });
@@ -819,7 +943,10 @@ mod tests {
             race.contains("refusing to take it over"),
             "the refusal says why: {race}"
         );
-        assert!(busy.exists(), "the busy listener's path file is never removed");
+        assert!(
+            busy.exists(),
+            "the busy listener's path file is never removed"
+        );
         drop(parked);
         drop(busy_listener);
 
@@ -833,13 +960,18 @@ mod tests {
     #[test]
     fn only_refused_and_missing_probes_are_stale() {
         let kind = |k: std::io::ErrorKind| probe_verdict(&std::io::Error::from(k));
-        assert_eq!(kind(std::io::ErrorKind::ConnectionRefused), ProbeVerdict::Stale);
+        assert_eq!(
+            kind(std::io::ErrorKind::ConnectionRefused),
+            ProbeVerdict::Stale
+        );
         assert_eq!(kind(std::io::ErrorKind::NotFound), ProbeVerdict::Stale);
         assert_eq!(kind(std::io::ErrorKind::WouldBlock), ProbeVerdict::Live);
-        assert_eq!(kind(std::io::ErrorKind::PermissionDenied), ProbeVerdict::Live);
+        assert_eq!(
+            kind(std::io::ErrorKind::PermissionDenied),
+            ProbeVerdict::Live
+        );
         assert_eq!(kind(std::io::ErrorKind::TimedOut), ProbeVerdict::Live);
     }
-
 
     /// The session cap reserves at most `max` slots and refuses the next
     /// connection, but reuses a slot once its session ends.

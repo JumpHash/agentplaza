@@ -17,6 +17,15 @@
 //! ([`crate::serve`]) is the one that dispatches it and matches the
 //! `tool_result`, so a dispatch is never guessed at from the next line.
 //!
+//! Every dispatch passes one gate first: [`Hub::admit`], the codex's tool
+//! grants ([`crate::roles`]). With `--roles` the hub holds the manifest, knows
+//! each session's role (the one its `hello` declared and the hub accepted), and
+//! refuses a tool the role does not grant *before* anything is dispatched — the
+//! agent's session is never touched, and the caller is told which role refused
+//! what and why. This is the single enforcement point for the ceiling: the
+//! session loop dispatches what it is given, and no path reaches an agent's tool
+//! without coming through here.
+//!
 //! Liveness is the *session's* idle deadline, not a lock: the hub never holds
 //! an application-level lock as the correctness mechanism for a session. The
 //! mutexes here only guard the two maps, and the log line is always written
@@ -28,6 +37,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use crate::roles::{Decision, Manifest};
 use crate::serve::SessionLog;
 
 /// How many heartbeats pass between logged heartbeat lines.
@@ -151,6 +161,25 @@ pub struct ToolReply {
     pub output: String,
 }
 
+/// What the hub makes of a request to drive one tool call on a connected agent:
+/// the gate [`Hub::admit`] holds before [`Hub::tell`] dispatches anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    /// No live session owns the CID: the agent has not connected, or its
+    /// session has already ended.
+    NoSession,
+    /// The call may be driven into the session.
+    Allowed,
+    /// The role the agent declared does not grant the tool under the manifest
+    /// the daemon was started with. The reason is the refusal's own words
+    /// (`403`, `{"ok":false,"output":"..."}`), and nothing was dispatched: the
+    /// agent's session never saw the call.
+    Refused {
+        /// Why the call is refused, naming the role or the tool.
+        reason: String,
+    },
+}
+
 /// What came of [`Hub::tell`]: the admin surface's request to run one tool
 /// call on a connected agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,21 +219,35 @@ pub struct Hub {
     /// row's timestamps are this anchor plus its elapsed time — see
     /// [`Hub::epoch_ms`].
     anchor: (Instant, u64),
+    /// The codex's tool grants ([`crate::roles`]), when the daemon was started
+    /// with `--roles`: the ceiling on what may be *driven* for each agent (see
+    /// [`Hub::admit`]). `None` is the daemon without a policy — every tool the
+    /// admin surface asks for is dispatched, exactly as before `--roles`
+    /// existed.
+    roles: Option<Arc<Manifest>>,
     log: Arc<dyn SessionLog + Send + Sync>,
 }
 
 impl Hub {
-    /// A hub that logs its transitions to `log`.
+    /// A hub that logs its transitions to `log`, with no tool-grant policy:
+    /// every dispatch the admin surface accepts is driven.
     pub fn new(log: Arc<dyn SessionLog + Send + Sync>) -> Self {
-        Self::started_at(log, Instant::now(), epoch_ms_now())
+        Self::started_at(log, None, Instant::now(), epoch_ms_now())
+    }
+
+    /// A hub that logs its transitions to `log` and holds `roles` as the
+    /// ceiling on what it will drive ([`Hub::admit`]).
+    pub fn with_roles(log: Arc<dyn SessionLog + Send + Sync>, roles: Arc<Manifest>) -> Self {
+        Self::started_at(log, Some(roles), Instant::now(), epoch_ms_now())
     }
 
     /// A hub whose monotonic instants are translated to epoch milliseconds
     /// against `at` == `epoch_ms`. Production always starts the hub now
-    /// ([`Hub::new`]); the tests pin the anchor so the status surface's
-    /// timestamps are exactly assertable.
+    /// ([`Hub::new`], [`Hub::with_roles`]); the tests pin the anchor so the
+    /// status surface's timestamps are exactly assertable.
     pub(crate) fn started_at(
         log: Arc<dyn SessionLog + Send + Sync>,
+        roles: Option<Arc<Manifest>>,
         at: Instant,
         epoch_ms: u64,
     ) -> Self {
@@ -213,6 +256,7 @@ impl Hub {
             steering: Mutex::new(HashMap::new()),
             epoch: AtomicU64::new(0),
             anchor: (at, epoch_ms),
+            roles,
             log,
         }
     }
@@ -263,7 +307,8 @@ impl Hub {
                 "vsockd: agent {} re-adopted (previous session role {}, connected {}s ago)",
                 previous.cid,
                 previous.role,
-                now.saturating_duration_since(previous.connected_at).as_secs()
+                now.saturating_duration_since(previous.connected_at)
+                    .as_secs()
             ));
         }
         (token, receiver)
@@ -355,6 +400,43 @@ impl Hub {
     /// `POST /tell`); the session tests steer a session with it directly.
     pub(crate) fn steer(&self, cid: u32) -> Option<Sender<Command>> {
         self.steering().get(&cid).map(|(_, sender)| sender.clone())
+    }
+
+    /// The gate every dispatch passes: what the hub makes of driving tool
+    /// `tool` on the agent connected as `cid`.
+    ///
+    /// With no manifest the answer is [`Admission::Allowed`] for any live
+    /// session — the daemon serves exactly what it served before `--roles`
+    /// existed. With one, the role the agent declared at its handshake is
+    /// checked against the manifest ([`crate::roles`]), and a call the role does
+    /// not grant is refused *here*, before a dispatch exists: the agent's
+    /// session is untouched, so the guest never sees a call its role was not
+    /// given. The refusal is logged, so a denial is visible to the operator and
+    /// never silently swallowed.
+    ///
+    /// The role is read and the registry lock released before the decision is
+    /// made and before the log line is written, so a slow stdout cannot couple
+    /// two agents.
+    pub fn admit(&self, cid: u32, tool: &str) -> Admission {
+        let role = {
+            let registry = self.registry();
+            match registry.agents.get(&cid) {
+                Some(agent) => agent.role.clone(),
+                None => return Admission::NoSession,
+            }
+        };
+        let Some(manifest) = &self.roles else {
+            return Admission::Allowed;
+        };
+        let refusal = match manifest.decide(&role, tool) {
+            Decision::Allow => return Admission::Allowed,
+            Decision::NoRole => format!("no role was accepted for cid {cid}"),
+            Decision::UnknownRole => format!("role {role} is not in the manifest"),
+            Decision::Ungranted => format!("role {role} does not grant {tool}"),
+        };
+        self.log
+            .line(&format!("vsockd: refused a call to agent {cid}: {refusal}"));
+        Admission::Refused { reason: refusal }
     }
 
     /// Runs one tool call on the connected agent `cid` and waits, bounded by
@@ -816,12 +898,16 @@ mod tests {
         assert_eq!(hub.agent_count(), 0, "every session unregistered itself");
         let text = log.text();
         assert_eq!(
-            text.lines().filter(|line| line.contains("connected")).count(),
+            text.lines()
+                .filter(|line| line.contains("connected"))
+                .count(),
             SESSIONS as usize,
             "{text}"
         );
         assert_eq!(
-            text.lines().filter(|line| line.contains("ended cleanly")).count(),
+            text.lines()
+                .filter(|line| line.contains("ended cleanly"))
+                .count(),
             SESSIONS as usize / 2,
             "{text}"
         );
@@ -834,6 +920,7 @@ mod tests {
         let log = Arc::new(Recording::default());
         let hub = Hub::started_at(
             Arc::clone(&log) as Arc<dyn SessionLog + Send + Sync>,
+            None,
             anchor,
             epoch_ms,
         );
@@ -904,10 +991,175 @@ mod tests {
             panic!("a session thread panics holding the registry lock");
         }));
         assert!(panicked.is_err(), "the helper really did panic");
-        assert!(hub.registry.lock().is_err(), "the registry lock is poisoned");
+        assert!(
+            hub.registry.lock().is_err(),
+            "the registry lock is poisoned"
+        );
 
         let snapshot = hub.snapshot();
         assert_eq!(snapshot.rows.len(), 1, "a poisoned lock still reports");
         assert_eq!(snapshot.sessions_active, 1);
+    }
+
+    /// The gate with no policy: every live session may be driven with any tool,
+    /// and a CID with no session is still `NoSession` — the answer the daemon
+    /// gave before `--roles` existed.
+    #[test]
+    fn without_a_manifest_every_live_session_is_allowed() {
+        let (_log, hub) = hub();
+        assert_eq!(hub.admit(10, "write_file"), Admission::NoSession);
+        hub.connect(10, "builder", Instant::now());
+        for tool in ["write_file", "read_file", "echo", "anything at all"] {
+            assert_eq!(hub.admit(10, tool), Admission::Allowed, "{tool}");
+        }
+        // A role-less agent too: with no manifest there is no role to check.
+        hub.connect(11, "", Instant::now());
+        assert_eq!(hub.admit(11, "write_file"), Admission::Allowed);
+    }
+
+    /// The gate with a policy is per role and per tool, and it is decided from
+    /// the role the hub *accepted* at the handshake — not from anything the
+    /// caller says.
+    #[test]
+    fn a_loaded_manifest_gates_each_session_by_its_accepted_role() {
+        let manifest = roles_manifest(&[
+            (
+                "builder",
+                &[
+                    "bash",
+                    "read_file",
+                    "write_file",
+                    "edit_file",
+                    "list",
+                    "search",
+                ],
+            ),
+            ("librarian", &["read_memory", "search", "transcript_search"]),
+        ]);
+        let hub = hub_with_roles(manifest.clone());
+        hub.connect(300, "builder", Instant::now());
+        hub.connect(310, "librarian", Instant::now());
+
+        // Granted: driven.
+        assert_eq!(hub.admit(300, "write_file"), Admission::Allowed);
+        assert_eq!(hub.admit(300, "list"), Admission::Allowed);
+        assert_eq!(hub.admit(310, "search"), Admission::Allowed);
+        // A diagnostic, for both of them.
+        for cid in [300, 310] {
+            assert_eq!(hub.admit(cid, "echo"), Admission::Allowed, "cid {cid}");
+            assert_eq!(hub.admit(cid, "uptime"), Admission::Allowed, "cid {cid}");
+        }
+
+        // The librarian's own reach: `search`, and nothing else — the honest
+        // consequence of the codex's librarian grants against this harness.
+        assert_eq!(
+            hub.admit(310, "write_file"),
+            Admission::Refused {
+                reason: "role librarian does not grant write_file".to_string(),
+            }
+        );
+        assert_eq!(
+            hub.admit(310, "list"),
+            Admission::Refused {
+                reason: "role librarian does not grant list".to_string(),
+            }
+        );
+        assert_eq!(
+            hub.admit(310, "read_file"),
+            Admission::Refused {
+                reason: "role librarian does not grant read_file".to_string(),
+            }
+        );
+        // A codex tool the harness does not serve is refused by name: the
+        // manifest grants `read_memory`, the harness maps no tool onto it.
+        assert_eq!(
+            hub.admit(310, "read_memory"),
+            Admission::Refused {
+                reason: "role librarian does not grant read_memory".to_string(),
+            }
+        );
+
+        // A role-less agent, with a manifest loaded: its own refusal.
+        hub.connect(320, "", Instant::now());
+        assert_eq!(
+            hub.admit(320, "echo"),
+            Admission::Refused {
+                reason: "no role was accepted for cid 320".to_string(),
+            }
+        );
+        // A role the manifest does not know: reported, never granted.
+        hub.connect(330, "intruder", Instant::now());
+        assert_eq!(
+            hub.admit(330, "echo"),
+            Admission::Refused {
+                reason: "role intruder is not in the manifest".to_string(),
+            }
+        );
+    }
+
+    /// A refusal is logged in the daemon's voice, and an allowed call logs
+    /// nothing: the operator sees the denials, and the dispatch's own line is
+    /// still the session's.
+    #[test]
+    fn a_refusal_is_logged_and_an_allowed_call_is_not() {
+        let log = Arc::new(Recording::default());
+        let hub = Hub::with_roles(
+            Arc::clone(&log) as Arc<dyn SessionLog + Send + Sync>,
+            Arc::new(roles_manifest(&[("librarian", &["read_memory", "search"])])),
+        );
+        hub.connect(310, "librarian", Instant::now());
+        assert_eq!(hub.admit(310, "search"), Admission::Allowed);
+        assert_eq!(
+            hub.admit(310, "write_file"),
+            Admission::Refused {
+                reason: "role librarian does not grant write_file".to_string(),
+            }
+        );
+        let text = log.text();
+        assert!(
+            text.contains(
+                "vsockd: refused a call to agent 310: role librarian does not grant write_file"
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            text.lines().filter(|line| line.contains("refused")).count(),
+            1,
+            "one denial, one line: {text}"
+        );
+    }
+
+    /// Whether an agent may be driven follows the session, not the CID: once a
+    /// session ends, the CID is nobody's again.
+    #[test]
+    fn the_gate_follows_the_live_session() {
+        let hub = hub_with_roles(roles_manifest(&[("builder", &["read_file"])]));
+        let (token, _steering) = hub.connect(300, "builder", Instant::now());
+        assert_eq!(hub.admit(300, "read_file"), Admission::Allowed);
+        hub.end_clean(300, token, 0);
+        assert_eq!(hub.admit(300, "read_file"), Admission::NoSession);
+    }
+
+    /// A manifest built from a role → tools table.
+    fn roles_manifest(roles: &[(&str, &[&str])]) -> crate::roles::Manifest {
+        let text = serde_json::json!({
+            "roles": roles
+                .iter()
+                .map(|(role, tools)| (
+                    (*role).to_string(),
+                    serde_json::json!({ "role": role, "tools": tools }),
+                ))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
+        })
+        .to_string();
+        crate::roles::Manifest::parse(&text).expect("the test's manifest is well formed")
+    }
+
+    /// A hub that holds `roles`, logging into a fresh recorder.
+    fn hub_with_roles(roles: crate::roles::Manifest) -> Hub {
+        Hub::with_roles(
+            Arc::new(Recording::default()) as Arc<dyn SessionLog + Send + Sync>,
+            Arc::new(roles),
+        )
     }
 }
