@@ -27,10 +27,11 @@ use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::signal::{Killable, SIGRTMIN};
 
 // Upstream re-exports the arch-specific `KvmVcpu` through `crate::arch`;
-// select the current arch's module here. The aarch64 arm lands with the
-// aarch64 port.
+// select the current arch's module here.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use crate::arch::x86_64::vcpu::{KvmVcpu, KvmVcpuConfigureError, KvmVcpuError, Peripherals};
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub use crate::arch::aarch64::vcpu::{KvmVcpu, KvmVcpuConfigureError, KvmVcpuError, Peripherals};
 use crate::vstate::vm::KvmVm;
 
 /// Signal number (SIGRTMIN) used to kick Vcpus.

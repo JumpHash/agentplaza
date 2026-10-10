@@ -532,10 +532,11 @@ pub(crate) mod tests {
     /// (upstream: `test_utils::arch_mem`).
     pub(crate) fn arch_mem(mem_size_bytes: usize) -> GuestMemoryMmap {
         // Upstream resolves this through `crate::arch::arch_memory_regions`; the
-        // per-arch module is selected directly here (the aarch64 arm lands with
-        // the aarch64 port).
+        // per-arch module is selected directly here.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let regions = crate::arch::x86_64::arch_memory_regions(mem_size_bytes);
+        #[cfg(target_arch = "aarch64")]
+        let regions = crate::arch::aarch64::arch_memory_regions(mem_size_bytes);
         multi_region_mem(&regions)
     }
 

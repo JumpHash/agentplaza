@@ -10,9 +10,11 @@ use kvm_bindings::KVM_API_VERSION;
 use kvm_ioctls::Kvm as KvmFd;
 
 // Upstream re-exports the arch-specific `Kvm` through `crate::arch`; select
-// the current arch's module here. The aarch64 arm lands with the aarch64 port.
+// the current arch's module here.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use crate::arch::x86_64::kvm::{Kvm, KvmArchError};
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub use crate::arch::aarch64::kvm::{Kvm, KvmArchError};
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug, thiserror::Error)]

@@ -21,9 +21,15 @@
 
 //! Single-VM build and boot orchestration.
 
+use std::io;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use std::thread;
+
+use vmm_sys_util::eventfd::EventFd;
 
 use crate::spawner::{SpawnError, VmRuntime, VmSpec};
+use crate::vstate::vm::KvmVm;
 
 /// Boots the VM described by `spec` and returns once its vCPUs are running.
 ///
@@ -38,8 +44,7 @@ pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        let _ = (spec, runtime);
-        Err(SpawnError::NoBackend)
+        aarch64::boot(spec, runtime)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -98,6 +103,85 @@ fn guest_cmdline(requested: &str) -> String {
     }
 }
 
+/// Installs the VM's stop control and spawns its exit watcher.
+///
+/// Both architectures end here: whichever vCPU stops the VM (guest shutdown or
+/// reset, a vCPU fault, or an arch-specific reset source) writes the VM's exit
+/// event, and the watcher — the thread the spawner joins — stops and joins the
+/// vCPU threads, then drops `devices`.
+///
+/// The bus only holds weak references, so the caller passes the strong handles
+/// of the devices it registered: the watcher is the VM's last thread, which
+/// makes those devices live exactly as long as the VM does.
+fn start_exit_watcher<D: Send + 'static>(
+    vm: Arc<KvmVm>,
+    runtime: &Arc<VmRuntime>,
+    devices: D,
+) -> io::Result<()> {
+    let stop_evt = vm.vcpus_exit_evt().try_clone()?;
+    runtime.set_stop_control(move || {
+        if let Err(err) = stop_evt.write(1) {
+            eprintln!("warning: failed to signal VM exit: {err}");
+        }
+    });
+
+    let exit_evt = vm.vcpus_exit_evt().try_clone()?;
+    let watcher_runtime = Arc::clone(runtime);
+    let watcher = thread::Builder::new()
+        .name(format!("apz_vm{}_exit", runtime.id))
+        .spawn(move || {
+            match wait_for_event(&exit_evt) {
+                Ok(()) => {
+                    if !watcher_runtime.stop_requested() {
+                        watcher_runtime.mark_guest_exited();
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "warning: VM {} could not watch for guest exit: {err}",
+                        watcher_runtime.id
+                    );
+                }
+            }
+            // Stop and join the vCPU threads, then drop the VM (and with it the
+            // guest memory) and the devices.
+            vm.shutdown_vcpus();
+            drop(devices);
+        })?;
+    runtime.add_thread(watcher);
+
+    Ok(())
+}
+
+/// Blocks until `evt` is signalled.
+///
+/// The event fds are created with `EFD_NONBLOCK` (a plain `read` would return
+/// `EAGAIN` immediately), so this waits with `poll(2)` and then drains the
+/// counter.
+fn wait_for_event(evt: &EventFd) -> io::Result<()> {
+    let fd = evt.as_raw_fd();
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `pfd` points to one initialized `pollfd` for a file
+        // descriptor this process owns and keeps open for the duration of
+        // the call.
+        let ret = unsafe { libc::poll(&mut pfd, 1, -1) };
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        let _ = evt.read();
+        return Ok(());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::guest_cmdline;
@@ -129,12 +213,9 @@ mod tests {
 mod x86_64 {
     use std::fs::File;
     use std::io;
-    use std::os::fd::AsRawFd;
     use std::sync::{Arc, Mutex, PoisonError};
-    use std::thread;
 
     use linux_loader::loader::Cmdline;
-    use vmm_sys_util::eventfd::EventFd;
 
     use crate::arch::x86_64::layout::CMDLINE_MAX_SIZE;
     use crate::arch::x86_64::{
@@ -312,68 +393,189 @@ mod x86_64 {
         let vm = Arc::new(vm);
         vm.start_vcpus(vcpus).map_err(BootError::from)?;
 
-        let stop_evt = vm.vcpus_exit_evt().try_clone().map_err(BootError::EventFd)?;
-        runtime.set_stop_control(move || {
-            if let Err(err) = stop_evt.write(1) {
-                eprintln!("warning: failed to signal VM exit: {err}");
-            }
-        });
+        super::start_exit_watcher(vm, runtime, legacy_devices).map_err(BootError::WaitExitEvent)?;
 
-        let exit_evt = vm.vcpus_exit_evt().try_clone().map_err(BootError::EventFd)?;
-        let watcher_runtime = Arc::clone(runtime);
-        let watcher = thread::Builder::new()
-            .name(format!("apz_vm{}_exit", runtime.id))
-            .spawn(move || {
-                match wait_for_event(&exit_evt) {
-                    Ok(()) => {
-                        if !watcher_runtime.stop_requested() {
-                            watcher_runtime.mark_guest_exited();
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "warning: VM {} could not watch for guest exit: {err}",
-                            watcher_runtime.id
-                        );
-                    }
-                }
-                // Stop and join the vCPU threads, then drop the VM (and with
-                // it the guest memory and the legacy devices).
-                vm.shutdown_vcpus();
-                drop(legacy_devices);
-            })
-            .map_err(BootError::WaitExitEvent)?;
-        runtime.add_thread(watcher);
+        Ok(())
+    }
+}
+
+/// The aarch64/KVM boot path.
+///
+/// The order differs from x86_64 in one important way: the in-kernel vGIC must
+/// be created *after* the vCPUs exist (`KVM_CREATE_VCPU` fails once the irqchip
+/// is initialized on arm64), which `KvmVm::arch_post_create_vcpus` takes care
+/// of inside `create_vcpus`.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod aarch64 {
+    use std::fs::File;
+    use std::io;
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use linux_loader::loader::Cmdline;
+
+    use crate::arch::aarch64::gic::GICVersion as KvmGicVersion;
+    use crate::arch::aarch64::layout::{CMDLINE_MAX_SIZE, GSI_LEGACY_START, MMIO_LEN, SERIAL_MEM_START};
+    use crate::arch::aarch64::{
+        ConfigurationError, InitrdConfig, InitrdError, SerialFdtInfo, arch_memory_regions,
+        configure_system_for_boot, load_kernel,
+    };
+    use crate::devices::legacy::{SerialDevice, SerialOut};
+    use crate::spawner::{GicVersion, SpawnError, VmRuntime, VmSpec};
+    use crate::vstate::kvm::{Kvm, KvmError};
+    use crate::vstate::memory::{MemoryError, anonymous, mib_to_bytes};
+    use crate::vstate::vm::{KvmVm, StartVcpusError, VmError};
+
+    /// The guest's only legacy device is the serial console, so it takes the
+    /// first legacy GSI. The FDT and the KVM irqfd use the same number: the
+    /// in-kernel vGIC shifts it by 32, so GSI 0 is SPI 32 in the guest's
+    /// interrupt numbering.
+    const SERIAL_GSI: u32 = GSI_LEGACY_START;
+
+    /// Errors from [`boot`].
+    #[derive(Debug, thiserror::Error)]
+    pub enum BootError {
+        /// Cannot open the kernel image {path}: {source}
+        #[error("cannot open the kernel image {path}: {source}")]
+        Kernel {
+            /// Path of the kernel image that could not be opened.
+            path: std::path::PathBuf,
+            /// The error the open failed with.
+            source: io::Error,
+        },
+        /// Cannot open the initrd image {path}: {source}
+        #[error("cannot open the initrd image {path}: {source}")]
+        Initrd {
+            /// Path of the initrd image that could not be opened.
+            path: std::path::PathBuf,
+            /// The error the open failed with.
+            source: io::Error,
+        },
+        /// Failed to allocate guest memory: {0}
+        #[error("failed to allocate guest memory: {0}")]
+        GuestMemory(#[from] MemoryError),
+        /// Failed to initialize KVM: {0}
+        #[error("failed to initialize KVM: {0}")]
+        Kvm(#[from] KvmError),
+        /// Failed to configure the VM: {0}
+        #[error("failed to configure the VM: {0}")]
+        Vm(#[from] VmError),
+        /// Failed to start the vCPUs: {0}
+        #[error("failed to start the vCPUs: {0}")]
+        StartVcpus(#[from] StartVcpusError),
+        /// Failed to configure the VM for boot: {0}
+        #[error("failed to configure the VM for boot: {0}")]
+        Configure(#[from] ConfigurationError),
+        /// Failed to load the initrd into guest memory: {0}
+        #[error("failed to load the initrd into guest memory: {0}")]
+        InitrdLoad(#[from] InitrdError),
+        /// Failed to build the kernel command line: {0}
+        #[error("failed to build the kernel command line: {0}")]
+        CommandLine(#[from] linux_loader::cmdline::Error),
+        /// Failed to create the serial device: {0}
+        #[error("failed to create the serial device: {0}")]
+        Serial(io::Error),
+        /// Failed to register the serial console on the MMIO bus: {0}
+        #[error("failed to register the serial console on the MMIO bus: {0}")]
+        Bus(#[from] crate::vstate::bus::BusError),
+        /// Failed to register the serial console IRQ: {0}
+        #[error("failed to register the serial console IRQ: {0}")]
+        Irq(vmm_sys_util::errno::Error),
+        /// Failed to watch the VM exit event fd: {0}
+        #[error("failed to watch the VM exit event fd: {0}")]
+        WaitExitEvent(io::Error),
+    }
+
+    /// Builds and boots the VM, leaving its vCPUs running.
+    pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+        boot_inner(spec, &runtime).map_err(SpawnError::backend)
+    }
+
+    fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+        // Guest memory: aarch64 has one DRAM region below the 64-bit MMIO hole,
+        // unless the requested size exceeds the architectural maximum.
+        let regions = arch_memory_regions(mib_to_bytes(spec.memory_mib));
+        let guest_regions = anonymous(&regions)?;
+
+        let kvm = Kvm::new()?;
+        let mut vm = KvmVm::new(kvm)?;
+        // The caller's GIC selection (`VmSpec::gic`); `None` keeps upstream's
+        // default, GICv3 with a fallback to GICv2 (the Raspberry Pi 4/5 path).
+        vm.set_gic_version(gic_version(spec.gic));
+
+        // The vCPUs, and through them the in-kernel vGIC, must exist before the
+        // guest memory is registered.
+        let mut vcpus = vm.create_vcpus(spec.vcpus)?;
+        vm.register_dram_memory_regions(guest_regions)?;
+
+        // The guest's only device: the serial console, on the MMIO bus (there
+        // is no network device by design).
+        let serial = Arc::new(Mutex::new(
+            SerialDevice::new(SerialOut::shared(Arc::clone(&runtime.serial)))
+                .map_err(BootError::Serial)?,
+        ));
+        vm.common
+            .mmio_bus
+            .insert(serial.clone(), SERIAL_MEM_START, MMIO_LEN)?;
+        {
+            let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
+            vm.register_irq(serial.serial.interrupt_evt(), SERIAL_GSI)
+                .map_err(BootError::Irq)?;
+        }
+
+        // The bus only holds a weak reference: the watcher below keeps the
+        // strong handle, so the console lives exactly as long as the VM.
+        let legacy_devices = serial;
+
+        // Load the kernel (the PE loader, which covers arm64 `Image` and
+        // EFI-stub images alike), the optional initrd, and write the boot
+        // parameters — here the device tree — into guest memory.
+        let kernel = File::open(&spec.kernel).map_err(|source| BootError::Kernel {
+            path: spec.kernel.clone(),
+            source,
+        })?;
+        let entry_point = load_kernel(&kernel, vm.guest_memory())?;
+        let initrd = match &spec.initrd {
+            Some(path) => {
+                let file = File::open(path).map_err(|source| BootError::Initrd {
+                    path: path.clone(),
+                    source,
+                })?;
+                Some(InitrdConfig::from_file(vm.guest_memory(), file)?)
+            }
+            None => None,
+        };
+        let cmdline =
+            Cmdline::try_from(super::guest_cmdline(&spec.cmdline).as_str(), CMDLINE_MAX_SIZE)?;
+        let serial_info = SerialFdtInfo {
+            addr: SERIAL_MEM_START,
+            len: MMIO_LEN,
+            gsi: SERIAL_GSI,
+        };
+        configure_system_for_boot(
+            &vm,
+            &mut vcpus,
+            entry_point,
+            &initrd,
+            cmdline,
+            &serial_info,
+        )?;
+
+        // Start the vCPUs and then the exit watcher, as on x86_64.
+        let vm = Arc::new(vm);
+        vm.start_vcpus(vcpus)?;
+
+        super::start_exit_watcher(vm, runtime, legacy_devices).map_err(BootError::WaitExitEvent)?;
 
         Ok(())
     }
 
-    /// Blocks until `evt` is signalled.
-    ///
-    /// The event fds are created with `EFD_NONBLOCK` (a plain `read` would
-    /// return `EAGAIN` immediately), so this waits with `poll(2)` and then
-    /// drains the counter.
-    fn wait_for_event(evt: &EventFd) -> io::Result<()> {
-        let fd = evt.as_raw_fd();
-        loop {
-            let mut pfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: `pfd` points to one initialized `pollfd` for a file
-            // descriptor this process owns and keeps open for the duration of
-            // the call.
-            let ret = unsafe { libc::poll(&mut pfd, 1, -1) };
-            if ret < 0 {
-                let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(err);
-            }
-            let _ = evt.read();
-            return Ok(());
+    /// Maps the spawner's arch-neutral GIC selection onto the KVM GIC versions.
+    fn gic_version(requested: Option<GicVersion>) -> Option<KvmGicVersion> {
+        match requested {
+            // The backend default: GICv3, falling back to GICv2.
+            None => None,
+            Some(GicVersion::V2) => Some(KvmGicVersion::GICV2),
+            Some(GicVersion::V3) => Some(KvmGicVersion::GICV3),
         }
     }
 }
