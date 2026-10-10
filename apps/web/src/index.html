@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+<title>AgentPlaza node console</title>
+<!-- AgentPlaza fleet console for the noded node daemon (crates/noded).
+     Multi-file TypeScript + CSS, bundled to plain static files (this file plus
+     hashed js/css) — hostable on any static host, no server build, no framework.
+     Talks to the frozen /api/v0 contract on the same origin:
+       GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
+       POST /api/v0/runs/{id}/input
+     Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
+     a civic register — ruled rows, entry numbers in the margin, red double margin rule,
+     Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
+     Guest serial output is untrusted: rendered as text, never as markup. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="{{CSS}}">
+<script type="module" src="{{JS}}"></script>
+</head>
+<body data-bundle-hash="{{BUNDLE_HASH}}">
+<div class="app">
+  <nav class="index" aria-label="Index">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
+    <div class="index-list">
+      <div class="hd">Index</div>
+      <a href="#register" data-nav="register" aria-keyshortcuts="0"><span class="k">0</span><span>Register</span><span class="dots"></span><span class="n" id="nav-count">—</span></a>
+      <a href="#register" data-nav="run" aria-keyshortcuts="1" id="nav-run"><span class="k">1</span><span>Run</span><span class="dots"></span><span class="n" id="nav-run-id">—</span></a>
+      <a href="#machine" data-nav="machine" aria-keyshortcuts="2"><span class="k">2</span><span>Machine</span><span class="dots"></span><span class="n" id="nav-machine">—</span></a>
+      <a href="#map" data-nav="map" aria-keyshortcuts="3"><span class="k">3</span><span>Map</span><span class="dots"></span><span class="n" id="nav-map">—</span></a>
+      <a href="#view3d" data-nav="view3d" aria-keyshortcuts="4"><span class="k">4</span><span>3D view</span><span class="dots"></span><span class="n" id="nav-3d">—</span></a>
+    </div>
+    <div class="colophon">
+      <span>Direct to the node daemon — no relay</span>
+      <span id="colo-origin">Node —</span>
+      <span>Bundle <code id="colo-hash">{{BUNDLE_HASH}}</code></span>
+      <span>Keys 0–4 walk the register</span>
+      <div class="theme" role="group" aria-label="Theme">
+        <button type="button" data-theme-set="system" aria-pressed="true">System</button>
+        <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+        <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <div class="running">
+      <span id="running-left">Opening the register…</span>
+      <span id="running-right" class="health"><span class="mk ok" id="health-mk" hidden>live</span></span>
+      <span class="prompt" id="prompt">$ apz register --follow<span class="cur" aria-hidden="true"></span></span>
+    </div>
+
+    <div class="sheet">
+
+    <!-- ============================================================ REGISTER -->
+    <div data-view="register" data-cmd="apz register --follow">
+      <div class="title">
+        <span class="folio">f. 1</span>
+        <h1>Register</h1>
+        <span class="aside mk ok" id="runs-live" hidden>live</span>
+        <p class="lede">Every run entered on this node, newest first. A run is one to sixty-four guest VMs spawned together; their serial consoles stream into each entry's page.</p>
+      </div>
+
+      <div class="parts" id="notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <h2>The machine <span class="goto"><a href="#machine">machine sheet →</a></span></h2>
+        <div class="cols" id="m-panel">
+          <dl>
+            <div class="lead"><dt>Name</dt><i></i><dd class="m" id="m-name">—</dd></div>
+            <div class="lead"><dt>Class</dt><i></i><dd class="m" id="m-class">—</dd></div>
+            <div class="lead"><dt>Arch · backend</dt><i></i><dd class="m" id="m-arch">—</dd></div>
+          </dl>
+          <dl>
+            <div class="lead"><dt>CPUs</dt><i></i><dd class="m" id="m-cpus">—</dd></div>
+            <div class="lead"><dt>Memory</dt><i></i><dd class="m" id="m-mem">—</dd></div>
+            <div class="lead"><dt>vsock</dt><i></i><dd class="m" id="m-vsock">—</dd></div>
+          </dl>
+          <dl>
+            <div class="lead"><dt>Node up</dt><i></i><dd class="m" id="m-uptime">—</dd></div>
+          </dl>
+        </div>
+        <div class="tallies" id="tallies">
+          <div class="tally"><div class="figure" id="t-runs">0</div><div class="tcap">live runs</div></div>
+          <div class="tally"><div class="figure" id="t-vms">0</div><div class="tcap">VMs running</div></div>
+          <div class="tally"><div class="figure" id="t-vcpus">0</div><div class="tcap">vCPUs in use</div></div>
+          <div class="tally"><div class="figure" id="t-mem">0</div><div class="tcap">MiB in use</div></div>
+        </div>
+      </div></div>
+
+      <div class="parts"><div class="body">
+        <h2>Enter a run</h2>
+        <form id="spawn" novalidate>
+          <div class="fields">
+            <div class="f"><label for="f-n">VMs · n</label><input id="f-n" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></div>
+            <div class="f"><label for="f-vcpus">vCPUs each</label><input id="f-vcpus" type="number" min="1" max="64" step="1" value="2" inputmode="numeric"></div>
+            <div class="f"><label for="f-mem">Memory each · MiB</label><input id="f-mem" type="number" min="128" step="1" value="512" inputmode="numeric"></div>
+            <div class="f"><label for="f-beats">Beats · churn, optional</label><input id="f-beats" type="number" min="1" step="1" placeholder="steady" inputmode="numeric"></div>
+            <div class="f"><label for="f-vsock">vsock CID · optional</label><input id="f-vsock" type="number" min="3" step="1" placeholder="no vsock" inputmode="numeric"></div>
+          </div>
+          <p class="example mt">n 1–64 · vCPUs 1–64 · memory 128 MiB and up. With beats set, each guest heartbeats that many times, then powers itself off (churn mode); the run closes itself. Empty beats runs steady, until you kill it. With a vsock CID set, each VM gets a vsock device (VM i takes CID base + i) and the agent inside talks to the orchestrator over it — the only wire a plaza guest has, there is no NIC; empty boots with no vsock at all.</p>
+          <div class="actions mt">
+            <button type="submit" class="btn owner" id="spawn-btn">Spawn the run</button>
+            <span class="err" id="spawn-err" role="alert"></span>
+          </div>
+        </form>
+      </div></div>
+
+      <div class="group bb0">
+        <div class="hd">The register <span class="c" id="reg-count"></span></div>
+        <div class="rows" id="runs-list"></div>
+      </div>
+      <div class="parts bb0" id="runs-empty" hidden><div class="body">
+        <p class="example">No runs entered yet — the page is blank. Enter the first one above.</p>
+      </div></div>
+    </div>
+
+    <!-- ============================================================ RUN -->
+    <div data-view="run" data-cmd="apz run --follow" hidden>
+      <div class="title">
+        <span class="folio" id="d-folio">no. —</span>
+        <div class="crumbs"><a href="#register">Register</a> / <span id="d-crumb">—</span></div>
+        <h1 id="d-h1">Run —</h1>
+        <span class="aside" id="d-state"></span>
+        <p class="lede" id="d-lede">Fetching the entry…</p>
+      </div>
+
+      <div class="parts" id="d-notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="d-notice-text"></p>
+      </div></div>
+
+      <div class="parts"><div class="body"><div class="cols">
+        <div>
+          <h2>Register</h2>
+          <dl>
+            <div class="lead"><dt>State</dt><i></i><dd id="d-state2">—</dd></div>
+            <div class="lead"><dt>Opened</dt><i></i><dd class="m" id="d-opened">—</dd></div>
+            <div class="lead"><dt>Closed</dt><i></i><dd class="m" id="d-closed">—</dd></div>
+            <div class="lead"><dt>Elapsed</dt><i></i><dd class="m" id="d-elapsed">—</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h2>Shape</h2>
+          <dl>
+            <div class="lead"><dt>VMs</dt><i></i><dd class="m" id="d-n">—</dd></div>
+            <div class="lead"><dt>vCPUs each</dt><i></i><dd class="m" id="d-vcpus">—</dd></div>
+            <div class="lead"><dt>Memory each</dt><i></i><dd class="m" id="d-mem">—</dd></div>
+            <div class="lead"><dt>Beats</dt><i></i><dd class="m" id="d-beats">—</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h2>Guests</h2>
+          <dl>
+            <div class="lead"><dt>Running</dt><i></i><dd class="m" id="d-vm-running">—</dd></div>
+            <div class="lead"><dt>Exited</dt><i></i><dd class="m" id="d-vm-exited">—</dd></div>
+            <div class="lead"><dt>Killed</dt><i></i><dd class="m" id="d-vm-killed">—</dd></div>
+          </dl>
+          <p class="example mt-sm">Times are this node's local clock.</p>
+        </div>
+      </div></div></div>
+
+      <div class="parts"><div class="body">
+        <h2>The owner's hand</h2>
+        <p class="example">Killing stops every VM in the run at once. On an already-finished run the strike is a harmless no-op.</p>
+        <div class="actions">
+          <button type="button" class="btn danger" id="d-kill" disabled>Kill run</button>
+          <span id="d-stamp"></span>
+        </div>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">Virtual machines <span class="c" id="d-vm-count"></span></div></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>No.</th><th>VM</th><th>State</th><th>Exit</th><th class="num">Serial lines</th><th class="num">Serial bytes</th><th class="num">Lines / s</th><th>Transcript</th></tr></thead>
+        <tbody id="vm-body"></tbody>
+      </table></div>
+
+      <div class="group bb0"><div class="hd">Transcript <span class="c" id="tx-hd"></span></div></div>
+      <div class="parts"><div class="body">
+        <p class="example">Guest output is untrusted — rendered as text, never as markup.</p>
+        <div class="txwrap" id="txwrap">
+          <div class="tx" id="tx" role="log" aria-live="off" aria-label="Serial transcript"></div>
+        </div>
+        <div class="actions">
+          <label class="check" for="tx-follow"><input type="checkbox" id="tx-follow" checked> Follow new lines</label>
+          <button type="button" class="btn sm" id="tx-jump">Jump to the latest line</button>
+        </div>
+      </div></div>
+
+      <div class="parts top bb0"><div class="body">
+        <h2 id="in-hd">Write to the serial console</h2>
+        <div class="actions" id="quick"></div>
+        <form id="in-form">
+          <label for="in-cmd" id="in-label">Command for vm —</label>
+          <input type="text" id="in-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="help">
+          <div class="actions mt">
+            <button type="submit" class="btn" id="in-send">Send to vm —</button>
+          </div>
+        </form>
+        <p class="example" id="in-note">The guest serves one command per heartbeat window (about 5 s); the reply lands in the transcript above. It understands: help, uname, cpu, mem, uptime, echo &lt;text&gt;, poweroff.</p>
+      </div></div>
+    </div>
+
+    <!-- ============================================================ MACHINE -->
+    <div data-view="machine" data-cmd="apz machine" hidden>
+      <div class="title">
+        <span class="folio">f. 2</span>
+        <h1>Machine</h1>
+        <span class="aside mk ok" id="mc-live" hidden>live</span>
+        <p class="lede">The node as it reports itself — one machine of the plaza's <span class="m">core.machines</span> register: name, class, architecture, hypervisor backend, interrupt chip, and the wire its guests get.</p>
+      </div>
+
+      <div class="parts" id="mc-notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="mc-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <div class="tallies">
+          <div class="tally"><div class="figure" id="mc-cpus">—</div><div class="tcap">host CPUs</div></div>
+          <div class="tally"><div class="figure" id="mc-mem">—</div><div class="tcap">MiB memory</div></div>
+          <div class="tally"><div class="figure" id="mc-up">—</div><div class="tcap">node uptime</div></div>
+        </div>
+        <div class="cols mt">
+          <div>
+            <h2>Identity</h2>
+            <dl>
+              <div class="lead"><dt>Name</dt><i></i><dd class="m" id="mc-name">—</dd></div>
+              <div class="lead"><dt>Class</dt><i></i><dd class="m" id="mc-class">—</dd></div>
+              <div class="lead"><dt>Arch</dt><i></i><dd class="m" id="mc-arch">—</dd></div>
+            </dl>
+          </div>
+          <div>
+            <h2>Virtualisation</h2>
+            <dl>
+              <div class="lead"><dt>Backend</dt><i></i><dd class="m" id="mc-backend">—</dd></div>
+              <div class="lead"><dt>IRQ chip</dt><i></i><dd class="m" id="mc-irqchip">—</dd></div>
+              <div class="lead"><dt>vsock mode</dt><i></i><dd class="m" id="mc-vsock">—</dd></div>
+            </dl>
+          </div>
+          <div>
+            <h2>Register</h2>
+            <dl>
+              <div class="lead"><dt>Entered</dt><i></i><dd class="m" id="mc-started">—</dd></div>
+              <div class="lead"><dt>Runs held</dt><i></i><dd class="m" id="mc-runs">—</dd></div>
+              <div class="lead"><dt>Live runs</dt><i></i><dd class="m" id="mc-live-runs">—</dd></div>
+            </dl>
+            <p class="example mt-sm">Self-reported by the node daemon at <span class="m">GET /api/v0/machine</span>.</p>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ============================================================ MAP -->
+    <div data-view="map" data-cmd="apz map --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 3</span>
+        <h1>Map</h1>
+        <span class="aside mk ok" id="map-live" hidden>live</span>
+        <p class="lede">The fleet drawn as a surveyor's plan: the machine is the plot, each run a lane, each VM a cell. A running VM's ring pulses with its serial chatter; click a cell (or walk it with the arrow keys) to open its entry.</p>
+      </div>
+
+      <div class="parts" id="map-notice" hidden><div class="body">
+        <span class="mk warn">node unreachable</span>
+        <p class="example" id="map-notice-text"></p>
+      </div></div>
+
+      <div class="parts top bb0"><div class="body canvasbody">
+        <canvas id="map-canvas" tabindex="0" role="application"
+          aria-label="Fleet map. Arrow keys walk the VMs; Enter opens the selected VM's run."></canvas>
+        <div class="maplegend" aria-hidden="true">
+          <span class="mk ok">running</span>
+          <span class="mk">exited</span>
+          <span class="mk crit">killed</span>
+          <span class="mk vsock">vsock cid</span>
+        </div>
+        <p class="example" id="map-status">Waiting for the register…</p>
+      </div></div>
+    </div>
+
+    <!-- ============================================================ 3D -->
+    <div data-view="view3d" data-cmd="apz view3d --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 4</span>
+        <h1>3D view</h1>
+        <span class="aside mk ok" id="v3-live" hidden>live</span>
+        <p class="lede">The same register, raised: the machine is the ground (gridded to its CPUs and memory), runs are platforms, VMs are blocks whose glow follows serial chatter. Drag to orbit, scroll to zoom, click a block to open its entry. Nothing is drawn that is not a machine, a run, or a VM.</p>
+      </div>
+
+      <div class="parts" id="v3-notice" hidden><div class="body">
+        <span class="mk warn" id="v3-notice-mk">node unreachable</span>
+        <p class="example" id="v3-notice-text"></p>
+      </div></div>
+
+      <div class="parts top bb0"><div class="body canvasbody">
+        <div id="v3-mount" class="v3mount"></div>
+        <p class="example" id="v3-status">Waiting for the register…</p>
+      </div></div>
+    </div>
+
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="sr-only" role="status" id="sr-status"></div>
+</body>
+</html>

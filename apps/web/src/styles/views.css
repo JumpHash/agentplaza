@@ -1,0 +1,12 @@
+/* The map and 3D screens: a surveyor's plan, same palette and type as the register. */
+
+.canvasbody { position: relative; }
+canvas#map-canvas { display: block; width: 100%; height: 420px; border: 1px solid var(--rule); background: var(--paper); box-sizing: border-box; }
+.maplegend { display: flex; gap: 18px; flex-wrap: wrap; padding-top: 4px; }
+.v3mount { position: relative; width: 100%; height: 460px; border: 1px solid var(--rule); background: var(--paper); box-sizing: border-box; overflow: hidden; }
+.v3mount canvas { display: block; width: 100%; height: 100%; outline-offset: -2px; }
+
+@media (max-width: 760px) {
+  canvas#map-canvas { height: 320px; }
+  .v3mount { height: 340px; }
+}
