@@ -1,0 +1,20 @@
+AgentPlaza VMM
+Copyright 2026 AgentPlaza
+
+This product includes software developed as part of the Firecracker project
+(https://github.com/firecracker-microvm/firecracker), Copyright 2018-2025
+Amazon.com, Inc. or its affiliates, licensed under the Apache License,
+Version 2.0 (see LICENSE in this directory).
+
+Files under crates/vmm/src/{vstate,arch,devices,builder} are derived from
+Firecracker's src/vmm crate (tree/main) and adapted:
+
+- trimmed to the multi-VM spawner base: removed metrics, the in-crate logger,
+  seccomp, snapshots/persist, event-manager, mmds, pci, gdb, vhost-user,
+  rate-limiter, balloon, block/net/vsock virtio devices and the api-server;
+- error types re-derived with thiserror; Firecracker-internal log and metric
+  macros removed;
+- added spawner module (N-VM lifecycle) and hvf module (Apple Silicon
+  Hypervisor.framework backend, not present upstream).
+
+The Apache License, Version 2.0 text is in crates/vmm/LICENSE.
