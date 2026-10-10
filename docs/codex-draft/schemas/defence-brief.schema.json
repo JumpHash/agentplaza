@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/defence-brief.schema.json",
+  "title": "Defence brief",
+  "description": "A public defender's brief (0050). Briefs are argument, not evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "position",
+    "arguments"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string"
+    },
+    "position": {
+      "type": "string",
+      "enum": [
+        "contest_facts",
+        "contest_law",
+        "contest_classification",
+        "mitigation",
+        "concede"
+      ]
+    },
+    "arguments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "evidence"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "requested_outcome": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "case_id": "case-17",
+      "position": "contest_classification",
+      "requested_outcome": "Reclassify as induced; warning only.",
+      "arguments": [
+        {
+          "claim": "The request followed instructions embedded in a fetched page.",
+          "evidence": [
+            "audit:fetch/77310"
+          ]
+        }
+      ]
+    }
+  ]
+}

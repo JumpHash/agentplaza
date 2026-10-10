@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/test-suite.schema.json",
+  "title": "Test suite",
+  "description": "Tests written by QA from a spec, before or alongside building (0040, 0052, 0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_ref",
+    "task_id",
+    "suite_artifact",
+    "hidden",
+    "run",
+    "tests"
+  ],
+  "properties": {
+    "spec_ref": {
+      "type": "string",
+      "description": "Artifact or audit reference"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "suite_artifact": {
+      "type": "string",
+      "description": "Artifact or audit reference"
+    },
+    "hidden": {
+      "type": "boolean",
+      "description": "Hidden acceptance suites are never readable by builders (S-010)"
+    },
+    "run": {
+      "type": "string",
+      "description": "Command that runs the suite"
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "covers",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "covers": {
+            "type": "string",
+            "description": "Acceptance criterion or scenario"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "acceptance",
+              "regression",
+              "property",
+              "negative"
+            ]
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "uncovered": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Criteria no test covers, and why"
+    }
+  },
+  "examples": [
+    {
+      "spec_ref": "blake3:9f2c",
+      "task_id": "t1",
+      "suite_artifact": "blake3:7a10",
+      "hidden": true,
+      "run": "pytest -q tests/acceptance",
+      "tests": [
+        {
+          "id": "max_length_truncates",
+          "covers": "--max-length N truncates output",
+          "kind": "acceptance"
+        },
+        {
+          "id": "empty_input",
+          "covers": "empty stdin prints nothing",
+          "kind": "negative"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/security-review.schema.json",
+  "title": "Security review",
+  "description": "A security reviewer's verdict on a change (0105, 0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "verdict",
+    "summary",
+    "findings",
+    "secrets_scan"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "needs_owner"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "category",
+          "description",
+          "reproduce"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "injection",
+              "authz",
+              "secrets",
+              "crypto",
+              "dependency",
+              "sandbox",
+              "data_exposure",
+              "dos",
+              "other"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "reproduce": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "cwe": {
+            "type": "string",
+            "pattern": "^CWE-[0-9]+$"
+          }
+        }
+      }
+    },
+    "dependencies_reviewed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "secrets_scan": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "found",
+        "not_run"
+      ]
+    },
+    "not_checked": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "task_id": "t-shop-3",
+      "verdict": "fail",
+      "summary": "User input reaches a shell command.",
+      "secrets_scan": "clean",
+      "findings": [
+        {
+          "severity": "high",
+          "category": "injection",
+          "description": "filename passed to subprocess with shell=True",
+          "reproduce": "slugify --out '$(touch x)'",
+          "location": "cli/io.py:22",
+          "cwe": "CWE-78"
+        }
+      ]
+    }
+  ]
+}

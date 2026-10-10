@@ -1,0 +1,35 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: edge-operator
+variant: ''
+council_seat: false
+permits:
+- statutes/S-016
+model:
+  start_rung: mid
+  max_rung: frontier
+toolsets:
+- python
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- read_device
+- actuate_device
+- bash
+- read_file
+- search
+- transcript_search
+- escalate
+- submit_device_report
+outputs:
+- device-report
+budget:
+  default_credits: 800
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/device-safety.md

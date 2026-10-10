@@ -1,0 +1,17 @@
+// Egress stream: one per outbound connection (0010). After EgressAccept, the stream carries raw bytes
+// (a TLS tunnel for HTTPS). The hub checks the allowlist (Cedar egress.connect), logs, and dials out.
+syntax = "proto3";
+package agentplaza.v1;
+
+import "agentplaza/v1/common.proto";
+
+message EgressOpen {
+  string host = 1;
+  uint32 port = 2;                  // 443 or 80 by default; others only if allowlisted
+  string purpose = 3;               // "fetch_url" | "tool" (curl/git/pip via proxy)
+}
+
+message EgressAccept {
+  Error error = 1;                  // unset = connected; DENIED carries law_id
+  string resolved_ip = 2;           // for audit only; DNS is resolved at the hub
+}

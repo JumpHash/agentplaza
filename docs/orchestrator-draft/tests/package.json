@@ -1,0 +1,9 @@
+{
+  "name": "agentplaza-orchestrator-draft-tests",
+  "private": true,
+  "type": "module",
+  "description": "Behaviour tests for the orchestrator core schema on PostgreSQL 16 (PGlite)",
+  "dependencies": {
+    "@electric-sql/pglite": "0.2.17"
+  }
+}

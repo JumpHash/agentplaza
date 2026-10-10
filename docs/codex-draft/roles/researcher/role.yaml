@@ -1,0 +1,33 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: researcher
+variant: ''
+council_seat: false
+permits:
+- statutes/S-013
+model:
+  start_rung: cheap
+  max_rung: mid
+toolsets: []
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- fetch_url
+- web_search
+- read_file
+- write_file
+- search
+- transcript_search
+- submit_research
+outputs:
+- research-brief
+budget:
+  default_credits: 800
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/research-method.md

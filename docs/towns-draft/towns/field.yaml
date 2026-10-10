@@ -1,0 +1,16 @@
+id: field
+name: Field
+template: edge
+purpose: Run the greenhouse vents and sensors on the field Pi within their safe envelopes.
+mayor: {rung: cheap, report_every: daily}
+budget: {monthly_credits: 20000, task_default_credits: 300}
+roster:
+  - {role: edge-operator, max: 1}
+placement: {require_labels: [gpio], prefer_machines: [pi4-field], dedicated: true}
+egress: {host_groups: []}
+tools:
+  scopes: [telegram:notify]
+  devices: [{id: vent-2, envelope: envelopes/vent-2.yaml}]
+confidentiality: sensitive
+quiet_hours: {from: "22:00", to: "07:00", tz: "Europe/Vienna"}
+bylaws: [B-field-001]

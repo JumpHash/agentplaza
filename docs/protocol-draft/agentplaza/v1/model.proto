@@ -1,0 +1,61 @@
+// Model stream: one per call. Provider-neutral (0011); the hub's gateway translates to
+// OpenAI-compatible, Anthropic or Vertex, injects credentials, and streams deltas back (0086).
+syntax = "proto3";
+package agentplaza.v1;
+
+import "agentplaza/v1/common.proto";
+import "agentplaza/v1/tool.proto";
+
+message ModelRequest {
+  string request_id = 1;            // idempotency key: a retried request with the same id is not re-billed
+  Seq context_through = 2;          // transcript seq this context reflects
+  repeated Message messages = 3;    // full context as the harness assembled it (after its own compaction)
+  repeated ToolSpec tools = 4;
+  uint32 max_output_tokens = 5;
+  bool stream = 6;
+  TraceContext trace = 7;           // 0116
+}
+
+message Message {
+  enum Role { ROLE_UNSPECIFIED = 0; ROLE_SYSTEM = 1; ROLE_USER = 2; ROLE_ASSISTANT = 3; ROLE_TOOL = 4; }
+  Role role = 1;
+  repeated ContentBlock content = 2;
+  bool cache_breakpoint = 3;        // hint for provider prompt caching
+}
+
+message ContentBlock {
+  oneof block {
+    Payload text = 1;
+    ToolCall tool_call = 2;
+    ToolResultBlock tool_result = 3;
+    Payload image = 4;
+  }
+  Taint taint = 5;                  // UNTRUSTED blocks are wrapped as untrusted data by the gateway
+}
+
+message ToolCall { string call_id = 1; string tool = 2; bytes input_json = 3; }
+message ToolResultBlock { string call_id = 1; Payload output = 2; bool is_error = 3; }
+
+// Hub → harness, streamed.
+message ModelEvent {
+  oneof event {
+    Started started = 1;
+    TextDelta text_delta = 2;
+    ToolCallDelta tool_call_delta = 3;
+    Usage usage = 4;
+    Completed completed = 5;
+    Error error = 6;
+  }
+}
+
+message Started { string model = 1; string provider = 2; string rung = 3; }
+message TextDelta { string text = 1; }
+message ToolCallDelta { string call_id = 1; string tool = 2; string input_json_fragment = 3; }
+message Usage { uint64 input_tokens = 1; uint64 output_tokens = 2; uint64 cached_input_tokens = 3; uint64 cost_microcredits = 4; }
+
+message Completed {
+  Seq seq = 1;                      // where the hub recorded this assistant turn
+  repeated ContentBlock content = 2;
+  string stop_reason = 3;           // "end_turn" | "tool_use" | "max_tokens" | ...
+  EntrySeal seal = 4;               // the orchestrator's signature on this turn (0135)
+}

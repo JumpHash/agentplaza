@@ -1,0 +1,33 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: mayor-office
+variant: ''
+council_seat: true
+permits:
+- statutes/S-005
+model:
+  start_rung: cheap
+  max_rung: mid
+toolsets: []
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- read_audit
+- search
+- send_message
+- submit_town_report
+outputs: []
+budget:
+  default_credits: 800
+  period: weekly
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/mayor-operations.md
+- playbooks/council-procedure.md
+overlays:
+- council-seat

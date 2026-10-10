@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/training-job.schema.json",
+  "title": "Training job",
+  "description": "A breeder's job spec for the Foundry job runner (0058, 0082).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "recipe",
+    "datasets",
+    "budget_gpu_hours",
+    "export"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "recipe": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+@[0-9]+$"
+    },
+    "datasets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+      },
+      "minItems": 1
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "optuna",
+            "pbt",
+            "grid"
+          ]
+        },
+        "trials": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "space": {
+          "type": "object"
+        }
+      }
+    },
+    "budget_gpu_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "x86_64",
+        "aarch64",
+        "any"
+      ]
+    },
+    "export": {
+      "type": "string",
+      "enum": [
+        "onnx"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "job_id": "tj-1",
+      "recipe": "rung-predictor@1",
+      "datasets": [
+        "blake3:5d1e"
+      ],
+      "search": {
+        "method": "optuna",
+        "trials": 40
+      },
+      "budget_gpu_hours": 2.0,
+      "target": "any",
+      "export": "onnx"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/review-verdict.schema.json",
+  "title": "Review verdict",
+  "description": "A reviewer's verdict after deterministic checks passed (0053).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "verdict",
+    "summary",
+    "findings"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "description",
+          "reproduce"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocking",
+              "major",
+              "minor"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "reproduce": {
+            "type": "string",
+            "description": "Command or steps that show it"
+          },
+          "location": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "not_checked": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "task_id": "t-shop-1",
+      "verdict": "fail",
+      "summary": "Spec requires --max-length; it's ignored.",
+      "findings": [
+        {
+          "severity": "blocking",
+          "description": "--max-length has no effect",
+          "reproduce": "slugify --max-length 5 'hello world' prints hello-world",
+          "location": "cli/slugify.py:41"
+        }
+      ],
+      "not_checked": [
+        "performance on very long input"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,161 @@
+// Daemon API (0092–0095, 0102): the public contract for the CLI, the iced desktop app, and the agentplaza.io
+// cloud service (which relays for the web dashboard). Served by the hub; authenticated with owner
+// device keys (0047). Draft.
+syntax = "proto3";
+package agentplaza.v1;
+
+import "agentplaza/v1/common.proto";
+import "agentplaza/v1/session.proto";
+import "agentplaza/v1/tool.proto";
+
+service AgentPlaza {
+  // Runs (MVP: one agent; later: any agent in any town).
+  rpc StartRun(StartRunRequest) returns (Run);
+  rpc GetRun(GetRunRequest) returns (Run);
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+  rpc KillRun(RunRef) returns (Run);
+  rpc Checkpoint(RunRef) returns (SnapshotInfo);       // `apz checkpoint` (0043)
+  rpc ResumeRun(ResumeRunRequest) returns (Run);       // from latest or a named snapshot
+  rpc MoveRun(MoveRunRequest) returns (Run);           // owner moves an agent off a lost or busy machine (0102)
+  rpc SendMessage(SendMessageRequest) returns (Ack);   // owner message into a run's transcript
+
+  // Transcripts and the event stream (0093).
+  rpc GetTranscript(GetTranscriptRequest) returns (stream TranscriptEvent);
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+
+  // Approvals (0094).
+  rpc ListApprovals(ListApprovalsRequest) returns (ListApprovalsResponse);
+  rpc DecideApproval(DecideApprovalRequest) returns (Approval);
+
+  // Devices (0047, 0095).
+  rpc GetInfo(Empty) returns (Capabilities);               // version and features of this orchestrator (0116)
+  rpc ListDevices(Empty) returns (ListDevicesResponse);
+  // Superseded by Settings.CreateDeviceEnrollmentCode and Settings.RevokeDevice (owner.proto),
+  // which carry an idempotency key and a bound passkey step-up (0047, 0128).
+  rpc CreateEnrollmentCode(Empty) returns (EnrollmentCode) { option deprecated = true; }
+  rpc RevokeDevice(DeviceRef) returns (Empty) { option deprecated = true; }
+}
+
+message Empty {}
+message RunRef { string run_id = 1; }
+message DeviceRef { string device_id = 1; }
+
+message StartRunRequest {
+  string idempotency_key = 8;      // retries never start two runs (0116)
+  string task = 1;                 // or a spec path later (Charter)
+  string model_rung = 2;           // MVP: set per run (0011); later chosen by routing (0054)
+  repeated string toolsets = 3;    // e.g. ["python"] (0077)
+  repeated string egress_allow = 4;// MVP per-run allowlist (0028)
+  uint32 vcpus = 5;                // 0 = default (0090)
+  uint32 memory_mib = 6;
+  string node = 7;                 // empty = scheduler decides
+}
+
+message Run {
+  string run_id = 1;
+  string agent_id = 2;
+  string agent_name = 3;
+  enum State {
+    STATE_UNSPECIFIED = 0; STATE_STARTING = 1; STATE_RUNNING = 2; STATE_WAITING_APPROVAL = 3;
+    STATE_HIBERNATED = 4; STATE_DONE = 5; STATE_FAILED = 6; STATE_KILLED = 7;
+    STATE_STALLED = 8;             // its machine is unreachable; waits, or the owner moves it (0102)
+  }
+  State state = 4;
+  string node = 5;
+  Seq last_seq = 6;
+  RunUsage usage = 7;
+  string latest_snapshot_id = 8;
+}
+
+message RunUsage { uint64 input_tokens = 1; uint64 output_tokens = 2; uint64 tool_calls = 3; uint64 vm_seconds = 4; uint64 cost_microcredits = 5; }
+
+message ListRunsRequest { uint32 page_size = 1; string page_token = 2; }
+message ListRunsResponse { repeated Run runs = 1; string next_page_token = 2; }
+message GetRunRequest { string run_id = 1; }
+message ResumeRunRequest { string run_id = 1; string snapshot_id = 2; }
+message MoveRunRequest {
+  string idempotency_key = 4;
+  string run_id = 1;
+  string target_node = 2;          // empty = scheduler picks (spread by load, 0101)
+  bool from_transcript = 3;        // true when no compatible machine exists for the snapshot (other arch/backend)
+}
+message SnapshotInfo { string snapshot_id = 1; Seq seq = 2; uint64 bytes_written = 3; uint32 pause_ms = 4; }
+message SendMessageRequest { string run_id = 1; string text = 2; string idempotency_key = 3; }
+message GetTranscriptRequest { string run_id = 1; Seq from = 2; }
+
+// ---- Event stream (0093) ----
+message SubscribeRequest {
+  string cursor = 1;               // resume after this event id; empty = from now
+  repeated string run_ids = 2;     // empty = everything the caller may see
+  repeated EventKind kinds = 3;    // empty = all kinds
+  bool include_deltas = 4;         // live model deltas (not replayable, 0086)
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_RUN = 1;            // run state changes
+  EVENT_KIND_TRANSCRIPT = 2;     // persisted transcript events
+  EVENT_KIND_DELTA = 3;          // live model output, never replayed
+  EVENT_KIND_APPROVAL = 4;
+  EVENT_KIND_VM = 5;             // VM lifecycle, snapshots, tripwires (0072)
+  EVENT_KIND_EGRESS = 6;         // allowed/denied connections (audit)
+  EVENT_KIND_TASK = 7;           // task lifecycle transitions (0123)
+  EVENT_KIND_TOWN = 8;           // town lifecycle and config changes (0124)
+  EVENT_KIND_MACHINE = 9;        // machine state, caps and enrollment
+  EVENT_KIND_INBOX = 10;         // an item appeared in or left "Needs you" (0127)
+  EVENT_KIND_CODEX = 11;         // proposals, signatures, vetoes (0049, 0134)
+  EVENT_KIND_VAULT = 12;         // locked/unlocked, credential added or degraded; never values (0131)
+  EVENT_KIND_RESTORE = 13;       // merge status and review windows (0135)
+}
+
+message Event {
+  string id = 1;                 // ordered, from the hub's append-only log; use as the next cursor
+  int64 at_unix_ms = 2;
+  string run_id = 3;
+  oneof body {
+    Run run = 10;
+    TranscriptEvent transcript = 11;
+    string delta_text = 12;
+    Approval approval = 13;
+    VmEvent vm = 14;
+    EgressEvent egress = 15;
+  }
+}
+
+message VmEvent { string vm_id = 1; string what = 2; string detail = 3; }   // "started", "snapshot", "tripwire:egress-storm", ...
+message EgressEvent { string host = 1; uint32 port = 2; bool allowed = 3; string law_id = 4; uint64 bytes = 5; }
+
+// ---- Approvals (0094) ----
+message Approval {
+  string approval_id = 1;
+  string run_id = 2;
+  string kind = 3;               // "tool_call" | "plan" | "merge" | "egress" | ...
+  string summary = 4;            // what is being asked, written by the hub, not the agent
+  ToolRequest tool_request = 5;  // when kind = tool_call
+  string risk_class = 6;
+  repeated string chain = 7;     // escalation order, e.g. ["mayor:shop", "council", "owner"]; C-004 → ["owner"]
+  uint32 chain_position = 8;
+  int64 step_deadline_unix_ms = 9;
+  enum Status { STATUS_UNSPECIFIED = 0; STATUS_PENDING = 1; STATUS_APPROVED = 2; STATUS_DENIED = 3; STATUS_EXPIRED = 4; }
+  Status status = 10;
+  string decided_by = 11;        // principal id (owner device id, or agent id for Mayor/council)
+  string reason = 12;
+  bytes nonce = 13;              // fresh per approval step; decisions must echo it (0116)
+}
+
+message ListApprovalsRequest { bool pending_only = 1; }
+message ListApprovalsResponse { repeated Approval approvals = 1; }
+message DecideApprovalRequest {
+  string approval_id = 1;
+  bool approve = 2;
+  string reason = 3;
+  bytes step_up_assertion = 4 [deprecated = true];   // replaced by step_up, which is bound to a challenge
+  StepUp step_up = 7;            // required for C-004 approvals (0047, 0127); challenge from Settings.BeginStepUp
+  bytes nonce = 5;               // from the Approval; a decision can be used once (replay protection, 0116)
+  int64 expires_unix_ms = 6;     // the signed decision is void after this
+}
+
+// ---- Devices ----
+message Device { string device_id = 1; string name = 2; int64 enrolled_unix_ms = 3; int64 last_seen_unix_ms = 4; }
+message ListDevicesResponse { repeated Device devices = 1; }
+message EnrollmentCode { string code = 1; int64 expires_unix_ms = 2; }

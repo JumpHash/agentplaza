@@ -1,0 +1,37 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: mayor
+variant: ''
+council_seat: false
+permits:
+- statutes/S-004
+model:
+  start_rung: mid
+  max_rung: frontier
+toolsets: []
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- read_file
+- list
+- search
+- transcript_search
+- assign_task
+- spawn_agent
+- hibernate_agent
+- approve_plan
+- approve_merge
+- escalate
+- send_message
+outputs: []
+budget:
+  default_credits: 3000
+  period: weekly
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 20
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/mayor-operations.md

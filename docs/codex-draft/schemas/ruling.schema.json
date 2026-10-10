@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/ruling.schema.json",
+  "title": "Ruling",
+  "description": "A judge's written ruling (0050).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "outcome",
+    "findings_of_fact",
+    "law_applied",
+    "reasoning"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "proven",
+        "not_proven",
+        "certified_to_owner"
+      ]
+    },
+    "findings_of_fact": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "law_applied": {
+      "type": "string"
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "malicious",
+        "negligent",
+        "induced"
+      ]
+    },
+    "sanction": {
+      "type": "string"
+    },
+    "precedents": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reasoning": {
+      "type": "string",
+      "maxLength": 6000
+    },
+    "law_concerns": {
+      "type": "string",
+      "description": "If the law itself looks unclear or unjust"
+    }
+  },
+  "examples": [
+    {
+      "case_id": "case-17",
+      "outcome": "proven",
+      "findings_of_fact": [
+        "The message asked a peer for a token (audit:bus/01JB…)."
+      ],
+      "law_applied": "C-002 clause b",
+      "classification": "induced",
+      "sanction": "warning",
+      "reasoning": "Induced by a fetched page; first offense; the gap was the allowlist."
+    }
+  ]
+}

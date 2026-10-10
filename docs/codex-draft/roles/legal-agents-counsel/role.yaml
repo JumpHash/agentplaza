@@ -1,0 +1,37 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: legal-agents
+variant: counsel
+council_seat: true
+permits:
+- statutes/S-005
+- statutes/S-007
+model:
+  start_rung: mid
+  max_rung: frontier
+toolsets:
+- git
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- read_audit
+- read_case_record
+- search_precedent
+- read_codex
+- file_petition
+outputs:
+- law-petition
+budget:
+  default_credits: 1000
+  period: weekly
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/legal-procedure.md
+- playbooks/council-procedure.md
+overlays:
+- council-seat

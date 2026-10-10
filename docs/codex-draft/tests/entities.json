@@ -1,0 +1,988 @@
+[
+ {
+  "uid": {
+   "type": "Town",
+   "id": "shop"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Town",
+   "id": "lab"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "vesna"
+  },
+  "attrs": {
+   "role": "builder",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "variant": "",
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "oskar"
+  },
+  "attrs": {
+   "role": "builder",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "lab"
+    }
+   },
+   "variant": "",
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "lab"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Sandbox",
+   "id": "vm-vesna"
+  },
+  "attrs": {
+   "agent": {
+    "__entity": {
+     "type": "Agent",
+     "id": "vesna"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Sandbox",
+   "id": "vm-oskar"
+  },
+  "attrs": {
+   "agent": {
+    "__entity": {
+     "type": "Agent",
+     "id": "oskar"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "HostGroup",
+   "id": "package-registries"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Host",
+   "id": "pypi.org"
+  },
+  "attrs": {},
+  "parents": [
+   {
+    "type": "HostGroup",
+    "id": "package-registries"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Host",
+   "id": "pastebin.com"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Tool",
+   "id": "namecheap.register"
+  },
+  "attrs": {
+   "risk_class": "irreversible"
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Approval",
+   "id": "ap-1"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "rhea"
+  },
+  "attrs": {
+   "role": "reviewer",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "variant": "",
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "pax"
+  },
+  "attrs": {
+   "role": "planner",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "variant": "",
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "mira"
+  },
+  "attrs": {
+   "role": "mayor",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "variant": "",
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "fin"
+  },
+  "attrs": {
+   "role": "finance",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "variant": "",
+   "council_seat": true
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "lex"
+  },
+  "attrs": {
+   "role": "legal-agents",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "variant": "",
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Sandbox",
+   "id": "vm-rhea"
+  },
+  "attrs": {
+   "agent": {
+    "__entity": {
+     "type": "Agent",
+     "id": "rhea"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "HostGroup",
+   "id": "hub-git"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Host",
+   "id": "git.hub.local"
+  },
+  "attrs": {},
+  "parents": [
+   {
+    "type": "HostGroup",
+    "id": "hub-git"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Task",
+   "id": "t-shop-1"
+  },
+  "attrs": {
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Task",
+   "id": "t-lab-1"
+  },
+  "attrs": {
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "lab"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "pros"
+  },
+  "attrs": {
+   "role": "legal-gov",
+   "variant": "prosecutor",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "jude"
+  },
+  "attrs": {
+   "role": "legal-gov",
+   "variant": "judge",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "def"
+  },
+  "attrs": {
+   "role": "legal-agents",
+   "variant": "defender",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "cou"
+  },
+  "attrs": {
+   "role": "legal-agents",
+   "variant": "counsel",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "omb"
+  },
+  "attrs": {
+   "role": "legal-agents",
+   "variant": "ombudsman",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "bree"
+  },
+  "attrs": {
+   "role": "breeder",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "lab"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "lab"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "ivo"
+  },
+  "attrs": {
+   "role": "incident",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": true
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Case",
+   "id": "case-17"
+  },
+  "attrs": {
+   "defendant": {
+    "__entity": {
+     "type": "Agent",
+     "id": "vesna"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Case",
+   "id": "case-jude"
+  },
+  "attrs": {
+   "defendant": {
+    "__entity": {
+     "type": "Agent",
+     "id": "jude"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "mo"
+  },
+  "attrs": {
+   "role": "mayor-office",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": true
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Sandbox",
+   "id": "vm-jude"
+  },
+  "attrs": {
+   "agent": {
+    "__entity": {
+     "type": "Agent",
+     "id": "jude"
+    }
+   }
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "arch"
+  },
+  "attrs": {
+   "role": "architect",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "qa1"
+  },
+  "attrs": {
+   "role": "qa",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "sec"
+  },
+  "attrs": {
+   "role": "security-reviewer",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "rel"
+  },
+  "attrs": {
+   "role": "release",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "res"
+  },
+  "attrs": {
+   "role": "researcher",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "lib"
+  },
+  "attrs": {
+   "role": "librarian",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "aud"
+  },
+  "attrs": {
+   "role": "auditor",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "edge"
+  },
+  "attrs": {
+   "role": "edge-operator",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "shop"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Artifact",
+   "id": "hidden-suite"
+  },
+  "attrs": {
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "hidden_from": [
+    "builder"
+   ]
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Artifact",
+   "id": "spec-notes"
+  },
+  "attrs": {
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "shop"
+    }
+   },
+   "hidden_from": []
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Artifact",
+   "id": "lab-notes"
+  },
+  "attrs": {
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "lab"
+    }
+   },
+   "hidden_from": []
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "ToolGroup",
+   "id": "deploy"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "ToolGroup",
+   "id": "web-search"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Tool",
+   "id": "cf.deploy.staging"
+  },
+  "attrs": {
+   "risk_class": "write"
+  },
+  "parents": [
+   {
+    "type": "ToolGroup",
+    "id": "deploy"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Tool",
+   "id": "cf.deploy.prod"
+  },
+  "attrs": {
+   "risk_class": "irreversible"
+  },
+  "parents": [
+   {
+    "type": "ToolGroup",
+    "id": "deploy"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Tool",
+   "id": "firecrawl.search"
+  },
+  "attrs": {
+   "risk_class": "read"
+  },
+  "parents": [
+   {
+    "type": "ToolGroup",
+    "id": "web-search"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "HostGroup",
+   "id": "advisories"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "HostGroup",
+   "id": "blocked"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Host",
+   "id": "osv.dev"
+  },
+  "attrs": {},
+  "parents": [
+   {
+    "type": "HostGroup",
+    "id": "advisories"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Host",
+   "id": "evil.example"
+  },
+  "attrs": {},
+  "parents": [
+   {
+    "type": "HostGroup",
+    "id": "blocked"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Host",
+   "id": "docs.python.org"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Device",
+   "id": "vent-1"
+  },
+  "attrs": {
+   "node": "pi5-greenhouse",
+   "kind": "vent"
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "MemoryStore",
+   "id": "main"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "AuditSample",
+   "id": "s1"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Town",
+   "id": "field"
+  },
+  "attrs": {},
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "fern"
+  },
+  "attrs": {
+   "role": "edge-operator",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "field"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "field"
+   }
+  ]
+ },
+ {
+  "uid": {
+   "type": "Device",
+   "id": "vent-2"
+  },
+  "attrs": {
+   "node": "pi4-field",
+   "kind": "vent"
+  },
+  "parents": []
+ },
+ {
+  "uid": {
+   "type": "Agent",
+   "id": "lres"
+  },
+  "attrs": {
+   "role": "researcher",
+   "variant": "",
+   "town": {
+    "__entity": {
+     "type": "Town",
+     "id": "lab"
+    }
+   },
+   "council_seat": false
+  },
+  "parents": [
+   {
+    "type": "Town",
+    "id": "lab"
+   }
+  ]
+ }
+]

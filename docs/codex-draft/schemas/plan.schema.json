@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/plan.schema.json",
+  "title": "Plan",
+  "description": "A planner's task graph for a spec or spec change (0053).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_ref",
+    "summary",
+    "tasks",
+    "total_budget_credits"
+  ],
+  "properties": {
+    "spec_ref": {
+      "type": "string",
+      "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "goal",
+          "acceptance",
+          "role",
+          "rung",
+          "budget_credits"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Machine-checkable criteria"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tool scopes, e.g. github:repo-x:write"
+          },
+          "role": {
+            "type": "string"
+          },
+          "rung": {
+            "type": "string",
+            "enum": [
+              "cheap",
+              "mid",
+              "frontier"
+            ]
+          },
+          "budget_credits": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "needs_clarification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "question",
+          "blocks"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "total_budget_credits": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "spec_ref": "blake3:9f2c",
+      "summary": "Two tasks: implement the CLI, then document it.",
+      "total_budget_credits": 2600,
+      "tasks": [
+        {
+          "id": "t1",
+          "goal": "Implement slugify CLI",
+          "acceptance": [
+            "pytest passes",
+            "--help lists all flags from spec"
+          ],
+          "role": "builder",
+          "rung": "cheap",
+          "budget_credits": 2000
+        },
+        {
+          "id": "t2",
+          "goal": "Write README usage section",
+          "depends_on": [
+            "t1"
+          ],
+          "acceptance": [
+            "README contains every flag"
+          ],
+          "role": "builder",
+          "rung": "cheap",
+          "budget_credits": 600
+        }
+      ],
+      "needs_clarification": [
+        {
+          "question": "Should non-ASCII letters be transliterated or dropped?",
+          "blocks": [
+            "t1"
+          ]
+        }
+      ]
+    }
+  ]
+}

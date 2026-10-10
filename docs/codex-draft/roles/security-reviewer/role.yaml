@@ -1,0 +1,37 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: security-reviewer
+variant: ''
+council_seat: false
+permits:
+- statutes/S-011
+model:
+  start_rung: mid
+  max_rung: frontier
+  differ_from: builder
+toolsets:
+- python
+- git
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- bash
+- read_file
+- list
+- search
+- transcript_search
+- read_artifact
+- submit_security_review
+outputs:
+- security-review
+budget:
+  default_credits: 1200
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/security-review-checklist.md
+- playbooks/review-checklist.md

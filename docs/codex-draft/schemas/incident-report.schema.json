@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/incident-report.schema.json",
+  "title": "Incident report",
+  "description": "Incident response report (0033, 0072).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "incident_id",
+    "severity",
+    "timeline",
+    "impact",
+    "root_cause",
+    "contained"
+  ],
+  "properties": {
+    "incident_id": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "at",
+          "event"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "impact": {
+      "type": "string"
+    },
+    "root_cause": {
+      "type": "string"
+    },
+    "contained": {
+      "type": "string"
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "detections_filed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "examples": [
+    {
+      "incident_id": "inc-4",
+      "severity": "medium",
+      "impact": "One agent paused 12 min.",
+      "root_cause": "Scraper retried a blocked host.",
+      "contained": "Tripwire paused VM; allowlist unchanged.",
+      "timeline": [
+        {
+          "at": "2026-10-08T10:00:00Z",
+          "event": "egress-denial storm tripwire fired",
+          "evidence": "audit:tripwire/31"
+        }
+      ],
+      "recommendations": [
+        "Add backoff to fetch tool"
+      ]
+    }
+  ]
+}

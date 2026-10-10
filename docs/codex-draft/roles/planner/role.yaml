@@ -1,0 +1,34 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: planner
+variant: ''
+council_seat: false
+permits:
+- statutes/S-003
+model:
+  start_rung: frontier
+  max_rung: frontier
+toolsets:
+- git
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- bash
+- read_file
+- list
+- search
+- transcript_search
+- submit_plan
+outputs:
+- plan
+budget:
+  default_credits: 1500
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/planning-guide.md
+- playbooks/design-note-guide.md

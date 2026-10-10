@@ -1,0 +1,14 @@
+# Template: a research town. Reads widely, writes sourced briefs and design notes; no code is shipped.
+template: research
+purpose: Answer questions with sourced research briefs and design notes for other towns.
+mayor: {rung: mid, report_every: weekly}
+budget: {monthly_credits: 100000, task_default_credits: 800, council_move_pct: 10, alert_at_pct: 80}
+roster:
+  - {role: researcher, max: 3}
+  - {role: architect, max: 1}
+  - {role: librarian, max: 1}
+  - {role: breeder, max: 1}
+placement: {dedicated: false}
+egress: {host_groups: [advisories, package-registries]}
+tools: {scopes: [firecrawl:search]}
+confidentiality: normal

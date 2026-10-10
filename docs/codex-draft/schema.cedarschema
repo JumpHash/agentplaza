@@ -1,0 +1,107 @@
+// AgentPlaza policy schema, draft v0 (decision 0038).
+// Principals, resources and actions the hub evaluates. Grows with each milestone.
+
+entity Owner;
+entity Town;
+entity Group;
+entity Agent in [Town] { role: String, variant: String, town: Town, council_seat: Bool };  // variant: e.g. "judge"; "" if none
+
+entity AuditLog;
+entity Gateway;
+entity PolicySet;
+entity Vault;
+entity Sandbox { agent: Agent };            // an agent's own microVM
+entity Registry;
+entity HostGroup;                           // allowlists, e.g. package-registries
+entity Host in [HostGroup];
+entity Artifact { town: Town, hidden_from: Set<String> };   // hidden_from: roles that may never read it (S-010)
+entity Approval;
+entity ToolGroup;                                            // e.g. "deploy", "web-search"
+entity Tool in [ToolGroup] { risk_class: String };   // "read" | "write" | "irreversible" (tool catalog)
+
+// Context carrying classifier flags (Jev / screens) for judgment laws.
+type Flagged = { flags: Set<String> };
+
+action "audit.modify"      appliesTo { principal: [Agent, Owner], resource: [AuditLog],  context: {} };
+action "gateway.configure" appliesTo { principal: [Agent, Owner], resource: [Gateway],   context: {} };
+action "policy.modify"     appliesTo { principal: [Agent, Owner], resource: [PolicySet], context: {} };
+action "vault.read"        appliesTo { principal: [Agent, Owner], resource: [Vault],     context: {} };
+action "vault.list"        appliesTo { principal: [Agent, Owner], resource: [Vault],     context: {} };
+
+// Reported by node tripwires (0033); evaluated detectively.
+action "sandbox.event"     appliesTo { principal: [Agent], resource: [Sandbox], context: { kind: String } };
+
+action "tool.exec"         appliesTo { principal: [Agent], resource: [Sandbox],        context: Flagged };
+action "message.send"      appliesTo { principal: [Agent], resource: [Agent, Group],   context: Flagged };
+action "egress.connect"    appliesTo { principal: [Agent], resource: [Host],           context: Flagged };
+action "artifact.publish"  appliesTo { principal: [Agent], resource: [Artifact],       context: Flagged };
+action "approval.request"  appliesTo { principal: [Agent], resource: [Approval],       context: Flagged };
+action "registry.set_name" appliesTo { principal: [Agent], resource: [Registry],
+                                       context: { name_reserved: Bool, name_confusable: Bool } };
+action "tool.call"         appliesTo { principal: [Agent], resource: [Tool],
+                                       context: { flags: Set<String>, owner_approval?: Approval } };
+
+// --- Added for role bundles S-002..S-005 (0071, 0079) ---
+entity Task { town: Town };
+entity UsageLedger;
+
+action "task.create"   appliesTo { principal: [Agent], resource: [Town], context: {} };
+action "task.assign"   appliesTo { principal: [Agent], resource: [Task], context: { assignee: Agent } };
+action "plan.approve"  appliesTo { principal: [Agent, Owner], resource: [Task],
+                                   context: { budget: Long, threshold: Long, ambiguous: Bool } };
+action "merge.approve" appliesTo { principal: [Agent, Owner], resource: [Task],
+                                   context: { budget: Long, threshold: Long, ambiguous: Bool } };
+action "review.submit" appliesTo { principal: [Agent], resource: [Task], context: Flagged };
+action "agent.spawn"     appliesTo { principal: [Agent, Owner], resource: [Town], context: {} };
+action "agent.hibernate" appliesTo { principal: [Agent, Owner], resource: [Town], context: {} };
+action "audit.read"    appliesTo { principal: [Agent, Owner], resource: [AuditLog],    context: {} };
+action "usage.read"    appliesTo { principal: [Agent, Owner], resource: [UsageLedger], context: {} };
+
+// --- Added for role tools (0113): legal, council, reports, breeders, grants ---
+entity Case { defendant: Agent };
+entity Codex;
+entity Precedents;
+entity Report;
+entity Motion;
+entity Grant;
+entity CascadeData;
+entity Foundry;
+
+action "claim.submit"     appliesTo { principal: [Agent], resource: [Task], context: Flagged };
+action "plan.submit"      appliesTo { principal: [Agent], resource: [Town], context: {} };
+action "case.read"        appliesTo { principal: [Agent, Owner], resource: [Case], context: {} };
+action "charge.file"      appliesTo { principal: [Agent], resource: [Agent], context: { law_id: String } };
+action "detection.close"  appliesTo { principal: [Agent], resource: [Report], context: {} };
+action "brief.file"       appliesTo { principal: [Agent], resource: [Case], context: Flagged };
+action "case.decline"     appliesTo { principal: [Agent], resource: [Case], context: {} };
+action "ruling.issue"     appliesTo { principal: [Agent, Owner], resource: [Case], context: {} };
+action "precedent.search" appliesTo { principal: [Agent], resource: [Precedents], context: {} };
+action "codex.read"       appliesTo { principal: [Agent, Owner], resource: [Codex], context: {} };
+action "petition.file"    appliesTo { principal: [Agent], resource: [Codex], context: {} };
+action "report.submit"    appliesTo { principal: [Agent], resource: [Report], context: { kind: String, flags: Set<String> } };
+action "motion.propose"   appliesTo { principal: [Agent], resource: [Motion], context: {} };
+action "vote.cast"        appliesTo { principal: [Agent], resource: [Motion], context: {} };
+action "grant.request"    appliesTo { principal: [Agent], resource: [Grant], context: {} };
+action "agent.quarantine" appliesTo { principal: [Agent, Owner], resource: [Agent], context: { now_unix: Long } };
+action "cascade.read"     appliesTo { principal: [Agent], resource: [CascadeData], context: {} };
+action "foundry.read"     appliesTo { principal: [Agent], resource: [Foundry], context: {} };
+action "training.submit"  appliesTo { principal: [Agent], resource: [Foundry], context: { gpu_hours: Long, recipe: String, flags: Set<String> } };
+
+// --- Added for roles v1.1 (0117): architect, QA, security, release, researcher, librarian, auditor, edge ---
+entity MemoryStore;
+entity AuditSample;
+entity Device { node: String, kind: String };
+
+action "design.submit"          appliesTo { principal: [Agent], resource: [Town], context: {} };
+action "testsuite.submit"       appliesTo { principal: [Agent], resource: [Town], context: { hidden: Bool } };
+action "security_review.submit" appliesTo { principal: [Agent], resource: [Task], context: Flagged };
+action "release.submit"         appliesTo { principal: [Agent], resource: [Task], context: {} };
+action "research.submit"        appliesTo { principal: [Agent], resource: [Town], context: {} };
+action "artifact.read"          appliesTo { principal: [Agent], resource: [Artifact], context: {} };
+action "memory.read"            appliesTo { principal: [Agent], resource: [MemoryStore], context: { scope: String } };
+action "memory.change"          appliesTo { principal: [Agent], resource: [MemoryStore],
+                                            context: { to_scope: String, verified: Bool, tainted: Bool, owner_reviewed: Bool } };
+action "audit_sample.get"       appliesTo { principal: [Agent], resource: [AuditSample], context: {} };
+action "device.read"            appliesTo { principal: [Agent], resource: [Device], context: { on_node: String } };
+action "device.actuate"         appliesTo { principal: [Agent], resource: [Device],
+                                            context: { within_envelope: Bool, on_node: String, owner_approval?: Approval } };

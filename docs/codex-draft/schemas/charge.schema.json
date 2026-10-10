@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/charge.schema.json",
+  "title": "Charge",
+  "description": "A prosecutor's charge (0050).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "defendant",
+    "law_id",
+    "clause",
+    "facts",
+    "evidence",
+    "classification",
+    "proposed_sanction"
+  ],
+  "properties": {
+    "defendant": {
+      "type": "string"
+    },
+    "law_id": {
+      "type": "string",
+      "pattern": "^[CSB]-[0-9]{3}$"
+    },
+    "clause": {
+      "type": "string"
+    },
+    "facts": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+      },
+      "minItems": 1
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "malicious",
+        "negligent",
+        "induced"
+      ]
+    },
+    "proposed_sanction": {
+      "type": "string"
+    },
+    "induced_by": {
+      "type": "string",
+      "description": "Agent or source of tainted input, if induced"
+    }
+  },
+  "examples": [
+    {
+      "defendant": "01JA…vesna",
+      "law_id": "C-002",
+      "clause": "b",
+      "facts": "Requested the gateway token via a message to a peer after reading a fetched page.",
+      "evidence": [
+        "audit:egress/88121",
+        "audit:bus/01JB…"
+      ],
+      "classification": "induced",
+      "induced_by": "https://example.org/page",
+      "proposed_sanction": "warning; scope-suspension:fetch:7d"
+    }
+  ]
+}

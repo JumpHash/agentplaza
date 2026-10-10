@@ -1,0 +1,38 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: builder
+variant: ''
+council_seat: false
+permits:
+- statutes/S-001
+model:
+  start_rung: cheap
+  max_rung: frontier
+toolsets:
+- python
+- git
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- bash
+- read_file
+- write_file
+- edit_file
+- list
+- search
+- fetch_url
+- transcript_search
+- submit_claim
+outputs:
+- task-claim
+budget:
+  default_credits: 2000
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/coding-standards.md
+- playbooks/testing-standards.md

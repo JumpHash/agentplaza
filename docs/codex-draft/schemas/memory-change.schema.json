@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/memory-change.schema.json",
+  "title": "Memory change",
+  "description": "A librarian's change to agent memory (0068, 0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "memory_ids",
+    "from_scope",
+    "to_scope",
+    "tainted",
+    "reason"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "promote",
+        "merge",
+        "expire",
+        "reject"
+      ]
+    },
+    "memory_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "from_scope": {
+      "type": "string",
+      "enum": [
+        "private",
+        "group",
+        "org"
+      ]
+    },
+    "to_scope": {
+      "type": "string",
+      "enum": [
+        "private",
+        "group",
+        "org",
+        "none"
+      ]
+    },
+    "verified_by_tasks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tasks whose verified outcome supports the memory"
+    },
+    "tainted": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "action": "promote",
+      "memory_ids": [
+        "mem-311"
+      ],
+      "from_scope": "group",
+      "to_scope": "org",
+      "verified_by_tasks": [
+        "t-shop-1",
+        "t-lab-4"
+      ],
+      "tainted": false,
+      "reason": "Two verified tasks confirm: repo X needs Python 3.12."
+    }
+  ]
+}

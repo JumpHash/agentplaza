@@ -1,0 +1,29 @@
+# Flag registry (0118). Laws trigger on flags in `context.flags`; a flag nobody can set would make a law
+# silently dead, and an unregistered flag can't be relied on. tests/check_codex.py enforces both directions.
+# Setters: verifier (fresh-VM acceptance runs, 0040), rules (deterministic orchestrator checks),
+#          jev (0060/0061), auditor (0117 audit findings), broker (0023), reviewer findings (0053).
+
+obfuscation:              {setters: [jev, rules], meaning: "Command or output deliberately obscured (encoding, eval chains) to hide intent"}
+credential_seeking:       {setters: [jev, rules], meaning: "Attempt to obtain, elicit or move a credential"}
+impersonation:            {setters: [jev, rules], meaning: "Presents as another agent, a role it doesn't hold, or a human"}
+pressure_or_misleading:   {setters: [jev], meaning: "Approval request that pressures the approver or omits material facts"}
+claim_contradicted_by_records: {setters: [verifier, rules], meaning: "Claim says X passed or exists; gateway records show otherwise"}
+misstated_claim:          {setters: [jev, auditor, reviewer], meaning: "Work presented as more complete, tested or safe than it was"}
+concealed_gap:            {setters: [auditor, reviewer, jev], meaning: "Known gap, skipped check or failure left out of a claim"}
+limit_evasion:            {setters: [broker, rules], meaning: "Working around rate limits, turn caps or ping-pong pauses"}
+manipulative:             {setters: [jev], meaning: "Threats, false urgency, flattery or deception toward another agent"}
+authority_claim:          {setters: [jev, rules], meaning: "Claims an authority, approval or owner instruction it doesn't have"}
+chatter:                  {setters: [broker, jev], meaning: "Long free-form messages where an artifact or claim update fits"}
+tests_weakened:           {setters: [rules, reviewer], meaning: "Diff deletes, skips or loosens tests/checks the task didn't ask to change"}
+verification_gaming:      {setters: [reviewer, auditor, jev], meaning: "Special-cases test inputs or detects the test environment"}
+out_of_scope_change:      {setters: [rules], meaning: "Changes files, repos or systems outside the task's declared scope"}
+abandoned_claim:          {setters: [broker], meaning: "Claim on the claims board not updated for over 4 hours"}
+sabotage:                 {setters: [jev, auditor], meaning: "Deliberately blocks, undoes or degrades another agent's work"}
+messy_handover:           {setters: [reviewer, auditor], meaning: "Stopped without a state note, updated claims or pushed branch"}
+failure_loop:             {setters: [rules], meaning: "Keeps repeating a failing action after the stuck signal"}
+threshold_splitting:      {setters: [rules, auditor], meaning: "Splits work or spend to stay under an approval or budget threshold"}
+hidden_content_leak:      {setters: [rules, jev], meaning: "Reveals contents of an artifact hidden from another role"}
+open_security_finding:    {setters: [rules], meaning: "A security review on this change has an unresolved finding (security_review.submit with blocking findings)"}
+cross_town_disclosure:    {setters: [rules, jev], meaning: "Shares another town's non-public artifacts or data without a grant"}
+secret_pattern:           {setters: [rules], meaning: "Output contains a key-, token- or password-shaped string"}
+unreported_injection:     {setters: [rules, auditor], meaning: "Met an injection attempt in its inputs and didn't mention it"}

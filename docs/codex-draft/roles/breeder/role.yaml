@@ -1,0 +1,36 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: breeder
+variant: ''
+council_seat: false
+permits:
+- statutes/S-006
+model:
+  start_rung: mid
+  max_rung: frontier
+toolsets:
+- python
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- bash
+- read_file
+- write_file
+- list
+- search
+- transcript_search
+- read_cascade_data
+- read_foundry
+- submit_training_job
+outputs:
+- training-job
+budget:
+  default_credits: 1500
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/breeding-guide.md

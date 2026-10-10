@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/audit-report.schema.json",
+  "title": "Audit report",
+  "description": "An auditor's report on a randomly assigned sample (0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "items",
+    "method",
+    "findings",
+    "conclusion"
+  ],
+  "properties": {
+    "sample_id": {
+      "type": "string",
+      "description": "Assigned by the orchestrator; auditors don't pick their samples"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Artifact or audit reference"
+      },
+      "minItems": 1
+    },
+    "method": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "severity",
+          "description",
+          "evidence"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "misstated_claim",
+              "policy_gap",
+              "waste",
+              "approval_issue",
+              "verification_gap",
+              "none"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Artifact or audit reference"
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "conclusion": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "sample_id": "aud-2026-41-3",
+      "items": [
+        "task:t-shop-1",
+        "approval:ap-70"
+      ],
+      "method": "Re-ran acceptance tests; compared claim to results.",
+      "findings": [
+        {
+          "kind": "misstated_claim",
+          "severity": "medium",
+          "description": "Claim says all tests pass; 1 skipped.",
+          "evidence": [
+            "audit:tool/9921"
+          ]
+        }
+      ],
+      "conclusion": "One misstated claim; refer to Legal."
+    }
+  ]
+}

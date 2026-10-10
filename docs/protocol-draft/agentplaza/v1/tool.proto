@@ -1,0 +1,45 @@
+// Tool authorisation and results. Tools run inside the guest, but every call is authorised by the hub
+// (Cedar, 0038) and recorded in the transcript before and after execution.
+syntax = "proto3";
+package agentplaza.v1;
+
+import "agentplaza/v1/common.proto";
+
+message ToolSpec {
+  string name = 1;              // "bash", "read_file", "write_file", "edit_file", "list", "search", "fetch_url" (0028)
+  string description = 2;
+  bytes json_schema = 3;        // input schema shown to the model
+  string risk_class = 4;        // "read" | "write" | "irreversible"
+}
+
+message ToolRequest {
+  string call_id = 1;           // from the model's tool call
+  string tool = 2;
+  bytes input_json = 3;
+  Seq after = 4;                // the assistant turn that produced it
+  TraceContext trace = 5;       // 0116
+}
+
+message ToolDecision {
+  string call_id = 1;
+  enum Verdict {
+    VERDICT_UNSPECIFIED = 0;
+    VERDICT_ALLOW = 1;
+    VERDICT_DENY = 2;
+    VERDICT_PENDING_APPROVAL = 3;   // a later ToolDecision follows once a human decides
+  }
+  Verdict verdict = 2;
+  Error error = 3;              // reason on DENY (law_id set when a law applied)
+  Seq seq = 4;                  // transcript position of this decision
+  EntrySeal seal = 5;           // the orchestrator's signature on this entry (0135)
+}
+
+message ToolResult {
+  string call_id = 1;
+  int32 exit_code = 2;
+  Payload output = 3;           // capped head+tail inline; full output as a blob if large
+  bool truncated = 4;
+  uint64 duration_ms = 5;
+  Taint taint = 6;              // UNTRUSTED for fetch_url and anything derived from untrusted input
+  bool possibly_reexecuted = 7; // set when replayed after a snapshot restore (0029)
+}

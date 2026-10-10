@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/release-plan.schema.json",
+  "title": "Release plan",
+  "description": "A release agent's plan and record for a deployment (0069, 0113). Production steps are irreversible (C-004).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "artifact",
+    "environment",
+    "steps",
+    "rollback",
+    "health_checks",
+    "outcome"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "artifact": {
+      "type": "string",
+      "description": "Artifact or audit reference"
+    },
+    "environment": {
+      "type": "string",
+      "enum": [
+        "staging",
+        "production"
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tool",
+          "action"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "irreversible": {
+            "type": "boolean"
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "rollback": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "description": "How to undo each step, or why it can't be undone"
+    },
+    "health_checks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "approval_id": {
+      "type": "string",
+      "description": "Owner approval, required for production"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "deployed",
+        "rolled_back",
+        "failed"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "task_id": "t-web-9",
+      "artifact": "blake3:aa01",
+      "environment": "production",
+      "approval_id": "ap-77",
+      "outcome": "planned",
+      "steps": [
+        {
+          "tool": "cloudflare.deploy",
+          "action": "deploy worker shop-api v14",
+          "irreversible": true
+        }
+      ],
+      "rollback": [
+        "cloudflare.deploy previous version v13"
+      ],
+      "health_checks": [
+        "GET /health returns 200 within 60 s"
+      ]
+    }
+  ]
+}

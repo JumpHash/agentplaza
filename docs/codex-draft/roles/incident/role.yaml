@@ -1,0 +1,37 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: incident
+variant: ''
+council_seat: true
+permits:
+- statutes/S-005
+model:
+  start_rung: mid
+  max_rung: frontier
+toolsets: []
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- read_audit
+- read_usage
+- search
+- request_grant
+- quarantine_agent
+- file_detection
+- submit_incident_report
+outputs:
+- incident-report
+budget:
+  default_credits: 1000
+  period: weekly
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 20
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/incident-runbook.md
+- playbooks/council-procedure.md
+overlays:
+- council-seat

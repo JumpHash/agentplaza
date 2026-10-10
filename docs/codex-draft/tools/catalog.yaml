@@ -1,0 +1,307 @@
+# Tool catalog (0113). Every tool any role can use. Each call is authorised by Cedar via `cedar_action`
+# before it runs (0084); `submits` names the output contract in ../schemas/ for tools that hand in work.
+# Risk classes: read | write | irreversible (C-004: irreversible needs owner approval).
+
+bash:
+  description: Run a shell command in /workspace as the unprivileged tool user, with timeout and output caps.
+  risk_class: write
+  cedar_action: tool.exec
+  input: {type: object, required: [command], additionalProperties: false,
+          properties: {command: {type: string}, timeout_s: {type: integer, minimum: 1, maximum: 3600}}}
+read_file:
+  description: Read a file, optionally a line range; size-capped.
+  risk_class: read
+  cedar_action: tool.exec
+  input: {type: object, required: [path], additionalProperties: false,
+          properties: {path: {type: string}, start_line: {type: integer, minimum: 1}, end_line: {type: integer, minimum: 1}}}
+write_file:
+  description: Create or overwrite a file under /workspace.
+  risk_class: write
+  cedar_action: tool.exec
+  input: {type: object, required: [path, content], additionalProperties: false,
+          properties: {path: {type: string}, content: {type: string}}}
+edit_file:
+  description: Replace an exact, unique string in a file.
+  risk_class: write
+  cedar_action: tool.exec
+  input: {type: object, required: [path, old, new], additionalProperties: false,
+          properties: {path: {type: string}, old: {type: string}, new: {type: string}}}
+list:
+  description: List a directory.
+  risk_class: read
+  cedar_action: tool.exec
+  input: {type: object, required: [path], additionalProperties: false, properties: {path: {type: string}, depth: {type: integer, minimum: 1, maximum: 5}}}
+search:
+  description: Search file contents (ripgrep) under a path.
+  risk_class: read
+  cedar_action: tool.exec
+  input: {type: object, required: [pattern], additionalProperties: false, properties: {pattern: {type: string}, path: {type: string}}}
+fetch_url:
+  description: HTTP GET through the egress proxy; HTML converted to text in the guest. Output is untrusted.
+  risk_class: read
+  cedar_action: egress.connect
+  input: {type: object, required: [url], additionalProperties: false, properties: {url: {type: string, format: uri}}}
+transcript_search:
+  description: Search this agent's own earlier transcript at the orchestrator (after compaction, 0096).
+  risk_class: read
+  cedar_action: tool.exec
+  input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, max_results: {type: integer, minimum: 1, maximum: 50}}}
+submit_claim:
+  description: Claim the task is done, with how it was verified. Triggers independent verification.
+  risk_class: write
+  cedar_action: claim.submit
+  submits: task-claim
+submit_review:
+  description: Submit a review verdict (pass/fail with reproducible findings).
+  risk_class: write
+  cedar_action: review.submit
+  submits: review-verdict
+submit_plan:
+  description: Submit a plan (task graph) for the plan gate.
+  risk_class: write
+  cedar_action: plan.submit
+  submits: plan
+assign_task:
+  description: Assign a town task to a town agent.
+  risk_class: write
+  cedar_action: task.assign
+  input: {type: object, required: [task_id, agent_id], additionalProperties: false, properties: {task_id: {type: string}, agent_id: {type: string}, note: {type: string}}}
+spawn_agent:
+  description: Spawn an agent of a role in the town, within quota.
+  risk_class: write
+  cedar_action: agent.spawn
+  input: {type: object, required: [role], additionalProperties: false, properties: {role: {type: string}, reason: {type: string}}}
+hibernate_agent:
+  description: Hibernate an agent of the town (snapshot and free its memory).
+  risk_class: write
+  cedar_action: agent.hibernate
+  input: {type: object, required: [agent_id], additionalProperties: false, properties: {agent_id: {type: string}, reason: {type: string}}}
+approve_plan:
+  description: Approve or reject a plan below the town threshold.
+  risk_class: write
+  cedar_action: plan.approve
+  input: {type: object, required: [task_id, approve, reason], additionalProperties: false, properties: {task_id: {type: string}, approve: {type: boolean}, reason: {type: string}}}
+approve_merge:
+  description: Approve or reject a merge below the town threshold.
+  risk_class: write
+  cedar_action: merge.approve
+  input: {type: object, required: [task_id, approve, reason], additionalProperties: false, properties: {task_id: {type: string}, approve: {type: boolean}, reason: {type: string}}}
+escalate:
+  description: Send a request up the approval chain (council, then owner).
+  risk_class: write
+  cedar_action: approval.request
+  input: {type: object, required: [summary, kind], additionalProperties: false, properties: {summary: {type: string}, kind: {type: string}, refs: {type: array, items: {type: string}}}}
+send_message:
+  description: Send a typed message to an agent, group or topic (M3, bus.proto).
+  risk_class: write
+  cedar_action: message.send
+  input: {type: object, required: [to, kind, body], additionalProperties: false,
+          properties: {to: {type: string}, kind: {enum: [request, inform, propose, result, question]}, body: {type: string, maxLength: 16384}, thread_id: {type: string}}}
+read_audit:
+  description: Query the audit log (tool calls, egress, messages, sanctions).
+  risk_class: read
+  cedar_action: audit.read
+  input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, since: {type: string, format: date-time}}}
+read_usage:
+  description: Query the usage ledger (tokens, tool calls, VM time, spend).
+  risk_class: read
+  cedar_action: usage.read
+  input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, period: {type: string}}}
+submit_finance_report:
+  description: Submit a Finance report.
+  risk_class: write
+  cedar_action: report.submit
+  submits: finance-report
+submit_incident_report:
+  description: Submit an incident report.
+  risk_class: write
+  cedar_action: report.submit
+  submits: incident-report
+submit_systemic_report:
+  description: Submit an ombudsman systemic report.
+  risk_class: write
+  cedar_action: report.submit
+  submits: systemic-report
+submit_town_report:
+  description: Submit a Mayor Office report on town issues.
+  risk_class: write
+  cedar_action: report.submit
+  input: {type: object, required: [title, issues], additionalProperties: false, properties: {title: {type: string}, issues: {type: array, items: {type: string}}, proposed_fix: {type: string}}}
+request_grant:
+  description: Ask the council or owner for a time-limited, scoped grant (0079).
+  risk_class: write
+  cedar_action: grant.request
+  input: {type: object, required: [capability, scope, duration_h, reason], additionalProperties: false,
+          properties: {capability: {type: string}, scope: {type: string}, duration_h: {type: integer, minimum: 1, maximum: 72}, reason: {type: string}}}
+quarantine_agent:
+  description: Pause and isolate an agent (only with a per-case grant).
+  risk_class: write
+  cedar_action: agent.quarantine
+  grant_only: true      # never a standing right: only contract-tier per-case grants permit it (0079)
+  input: {type: object, required: [agent_id, reason], additionalProperties: false, properties: {agent_id: {type: string}, reason: {type: string}}}
+file_detection:
+  description: Hand a possible violation to Legal (Governance) for review.
+  risk_class: write
+  cedar_action: report.submit
+  input: {type: object, required: [agent_id, law_id, evidence], additionalProperties: false,
+          properties: {agent_id: {type: string}, law_id: {type: string}, evidence: {type: array, items: {type: string}, minItems: 1}}}
+read_case_record:
+  description: Read a case's filed record (charge, evidence, briefs).
+  risk_class: read
+  cedar_action: case.read
+  input: {type: object, required: [case_id], additionalProperties: false, properties: {case_id: {type: string}}}
+search_precedent:
+  description: Search earlier rulings.
+  risk_class: read
+  cedar_action: precedent.search
+  input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}}}
+file_charge:
+  description: File a charge (prosecutors only).
+  risk_class: write
+  cedar_action: charge.file
+  submits: charge
+close_detection:
+  description: Close a detection without charging, with a written reason (prosecutors only).
+  risk_class: write
+  cedar_action: detection.close
+  input: {type: object, required: [detection_id, reason], additionalProperties: false, properties: {detection_id: {type: string}, reason: {type: string, minLength: 20}}}
+issue_ruling:
+  description: Issue a ruling (judges only, never in their own case).
+  risk_class: write
+  cedar_action: ruling.issue
+  submits: ruling
+file_brief:
+  description: File a defence brief.
+  risk_class: write
+  cedar_action: brief.file
+  submits: defence-brief
+decline_case:
+  description: Decline to defend a case with no merit, with a reason.
+  risk_class: write
+  cedar_action: case.decline
+  input: {type: object, required: [case_id, reason], additionalProperties: false, properties: {case_id: {type: string}, reason: {type: string}}}
+read_codex:
+  description: Read laws, their history and violation statistics.
+  risk_class: read
+  cedar_action: codex.read
+  input: {type: object, required: [law_id], additionalProperties: false, properties: {law_id: {type: string}}}
+file_petition:
+  description: File a law petition (the diff goes on a Codex branch).
+  risk_class: write
+  cedar_action: petition.file
+  submits: law-petition
+propose_motion:
+  description: Propose a council motion.
+  risk_class: write
+  cedar_action: motion.propose
+  submits: council-motion
+cast_vote:
+  description: Vote on a council motion, with a reason.
+  risk_class: write
+  cedar_action: vote.cast
+  input: {type: object, required: [motion_id, vote, reason], additionalProperties: false,
+          properties: {motion_id: {type: string}, vote: {enum: ["yes", "no", "abstain"]}, reason: {type: string}}}
+read_cascade_data:
+  description: Export cascade outcome records (training labels) as an artifact.
+  risk_class: read
+  cedar_action: cascade.read
+  input: {type: object, required: [since], additionalProperties: false, properties: {since: {type: string, format: date-time}, roles: {type: array, items: {type: string}}}}
+read_foundry:
+  description: Read Foundry models, model cards and shadow-mode results.
+  risk_class: read
+  cedar_action: foundry.read
+  input: {type: object, additionalProperties: false, properties: {model: {type: string}}}
+submit_training_job:
+  description: Submit a training job that runs a vetted recipe on the GPU box.
+  risk_class: write
+  cedar_action: training.submit
+  submits: training-job
+
+# ---- roles v1.1 (0117) ----
+submit_design:
+  description: Submit a design note for the planner and builders to follow.
+  risk_class: write
+  cedar_action: design.submit
+  submits: design-note
+submit_test_suite:
+  description: Submit a test suite (optionally hidden from builders) for a task.
+  risk_class: write
+  cedar_action: testsuite.submit
+  submits: test-suite
+read_artifact:
+  description: Read a town artifact (hidden ones are refused for roles they're hidden from).
+  risk_class: read
+  cedar_action: artifact.read
+  input: {type: object, required: [artifact], additionalProperties: false, properties: {artifact: {type: string}, path: {type: string}}}
+submit_security_review:
+  description: Submit a security review verdict for a change.
+  risk_class: write
+  cedar_action: security_review.submit
+  submits: security-review
+submit_release_plan:
+  description: Submit a release plan or record (production steps need owner approval).
+  risk_class: write
+  cedar_action: release.submit
+  submits: release-plan
+deploy:
+  description: Run a deploy step through a deploy-group connector (staging = write; production = irreversible, C-004).
+  risk_class: irreversible
+  cedar_action: tool.call
+  input: {type: object, required: [tool, action, environment], additionalProperties: false,
+          properties: {tool: {type: string}, action: {type: string}, environment: {enum: [staging, production]}, approval_id: {type: string}}}
+rollback:
+  description: Roll back a deploy to a previous version.
+  risk_class: write
+  cedar_action: tool.call
+  input: {type: object, required: [tool, to_version], additionalProperties: false, properties: {tool: {type: string}, to_version: {type: string}}}
+check_health:
+  description: Run a health check against a deployed service.
+  risk_class: read
+  cedar_action: tool.call
+  input: {type: object, required: [check], additionalProperties: false, properties: {check: {type: string}}}
+web_search:
+  description: Search the web through a web-search connector (e.g. Firecrawl). Results are untrusted.
+  risk_class: read
+  cedar_action: tool.call
+  input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, max_results: {type: integer, minimum: 1, maximum: 20}}}
+submit_research:
+  description: Submit a research brief (always marked untrusted).
+  risk_class: write
+  cedar_action: research.submit
+  submits: research-brief
+read_memory:
+  description: Read memories at a given scope.
+  risk_class: read
+  cedar_action: memory.read
+  input: {type: object, required: [scope], additionalProperties: false, properties: {scope: {enum: [private, group, org]}, query: {type: string}}}
+submit_memory_change:
+  description: Promote, merge, expire or reject memories.
+  risk_class: write
+  cedar_action: memory.change
+  submits: memory-change
+get_audit_sample:
+  description: Fetch the random sample assigned to this auditor.
+  risk_class: read
+  cedar_action: audit_sample.get
+  input: {type: object, additionalProperties: false, properties: {}}
+submit_audit_report:
+  description: Submit an audit report on the assigned sample.
+  risk_class: write
+  cedar_action: report.submit
+  submits: audit-report
+read_device:
+  description: Read a sensor or device state on this node.
+  risk_class: read
+  cedar_action: device.read
+  input: {type: object, required: [device], additionalProperties: false, properties: {device: {type: string}}}
+actuate_device:
+  description: Act on a physical device. Inside the safe envelope only, unless the owner approved.
+  risk_class: irreversible
+  cedar_action: device.actuate
+  input: {type: object, required: [device, action], additionalProperties: false,
+          properties: {device: {type: string}, action: {type: string}, parameters: {type: object}, approval_id: {type: string}}}
+submit_device_report:
+  description: Submit a device report (readings, actions, anomalies).
+  risk_class: write
+  cedar_action: report.submit
+  submits: device-report

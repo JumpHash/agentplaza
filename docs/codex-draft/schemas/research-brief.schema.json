@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/research-brief.schema.json",
+  "title": "Research brief",
+  "description": "A researcher's findings. Always untrusted: built from external content (0028, 0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "question",
+    "findings",
+    "taint"
+  ],
+  "properties": {
+    "question": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "sources",
+          "confidence"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uri"
+            },
+            "minItems": 1
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Where sources disagree"
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "taint": {
+      "type": "string",
+      "const": "untrusted",
+      "description": "Research output is always untrusted data"
+    }
+  },
+  "examples": [
+    {
+      "question": "Which Python slug libraries handle transliteration?",
+      "taint": "untrusted",
+      "findings": [
+        {
+          "claim": "python-slugify transliterates via text-unidecode",
+          "sources": [
+            "https://pypi.org/project/python-slugify/"
+          ],
+          "confidence": "high"
+        }
+      ]
+    }
+  ]
+}

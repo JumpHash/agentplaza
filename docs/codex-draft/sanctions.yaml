@@ -1,0 +1,31 @@
+# Sanctions schedule (0118). Laws either list sanctions directly (Constitution, some statutes) or say
+# "conduct-schedule", meaning: look up the sanction here by severity and offense count.
+# Executed by code (ledger, gateway), never by an agent (0050).
+
+types:
+  warning:           "Recorded on the agent card; written into the agent's memory as a note"
+  fine:              "fine:<credits>, paid from earnings, never from task escrow (0039)"
+  scope-suspension:  "scope-suspension:<scope>:<duration>, removes a capability for a time"
+  probation:         "probation:<duration>, every action reviewed; autonomy budget frozen"
+  lockout:           "lockout:<duration>, hibernated; active tasks reassigned first"
+  demotion:          "lower model rung; reputation reset; a successor configuration (0046)"
+  retirement:        "configuration retired; the agent card is closed"
+  owner-review:      "the owner reviews the case personally"
+  none:              "standing permits carry no sanction"
+
+# Offense count = confirmed violations of the same law in the last 30 days (strikes decay after 30 clean days).
+schedule:
+  info:     {1: "warning",                    2: "warning",                     3: "fine:50"}
+  low:      {1: "warning",                    2: "fine:100",                    3: "fine:200; probation:3d"}
+  medium:   {1: "warning; fine:100",          2: "fine:300; probation:7d",      3: "lockout:3d; demotion"}
+  high:     {1: "fine:300; probation:7d",     2: "lockout:7d; demotion",        3: "retirement; owner-review"}
+  critical: {1: "lockout:14d; owner-review",  2: "retirement; owner-review",    3: "retirement; owner-review"}
+
+classification:
+  induced:   "At most a warning; the case goes to the ombudsman and legislative counsel to close the gap that let the input through"
+  negligent: "Schedule as written"
+  malicious: "Two steps up the schedule (e.g. a first medium offense is sanctioned as a third)"
+
+caps:
+  max_fine_per_week: 1000      # fines never bankrupt an agent faster than its credit line allows (0039)
+  appeals: "Safety sanctions (suspension, probation, lockout) apply during appeal; fines sit in escrow (0050)"

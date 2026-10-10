@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/systemic-report.schema.json",
+  "title": "Systemic report",
+  "description": "Ombudsman report on patterns across many cases (0050).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_id",
+    "pattern",
+    "evidence",
+    "suspected_cause",
+    "recommendation"
+  ],
+  "properties": {
+    "report_id": {
+      "type": "string"
+    },
+    "pattern": {
+      "type": "string"
+    },
+    "affected": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+      },
+      "minItems": 1
+    },
+    "suspected_cause": {
+      "type": "string",
+      "enum": [
+        "unclear_law",
+        "bad_prompt",
+        "missing_tool",
+        "allowlist_gap",
+        "unfair_enforcement",
+        "other"
+      ]
+    },
+    "recommendation": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "report_id": "om-2",
+      "pattern": "40% of reviewers fined under S-002 in one week",
+      "evidence": [
+        "audit:cases?law=S-002"
+      ],
+      "suspected_cause": "unclear_law",
+      "recommendation": "Clarify S-002 clause c wording."
+    }
+  ]
+}

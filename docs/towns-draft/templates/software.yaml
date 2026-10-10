@@ -1,0 +1,18 @@
+# Template: a software town. Builds, reviews, tests and ships code from specs (Charter, 0052).
+template: software
+purpose: Turn specs into tested, reviewed, released code in the town's repositories.
+mayor: {rung: mid, report_every: weekly}
+budget: {monthly_credits: 300000, task_default_credits: 2000, council_move_pct: 10, alert_at_pct: 80}
+roster:
+  - {role: planner, max: 1}
+  - {role: architect, max: 1}
+  - {role: builder, max: 4}
+  - {role: reviewer, max: 2}
+  - {role: qa, max: 1}
+  - {role: security-reviewer, max: 1}
+  - {role: release, max: 1}
+  - {role: researcher, max: 1}
+placement: {dedicated: false}
+egress: {host_groups: [package-registries, hub-git, advisories]}
+tools: {scopes: [github:read, github:write, ci:run]}
+confidentiality: normal

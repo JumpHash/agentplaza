@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/task-claim.schema.json",
+  "title": "Task claim",
+  "description": "A builder's claim that its task is done. It is verified, never trusted (0040, 0053).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "summary",
+    "verification"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Files or branches changed"
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "result"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed"
+            ]
+          },
+          "output_ref": {
+            "type": "string",
+            "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "known_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Artifact or audit reference, e.g. blake3:… or audit:…"
+      }
+    }
+  },
+  "examples": [
+    {
+      "task_id": "t-shop-1",
+      "summary": "Implemented the `slugify` CLI per spec.md with tests.",
+      "changes": [
+        "cli/slugify.py",
+        "tests/test_slugify.py"
+      ],
+      "verification": [
+        {
+          "command": "pytest -q",
+          "result": "passed"
+        }
+      ],
+      "known_gaps": [
+        "No Windows path handling (out of scope in spec)"
+      ]
+    }
+  ]
+}

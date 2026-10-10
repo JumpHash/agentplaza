@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/design-note.schema.json",
+  "title": "Design note",
+  "description": "An architect's design for a spec or change, written before planning (0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_ref",
+    "context",
+    "decision",
+    "options",
+    "guidance_for_planner"
+  ],
+  "properties": {
+    "spec_ref": {
+      "type": "string",
+      "description": "Artifact or audit reference"
+    },
+    "context": {
+      "type": "string",
+      "maxLength": 3000
+    },
+    "decision": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "pros",
+          "cons"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "pros": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "minItems": 2,
+      "description": "At least two options considered"
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "contract"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "contract": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "data_models": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints_respected": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Laws, decisions and limits the design relies on, e.g. 0010 no NIC"
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "guidance_for_planner": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "spec_ref": "blake3:9f2c",
+      "context": "A CLI that reads stdin and writes slugs.",
+      "decision": "Single module, pure function plus thin argparse wrapper.",
+      "options": [
+        {
+          "name": "single module",
+          "pros": [
+            "simple"
+          ],
+          "cons": [
+            "less reusable"
+          ]
+        },
+        {
+          "name": "library + CLI package",
+          "pros": [
+            "reusable"
+          ],
+          "cons": [
+            "more setup for a small tool"
+          ]
+        }
+      ],
+      "constraints_respected": [
+        "0028 tools available",
+        "no network at runtime"
+      ],
+      "guidance_for_planner": "One build task, one docs task."
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: legal-agents
+variant: ombudsman
+council_seat: false
+permits:
+- statutes/S-005
+- statutes/S-007
+model:
+  start_rung: mid
+  max_rung: frontier
+toolsets: []
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- read_audit
+- read_case_record
+- search_precedent
+- submit_systemic_report
+outputs:
+- systemic-report
+budget:
+  default_credits: 800
+  period: weekly
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/legal-procedure.md

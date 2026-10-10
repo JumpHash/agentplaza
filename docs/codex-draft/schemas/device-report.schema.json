@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/device-report.schema.json",
+  "title": "Device report",
+  "description": "An edge operator's record of device reads and actions (0113).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "device",
+    "node"
+  ],
+  "properties": {
+    "device": {
+      "type": "string"
+    },
+    "node": {
+      "type": "string"
+    },
+    "readings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "at",
+          "value"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "within_envelope"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object"
+          },
+          "within_envelope": {
+            "type": "boolean"
+          },
+          "approval_id": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "anomalies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "safety_notes": {
+      "type": "string"
+    }
+  },
+  "examples": [
+    {
+      "device": "greenhouse-vent-1",
+      "node": "pi5-greenhouse",
+      "readings": [
+        {
+          "at": "2026-10-08T12:00:00Z",
+          "value": "31.2C"
+        }
+      ],
+      "actions": [
+        {
+          "action": "open_vent",
+          "parameters": {
+            "percent": 40
+          },
+          "within_envelope": true,
+          "result": "ok"
+        }
+      ],
+      "anomalies": []
+    }
+  ]
+}

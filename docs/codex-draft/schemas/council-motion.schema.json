@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentplaza.io/schemas/council-motion.schema.json",
+  "title": "Council motion",
+  "description": "A council motion and its vote (0034, 0067).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "motion_id",
+    "proposer",
+    "kind",
+    "text",
+    "needs_owner"
+  ],
+  "properties": {
+    "motion_id": {
+      "type": "string"
+    },
+    "proposer": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "priority",
+        "budget_move",
+        "town_proposal",
+        "mayor_replacement",
+        "law_proposal",
+        "other"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "needs_owner": {
+      "type": "boolean",
+      "description": "Above a ratification threshold (0067)"
+    },
+    "votes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "member",
+          "vote",
+          "reason"
+        ],
+        "properties": {
+          "member": {
+            "type": "string"
+          },
+          "vote": {
+            "type": "string",
+            "enum": [
+              "yes",
+              "no",
+              "abstain"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "motion_id": "m-12",
+      "proposer": "finance-head",
+      "kind": "budget_move",
+      "text": "Move 15% of lab's monthly budget to shop for the launch week.",
+      "needs_owner": true,
+      "votes": [
+        {
+          "member": "finance-head",
+          "vote": "yes",
+          "reason": "Shop is blocked on budget."
+        }
+      ]
+    }
+  ]
+}

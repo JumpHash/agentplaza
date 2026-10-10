@@ -1,0 +1,38 @@
+# Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
+role: finance
+variant: ''
+council_seat: true
+permits:
+- statutes/S-005
+model:
+  start_rung: cheap
+  max_rung: mid
+toolsets:
+- python
+vm:
+  vcpus: 1
+  memory_mib: 512
+tools:
+- bash
+- read_file
+- search
+- read_audit
+- read_usage
+- file_detection
+- submit_finance_report
+outputs:
+- finance-report
+budget:
+  default_credits: 1000
+  period: weekly
+compaction:
+  trigger_fraction: 0.75
+  keep_recent_turns: 10
+prompt: prompt.md
+evals: evals.yaml
+handbook: handbook.md
+playbooks:
+- playbooks/finance-analysis.md
+- playbooks/council-procedure.md
+overlays:
+- council-seat
