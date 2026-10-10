@@ -1416,30 +1416,35 @@ fn export_line(model: &Model, run: &Run) -> String {
         "" => "— (no path)".to_string(),
         path => path.to_string(),
     };
+    // The captures the write will carry: one VM's, or every VM's.
+    let capture_bytes = |only: Option<u32>| -> usize {
+        run.vms
+            .iter()
+            .filter(|vm| match only {
+                Some(id) => vm.id == id,
+                None => true,
+            })
+            .filter_map(|vm| vm.serial.as_deref())
+            .map(str::len)
+            .sum()
+    };
     match model.export.target {
         ExportTarget::Vm => {
             let vm = model.target_vm(&run.id);
-            let bytes = run
-                .vms
-                .iter()
-                .find(|vm_of_run| vm_of_run.id == vm)
-                .and_then(|vm_of_run| vm_of_run.serial.as_deref())
-                .map_or(0, str::len);
-            format!("vm {vm} · {bytes} byte(s) of capture → {path}")
+            format!("vm {vm} · {} byte(s) of capture → {path}", capture_bytes(Some(vm)))
         }
-        ExportTarget::Run => {
-            let bytes: usize = run
-                .vms
-                .iter()
-                .filter_map(|vm| vm.serial.as_deref())
-                .map(str::len)
-                .sum();
-            format!(
-                "every vm of {} · {} section(s) · {bytes} byte(s) of capture → {path}",
-                run.id,
-                run.vms.len()
-            )
-        }
+        ExportTarget::Run => format!(
+            "every vm of {} · {} section(s) · {} byte(s) of capture → {path}",
+            run.id,
+            run.vms.len(),
+            capture_bytes(None)
+        ),
+        ExportTarget::Report => format!(
+            "the report of {} · {} section(s) · {} byte(s) of capture → {path}",
+            run.id,
+            run.vms.len(),
+            capture_bytes(None)
+        ),
     }
 }
 
@@ -1974,6 +1979,12 @@ mod tests {
         assert_eq!(
             export_line(&model, &detail),
             "every vm of r1 · 2 section(s) · 16 byte(s) of capture → /tmp/plaza-r1-0.txt"
+        );
+
+        model.export.target = ExportTarget::Report;
+        assert_eq!(
+            export_line(&model, &detail),
+            "the report of r1 · 2 section(s) · 16 byte(s) of capture → /tmp/plaza-r1-0.txt"
         );
 
         // A VM whose serial the pane has not seen counts nothing.

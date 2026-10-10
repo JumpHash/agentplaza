@@ -42,6 +42,17 @@ pub const EXITS: &str = r#"{"id":"r1","state":"done","vcpus":1,"memory_mib":256,
            {"id":1,"guest_cid":41,"state":"killed",
             "serial":"$ reboot\r\n[   12.4] machine restart\r\n"}]}"#;
 
+/// The run of [`LIST`] as a report reads it: vm 0's capture is a frozen v1
+/// session that completed, vm 1's is a keepalive agent that has beaten and
+/// served a tool call and not been stopped. The console's own boot lines are
+/// interleaved as they really are.
+pub const REPORT_DETAIL: &str = r#"{"id":"r1","state":"running","vcpus":2,"memory_mib":512,
+    "beats":null,"created_at":1760000000000,"ended_at":null,
+    "vms":[{"id":0,"guest_cid":50,"state":"running",
+            "serial":"plaza guest: plaza.harness=1: loading the vsock modules\r\n[    0.417190] virtio_vsock: vsock ready\r\n[vsock->] {\"type\":\"hello\",\"vm\":0,\"guest_cid\":50}\r\n[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\"}\r\nagent-harness: handshake complete (host echo \"plaza-orchestrator\")\r\n[vsock->] {\"type\":\"tool_call\",\"call\":1,\"name\":\"echo\",\"args\":{\"text\":\"plaza-guest-50-hello\"}}\r\n[vsock<-] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"plaza-guest-50-hello\"}\r\n[vsock->] {\"type\":\"tool_call\",\"call\":2,\"name\":\"uptime\",\"args\":{}}\r\n[vsock<-] {\"type\":\"tool_result\",\"call\":2,\"ok\":true,\"output\":\"12.34 45.67\"}\r\n[vsock->] {\"type\":\"bye\",\"calls\":2}\r\nagent-harness: session complete after 2 tool calls\r\n"},
+           {"id":1,"guest_cid":51,"state":"running",
+            "serial":"[vsock->] {\"type\":\"hello\",\"vm\":1,\"guest_cid\":51,\"keepalive\":true}\r\n[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"keepalive\":true}\r\n[vsock->] {\"type\":\"heartbeat\",\"seq\":1}\r\n[vsock<-] {\"type\":\"tool_call\",\"call\":1,\"name\":\"uptime\",\"args\":{}}\r\n[vsock->] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"1.0 2.0\"}\r\n"}]}"#;
+
 /// A machine body as `GET /api/v0/machine` sends it.
 pub const MACHINE: &str = r#"{"name":"plaza-node","arch":"x86_64","backend":"kvm",
     "irqchip":"ioapic","class":"server","cpus":24,"memory_mib":128320,

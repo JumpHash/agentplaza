@@ -27,6 +27,8 @@
 //!   a long-running fleet run needs.
 //! * [`serial`] — the offset-idempotent merge of the stream's serial deltas,
 //!   and the per-VM capture bookkeeping it needs.
+//! * [`session`] — the frozen vsock session read back out of a serial
+//!   capture: the pure derivation the run report's summary line is built from.
 //! * [`telemetryview`] — the session's figures as iced canvases, painting what
 //!   [`chart`] and [`history`] compute.
 //! * [`theme`] — the register's palette, stamps and rulings.
@@ -47,6 +49,7 @@ pub mod map;
 pub mod mapview;
 pub mod model;
 pub mod serial;
+pub mod session;
 pub mod telemetryview;
 pub mod theme;
 pub mod view;

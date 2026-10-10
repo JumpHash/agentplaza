@@ -136,12 +136,22 @@ cargo run -- --refresh-ms 500
   transcript on;
 * **transcript export**: a path box (iced offers no file dialog and the crate
   takes no dependency for one) pre-filled with
-  `{temp}/plaza-{run}-{vm}.txt`, a `this vm` / `all vms` switch, and an `EXPORT`
-  button that writes the transcript — the pane's own bytes, with a header line
-  naming the run, the VM, its role, its state, CID and exit kind — with plain
-  `std::fs`.
-  A run export writes one labelled section per VM. A write that cannot land is
-  a refusal in the notice line, in the disk's own words, and never touches the
+  `{temp}/plaza-{run}-{vm}.txt`, a `this vm` / `all vms` / `report` switch, and
+  an `EXPORT` button that writes the transcript — the pane's own bytes, with a
+  header line naming the run, the VM, its role, its state, CID and exit kind —
+  with plain `std::fs`.
+  A run export writes one labelled section per VM. The **report**
+  (`{temp}/plaza-{run}-report.txt`) is the run as one document: a facts header
+  (state, shape, the creation and end read against the run's own clock — a
+  time of day on the same UTC day, the date on another, the elapsed time in
+  the day tier — a tally of the sessions its captures showed, and each VM's
+  role, state, CID and exit kind), then every VM's transcript under the same
+  labelled section rule, each with a `session:` line derived from its own
+  capture alone (`session: hello→welcome→echo✓→uptime✓→bye, 2 tool calls`;
+  `session: keepalive, 3 heartbeats, 2 tool calls, no bye seen`;
+  `session: none seen` — a line appears only where the capture supports it, so
+  a fragment is never claimed as a session). A write that cannot land is a
+  refusal in the notice line, in the disk's own words, and never touches the
   daemon's connection stamp. A path you type is kept; emptying the box hands it
   back to the derived default;
 * the **telemetry** pane (`t`): the session's own figures, one observation per
@@ -201,12 +211,14 @@ cargo run -- --refresh-ms 500
   and its tallies, the age/instant arithmetic — the map's geometry and activity
   (`src/map.rs`),
   the exit kinds (`src/exit.rs`), the form and its presets (`src/form.rs`), the
-  export (`src/export.rs`), the session's rolling history (`src/history.rs`),
-  the charts' arithmetic (`src/chart.rs`), the client (`src/api.rs`) and the
-  CLI (`src/cli.rs`) know nothing about iced, so the reducer, the layout and
-  its hit-testing, the rate arithmetic, the observation ring and its gap
-  segmentation, the CSV bytes, validation, preset bodies, transcript bytes,
-  parsing and poll arithmetic are unit-tested headlessly; `src/app.rs` is the
+  export (`src/export.rs`), the frozen vsock session read back out of a serial
+  capture (`src/session.rs`), the session's rolling history
+  (`src/history.rs`), the charts' arithmetic (`src/chart.rs`), the client
+  (`src/api.rs`) and the CLI (`src/cli.rs`) know nothing about iced, so the
+  reducer, the layout and its hit-testing, the rate arithmetic, the observation
+  ring and its gap segmentation, the CSV bytes, validation, preset bodies,
+  transcript and report bytes, the session derivation, parsing and poll
+  arithmetic are unit-tested headlessly; `src/app.rs` is the
   only place that turns an effect into an iced `Task` (and the only place that
   writes a file), and `src/mapview.rs` and `src/telemetryview.rs` the only
   places that paint.
@@ -217,7 +229,7 @@ cargo run -- --refresh-ms 500
 ## Tests
 
 ```
-cargo test          # 245 lib + 19 client + 35 render = 299, 0 failed
+cargo test          # 259 lib + 19 client + 36 render = 314, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
@@ -228,7 +240,15 @@ cargo test          # 245 lib + 19 client + 35 render = 299, 0 failed
   character-wise elision, the exit-kind
   matrix, the console's history walk, the spawn form's boundaries and the
   presets' fill + byte-for-byte bodies, the export path's token arithmetic and
-  its write (bytes read back off the disk), the help sheet's toggling, the poll
+  its write (bytes read back off the disk), the report's byte-exact assembly
+  (facts, sections, the derived `session:` lines and the tally) and the session
+  derivation's whole matrix (a frozen session read past interleaved boot lines
+  and CRLF; a keepalive session's beats and served calls with no bye, from a
+  welcome that confirms it, from a bare heartbeat and from the hello's own ask;
+  a keepalive session the hub stopped; a partial or absent session reading as
+  `none seen`; malformed, non-object and unknown-kind payloads skipped and never
+  believed; a result stamped on the call it names; a fresh hello restarting the
+  reading), the help sheet's toggling, the poll
   schedule and backoff at more than one cadence, the serial tail (with the byte
   each row starts at), the key bindings (`w` among them), the CLI.
 * the stream: the frame parser's whole matrix (the daemon's frames, a frame
@@ -262,8 +282,11 @@ cargo test          # 245 lib + 19 client + 35 render = 299, 0 failed
   clipped tail and its amber `15 of 50 cells · 35 past` note), the console's
   quick buttons driving a real `POST .../input` whose body is read back off the
   stub, the export button writing two real transcripts whose bytes are compared
-  against the pane's and read back off the disk, an export that cannot land
-  drawn as a `REFUSED` notice, the help `?` sheet drawn over a dimmed register
+  against the pane's and read back off the disk, the `report` target writing the
+  run's report to `plaza-r1-report.txt` whose bytes are compared against
+  `run_report`'s and read back off the disk (both derived sessions and the tally
+  in the file), an export that cannot land drawn as a `REFUSED` notice, the
+  help `?` sheet drawn over a dimmed register
   (its box, its scrim and the ink still showing through asserted in pixels),
   the telemetry pane over a real six-observation session (the honest
   `<3 observations` notes, the captions with their window and peak, a real

@@ -15,11 +15,17 @@ use std::path::{Path, PathBuf};
 
 use crate::api::{Run, Vm, VmState};
 use crate::exit::exit_kind;
-use crate::model::clock_label;
+use crate::model::{clock_label, duration_label, instant_label};
+use crate::session::{self, SessionRead};
 
 /// The first line of every exported transcript, so a file found later says
 /// what it is.
 pub const TRANSCRIPT_HEADER: &str = "# AgentPlaza transcript";
+
+/// The first line of every exported run report, which is not a transcript: it
+/// carries the run's facts and each VM's derived session summary over the
+/// captures.
+pub const REPORT_HEADER: &str = "# AgentPlaza report";
 
 /// What an export covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,17 +34,21 @@ pub enum ExportTarget {
     Vm,
     /// Every VM of the run, one labelled section each.
     Run,
+    /// The whole run as a report: its facts, every transcript, and each VM's
+    /// derived session summary.
+    Report,
 }
 
 impl ExportTarget {
     /// Every target, in the order the switch offers them.
-    pub const ALL: [ExportTarget; 2] = [ExportTarget::Vm, ExportTarget::Run];
+    pub const ALL: [ExportTarget; 3] = [ExportTarget::Vm, ExportTarget::Run, ExportTarget::Report];
 
     /// The word the switch shows.
     pub fn label(self) -> &'static str {
         match self {
             ExportTarget::Vm => "this vm",
             ExportTarget::Run => "all vms",
+            ExportTarget::Report => "report",
         }
     }
 }
@@ -88,6 +98,8 @@ impl Export {
 /// One transcript write the runtime has to make: the bytes, and where they go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportCall {
+    /// What the write covers: one VM, the run's transcripts, or its report.
+    pub target: ExportTarget,
     /// The run the transcript is of.
     pub run: String,
     /// The VM it is of, or `None` for every VM of the run.
@@ -164,6 +176,7 @@ pub fn export_path(dir: &Path, run: &str, vm: u32, target: ExportTarget) -> Stri
     let name = match target {
         ExportTarget::Vm => format!("plaza-{run}-{vm}.txt"),
         ExportTarget::Run => format!("plaza-{run}-all.txt"),
+        ExportTarget::Report => format!("plaza-{run}-report.txt"),
     };
     dir.join(name).to_string_lossy().into_owned()
 }
@@ -237,6 +250,86 @@ pub fn run_transcript(run: &Run, at_ms: u64) -> String {
         push_capture(&mut out, vm);
     }
     out
+}
+
+/// A run's report: the run's facts, then every VM's transcript under the same
+/// labelled section rule the run export uses, with the session its capture
+/// shows summarised under the label.
+///
+/// The report is a document about the run rather than a concatenation of its
+/// captures, so it adds two kinds of bytes the transcript export does not: the
+/// header's facts (state, shape, the instants read against the run's own
+/// clock, and each VM's identity), and one `session:` line per VM derived from
+/// the capture alone (see [`crate::session`]). Everything between a section's
+/// label and the next one is the capture exactly as served.
+pub fn run_report(run: &Run, at_ms: u64) -> String {
+    let reference = run.ended_at.unwrap_or(at_ms);
+    let sessions: Vec<SessionRead> = run
+        .vms
+        .iter()
+        .map(|vm| session::read(vm.serial.as_deref().unwrap_or("")))
+        .collect();
+
+    let mut out = String::new();
+    out.push_str(REPORT_HEADER);
+    out.push('\n');
+    out.push_str(&format!(
+        "# run {} · {} · {} vm(s) · {} up\n",
+        run.id,
+        run.state.label(),
+        run.vms.len(),
+        run.live_vms()
+    ));
+    out.push_str(&format!("# shape: {}\n", shape_facts(run)));
+    out.push_str(&format!(
+        "# created {} · ended {} · elapsed {}\n",
+        instant_label(run.created_at, reference),
+        match run.ended_at {
+            Some(ended) => instant_label(ended, reference),
+            None => "—".to_string(),
+        },
+        duration_label(reference.saturating_sub(run.created_at))
+    ));
+    out.push_str(&format!("# exported {}\n", clock_label(at_ms)));
+    out.push_str(&format!("# sessions: {}\n", session_tally(&sessions)));
+    for vm in &run.vms {
+        out.push_str(&format!("# vm {} · {}\n", vm.id, vm_facts(vm)));
+    }
+    for (vm, session) in run.vms.iter().zip(&sessions) {
+        out.push('\n');
+        out.push_str(&format!("# vm {} · {}\n", vm.id, vm_facts(vm)));
+        out.push_str(&format!("session: {}\n", session.summary()));
+        push_capture(&mut out, vm);
+    }
+    out
+}
+
+/// The run's shape as the report's facts header writes it: how many vCPUs each
+/// guest was given, how much memory, and whether a guest reboots itself after
+/// a count of heartbeats or runs long-lived.
+fn shape_facts(run: &Run) -> String {
+    format!(
+        "{} {} · {} MiB each · beats {}",
+        run.vcpus,
+        if run.vcpus == 1 { "vcpu" } else { "vcpus" },
+        run.memory_mib,
+        match run.beats {
+            Some(beats) => beats.to_string(),
+            None => "long-lived".to_string(),
+        }
+    )
+}
+
+/// The report header's ledger of what the captures showed: how many of the
+/// run's guests completed the frozen session, how many are keepalive sessions,
+/// and how many showed none. It is the total of the `session:` lines below it,
+/// stated once so the report's first lines say what the document holds.
+fn session_tally(sessions: &[SessionRead]) -> String {
+    let count = |of: fn(&SessionRead) -> bool| sessions.iter().filter(|s| of(s)).count();
+    let complete = count(|s| matches!(s, SessionRead::Complete { .. }));
+    let keepalive = count(|s| matches!(s, SessionRead::Keepalive { .. }));
+    let none = sessions.len() - complete - keepalive;
+    format!("{complete} complete · {keepalive} keepalive · {none} none seen")
 }
 
 /// Appends a VM's capture, terminated: an export concatenates captures, and
@@ -544,5 +637,153 @@ mod tests {
         csv.edited = false;
         csv.derive(dir, 1_760_000_500_000);
         assert_eq!(csv.path, "/tmp/plaza-test/plaza-telemetry-1760000500000.csv");
+    }
+
+    /// A capture as the console really carries it: the guest init's own lines
+    /// and the harness's transcript around a frozen session that completed.
+    const SESSION: &str = "plaza guest: plaza.harness=1: loading the vsock modules\r\n\
+                           [    0.417190] virtio_vsock: vsock ready\r\n\
+                           [vsock->] {\"type\":\"hello\",\"vm\":0,\"guest_cid\":40}\r\n\
+                           [vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\"}\r\n\
+                           agent-harness: handshake complete (host echo \"plaza-orchestrator\")\r\n\
+                           [vsock->] {\"type\":\"tool_call\",\"call\":1,\"name\":\"echo\",\"args\":{\"text\":\"plaza-guest-40-hello\"}}\r\n\
+                           [vsock<-] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"plaza-guest-40-hello\"}\r\n\
+                           [vsock->] {\"type\":\"tool_call\",\"call\":2,\"name\":\"uptime\",\"args\":{}}\r\n\
+                           [vsock<-] {\"type\":\"tool_result\",\"call\":2,\"ok\":true,\"output\":\"12.34 45.67\"}\r\n\
+                           [vsock->] {\"type\":\"bye\",\"calls\":2}\r\n\
+                           agent-harness: session complete after 2 tool calls\r\n";
+
+    /// A keepalive guest's capture: it has beaten once and served one tool
+    /// call, and the hub has not stopped it, so there is no `bye`.
+    const KEEPALIVE: &str = "[vsock->] {\"type\":\"hello\",\"vm\":1,\"guest_cid\":41,\"keepalive\":true}\r\n\
+                             [vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"keepalive\":true}\r\n\
+                             [vsock->] {\"type\":\"heartbeat\",\"seq\":1}\r\n\
+                             [vsock<-] {\"type\":\"tool_call\",\"call\":1,\"name\":\"uptime\",\"args\":{}}\r\n\
+                             [vsock->] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"1.0 2.0\"}\r\n";
+
+    /// A live run of three guests: one completed the frozen session, one is a
+    /// keepalive agent, and one has written nothing at all.
+    fn report_run() -> Run {
+        Run {
+            id: "r1".to_string(),
+            state: RunState::Running,
+            vcpus: 1,
+            memory_mib: 256,
+            beats: Some(3),
+            created_at: 1_760_000_000_000,
+            ended_at: None,
+            vms: vec![
+                Vm {
+                    id: 0,
+                    guest_cid: Some(40),
+                    role: Some("builder".to_string()),
+                    state: VmState::Running,
+                    serial: Some(SESSION.to_string()),
+                },
+                Vm {
+                    id: 1,
+                    guest_cid: Some(41),
+                    role: None,
+                    state: VmState::Running,
+                    serial: Some(KEEPALIVE.to_string()),
+                },
+                Vm {
+                    id: 2,
+                    guest_cid: None,
+                    role: None,
+                    state: VmState::Running,
+                    serial: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_reports_path_names_the_run_and_cannot_steer_the_write_out_of_the_directory() {
+        let dir = Path::new("/tmp/plaza-test");
+        assert_eq!(
+            export_path(dir, "r1", 0, ExportTarget::Report),
+            "/tmp/plaza-test/plaza-r1-report.txt"
+        );
+        // A report is not one VM's transcript, so no VM index reaches its name.
+        assert_ne!(
+            export_path(dir, "r1", 3, ExportTarget::Report),
+            export_path(dir, "r1", 3, ExportTarget::Vm)
+        );
+        // The run id becomes the same filename token as everywhere else.
+        assert_eq!(
+            export_path(dir, "../../etc/passwd", 0, ExportTarget::Report),
+            "/tmp/plaza-test/plaza-______etc_passwd-report.txt"
+        );
+    }
+
+    #[test]
+    fn a_run_report_carries_its_facts_every_transcript_and_each_derived_session() {
+        let report = run_report(&report_run(), 1_760_000_500_000);
+        // The captures are carried byte for byte, under the label rule.
+        let expected = format!(
+            "# AgentPlaza report\n\
+             # run r1 · running · 3 vm(s) · 3 up\n\
+             # shape: 1 vcpu · 256 MiB each · beats 3\n\
+             # created 08:53:20 UTC · ended — · elapsed 8m 20s\n\
+             # exported 09:01:40 UTC\n\
+             # sessions: 1 complete · 1 keepalive · 1 none seen\n\
+             # vm 0 · role builder · running · cid 40\n\
+             # vm 1 · running · cid 41\n\
+             # vm 2 · running · no vsock\n\
+             \n\
+             # vm 0 · role builder · running · cid 40\n\
+             session: hello→welcome→echo✓→uptime✓→bye, 2 tool calls\n\
+             {SESSION}\
+             \n\
+             # vm 1 · running · cid 41\n\
+             session: keepalive, 1 heartbeat, 1 tool call, no bye seen\n\
+             {KEEPALIVE}\
+             \n\
+             # vm 2 · running · no vsock\n\
+             session: none seen\n"
+        );
+        assert_eq!(report, expected);
+        // A report is a file: its last line ends.
+        assert!(report.ends_with('\n'));
+    }
+
+    #[test]
+    fn a_reports_instants_are_read_against_the_runs_own_clock() {
+        // A run that ended three days and seven hours after it was created:
+        // the creation reads as its day rather than as today's clock, and the
+        // elapsed time is in the day tier.
+        let mut run = report_run();
+        run.state = RunState::Done;
+        run.ended_at = Some(1_760_000_060_000);
+        let created = run.ended_at.expect("just set") - 3 * crate::model::DAY_MS - 7 * 3_600_000;
+        run.created_at = created;
+        let report = run_report(&run, 1_760_000_500_000);
+        assert!(
+            report.contains("# created 2025-10-06 · ended 08:54:20 UTC · elapsed 3d 07h\n"),
+            "{report:?}"
+        );
+        // A run with no VMs and no end is still a document: the facts, and no
+        // section at all.
+        let mut bare = report_run();
+        bare.vms.clear();
+        let bare = run_report(&bare, 1_760_000_500_000);
+        assert!(bare.ends_with("# sessions: 0 complete · 0 keepalive · 0 none seen\n"), "{bare:?}");
+        assert!(!bare.contains("# vm "), "{bare:?}");
+    }
+
+    #[test]
+    fn a_reports_bytes_are_written_and_read_back_with_the_same_one_write() {
+        let path = std::env::temp_dir().join(format!(
+            "plaza-report-unit-{}-{:?}.txt",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = path.to_string_lossy().into_owned();
+        let contents = run_report(&report_run(), 1_760_000_500_000);
+        let written = write_export(&path, &contents).expect("the write lands");
+        assert_eq!(written, contents.len());
+        assert_eq!(std::fs::read_to_string(&path).expect("the file is there"), contents);
+        std::fs::remove_file(&path).expect("the probe file is removed");
     }
 }

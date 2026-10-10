@@ -10,10 +10,11 @@ mod common;
 
 use std::time::Duration;
 
-use common::{DETAIL, EXITS, LIST, MACHINE, ROLE_DETAIL, ROLE_LIST};
+use common::{DETAIL, EXITS, LIST, MACHINE, REPORT_DETAIL, ROLE_DETAIL, ROLE_LIST};
 
 use agentplaza_desktop::api::{Client, Endpoint};
 use agentplaza_desktop::cli::Config;
+use agentplaza_desktop::export::ExportTarget;
 use agentplaza_desktop::model::{
     Effect, Message, Model, NoticeKind, Pane, Selection, DEFAULT_REFRESH_MS,
 };
@@ -153,6 +154,7 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
         let result = agentplaza_desktop::export::write_export(&call.path, &call.contents);
         model.apply(Message::Exported {
             at_ms: model.now_ms,
+            target: call.target,
             run: call.run,
             vm: call.vm,
             path: call.path,
@@ -998,6 +1000,85 @@ fn the_export_button_writes_the_selected_vms_transcript_and_reads_back_the_same_
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&run_path);
+}
+
+#[test]
+fn the_report_target_writes_the_runs_report_and_reads_its_sessions_back() {
+    let server = common::fleet(LIST, REPORT_DETAIL);
+    let mut model = model_from(server.port);
+    model.apply(Message::Show(Pane::Run("r1".to_string())));
+    let run = Client::new(model.endpoint.clone())
+        .run("r1")
+        .expect("the stub answers the run");
+    model.apply(Message::Run {
+        at_ms: 1_760_000_500_000,
+        id: "r1".to_string(),
+        result: Ok(run),
+    });
+    let client = Client::new(model.endpoint.clone());
+
+    // The switch offers the report beside the two transcript targets, and
+    // pressing it moves the box to the report's own default path.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("report")).is_ok(), "the report target is offered");
+        ui.click("report").expect("the report target is clickable");
+        ui.into_messages().collect()
+    };
+    assert!(
+        messages.contains(&Message::ExportTarget(ExportTarget::Report)),
+        "pressing it asks for the report target, got {messages:?}"
+    );
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    let path = model.export.path.clone();
+    assert!(path.ends_with("plaza-r1-report.txt"), "{path}");
+    let _ = std::fs::remove_file(&path);
+
+    // The row names what lands where, and EXPORT writes it.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says("the report of r1")).is_ok(),
+            "the row names the report it will write"
+        );
+        ui.click("EXPORT").expect("EXPORT is clickable");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+
+    let written = std::fs::read_to_string(&path).expect("the report was written");
+    let detail = model.detail.clone().expect("the run");
+    assert_eq!(
+        written,
+        agentplaza_desktop::export::run_report(&detail, 1_760_000_500_000),
+        "the bytes on disk are the pane's own report"
+    );
+    // The sessions the captures show are in the file, derived rather than
+    // invented: vm 0 completed the frozen session, vm 1 has not said bye.
+    assert!(
+        written.contains("session: hello→welcome→echo✓→uptime✓→bye, 2 tool calls\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains("session: keepalive, 1 heartbeat, 1 tool call, no bye seen\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains("# sessions: 1 complete · 1 keepalive · 0 none seen\n"),
+        "{written}"
+    );
+    assert_eq!(
+        model.notice.as_ref().expect("a notice").text,
+        format!("exported {} byte(s) of the report of run r1 to {path}", written.len())
+    );
+
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

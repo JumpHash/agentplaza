@@ -290,6 +290,7 @@ fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
         ));
     }
     if let Some(ExportCall {
+        target,
         run,
         vm,
         path,
@@ -308,6 +309,7 @@ fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
             },
             move |(at_ms, result)| Message::Exported {
                 at_ms,
+                target,
                 run: run.clone(),
                 vm,
                 path: written.clone(),

@@ -9,7 +9,8 @@
 use crate::api::{ApiError, CreateRun, Endpoint, Machine, Run, RunState, RunsPage, VmState};
 use crate::events::Event;
 use crate::export::{
-    self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_transcript, vm_transcript,
+    self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_report, run_transcript,
+    vm_transcript,
 };
 use crate::form::{Field, Preset, SpawnForm};
 use crate::history::{self, SessionHistory};
@@ -430,6 +431,9 @@ pub enum Message {
     Exported {
         /// When the answer arrived.
         at_ms: u64,
+        /// What the write covered: one VM, the run's transcripts, or its
+        /// report.
+        target: ExportTarget,
         /// Which run the transcript was of.
         run: String,
         /// Which VM, or `None` for the whole run.
@@ -962,14 +966,19 @@ impl Model {
             Message::Export => self.export_now(),
             Message::Exported {
                 at_ms,
+                target,
                 run,
                 vm,
                 path,
                 result,
             } => {
-                let what = match vm {
-                    Some(vm) => format!("run {run} vm {vm}"),
-                    None => format!("run {run}, every vm"),
+                let what = match target {
+                    ExportTarget::Vm => match vm {
+                        Some(vm) => format!("run {run} vm {vm}"),
+                        None => format!("run {run}"),
+                    },
+                    ExportTarget::Run => format!("run {run}, every vm"),
+                    ExportTarget::Report => format!("the report of run {run}"),
                 };
                 match result {
                     Ok(bytes) => {
@@ -1445,8 +1454,10 @@ impl Model {
                 (Some(vm.id), vm_transcript(run, vm, self.now_ms))
             }
             ExportTarget::Run => (None, run_transcript(run, self.now_ms)),
+            ExportTarget::Report => (None, run_report(run, self.now_ms)),
         };
         Ok(ExportCall {
+            target: self.export.target,
             run: id.clone(),
             vm,
             path,
@@ -3285,6 +3296,54 @@ mod tests {
     }
 
     #[test]
+    fn the_report_target_asks_for_the_runs_report_at_the_reports_own_path() {
+        let mut model = Model::new();
+        open_run(&mut model);
+
+        model.apply(Message::ExportTarget(ExportTarget::Report));
+        assert!(
+            model.export.path.ends_with("plaza-r1-report.txt"),
+            "{}",
+            model.export.path
+        );
+
+        let effect = model.apply(Message::Export);
+        let call = effect.export.expect("an export was asked for");
+        assert_eq!(call.target, ExportTarget::Report);
+        assert_eq!(call.run, "r1");
+        assert_eq!(call.vm, None, "a report is the whole run, not one VM");
+        let detail = model.detail.clone().expect("the run");
+        assert_eq!(
+            call.contents,
+            run_report(&detail, 2_000),
+            "the bytes are the report of the very run the pane holds"
+        );
+        assert!(call.contents.starts_with("# AgentPlaza report\n"), "{}", call.contents);
+        // Neither VM's capture shows a session: the report says so rather than
+        // claiming one.
+        assert_eq!(
+            call.contents.matches("session: none seen\n").count(),
+            2,
+            "{}",
+            call.contents
+        );
+
+        // The notice names the report rather than "every vm".
+        model.apply(Message::Exported {
+            at_ms: 3_000,
+            target: ExportTarget::Report,
+            run: "r1".to_string(),
+            vm: None,
+            path: "/tmp/plaza-r1-report.txt".to_string(),
+            result: Ok(128),
+        });
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "exported 128 byte(s) of the report of run r1 to /tmp/plaza-r1-report.txt"
+        );
+    }
+
+    #[test]
     fn a_path_the_operator_typed_is_kept_and_an_empty_box_gets_the_default_back() {
         let mut model = Model::new();
         open_run(&mut model);
@@ -3321,6 +3380,7 @@ mod tests {
         open_run(&mut model);
         model.apply(Message::Exported {
             at_ms: 3_000,
+            target: ExportTarget::Vm,
             run: "r1".to_string(),
             vm: Some(1),
             path: "/tmp/plaza-r1-1.txt".to_string(),
@@ -3335,6 +3395,7 @@ mod tests {
 
         model.apply(Message::Exported {
             at_ms: 4_000,
+            target: ExportTarget::Run,
             run: "r1".to_string(),
             vm: None,
             path: "/nope/plaza-r1-all.txt".to_string(),
