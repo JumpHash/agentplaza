@@ -66,15 +66,19 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// One parsed request: the method and the request target (path plus any
-/// query).
+/// One parsed request: the method, the request target (path plus any query)
+/// and the body.
 ///
-/// The status surface is read-only, so there is no body: a request that
-/// declares one is refused rather than swallowed.
+/// The status surface is read-only, so its own requests carry no body at all
+/// ([`read_request`]); the admin surface's `POST /tell` does, and it is read
+/// by [`read_request_body`]. The two share this type, the parser and the
+/// [`Response`] writer, so the two surfaces stay in step by construction
+/// rather than by hand.
 #[derive(Debug)]
 pub struct Request {
     method: String,
     target: String,
+    body: Vec<u8>,
 }
 
 impl Request {
@@ -89,6 +93,21 @@ impl Request {
         let end = self.target.find(['?', '#']).unwrap_or(self.target.len());
         &self.target[..end]
     }
+
+    /// The request body, empty when the request had none.
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+/// Whether a request may carry a body, and how large.
+#[derive(Debug, Clone, Copy)]
+enum Body {
+    /// The status surface's rule: a request with a body is refused rather
+    /// than half-read.
+    Forbidden,
+    /// A bounded body: read exactly `Content-Length` bytes.
+    Allowed { max: usize },
 }
 
 /// Reads one request: the request line and the headers, bounded together by
@@ -99,6 +118,51 @@ impl Request {
 /// body, a head that is too large, a connection that ends mid-request — is a
 /// [`ParseError`], never a panic.
 pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
+    let (method, target, _body) = read_head(reader, Body::Forbidden)?;
+    Ok(Request {
+        method,
+        target,
+        body: Vec::new(),
+    })
+}
+
+/// Reads one request whose body (up to `max_body` bytes) is part of it: the
+/// admin surface's `POST /tell`.
+///
+/// The head rules are [`read_request`]'s exactly; a body that declares more
+/// than `max_body`, a second `Content-Length`, a chunked body, a body shorter
+/// than it declared, or a connection that ends mid-body is a [`ParseError`],
+/// never a panic.
+pub fn read_request_body(
+    reader: &mut impl BufRead,
+    max_body: usize,
+) -> Result<Request, ParseError> {
+    let (method, target, length) = read_head(reader, Body::Allowed { max: max_body })?;
+    let mut body = Vec::new();
+    if length > 0 {
+        (&mut *reader)
+            .take(length as u64)
+            .read_to_end(&mut body)
+            .map_err(|_| ParseError("the request body could not be read"))?;
+        if body.len() != length {
+            return Err(ParseError(
+                "the request body is shorter than Content-Length",
+            ));
+        }
+    }
+    Ok(Request {
+        method,
+        target,
+        body,
+    })
+}
+
+/// Reads a request's head — the request line and the headers, bounded
+/// together by [`MAX_HEAD`] — and returns `(method, target, body length)`.
+///
+/// The body is not read here; the caller decides what to do with it (nothing,
+/// for the status surface; exactly the declared bytes, for the admin surface).
+fn read_head(reader: &mut impl BufRead, body: Body) -> Result<(String, String, usize), ParseError> {
     let mut line = Vec::new();
     read_line(reader, MAX_HEAD, &mut line)?;
     let request_line =
@@ -107,7 +171,9 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
     let (Some(method), Some(target), Some(version), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return Err(ParseError("the request line must be `METHOD TARGET HTTP/1.x`"));
+        return Err(ParseError(
+            "the request line must be `METHOD TARGET HTTP/1.x`",
+        ));
     };
     if method.is_empty() || !method.bytes().all(is_token_byte) {
         return Err(ParseError("the method is not a token"));
@@ -126,6 +192,7 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
     let target = target.to_string();
 
     let mut head_bytes = line.len() + 2;
+    let mut content_length = None;
     loop {
         read_line(reader, MAX_HEAD, &mut line)?;
         head_bytes += line.len() + 2;
@@ -142,23 +209,46 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ParseError> {
         };
         let value = value.trim_matches([' ', '\t']);
         if name.eq_ignore_ascii_case("content-length") {
-            // Read-only: the endpoints take no body at all, and a request that
-            // declares one is refused rather than half-read.
-            if value != "0" {
-                return Err(ParseError("a status request must not carry a body"));
+            match body {
+                Body::Forbidden => {
+                    // Read-only endpoints take no body at all, and a request
+                    // that declares one is refused rather than half-read.
+                    if value != "0" {
+                        return Err(ParseError("a status request must not carry a body"));
+                    }
+                }
+                Body::Allowed { max } => {
+                    if content_length.is_some() {
+                        return Err(ParseError("the request has more than one Content-Length"));
+                    }
+                    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                        return Err(ParseError("Content-Length is not a number"));
+                    }
+                    let length = value
+                        .parse::<usize>()
+                        .map_err(|_| ParseError("Content-Length is too large"))?;
+                    if length > max {
+                        return Err(ParseError("the request body is too large"));
+                    }
+                    content_length = Some(length);
+                }
             }
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             return Err(ParseError("chunked request bodies are not supported"));
         }
     }
-    Ok(Request { method, target })
+    Ok((method, target, content_length.unwrap_or(0)))
 }
 
 /// Reads one `\n`-terminated line, without its `\r\n` or `\n`, into `line`.
 ///
 /// A line longer than `limit`, or a connection that ends before the newline,
 /// is an error: the request cannot be read as sent.
-fn read_line(reader: &mut impl BufRead, limit: usize, line: &mut Vec<u8>) -> Result<(), ParseError> {
+fn read_line(
+    reader: &mut impl BufRead,
+    limit: usize,
+    line: &mut Vec<u8>,
+) -> Result<(), ParseError> {
     line.clear();
     let read = (&mut *reader)
         .take(limit as u64 + 1)
@@ -267,6 +357,8 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        504 => "Gateway Timeout",
         _ => "Unknown",
     }
 }
@@ -298,6 +390,14 @@ impl NodeFacts {
     /// The daemon's uptime in whole seconds.
     pub fn uptime_s(&self) -> u64 {
         self.started.elapsed().as_secs()
+    }
+
+    /// The guest CIDs the daemon serves — the set of CIDs an agent could
+    /// possibly be connected as. The admin surface is the caller: a CID
+    /// outside this set can never connect, so a dispatch to it is an unknown
+    /// agent rather than a not-yet-connected one.
+    pub fn cids(&self) -> &[u32] {
+        &self.cids
     }
 }
 
@@ -671,9 +771,61 @@ mod tests {
             (400, "Bad Request"),
             (404, "Not Found"),
             (405, "Method Not Allowed"),
+            (409, "Conflict"),
+            (504, "Gateway Timeout"),
         ] {
             assert_eq!(reason(status), phrase);
         }
+    }
+
+    /// The bounded-body path the admin surface's `POST /tell` reads: the body
+    /// is part of the request, its declared length is what is read, and the
+    /// head rules are the read-only ones (the same request line, the same
+    /// headers, the same refusals) plus the body rules.
+    #[test]
+    fn a_bounded_body_is_read_as_declared_and_refused_beyond_its_bound() {
+        let read = |raw: &str| read_request_body(&mut Cursor::new(raw.as_bytes()), 64);
+
+        let request = read("POST /tell HTTP/1.1\r\nContent-Length: 7\r\n\r\n{\"a\":1}")
+            .expect("a bounded body is read");
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.path(), "/tell");
+        assert_eq!(request.body(), br#"{"a":1}"#);
+
+        // No body at all is a body of zero bytes, not an error.
+        let request = read("POST /tell HTTP/1.1\r\n\r\n").expect("a bodyless POST is read");
+        assert!(request.body().is_empty());
+
+        // The status surface's own reader still refuses a body outright.
+        assert!(
+            read_request(&mut Cursor::new(
+                b"GET /status HTTP/1.1\r\nContent-Length: 0\r\n\r\n"
+            ))
+            .is_ok()
+        );
+        assert!(
+            read_request(&mut Cursor::new(
+                b"GET /status HTTP/1.1\r\nContent-Length: 1\r\n\r\nx"
+            ))
+            .is_err()
+        );
+
+        // The body rules: too large, a second Content-Length, chunked, not a
+        // number, and a body shorter than it declared.
+        for raw in [
+            "POST /tell HTTP/1.1\r\nContent-Length: 65\r\n\r\n",
+            "POST /tell HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx",
+            "POST /tell HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            "POST /tell HTTP/1.1\r\nContent-Length: abc\r\n\r\n",
+            "POST /tell HTTP/1.1\r\nContent-Length: 5\r\n\r\nhi",
+            "POST /tell HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+        ] {
+            assert!(read(raw).is_err(), "should have been refused: {raw:?}");
+        }
+
+        // A head that the read-only reader refuses is refused here too.
+        assert!(read("GET /tell HTTP/2\r\n\r\n").is_err());
+        assert!(read("POST /tell HTTP/1.1\r\nno-colon\r\n\r\n").is_err());
     }
 
     /// A row that has gone is gone from the surface too: a session that ended

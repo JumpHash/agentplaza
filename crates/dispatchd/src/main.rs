@@ -1,0 +1,215 @@
+//! `dispatchd` — the fleet dispatcher's entry point.
+//!
+//! ```text
+//! dispatchd [--noded URL] [--hub URL] [--once] [--interval-secs N]
+//! ```
+//!
+//! Each pass reads the ledger and the fleet register, claims every open task
+//! whose role has a connected agent, drives that agent through its role
+//! family's workflow, and finishes the task with the artifacts its workspace
+//! now holds — or with the reason it could not. See [`dispatchd`] (the
+//! library) for what a pass does and [`dispatchd::dispatch`] for the retry and
+//! finish semantics.
+//!
+//! `--once` runs exactly one pass and exits, which is the shape a test or a
+//! cron wants: it reports a failure the pass could not read the ledger, so a
+//! one-shot run's exit status is worth something. Otherwise the daemon runs
+//! pass, interval, pass until it is signalled — `SIGTERM`/`SIGINT` end it the
+//! ordinary way, and it installs no handler of its own, so a stop is
+//! immediate.
+
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use dispatchd::{Dispatcher, Hub, Noded, StdoutLog};
+
+/// The node daemon's loopback address unless `--noded` says otherwise.
+const DEFAULT_NODED: &str = "http://127.0.0.1:8899";
+
+/// The hub's admin surface unless `--hub` says otherwise.
+const DEFAULT_HUB: &str = "http://127.0.0.1:19080";
+
+/// How long to wait between passes unless `--interval-secs` says otherwise.
+const DEFAULT_INTERVAL_SECS: u64 = 5;
+
+const USAGE: &str = "\
+usage: dispatchd [--noded URL] [--hub URL] [--once] [--interval-secs N]
+
+  --noded URL        the node daemon (the ledger and the fleet register)
+                     (default http://127.0.0.1:8899)
+  --hub URL          the hub's admin surface (POST /tell — the way into an
+                     agent's session) (default http://127.0.0.1:19080)
+  --once             run exactly one pass and exit
+  --interval-secs N  how long to wait between passes when looping (default 5,
+                     at least 1)
+  -h, --help         print this help
+
+A pass reads GET {noded}/api/v0/tasks and GET {noded}/api/v0/hub, and for each
+open task that names a role: finds a CONNECTED agent of that role, claims the
+task for it (POST /api/v0/tasks/{id}/claim), drives it through its role
+family's scripted workflow (one tool call at a time, through POST
+{hub}/tell), and finishes it (POST /api/v0/tasks/{id}/finish) with the note
+naming the artifacts its workspace now holds. A task whose role has no
+connected agent is left open and logged. An agent that answers and refuses
+finishes the task failed at once; an agent that cannot be reached is retried
+for at most 3 passes, then finished failed with the evidence. Every URL is a
+loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.";
+
+/// Everything `dispatchd` accepts on its command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Config {
+    noded: String,
+    hub: String,
+    once: bool,
+    interval: Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            noded: DEFAULT_NODED.to_string(),
+            hub: DEFAULT_HUB.to_string(),
+            once: false,
+            interval: Duration::from_secs(DEFAULT_INTERVAL_SECS),
+        }
+    }
+}
+
+/// Reads `--noded`, `--hub`, `--once` and `--interval-secs`, leaving the rest
+/// at its default.
+fn parse_args(args: Vec<String>) -> Result<Config, String> {
+    let mut config = Config::default();
+    let mut args = args.into_iter();
+    while let Some(argument) = args.next() {
+        let mut value = |flag: &str| {
+            args.next()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
+        match argument.as_str() {
+            "--noded" => config.noded = value("--noded")?,
+            "--hub" => config.hub = value("--hub")?,
+            "--once" => config.once = true,
+            "--interval-secs" => {
+                let seconds: u64 = value("--interval-secs")?
+                    .parse()
+                    .map_err(|err| format!("--interval-secs: {err}"))?;
+                if seconds == 0 {
+                    return Err("--interval-secs must be at least 1".to_string());
+                }
+                config.interval = Duration::from_secs(seconds);
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(config)
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let config = match parse_args(args) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("dispatchd: {err}\n\n{USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Both URLs are checked to be the loopback before any socket is opened, so
+    // a typo fails here with a message rather than at the first pass.
+    let ledger = match Noded::new(&config.noded) {
+        Ok(noded) => noded,
+        Err(err) => {
+            eprintln!("dispatchd: --noded: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let hub = match Hub::new(&config.hub) {
+        Ok(hub) => hub,
+        Err(err) => {
+            eprintln!("dispatchd: --hub: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut dispatcher = Dispatcher::new(ledger, hub, Arc::new(StdoutLog));
+
+    if config.once {
+        return match dispatcher.pass() {
+            Ok(_report) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("dispatchd: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // The loop: a pass, then the interval, forever. A pass that could not read
+    // the ledger is logged and the loop goes on — the node may be restarting,
+    // and stopping the dispatcher over it would leave the fleet idle.
+    loop {
+        if let Err(err) = dispatcher.pass() {
+            eprintln!("dispatchd: {err}");
+        }
+        thread::sleep(config.interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_defaults_are_the_loopback_stack() {
+        let config = parse_args(Vec::new()).expect("no arguments is valid");
+        assert_eq!(config.noded, DEFAULT_NODED);
+        assert_eq!(config.hub, DEFAULT_HUB);
+        assert!(!config.once, "the daemon loops unless asked for one pass");
+        assert_eq!(config.interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn explicit_flags_override_their_defaults() {
+        let config = parse_args(vec![
+            "--noded".to_string(),
+            "http://127.0.0.1:8901".to_string(),
+            "--hub".to_string(),
+            "http://localhost:19082".to_string(),
+            "--once".to_string(),
+            "--interval-secs".to_string(),
+            "30".to_string(),
+        ])
+        .expect("explicit flags parse");
+        assert_eq!(config.noded, "http://127.0.0.1:8901");
+        assert_eq!(config.hub, "http://localhost:19082");
+        assert!(config.once);
+        assert_eq!(config.interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn bad_arguments_are_reported() {
+        assert!(parse_args(vec!["--noded".to_string()]).is_err());
+        assert!(parse_args(vec!["--hub".to_string()]).is_err());
+        assert!(parse_args(vec!["--interval-secs".to_string()]).is_err());
+        assert!(parse_args(vec!["--interval-secs".to_string(), "x".to_string()]).is_err());
+        assert!(parse_args(vec!["--interval-secs".to_string(), "0".to_string()]).is_err());
+        assert!(parse_args(vec!["--nope".to_string()]).is_err());
+    }
+
+    /// `--once` is a flag, not a value: it takes no argument, and everything
+    /// after it still parses.
+    #[test]
+    fn once_is_a_flag() {
+        let config = parse_args(vec![
+            "--once".to_string(),
+            "--noded".to_string(),
+            "http://127.0.0.1:1".to_string(),
+        ])
+        .expect("a flag then a value parses");
+        assert!(config.once);
+        assert_eq!(config.noded, "http://127.0.0.1:1");
+    }
+}

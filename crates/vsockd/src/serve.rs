@@ -22,10 +22,10 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-use crate::hub::Hub;
+use crate::hub::{Command, Hub, ToolReply};
 use crate::line::{Inbound, LineTransport};
 use crate::proto::{GuestMessage, HostMessage, WELCOME_ECHO};
 
@@ -252,12 +252,10 @@ fn read_handshake<T: LineTransport>(
         Ok(GuestMessage::ToolResult { call, .. }) => Err(HostError::Protocol(format!(
             "tool_result {call} before hello"
         ))),
-        Ok(GuestMessage::Heartbeat { seq }) => Err(HostError::Protocol(format!(
-            "heartbeat {seq} before hello"
-        ))),
-        Ok(GuestMessage::Bye { .. }) => {
-            Err(HostError::Protocol("bye before hello".to_string()))
+        Ok(GuestMessage::Heartbeat { seq }) => {
+            Err(HostError::Protocol(format!("heartbeat {seq} before hello")))
         }
+        Ok(GuestMessage::Bye { .. }) => Err(HostError::Protocol("bye before hello".to_string())),
         Err(err) => Err(HostError::Protocol(format!(
             "unparsable guest line ({err}): {inbound:?}"
         ))),
@@ -414,7 +412,10 @@ fn run_keepalive<T: LineTransport>(
     )?;
 
     let mut calls = 0u64;
-    let mut outstanding: Vec<u64> = Vec::new();
+    // One entry per dispatch this side issued and has not been answered:
+    // the call number and, when somebody is waiting on it (the admin
+    // surface's `POST /tell`), the channel their answer goes down.
+    let mut outstanding: Vec<(u64, Option<Sender<ToolReply>>)> = Vec::new();
     let mut last_heartbeat = accepted_at;
     let mut stopping = false;
 
@@ -436,7 +437,7 @@ fn run_keepalive<T: LineTransport>(
                     // The `call` number is the *session's*: the hub says which
                     // tool to run, and the session numbers the exchange, so the
                     // agent sees one monotonic sequence per session.
-                    HostMessage::ToolCall { name, args, .. } => {
+                    Command::Call { name, args, reply } => {
                         if calls >= limits.max_calls {
                             log.line(&format!(
                                 "vsockd: refusing the hub's call ({}) for agent {cid}: \
@@ -452,7 +453,7 @@ fn run_keepalive<T: LineTransport>(
                         calls += 1;
                         let call = calls;
                         hub.note_calls(cid, calls);
-                        outstanding.push(call);
+                        outstanding.push((call, reply));
                         send(
                             transport,
                             cid,
@@ -461,17 +462,9 @@ fn run_keepalive<T: LineTransport>(
                             log,
                         )?;
                     }
-                    HostMessage::Stop { reason } => {
+                    Command::Stop { reason } => {
                         send(transport, cid, vm, &stop_message(reason), log)?;
                         stopping = true;
-                    }
-                    other => {
-                        // The hub speaks `HostMessage`, but only two of them
-                        // are the hub's to dispatch into a session: anything
-                        // else is refused rather than guessed at.
-                        log.line(&format!(
-                            "vsockd: ignoring a host line the hub does not dispatch: {other:?}"
-                        ));
                     }
                 }
             }
@@ -504,13 +497,20 @@ fn run_keepalive<T: LineTransport>(
                         }
                         hub.heartbeat(cid, seq, clock.now());
                     }
-                    Ok(GuestMessage::ToolResult { call, ok, .. }) => {
-                        match outstanding.iter().position(|issued| *issued == call) {
+                    Ok(GuestMessage::ToolResult { call, ok, output }) => {
+                        match outstanding.iter().position(|(issued, _)| *issued == call) {
                             Some(index) => {
-                                outstanding.remove(index);
+                                let (_call, reply) = outstanding.remove(index);
                                 log.line(&format!(
                                     "vsockd: agent {cid} answered tool call {call} (ok: {ok})"
                                 ));
+                                if let Some(reply) = reply {
+                                    // A waiter that timed out has dropped its
+                                    // receiver: a refused send is not an
+                                    // error, the answer is simply
+                                    // undeliverable and the session goes on.
+                                    let _ = reply.send(ToolReply { ok, output });
+                                }
                             }
                             None => log.line(&format!(
                                 "vsockd: agent {cid} answered tool call {call}, which this side did not issue"
@@ -674,6 +674,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
+    use crate::hub::TellOutcome;
     use crate::line::StreamLines;
 
     /// A [`LineTransport`] over a channel, so a test can put a scripted guest
@@ -1254,8 +1255,15 @@ mod tests {
         ]);
         let log = Arc::new(Recording::default());
         let hub = hub(&log);
-        let err = handle_session(&mut scripted, 23, keepalive_limits(), &*log, &hub, &SystemClock)
-            .expect_err("the dropped session ends");
+        let err = handle_session(
+            &mut scripted,
+            23,
+            keepalive_limits(),
+            &*log,
+            &hub,
+            &SystemClock,
+        )
+        .expect_err("the dropped session ends");
         assert!(
             matches!(&err, HostError::Dropped(detail) if detail.contains("reconnects with backoff")),
             "got {err:?}"
@@ -1374,7 +1382,9 @@ mod tests {
         // 1. hello with a role and keepalive; the welcome echoes what the hub
         //    accepted.
         guest
-            .send_line(r#"{"type":"hello","vm":0,"guest_cid":20,"role":"builder","keepalive":true}"#)
+            .send_line(
+                r#"{"type":"hello","vm":0,"guest_cid":20,"role":"builder","keepalive":true}"#,
+            )
             .expect("hello sends");
         assert_eq!(
             strand(&mut guest),
@@ -1393,15 +1403,19 @@ mod tests {
             .steer(20)
             .expect("the connected agent has a steering channel");
         let calls = [
-            (1u64, "echo", serde_json::json!({ "text": "plaza-agent-20" })),
+            (
+                1u64,
+                "echo",
+                serde_json::json!({ "text": "plaza-agent-20" }),
+            ),
             (2, "uptime", serde_json::json!({})),
         ];
         for (call, name, args) in calls {
             steering
-                .send(HostMessage::ToolCall {
-                    call,
+                .send(Command::Call {
                     name: name.to_string(),
                     args,
+                    reply: None,
                 })
                 .expect("the hub dispatches");
             // A heartbeat wakes the session so it takes its dispatch at once.
@@ -1423,7 +1437,7 @@ mod tests {
         // 4. the hub stops the agent; the agent answers bye and the session
         //    ends cleanly.
         steering
-            .send(HostMessage::Stop {
+            .send(Command::Stop {
                 reason: "slice proof".to_string(),
             })
             .expect("the hub stops it");
@@ -1465,7 +1479,173 @@ mod tests {
         // The proof's transcript, for `cargo test -- --nocapture`.
         println!("--- keepalive session, cid 20, over a Unix socket ---");
         println!("{text}");
-        println!("--- end (registry drained: {} agents) ---", hub.agent_count());
+        println!(
+            "--- end (registry drained: {} agents) ---",
+            hub.agent_count()
+        );
+    }
+
+    /// `Hub::tell` end to end through a real keepalive session: the caller
+    /// blocks on its reply channel, the session takes the dispatch, the stub
+    /// guest answers the `tool_call`, and the answer lands back at the caller
+    /// — the whole control path the admin surface's `POST /tell` rides, with
+    /// no stand-in for the session.
+    #[test]
+    fn a_hub_dispatch_is_answered_back_to_the_caller() {
+        use std::os::unix::net::UnixStream;
+
+        let (guest_stream, hub_stream) = UnixStream::pair().expect("a Unix socket pair");
+        guest_stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("the stub's read timeout");
+        let log = Arc::new(Recording::default());
+        let hub = Arc::new(hub(&log));
+
+        let limits = keepalive_limits();
+        let session_hub = Arc::clone(&hub);
+        let session_log = Arc::clone(&log);
+        let session = thread::spawn(move || {
+            let mut transport = StreamLines::new(hub_stream);
+            handle_session(
+                &mut transport,
+                20,
+                limits,
+                &*session_log,
+                &session_hub,
+                &SystemClock,
+            )
+        });
+
+        let mut guest = StreamLines::new(guest_stream);
+        guest
+            .send_line(
+                r#"{"type":"hello","vm":0,"guest_cid":20,"role":"builder","keepalive":true}"#,
+            )
+            .expect("hello sends");
+        assert_eq!(
+            strand(&mut guest),
+            r#"{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}"#
+        );
+
+        // The caller asks for a tool. `tell` blocks until the answer arrives,
+        // so it runs on its own thread while this one drives the stub guest.
+        let caller_hub = Arc::clone(&hub);
+        let caller = thread::spawn(move || {
+            caller_hub.tell(
+                20,
+                "write_file",
+                serde_json::json!({ "path": "build-notes.txt", "content": "hi" }),
+                Duration::from_secs(5),
+            )
+        });
+
+        // A heartbeat wakes the session, which takes the dispatch; the stub
+        // guest answers it.
+        guest
+            .send_line(r#"{"type":"heartbeat","seq":1}"#)
+            .expect("a heartbeat sends");
+        let dispatched: serde_json::Value =
+            serde_json::from_str(&strand(&mut guest)).expect("the dispatch is JSON");
+        assert_eq!(dispatched["type"], "tool_call");
+        assert_eq!(dispatched["name"], "write_file");
+        guest
+            .send_line(r#"{"type":"tool_result","call":1,"ok":true,"output":"{\"bytes\":2}"}"#)
+            .expect("the result sends");
+
+        assert_eq!(
+            caller.join().expect("the caller finishes"),
+            TellOutcome::Answered {
+                ok: true,
+                output: r#"{"bytes":2}"#.to_string(),
+            }
+        );
+
+        // The session is still alive after the dispatch: end it cleanly.
+        guest
+            .send_line(r#"{"type":"bye","calls":1}"#)
+            .expect("bye sends");
+        let summary = session
+            .join()
+            .expect("the session thread finishes")
+            .expect("the session completes");
+        assert_eq!(summary.calls, 1);
+        assert!(
+            log.text()
+                .contains("vsockd: agent 20 answered tool call 1 (ok: true)"),
+            "log: {}",
+            log.text()
+        );
+    }
+
+    /// A dispatch nobody waits on is still served: the session runs the tool
+    /// call and the agent's answer is simply dropped, never mis-delivered.
+    #[test]
+    fn a_dispatch_with_no_waiter_is_run_and_dropped() {
+        use std::os::unix::net::UnixStream;
+
+        let (guest_stream, hub_stream) = UnixStream::pair().expect("a Unix socket pair");
+        guest_stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("the stub's read timeout");
+        let log = Arc::new(Recording::default());
+        let hub = Arc::new(hub(&log));
+
+        let limits = keepalive_limits();
+        let session_hub = Arc::clone(&hub);
+        let session_log = Arc::clone(&log);
+        let session = thread::spawn(move || {
+            let mut transport = StreamLines::new(hub_stream);
+            handle_session(
+                &mut transport,
+                20,
+                limits,
+                &*session_log,
+                &session_hub,
+                &SystemClock,
+            )
+        });
+
+        let mut guest = StreamLines::new(guest_stream);
+        guest
+            .send_line(
+                r#"{"type":"hello","vm":0,"guest_cid":20,"role":"builder","keepalive":true}"#,
+            )
+            .expect("hello sends");
+        let _welcome = strand(&mut guest);
+
+        // A dispatch the raw `Command` carries with no reply channel: it is
+        // run, its result is logged, and nothing is mis-delivered.
+        hub.steer(20)
+            .expect("the agent is steerable")
+            .send(Command::Call {
+                name: "uptime".to_string(),
+                args: serde_json::json!({}),
+                reply: None,
+            })
+            .expect("the dispatch is queued");
+        guest
+            .send_line(r#"{"type":"heartbeat","seq":1}"#)
+            .expect("a heartbeat sends");
+        let dispatched: serde_json::Value =
+            serde_json::from_str(&strand(&mut guest)).expect("the dispatch is JSON");
+        assert_eq!(dispatched["name"], "uptime");
+        guest
+            .send_line(r#"{"type":"tool_result","call":1,"ok":true,"output":"done"}"#)
+            .expect("the result sends");
+
+        guest
+            .send_line(r#"{"type":"bye","calls":1}"#)
+            .expect("bye sends");
+        session
+            .join()
+            .expect("the session thread finishes")
+            .expect("the session completes");
+        assert!(
+            log.text()
+                .contains("vsockd: agent 20 answered tool call 1 (ok: true)"),
+            "log: {}",
+            log.text()
+        );
     }
 
     /// Reads one host line from the stub's end of the socket.

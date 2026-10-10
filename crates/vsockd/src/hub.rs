@@ -10,6 +10,13 @@
 //! serialised after it is released, so a console scrape never sits between a
 //! session and its heartbeat.
 //!
+//! The hub is also the control plane's one way into a session: [`Hub::tell`]
+//! sends a keepalive agent a [`Command::Call`] and waits, bounded, for the
+//! agent's answer, which the session routes back to whoever asked. The
+//! admin surface ([`crate::admin`]) is the caller; the session loop
+//! ([`crate::serve`]) is the one that dispatches it and matches the
+//! `tool_result`, so a dispatch is never guessed at from the next line.
+//!
 //! Liveness is the *session's* idle deadline, not a lock: the hub never holds
 //! an application-level lock as the correctness mechanism for a session. The
 //! mutexes here only guard the two maps, and the log line is always written
@@ -17,11 +24,10 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::proto::HostMessage;
 use crate::serve::SessionLog;
 
 /// How many heartbeats pass between logged heartbeat lines.
@@ -100,14 +106,82 @@ fn epoch_ms_now() -> u64 {
         .map_or(0, |since| since.as_millis() as u64)
 }
 
+/// What the hub sends a live keepalive session.
+///
+/// This is the hub's own control-plane message, not the guest wire
+/// ([`HostMessage`] is that): it carries what the session acts on *and* the
+/// channel a dispatch's answer goes back on, so a `tool_call` the admin
+/// surface asked for is answered to whoever asked — never to the next caller,
+/// and never guessed at from line order.
+#[derive(Debug)]
+pub enum Command {
+    /// Run one tool call on the agent. `reply`, when there is one, receives
+    /// the matching `tool_result`.
+    Call {
+        /// The tool to run.
+        name: String,
+        /// The tool's arguments.
+        args: serde_json::Value,
+        /// Where the agent's answer goes; `None` for a dispatch nobody waits
+        /// on.
+        reply: Option<Sender<ToolReply>>,
+    },
+    /// End the session, in the hub's words.
+    ///
+    /// The session loop serves this and the round-trip tests drive it, but
+    /// nothing in the daemon *sends* it yet: the control plane's own stop is a
+    /// later slice, exactly as the pre-existing steering accessor was
+    /// test-only before this one. It is marked unconstructed rather than
+    /// removed, so the stop path the keepalive contract defines stays served
+    /// (and tested).
+    #[allow(dead_code)]
+    Stop {
+        /// Why the session is ending.
+        reason: String,
+    },
+}
+
+/// One agent's answer to a tool call the hub dispatched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolReply {
+    /// Whether the tool succeeded. A refusal is data, not a broken session.
+    pub ok: bool,
+    /// The tool's output: its own JSON object on success, the reason on a
+    /// refusal.
+    pub output: String,
+}
+
+/// What came of [`Hub::tell`]: the admin surface's request to run one tool
+/// call on a connected agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TellOutcome {
+    /// The agent answered within the wait.
+    Answered {
+        /// Whether the tool succeeded.
+        ok: bool,
+        /// The tool's output.
+        output: String,
+    },
+    /// The agent did not answer within the wait. The session is untouched —
+    /// it is still alive and may still answer, later and to nobody — so this
+    /// is an honest timeout, not a failed dispatch.
+    TimedOut {
+        /// How long the caller waited.
+        waited: Duration,
+    },
+    /// No live session owns the CID: it has not connected, or its session has
+    /// already ended.
+    NotConnected,
+}
+
 /// The hub every keepalive session registers with.
 pub struct Hub {
     registry: Mutex<Registry>,
     /// The outbound channel per live session — the hub's way to send a
-    /// keepalive agent a `tool_call` or a `stop` at will. The row carries the
+    /// keepalive agent a tool call or a stop at will. The row carries the
     /// session token beside the sender, so a predecessor's cleanup can never
     /// evict the session that replaced it.
-    steering: Mutex<HashMap<u32, (u64, Sender<HostMessage>)>>,
+    steering: Mutex<HashMap<u32, (u64, Sender<Command>)>>,
     /// Bumped on every connect: a session's token.
     epoch: AtomicU64,
     /// What the registry's monotonic instants are reported against: the wall
@@ -150,7 +224,7 @@ impl Hub {
     }
 
     /// The steering map, poison-proof.
-    fn steering(&self) -> MutexGuard<'_, HashMap<u32, (u64, Sender<HostMessage>)>> {
+    fn steering(&self) -> MutexGuard<'_, HashMap<u32, (u64, Sender<Command>)>> {
         self.steering.lock().unwrap_or_else(|err| err.into_inner())
     }
 
@@ -161,7 +235,7 @@ impl Hub {
     /// the same agent, so the new session replaces the row rather than being
     /// refused. The predecessor's token stops matching, so its later cleanup
     /// cannot evict its successor's row.
-    pub fn connect(&self, cid: u32, role: &str, now: Instant) -> (u64, Receiver<HostMessage>) {
+    pub fn connect(&self, cid: u32, role: &str, now: Instant) -> (u64, Receiver<Command>) {
         let token = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let (sender, receiver) = channel();
         self.steering().insert(cid, (token, sender));
@@ -277,13 +351,51 @@ impl Hub {
     /// The outbound channel for a live session: what the hub sends a keepalive
     /// agent at will. `None` once the session has ended.
     ///
-    /// This slice wires no hub-side producer (the control plane — the status
-    /// surface and the dispatch of real work — is a later slice), so the
-    /// channel is exercised by the session tests; the hub's own consumer half
-    /// is production code either way.
-    #[cfg(test)]
-    pub(crate) fn steer(&self, cid: u32) -> Option<Sender<HostMessage>> {
+    /// [`Hub::tell`] is the production caller (the admin surface's
+    /// `POST /tell`); the session tests steer a session with it directly.
+    pub(crate) fn steer(&self, cid: u32) -> Option<Sender<Command>> {
         self.steering().get(&cid).map(|(_, sender)| sender.clone())
+    }
+
+    /// Runs one tool call on the connected agent `cid` and waits, bounded by
+    /// `wait`, for the agent's answer.
+    ///
+    /// The call is numbered by the *session* (the protocol's `call` is the
+    /// sequence number within the session), so the caller never invents one:
+    /// it asks for a tool, and the reply channel carried on the dispatch
+    /// brings back exactly that tool's answer.
+    ///
+    /// Both directions are honest about what is not known: a CID with no live
+    /// session is [`TellOutcome::NotConnected`] and a wait that runs out is
+    /// [`TellOutcome::TimedOut`] — the session is not torn down by either, and
+    /// an answer that arrives after the waiter gave up is simply undeliverable.
+    pub fn tell(
+        &self,
+        cid: u32,
+        name: &str,
+        args: serde_json::Value,
+        wait: Duration,
+    ) -> TellOutcome {
+        let Some(sender) = self.steer(cid) else {
+            return TellOutcome::NotConnected;
+        };
+        let (reply, answers) = channel();
+        let dispatched = sender.send(Command::Call {
+            name: name.to_string(),
+            args,
+            reply: Some(reply),
+        });
+        if dispatched.is_err() {
+            // The row outlived its session's worker by a moment; the agent is
+            // gone either way.
+            return TellOutcome::NotConnected;
+        }
+        match answers.recv_timeout(wait) {
+            Ok(ToolReply { ok, output }) => TellOutcome::Answered { ok, output },
+            Err(RecvTimeoutError::Timeout) => TellOutcome::TimedOut { waited: wait },
+            // The session ended without answering: the sender went with it.
+            Err(RecvTimeoutError::Disconnected) => TellOutcome::NotConnected,
+        }
     }
 
     /// The row for `cid`, if the agent is connected.
@@ -467,6 +579,206 @@ mod tests {
         assert!(hub.steer(10).is_none(), "an ended session is not steerable");
         assert!(!hub.forget(10, token), "a stale token owns nothing");
         assert_eq!(hub.agent_count(), 0);
+    }
+
+    /// `tell` on a CID nothing serves is `NotConnected` — the same answer for
+    /// a CID that never connected and one whose session has already ended.
+    #[test]
+    fn tell_reports_not_connected_when_no_session_owns_the_cid() {
+        let (_log, hub) = hub();
+        assert_eq!(
+            hub.tell(99, "echo", serde_json::json!({}), Duration::from_millis(10)),
+            TellOutcome::NotConnected
+        );
+
+        // A session that ended is gone, whichever door it left by.
+        let now = Instant::now();
+        let (token, steering) = hub.connect(10, "builder", now);
+        hub.end_clean(10, token, 0);
+        drop(steering);
+        assert_eq!(
+            hub.tell(10, "echo", serde_json::json!({}), Duration::from_millis(10)),
+            TellOutcome::NotConnected
+        );
+    }
+
+    /// A session that takes the dispatch and then ends — its answer unsent —
+    /// is not a timeout: there is nobody left to answer, and the caller is told
+    /// so rather than waiting out its whole budget.
+    #[test]
+    fn tell_reports_not_connected_when_the_session_ends_mid_flight() {
+        use std::thread;
+
+        let (_log, hub) = hub();
+        let now = Instant::now();
+        let (token, steering) = hub.connect(10, "builder", now);
+        let session = thread::spawn(move || {
+            // The dispatch is taken and dropped, reply channel and all: the
+            // session ended between accepting the work and answering it.
+            let _ = steering.recv();
+        });
+
+        let started = Instant::now();
+        assert_eq!(
+            hub.tell(
+                10,
+                "write_file",
+                serde_json::json!({}),
+                Duration::from_secs(5)
+            ),
+            TellOutcome::NotConnected
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a gone session is reported at once, not waited out: {:?}",
+            started.elapsed()
+        );
+        session.join().expect("the session thread finishes");
+        assert_eq!(hub.agent_count(), 1, "the row is the session's to remove");
+        let _ = token;
+    }
+
+    /// Two dispatches in flight on one session do not cross: each answer goes
+    /// to the caller that asked for it, whatever order the agent answers in.
+    /// The reply channel rides the dispatch, so there is no shared slot to
+    /// race over.
+    #[test]
+    fn two_dispatches_in_flight_do_not_cross_their_answers() {
+        use std::thread;
+
+        let (_log, hub) = hub();
+        let hub = Arc::new(hub);
+        let now = Instant::now();
+        let (_token, steering) = hub.connect(10, "builder", now);
+        let agent = thread::spawn(move || {
+            for _ in 0..2 {
+                if let Ok(Command::Call { args, reply, .. }) = steering.recv() {
+                    let text = args
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let _ = reply.expect("a caller is waiting").send(ToolReply {
+                        ok: true,
+                        output: format!("answered {text}"),
+                    });
+                }
+            }
+        });
+
+        let call = |text: &'static str| {
+            let hub = Arc::clone(&hub);
+            thread::spawn(move || {
+                hub.tell(
+                    10,
+                    "echo",
+                    serde_json::json!({ "text": text }),
+                    Duration::from_secs(5),
+                )
+            })
+        };
+        let first = call("one");
+        let second = call("two");
+        let answers = [
+            first.join().expect("the caller finishes"),
+            second.join().expect("the caller finishes"),
+        ];
+        assert!(
+            answers.contains(&TellOutcome::Answered {
+                ok: true,
+                output: "answered one".to_string(),
+            }),
+            "{answers:?}"
+        );
+        assert!(
+            answers.contains(&TellOutcome::Answered {
+                ok: true,
+                output: "answered two".to_string(),
+            }),
+            "{answers:?}"
+        );
+        agent.join().expect("the stub agent finishes");
+    }
+
+    /// `tell` hands the dispatch to the session's steering channel and brings
+    /// the agent's own `tool_result` back to the caller — with the tool it
+    /// asked for, and no invented call number.
+    #[test]
+    fn tell_hands_the_agents_answer_back_to_the_caller() {
+        use std::thread;
+
+        let (_log, hub) = hub();
+        let now = Instant::now();
+        let (_token, steering) = hub.connect(10, "builder", now);
+        let agent = thread::spawn(move || match steering.recv() {
+            Ok(Command::Call { name, args, reply }) => {
+                assert_eq!(name, "write_file");
+                assert_eq!(args, serde_json::json!({ "path": "build-notes.txt" }));
+                reply
+                    .expect("a caller is waiting")
+                    .send(ToolReply {
+                        ok: true,
+                        output: r#"{"path":"build-notes.txt","bytes":7}"#.to_string(),
+                    })
+                    .expect("the caller is listening");
+            }
+            other => panic!("expected a call, got {other:?}"),
+        });
+
+        let outcome = hub.tell(
+            10,
+            "write_file",
+            serde_json::json!({ "path": "build-notes.txt" }),
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            outcome,
+            TellOutcome::Answered {
+                ok: true,
+                output: r#"{"path":"build-notes.txt","bytes":7}"#.to_string(),
+            }
+        );
+        agent.join().expect("the stub agent finishes");
+        assert_eq!(hub.agent_count(), 1, "the session is untouched by a tell");
+    }
+
+    /// A session that never answers is an honest timeout, not a broken
+    /// session and not a lie: the row is still live and still steerable.
+    #[test]
+    fn tell_times_out_without_tearing_the_session_down() {
+        let (_log, hub) = hub();
+        let now = Instant::now();
+        // The receiver is held but never read: the dispatch is accepted and
+        // the agent simply does not answer.
+        let (_token, _steering) = hub.connect(10, "builder", now);
+
+        let outcome = hub.tell(
+            10,
+            "read_file",
+            serde_json::json!({}),
+            Duration::from_millis(50),
+        );
+        assert_eq!(
+            outcome,
+            TellOutcome::TimedOut {
+                waited: Duration::from_millis(50)
+            }
+        );
+        assert_eq!(hub.agent_count(), 1, "a timeout does not reap the session");
+        assert!(hub.steer(10).is_some(), "the session stays steerable");
+
+        // And a session whose worker went away is not a timeout: there is
+        // nobody left to answer.
+        drop(_steering);
+        assert_eq!(
+            hub.tell(
+                10,
+                "read_file",
+                serde_json::json!({}),
+                Duration::from_millis(50)
+            ),
+            TellOutcome::NotConnected
+        );
     }
 
     /// The hub is shared by every session thread, so its registry has to

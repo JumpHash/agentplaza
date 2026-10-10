@@ -20,6 +20,12 @@
 //! connected without scraping the log, and a liveness probe (`GET /healthz`).
 //! It is off unless asked for and mutates nothing — see [`status`].
 //!
+//! `--admin-port` adds the control plane's surface on `127.0.0.1`:
+//! `POST /tell` sends one `tool_call` into a connected agent's session and
+//! answers with that agent's own `tool_result`, bounded by a wait the caller
+//! asks for. It is off unless asked for, and it is how the dispatcher
+//! (`dispatchd`) drives the fleet — see [`admin`].
+//!
 //! This is a stand-in for the real orchestrator: it exists so the plaza's core
 //! loop can be exercised end to end against a real VM. It holds no policy
 //! beyond the two tools the frozen slice contract defines, and no secrets.
@@ -35,6 +41,8 @@
 //     safe Rust cannot call.
 #![deny(unsafe_code)]
 
+#[cfg(target_os = "linux")]
+mod admin;
 #[cfg(target_os = "linux")]
 mod hub;
 #[cfg(target_os = "linux")]
@@ -179,6 +187,7 @@ impl Drop for SessionGuard {
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
+              [--admin-port P]
 
   --uds-dir DIR  directory for the per-VM vsock Unix sockets
                  (default /tmp/plaza-vsock)
@@ -188,6 +197,10 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
   --status-port P  also serve the read-only status surface on 127.0.0.1:P
                  (GET /status — the agent registry and the host facts as
                  JSON; GET /healthz — a liveness probe; default: off)
+  --admin-port P   also serve the control plane's admin surface on 127.0.0.1:P
+                 (POST /tell — send one tool_call into a connected agent's
+                 session and answer with its tool_result; GET /healthz;
+                 default: off)
   -h, --help     print this help
 
 For each guest CID `c` the daemon listens on the Unix socket
@@ -239,6 +252,9 @@ struct Config {
     /// The loopback TCP port the read-only status surface answers on, when
     /// `--status-port` asks for it.
     status_port: Option<u16>,
+    /// The loopback TCP port the admin surface (`POST /tell`) answers on,
+    /// when `--admin-port` asks for it.
+    admin_port: Option<u16>,
 }
 
 #[cfg(target_os = "linux")]
@@ -249,12 +265,13 @@ impl Default for Config {
             cids: vec![3],
             port: DEFAULT_PORT,
             status_port: None,
+            admin_port: None,
         }
     }
 }
 
-/// Reads `--uds-dir`, `--cids`, `--port` and `--status-port`, leaving the rest
-/// at its default.
+/// Reads `--uds-dir`, `--cids`, `--port`, `--status-port` and `--admin-port`,
+/// leaving the rest at its default.
 #[cfg(target_os = "linux")]
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
@@ -286,6 +303,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     value("--status-port")?
                         .parse()
                         .map_err(|err| format!("--status-port: {err}"))?,
+                );
+            }
+            "--admin-port" => {
+                config.admin_port = Some(
+                    value("--admin-port")?
+                        .parse()
+                        .map_err(|err| format!("--admin-port: {err}"))?,
                 );
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -345,6 +369,9 @@ fn run(config: Config) -> Result<(), String> {
     // agents, shared by every session thread.
     let hub = Arc::new(Hub::new(Arc::new(StdoutLog)));
     let mut handles = Vec::new();
+    // The host facts both loopback surfaces report are the daemon's own, so
+    // they are built once and shared.
+    let facts = Arc::new(NodeFacts::new(config.cids.clone(), config.port, started));
     // The status surface, when asked for, binds with the guest listeners: a
     // port that is already taken fails the daemon rather than half-serving.
     if let Some(port) = config.status_port {
@@ -356,9 +383,22 @@ fn run(config: Config) -> Result<(), String> {
         println!(
             "vsockd: status on http://127.0.0.1:{bound} (GET /status, GET /healthz, read-only)"
         );
-        let facts = Arc::new(NodeFacts::new(config.cids.clone(), config.port, started));
         let hub = Arc::clone(&hub);
+        let facts = Arc::clone(&facts);
         handles.push(thread::spawn(move || status::serve(listener, hub, facts)));
+    }
+    // The admin surface, the control plane's way in: `POST /tell` drives a
+    // connected agent. Off unless `--admin-port` asks for it.
+    if let Some(port) = config.admin_port {
+        let listener = bind_admin_listener(port)?;
+        let bound = listener.local_addr().map_or(port, |addr| addr.port());
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| format!("cannot make the admin listener non-blocking: {err}"))?;
+        println!("vsockd: admin on http://127.0.0.1:{bound} (POST /tell, GET /healthz)");
+        let hub = Arc::clone(&hub);
+        let facts = Arc::clone(&facts);
+        handles.push(thread::spawn(move || admin::serve(listener, hub, facts)));
     }
     let mut listener_paths = Vec::new();
     for cid in &config.cids {
@@ -513,6 +553,17 @@ fn bind_status_listener(port: u16) -> Result<TcpListener, String> {
         .map_err(|err| format!("cannot listen on 127.0.0.1:{port} for the status surface: {err}"))
 }
 
+/// Binds the admin surface's listener.
+///
+/// Loopback-only, like the status surface: the dispatcher runs on the same
+/// host, and a surface that can make an agent act is not the network's to
+/// reach.
+#[cfg(target_os = "linux")]
+fn bind_admin_listener(port: u16) -> Result<TcpListener, String> {
+    TcpListener::bind(("127.0.0.1", port))
+        .map_err(|err| format!("cannot listen on 127.0.0.1:{port} for the admin surface: {err}"))
+}
+
 /// Accepts sessions for one guest CID and serves each on its own thread.
 #[cfg(target_os = "linux")]
 fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, hub: Arc<Hub>) {
@@ -607,6 +658,10 @@ mod tests {
             config.status_port, None,
             "the status surface is off unless asked for"
         );
+        assert_eq!(
+            config.admin_port, None,
+            "the admin surface is off unless asked for"
+        );
     }
 
     #[test]
@@ -620,12 +675,15 @@ mod tests {
             "6000".to_string(),
             "--status-port".to_string(),
             "9101".to_string(),
+            "--admin-port".to_string(),
+            "9102".to_string(),
         ])
         .expect("explicit flags parse");
         assert_eq!(config.uds_dir, PathBuf::from("/tmp/x"));
         assert_eq!(config.cids, vec![3, 4, 5]);
         assert_eq!(config.port, 6000);
         assert_eq!(config.status_port, Some(9101));
+        assert_eq!(config.admin_port, Some(9102));
     }
 
     #[test]
@@ -637,6 +695,9 @@ mod tests {
         assert!(parse_args(vec!["--status-port".to_string()]).is_err());
         assert!(parse_args(vec!["--status-port".to_string(), "x".to_string()]).is_err());
         assert!(parse_args(vec!["--status-port".to_string(), "70000".to_string()]).is_err());
+        assert!(parse_args(vec!["--admin-port".to_string()]).is_err());
+        assert!(parse_args(vec!["--admin-port".to_string(), "x".to_string()]).is_err());
+        assert!(parse_args(vec!["--admin-port".to_string(), "70000".to_string()]).is_err());
         assert!(parse_args(vec!["--nope".to_string()]).is_err());
     }
 
@@ -650,6 +711,26 @@ mod tests {
         let taken = bind_status_listener(addr.port());
         assert!(
             taken.expect_err("a taken port is an error").contains("status surface"),
+            "the error names the surface"
+        );
+    }
+
+    /// The admin surface binds loopback only too — it can make an agent act,
+    /// so it is even less the network's to reach — and a taken port is an
+    /// honest error.
+    #[test]
+    fn the_admin_listener_binds_loopback_and_refuses_a_taken_port() {
+        let listener = bind_admin_listener(0).expect("an ephemeral port binds");
+        let addr = listener.local_addr().expect("a bound address");
+        assert!(
+            addr.ip().is_loopback(),
+            "the admin surface is loopback only"
+        );
+        let taken = bind_admin_listener(addr.port());
+        assert!(
+            taken
+                .expect_err("a taken port is an error")
+                .contains("admin surface"),
             "the error names the surface"
         );
     }
