@@ -22,7 +22,7 @@ use acpi_tables::fadt::{
     FADT_F_HW_REDUCED_ACPI, FADT_F_PWR_BUTTON, FADT_F_RESET_REGISTER, FADT_F_SLP_BUTTON,
     IAPC_BOOT_ARG_FLAGS_VGA_NOT_PRESENT,
 };
-use acpi_tables::madt::{IoAPIC, LocalAPIC};
+use acpi_tables::madt::LocalAPIC;
 use acpi_tables::{Dsdt, Fadt, GenericAddressStructure, Madt, Rsdp, Sdt, Xsdt};
 use zerocopy::IntoBytes;
 
@@ -204,15 +204,26 @@ fn build_fadt(
     write_acpi_table(mem, resource_allocator, &mut fadt)
 }
 
+/// The MADT declares only the local APICs. It deliberately carries **no**
+/// I/O-APIC entry: the I/O-APIC and the legacy ISA IRQ routing live in the
+/// MPTable this port also writes (`mptable::setup_mptable`), whose
+/// `mpc_intsrc` records map ISA IRQ `i` -> GSI `i` for the whole 0..=23
+/// legacy range. If the MADT instead declared an I/O-APIC, the guest kernel
+/// would switch to ACPI (MADT) interrupt routing, which on this kernel
+/// (7.2.8) does not populate the legacy ISA IRQ mapping the MPTable's
+/// `mpc_intsrc` records provide — `acpi_register_gsi` then hands the DSDT
+/// devices fresh vectors (serial COM1's GSI 4 -> irq 24) and leaves the raw
+/// Linux IRQ a `virtio_mmio.device=...:<irq>` transport requests (the vsock
+/// device, IRQ 5) unallocated, so its `request_irq` fails with `-EINVAL` and
+/// the virtio-vsock probe aborts. Omitting the I/O-APIC entry keeps the
+/// kernel on the MPTable's routing and the IRQ numbers stable.
 fn build_madt(
     mem: &GuestMemoryMmap,
     resource_allocator: &mut ResourceAllocator,
     vcpu_count: u8,
 ) -> Result<u64, AcpiError> {
-    let mut interrupt_controllers = Vec::with_capacity(
-        std::mem::size_of::<IoAPIC>() + (vcpu_count as usize) * std::mem::size_of::<LocalAPIC>(),
-    );
-    interrupt_controllers.extend_from_slice(IoAPIC::new(0, layout::IOAPIC_ADDR).as_bytes());
+    let mut interrupt_controllers =
+        Vec::with_capacity((vcpu_count as usize) * std::mem::size_of::<LocalAPIC>());
     for i in 0..vcpu_count {
         interrupt_controllers.extend_from_slice(LocalAPIC::new(i).as_bytes());
     }
