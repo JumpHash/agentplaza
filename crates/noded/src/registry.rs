@@ -83,10 +83,6 @@ impl CreateRun {
             .map_err(|_| format!("vcpus must be between 1 and {MAX_VCPUS}"))?;
         let memory_mib = usize::try_from(self.memory_mib)
             .map_err(|_| "memory_mib is too large for this host".to_string())?;
-        let cmdline = match self.beats {
-            Some(beats) => format!("console=ttyS0 plaza.beats={beats}"),
-            None => "console=ttyS0".to_string(),
-        };
         let vsock_cid = match self.vsock_cid {
             Some(cid) => {
                 if cid < MIN_GUEST_CID {
@@ -103,6 +99,15 @@ impl CreateRun {
                 Some(cid)
             }
             None => None,
+        };
+        // A run with vsock devices boots the agent harness in its guests: the
+        // harness is the vsock client (handbook: every tool call goes over
+        // vsock), and it exits by rebooting the guest when its session ends.
+        let cmdline = match (self.beats, vsock_cid) {
+            (Some(beats), Some(_)) => format!("console=ttyS0 plaza.beats={beats} plaza.harness=1"),
+            (Some(beats), None) => format!("console=ttyS0 plaza.beats={beats}"),
+            (None, Some(_)) => "console=ttyS0 plaza.harness=1".to_string(),
+            (None, None) => "console=ttyS0".to_string(),
         };
         let spec = VmSpec {
             kernel: images.kernel.clone(),
