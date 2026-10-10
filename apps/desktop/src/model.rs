@@ -7,7 +7,8 @@
 //! nothing more.
 
 use crate::api::{
-    ApiError, CreateRun, Endpoint, HubAgent, HubStatus, Machine, Run, RunState, RunsPage, VmState,
+    ApiError, Column, CreateRun, CreateTask, Endpoint, FinishOutcome, HubAgent, HubStatus, Machine,
+    Run, RunState, RunsPage, Task, TaskState, TasksPage, VmState,
 };
 use crate::events::Event;
 use crate::export::{
@@ -16,6 +17,7 @@ use crate::export::{
 };
 use crate::form::{Field, Preset, SpawnForm};
 use crate::history::{self, SessionHistory};
+use crate::ledger::{TaskField, TaskForm};
 use crate::map::Activity;
 use crate::serial::{Feed, Merge};
 
@@ -58,6 +60,9 @@ pub enum Pane {
     Map,
     /// The role fleet: who is running right now, grouped by role.
     Roster,
+    /// The plaza's ledger: every task, and the moves the daemon accepts on
+    /// them — create, claim, finish, withdraw.
+    Ledger,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -92,6 +97,8 @@ pub enum KeyAction {
     Map,
     /// `w`: the roster — who is running right now.
     Roster,
+    /// `l`: the ledger — the plaza's tasks.
+    Ledger,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
@@ -163,6 +170,28 @@ pub struct ConsoleCall {
     pub vm: u32,
     /// The line to write, newline-terminated.
     pub data: String,
+}
+
+/// One claim the runtime has to make: an open task, and the live agent's guest
+/// CID it is claimed as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimCall {
+    /// The task to claim.
+    pub id: String,
+    /// The guest CID of the agent claiming it.
+    pub agent_cid: u64,
+}
+
+/// One finish the runtime has to make: a claimed task, how it ended, and what
+/// the agent said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishCall {
+    /// The task to finish.
+    pub id: String,
+    /// How it ended.
+    pub outcome: FinishOutcome,
+    /// What the agent said, when it said anything.
+    pub note: Option<String>,
 }
 
 /// What the last action did, as a line in the register.
@@ -256,6 +285,18 @@ pub struct Effect {
     pub export: Option<ExportCall>,
     /// Write this session CSV with the same one write.
     pub csv: Option<CsvCall>,
+    /// Poll `GET /api/v0/tasks`.
+    pub poll_tasks: bool,
+    /// Fetch `GET /api/v0/tasks/{id}`.
+    pub fetch_task: Option<String>,
+    /// `POST /api/v0/tasks` with this body.
+    pub create_task: Option<CreateTask>,
+    /// `POST /api/v0/tasks/{id}/claim` as this agent.
+    pub claim_task: Option<ClaimCall>,
+    /// `POST /api/v0/tasks/{id}/finish` with this outcome and note.
+    pub finish_task: Option<FinishCall>,
+    /// `DELETE /api/v0/tasks/{id}`.
+    pub withdraw_task: Option<String>,
 }
 
 impl Effect {
@@ -330,6 +371,22 @@ impl Effect {
     pub fn console(call: ConsoleCall) -> Self {
         Self {
             input: Some(call),
+            ..Self::default()
+        }
+    }
+
+    /// Read the ledger: every task, oldest first.
+    pub fn ledger() -> Self {
+        Self {
+            poll_tasks: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read one task.
+    pub fn task(id: impl Into<String>) -> Self {
+        Self {
+            fetch_task: Some(id.into()),
             ..Self::default()
         }
     }
@@ -483,6 +540,83 @@ pub enum Message {
     },
     /// Dismiss the notice line.
     DismissNotice,
+    /// `GET /api/v0/tasks` answered.
+    Tasks {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer.
+        result: Result<TasksPage, ApiError>,
+    },
+    /// `GET /api/v0/tasks/{id}` answered: one task, read again.
+    Task {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which task was asked about.
+        id: String,
+        /// The answer.
+        result: Result<Task, ApiError>,
+    },
+    /// A ledger row was pressed: open that task's detail.
+    SelectTask(String),
+    /// The detail's refresh button was pressed.
+    TaskRefresh,
+    /// A create-form field was edited.
+    TaskEdit {
+        /// Which field.
+        field: TaskField,
+        /// Its new text.
+        value: String,
+    },
+    /// The ledger's create button was pressed.
+    TaskCreate,
+    /// `POST /api/v0/tasks` answered.
+    TaskCreated {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer.
+        result: Result<Task, ApiError>,
+    },
+    /// The claim field was edited: the agent CID the task would be claimed as.
+    ClaimCidEdit(String),
+    /// The claim button was pressed.
+    TaskClaim,
+    /// `POST /api/v0/tasks/{id}/claim` answered.
+    TaskClaimed {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which task was claimed.
+        id: String,
+        /// The guest CID it was claimed as.
+        cid: u64,
+        /// The answer.
+        result: Result<Task, ApiError>,
+    },
+    /// The finish note was edited.
+    FinishNoteEdit(String),
+    /// A finish button was pressed, for one of the two outcomes.
+    TaskFinish(FinishOutcome),
+    /// `POST /api/v0/tasks/{id}/finish` answered.
+    TaskFinished {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which task was finished.
+        id: String,
+        /// How it ended.
+        outcome: FinishOutcome,
+        /// The answer.
+        result: Result<Task, ApiError>,
+    },
+    /// The withdraw button was pressed; confirming it withdraws the task.
+    TaskWithdrawClicked(String),
+    /// `DELETE /api/v0/tasks/{id}` answered.
+    TaskWithdrawn {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which task was withdrawn.
+        id: String,
+        /// The answer.
+        result: Result<Task, ApiError>,
+    },
     /// The daemon's event stream delivered an event, at `at_ms` milliseconds
     /// since the Unix epoch (when the console read it, since the frames carry
     /// no clock of their own).
@@ -517,6 +651,12 @@ impl Message {
             | Message::Spawned { at_ms, .. }
             | Message::Exported { at_ms, .. }
             | Message::CsvExported { at_ms, .. }
+            | Message::Tasks { at_ms, .. }
+            | Message::Task { at_ms, .. }
+            | Message::TaskCreated { at_ms, .. }
+            | Message::TaskClaimed { at_ms, .. }
+            | Message::TaskFinished { at_ms, .. }
+            | Message::TaskWithdrawn { at_ms, .. }
             | Message::Event { at_ms, .. } => Some(*at_ms),
             Message::Show(_)
             | Message::Key(_)
@@ -538,6 +678,15 @@ impl Message {
             | Message::TelemetryPick(_)
             | Message::CsvEdited(_)
             | Message::CsvExport
+            | Message::SelectTask(_)
+            | Message::TaskRefresh
+            | Message::TaskEdit { .. }
+            | Message::TaskCreate
+            | Message::ClaimCidEdit(_)
+            | Message::TaskClaim
+            | Message::FinishNoteEdit(_)
+            | Message::TaskFinish(_)
+            | Message::TaskWithdrawClicked(_)
             | Message::DismissNotice => None,
         }
     }
@@ -603,6 +752,29 @@ pub struct Model {
     /// answer has not landed: a burst of events naming a run the register has
     /// not seen yet is one poll, not one per event.
     pub stream_asked: bool,
+    /// The plaza's ledger: every task, oldest first, as the daemon reports it.
+    pub tasks: Vec<Task>,
+    /// Whether the ledger has ever answered. The counts the index prints are
+    /// unknown until it has, which is not the same fact as an empty ledger.
+    pub ledger_read: bool,
+    /// The task the ledger has opened: the row its detail is drawn from.
+    pub task_selected: Option<String>,
+    /// The ledger's create form.
+    pub task_form: TaskForm,
+    /// The create form's errors, from the last submission.
+    pub task_errors: Vec<(TaskField, String)>,
+    /// The agent CID typed into the claim box: the agent the open task would
+    /// be claimed as.
+    pub claim_cid: String,
+    /// The note typed into the finish box.
+    pub finish_note: String,
+    /// The task whose withdraw button was pressed once and is waiting for a
+    /// second press.
+    pub armed_task: Option<String>,
+    /// Whether a task event has already asked for the ledger and the answer
+    /// has not landed: a burst of events naming a task the ledger does not
+    /// hold is one read, not one per event.
+    pub ledger_asked: bool,
     /// How often a healthy daemon is polled, in milliseconds.
     pub refresh_ms: u64,
     /// The spawn form's raw input.
@@ -654,6 +826,15 @@ impl Default for Model {
             activity: Activity::default(),
             serial: Feed::new(),
             stream_asked: false,
+            tasks: Vec::new(),
+            ledger_read: false,
+            task_selected: None,
+            task_form: TaskForm::default(),
+            task_errors: Vec::new(),
+            claim_cid: String::new(),
+            finish_note: String::new(),
+            armed_task: None,
+            ledger_asked: false,
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
             errors: Vec::new(),
@@ -799,6 +980,30 @@ impl Model {
         self.telemetry_run
             .as_deref()
             .filter(|id| self.runs.iter().any(|run| run.id == *id))
+    }
+
+    /// The task the ledger has opened, when the ledger still holds it: the row
+    /// its detail is drawn from, and the row its actions act on.
+    pub fn selected_task(&self) -> Option<&Task> {
+        let id = self.task_selected.as_deref()?;
+        self.tasks.iter().find(|task| task.id == id)
+    }
+
+    /// The agents a claim would be accepted from right now: every VM the
+    /// register shows running that carries a role, in run-then-VM order, with
+    /// the guest CID it is reached by.
+    ///
+    /// The daemon accepts a claim only from an agent its register shows
+    /// running, so these are exactly the CIDs a claim can be made as. The
+    /// ledger offers them rather than leaving the operator to open the roster
+    /// and type a number the daemon will refuse.
+    pub fn live_agents(&self) -> Vec<(u64, &str)> {
+        self.runs
+            .iter()
+            .flat_map(|run| run.vms.iter())
+            .filter(|vm| vm.state == VmState::Running)
+            .filter_map(|vm| vm.guest_cid.zip(vm.role.as_deref()))
+            .collect()
     }
 
     /// The role fleet as the roster pane lists it: every role agent in the
@@ -1122,6 +1327,62 @@ impl Model {
                 self.notice = None;
                 Effect::none()
             }
+            Message::Tasks { at_ms, result } => self.tasks_answer(at_ms, result),
+            Message::Task { at_ms, id, result } => self.task_answer(at_ms, &id, result),
+            Message::SelectTask(id) => {
+                self.task_selected = Some(id);
+                Effect::none()
+            }
+            Message::TaskRefresh => match self.task_selected.clone() {
+                Some(id) => Effect::task(id),
+                None => self.refuse("refresh: no task is open on the ledger"),
+            },
+            Message::TaskEdit { field, value } => {
+                self.task_form.set(field, value);
+                // The field changed, so the last submission's complaint about
+                // it no longer describes what is in the box.
+                self.task_errors.retain(|(errored, _)| *errored != field);
+                Effect::none()
+            }
+            Message::TaskCreate => self.task_create(),
+            Message::TaskCreated { at_ms, result } => self.task_created(at_ms, result),
+            Message::ClaimCidEdit(cid) => {
+                self.claim_cid = cid;
+                Effect::none()
+            }
+            Message::TaskClaim => self.task_claim(),
+            Message::TaskClaimed {
+                at_ms,
+                id,
+                cid,
+                result,
+            } => self.task_claimed(at_ms, &id, cid, result),
+            Message::FinishNoteEdit(note) => {
+                self.finish_note = note;
+                Effect::none()
+            }
+            Message::TaskFinish(outcome) => self.task_finish(outcome),
+            Message::TaskFinished {
+                at_ms,
+                id,
+                outcome,
+                result,
+            } => self.task_finished(at_ms, &id, outcome, result),
+            Message::TaskWithdrawClicked(id) => {
+                if self.armed_task.as_deref() == Some(id.as_str()) {
+                    self.armed_task = None;
+                    Effect {
+                        withdraw_task: Some(id),
+                        ..Effect::none()
+                    }
+                } else {
+                    self.armed_task = Some(id);
+                    Effect::none()
+                }
+            }
+            Message::TaskWithdrawn { at_ms, id, result } => {
+                self.task_withdrawn(at_ms, &id, result)
+            }
             Message::Event { at_ms, event } => self.event(at_ms, event),
         }
     }
@@ -1151,6 +1412,10 @@ impl Model {
         match &self.pane {
             Pane::Run(id) if self.follow => effect.fetch_run = Some(id.clone()),
             Pane::Machine => effect.poll_machine = true,
+            // The ledger is one read — every task, oldest first — and the task
+            // events patch its rows in between. It draws no substrate and
+            // decomposes no serial, so nothing else is asked for.
+            Pane::Ledger => effect.poll_tasks = true,
             Pane::Map => {
                 effect.poll_machine = true;
                 effect.fetch_map = self.run_ids();
@@ -1276,7 +1541,47 @@ impl Model {
                 }
                 self.merge_serial(at_ms, &run, vm, offset, &text)
             }
+            Event::Task {
+                id,
+                state,
+                assignee,
+            } => self.task_event(&id, state, assignee),
         }
+    }
+
+    /// Applies one task event: the ledger's own deltas between its polls.
+    ///
+    /// The bus has no backlog, so an event for a task the ledger has not read
+    /// carries an id, a state and an assignee and nothing else — no goal, no
+    /// budget and no clock. The ledger does not invent a row from it: it asks
+    /// for the ledger instead, once, and the answer lands in about as long as a
+    /// poll takes.
+    ///
+    /// A settled task never moves again, so an event that would walk one back
+    /// is not applied at all: either it was written before the answer that
+    /// settled the task, or the daemon restarted and began its ids again. What
+    /// a frame does not carry — the goal, the budget, the times — is left
+    /// exactly as the poll wrote it, because a task's history is not something
+    /// a delta may invent.
+    fn task_event(&mut self, id: &str, state: TaskState, assignee: Option<String>) -> Effect {
+        let Some(held) = self.tasks.iter_mut().find(|task| task.id == id) else {
+            return self.ask_for_the_ledger();
+        };
+        if task_ended(held.state) && !task_ended(state) {
+            return Effect::none();
+        }
+        held.state = state;
+        held.assignee_id = Column::filled(assignee);
+        Effect::none()
+    }
+
+    /// Asks for the ledger, at most once per outstanding answer.
+    fn ask_for_the_ledger(&mut self) -> Effect {
+        if self.ledger_asked {
+            return Effect::none();
+        }
+        self.ledger_asked = true;
+        Effect::ledger()
     }
 
     /// Whether the register has read this run at all.
@@ -1460,17 +1765,293 @@ impl Model {
         }
     }
 
+    /// The ledger answered: every task, oldest first.
+    fn tasks_answer(&mut self, at_ms: u64, result: Result<TasksPage, ApiError>) -> Effect {
+        self.ledger_asked = false;
+        match result {
+            Ok(page) => {
+                self.ledger_read = true;
+                self.absorb_tasks(page.tasks);
+                self.succeeded(at_ms);
+            }
+            Err(error) => self.failed(at_ms, &error),
+        }
+        Effect::none()
+    }
+
+    /// Takes a ledger answer into the ledger.
+    ///
+    /// A task only ever moves forward, so a row the ledger already holds keeps
+    /// the state it settled into: an answer read before a transition the events
+    /// already delivered describes an older ledger, and one that would walk a
+    /// settled task back is not the newer word.
+    ///
+    /// A task is identified by its id *and* when it was created — a daemon that
+    /// restarts begins its task ids again — so a row wearing a reused id
+    /// inherits nothing from the task before it, and a selection that named one
+    /// of those rows is dropped rather than drawn from another daemon's life.
+    fn absorb_tasks(&mut self, mut page: Vec<Task>) {
+        for task in page.iter_mut() {
+            let Some(held) = self.tasks.iter().find(|held| held.id == task.id) else {
+                continue;
+            };
+            if held.created_at != task.created_at {
+                continue;
+            }
+            let settled = moved_task_state(held.state, task.state);
+            if settled != task.state {
+                task.state = settled;
+                task.assignee_id = held.assignee_id.clone();
+            }
+        }
+        let dropped = match self.task_selected.as_deref() {
+            None => false,
+            Some(id) => match self.tasks.iter().find(|task| task.id == id) {
+                Some(held) => !page
+                    .iter()
+                    .any(|task| task.id == id && task.created_at == held.created_at),
+                None => true,
+            },
+        };
+        if dropped {
+            self.task_selected = None;
+            self.armed_task = None;
+        }
+        self.tasks = page;
+    }
+
+    /// One task's own answer: the ledger's refresh reads a row again.
+    fn task_answer(&mut self, at_ms: u64, id: &str, result: Result<Task, ApiError>) -> Effect {
+        match result {
+            Ok(task) => {
+                self.succeeded(at_ms);
+                self.file_task(task);
+                Effect::none()
+            }
+            // A 404 is an answer: the daemon is alive, the task is gone.
+            Err(error) if error.is_not_found() => {
+                self.succeeded(at_ms);
+                if self.task_selected.as_deref() == Some(id) {
+                    self.task_selected = None;
+                    self.armed_task = None;
+                }
+                self.refuse(format!("task {id} is gone"))
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.refuse(format!("task {id}: {error}"))
+            }
+        }
+    }
+
+    /// Files one task the daemon itself reported — a create's answer, a
+    /// single-task read, a claim's, a finish's or a withdraw's: in place when
+    /// the ledger holds its id, at the end when it does not.
+    ///
+    /// Only the daemon's own rows are filed here. A *task event* never reaches
+    /// this: a frame carries an id and a state and nothing else, so it moves a
+    /// row the ledger already holds rather than standing in for one.
+    fn file_task(&mut self, task: Task) {
+        match self.tasks.iter_mut().find(|held| held.id == task.id) {
+            Some(held) => *held = task,
+            None => self.tasks.push(task),
+        }
+    }
+
+    /// Submits the ledger's create form: valid means send, invalid means say
+    /// what is wrong and send nothing.
+    fn task_create(&mut self) -> Effect {
+        match self.task_form.validate() {
+            Ok(create) => {
+                self.task_errors.clear();
+                Effect {
+                    create_task: Some(create),
+                    ..Effect::none()
+                }
+            }
+            Err(errors) => {
+                let why = format!("the form has {} problem(s)", errors.len());
+                self.task_errors = errors;
+                self.refuse(why)
+            }
+        }
+    }
+
+    /// A create's answer: the task the daemon filed, in its first state.
+    fn task_created(&mut self, at_ms: u64, result: Result<Task, ApiError>) -> Effect {
+        match result {
+            Ok(task) => {
+                self.succeeded(at_ms);
+                let id = task.id.clone();
+                self.task_errors.clear();
+                self.file_task(task);
+                self.task_selected = Some(id.clone());
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Done,
+                    text: format!("task {id} created"),
+                });
+                // The ledger's own answer carries the new task in the order
+                // the daemon keeps it, alongside every task the console has
+                // not read yet.
+                Effect::ledger()
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.refuse(format!("task refused: {error}"))
+            }
+        }
+    }
+
+    /// Claims the open task as the agent whose guest CID is in the claim box.
+    ///
+    /// The two guards are the daemon's own: only an open task can be claimed,
+    /// and only a whole number names an agent. A refusal here is the ledger
+    /// saying so in the notice line — and a refused claim is still the
+    /// daemon's refusal to make: the 409 it answers with names the CID no live
+    /// agent holds, in its own words.
+    fn task_claim(&mut self) -> Effect {
+        let Some((id, state)) = self
+            .selected_task()
+            .map(|task| (task.id.clone(), task.state))
+        else {
+            return self.refuse("claim: no task is open on the ledger");
+        };
+        if !state.is_claimable() {
+            return self.refuse(format!(
+                "task {id} is {}: only an open task can be claimed",
+                state.label()
+            ));
+        }
+        match crate::ledger::agent_cid(&self.claim_cid) {
+            Ok(agent_cid) => Effect {
+                claim_task: Some(ClaimCall { id, agent_cid }),
+                ..Effect::none()
+            },
+            Err(why) => self.refuse(why),
+        }
+    }
+
+    /// A claim's answer: the task, bound to the agent that claimed it.
+    fn task_claimed(
+        &mut self,
+        at_ms: u64,
+        id: &str,
+        cid: u64,
+        result: Result<Task, ApiError>,
+    ) -> Effect {
+        match result {
+            Ok(task) => {
+                self.succeeded(at_ms);
+                self.file_task(task);
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Done,
+                    text: format!("task {id} claimed by cid {cid}"),
+                });
+                Effect::none()
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.refuse(format!("task {id} claim: {error}"))
+            }
+        }
+    }
+
+    /// Finishes the claimed task the ledger has open, as `done` or `failed`.
+    fn task_finish(&mut self, outcome: FinishOutcome) -> Effect {
+        let Some((id, state)) = self
+            .selected_task()
+            .map(|task| (task.id.clone(), task.state))
+        else {
+            return self.refuse("finish: no task is open on the ledger");
+        };
+        if !state.is_finishable() {
+            return self.refuse(format!(
+                "task {id} is {}: only a claimed task can be finished",
+                state.label()
+            ));
+        }
+        match crate::ledger::finish_note(&self.finish_note) {
+            Ok(note) => Effect {
+                finish_task: Some(FinishCall { id, outcome, note }),
+                ..Effect::none()
+            },
+            Err(why) => self.refuse(why),
+        }
+    }
+
+    /// A finish's answer: the task in the state the agent reported.
+    fn task_finished(
+        &mut self,
+        at_ms: u64,
+        id: &str,
+        outcome: FinishOutcome,
+        result: Result<Task, ApiError>,
+    ) -> Effect {
+        match result {
+            Ok(task) => {
+                self.succeeded(at_ms);
+                self.file_task(task);
+                // The note described this finish, and it is on the task now.
+                self.finish_note.clear();
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Done,
+                    text: format!("task {id} finished {}", outcome.label()),
+                });
+                Effect::none()
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.refuse(format!("task {id} finish: {error}"))
+            }
+        }
+    }
+
+    /// A withdraw's answer: the task, given up before it finished.
+    fn task_withdrawn(&mut self, at_ms: u64, id: &str, result: Result<Task, ApiError>) -> Effect {
+        self.armed_task = None;
+        match result {
+            Ok(task) => {
+                self.succeeded(at_ms);
+                self.file_task(task);
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Done,
+                    text: format!("task {id} withdrawn"),
+                });
+                Effect::none()
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.refuse(format!("task {id} withdraw: {error}"))
+            }
+        }
+    }
+
+    /// Refuses locally: a complaint in the notice line, and nothing sent.
+    ///
+    /// The notice line is where every refusal already lands — the daemon's own
+    /// words included — so a guard that never reached the daemon reads exactly
+    /// as one that did.
+    fn refuse(&mut self, why: impl Into<String>) -> Effect {
+        self.notice = Some(Notice {
+            kind: NoticeKind::Failed,
+            text: why.into(),
+        });
+        Effect::none()
+    }
+
     /// Shows `pane`, fetching what it needs.
     fn show(&mut self, pane: Pane) -> Effect {
+        // Arming is per sheet: a kill or a withdraw that was armed on the
+        // sheet the operator just left is not armed on the one arriving.
+        self.armed = None;
+        self.armed_task = None;
         match pane {
             Pane::Fleet => {
                 self.pane = Pane::Fleet;
                 self.detail = None;
-                self.armed = None;
                 Effect::poll()
             }
             Pane::Run(id) => {
-                self.armed = None;
                 if self.detail.as_ref().map(|run| run.id.as_str()) != Some(id.as_str()) {
                     self.detail = None;
                 }
@@ -1489,20 +2070,17 @@ impl Model {
             Pane::Spawn => {
                 self.pane = Pane::Spawn;
                 self.detail = None;
-                self.armed = None;
                 self.errors.clear();
                 Effect::none()
             }
             Pane::Machine => {
                 self.pane = Pane::Machine;
                 self.detail = None;
-                self.armed = None;
                 Effect::machine()
             }
             Pane::Map => {
                 self.pane = Pane::Map;
                 self.detail = None;
-                self.armed = None;
                 // The plate is labelled with the machine's model and its pulse
                 // is measured from every run's serial, so opening it asks for
                 // both at once.
@@ -1511,7 +2089,6 @@ impl Model {
             Pane::Roster => {
                 self.pane = Pane::Roster;
                 self.detail = None;
-                self.armed = None;
                 // One row per role agent, each with its own rate: the register
                 // and every run's serial, the same read the map's pulse is
                 // measured from. The roster draws no substrate, so the machine
@@ -1523,10 +2100,18 @@ impl Model {
                 effect.poll_hub = self.has_hub();
                 effect
             }
+            Pane::Ledger => {
+                self.pane = Pane::Ledger;
+                self.detail = None;
+                // The ledger is one read: every task, oldest first, each with
+                // its own facts. Opening the sheet is a reason to want them now
+                // rather than at the next tick, and the task events patch rows
+                // in between.
+                Effect::ledger()
+            }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
                 self.detail = None;
-                self.armed = None;
                 // The session's figures come from the register's own answers:
                 // the list poll, every run's serial for the decomposition, and
                 // the machine's total for the RAM chart's ceiling.
@@ -1673,6 +2258,7 @@ impl Model {
             KeyAction::Machine => self.show(Pane::Machine),
             KeyAction::Map => self.show(Pane::Map),
             KeyAction::Roster => self.show(Pane::Roster),
+            KeyAction::Ledger => self.show(Pane::Ledger),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
@@ -1886,6 +2472,25 @@ pub fn moved_run_state(known: RunState, next: RunState) -> RunState {
 /// The same rule for a VM.
 pub fn moved_vm_state(known: VmState, next: VmState) -> VmState {
     if vm_stopped(known) && !vm_stopped(next) {
+        known
+    } else {
+        next
+    }
+}
+
+/// Whether a task has ended, and so will never move again.
+pub fn task_ended(state: TaskState) -> bool {
+    state.is_finished()
+}
+
+/// The state a task moves to, refusing to walk a settled one back.
+///
+/// The v0 ledger only ever moves a task forward — `open` → `claimed`, then
+/// `done`, `failed` or `withdrawn` — so a view that says otherwise describes an
+/// older ledger and the console keeps what it saw. A state this console does
+/// not know is a newer daemon's word rather than a settled one.
+pub fn moved_task_state(known: TaskState, next: TaskState) -> TaskState {
+    if task_ended(known) && !task_ended(next) {
         known
     } else {
         next
@@ -2157,6 +2762,7 @@ pub fn title(model: &Model) -> String {
         Pane::Machine => "AgentPlaza register — machine".to_string(),
         Pane::Map => "AgentPlaza register — fleet map".to_string(),
         Pane::Roster => "AgentPlaza register — roster".to_string(),
+        Pane::Ledger => "AgentPlaza register — ledger".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -2206,6 +2812,44 @@ pub fn roster_line(model: &Model) -> String {
         line.push_str(&format!(" · {connected} connected"));
     }
     line
+}
+
+/// The ledger as the index column writes it: the counts once the ledger has
+/// answered, and the honest nothing before that.
+///
+/// A ledger nobody has read is not an empty ledger: the entry the operator
+/// reads first says which of the two it is rather than claiming a count nobody
+/// took.
+pub fn task_line(model: &Model) -> String {
+    if model.ledger_read {
+        task_tally(&model.tasks)
+    } else {
+        "not read yet".to_string()
+    }
+}
+
+/// How the ledger stands, as the sheet's tally and the index entry write it:
+/// the tasks the daemon holds, how many wait for an agent, how many are in an
+/// agent's hands, and how many have ended.
+pub fn task_tally(tasks: &[Task]) -> String {
+    let count = |state: TaskState| tasks.iter().filter(|task| task.state == state).count();
+    format!(
+        "{} task(s) · {} open · {} claimed · {} ended",
+        tasks.len(),
+        count(TaskState::Open),
+        count(TaskState::Claimed),
+        tasks.iter().filter(|task| task.state.is_finished()).count()
+    )
+}
+
+/// A task's state, and — once it has ended — the schema's outcome beside it,
+/// as the ledger's detail writes the pair. The two are not the same word: a
+/// task ends `done` holding the outcome `accepted`.
+pub fn task_state_line(task: &Task) -> String {
+    match task.outcome.get() {
+        Some(outcome) => format!("{} · {}", task.state.label(), outcome.label()),
+        None => task.state.label().to_string(),
+    }
 }
 
 /// Guest memory as the register writes it: MiB below a gibibyte (where a
@@ -3317,6 +3961,12 @@ mod tests {
         model.apply(Message::Show(Pane::Machine));
         assert_eq!(model.apply(Message::Key(KeyAction::Back)), Effect::poll());
         assert_eq!(model.pane, Pane::Fleet);
+
+        // The ledger's own key, which is the one read the sheet needs.
+        assert_eq!(model.apply(Message::Key(KeyAction::Ledger)), Effect::ledger());
+        assert_eq!(model.pane, Pane::Ledger);
+        assert_eq!(model.apply(Message::Key(KeyAction::Roster)).poll_list, true);
+        assert_eq!(model.pane, Pane::Roster);
     }
 
     #[test]
@@ -3346,6 +3996,8 @@ mod tests {
         assert_eq!(title(&model), "AgentPlaza register — fleet map");
         model.apply(Message::Show(Pane::Telemetry));
         assert_eq!(title(&model), "AgentPlaza register — telemetry");
+        model.apply(Message::Show(Pane::Ledger));
+        assert_eq!(title(&model), "AgentPlaza register — ledger");
         model.apply(Message::Show(Pane::Spawn));
         assert_eq!(title(&model), "AgentPlaza register — new run");
         model.apply(Message::Show(Pane::Run("r7".to_string())));
@@ -5033,5 +5685,718 @@ mod tests {
             },
         });
         assert_eq!(model.runs[0].state, RunState::Running);
+    }
+
+    // ---- the ledger: the plaza's tasks ----
+
+    /// One task as the daemon writes it: every column present, and the ones a
+    /// test cares about spelled out.
+    fn task(id: &str, state: &str, assignee: Option<&str>, cid: Option<u64>) -> Task {
+        let outcome = match state {
+            "done" => Some("accepted"),
+            "failed" => Some("failed"),
+            "withdrawn" => Some("cancelled"),
+            _ => None,
+        };
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "goal": format!("the goal of {id}"),
+            "acceptance": null,
+            "budget": 0,
+            "role": null,
+            "state": state,
+            "outcome": outcome,
+            "assignee_id": assignee,
+            "verifier_id": null,
+            "agent_cid": cid,
+            "note": null,
+            "created_at": 1_000_000,
+            "updated_at": 1_000_000,
+        }))
+        .expect("the fixture is the shape the daemon writes")
+    }
+
+    /// A ledger as the daemon lists it, fed to the model the way an answer is.
+    fn ledger(tasks: Vec<Task>) -> Result<TasksPage, ApiError> {
+        Ok(TasksPage { tasks })
+    }
+
+    /// A model whose ledger holds `tasks`, as of `at_ms`.
+    fn with_ledger(tasks: Vec<Task>) -> Model {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Ledger));
+        model.apply(Message::Tasks {
+            at_ms: 10_000,
+            result: ledger(tasks),
+        });
+        model
+    }
+
+    #[test]
+    fn showing_the_ledger_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::Key(KeyAction::Ledger));
+        assert_eq!(model.pane, Pane::Ledger);
+        assert_eq!(effect, Effect::ledger(), "the sheet asks for the tasks");
+
+        // While the sheet is up, the tick reads the ledger; the register is
+        // still polled, and nothing else is asked for.
+        model.apply(Message::Tasks {
+            at_ms: 10_000,
+            result: ledger(vec![task("t1", "open", None, None)]),
+        });
+        let effect = model.apply(Message::Tick { at_ms: 12_000 });
+        assert!(effect.poll_tasks, "the ledger is read on the tick");
+        assert!(effect.poll_list, "and so is the register");
+        assert!(!effect.poll_machine && effect.fetch_map.is_empty());
+
+        // Off the sheet, the ledger is not read at all.
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 14_000 }).poll_tasks);
+    }
+
+    #[test]
+    fn the_ledger_fills_from_the_daemons_answer_and_counts_what_it_holds() {
+        let mut model = Model::new();
+        assert_eq!(
+            task_line(&model),
+            "not read yet",
+            "a ledger nobody read is not an empty ledger"
+        );
+        model.apply(Message::Tasks {
+            at_ms: 10_000,
+            result: ledger(vec![
+                task("t1", "open", None, None),
+                task("t2", "claimed", Some("librarian"), Some(112)),
+                task("t3", "done", Some("builder"), Some(100)),
+            ]),
+        });
+        assert!(model.ledger_read);
+        assert_eq!(model.tasks.len(), 3, "oldest first, as the daemon lists them");
+        assert_eq!(
+            task_line(&model),
+            "3 task(s) · 1 open · 1 claimed · 1 ended"
+        );
+        assert_eq!(task_tally(&model.tasks), task_line(&model));
+        assert_eq!(model.health(), Health::Live);
+
+        // A failed read leaves the rows it already holds alone.
+        model.apply(Message::Tasks {
+            at_ms: 11_000,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        assert_eq!(model.tasks.len(), 3);
+        assert_eq!(model.health(), Health::Down);
+    }
+
+    #[test]
+    fn a_task_event_patches_a_row_the_ledger_holds_and_invents_nothing() {
+        let mut model = with_ledger(vec![task("t1", "open", None, None)]);
+        let before = model.tasks[0].clone();
+
+        assert!(model
+            .apply(Message::Event {
+                at_ms: 10_100,
+                event: Event::Task {
+                    id: "t1".to_string(),
+                    state: TaskState::Claimed,
+                    assignee: Some("librarian".to_string()),
+                },
+            })
+            .is_idle());
+
+        let held = &model.tasks[0];
+        assert_eq!(held.state, TaskState::Claimed);
+        assert_eq!(held.assignee_id.as_deref(), Some("librarian"));
+        // What the frame does not carry is exactly what the poll wrote: a
+        // delta may not invent a budget, a goal or a clock.
+        assert_eq!(held.goal, before.goal);
+        assert_eq!(held.budget, before.budget);
+        assert_eq!(held.created_at, before.created_at);
+        assert_eq!(held.updated_at, before.updated_at);
+        assert_eq!(held.outcome.get(), None);
+    }
+
+    #[test]
+    fn a_task_event_for_a_task_the_ledger_does_not_hold_asks_for_the_ledger_once() {
+        let mut model = Model::new();
+        let event = |at_ms: u64| Message::Event {
+            at_ms,
+            event: Event::Task {
+                id: "t9".to_string(),
+                state: TaskState::Open,
+                assignee: None,
+            },
+        };
+        assert_eq!(model.apply(event(10_000)), Effect::ledger());
+        assert!(
+            model.tasks.is_empty(),
+            "a frame carries an id, a state and an assignee: it is not a row"
+        );
+        // The answer has not landed: a burst of events is still one read.
+        assert!(model.apply(event(10_050)).is_idle());
+        assert_eq!(model.ledger_asked, true);
+
+        // The answer lands and holds t9: the next event is a patch, not a read,
+        // and it never grows the ledger into a row nobody listed.
+        model.apply(Message::Tasks {
+            at_ms: 10_100,
+            result: ledger(vec![task("t9", "open", None, None)]),
+        });
+        assert!(!model.ledger_asked);
+        assert!(model.apply(event(10_200)).is_idle());
+        assert_eq!(model.tasks[0].state, TaskState::Open);
+        assert_eq!(model.tasks.len(), 1);
+
+        // A task the answer did not carry asks again, and still invents nothing.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 10_300,
+                event: Event::Task {
+                    id: "t8".to_string(),
+                    state: TaskState::Claimed,
+                    assignee: Some("builder".to_string()),
+                },
+            }),
+            Effect::ledger()
+        );
+        assert_eq!(model.tasks.len(), 1, "a frame is never a row");
+
+        // And an event for a task it does hold, after the answer, is a patch.
+        model.apply(Message::Tasks {
+            at_ms: 10_400,
+            result: ledger(vec![task("t9", "open", None, None)]),
+        });
+        assert!(model
+            .apply(Message::Event {
+                at_ms: 10_400,
+                event: Event::Task {
+                    id: "t9".to_string(),
+                    state: TaskState::Withdrawn,
+                    assignee: None,
+                },
+            })
+            .is_idle());
+        assert_eq!(model.tasks[0].state, TaskState::Withdrawn);
+    }
+
+    #[test]
+    fn a_task_that_has_ended_is_never_walked_back_by_an_event() {
+        let mut model = with_ledger(vec![task("t1", "claimed", Some("librarian"), Some(112))]);
+        let done = |at_ms| Message::Event {
+            at_ms,
+            event: Event::Task {
+                id: "t1".to_string(),
+                state: TaskState::Done,
+                assignee: Some("librarian".to_string()),
+            },
+        };
+        model.apply(done(10_100));
+        assert_eq!(model.tasks[0].state, TaskState::Done);
+
+        // The same event again changes nothing at all.
+        let settled = model.tasks[0].clone();
+        model.apply(done(10_200));
+        assert_eq!(model.tasks[0], settled, "a duplicate is a no-op");
+
+        // And an event that would walk it back is not applied — the whole
+        // frame, the assignee it carries included, is an older word.
+        model.apply(Message::Event {
+            at_ms: 10_300,
+            event: Event::Task {
+                id: "t1".to_string(),
+                state: TaskState::Open,
+                assignee: None,
+            },
+        });
+        assert_eq!(model.tasks[0], settled);
+        assert_eq!(model.tasks[0].assignee_id.as_deref(), Some("librarian"));
+        // A state this console does not know is not a settled one for a task
+        // that is still live — the runs' own rule — and it is not a way back
+        // for one that has ended either: a settled task stays settled.
+        let mut open = with_ledger(vec![task("t2", "claimed", Some("builder"), Some(100))]);
+        open.apply(Message::Event {
+            at_ms: 10_100,
+            event: Event::Task {
+                id: "t2".to_string(),
+                state: TaskState::Unknown,
+                assignee: Some("builder".to_string()),
+            },
+        });
+        assert_eq!(open.tasks[0].state, TaskState::Unknown);
+        open.apply(Message::Event {
+            at_ms: 10_200,
+            event: Event::Task {
+                id: "t2".to_string(),
+                state: TaskState::Done,
+                assignee: Some("builder".to_string()),
+            },
+        });
+        assert_eq!(open.tasks[0].state, TaskState::Done);
+    }
+
+    #[test]
+    fn a_tasks_state_and_its_outcome_are_the_tasks_own_two_words() {
+        // `done · accepted`, `failed · failed`, `withdrawn · cancelled`: the
+        // state the daemon's ledger ends in, and the schema's `outcome` the
+        // daemon recorded with it. The pair is read from the row, never
+        // assumed: the three outcomes are three different words.
+        for (state, outcome, line) in [
+            ("done", Some("accepted"), "done · accepted"),
+            ("failed", Some("failed"), "failed · failed"),
+            ("withdrawn", Some("cancelled"), "withdrawn · cancelled"),
+        ] {
+            let mut task = task("t1", state, Some("builder"), Some(100));
+            task.outcome = Column::filled(outcome.map(|outcome| {
+                serde_json::from_value::<crate::api::TaskOutcome>(serde_json::json!(outcome))
+                    .expect("the schema's own outcome")
+            }));
+            assert_eq!(task_state_line(&task), line, "the row's own pair");
+        }
+        // A task that is still live has no outcome to pair with.
+        assert_eq!(task_state_line(&task("t2", "claimed", None, None)), "claimed");
+        assert_eq!(task_state_line(&task("t3", "open", None, None)), "open");
+    }
+
+    #[test]
+    fn a_ledger_answer_does_not_walk_a_settled_row_back() {
+        // The events settled t1 as done; the list answer was read before that.
+        let mut model = with_ledger(vec![task("t1", "claimed", Some("librarian"), Some(112))]);
+        model.apply(Message::Event {
+            at_ms: 10_100,
+            event: Event::Task {
+                id: "t1".to_string(),
+                state: TaskState::Done,
+                assignee: Some("librarian".to_string()),
+            },
+        });
+        model.apply(Message::Tasks {
+            at_ms: 10_200,
+            result: ledger(vec![task("t1", "claimed", Some("librarian"), Some(112))]),
+        });
+        assert_eq!(
+            model.tasks[0].state,
+            TaskState::Done,
+            "an older list keeps a settled task settled"
+        );
+        assert_eq!(model.tasks[0].assignee_id.as_deref(), Some("librarian"));
+
+        // A task the daemon has begun again under a reused id inherits nothing.
+        let mut page = task("t1", "open", None, None);
+        page.created_at = 9_000_000;
+        model.apply(Message::Tasks {
+            at_ms: 10_300,
+            result: ledger(vec![page]),
+        });
+        assert_eq!(model.tasks[0].state, TaskState::Open);
+    }
+
+    #[test]
+    fn selecting_a_task_opens_its_detail_and_a_row_that_leaves_closes_it() {
+        let mut model = with_ledger(vec![
+            task("t1", "open", None, None),
+            task("t2", "claimed", Some("builder"), Some(100)),
+        ]);
+        assert!(model.selected_task().is_none());
+        assert!(model
+            .apply(Message::SelectTask("t2".to_string()))
+            .is_idle());
+        assert_eq!(
+            model.selected_task().map(|task| task.id.as_str()),
+            Some("t2")
+        );
+        // The detail is the ledger's own row: a poll keeps it fresh.
+        model.apply(Message::Tasks {
+            at_ms: 10_100,
+            result: ledger(vec![
+                task("t1", "open", None, None),
+                task("t2", "done", Some("builder"), Some(100)),
+            ]),
+        });
+        assert_eq!(model.selected_task().expect("still held").state, TaskState::Done);
+
+        // A selection the ledger no longer holds is dropped rather than drawn
+        // from a task the daemon has forgotten.
+        model.apply(Message::Tasks {
+            at_ms: 10_200,
+            result: ledger(vec![task("t1", "open", None, None)]),
+        });
+        assert!(model.task_selected.is_none());
+        assert!(model.selected_task().is_none());
+    }
+
+    #[test]
+    fn pressing_a_tasks_row_goes_through_the_ledger_sheet_and_opens_the_task() {
+        // The same route a click takes: the pane's own key, then the row.
+        let mut model = Model::new();
+        model.apply(Message::Key(KeyAction::Ledger));
+        model.apply(Message::Tasks {
+            at_ms: 10_000,
+            result: ledger(vec![
+                task("t1", "open", None, None),
+                task("t2", "claimed", Some("librarian"), Some(112)),
+            ]),
+        });
+        model.apply(Message::SelectTask("t1".to_string()));
+        assert_eq!(model.pane, Pane::Ledger);
+        assert_eq!(model.selected_task().expect("the row").goal, "the goal of t1");
+    }
+
+    #[test]
+    fn the_details_refresh_reads_the_one_task_the_ledger_has_open() {
+        let mut model = with_ledger(vec![task("t1", "open", None, None)]);
+        assert_eq!(
+            model.apply(Message::TaskRefresh),
+            Effect::none(),
+            "nothing is open, so there is nothing to read"
+        );
+        let notice = model.notice.as_ref().expect("a refusal");
+        assert_eq!(notice.kind, NoticeKind::Failed);
+        assert_eq!(notice.text, "refresh: no task is open on the ledger");
+
+        model.apply(Message::SelectTask("t1".to_string()));
+        assert_eq!(
+            model.apply(Message::TaskRefresh),
+            Effect::task("t1"),
+            "the open task is read again"
+        );
+
+        // The answer files what the daemon says, in place.
+        let mut read = task("t1", "claimed", Some("librarian"), Some(112));
+        read.note = crate::api::Column::filled(Some("taken".to_string()));
+        model.apply(Message::Task {
+            at_ms: 10_100,
+            id: "t1".to_string(),
+            result: Ok(read),
+        });
+        let held = &model.tasks[0];
+        assert_eq!(held.state, TaskState::Claimed);
+        assert_eq!(held.note.as_deref(), Some("taken"));
+        assert_eq!(model.health(), Health::Live);
+
+        // A 404 is an answer: the task is gone, and its detail closes.
+        model.apply(Message::Task {
+            at_ms: 10_200,
+            id: "t1".to_string(),
+            result: Err(ApiError::Status {
+                status: 404,
+                message: "no task with id t1".to_string(),
+            }),
+        });
+        assert!(model.task_selected.is_none());
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.text, "task t1 is gone");
+        assert_eq!(model.health(), Health::Live, "a 404 is not a dead daemon");
+    }
+
+    #[test]
+    fn filing_a_task_validates_the_form_like_the_daemon() {
+        let mut model = with_ledger(vec![]);
+        // An empty goal is refused before anything is sent.
+        assert!(model.apply(Message::TaskCreate).is_idle());
+        assert_eq!(model.task_errors.len(), 1);
+        let notice = model.notice.as_ref().expect("a refusal");
+        assert_eq!(notice.kind, NoticeKind::Failed);
+        assert_eq!(notice.text, "the form has 1 problem(s)");
+        assert_eq!(
+            TaskField::Goal.error(&model.task_errors),
+            Some("goal must not be empty")
+        );
+
+        // Editing the field drops its complaint; a whole form is sent.
+        model.apply(Message::TaskEdit {
+            field: TaskField::Goal,
+            value: "port the ledger".to_string(),
+        });
+        assert!(model.task_errors.is_empty());
+        model.apply(Message::TaskEdit {
+            field: TaskField::Budget,
+            value: "500".to_string(),
+        });
+        let effect = model.apply(Message::TaskCreate);
+        assert_eq!(
+            effect.create_task,
+            Some(CreateTask {
+                goal: "port the ledger".to_string(),
+                acceptance: None,
+                budget: Some(500),
+                role: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_created_task_is_filed_selected_and_the_ledger_is_read_again() {
+        let mut model = with_ledger(vec![task("t1", "open", None, None)]);
+        let effect = model.apply(Message::TaskCreated {
+            at_ms: 10_100,
+            result: Ok(task("t2", "open", None, None)),
+        });
+        assert_eq!(model.tasks.len(), 2, "the ledger is oldest first");
+        assert_eq!(model.tasks[1].id, "t2");
+        assert_eq!(model.task_selected.as_deref(), Some("t2"));
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Done);
+        assert_eq!(notice.text, "task t2 created");
+        assert!(
+            effect.poll_tasks,
+            "the ledger's own answer carries it in the daemon's order"
+        );
+
+        // A create the daemon refuses is its own words in the notice line.
+        model.apply(Message::TaskCreated {
+            at_ms: 10_200,
+            result: Err(ApiError::Status {
+                status: 400,
+                message: "goal must be at most 4096 bytes".to_string(),
+            }),
+        });
+        let notice = model.notice.as_ref().expect("a refusal");
+        assert_eq!(notice.text, "task refused: 400: goal must be at most 4096 bytes");
+    }
+
+    #[test]
+    fn claiming_takes_the_cid_in_the_box_and_only_from_an_open_task() {
+        let mut model = with_ledger(vec![
+            task("t1", "open", None, None),
+            task("t2", "claimed", Some("builder"), Some(100)),
+            task("t3", "done", Some("builder"), Some(100)),
+        ]);
+
+        // Nothing is open: the ledger refuses here rather than sending.
+        assert!(model.apply(Message::TaskClaim).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "claim: no task is open on the ledger"
+        );
+
+        // An open task and an empty CID box.
+        model.apply(Message::SelectTask("t1".to_string()));
+        model.apply(Message::ClaimCidEdit("  ".to_string()));
+        assert!(model.apply(Message::TaskClaim).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "claim: the agent CID box is empty"
+        );
+
+        // A CID that is not a number is refused the same way.
+        model.apply(Message::ClaimCidEdit("cid 112".to_string()));
+        assert!(model.apply(Message::TaskClaim).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "claim: the agent CID must be a whole number"
+        );
+
+        // A whole number is the claim the daemon is asked for.
+        model.apply(Message::ClaimCidEdit("112".to_string()));
+        let effect = model.apply(Message::TaskClaim);
+        assert_eq!(
+            effect.claim_task,
+            Some(ClaimCall {
+                id: "t1".to_string(),
+                agent_cid: 112,
+            })
+        );
+
+        // A task already in hand cannot be claimed again: the daemon's own
+        // state machine, said here without a round trip.
+        model.apply(Message::SelectTask("t2".to_string()));
+        assert!(model.apply(Message::TaskClaim).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "task t2 is claimed: only an open task can be claimed"
+        );
+        model.apply(Message::SelectTask("t3".to_string()));
+        assert!(model.apply(Message::TaskClaim).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "task t3 is done: only an open task can be claimed"
+        );
+    }
+
+    #[test]
+    fn a_refused_claim_keeps_the_daemons_own_409_words() {
+        let mut model = with_ledger(vec![task("t1", "open", None, None)]);
+        model.apply(Message::SelectTask("t1".to_string()));
+        model.apply(Message::ClaimCidEdit("4".to_string()));
+        model.apply(Message::TaskClaim);
+
+        // The daemon's answer, as it writes it: the message names the problem.
+        model.apply(Message::TaskClaimed {
+            at_ms: 10_100,
+            id: "t1".to_string(),
+            cid: 4,
+            result: Err(ApiError::Status {
+                status: 409,
+                message: "no live agent has guest CID 4".to_string(),
+            }),
+        });
+        let notice = model.notice.as_ref().expect("a refusal");
+        assert_eq!(notice.kind, NoticeKind::Failed);
+        assert_eq!(
+            notice.text,
+            "task t1 claim: 409: no live agent has guest CID 4",
+            "the daemon's own words, verbatim"
+        );
+        assert_eq!(
+            model.tasks[0].state,
+            TaskState::Open,
+            "a refused claim changed nothing"
+        );
+        assert_eq!(model.health(), Health::Down);
+
+        // And an accepted one is the task the daemon answered with.
+        model.apply(Message::TaskClaimed {
+            at_ms: 10_200,
+            id: "t1".to_string(),
+            cid: 112,
+            result: Ok(task("t1", "claimed", Some("librarian"), Some(112))),
+        });
+        assert_eq!(model.tasks[0].state, TaskState::Claimed);
+        assert_eq!(model.tasks[0].agent_cid.copied(), Some(112));
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Done);
+        assert_eq!(notice.text, "task t1 claimed by cid 112");
+    }
+
+    #[test]
+    fn finishing_carries_the_note_and_needs_a_claimed_task() {
+        let mut model = with_ledger(vec![
+            task("t1", "open", None, None),
+            task("t2", "claimed", Some("librarian"), Some(112)),
+        ]);
+        // An open task cannot be finished, and nothing open is refused by name.
+        assert!(model.apply(Message::TaskFinish(FinishOutcome::Done)).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "finish: no task is open on the ledger"
+        );
+        model.apply(Message::SelectTask("t1".to_string()));
+        assert!(model.apply(Message::TaskFinish(FinishOutcome::Done)).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "task t1 is open: only a claimed task can be finished"
+        );
+
+        // A note the daemon would refuse is refused here, in its words.
+        model.apply(Message::SelectTask("t2".to_string()));
+        model.apply(Message::FinishNoteEdit("x".repeat(4_097)));
+        assert!(model.apply(Message::TaskFinish(FinishOutcome::Done)).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "note must be at most 4096 bytes"
+        );
+
+        // A claimed task, a note, and the outcome the operator pressed.
+        model.apply(Message::FinishNoteEdit("21 handbooks committed".to_string()));
+        let effect = model.apply(Message::TaskFinish(FinishOutcome::Done));
+        assert_eq!(
+            effect.finish_task,
+            Some(FinishCall {
+                id: "t2".to_string(),
+                outcome: FinishOutcome::Done,
+                note: Some("21 handbooks committed".to_string()),
+            })
+        );
+
+        model.apply(Message::TaskFinished {
+            at_ms: 10_100,
+            id: "t2".to_string(),
+            outcome: FinishOutcome::Done,
+            result: Ok(task("t2", "done", Some("librarian"), Some(112))),
+        });
+        let held = &model.tasks[1];
+        assert_eq!(held.state, TaskState::Done);
+        assert_eq!(held.outcome.get(), Some(&crate::api::TaskOutcome::Accepted));
+        assert_eq!(
+            task_state_line(held),
+            "done · accepted",
+            "the daemon's state word and the schema's outcome are not the same word"
+        );
+        assert!(model.finish_note.is_empty(), "the note is on the task now");
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "task t2 finished done"
+        );
+        // A refused finish is the daemon's own words.
+        model.apply(Message::TaskFinished {
+            at_ms: 10_200,
+            id: "t2".to_string(),
+            outcome: FinishOutcome::Failed,
+            result: Err(ApiError::Status {
+                status: 409,
+                message: "a task may not go from done to failed".to_string(),
+            }),
+        });
+        assert_eq!(
+            model.notice.as_ref().expect("a refusal").text,
+            "task t2 finish: 409: a task may not go from done to failed"
+        );
+    }
+
+    #[test]
+    fn withdrawing_takes_two_presses_and_re_arms_on_another_task() {
+        let mut model = with_ledger(vec![
+            task("t1", "open", None, None),
+            task("t2", "claimed", Some("builder"), Some(100)),
+            task("t3", "done", Some("builder"), Some(100)),
+        ]);
+        assert!(model
+            .apply(Message::TaskWithdrawClicked("t1".to_string()))
+            .is_idle());
+        assert_eq!(model.armed_task.as_deref(), Some("t1"));
+        // Arming another task re-arms rather than withdrawing the first.
+        assert!(model
+            .apply(Message::TaskWithdrawClicked("t2".to_string()))
+            .is_idle());
+        assert_eq!(model.armed_task.as_deref(), Some("t2"));
+        // The second press on the armed task is the withdrawal itself.
+        assert_eq!(
+            model.apply(Message::TaskWithdrawClicked("t2".to_string())),
+            Effect {
+                withdraw_task: Some("t2".to_string()),
+                ..Effect::none()
+            }
+        );
+        assert!(model.armed_task.is_none());
+
+        model.apply(Message::TaskWithdrawn {
+            at_ms: 10_100,
+            id: "t2".to_string(),
+            result: Ok(task("t2", "withdrawn", Some("builder"), Some(100))),
+        });
+        let held = &model.tasks[1];
+        assert_eq!(held.state, TaskState::Withdrawn);
+        assert_eq!(held.outcome.get(), Some(&crate::api::TaskOutcome::Cancelled));
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "task t2 withdrawn"
+        );
+
+        // Leaving the sheet disarms: the press was on the sheet left behind.
+        model.apply(Message::TaskWithdrawClicked("t3".to_string()));
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(model.armed_task.is_none());
+    }
+
+    #[test]
+    fn the_ledger_offers_the_agents_a_claim_would_be_accepted_from() {
+        // The register's running role VMs are exactly the CIDs the daemon
+        // accepts a claim from; a VM with no role, and a stopped one, are not
+        // agents.
+        let model = fleet_with_roles();
+        assert_eq!(
+            model.live_agents(),
+            vec![(100, "builder"), (101, "reviewer")],
+            "running, and carrying a role"
+        );
+        // The register's third role VM is up but has no role, and its fourth
+        // carries one but has stopped.
+        let roles: Vec<&str> = model.live_agents().iter().map(|(_, role)| *role).collect();
+        assert!(!roles.contains(&"nobody"));
+
+        // No register at all, no agents to offer.
+        let empty = Model::new();
+        assert!(empty.live_agents().is_empty());
     }
 }

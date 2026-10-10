@@ -11,16 +11,18 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Padding};
 
-use crate::api::{Run, RunState, Vm, VmState};
+use crate::api::{FinishOutcome, Run, RunState, Task, TaskState, Vm, VmState};
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
 use crate::form::{Field, Preset};
 use crate::history;
+use crate::ledger::TaskField;
 use crate::mapview::{self, FleetMap};
 use crate::model::{
     Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, RosterAgent, SERIAL_TAIL_LINES,
     duration_label, hub_facts, hub_line, instant_label, memory_label, preset_footprint,
-    roster_line, roster_tally, serial_tail, tally_line, transcript_span,
+    roster_line, roster_tally, serial_tail, tally_line, task_line, task_state_line, task_tally,
+    transcript_span,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
@@ -79,6 +81,13 @@ fn index(model: &Model) -> Container<'_, Message> {
         index_entry(
             model,
             "3",
+            "Ledger",
+            task_line(model),
+            Pane::Ledger,
+        ),
+        index_entry(
+            model,
+            "4",
             "Fleet map",
             format!(
                 "{runs} lane(s) · {} cell(s)",
@@ -88,7 +97,7 @@ fn index(model: &Model) -> Container<'_, Message> {
         ),
         index_entry(
             model,
-            "4",
+            "5",
             "Telemetry",
             format!(
                 "{} observation(s) · {} lines/s",
@@ -209,9 +218,10 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 8] = [
+const KEYS: [(&str, &str); 9] = [
     ("r", "register"),
     ("w", "roster: running + connected, by role"),
+    ("l", "ledger: the plaza's tasks"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
@@ -320,6 +330,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Machine => body.push(machine_pane(model)),
         Pane::Map => body.push(map_pane(model)),
         Pane::Roster => body.push(roster_pane(model)),
+        Pane::Ledger => body.push(ledger_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -358,6 +369,12 @@ fn running_head(model: &Model) -> Element<'_, Message> {
             } else {
                 "who is running right now · every role agent the register reports".to_string()
             },
+        ),
+        Pane::Ledger => (
+            "Ledger".to_string(),
+            "the plaza's tasks · every claim, finish and withdrawal the daemon \
+             holds"
+                .to_string(),
         ),
         Pane::Telemetry => (
             "Telemetry".to_string(),
@@ -983,6 +1000,462 @@ fn hub_half(agent: &RosterAgent, now_ms: u64) -> Element<'static, Message> {
     .spacing(8.0)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// The ledger: the plaza's tasks as an account book — one ruled row per task,
+/// the open task's detail, and the four moves the daemon accepts.
+///
+/// The rows come from one read (`GET /api/v0/tasks`, refreshed on the poll
+/// while this sheet is up), and the task events patch them in place between
+/// the polls: an event for a task the ledger has not read asks for the ledger
+/// rather than inventing a row from a frame that carries an id, a state and an
+/// assignee and nothing else.
+fn ledger_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "One row per task: what it is for, the role it was filed for, its budget, the state \
+             it is in, who holds it and the guest CID it is held by, and when it was filed and \
+             last moved. A task is claimed by a live agent, finished as done or failed with a \
+             note, or withdrawn before it ends; a task that has ended is final. Refusals — the \
+             daemon's own, or one of these guards — land in the notice line above.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    ];
+
+    if model.tasks.is_empty() {
+        let message = if !model.ledger_read && model.health() == Health::Unknown {
+            "waiting for the daemon's first answer…"
+        } else {
+            "no task is on the ledger: nothing has been filed yet"
+        };
+        body.push(
+            container(serif(message, 12.5, INK_2))
+                .style(theme::boxed)
+                .width(Length::Fill)
+                .padding(edge(16.0, 14.0, 16.0, 14.0))
+                .into(),
+        );
+    } else {
+        body.push(mono(task_tally(&model.tasks), 11.5, INK).into());
+        body.push(task_heads());
+        body.push(rule_heading());
+        for task in &model.tasks {
+            body.push(task_row(model, task));
+        }
+    }
+
+    match model.selected_task() {
+        Some(task) => body.push(task_detail(model, task)),
+        None if !model.tasks.is_empty() => body.push(
+            container(serif(
+                "Press a task's row to open its detail and the moves the daemon accepts on it.",
+                11.5,
+                INK_3,
+            ))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .padding(edge(12.0, 12.0, 12.0, 12.0))
+            .into(),
+        ),
+        None => {}
+    }
+
+    body.push(task_create_form(model));
+    // The ledger's rows are columns of the sheet: a scrollable measures its
+    // content against the viewport, so the content is told to take it — which
+    // is what lets the goal's own column fill what the stamped columns leave.
+    Column::with_children(body).spacing(8.0).width(Length::Fill).into()
+}
+
+/// The ledger's column widths: one place for the heads and the cells, each
+/// wide enough for the widest value it prints — a cell the text does not fit
+/// is a cell that wraps.
+const TASK_COL_ID: f32 = 40.0;
+const TASK_COL_GOAL: f32 = 180.0;
+const TASK_COL_ROLE: f32 = 100.0;
+const TASK_COL_BUDGET: f32 = 62.0;
+const TASK_COL_STATE: f32 = 98.0;
+const TASK_COL_ASSIGNEE: f32 = 100.0;
+const TASK_COL_CID: f32 = 74.0;
+const TASK_COL_STAMP: f32 = 92.0;
+
+/// How much space is between the ledger's columns, heads and cells both: one
+/// constant, so the table's own width is a sum rather than a guess.
+const COL_SPACING: f32 = 6.0;
+
+/// The ledger's column heads, matched to the cells below them: the task, what
+/// it is for, and everything the daemon reports about how it stands.
+fn task_heads() -> Element<'static, Message> {
+    Row::with_children(vec![
+        mono("id", 10.0, INK_3).width(Length::Fixed(TASK_COL_ID)).into(),
+        mono("goal", 10.0, INK_3).width(Length::Fixed(TASK_COL_GOAL)).into(),
+        mono("role", 10.0, INK_3).width(Length::Fixed(TASK_COL_ROLE)).into(),
+        mono("budget", 10.0, INK_3).width(Length::Fixed(TASK_COL_BUDGET)).into(),
+        mono("state", 10.0, INK_3).width(Length::Fixed(TASK_COL_STATE)).into(),
+        mono("assignee", 10.0, INK_3).width(Length::Fixed(TASK_COL_ASSIGNEE)).into(),
+        mono("agent cid", 10.0, INK_3).width(Length::Fixed(TASK_COL_CID)).into(),
+        mono("created", 10.0, INK_3).width(Length::Fixed(TASK_COL_STAMP)).into(),
+        mono("updated", 10.0, INK_3).width(Length::Fixed(TASK_COL_STAMP)).into(),
+    ])
+    .spacing(COL_SPACING)
+    .into()
+}
+
+/// One task's row, which opens its detail when pressed.
+fn task_row<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
+    let selected = model.task_selected.as_deref() == Some(task.id.as_str());
+    let cells = Row::with_children(vec![
+        mono(task.id.as_str(), 11.0, INK).width(Length::Fixed(TASK_COL_ID)).into(),
+        mono(task.goal.as_str(), 11.0, INK)
+            .width(Length::Fixed(TASK_COL_GOAL))
+            .wrapping(Wrapping::None)
+            .into(),
+        mono(column_or_dash(task.role.as_deref()), 10.5, INK_2)
+            .width(Length::Fixed(TASK_COL_ROLE))
+            .wrapping(Wrapping::None)
+            .into(),
+        mono(task.budget.to_string(), 10.5, INK_2)
+            .width(Length::Fixed(TASK_COL_BUDGET))
+            .into(),
+        stamp(task.state.stamp_label(), tone_for_task(task.state))
+            .width(Length::Fixed(TASK_COL_STATE))
+            .into(),
+        mono(column_or_dash(task.assignee_id.as_deref()), 10.5, INK_2)
+            .width(Length::Fixed(TASK_COL_ASSIGNEE))
+            .wrapping(Wrapping::None)
+            .into(),
+        mono(agent_cid_label(task), 10.5, INK_2)
+            .width(Length::Fixed(TASK_COL_CID))
+            .into(),
+        // A task filed days ago reads as its day rather than as a time of day
+        // that would read as today's, exactly as a run's creation does.
+        mono(instant_label(task.created_at, model.now_ms), 10.5, INK_2)
+            .width(Length::Fixed(TASK_COL_STAMP))
+            .into(),
+        mono(instant_label(task.updated_at, model.now_ms), 10.5, INK_2)
+            .width(Length::Fixed(TASK_COL_STAMP))
+            .into(),
+    ])
+    .spacing(COL_SPACING)
+    .align_y(Alignment::Center);
+
+    button(cells)
+        .on_press(Message::SelectTask(task.id.clone()))
+        .style(theme::register_row(selected))
+        .padding(edge(4.0, 6.0, 4.0, 6.0))
+        .width(Length::Fill)
+        .into()
+}
+
+/// The open task's detail: every fact the daemon reports about the row, the
+/// text the task carries, and the moves the daemon would accept on it.
+fn task_detail<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![
+        row![
+            mono(format!("task {}", task.id), 15.0, INK),
+            stamp(task.state.stamp_label(), tone_for_task(task.state)),
+            space::horizontal(),
+            button(mono("REFRESH", 10.5, INK))
+                .on_press(Message::TaskRefresh)
+                .style(theme::primary_button)
+                .padding(edge(6.0, 10.0, 6.0, 10.0)),
+        ]
+        .spacing(10.0)
+        .align_y(Alignment::Center)
+        .into(),
+        serif(task.goal.as_str(), 13.0, INK).into(),
+        serif(
+            match task.acceptance.as_deref() {
+                Some(acceptance) => acceptance.to_string(),
+                None => "no acceptance criteria were given for this task".to_string(),
+            },
+            12.0,
+            match task.acceptance.get() {
+                Some(_) => INK_2,
+                None => INK_3,
+            },
+        )
+        .into(),
+        rule::horizontal(1.0).style(theme::rule).into(),
+        lead(vec![
+            ("state", task_state_line(task)),
+            ("budget", format!("{} credits", task.budget)),
+            ("role", column_or_dash(task.role.as_deref()).to_string()),
+            ("assignee", column_or_dash(task.assignee_id.as_deref()).to_string()),
+            ("agent cid", agent_cid_label(task)),
+            (
+                "verifier",
+                match task.verifier_id.as_deref() {
+                    Some(verifier) => verifier.to_string(),
+                    // v0's ledger has no verification step, and says so rather
+                    // than drawing a name nobody recorded.
+                    None => "none (v0 records no verifier)".to_string(),
+                },
+            ),
+            ("created", instant_label(task.created_at, model.now_ms)),
+            (
+                "updated",
+                format!(
+                    "{} · {} ago",
+                    instant_label(task.updated_at, model.now_ms),
+                    duration_label(model.now_ms.saturating_sub(task.updated_at))
+                ),
+            ),
+        ]),
+        serif(
+            match task.note.as_deref() {
+                Some(note) => format!("The agent's note: {note}"),
+                None => "No note was left on this task.".to_string(),
+            },
+            if task.note.get().is_some() { 12.5 } else { 11.5 },
+            if task.note.get().is_some() { INK } else { INK_3 },
+        )
+        .into(),
+    ];
+
+    if task.state.is_finished() {
+        body.push(
+            container(serif(
+                format!(
+                    "The task has ended ({}) and its state is final: the daemon accepts no \
+                     further claim, finish or withdrawal on it.",
+                    task_state_line(task)
+                ),
+                11.5,
+                INK_2,
+            ))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .padding(edge(12.0, 10.0, 12.0, 10.0))
+            .into(),
+        );
+        return Column::with_children(body).spacing(8.0).into();
+    }
+
+    if task.state.is_claimable() {
+        body.push(task_claim_row(model));
+    }
+    if task.state.is_finishable() {
+        body.push(task_finish_row(model));
+    }
+    body.push(task_withdraw_row(model, task));
+    Column::with_children(body).spacing(8.0).into()
+}
+
+/// The claim row: the agent's guest CID, the button that claims as it, and —
+/// as one-press buttons — the CIDs the register shows a live agent on.
+///
+/// The buttons fill the box rather than claiming on the spot, the same way the
+/// spawn form's quick boots fill the form: the CID is visible, and adjustable,
+/// before anything is sent. They are the CIDs a claim would be *accepted*
+/// from — the daemon accepts one only from an agent its register shows
+/// running — so this turns the daemon's own rule into something the operator
+/// can point at instead of typing a number the daemon will refuse.
+fn task_claim_row(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        row![
+            text_input("the agent's guest CID", model.claim_cid.as_str())
+                .on_input(Message::ClaimCidEdit)
+                .on_submit(Message::TaskClaim)
+                .font(MONO)
+                .size(12.0)
+                .padding(edge(7.0, 9.0, 7.0, 9.0))
+                .width(Length::Fixed(200.0))
+                .style(theme::input),
+            button(mono("CLAIM", 10.5, INK))
+                .on_press(Message::TaskClaim)
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+            mono("binds this open task to the agent connected as that CID", 10.0, INK_3),
+        ]
+        .spacing(10.0)
+        .align_y(Alignment::Center)
+        .into(),
+    ];
+
+    let agents = model.live_agents();
+    if agents.is_empty() {
+        body.push(serif(
+            "No live agent is in the register: a claim is accepted only from an agent that is up, \
+             so there is no CID to claim as yet.",
+            11.5,
+            INK_3,
+        )
+        .into());
+        return Column::with_children(body).spacing(6.0).into();
+    }
+    let mut buttons: Vec<Element<'_, Message>> = Vec::with_capacity(agents.len());
+    for (cid, role) in agents {
+        buttons.push(
+            button(mono(format!("cid {cid} · {role}"), 10.0, INK))
+                .on_press(Message::ClaimCidEdit(cid.to_string()))
+                .style(theme::primary_button)
+                .padding(edge(4.0, 9.0, 4.0, 9.0))
+                .into(),
+        );
+    }
+    body.push(
+        row![
+            mono("live agents", 10.0, INK_3).width(Length::Fixed(88.0)),
+            Row::with_children(buttons).spacing(6.0),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    Column::with_children(body).spacing(6.0).into()
+}
+
+/// The finish row: the note the claiming agent leaves, and the two outcomes it
+/// can report.
+fn task_finish_row(model: &Model) -> Element<'_, Message> {
+    Column::with_children(vec![
+        row![
+            mono("note", 10.0, INK_3).width(Length::Fixed(88.0)),
+            text_input("what the agent has to say (optional)", model.finish_note.as_str())
+                .on_input(Message::FinishNoteEdit)
+                .font(MONO)
+                .size(12.0)
+                .padding(edge(7.0, 9.0, 7.0, 9.0))
+                .width(Length::Fixed(560.0))
+                .style(theme::input),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+        row![
+            button(mono("FINISHED", 10.5, INK))
+                .on_press(Message::TaskFinish(FinishOutcome::Done))
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+            button(mono("FAILED", 10.5, INK))
+                .on_press(Message::TaskFinish(FinishOutcome::Failed))
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+            mono("ends the claimed task, with the note above", 10.0, INK_3),
+        ]
+        .spacing(10.0)
+        .align_y(Alignment::Center)
+        .into(),
+    ])
+    .spacing(6.0)
+    .into()
+}
+
+/// The withdraw row: two presses, armed then confirmed, like a run's kill.
+fn task_withdraw_row<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
+    let armed = model.armed_task.as_deref() == Some(task.id.as_str());
+    let label = if armed { "CONFIRM WITHDRAW" } else { "WITHDRAW" };
+    let mut controls = row![
+        button(mono(label, 10.5, if armed { theme::SHEET } else { theme::CRIT }))
+            .on_press(Message::TaskWithdrawClicked(task.id.clone()))
+            .style(theme::kill_button(armed))
+            .padding(edge(6.0, 12.0, 6.0, 12.0)),
+    ]
+    .spacing(10.0)
+    .align_y(Alignment::Center);
+    if armed {
+        controls = controls.push(mono("press again to withdraw", 10.0, theme::CRIT));
+    } else {
+        controls = controls.push(mono(
+            "gives the task up before it ends; the daemon keeps it, withdrawn",
+            10.0,
+            INK_3,
+        ));
+    }
+    controls.into()
+}
+
+/// The ledger's create form: the daemon's four fields and the button that
+/// files the task. Nothing is sent until FILE TASK.
+fn task_create_form(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        mono("File a task", 10.5, INK_3).into(),
+        rule_heading(),
+    ];
+    for field in [TaskField::Goal, TaskField::Acceptance, TaskField::Budget, TaskField::Role] {
+        body.push(task_form_row(model, field));
+    }
+    body.push(
+        row![
+            button(mono("FILE TASK", 11.0, INK))
+                .on_press(Message::TaskCreate)
+                .style(theme::primary_button)
+                .padding(edge(8.0, 14.0, 8.0, 14.0)),
+            mono("POST /api/v0/tasks", 10.0, INK_3),
+        ]
+        .spacing(12.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    Column::with_children(body).spacing(6.0).into()
+}
+
+/// One create-form row: the column's name and what it holds, the box, and the
+/// complaint the last submission made about it.
+fn task_form_row<'a>(model: &'a Model, field: TaskField) -> Element<'a, Message> {
+    let value = match field {
+        TaskField::Goal => model.task_form.goal.as_str(),
+        TaskField::Acceptance => model.task_form.acceptance.as_str(),
+        TaskField::Budget => model.task_form.budget.as_str(),
+        TaskField::Role => model.task_form.role.as_str(),
+    };
+    let mut right: Vec<Element<'a, Message>> = vec![
+        text_input(field.label(), value)
+            .on_input(move |value| Message::TaskEdit { field, value })
+            .on_submit(Message::TaskCreate)
+            .font(MONO)
+            .size(12.0)
+            .padding(edge(7.0, 9.0, 7.0, 9.0))
+            .width(Length::Fixed(420.0))
+            .style(theme::input)
+            .into(),
+    ];
+    if let Some(error) = field.error(&model.task_errors) {
+        right.push(mono(error, 10.0, theme::CRIT).into());
+    }
+    row![
+        column![
+            mono(field.name(), 11.5, INK),
+            mono(field.label(), 9.5, INK_3)
+        ]
+        .width(240),
+        Column::with_children(right),
+    ]
+    .spacing(12.0)
+    .align_y(Alignment::Start)
+    .into()
+}
+
+/// A column the daemon may not have filled: its value, or the register's own
+/// dash for nothing.
+fn column_or_dash(value: Option<&str>) -> String {
+    value.unwrap_or("—").to_string()
+}
+
+/// A task's claiming agent's guest CID, as the ledger writes it.
+fn agent_cid_label(task: &Task) -> String {
+    match task.agent_cid.copied() {
+        Some(cid) => format!("cid {cid}"),
+        None => "—".to_string(),
+    }
+}
+
+/// A task's state as a stamp is toned: open waits (neutral ink), claimed is
+/// held (the caution), done finished well (green), failed broke (red), and a
+/// withdrawal was given up (amber). A state the console does not know is drawn
+/// in neutral ink rather than guessed at.
+fn tone_for_task(state: TaskState) -> Tone {
+    match state {
+        TaskState::Open => Tone::Neutral,
+        TaskState::Claimed => Tone::Signal,
+        TaskState::Done => Tone::Ok,
+        TaskState::Failed => Tone::Crit,
+        TaskState::Withdrawn => Tone::Warn,
+        TaskState::Unknown => Tone::Neutral,
+    }
 }
 
 /// The session's figures: what the register observed, one observation per
@@ -1887,6 +2360,51 @@ mod tests {
             assert!(!kind.stamp_label().is_empty());
             let _ = tone_for_exit(kind);
         }
+        // A task's five states, plus the unknown one a newer daemon may send:
+        // every one has a stamp, and every one a tone.
+        for (state, tone) in [
+            (TaskState::Open, Tone::Neutral),
+            (TaskState::Claimed, Tone::Signal),
+            (TaskState::Done, Tone::Ok),
+            (TaskState::Failed, Tone::Crit),
+            (TaskState::Withdrawn, Tone::Warn),
+            (TaskState::Unknown, Tone::Neutral),
+        ] {
+            assert!(!state.stamp_label().is_empty());
+            assert_eq!(tone_for_task(state), tone);
+        }
+    }
+
+    /// The ledger's columns, summed: what its table occupies before spacing.
+    /// It lives here because the check that reads it is what it is for.
+    const TASK_TABLE: f32 = TASK_COL_ID
+        + TASK_COL_GOAL
+        + TASK_COL_ROLE
+        + TASK_COL_BUDGET
+        + TASK_COL_STATE
+        + TASK_COL_ASSIGNEE
+        + TASK_COL_CID
+        + TASK_COL_STAMP
+        + TASK_COL_STAMP;
+
+    #[test]
+    fn the_ledgers_columns_fit_the_sheet_the_window_has() {
+        // The ledger's table is fixed-width columns, and each is wide enough
+        // for the widest value it prints. What is left of the window for it is
+        // the width less the index's own fixed width and both paddings — and a
+        // column widened past that is a row that wraps, which stops the row
+        // being pressable at all (a wrapped row has no whole-row hit area, and
+        // iced draws a zero-width one).
+        const WINDOW: f32 = 1280.0;
+        const INDEX: f32 = 280.0;
+        const INDEX_PADDING: f32 = 36.0;
+        const SHEET_PADDING: f32 = 44.0;
+        const SPACING: f32 = COL_SPACING * 9.0;
+        let sheet = WINDOW - INDEX - INDEX_PADDING - SHEET_PADDING;
+        assert!(
+            TASK_TABLE + SPACING <= sheet,
+            "the ledger's table is {TASK_TABLE} wide plus {SPACING} of spacing, and the sheet has {sheet}"
+        );
     }
 
     #[test]
@@ -1908,6 +2426,7 @@ mod tests {
             Pane::Machine,
             Pane::Map,
             Pane::Roster,
+            Pane::Ledger,
             Pane::Telemetry,
         ] {
             model.pane = pane;
@@ -2063,7 +2582,7 @@ mod tests {
     #[test]
     fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
         let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
-        for bound in ["r", "m", "f", "t", "?", "esc", "↑ ↓"] {
+        for bound in ["r", "w", "l", "m", "f", "t", "?", "esc", "↑ ↓"] {
             assert!(keys.contains(&bound), "the register binds {bound:?}");
         }
         for (_, what) in KEYS {

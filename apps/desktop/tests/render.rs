@@ -184,6 +184,54 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if effect.poll_tasks {
+        let result = client.tasks();
+        model.apply(Message::Tasks {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
+    if let Some(id) = effect.fetch_task {
+        let result = client.task(&id);
+        model.apply(Message::Task {
+            at_ms: model.now_ms,
+            id,
+            result,
+        });
+    }
+    if let Some(create) = effect.create_task {
+        let result = client.create_task(&create);
+        model.apply(Message::TaskCreated {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
+    if let Some(claim) = effect.claim_task {
+        let result = client.claim_task(&claim.id, claim.agent_cid);
+        model.apply(Message::TaskClaimed {
+            at_ms: model.now_ms,
+            id: claim.id,
+            cid: claim.agent_cid,
+            result,
+        });
+    }
+    if let Some(call) = effect.finish_task {
+        let result = client.finish_task(&call.id, call.outcome, call.note.as_deref());
+        model.apply(Message::TaskFinished {
+            at_ms: model.now_ms,
+            id: call.id,
+            outcome: call.outcome,
+            result,
+        });
+    }
+    if let Some(id) = effect.withdraw_task {
+        let result = client.withdraw_task(&id);
+        model.apply(Message::TaskWithdrawn {
+            at_ms: model.now_ms,
+            id,
+            result,
+        });
+    }
 }
 
 /// The register's view, driven from a fixed model: the frame the harness
@@ -2282,4 +2330,412 @@ fn a_fleet_run_running_for_days_reads_as_days_and_a_day_stamp() {
     let mut ui = simulator(view::view(&model));
     assert!(ui.find(says("3d 07h")).is_ok());
     assert!(ui.find(says("2025-10-06")).is_ok(), "the day it began is kept");
+}
+
+// ---- the ledger: the plaza's tasks ----
+
+/// A daemon stub with both the register and the ledger: the runs the register
+/// answers, and the tasks the ledger holds.
+fn ledger_server(list: &'static str, detail: &'static str) -> common::Stub {
+    common::ledger_live(list, detail, "", common::TASKS, common::TASK)
+}
+
+/// A model that has read the register and opened the ledger, the way the
+/// runtime does: the pane's own key, then the answer to its own read.
+fn ledger_from(port: u16) -> Model {
+    let mut model = model_from(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Ledger));
+    perform(effect, &mut model, &client);
+    model
+}
+
+#[test]
+fn the_ledger_lists_every_task_the_daemon_holds() {
+    let server = ledger_server(LIST, DETAIL);
+    let model = ledger_from(server.port);
+    assert_eq!(model.pane, Pane::Ledger);
+    assert_eq!(model.tasks.len(), 3, "the daemon's own rows, read through the client");
+    assert!(model.ledger_read);
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        // The tally of the whole ledger.
+        "3 task(s) · 1 open · 1 claimed · 1 ended",
+        // Every task's row: what it is for, and how it stands.
+        "write the plaza handbooks",
+        "port the ledger to the console",
+        "audit the egress allowlist",
+        "2000",
+        "CLAIMED",
+        "OPEN",
+        "DONE",
+        "librarian",
+        "cid 112",
+        "auditor",
+        // The create form is on the sheet, and nothing is sent until it is
+        // pressed.
+        "File a task",
+        "FILE TASK",
+        "POST /api/v0/tasks",
+        "the role it is for (optional)",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the ledger should show {expected:?}"
+        );
+    }
+    // Nothing is open yet, so the sheet says what pressing a row does rather
+    // than inventing a detail.
+    assert!(ui.find(says("Press a task's row")).is_ok());
+}
+
+#[test]
+fn pressing_a_task_row_opens_its_detail_and_the_moves_the_daemon_accepts() {
+    // The register is the role fleet, whose running VMs carry a role: those
+    // are the agents a claim would be accepted from, and the ones the claim
+    // row offers as one-press CIDs.
+    let server = ledger_server(ROLE_LIST, ROLE_DETAIL);
+    let mut model = ledger_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+
+    // The click the operator makes on a claimed task.
+    let mut ui = simulator(view::view(&model));
+    ui.click("write the plaza handbooks")
+        .expect("the row is clickable");
+    for message in ui.into_messages() {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    assert_eq!(model.selected_task().map(|task| task.id.as_str()), Some("t1"));
+
+    {
+        let mut ui = simulator(view::view(&model));
+        for expected in [
+        "task t1",
+        // Every fact the daemon reports about the row.
+        "all 21 present",
+        "2000 credits",
+        "claimed",
+        "librarian",
+        "cid 112",
+        "none (v0 records no verifier)",
+        "No note was left on this task.",
+        // A claimed task is finished or withdrawn, and is not claimed again.
+        "FINISHED",
+        "FAILED",
+        "WITHDRAW",
+        "note",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the detail should show {expected:?}"
+        );
+    }
+    // `says` is a substring match, and the table's own stamp reads CLAIMED:
+    // the claim row is named by the words only it carries.
+    assert!(
+        ui.find(says("binds this open task to the agent connected as that CID")).is_err(),
+        "a task in hand is not offered for claiming again"
+    );
+    }
+
+    // The open task, drawn from the same model, is offered for claiming — with
+    // the register's live agents as one-press CIDs.
+    model.apply(Message::SelectTask("t2".to_string()));
+    {
+        let mut ui = simulator(view::view(&model));
+        for expected in [
+            "CLAIM",
+            "live agents",
+            "cid 100 · builder",
+            "binds this open task to the agent connected as that CID",
+        ] {
+            assert!(
+                ui.find(says(expected)).is_ok(),
+                "the open task's detail should show {expected:?}"
+            );
+        }
+        assert!(
+            ui.find(says("FINISHED")).is_err(),
+            "an open task cannot be finished before it is claimed"
+        );
+    }
+
+    // The ended task is final: no move is offered at all.
+    model.apply(Message::SelectTask("t3".to_string()));
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("The task has ended (done · accepted) and its state is final")).is_ok(),
+        "the daemon's state word and the schema's outcome are both named"
+    );
+    assert!(ui.find(says("every negative covered")).is_ok(), "the note is drawn");
+    assert!(ui.find(says("WITHDRAW")).is_err());
+}
+
+#[test]
+fn a_claim_refused_is_drawn_in_the_daemons_own_words() {
+    // The daemon refuses a claim from a CID no live agent holds, and says
+    // which CID it was.
+    let server = common::ledger_claim_refused(
+        LIST,
+        common::TASKS,
+        common::TASK,
+        r#"{"error":"no live agent has guest CID 4"}"#,
+    );
+    let mut model = ledger_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    let t2 = model.tasks.iter().position(|task| task.id == "t2").expect("t2");
+    model.apply(Message::SelectTask(model.tasks[t2].id.clone()));
+
+    // The operator types a CID and presses CLAIM.
+    model.apply(Message::ClaimCidEdit("4".to_string()));
+    {
+        let mut ui = simulator(view::view(&model));
+        ui.click("CLAIM").expect("the claim button is on the sheet");
+        let messages: Vec<Message> = ui.into_messages().collect();
+        for message in messages {
+            let effect = model.apply(message);
+            perform(effect, &mut model, &client);
+        }
+    }
+
+    assert_eq!(
+        model.tasks[t2].state,
+        agentplaza_desktop::api::TaskState::Open,
+        "a refused claim changes nothing"
+    );
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("REFUSED")).is_ok(),
+        "the refusal is UI state, not swallowed"
+    );
+    assert!(
+        ui.find(says("task t2 claim: 409: no live agent has guest CID 4")).is_ok(),
+        "the daemon's own words, verbatim"
+    );
+}
+
+#[test]
+fn the_withdraw_button_takes_two_presses_and_shows_the_arm() {
+    let server = ledger_server(LIST, DETAIL);
+    let mut model = ledger_from(server.port);
+    model.apply(Message::SelectTask("t2".to_string()));
+
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("WITHDRAW").expect("the button is on the sheet");
+        let messages: Vec<Message> = ui.into_messages().collect();
+        messages
+    };
+    assert_eq!(messages, vec![Message::TaskWithdrawClicked("t2".to_string())]);
+    for message in messages {
+        let effect = model.apply(message);
+        assert!(effect.is_idle(), "the first press only arms");
+    }
+
+    // The register this stub answers carries no role on any VM, so there is
+    // no agent a claim would be accepted from, and the sheet says so rather
+    // than offering a CID the daemon would refuse.
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says("No live agent is in the register")).is_ok(),
+            "a register with no role agent offers no claim"
+        );
+    }
+
+    // Armed: the sheet says so, and the second press is the withdrawal.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("CONFIRM WITHDRAW")).is_ok());
+        assert!(ui.find(says("press again to withdraw")).is_ok());
+        ui.click("CONFIRM WITHDRAW").expect("the armed button is on the sheet");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert_eq!(messages, vec![Message::TaskWithdrawClicked("t2".to_string())]);
+    let effect = model.apply(messages[0].clone());
+    assert_eq!(
+        effect.withdraw_task.as_deref(),
+        Some("t2"),
+        "the second press is the withdrawal itself"
+    );
+}
+
+#[test]
+fn filing_a_task_takes_the_form_through_the_daemons_own_body() {
+    let server = ledger_server(LIST, DETAIL);
+    let mut model = ledger_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+
+    {
+        let mut ui = simulator(view::view(&model));
+        ui.click("FILE TASK").expect("the create button is on the sheet");
+        let messages: Vec<Message> = ui.into_messages().collect();
+        for message in messages {
+            let effect = model.apply(message);
+            assert!(effect.is_idle(), "an empty goal is refused before anything is sent");
+        }
+    }
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("goal must not be empty")).is_ok());
+    drop(ui);
+
+    // A whole form is the request, and the daemon's answer is on the sheet.
+    model.apply(Message::TaskEdit {
+        field: agentplaza_desktop::ledger::TaskField::Goal,
+        value: "ship the desktop ledger".to_string(),
+    });
+    model.apply(Message::TaskEdit {
+        field: agentplaza_desktop::ledger::TaskField::Budget,
+        value: "500".to_string(),
+    });
+    let effect = model.apply(Message::TaskCreate);
+    assert_eq!(
+        effect.create_task.as_ref().map(|create| create.budget),
+        Some(Some(500))
+    );
+    perform(effect, &mut model, &client);
+
+    // The stub answers the create with the task, and the ledger is re-read:
+    // the task is filed, selected, and named in the notice line.
+    assert!(model.tasks.iter().any(|task| task.id == "t1"));
+    assert_eq!(model.task_selected.as_deref(), Some("t1"));
+    assert_eq!(
+        model.notice.as_ref().map(|notice| notice.text.as_str()),
+        Some("task t1 created")
+    );
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("task t1 created")).is_ok());
+}
+
+#[test]
+fn the_ledger_key_and_its_index_entry_reach_the_sheet() {
+    let server = ledger_server(LIST, DETAIL);
+    let mut model = model_from(server.port);
+
+    // The index entry is offered, and carries the ledger's own counts — which
+    // it says it has not read yet rather than claiming an empty ledger.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Ledger")).is_ok());
+        assert!(ui.find(says("not read yet")).is_ok());
+        ui.click("Ledger").expect("the entry is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert!(
+        messages.contains(&Message::Show(Pane::Ledger)),
+        "the entry asks for the ledger, got {messages:?}"
+    );
+    for message in messages {
+        model.apply(message);
+    }
+    assert_eq!(model.pane, Pane::Ledger);
+
+    // The key sheet names it too, from the one table the index and the help
+    // sheet share.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("ledger: the plaza's tasks")).is_ok());
+    }
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Ledger));
+    assert_eq!(model.pane, Pane::Ledger, "the key reaches it too");
+}
+
+#[test]
+fn the_ledger_pane_is_drawn_over_a_real_frame() {
+    let server = ledger_server(LIST, DETAIL);
+    let mut model = ledger_from(server.port);
+    model.apply(Message::SelectTask("t1".to_string()));
+
+    // A ledger row's state is a stamp, and a stamp is its tone: the frame's
+    // green has to be the done task's own row, not the connection stamp's.
+    // The same model with nothing ended has strictly less of it.
+    let mut unended = model.clone();
+    for task in unended.tasks.iter_mut() {
+        if task.state.is_finished() {
+            task.state = agentplaza_desktop::api::TaskState::Open;
+        }
+    }
+    let unended_frame = frame_of(unended);
+    assert!(
+        count_near(&frame_of(model.clone()), OK, 8) > count_near(&unended_frame, OK, 8),
+        "the done task's row stamp is drawn in the register's green"
+    );
+
+    let frame = frame_of(model);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+    let pixels: &[u8] = frame.rgba.as_ref();
+    for (name, color, tolerance) in [
+        ("the page", PAPER, 2),
+        ("the ink", INK, 8),
+        // A claimed task is stamped in the one hot signal, a done one in the
+        // register's green.
+        ("a claimed stamp", SIGNAL, 8),
+        ("a done stamp", OK, 8),
+    ] {
+        assert!(
+            holds(&frame, color, tolerance),
+            "{name} is not on the ledger's frame"
+        );
+    }
+    assert!(distinct_colors(pixels) > 100);
+}
+
+#[test]
+fn the_whole_application_follows_a_task_event_between_polls() {
+    // The list endpoint answers `t2` open for the whole test; only the stream
+    // says it was claimed, and the cadence is the 30 s ceiling, so no second
+    // poll can run while this test does.
+    let frames = "event: task\ndata: {\"id\":\"t2\",\"state\":\"claimed\",\"assignee\":\"librarian\"}\n\n\
+                  : heartbeat\n\n";
+    let server = common::ledger_live(LIST, DETAIL, frames, common::TASKS, common::TASK);
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 800);
+
+    // Open the ledger: its own read is what the task event then patches.
+    emulator.update(&program, Message::Show(Pane::Ledger));
+    pump(&mut emulator, 800);
+
+    let (model, _) = emulator.into_state();
+    assert_eq!(model.polls, 1, "only the boot tick polled: nothing else asked");
+    let t2 = model
+        .tasks
+        .iter()
+        .find(|task| task.id == "t2")
+        .expect("the ledger's own row");
+    assert_eq!(
+        t2.state,
+        agentplaza_desktop::api::TaskState::Claimed,
+        "the state came off the stream, not off a poll"
+    );
+    assert_eq!(t2.assignee_id.as_deref(), Some("librarian"));
+    assert_eq!(
+        t2.goal, "port the ledger to the console",
+        "what the frame does not carry is still the poll's own row"
+    );
+    assert_eq!(
+        model.tasks.len(),
+        3,
+        "a frame never grows the ledger by a row"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }

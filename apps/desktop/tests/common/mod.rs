@@ -176,6 +176,94 @@ pub fn streams(bodies: Vec<&'static str>) -> Stub {
     }))
 }
 
+/// A tasks body as `GET /api/v0/tasks` sends it, byte for byte the shape the
+/// live daemon answers with: a task in an agent's hands next to one nobody has
+/// taken, and one that has ended with a note.
+pub const TASKS: &str = r#"{"tasks":[
+    {"id":"t1","goal":"write the plaza handbooks","acceptance":"all 21 present",
+     "budget":2000,"role":"librarian","state":"claimed","outcome":null,
+     "assignee_id":"librarian","verifier_id":null,"agent_cid":112,"note":null,
+     "created_at":1791671813178,"updated_at":1791671813568},
+    {"id":"t2","goal":"port the ledger to the console","acceptance":null,
+     "budget":0,"role":null,"state":"open","outcome":null,"assignee_id":null,
+     "verifier_id":null,"agent_cid":null,"note":null,"created_at":1791671900000,
+     "updated_at":1791671900000},
+    {"id":"t3","goal":"audit the egress allowlist","acceptance":"every negative",
+     "budget":50,"role":"auditor","state":"done","outcome":"accepted",
+     "assignee_id":"auditor","verifier_id":null,"agent_cid":118,
+     "note":"every negative covered","created_at":1791671700000,
+     "updated_at":1791671810000}
+]}"#;
+
+/// A single-task body as `GET /api/v0/tasks/t1` sends it: the same task after
+/// its agent claimed it.
+pub const TASK: &str = r#"{"id":"t1","goal":"write the plaza handbooks",
+    "acceptance":"all 21 present","budget":2000,"role":"librarian","state":"claimed",
+    "outcome":null,"assignee_id":"librarian","verifier_id":null,"agent_cid":112,
+    "note":null,"created_at":1791671813178,"updated_at":1791671813568}"#;
+
+/// A ledger stub: `GET /api/v0/tasks` answers `tasks`, and every other path
+/// answers `task` — including the claim, finish and withdraw answers, which
+/// the daemon also answers with the task they moved.
+pub fn ledger(tasks: &str, task: &str) -> Stub {
+    let tasks = tasks.to_string();
+    let task = task.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/tasks") => tasks.as_str(),
+            _ => task.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon for the ledger pane: the register, the machine, an
+/// event stream, and the ledger's own paths — `GET /api/v0/tasks` answers
+/// `tasks`, and every other non-run path answers `task`.
+pub fn ledger_live(list: &str, detail: &str, events: &str, tasks: &str, task: &str) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let tasks = tasks.to_string();
+    let task = task.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            // The ledger's own paths: the list is the collection's GET, and
+            // everything else — a create posting to it, a move on one task —
+            // is answered with the task itself.
+            ("GET", "/api/v0/tasks") => tasks.as_str(),
+            (_, "/api/v0/tasks") => task.as_str(),
+            (_, target) if target.starts_with("/api/v0/tasks/") => task.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A ledger whose claims are refused: the register answers `list`, the ledger
+/// `tasks`, every other read `task` — and a claim is the daemon's own 409,
+/// which names the CID no live agent holds.
+pub fn ledger_claim_refused(list: &str, tasks: &str, task: &str, error: &str) -> Stub {
+    let list = list.to_string();
+    let tasks = tasks.to_string();
+    let task = task.to_string();
+    let error = error.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("POST", target) if target.ends_with("/claim") => {
+                return Some(response(409, &error));
+            }
+            ("GET", "/api/v0/runs") => list.as_str(),
+            (_, "/api/v0/tasks") => tasks.as_str(),
+            _ => task.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
 /// A whole stub daemon: the register's paths answer `list`/`detail`, the
 /// machine `MACHINE`, and `GET /api/v0/events` an event stream of `events`.
 pub fn live(list: &str, detail: &str, events: &str) -> Stub {

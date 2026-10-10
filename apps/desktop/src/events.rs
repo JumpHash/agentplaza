@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::api::{self, Endpoint, RunState, VmState};
+use crate::api::{self, Column, Endpoint, RunState, TaskState, VmState};
 
 /// The path the stream lives at.
 pub const PATH: &str = "/api/v0/events";
@@ -93,6 +93,21 @@ pub enum Event {
         offset: u64,
         /// The bytes written since the last event.
         text: String,
+    },
+    /// A task moved state (or was created, as `open`): `assignee` is the
+    /// schema's `assignee_id` once a claimed agent has one, and `None` while
+    /// nobody does.
+    ///
+    /// The frame carries no clock, no budget and no goal: it is the ledger's
+    /// *delta*, and a task this console has not read is read from the ledger
+    /// rather than assembled from a frame.
+    Task {
+        /// The task's id.
+        id: String,
+        /// The state it moved to.
+        state: TaskState,
+        /// The schema's `assignee_id` once an agent holds it.
+        assignee: Option<String>,
     },
 }
 
@@ -213,6 +228,11 @@ impl Framer {
                 offset: data.offset,
                 text: data.text,
             }),
+            "task" => serde_json::from_str::<TaskData>(&payload).map(|data| Event::Task {
+                id: data.id,
+                state: data.state,
+                assignee: data.assignee.into_option(),
+            }),
             other => {
                 out.push(Frame::Other(other.to_string()));
                 return;
@@ -247,6 +267,19 @@ struct SerialData {
     vm: u32,
     offset: u64,
     text: String,
+}
+
+/// A `task` frame's `data`.
+///
+/// `noded` writes all three fields for every task transition it publishes
+/// (`crates/noded/src/events.rs`, `Event::Task::frame`), so an absent
+/// `assignee` is not the shape the daemon sends and is refused by name — the
+/// same rule the ledger's own rows are read by.
+#[derive(Debug, Deserialize)]
+struct TaskData {
+    id: String,
+    state: TaskState,
+    assignee: Column<String>,
 }
 
 /// Why one connection to the stream did not deliver events.
@@ -673,6 +706,77 @@ mod tests {
                 offset: 9,
                 text: "a\"b\\c\nline\u{7} é".to_string(),
             })]
+        );
+    }
+
+    #[test]
+    fn the_framer_reads_a_task_frame_the_daemon_writes() {
+        // `crates/noded/src/events.rs`'s own frames, byte for byte: a create
+        // (assignee null) and a claim (assignee is the schema's
+        // `assignee_id`).
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null}\n\n\
+              event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"librarian\"}\n\n",
+        );
+        assert_eq!(
+            frames,
+            vec![
+                Frame::Event(Event::Task {
+                    id: "t1".to_string(),
+                    state: TaskState::Open,
+                    assignee: None,
+                }),
+                Frame::Event(Event::Task {
+                    id: "t1".to_string(),
+                    state: TaskState::Claimed,
+                    assignee: Some("librarian".to_string()),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_task_frame_with_a_state_this_console_does_not_know_parses_as_unknown() {
+        let mut framer = Framer::new();
+        assert_eq!(
+            framer.feed(b"event: task\ndata: {\"id\":\"t1\",\"state\":\"verifying\",\"assignee\":null}\n\n"),
+            vec![Frame::Event(Event::Task {
+                id: "t1".to_string(),
+                state: TaskState::Unknown,
+                assignee: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_task_frame_missing_a_field_is_named_and_the_next_frame_still_reads() {
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: task\ndata: {\"id\":\"t1\",\"assignee\":null}\n\n\
+              event: task\ndata: {\"id\":\"t1\",\"state\":\"open\"}\n\n\
+              event: task\ndata: {oops\n\n\
+              event: run\ndata: {\"id\":\"r1\",\"state\":\"done\"}\n\n",
+        );
+        assert_eq!(frames.len(), 4);
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("task") && why.contains("state")),
+            "a task frame with no state is named: {:?}",
+            frames[0]
+        );
+        assert!(
+            matches!(&frames[1], Frame::Malformed(why) if why.contains("task") && why.contains("assignee")),
+            "a task frame with no assignee is named: {:?}",
+            frames[1]
+        );
+        assert!(matches!(&frames[2], Frame::Malformed(why) if why.contains("task")));
+        assert_eq!(
+            frames[3],
+            Frame::Event(Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            }),
+            "one bad task frame never ends the stream"
         );
     }
 

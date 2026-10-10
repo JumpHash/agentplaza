@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use common::{DETAIL, LIST, MACHINE, always, raw, replies, streams};
 
-use agentplaza_desktop::api::{ApiError, Client, CreateRun, Endpoint, RunState, VmState};
+use agentplaza_desktop::api::{
+    ApiError, Client, CreateRun, CreateTask, Endpoint, FinishOutcome, RunState, TaskOutcome,
+    TaskState, VmState,
+};
 use agentplaza_desktop::events;
 use agentplaza_desktop::exit::{ExitKind, exit_kind};
 
@@ -500,6 +503,158 @@ fn the_stream_client_reconnects_when_the_daemon_closes_the_stream() {
     );
 }
 
+/// The exact bytes the daemon parses out of a task create.
+const CREATE_TASK_BODY: &str =
+    r#"{"goal":"write the plaza handbooks","acceptance":null,"budget":null,"role":null}"#;
+
+#[test]
+fn listing_tasks_sends_the_documented_request_and_reads_the_ledger() {
+    let server = common::ledger(common::TASKS, common::TASK);
+    let page = client(server.port).tasks().expect("the ledger should parse");
+
+    assert_eq!(page.tasks.len(), 3, "oldest first, as the daemon lists them");
+    let claimed = &page.tasks[0];
+    assert_eq!(claimed.id, "t1");
+    assert_eq!(claimed.goal, "write the plaza handbooks");
+    assert_eq!(claimed.acceptance.as_deref(), Some("all 21 present"));
+    assert_eq!(claimed.budget, 2_000);
+    assert_eq!(claimed.role.as_deref(), Some("librarian"));
+    assert_eq!(claimed.state, TaskState::Claimed);
+    assert!(claimed.state.is_finishable());
+    assert_eq!(claimed.outcome.get(), None, "a living task has no outcome");
+    assert_eq!(claimed.assignee_id.as_deref(), Some("librarian"));
+    assert_eq!(claimed.verifier_id.get(), None, "v0 records no verifier");
+    assert_eq!(claimed.agent_cid.copied(), Some(112));
+    assert_eq!(claimed.note.get(), None);
+
+    let open = &page.tasks[1];
+    assert_eq!(open.state, TaskState::Open);
+    assert!(open.state.is_claimable());
+    assert_eq!(open.role.get(), None);
+
+    let ended = &page.tasks[2];
+    assert_eq!(ended.state, TaskState::Done);
+    assert_eq!(ended.outcome.get(), Some(&TaskOutcome::Accepted));
+    assert_eq!(ended.note.as_deref(), Some("every negative covered"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/tasks");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn reading_one_task_follows_the_tasks_path() {
+    let server = common::ledger(common::TASKS, common::TASK);
+    let task = client(server.port).task("t1").expect("the task should parse");
+    assert_eq!(task.id, "t1");
+    assert_eq!(task.state, TaskState::Claimed);
+    assert_eq!(task.agent_cid.copied(), Some(112));
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/tasks/t1");
+}
+
+#[test]
+fn creating_a_task_posts_exactly_the_daemons_create_body() {
+    let server = common::ledger(common::TASKS, common::TASK);
+    let task = client(server.port)
+        .create_task(&CreateTask {
+            goal: "write the plaza handbooks".to_string(),
+            acceptance: None,
+            budget: None,
+            role: None,
+        })
+        .expect("the answer should parse");
+    assert_eq!(task.id, "t1");
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/api/v0/tasks");
+    assert_eq!(requests[0].body, CREATE_TASK_BODY);
+    assert_eq!(
+        requests[0].header("Content-Type"),
+        Some("application/json"),
+        "the daemon parses the body as JSON"
+    );
+}
+
+#[test]
+fn claiming_a_task_posts_the_agent_cid_and_a_409_carries_the_daemons_words() {
+    // The daemon answers a claim with the task it bound.
+    let server = common::ledger(common::TASKS, common::TASK);
+    let task = client(server.port)
+        .claim_task("t1", 112)
+        .expect("the answer should parse");
+    assert_eq!(task.state, TaskState::Claimed);
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/api/v0/tasks/t1/claim");
+    assert_eq!(requests[0].body, r#"{"agent_cid":112}"#);
+
+    // A CID no live agent holds is refused 409, and the client carries the
+    // daemon's own message through unchanged.
+    let server = common::always(
+        409,
+        r#"{"error":"no live agent has guest CID 4"}"#,
+    );
+    let error = client(server.port)
+        .claim_task("t1", 4)
+        .expect_err("a CID no live agent holds is refused");
+    assert_eq!(error.status(), Some(409));
+    assert_eq!(error.to_string(), "409: no live agent has guest CID 4");
+}
+
+#[test]
+fn finishing_posts_the_outcome_and_note_and_withdrawing_deletes_the_path() {
+    let server = common::ledger(common::TASKS, common::TASK);
+    let task = client(server.port)
+        .finish_task(
+            "t1",
+            FinishOutcome::Done,
+            Some("21 handbooks committed"),
+        )
+        .expect("the answer should parse");
+    assert_eq!(task.id, "t1");
+
+    // The withdrawal is a DELETE on the task's own path.
+    let server2 = common::ledger(common::TASKS, common::TASK);
+    client(server2.port)
+        .withdraw_task("t1")
+        .expect("the answer should parse");
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/api/v0/tasks/t1/finish");
+    assert_eq!(
+        requests[0].body,
+        r#"{"outcome":"done","note":"21 handbooks committed"}"#
+    );
+
+    let requests = server2.requests();
+    assert_eq!(requests[0].method, "DELETE");
+    assert_eq!(requests[0].target, "/api/v0/tasks/t1");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn a_missing_task_and_a_task_id_that_is_not_plain_are_both_refused() {
+    let server = common::always(404, r#"{"error":"no task with id t9"}"#);
+    let error = client(server.port)
+        .task("t9")
+        .expect_err("a missing task is a 404");
+    assert!(error.is_not_found());
+    assert_eq!(error.to_string(), "404: no task with id t9");
+
+    // A path that could change the request never reaches a socket.
+    let error = Client::default()
+        .task("t1/../t2")
+        .expect_err("an id with a path in it is refused");
+    assert!(matches!(error, ApiError::Config(_)), "{error:?}");
+}
+
 /// Reads the live hub's status surface when `APZ_DESKTOP_LIVE_HUB` names one
 /// (`host:port`), and does nothing otherwise: the suite stays runnable on a
 /// host with no hub.
@@ -589,5 +744,27 @@ fn a_live_daemon_reads_when_one_is_named() {
                 kind.unwrap_or(ExitKind::Unknown).label()
             );
         }
+    }
+
+    // The ledger, read the same way and mutating nothing: every task the live
+    // daemon holds, with its own state and the agent holding it.
+    let page = client.tasks().expect("the live daemon should answer its ledger");
+    println!("live {}: {} task(s)", endpoint.url(), page.tasks.len());
+    for task in &page.tasks {
+        println!(
+            "  {} {} · goal {:?} · role {:?} · budget {} · assignee {:?} · agent cid {:?} · note {:?}",
+            task.id,
+            task.state.label(),
+            task.goal,
+            task.role.as_deref(),
+            task.budget,
+            task.assignee_id.as_deref(),
+            task.agent_cid.copied(),
+            task.note.as_deref()
+        );
+        // Each row is also readable on its own, which is the ledger pane's
+        // refresh path.
+        let one = client.task(&task.id).expect("the task should read");
+        assert_eq!(one, *task, "the single-task read is the list's own row");
     }
 }

@@ -179,8 +179,8 @@ fn keys() -> Subscription<Message> {
     })
 }
 
-/// The action a key names, if the register binds it: `r`, `m`, `f`, `w` and
-/// `t` in either case, `?`, Escape, and the console's arrows.
+/// The action a key names, if the register binds it: `r`, `m`, `f`, `w`, `l`
+/// and `t` in either case, `?`, Escape, and the console's arrows.
 pub fn shortcut(key: &Key) -> Option<KeyAction> {
     match key.as_ref() {
         Key::Character(character) => match character.to_ascii_lowercase().as_str() {
@@ -188,6 +188,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "m" => Some(KeyAction::Machine),
             "f" => Some(KeyAction::Map),
             "w" => Some(KeyAction::Roster),
+            "l" => Some(KeyAction::Ledger),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -349,6 +350,88 @@ fn dispatch(effect: Effect, client: &Client, hub: Option<&Client>) -> Task<Messa
             },
         ));
     }
+    if effect.poll_tasks {
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.tasks();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Tasks { at_ms, result },
+        ));
+    }
+    if let Some(id) = effect.fetch_task {
+        let client = client.clone();
+        let requested = id.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.task(&id);
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::Task {
+                at_ms,
+                id: requested.clone(),
+                result,
+            },
+        ));
+    }
+    if let Some(create) = effect.create_task {
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.create_task(&create);
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::TaskCreated { at_ms, result },
+        ));
+    }
+    if let Some(call) = effect.claim_task {
+        let client = client.clone();
+        let claimed = call.id.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.claim_task(&call.id, call.agent_cid);
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::TaskClaimed {
+                at_ms,
+                id: claimed.clone(),
+                cid: call.agent_cid,
+                result,
+            },
+        ));
+    }
+    if let Some(call) = effect.finish_task {
+        let client = client.clone();
+        let finished = call.id.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.finish_task(&call.id, call.outcome, call.note.as_deref());
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::TaskFinished {
+                at_ms,
+                id: finished.clone(),
+                outcome: call.outcome,
+                result,
+            },
+        ));
+    }
+    if let Some(id) = effect.withdraw_task {
+        let client = client.clone();
+        let withdrawn = id.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.withdraw_task(&id);
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::TaskWithdrawn {
+                at_ms,
+                id: withdrawn.clone(),
+                result,
+            },
+        ));
+    }
     Task::batch(tasks)
 }
 
@@ -478,12 +561,14 @@ mod tests {
             (Key::Character("m".into()), KeyAction::Machine),
             (Key::Character("f".into()), KeyAction::Map),
             (Key::Character("w".into()), KeyAction::Roster),
+            (Key::Character("l".into()), KeyAction::Ledger),
             (Key::Character("t".into()), KeyAction::Telemetry),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
             (Key::Character("M".into()), KeyAction::Machine),
             (Key::Character("F".into()), KeyAction::Map),
             (Key::Character("W".into()), KeyAction::Roster),
+            (Key::Character("L".into()), KeyAction::Ledger),
             (Key::Character("T".into()), KeyAction::Telemetry),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
             (Key::Character("?".into()), KeyAction::Help),

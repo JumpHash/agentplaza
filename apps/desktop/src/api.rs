@@ -339,6 +339,285 @@ impl HubStatus {
     }
 }
 
+/// A column the daemon always writes, whose value may be `null`.
+///
+/// `noded`'s task view writes every column a task has, so an **absent** key is
+/// not the same fact as a `null` one: absent means the body is not the shape
+/// this client reads, and it is named rather than quietly read as "none".
+///
+/// serde reads a plain `Option<T>` field's absence as `None` — its
+/// `missing_field` hands the field to `deserialize_option`, which answers
+/// `visit_none` — so the distinction would be erased by the obvious type. This
+/// wraps the value and reads it through `serde_json::Value`, whose
+/// `deserialize_any` an absent key refuses (a missing field is an error that
+/// names the column) while a `null` becomes `None`. It dereferences to
+/// `Option<T>`, so `as_deref`, `copied`, `cloned` and `is_some` read as they
+/// would on the plain type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Column<T>(Option<T>);
+
+impl<T> Column<T> {
+    /// The column holding `value`.
+    pub fn filled(value: Option<T>) -> Self {
+        Self(value)
+    }
+
+    /// The column's value, if the daemon sent one.
+    pub fn get(&self) -> Option<&T> {
+        self.0.as_ref()
+    }
+
+    /// The column's value, owned.
+    pub fn into_option(self) -> Option<T> {
+        self.0
+    }
+}
+
+impl<T: Copy> Column<T> {
+    /// The column's value, copied out of it.
+    pub fn copied(&self) -> Option<T> {
+        self.0
+    }
+}
+
+impl<T: Clone> Column<T> {
+    /// The column's value, cloned out of it.
+    pub fn cloned(&self) -> Option<T> {
+        self.0.clone()
+    }
+}
+
+impl<T> std::ops::Deref for Column<T> {
+    type Target = Option<T>;
+
+    fn deref(&self) -> &Option<T> {
+        &self.0
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Column<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // `Value`'s own `Deserialize` asks for `deserialize_any`, which the
+        // pseudo-value an absent key is never answers — so this errors naming
+        // the column, where an `Option<T>` field would have read `None`.
+        match serde_json::Value::deserialize(deserializer)? {
+            serde_json::Value::Null => Ok(Column(None)),
+            value => T::deserialize(value)
+                .map(|value| Column(Some(value)))
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// A task's state, as `noded` and the schema's `core.tasks` name it.
+///
+/// The daemon's v0 ledger moves a task only along the pairs it accepts
+/// (`open` → `claimed`, then `done`, `failed` or `withdrawn`); a state this
+/// console does not know parses as [`TaskState::Unknown`] rather than failing
+/// the row, exactly as an unknown run or VM state does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    /// Created and claimable.
+    Open,
+    /// Bound to a live agent.
+    Claimed,
+    /// Ended: the agent reports the work done.
+    Done,
+    /// Ended: the agent reports the work failed.
+    Failed,
+    /// Ended: given up before it finished.
+    Withdrawn,
+    /// A state this dashboard does not know; rendered as-is, never a parse
+    /// error.
+    #[serde(other)]
+    Unknown,
+}
+
+impl TaskState {
+    /// The name the API uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskState::Open => "open",
+            TaskState::Claimed => "claimed",
+            TaskState::Done => "done",
+            TaskState::Failed => "failed",
+            TaskState::Withdrawn => "withdrawn",
+            TaskState::Unknown => "unknown",
+        }
+    }
+
+    /// The word a stamp presses into the ledger, in caps.
+    pub fn stamp_label(self) -> &'static str {
+        match self {
+            TaskState::Open => "OPEN",
+            TaskState::Claimed => "CLAIMED",
+            TaskState::Done => "DONE",
+            TaskState::Failed => "FAILED",
+            TaskState::Withdrawn => "WITHDRAWN",
+            TaskState::Unknown => "UNKNOWN",
+        }
+    }
+
+    /// Whether the task has ended: these are the states the schema pairs with
+    /// a non-null `outcome`, and a state this console does not know is a newer
+    /// daemon's word rather than a settled one.
+    pub fn is_finished(self) -> bool {
+        matches!(
+            self,
+            TaskState::Done | TaskState::Failed | TaskState::Withdrawn
+        )
+    }
+
+    /// Whether a claim would be accepted: only an open task can be claimed.
+    pub fn is_claimable(self) -> bool {
+        self == TaskState::Open
+    }
+
+    /// Whether a finish would be accepted: only a claimed task can be
+    /// finished.
+    pub fn is_finishable(self) -> bool {
+        self == TaskState::Claimed
+    }
+
+    /// Whether a task in this state can still be withdrawn: either state
+    /// before it ends.
+    pub fn is_withdrawable(self) -> bool {
+        matches!(self, TaskState::Open | TaskState::Claimed)
+    }
+}
+
+/// How a task ended: the schema's outcome enum, set when a task closes and
+/// `null` while it lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskOutcome {
+    /// The work is done (the task ended `done`).
+    Accepted,
+    /// The work failed (the task ended `failed`).
+    Failed,
+    /// The task was given up (the task ended `withdrawn`).
+    Cancelled,
+    /// An outcome this dashboard does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl TaskOutcome {
+    /// The name the API uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskOutcome::Accepted => "accepted",
+            TaskOutcome::Failed => "failed",
+            TaskOutcome::Cancelled => "cancelled",
+            TaskOutcome::Unknown => "unknown",
+        }
+    }
+}
+
+/// One task, as `GET /api/v0/tasks` and `GET /api/v0/tasks/{id}` report it
+/// (`noded::tasks::TaskView`).
+///
+/// Every column the daemon writes is required — a body missing one is an error
+/// that names it, at every level — while a column this client does not know is
+/// ignored rather than a parse failure, so a newer daemon may add to its view
+/// without breaking the console. The columns that may be `null` are
+/// [`Column`]s: `null` reads as "none", an absent key does not.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Task {
+    /// The task's id (`t<seq>`).
+    pub id: String,
+    /// What the task is for (the schema's `title`).
+    pub goal: String,
+    /// How the work will be judged complete (the schema's `spec_ref`), or
+    /// `null`.
+    pub acceptance: Column<String>,
+    /// The task's budget, in credits (the schema's `budget_credits`).
+    pub budget: u64,
+    /// The role the task was created for, or `null`.
+    pub role: Column<String>,
+    /// The task's state.
+    pub state: TaskState,
+    /// How the task ended, or `null` while it lives.
+    pub outcome: Column<TaskOutcome>,
+    /// The schema's `assignee_id`: the claiming agent's role, or `cid:<n>` for
+    /// an agent without one.
+    pub assignee_id: Column<String>,
+    /// The schema's `verifier_id`; `null` at v0, which records no verifier.
+    pub verifier_id: Column<String>,
+    /// The claiming agent's guest CID, or `null` while nobody claimed it.
+    pub agent_cid: Column<u64>,
+    /// What the agent said when it finished, or `null`.
+    pub note: Column<String>,
+    /// When the task was created, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+    /// When the task last changed, in milliseconds since the Unix epoch.
+    pub updated_at: u64,
+}
+
+/// `GET /api/v0/tasks`: the list endpoint's body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TasksPage {
+    /// Every task, oldest first.
+    pub tasks: Vec<Task>,
+}
+
+/// `POST /api/v0/tasks`: the body sends exactly the fields `noded` accepts
+/// (`noded::tasks::CreateTask`); a field it does not name is absent rather
+/// than null, and the daemon fills its own default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateTask {
+    /// What the task is for.
+    pub goal: String,
+    /// How the work will be judged complete, or `null`.
+    pub acceptance: Option<String>,
+    /// The task's budget, in credits, or `null` for the schema's zero.
+    pub budget: Option<u64>,
+    /// The role the task is for, or `null`.
+    pub role: Option<String>,
+}
+
+/// `POST /api/v0/tasks/{id}/claim`: the body names the guest CID the claiming
+/// agent is connected as (`noded::tasks::ClaimRequest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimTask {
+    /// The guest CID of the live agent making the claim.
+    pub agent_cid: u64,
+}
+
+/// How a finishing agent reports the task ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishOutcome {
+    /// The work is done.
+    Done,
+    /// The work failed.
+    Failed,
+}
+
+impl FinishOutcome {
+    /// The name the API uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            FinishOutcome::Done => "done",
+            FinishOutcome::Failed => "failed",
+        }
+    }
+}
+
+/// `POST /api/v0/tasks/{id}/finish`: the body sends the outcome and, when the
+/// agent says anything, its note (`noded::tasks::FinishRequest`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishTask {
+    /// How the task ended.
+    pub outcome: FinishOutcome,
+    /// What the agent has to say about it, or `null`.
+    pub note: Option<String>,
+}
+
 /// `POST /api/v0/runs/{id}/input`: the body writes one line to one VM's
 /// console, in exactly the fields `noded` accepts (`noded::InputRequest`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,6 +867,67 @@ impl Client {
         self.json("GET", "/status", None)
     }
 
+    /// `GET /api/v0/tasks`: the plaza's ledger, oldest task first.
+    pub fn tasks(&self) -> Result<TasksPage, ApiError> {
+        self.json("GET", "/api/v0/tasks", None)
+    }
+
+    /// `GET /api/v0/tasks/{id}`: one task.
+    pub fn task(&self, id: &str) -> Result<Task, ApiError> {
+        self.json("GET", &format!("/api/v0/tasks/{}", checked_id(id)?), None)
+    }
+
+    /// `POST /api/v0/tasks`: files a task, which the daemon answers `201` with
+    /// in its first state, `open`.
+    pub fn create_task(&self, create: &CreateTask) -> Result<Task, ApiError> {
+        let body = serde_json::to_string(create).map_err(|err| {
+            ApiError::Malformed(format!("cannot serialize the create request: {err}"))
+        })?;
+        self.json("POST", "/api/v0/tasks", Some(&body))
+    }
+
+    /// `POST /api/v0/tasks/{id}/claim`: binds an open task to the live agent
+    /// connected as `agent_cid`.
+    ///
+    /// The daemon checks that CID against the register the moment the request
+    /// arrives, so a CID no live agent holds is refused `409` — in its own
+    /// words, which this client carries through unchanged.
+    pub fn claim_task(&self, id: &str, agent_cid: u64) -> Result<Task, ApiError> {
+        let body = serde_json::to_string(&ClaimTask { agent_cid }).map_err(|err| {
+            ApiError::Malformed(format!("cannot serialize the claim request: {err}"))
+        })?;
+        self.json(
+            "POST",
+            &format!("/api/v0/tasks/{}/claim", checked_id(id)?),
+            Some(&body),
+        )
+    }
+
+    /// `POST /api/v0/tasks/{id}/finish`: ends a claimed task as `done` or
+    /// `failed`, with the agent's note when it has one.
+    pub fn finish_task(
+        &self,
+        id: &str,
+        outcome: FinishOutcome,
+        note: Option<&str>,
+    ) -> Result<Task, ApiError> {
+        let body = serde_json::to_string(&FinishTask {
+            outcome,
+            note: note.map(str::to_string),
+        })
+        .map_err(|err| ApiError::Malformed(format!("cannot serialize the finish request: {err}")))?;
+        self.json(
+            "POST",
+            &format!("/api/v0/tasks/{}/finish", checked_id(id)?),
+            Some(&body),
+        )
+    }
+
+    /// `DELETE /api/v0/tasks/{id}`: withdraws a task before it ends.
+    pub fn withdraw_task(&self, id: &str) -> Result<Task, ApiError> {
+        self.json("DELETE", &format!("/api/v0/tasks/{}", checked_id(id)?), None)
+    }
+
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
     pub fn run(&self, id: &str) -> Result<Run, ApiError> {
         self.json("GET", &format!("/api/v0/runs/{}", checked_id(id)?), None)
@@ -677,7 +1017,8 @@ impl Default for Client {
     }
 }
 
-/// A run id as it may appear in a path: plain, so it cannot change the request.
+/// A run or task id as it may appear in a path: plain, so it cannot change the
+/// request.
 fn checked_id(id: &str) -> Result<&str, ApiError> {
     if !id.is_empty()
         && id
@@ -687,7 +1028,7 @@ fn checked_id(id: &str) -> Result<&str, ApiError> {
         Ok(id)
     } else {
         Err(ApiError::Config(format!(
-            "{id:?} is not a run id: ids are plain alphanumeric words"
+            "{id:?} is not a daemon id: ids are plain alphanumeric words"
         )))
     }
 }
@@ -1215,5 +1556,224 @@ mod tests {
     #[test]
     fn an_input_id_that_is_not_plain_is_refused_before_it_reaches_a_path() {
         assert!(Client::default().input("r1/../r2", 0, "uname\n").is_err());
+    }
+
+    /// A tasks body as `GET /api/v0/tasks` sends it, byte for byte the shape
+    /// the live daemon answered with: a claimed task with a note next to one
+    /// nobody has taken.
+    const TASKS: &str = r#"{"tasks":[
+        {"id":"t1","goal":"write the plaza handbooks","acceptance":"all 21 present",
+         "budget":2000,"role":"librarian","state":"done","outcome":"accepted",
+         "assignee_id":"librarian","verifier_id":null,"agent_cid":112,
+         "note":"21 handbooks committed","created_at":1791671813178,
+         "updated_at":1791671813568},
+        {"id":"t2","goal":"port the ledger to the console","acceptance":null,
+         "budget":0,"role":null,"state":"open","outcome":null,"assignee_id":null,
+         "verifier_id":null,"agent_cid":null,"note":null,"created_at":1791671900000,
+         "updated_at":1791671900000}
+    ]}"#;
+
+    #[test]
+    fn a_tasks_body_parses_every_column_the_daemon_writes() {
+        let page: TasksPage = from_body(TASKS);
+        assert_eq!(page.tasks.len(), 2);
+
+        let claimed = &page.tasks[0];
+        assert_eq!(claimed.id, "t1");
+        assert_eq!(claimed.goal, "write the plaza handbooks");
+        assert_eq!(claimed.acceptance.as_deref(), Some("all 21 present"));
+        assert_eq!(claimed.budget, 2_000);
+        assert_eq!(claimed.role.as_deref(), Some("librarian"));
+        assert_eq!(claimed.state, TaskState::Done);
+        assert_eq!(claimed.outcome.get(), Some(&TaskOutcome::Accepted));
+        assert_eq!(claimed.assignee_id.as_deref(), Some("librarian"));
+        assert_eq!(claimed.verifier_id.get(), None, "v0 records no verifier");
+        assert_eq!(claimed.agent_cid.copied(), Some(112));
+        assert_eq!(claimed.note.as_deref(), Some("21 handbooks committed"));
+        assert_eq!(claimed.created_at, 1_791_671_813_178);
+        assert_eq!(claimed.updated_at, 1_791_671_813_568);
+        assert!(claimed.state.is_finished());
+
+        let open = &page.tasks[1];
+        assert_eq!(open.state, TaskState::Open);
+        assert!(!open.state.is_finished());
+        assert!(open.state.is_claimable());
+        assert!(!open.state.is_finishable());
+        assert_eq!(open.acceptance.get(), None, "a null column is none");
+        assert_eq!(open.outcome.get(), None, "a living task has no outcome");
+        assert_eq!(open.assignee_id.get(), None);
+        assert_eq!(open.agent_cid.get(), None);
+        assert_eq!(open.note.get(), None);
+        assert_eq!(open.role.get(), None);
+    }
+
+    /// A whole task body — every column the daemon writes — with the named
+    /// ones left out: what a body that is not the daemon's shape looks like.
+    fn body_without(missing: &[&str]) -> String {
+        let mut body = serde_json::json!({
+            "id": "t1", "goal": "g", "acceptance": null, "budget": 0, "role": null,
+            "state": "open", "outcome": null, "assignee_id": null,
+            "verifier_id": null, "agent_cid": null, "note": null,
+            "created_at": 1, "updated_at": 1,
+        });
+        for column in missing {
+            body.as_object_mut()
+                .expect("the body is an object")
+                .remove(*column);
+        }
+        body.to_string()
+    }
+
+    #[test]
+    fn a_task_missing_a_column_is_an_error_that_names_it() {
+        // Every column the daemon writes is required — the nullable ones
+        // included: `null` and "absent" are not the same fact, and a body that
+        // omits one is not the shape this client reads. The whole body is
+        // walked so no column is quietly optional.
+        for column in [
+            "id",
+            "goal",
+            "acceptance",
+            "budget",
+            "role",
+            "state",
+            "outcome",
+            "assignee_id",
+            "verifier_id",
+            "agent_cid",
+            "note",
+            "created_at",
+            "updated_at",
+        ] {
+            let body = body_without(&[column]);
+            let error = serde_json::from_str::<Task>(&body)
+                .expect_err("a body missing a column must be refused");
+            assert!(
+                error.to_string().contains(column),
+                "the error should name {column:?}: {error}"
+            );
+        }
+        // The whole shape, and none of it missing, parses.
+        let task: Task = from_body(&body_without(&[]));
+        assert_eq!(task.id, "t1");
+        assert_eq!(task.state, TaskState::Open);
+    }
+
+    #[test]
+    fn a_task_column_the_client_does_not_know_is_ignored() {
+        // A newer daemon may add a column without breaking the console.
+        let task: Task = from_body(
+            r#"{"id":"t1","goal":"g","acceptance":null,"budget":7,"role":null,
+                "state":"claimed","outcome":null,"assignee_id":"builder",
+                "verifier_id":null,"agent_cid":100,"note":null,"created_at":1,
+                "updated_at":2,"parent_id":"t0","change_sets":[]}"#,
+        );
+        assert_eq!(task.id, "t1");
+        assert_eq!(task.state, TaskState::Claimed);
+        assert_eq!(task.assignee_id.as_deref(), Some("builder"));
+        assert_eq!(task.agent_cid.copied(), Some(100));
+    }
+
+    #[test]
+    fn a_task_state_or_outcome_the_client_does_not_know_parses() {
+        let task: Task = from_body(
+            r#"{"id":"t9","goal":"g","acceptance":null,"budget":0,"role":null,
+                "state":"verifying","outcome":"reworked","assignee_id":null,
+                "verifier_id":null,"agent_cid":null,"note":null,"created_at":1,
+                "updated_at":1}"#,
+        );
+        assert_eq!(task.state, TaskState::Unknown);
+        assert_eq!(task.outcome.get(), Some(&TaskOutcome::Unknown));
+        assert!(!task.state.is_finished());
+        assert!(!task.state.is_claimable());
+        assert!(!task.state.is_withdrawable());
+    }
+
+    #[test]
+    fn the_states_and_outcomes_are_the_daemons_own_words() {
+        for (state, label, stamp) in [
+            (TaskState::Open, "open", "OPEN"),
+            (TaskState::Claimed, "claimed", "CLAIMED"),
+            (TaskState::Done, "done", "DONE"),
+            (TaskState::Failed, "failed", "FAILED"),
+            (TaskState::Withdrawn, "withdrawn", "WITHDRAWN"),
+            (TaskState::Unknown, "unknown", "UNKNOWN"),
+        ] {
+            assert_eq!(state.label(), label);
+            assert_eq!(state.stamp_label(), stamp);
+        }
+        // The daemon's four moves, as guards: a claim only from `open`, a
+        // finish only from `claimed`, a withdraw from either.
+        assert!(TaskState::Open.is_claimable() && !TaskState::Claimed.is_claimable());
+        assert!(TaskState::Claimed.is_finishable() && !TaskState::Open.is_finishable());
+        assert!(TaskState::Open.is_withdrawable() && TaskState::Claimed.is_withdrawable());
+        assert!(!TaskState::Done.is_withdrawable() && !TaskState::Failed.is_withdrawable());
+        assert_eq!(TaskOutcome::Accepted.label(), "accepted");
+        assert_eq!(TaskOutcome::Failed.label(), "failed");
+        assert_eq!(TaskOutcome::Cancelled.label(), "cancelled");
+        assert_eq!(FinishOutcome::Done.label(), "done");
+        assert_eq!(FinishOutcome::Failed.label(), "failed");
+    }
+
+    #[test]
+    fn a_create_task_body_carries_exactly_the_daemons_fields() {
+        let create = CreateTask {
+            goal: "ship the ledger".to_string(),
+            acceptance: Some("the pane draws it".to_string()),
+            budget: Some(50),
+            role: None,
+        };
+        let body = serde_json::to_value(&create).expect("serializable");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "goal": "ship the ledger",
+                "acceptance": "the pane draws it",
+                "budget": 50,
+                "role": null
+            })
+        );
+        let parsed: CreateTask = from_body(&body.to_string());
+        assert_eq!(parsed, create);
+    }
+
+    #[test]
+    fn a_claim_and_a_finish_body_are_exactly_the_daemons() {
+        assert_eq!(
+            serde_json::to_string(&ClaimTask { agent_cid: 112 }).expect("serializable"),
+            r#"{"agent_cid":112}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&FinishTask {
+                outcome: FinishOutcome::Failed,
+                note: Some("the guest never answered".to_string()),
+            })
+            .expect("serializable"),
+            r#"{"outcome":"failed","note":"the guest never answered"}"#
+        );
+        // A finish with no note is still the whole request shape.
+        assert_eq!(
+            serde_json::to_string(&FinishTask {
+                outcome: FinishOutcome::Done,
+                note: None,
+            })
+            .expect("serializable"),
+            r#"{"outcome":"done","note":null}"#
+        );
+        let parsed: FinishTask =
+            from_body(r#"{"outcome":"done","note":null}"#);
+        assert_eq!(parsed.outcome, FinishOutcome::Done);
+        assert_eq!(parsed.note, None);
+    }
+
+    #[test]
+    fn a_task_id_that_is_not_plain_is_refused_before_it_reaches_a_path() {
+        let client = Client::default();
+        for id in ["", "t1/../t2", "t1?x=1", "t1 t2", "t\u{00e9}"] {
+            assert!(matches!(client.task(id), Err(ApiError::Config(_))), "{id:?}");
+        }
+        assert!(client.claim_task("t1/claim", 4).is_err());
+        assert!(client.finish_task("t1/../t2", FinishOutcome::Done, None).is_err());
+        assert!(client.withdraw_task("t1/../t2").is_err());
     }
 }

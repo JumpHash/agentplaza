@@ -20,6 +20,9 @@
 //! * [`form`] — the spawn form, its quick-boot presets, and the validation
 //!   that mirrors the daemon's.
 //! * [`history`] — the session's rolling telemetry history and its CSV.
+//! * [`ledger`] — the task ledger's create form and the validation that
+//!   mirrors the daemon's: the goal, the acceptance, the budget, the role, and
+//!   the two boxes the claim and the finish are typed into.
 //! * [`map`] — the fleet map's geometry and its serial-activity feed: pure,
 //!   no iced types.
 //! * [`mapview`] — the map as an iced canvas, painting what [`map`] computes.
@@ -48,6 +51,7 @@ pub mod exit;
 pub mod export;
 pub mod form;
 pub mod history;
+pub mod ledger;
 pub mod map;
 pub mod mapview;
 pub mod model;

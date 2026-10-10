@@ -2,7 +2,9 @@
 
 An iced + wgpu (WebGPU) desktop dashboard for the node daemon's fleet API: the
 fleet as a register — an index of runs on the left, a ruled sheet on the right,
-stamps for every state the daemon reports. With `--hub-url` it also reads the
+stamps for every state the daemon reports — and, beside it, the plaza's own
+**ledger**: the tasks the daemon holds, and the claims, finishes and
+withdrawals it accepts on them. With `--hub-url` it also reads the
 hub's read-only status surface, so the **roster** (`w`) can show not only who
 the register says is running but who is actually **connected to the
 orchestrator** right now — the two halves joined by guest CID, never merged.
@@ -45,6 +47,7 @@ agentplaza-desktop [--url <url>] [--hub-url <host:port>]
 | `m` | the machine (the index also lists it) |
 | `f` | the fleet map |
 | `w` | the roster: who is running right now, and — with `--hub-url` — who is connected |
+| `l` | the ledger: the plaza's tasks, with the claim, finish and withdrawal the daemon accepts on them |
 | `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
 | `Escape` | back to the register |
@@ -228,6 +231,38 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   `2 VMs + vsock` (n=2, 2 vCPU, 512 MiB, cid 10), `8 VMs` (n=8, 512 MiB) and
   `50-VM scale` (n=50, 1 vCPU, 128 MiB ≈ 6.3 GiB guest RAM);
 * **KILL**: `DELETE /api/v0/runs/{id}`, two presses (arm, then confirm);
+* the **ledger** (`l`): the plaza's account book — every task the daemon holds,
+  as `GET /api/v0/tasks` reports it, oldest first, and the four moves the
+  daemon accepts on one. One ruled row per task: its id, what it is for, the
+  role it was filed for, its budget, the state it is in as a stamp, who holds
+  it, the guest CID it is held by, and when it was filed and last moved (a task
+  filed on another day is stamped with **that day** rather than a bare time of
+  day, the register's own rule). Pressing a row opens its detail: every fact
+  the daemon reports about the row — its state *and*, once it has ended, the
+  schema's `outcome` beside it (`done · accepted`; the two are not the same
+  word), its budget, role, assignee, agent CID, its verifier (always none at
+  v0, and said so rather than drawn as a name nobody recorded), its creation
+  and last move with the age read in the day tier — the goal and the acceptance
+  criteria in full, and the agent's note. The moves are the daemon's own:
+  **create** (the goal, the acceptance, the budget and the role as free-text
+  fields, validated here with `noded`'s own bounds and wording — a blank
+  optional box is *absent*, not empty), **claim** (the claiming agent's guest
+  CID in a numeric box, with the register's live agents — its running role VMs
+  — offered beside it as one-press CIDs, so a claim is made as a CID the daemon
+  will actually accept), **finish** (`FINISHED`/`FAILED` with the agent's note),
+  and **withdraw** (two presses: arm, then confirm, like a run's kill). A task
+  that has ended is final and the sheet says so; the moves it cannot accept are
+  not drawn at all. Every refusal — the daemon's or one of these guards — is the
+  notice line, in the daemon's own words: the `409` a claim from a CID no live
+  agent holds answers with names the CID, and it is shown **verbatim**. Task
+  events arrive on the event stream and patch the rows in place between the
+  polls (`event: task` carries an id, a state and an assignee): a task the
+  ledger holds is moved where it stands, and an event for a task it has **not**
+  read triggers one coalesced read of the ledger rather than a row invented
+  from a frame that carries no goal, no budget and no clock. The index's ledger
+  entry carries the daemon's own counts (`3 task(s) · 1 open · 1 claimed · 1
+  ended`) once the ledger has answered, and says `not read yet` before that: a
+  ledger nobody read is not an empty ledger;
 * every failure is a notice line and an error in the index — no request path
   panics, and nothing is swallowed.
 
@@ -255,10 +290,12 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   serial deltas and the capture bookkeeping it needs: both are pure, so the
   frame matrix and the merge matrix are unit-tested without a socket.
 * The model (`src/model.rs`) — the panes, the reducer, the roster's grouping
-  and its tallies, the age/instant arithmetic — the map's geometry and activity
+  and its tallies, the ledger's state arithmetic, the age/instant arithmetic —
+  the map's geometry and activity
   (`src/map.rs`),
   the exit kinds (`src/exit.rs`), the form and its presets (`src/form.rs`), the
-  export (`src/export.rs`), the frozen vsock session read back out of a serial
+  ledger's create form (`src/ledger.rs`), the export (`src/export.rs`), the
+  frozen vsock session read back out of a serial
   capture (`src/session.rs`), the session's rolling history
   (`src/history.rs`), the charts' arithmetic (`src/chart.rs`), the client
   (`src/api.rs`) and the CLI (`src/cli.rs`) know nothing about iced, so the
@@ -276,7 +313,7 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
 ## Tests
 
 ```
-cargo test          # 274 lib + 26 client + 42 render = 342, 0 failed
+cargo test          # 312 lib + 32 client + 50 render = 394, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
@@ -304,12 +341,29 @@ cargo test          # 274 lib + 26 client + 42 render = 342, 0 failed
   believed; a result stamped on the call it names; a fresh hello restarting the
   reading), the help sheet's toggling, the poll
   schedule and backoff at more than one cadence, the serial tail (with the byte
-  each row starts at), the key bindings (`w` among them), the CLI.
+  each row starts at), the key bindings (`w` and `l` among them), the CLI.
+* the ledger, in the same unit tests: the `Task` model's whole parse matrix — a
+  body as the daemon writes it read field for field, **every** column required
+  (the nullable ones included: `null` and "absent" are not the same fact, and a
+  body missing one is an error that names it), an unknown column and an unknown
+  state or outcome tolerated, and the create/claim/finish bodies byte for byte;
+  the create form's boundaries in `noded`'s own words (a blank goal, a field
+  past its bound, a budget that is not a whole number, every broken field named
+  at once); and the reducer's ledger paths — a task event patching a row in
+  place without inventing the goal, budget or clock a frame does not carry, an
+  event for a task the ledger has not read asking for the ledger **once** for a
+  whole burst and never growing the ledger by a row, a settled task that no
+  event or older list answer walks back, a duplicate event as a no-op, a reused
+  task id inheriting nothing, the claim's guards and the daemon's `409` kept
+  verbatim in the notice line, the finish's note and its absence, the withdraw's
+  arm/confirm, and the live agents the register's running role VMs offer.
 * the stream: the frame parser's whole matrix (the daemon's frames, a frame
   split mid-line across reads, a heartbeat, CRLF frames, a leading blank line,
   an unknown event kind, a data line with no kind, a malformed frame followed
   by a good one, a state this console does not know, a serial frame's escaped
-  bytes), the head that confirms the subscription (a real socket, and three
+  bytes, and a `task` frame from the daemon's own bytes — with a state this
+  console does not know, and with a field missing, which is named while the next
+  frame still reads), the head that confirms the subscription (a real socket, and three
   heads that are not a stream), the reconnect ladder's bounds (`250 ms` doubling
   to `30 s`, reset by any event), the offset merge's whole matrix (append,
   clip, replay, gap, a clip that would split a character, per-VM independence,
@@ -323,10 +377,17 @@ cargo test          # 274 lib + 26 client + 42 render = 342, 0 failed
   fresh without hiding a refused poll).
 * `tests/client.rs` — the client over real sockets against a `std::net` daemon
   stub (`tests/common/mod.rs`), asserting the exact request line, headers and
-  bodies (create **and** console write), the malformed/refused/unreachable
+  bodies (create **and** console write, and the ledger's own four: the create
+  body, the claim's `agent_cid`, the finish's outcome and note, and the
+  withdraw's path), the malformed/refused/unreachable
   paths, and the event stream: the frames off a real socket (the heartbeat is
   not an event, an unknown kind is not an event) and a reconnect whose second
-  event comes off a second connection after the backoff. The hub's status
+  event comes off a second connection after the backoff. The ledger's paths are
+  read the same way, off their own stub: the list parsed oldest first with every
+  column, one task on its own path (`GET /api/v0/tasks/t1`), a missing task as a
+  recognizable 404, an id that could change the path refused before a socket is
+  opened, and a refused claim carrying the daemon's own `409` — `no live agent
+  has guest CID 4` — through unchanged. The hub's status
   surface is read the same way, off its own stub: `GET /status` on the status
   path, the frozen body parsed field for field, an empty registry as an answer
   rather than a failure, an unknown extra field tolerated, a missing field
@@ -380,14 +441,30 @@ cargo test          # 274 lib + 26 client + 42 render = 342, 0 failed
   (cannot reach …)` with the register's half still drawn and the daemon still
   `LIVE`, a hub with nobody connected as an answer rather than a failure, and
   the **whole application** asking the hub's `/status` over a real socket),
-  and a full application frame written to
+  the **ledger** (the table drawn from the stub's tasks — the tally, every row
+  with its goal, role, budget and state stamp — a click on a row opening its
+  detail with the goal and acceptance in full, the outcome beside the state for
+  an ended task, and only the moves the daemon would accept: no claim on a task
+  in hand, no finish before a claim, no move at all on one that has ended; the
+  claim row offering the register's live agents as one-press CIDs and saying so
+  when no role agent is up; a claim the daemon refuses `409` drawn in its own
+  words — `task t2 claim: 409: no live agent has guest CID 4` — with nothing
+  changed; the create form's own refusal at an empty goal and then a real
+  `POST /api/v0/tasks` whose answer is filed, selected and named in the notice
+  line; the withdraw's arm/confirm; the index entry and the `l` key reaching the
+  sheet; a scrollable ledger drawn over a real frame whose claimed and done
+  stamps are asserted in pixels; and the **whole application following a task
+  event** between polls — the state and assignee off the stream, the ledger
+  still holding exactly the daemon's rows), and a full application frame
+  written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
   the telemetry pane's to `target/tmp/telemetry-frame.rgba`, the stream's to
   `target/tmp/stream-frame.rgba`).
 
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
-read a running daemon (read-only: it reads the machine, lists runs, and reads
-each one with its serial and exit kind). Set `APZ_DESKTOP_LIVE_HUB=host:port`
+read a running daemon (read-only: it reads the machine, lists runs, reads
+each one with its serial and exit kind, and reads the ledger — every task, and
+each task by its own id — mutating nothing). Set `APZ_DESKTOP_LIVE_HUB=host:port`
 to have it read a running hub's status surface too (read-only: the served CIDs,
 the uptime, the session count, and every connected agent's role, call count and
 heartbeat age). Neither is set by default, so the suite runs on a host with

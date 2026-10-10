@@ -102,6 +102,8 @@ KEYS:
     f                      the fleet map
     w                      the roster: who is running by role, and — when a
                            hub url is configured — who is connected to it
+    l                      the ledger: the plaza's tasks, with the claim,
+                           finish and withdrawal the daemon accepts on them
     t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
     Escape                 back to the register
@@ -111,9 +113,15 @@ The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
 GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
 POST /api/v0/runs/{id}/input, spawns runs with POST /api/v0/runs and kills
 them with DELETE /api/v0/runs/{id}. Between polls it follows
-GET /api/v0/events — the daemon's event stream: run and VM state changes and
-each VM's serial deltas — and reconnects to it with a bounded backoff. The
-polls stay the source of truth; the stream only moves the same state sooner.
+GET /api/v0/events — the daemon's event stream: run and VM state changes,
+each VM's serial deltas and every task transition — and reconnects to it with
+a bounded backoff. The polls stay the source of truth; the stream only moves
+the same state sooner.
+The ledger pane reads GET /api/v0/tasks while it is up and moves a task with
+POST /api/v0/tasks (file), POST /api/v0/tasks/{id}/claim (as a live agent's
+guest CID), POST /api/v0/tasks/{id}/finish (done or failed, with a note) and
+DELETE /api/v0/tasks/{id} (withdraw); a task event for a task the ledger has
+not read asks for the ledger rather than inventing a row.
 When --hub-url names a status surface, GET /status is read at the same
 cadence and the roster joins it to the register by guest CID: an agent the
 register reports and the hub does not is drawn 'registered, not connected',
