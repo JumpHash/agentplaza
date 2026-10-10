@@ -333,7 +333,10 @@ pub struct RunView<'a> {
 pub struct VmView {
     /// The VM's index among the run's VMs.
     pub id: u32,
-    /// The VM's state.
+    /// The VM's vsock guest CID (`vsock_cid + index`); absent when the run has
+    /// no vsock devices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_cid: Option<u64>,
     pub state: &'static str,
     /// The VM's serial capture; present only in a single-run GET.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -411,8 +414,12 @@ impl Registry {
                 }
                 inner.vms = handles
                     .into_iter()
-                    .map(|handle| VmSlot {
+                    .enumerate()
+                    .map(|(index, handle)| VmSlot {
                         id: handle.id(),
+                        guest_cid: vsock_cid.map(|base| {
+                            base + u64::try_from(index).unwrap_or(u64::MAX)
+                        }),
                         runtime: handle.runtime(),
                         handle: Some(handle),
                         state: VmState::Running,
@@ -490,10 +497,11 @@ struct RunInner {
 ///
 /// The serial capture and the console input are reached through the shared
 /// runtime, and the control handle is taken out while the VM is being killed:
-/// a GET of the run must never queue behind a VM that is slow to stop.
 struct VmSlot {
     /// The VM's index among the run's VMs, as the API reports it.
     id: u32,
+    /// The VM's vsock guest CID, when the run has vsock devices.
+    guest_cid: Option<u64>,
     /// The VM's shared runtime: its serial capture and its console input.
     runtime: Arc<VmRuntime>,
     /// The VM's control handle (`wait`/`kill`), absent only while a kill has
@@ -554,6 +562,7 @@ impl Run {
                 .iter()
                 .map(|slot| VmView {
                     id: slot.id,
+                    guest_cid: slot.guest_cid,
                     state: slot.state.as_str(),
                     serial: match detail {
                         Detail::Summary => None,

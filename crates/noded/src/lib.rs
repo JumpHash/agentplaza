@@ -46,8 +46,9 @@ pub const DEFAULT_KERNEL: &str = "/boot/vmlinuz-linux";
 /// directory.
 pub const DEFAULT_INITRD: &str = "target/guest/initrd.x86_64.gz";
 
-/// The console's files, relative to the working directory.
-pub const DEFAULT_CONSOLE_DIR: &str = "crates/noded/console";
+/// The web app's files (the agentplaza.io console), relative to the working
+/// directory.
+pub const DEFAULT_CONSOLE_DIR: &str = "apps/web";
 
 /// How long a client has to send its request and to take its response.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);

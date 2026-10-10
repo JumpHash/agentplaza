@@ -1,4 +1,4 @@
-//! Static serving of the console's files: `crates/noded/console/*` only.
+//! Static serving of the web app's files: `apps/web/*` only.
 //!
 //! The guard has two layers, because the console directory is written by
 //! another process: a request may only name a bare file (the characters

@@ -24,7 +24,7 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH]
   -h, --help     print this help
 
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
-POST /api/v0/runs/{id}/input and the console's files from crates/noded/console.";
+POST /api/v0/runs/{id}/input and the web app's files from apps/web.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
