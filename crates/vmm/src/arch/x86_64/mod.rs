@@ -87,6 +87,9 @@ pub enum ConfigurationError {
     /// Error writing MP table to memory: {0}
     #[error("Error writing MP table to memory: {0}")]
     MpTableSetup(#[from] mptable::MptableError),
+    /// Error creating ACPI tables: {0}
+    #[error("Error creating ACPI tables: {0}")]
+    AcpiTables(#[from] crate::acpi::AcpiError),
     /// Error writing the zero page of guest memory.
     #[error("Error writing the zero page of guest memory.")]
     ZeroPageSetup,
@@ -377,8 +380,12 @@ pub fn configure_system_for_boot(
 
     // Create ACPI tables and write them in guest memory
     // For the time being we only support ACPI in x86_64
-    // (trimmed: no DeviceManager in this port, so no ACPI tables are
-    // generated; the guest falls back to the MP table and legacy PIC.)
+    crate::acpi::create_acpi_tables(
+        vm.guest_memory(),
+        &mut vm.resource_allocator(),
+        vcpu_count,
+    )
+    .map_err(ConfigurationError::AcpiTables)?;
     Ok(())
 }
 
@@ -505,10 +512,9 @@ fn configure_64bit_boot(
     }
 
     // Set the location of RSDP in Boot Parameters to help the guest kernel find it faster.
-    // (trimmed: no ACPI tables are written, so the pointer stays zero and
-    // the guest scans for the RSDP itself.)
     let mut params = boot_params {
         hdr,
+        acpi_rsdp_addr: layout::RSDP_ADDR,
         ..Default::default()
     };
 

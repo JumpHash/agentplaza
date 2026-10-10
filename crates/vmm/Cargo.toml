@@ -12,6 +12,8 @@ linux-loader.workspace = true
 vm-memory.workspace = true
 vm-superio.workspace = true
 vmm-sys-util.workspace = true
+acpi_tables.workspace = true
+zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-bindings.workspace = true

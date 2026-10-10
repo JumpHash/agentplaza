@@ -19,3 +19,5 @@ vm-fdt = "0.3"
 vm-memory = { version = "0.18", features = ["backend-mmap"] }
 vm-superio = "0.8"
 vmm-sys-util = "0.15"
+zerocopy = { version = "0.8", features = ["derive"] }
+acpi_tables = { path = "crates/acpi-tables" }

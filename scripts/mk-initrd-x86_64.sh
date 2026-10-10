@@ -5,9 +5,13 @@
 #
 # Cmdline flags:
 #   plaza.beats=N    power off cleanly after N heartbeats (churn mode for the
-#                    respawn supervisor). The port has no ACPI S5 path yet, so
-#                    "power off" is a guest reboot (RB_AUTOBOOT -> i8042/triple
-#                    fault -> KVM exit -> VmHandle::wait() == GuestExited{reset}).
+#                    respawn supervisor). "Power off" is a guest reboot
+#                    (RB_AUTOBOOT -> KVM reset -> GuestExited{reset=true}), the
+#                    reset path, kept separate from ACPI S5 below.
+#   plaza.acpi=0     disable the ACPI S5 poweroff path: the `poweroff` command
+#                    then reboots (RB_AUTOBOOT) instead of writing the sleep
+#                    control register. ACPI S5 is the default when the flag is
+#                    absent, and a comparison run sets it to 0.
 #   plaza.halt=1     park forever in pause() after the banner (a deliberately
 #                    unresponsive guest: exercises the host kill path).
 #   plaza.harness=1  load the guest's vsock module set and run the AgentPlaza
@@ -20,6 +24,10 @@
 #                    harness itself.
 #   plaza.vm=N       this VM's index within the spawn (default 0), read by the
 #                    harness itself.
+#
+# The `poweroff` serial command uses ACPI S5 (RB_POWER_OFF): the guest kernel
+# evaluates the DSDT `_S5` object and writes SLP_EN to the PM1-control port,
+# and the VMM stops the VM cleanly (GuestExited{reset=false}).
 #
 # The guest's CID is NOT on the command line: one command line is shared by
 # every VM of a spawn, while the VMM gives each VM its own CID through the
@@ -212,6 +220,33 @@ static unsigned long parse_flag(const char *key)
     return kv ? strtoul(kv + strlen(key), NULL, 10) : 0;
 }
 
+// Whether `key=` appears anywhere on the kernel command line (its value is not
+// looked at). Needed to tell `plaza.acpi=0` (present, disabled) apart from an
+// absent flag, which parse_flag cannot: both read back as 0.
+static int flag_present(const char *key)
+{
+    char buf[1024];
+    int fd = open("/proc/cmdline", O_RDONLY);
+    if (fd < 0)
+        return 0;
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return 0;
+    buf[n] = '\0';
+    return strstr(buf, key) != NULL;
+}
+
+// ACPI S5 is the default poweroff path now. `plaza.acpi=0` restores the
+// pre-S5 behaviour (poweroff == reboot(RB_AUTOBOOT), the reset path) for
+// comparison runs.
+static int poweroff_is_acpi(void)
+{
+    if (flag_present("plaza.acpi=") && parse_flag("plaza.acpi=") == 0)
+        return 0;
+    return 1;
+}
+
 static void put(const char *s)
 {
     write(1, s, strlen(s));
@@ -297,8 +332,16 @@ static void do_command(const char *cmd)
         read_file_head("/proc/uptime", 1);
     } else if (!strcmp(cmd, "mem")) {
         read_file_head("/proc/meminfo", 3);
-    } else if (!strcmp(cmd, "poweroff") || !strcmp(cmd, "reboot")) {
-        put("plaza guest: rebooting (no ACPI S5 in the VMM yet)\n");
+    } else if (!strcmp(cmd, "poweroff")) {
+        if (poweroff_is_acpi()) {
+            put("plaza guest: powering off (ACPI S5)\n");
+            reboot(RB_POWER_OFF);
+        } else {
+            put("plaza guest: rebooting (plaza.acpi=0, no ACPI S5)\n");
+            reboot(RB_AUTOBOOT);
+        }
+    } else if (!strcmp(cmd, "reboot")) {
+        put("plaza guest: rebooting\n");
         reboot(RB_AUTOBOOT);
     } else if (!strcmp(cmd, "halt")) {
         put("plaza guest: parking forever\n");
@@ -439,9 +482,9 @@ static pid_t start_harness(void)
 }
 
 // Reaps the harness once it has finished. A completed session reboots the
-// guest: the VMM has no ACPI S5, so a guest-initiated exit is a reset - the
-// same clean path `plaza.beats` uses. A failed session is reported and the
-// guest stays up, so its transcript can be read.
+// guest (RB_AUTOBOOT -> reset), the same clean path `plaza.beats` uses; the
+// serial `poweroff` command is the only ACPI S5 (shutdown) path. A failed
+// session is reported and the guest stays up, so its transcript can be read.
 static void reap_harness(pid_t *harness)
 {
     if (*harness <= 0)

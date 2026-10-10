@@ -71,6 +71,18 @@ pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
 ///   7.2.8-arch1-2: the banner is missing under QEMU with the same command
 ///   line). Callers that set the level themselves (`loglevel=`, `quiet`,
 ///   `debug`, `ignore_loglevel`) are left alone.
+/// * on `x86_64` only, `reboot=acpi` — this port's ACPI tables declare the
+///   FADT RESET_REGISTER (a write of `RESET_VALUE` to PIO `0x606`, handled by
+///   [`crate::devices::legacy::pm1_cnt::Pm1CntDevice`]) and set the
+///   HW-reduced flag so S5 poweroff works. The HW-reduced flag makes the
+///   kernel's `efi_reboot_required()` return true, which silently rewrites the
+///   default `reboot_type` to `BOOT_EFI`; with no EFI runtime services the
+///   reboot then falls straight through to `machine_real_restart` (the BIOS
+///   real-mode jump), which double-faults on CET/IBT kernels. Forcing
+///   `reboot=acpi` disables that DMI/EFI quirk (`reboot_default = 0`) and keeps
+///   the reboot on the ACPI reset register, so a guest reboot stops the VM
+///   cleanly with `reset=true`. Callers that set a `reboot=` mode themselves
+///   are left alone.
 /// * on `x86_64` only, when the VM has a vsock device, the `virtio_mmio.device`
 ///   entry that registers the device's transport window with the guest: an
 ///   `x86_64` guest has no device tree, so the kernel learns about the
@@ -89,6 +101,8 @@ fn guest_cmdline(requested: &str, vsock: Option<VsockConfig>) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
     #[cfg(target_arch = "x86_64")]
+    const REBOOT_ARGS: [&str; 1] = ["reboot="];
+    #[cfg(target_arch = "x86_64")]
     const VIRTIO_MMIO_ARGS: [&str; 1] = ["virtio_mmio.device"];
 
     let requested = requested.trim();
@@ -104,6 +118,14 @@ fn guest_cmdline(requested: &str, vsock: Option<VsockConfig>) -> String {
     }
     if !sets(&LOGLEVEL_ARGS) {
         defaults.push("loglevel=7".to_string());
+    }
+
+    // `x86_64` only: keep guest reboots on the ACPI reset register instead of
+    // the kernel's HW-reduced-triggered EFI fallthrough (which ends in the
+    // BIOS real-mode jump and a CET double-fault). See the doc comment above.
+    #[cfg(target_arch = "x86_64")]
+    if !sets(&REBOOT_ARGS) {
+        defaults.push("reboot=acpi".to_string());
     }
 
     // The `x86_64` transport window. The numbers are this port's own layout
@@ -241,32 +263,57 @@ fn wait_for_event(evt: &EventFd) -> io::Result<()> {
 mod tests {
     use super::guest_cmdline;
 
+    /// The `x86_64`-only `reboot=acpi` suffix this port appends to the guest
+    /// command line (ACPI tables are x86_64-only; the knob is meaningless on
+    /// `aarch64`, whose reboots go through PSCI).
+    #[cfg(target_arch = "x86_64")]
+    const REBOOT_ACPI: &str = " reboot=acpi";
+    #[cfg(not(target_arch = "x86_64"))]
+    const REBOOT_ACPI: &str = "";
+
     #[test]
     fn guest_cmdline_appends_console_defaults() {
         assert_eq!(
             guest_cmdline("console=ttyS0 panic=-1", None),
-            "console=ttyS0 panic=-1 pci=off loglevel=7"
+            format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
-        assert_eq!(guest_cmdline("", None), "pci=off loglevel=7");
+        assert_eq!(
+            guest_cmdline("", None),
+            format!("pci=off loglevel=7{REBOOT_ACPI}")
+        );
         assert_eq!(
             guest_cmdline("  panic=-1  ", None),
-            "panic=-1 pci=off loglevel=7"
+            format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
     }
 
     #[test]
     fn guest_cmdline_respects_the_callers_settings() {
-        assert_eq!(guest_cmdline("quiet", None), "quiet pci=off");
-        assert_eq!(guest_cmdline("debug", None), "debug pci=off");
+        assert_eq!(
+            guest_cmdline("quiet", None),
+            format!("quiet pci=off{REBOOT_ACPI}")
+        );
+        assert_eq!(
+            guest_cmdline("debug", None),
+            format!("debug pci=off{REBOOT_ACPI}")
+        );
         assert_eq!(
             guest_cmdline("loglevel=3 ignore_loglevel", None),
-            "loglevel=3 ignore_loglevel pci=off"
+            format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
             guest_cmdline("pci=off loglevel=9", None),
-            "pci=off loglevel=9"
+            format!("pci=off loglevel=9{REBOOT_ACPI}")
         );
-        assert_eq!(guest_cmdline("pci=nocrs", None), "pci=nocrs loglevel=7");
+        assert_eq!(
+            guest_cmdline("pci=nocrs", None),
+            format!("pci=nocrs loglevel=7{REBOOT_ACPI}")
+        );
+        // A caller-chosen reboot mode is left alone.
+        assert_eq!(
+            guest_cmdline("reboot=k", None),
+            "reboot=k pci=off loglevel=7"
+        );
     }
 
     /// With a vsock device, the command line tells an `x86_64` guest where the
@@ -283,17 +330,17 @@ mod tests {
         let expected = format!("{MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}");
         assert_eq!(
             guest_cmdline("console=ttyS0", vsock),
-            format!("console=ttyS0 pci=off loglevel=7 virtio_mmio.device={expected}")
+            format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={expected}")
         );
         // A VM without a vsock device registers no transport...
         assert_eq!(
             guest_cmdline("console=ttyS0", None),
-            "console=ttyS0 pci=off loglevel=7"
+            "console=ttyS0 pci=off loglevel=7 reboot=acpi"
         );
         // ...and a caller that registered one itself keeps its own.
         assert_eq!(
             guest_cmdline("virtio_mmio.device=0x200@0x1000:6", vsock),
-            "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7"
+            "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
         );
     }
 
@@ -326,7 +373,9 @@ mod x86_64 {
         ConfigurationError, InitrdConfig, InitrdError, arch_memory_regions,
         configure_system_for_boot, load_kernel,
     };
-    use crate::devices::legacy::{I8042Device, SerialDevice, SerialOut};
+    use crate::devices::legacy::{
+        I8042Device, PM1_CNT_SIZE, Pm1CntDevice, SLEEP_CONTROL_PORT, SerialDevice, SerialOut,
+    };
     use crate::devices::virtio::VirtioError;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
     use crate::devices::virtio::vsock::VsockDevice;
@@ -446,12 +495,32 @@ mod x86_64 {
         let i8042 = Arc::new(Mutex::new(
             I8042Device::new(reset_evt).map_err(BootError::I8042)?,
         ));
+        // The PM1-control device: turns a guest ACPI S5 write (SLP_EN on the
+        // sleep control register, port 0x604) into the VM's exit event as a
+        // clean shutdown (reset=false), and a guest ACPI reboot (a write of
+        // RESET_VALUE to the reset register, port 0x606) into the exit event
+        // as a reset (reset=true) — the ACPI reboot path, which avoids the
+        // BIOS real-mode jump that double-faults on this port. It shares the
+        // exit event with the i8042 reset port, and publishes reset-vs-
+        // shutdown through the VM's `guest_reset` flag, which the exit watcher
+        // reads.
+        let shutdown_evt = vm
+            .vcpus_exit_evt()
+            .try_clone()
+            .map_err(BootError::EventFd)?;
+        let pm1 = Arc::new(Mutex::new(Pm1CntDevice::new(
+            shutdown_evt,
+            Arc::clone(&vm.common.guest_reset),
+            Arc::clone(&vm.common.vcpu_finish_requested),
+        )));
         // `Arc<Mutex<Device>>` unsizes into the bus's `Arc<Mutex<dyn BusDevice>>`
         // at the call site.
         vm.pio_bus
             .insert(serial.clone(), SERIAL_PORT_ADDRESS, SERIAL_PORT_SIZE)?;
         vm.pio_bus
             .insert(i8042.clone(), I8042_DATA_PORT, I8042_DATA_PORT_SIZE)?;
+        vm.pio_bus
+            .insert(pm1.clone(), SLEEP_CONTROL_PORT, PM1_CNT_SIZE)?;
         {
             let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
             vm.register_irq(serial.serial.interrupt_evt(), COM1_GSI)
@@ -497,7 +566,7 @@ mod x86_64 {
         // to its devices for as long as it runs. They are moved into the exit
         // watcher below, which is the VM's last thread — so the devices live
         // exactly as long as the VM does.
-        let legacy_devices = (serial, i8042, vsock);
+        let legacy_devices = (serial, i8042, pm1, vsock);
 
         // Load the kernel (ELF first, bzImage fallback), the optional initrd,
         // and write the boot parameters into guest memory.

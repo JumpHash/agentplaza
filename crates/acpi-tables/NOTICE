@@ -1,0 +1,24 @@
+acpi-tables
+Copyright 2026 AgentPlaza
+
+This crate is derived from Firecracker's src/acpi-tables crate
+(https://github.com/firecracker-microvm/firecracker, tree/main),
+Copyright 2019 Intel Corporation, Copyright 2023 Rivos, Inc., and
+Copyright 2024 Amazon.com, Inc. or its affiliates, licensed under the
+Apache License, Version 2.0 (see LICENSE in this directory).
+
+Copied files and upstream paths:
+
+- src/lib.rs      <- src/acpi-tables/src/lib.rs      (mcfg table dropped;
+                     displaydoc replaced with explicit thiserror strings)
+- src/aml.rs      <- src/acpi-tables/src/aml.rs      (trimmed to the AML
+                     subset for a serial + i8042 + _S5 DSDT)
+- src/rsdp.rs     <- src/acpi-tables/src/rsdp.rs     (verbatim)
+- src/xsdt.rs     <- src/acpi-tables/src/xsdt.rs     (verbatim)
+- src/fadt.rs     <- src/acpi-tables/src/fadt.rs     (added set_sleep_control_reg
+                     and set_sleep_status_reg setters for guest S5)
+- src/madt.rs     <- src/acpi-tables/src/madt.rs     (verbatim)
+- src/dsdt.rs     <- src/acpi-tables/src/dsdt.rs     (verbatim)
+- src/mcfg.rs     <- dropped (this port has no PCI MMCONFIG)
+
+The Apache License, Version 2.0 text is in this directory (LICENSE).

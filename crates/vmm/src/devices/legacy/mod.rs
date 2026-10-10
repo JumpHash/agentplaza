@@ -18,6 +18,8 @@
 #[cfg(target_os = "linux")]
 mod i8042;
 #[cfg(target_os = "linux")]
+mod pm1_cnt;
+#[cfg(target_os = "linux")]
 pub mod serial;
 
 #[cfg(target_os = "linux")]
@@ -32,6 +34,10 @@ use vmm_sys_util::eventfd::EventFd;
 
 #[cfg(target_os = "linux")]
 pub use self::i8042::{I8042Device, I8042Error as I8042DeviceError};
+#[cfg(target_os = "linux")]
+pub use self::pm1_cnt::{
+    PM1_CNT_SIZE, Pm1CntDevice, RESET_PORT, RESET_VALUE, SLEEP_CONTROL_PORT, SLEEP_STATUS_PORT,
+};
 #[cfg(target_os = "linux")]
 pub use self::serial::{SerialDevice, SerialEventsWrapper, SerialOut, SerialOutInner, SerialWrapper};
 #[cfg(target_os = "linux")]

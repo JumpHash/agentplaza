@@ -1,0 +1,17 @@
+[package]
+name = "acpi_tables"
+version = "0.1.0"
+authors = [
+    "The Cloud Hypervisor Authors",
+    "Amazon Firecracker team <firecracker-devel@amazon.com>",
+]
+edition = "2024"
+license = "Apache-2.0"
+
+[lib]
+bench = false
+
+[dependencies]
+thiserror.workspace = true
+vm-memory.workspace = true
+zerocopy.workspace = true

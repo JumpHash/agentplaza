@@ -47,3 +47,18 @@ src/vmm crate in part, and written for this port in part:
   crates/vmm/src/devices/virtio/FACTS.md.
 
 The Apache License, Version 2.0 text is in crates/vmm/LICENSE.
+
+Files under crates/vmm/src/acpi.rs are derived from Firecracker's
+src/vmm/src/acpi/{mod.rs,x86_64.rs} (Apache-2.0, Copyright 2024 Amazon.com,
+Inc. or its affiliates), trimmed to drop the DeviceManager argument and the
+MCFG table, and extended with the sleep control/status registers and a _S5
+DSDT object that upstream leaves absent (upstream Firecracker has no guest S5
+poweroff).
+
+crates/vmm/src/devices/legacy/pm1_cnt.rs is written for this port (Copyright
+2026 AgentPlaza, Apache-2.0): a PIO stub for the ACPI sleep control/status
+registers, with its shutdown condition mirroring Cloud Hypervisor's
+AcpiShutdownDevice (Apache-2.0, Copyright 2019 Intel Corporation).
+
+The acpi_tables crate (crates/acpi-tables) this crate depends on is derived
+from Firecracker's src/acpi-tables crate; see crates/acpi-tables/NOTICE.

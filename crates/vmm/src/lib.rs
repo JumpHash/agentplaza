@@ -26,6 +26,10 @@ pub mod builder;
 pub mod devices;
 pub mod spawner;
 
+/// ACPI table generation (`x86_64` guests only; aarch64 uses FDT).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod acpi;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod arch;
 
