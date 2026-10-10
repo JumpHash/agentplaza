@@ -1,0 +1,209 @@
+//! The dashboard's HTTP client against a real socket.
+//!
+//! `crates/noded/tests/common/mod.rs` stubs the daemon's *server* side with
+//! nothing but `std::net`; `tests/common/mod.rs` is the mirror image, and
+//! these tests use it to assert the exact request the client sends and to
+//! exercise its parsing over a real connection.
+//!
+//! One test talks to a live daemon when `APZ_DESKTOP_LIVE` names one (for
+//! example `http://127.0.0.1:8899`), and does nothing otherwise.
+
+mod common;
+
+use std::time::Duration;
+
+use common::{DETAIL, LIST, always, raw, replies};
+
+use agentplaza_desktop::api::{ApiError, Client, CreateRun, Endpoint, RunState, VmState};
+
+/// A client for a stub on `port`, with a short timeout so a stall fails fast.
+fn client(port: u16) -> Client {
+    Client::new(Endpoint::loopback_at("127.0.0.1", port).expect("loopback"))
+        .with_timeout(Duration::from_secs(5))
+}
+
+/// The exact bytes the daemon parses out of a create request.
+const CREATE_BODY: &str = r#"{"n":2,"vcpus":4,"memory_mib":256,"beats":3,"vsock_cid":50}"#;
+
+#[test]
+fn listing_runs_sends_the_documented_request_and_reads_the_answer() {
+    let server = replies(vec![(200, LIST.to_string())]);
+    let page = client(server.port).runs().expect("the list should parse");
+
+    assert_eq!(page.runs.len(), 2);
+    assert_eq!(page.runs[0].id, "r1");
+    assert_eq!(page.runs[0].state, RunState::Running);
+    assert_eq!(page.runs[0].live_vms(), 2);
+    assert_eq!(page.runs[0].base_cid(), Some(50));
+    assert_eq!(page.runs[1].state, RunState::Killed);
+    assert_eq!(page.runs[1].vms[0].state, VmState::Killed);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/runs");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn the_host_header_names_the_endpoint() {
+    let server = always(200, LIST);
+    let port = server.port;
+    client(port).runs().expect("the list should parse");
+    let requests = server.requests();
+    let host = format!("127.0.0.1:{port}");
+    assert_eq!(requests[0].header("Host"), Some(host.as_str()));
+}
+
+#[test]
+fn reading_one_run_follows_the_runs_path() {
+    let server = replies(vec![(200, DETAIL.to_string())]);
+    let run = client(server.port).run("r1").expect("the run should parse");
+
+    assert_eq!(run.id, "r1");
+    assert_eq!(run.vms[0].guest_cid, Some(50));
+    assert_eq!(run.serial().lines().count(), 3);
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/runs/r1");
+}
+
+#[test]
+fn killing_a_run_deletes_the_runs_path() {
+    let server = replies(vec![(200, DETAIL.to_string())]);
+    let run = client(server.port).kill("r1").expect("the answer should parse");
+    assert_eq!(run.id, "r1");
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "DELETE");
+    assert_eq!(requests[0].target, "/api/v0/runs/r1");
+}
+
+#[test]
+fn spawning_posts_exactly_the_daemons_create_body() {
+    let server = replies(vec![(201, DETAIL.to_string())]);
+    let create = CreateRun {
+        n: 2,
+        vcpus: 4,
+        memory_mib: 256,
+        beats: Some(3),
+        vsock_cid: Some(50),
+    };
+    let run = client(server.port).spawn(&create).expect("the answer should parse");
+    assert_eq!(run.id, "r1");
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/api/v0/runs");
+    assert_eq!(requests[0].header("Content-Type"), Some("application/json"));
+    assert_eq!(
+        requests[0].header("Content-Length"),
+        Some(CREATE_BODY.len().to_string().as_str())
+    );
+    assert_eq!(
+        requests[0].body, CREATE_BODY,
+        "the body is the daemon's own field set, byte for byte"
+    );
+}
+
+#[test]
+fn a_refusal_carries_the_daemons_own_words() {
+    let server = replies(vec![(400, r#"{"error":"vcpus must be between 1 and 64"}"#.to_string())]);
+    let error = client(server.port)
+        .spawn(&CreateRun {
+            n: 1,
+            vcpus: 65,
+            memory_mib: 128,
+            beats: None,
+            vsock_cid: None,
+        })
+        .expect_err("the daemon refuses");
+
+    assert_eq!(error.status(), Some(400));
+    assert_eq!(error.to_string(), "400: vcpus must be between 1 and 64");
+}
+
+#[test]
+fn a_missing_run_is_a_recognizable_404() {
+    let server = replies(vec![(404, r#"{"error":"no run with id r9"}"#.to_string())]);
+    let error = client(server.port).run("r9").expect_err("there is no such run");
+    assert!(error.is_not_found());
+    assert_eq!(error.to_string(), "404: no run with id r9");
+}
+
+#[test]
+fn an_unreachable_daemon_is_a_connect_error_rather_than_a_panic() {
+    // Nothing listens on port 1 of the loopback: the connect is refused
+    // immediately, which is what a stopped daemon looks like.
+    let error = Client::new(Endpoint::loopback_at("127.0.0.1", 1).expect("loopback"))
+        .runs()
+        .expect_err("nothing is listening");
+    assert!(error.is_unreachable(), "{error:?}");
+    assert!(error.to_string().starts_with("cannot reach "), "{error}");
+}
+
+#[test]
+fn a_body_shorter_than_content_length_is_malformed() {
+    let server = raw(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"runs\":",
+    );
+    let error = client(server.port).runs().expect_err("the body is short");
+    assert!(
+        matches!(error, ApiError::Malformed(_)),
+        "a truncated answer is malformed, not a panic: {error:?}"
+    );
+}
+
+#[test]
+fn a_response_without_a_length_is_malformed() {
+    let server = raw("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n");
+    let error = client(server.port).runs().expect_err("there is no body to read");
+    assert!(matches!(error, ApiError::Malformed(_)), "{error:?}");
+    assert!(error.to_string().contains("Content-Length"), "{error}");
+}
+
+#[test]
+fn a_non_loopback_endpoint_is_refused_before_any_socket_is_opened() {
+    for host in ["example.com", "10.0.0.1", "127.0.0.1.evil.tld", "::1"] {
+        let error = Endpoint::loopback_at(host, 8899).expect_err("must be refused");
+        assert!(matches!(error, ApiError::Config(_)), "{host}: {error:?}");
+    }
+    assert_eq!(
+        Endpoint::loopback_at("localhost", 8899)
+            .expect("localhost is loopback")
+            .host(),
+        "127.0.0.1"
+    );
+}
+
+/// Reads the live daemon when `APZ_DESKTOP_LIVE` names one, and does nothing
+/// otherwise: the suite stays runnable on a host with no daemon.
+#[test]
+fn a_live_daemon_reads_when_one_is_named() {
+    let Ok(url) = std::env::var("APZ_DESKTOP_LIVE") else {
+        eprintln!("APZ_DESKTOP_LIVE is not set: skipping the live read");
+        return;
+    };
+    let endpoint = Endpoint::from_url(&url).expect("a loopback URL");
+    let client = Client::new(endpoint.clone());
+    let page = client.runs().expect("the live daemon should answer");
+    println!("live {}: {} run(s)", endpoint.url(), page.runs.len());
+    for run in &page.runs {
+        println!(
+            "  {} {} · {}/{} vm · {} vcpu · {} MiB",
+            run.id,
+            run.state.label(),
+            run.live_vms(),
+            run.vms.len(),
+            run.vcpus,
+            run.memory_mib
+        );
+        let detail = client.run(&run.id).expect("the run should read");
+        println!(
+            "    detail: serial {} bytes, {} vm",
+            detail.serial().len(),
+            detail.vms.len()
+        );
+    }
+}
