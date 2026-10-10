@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use noded::hub::HubStatus;
 use noded::{Config, Server};
 
 /// How long a test waits for a response before failing.
@@ -31,18 +32,27 @@ pub fn missing_kernel() -> PathBuf {
 /// A daemon serving on an ephemeral port whose runs boot from
 /// [`missing_kernel`], with `console_dir` as its console.
 pub fn start(console_dir: PathBuf) -> Server {
-    let config = Config {
+    start_with(console_dir, Config::default().hub_status)
+}
+
+/// Like [`start`], with the hub's status surface chosen: `Some` proxies it,
+/// `None` is the `--hub-status off` daemon.
+pub fn start_with(console_dir: PathBuf, hub_status: Option<HubStatus>) -> Server {
+    Server::start(config(console_dir, hub_status)).expect("the test daemon should bind")
+}
+
+/// The config [`start_with`] runs a daemon with.
+pub fn config(console_dir: PathBuf, hub_status: Option<HubStatus>) -> Config {
+    Config {
         port: 0,
         kernel: missing_kernel(),
         initrd: missing_kernel(),
+        hub_status,
         console_dir,
         uds_dir: PathBuf::from("/tmp/plaza-vsock"),
         workspace: None,
-        // No initial role fleet: these tests drive the API exactly as it was
-        // before agents existed.
         ..Config::default()
-    };
-    Server::start(config).expect("the test daemon should bind")
+    }
 }
 
 /// One response, read off the socket.

@@ -8,6 +8,7 @@
 //! never panic on a malformed request, because the socket is the daemon's
 //! whole attack surface.
 
+use std::borrow::Cow;
 use std::io::{BufRead, Read, Write};
 
 /// The most a request line and its headers may occupy, together.
@@ -202,7 +203,7 @@ fn is_token_byte(byte: u8) -> bool {
 #[derive(Debug)]
 pub struct Response {
     status: u16,
-    content_type: &'static str,
+    content_type: Cow<'static, str>,
     body: Vec<u8>,
 }
 
@@ -211,7 +212,7 @@ impl Response {
     pub fn json(status: u16, body: String) -> Self {
         Self {
             status,
-            content_type: "application/json; charset=utf-8",
+            content_type: Cow::Borrowed("application/json; charset=utf-8"),
             body: body.into_bytes(),
         }
     }
@@ -225,6 +226,17 @@ impl Response {
     pub fn file(content_type: &'static str, body: Vec<u8>) -> Self {
         Self {
             status: 200,
+            content_type: Cow::Borrowed(content_type),
+            body,
+        }
+    }
+
+    /// A response with the given status and content type, carrying `body`
+    /// exactly as it was received: what the hub proxy passes through, so the
+    /// console sees the hub's own answer and not a re-serialized one.
+    pub fn bytes(status: u16, content_type: Cow<'static, str>, body: Vec<u8>) -> Self {
+        Self {
+            status,
             content_type,
             body,
         }
@@ -261,6 +273,8 @@ fn reason(status: u16) -> &'static str {
         405 => "Method Not Allowed",
         409 => "Conflict",
         500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
         _ => "Unknown",
     }
 }

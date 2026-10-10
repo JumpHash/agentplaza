@@ -3,17 +3,21 @@
 //! ```text
 //! noded [--port 8899] [--kernel /boot/vmlinuz-linux]
 //!       [--initrd target/guest/initrd.x86_64.gz]
+//!       [--hub-status 127.0.0.1:19080]
 //! ```
 //!
 //! Binds `127.0.0.1` only and serves the run API plus the console's static
-//! files; see the crate documentation for the endpoints. The guest images and
-//! the console directory are read relative to the working directory, so the
-//! daemon is started from the repository root.
+//! files; see the crate documentation for the endpoints. `--hub-status` also
+//! names the hub's status surface to proxy at `GET /api/v0/hub`, so the console
+//! can read the fleet through this daemon despite its `connect-src 'self'`
+//! policy. The guest images and the console directory are read relative to the
+//! working directory, so the daemon is started from the repository root.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use noded::fleet::Fleet;
+use noded::hub::HubStatus;
 use noded::registry::Detail;
 use noded::{Config, Server};
 
@@ -21,6 +25,7 @@ const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--workspace IMAGE] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
+             [--hub-status HOST:PORT|off]
 
   --port PORT      port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH    guest kernel image (default /boot/vmlinuz-linux)
@@ -39,10 +44,18 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                         (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 128)
   --agents-vcpus N      vCPUs per agent VM (default 1)
+  --hub-status HOST:PORT  where the hub (vsockd)'s status surface is, proxied
+                   at GET /api/v0/hub and /api/v0/hub/healthz so the console
+                   can read the fleet from this daemon's origin. Loopback
+                   only: exactly 127.0.0.1 or localhost
+                   (default 127.0.0.1:19080). `off` serves those endpoints
+                   with a 503: a daemon not told where the hub is must not
+                   report an empty registry.
   -h, --help       print this help
 
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
-POST /api/v0/runs/{id}/input and the web app's files from apps/web.";
+POST /api/v0/runs/{id}/input, GET /api/v0/hub[/healthz] and the web app's
+files from apps/web.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -86,6 +99,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         config.console_dir.display()
     );
     server.wait().map_err(|err| format!("server error: {err}"))
+}
+
+/// Reads `--hub-status`: `off` disables the proxy, and anything else must be a
+/// loopback `host:port`.
+fn parse_hub_status(value: &str) -> Result<Option<HubStatus>, String> {
+    if value == "off" {
+        return Ok(None);
+    }
+    HubStatus::parse(value)
+        .map(Some)
+        .map_err(|err| format!("--hub-status: {err}"))
 }
 
 /// Boots the initial role fleet, or reports why the node cannot serve it.
@@ -166,6 +190,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .parse()
                     .map_err(|err| format!("--agents-vcpus: {err}"))?;
             }
+            "--hub-status" => config.hub_status = parse_hub_status(&value("--hub-status")?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -246,8 +271,39 @@ mod tests {
             vec!["--agents-cid-base".to_string(), "x".to_string()],
             vec!["--agents-memory-mib".to_string(), "x".to_string()],
             vec!["--agents-vcpus".to_string(), "x".to_string()],
+            vec!["--hub-status".to_string()],
+            vec!["--hub-status".to_string(), "10.0.0.1:19080".to_string()],
+            vec!["--hub-status".to_string(), "127.0.0.1".to_string()],
         ] {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn the_hub_status_defaults_to_the_live_surface() {
+        let config = parse_args(Vec::new()).expect("no arguments is the default");
+        assert_eq!(
+            config.hub_status.map(|hub| hub.addr().to_string()),
+            Some("127.0.0.1:19080".to_string())
+        );
+    }
+
+    #[test]
+    fn the_hub_status_flag_overrides_and_disables() {
+        let config = parse_args(
+            ["--hub-status", "localhost:19081"]
+                .map(String::from)
+                .to_vec(),
+        )
+        .expect("a loopback surface");
+        assert_eq!(
+            config.hub_status.map(|hub| hub.addr().to_string()),
+            Some("127.0.0.1:19081".to_string()),
+            "localhost normalizes to the literal loopback"
+        );
+
+        let config = parse_args(["--hub-status", "off"].map(String::from).to_vec())
+            .expect("off is not an error");
+        assert_eq!(config.hub_status, None);
     }
 }

@@ -17,6 +17,8 @@
 //! * `GET    /api/v0/runs/{id}`        - one run, with every VM's serial
 //! * `POST   /api/v0/runs/{id}/input`  - write to one VM's serial console
 //! * `DELETE /api/v0/runs/{id}`        - kill a run's VMs
+//! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
+//! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
 //! * `GET    /` and `GET /<file>`      - the console's static files
 //!
 //! Run states and transitions are the schema's (`core.run_transitions`,
@@ -26,9 +28,11 @@
 pub mod events;
 pub mod fleet;
 pub mod http;
+pub mod hub;
 pub mod registry;
 pub mod static_files;
 
+use std::borrow::Cow;
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -40,6 +44,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::http::Response;
+use crate::hub::HubStatus;
 use crate::registry::{CreateRun, Detail, Registry, VmImages};
 
 /// The port the daemon listens on unless `--port` says otherwise.
@@ -83,6 +88,12 @@ pub struct Config {
     pub kernel: PathBuf,
     /// The guest initrd every run boots.
     pub initrd: PathBuf,
+    /// Where the hub's status surface is, when `--hub-status` named one. `Some`
+    /// serves `GET /api/v0/hub` and `/api/v0/hub/healthz` as a proxy of it;
+    /// `None` (`--hub-status off`) answers those endpoints with a 503, because
+    /// a daemon not told where the hub is cannot know its state and must not
+    /// pretend the registry is empty.
+    pub hub_status: Option<HubStatus>,
     /// The directory `GET /` and `GET <file>` serve.
     pub console_dir: PathBuf,
     /// The directory holding the per-VM vsock Unix sockets; VM `i`'s muxer
@@ -113,6 +124,7 @@ impl Default for Config {
             port: DEFAULT_PORT,
             kernel: PathBuf::from(DEFAULT_KERNEL),
             initrd: PathBuf::from(DEFAULT_INITRD),
+            hub_status: Some(HubStatus::default()),
             console_dir: PathBuf::from(DEFAULT_CONSOLE_DIR),
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
             workspace: None,
@@ -124,11 +136,12 @@ impl Default for Config {
     }
 }
 
-/// The daemon's state: its runs, the console directory it serves, and when it
-/// started (the machine view's uptime).
+/// The daemon's state: its runs, the console directory it serves, the hub's
+/// status surface it proxies, and when it started (the machine view's uptime).
 pub struct Node {
     registry: Registry,
     console_dir: PathBuf,
+    hub_status: Option<HubStatus>,
     started_at_ms: u64,
 }
 
@@ -173,6 +186,7 @@ impl Node {
                 events,
             ),
             console_dir: config.console_dir,
+            hub_status: config.hub_status,
             started_at_ms: epoch_ms(),
         }
     }
@@ -207,6 +221,12 @@ impl Node {
     /// The directory the console's files are served from.
     pub fn console_dir(&self) -> &Path {
         &self.console_dir
+    }
+
+    /// Where the hub's status surface is, or `None` when the daemon was not
+    /// told (`--hub-status off`).
+    pub fn hub_status(&self) -> Option<&HubStatus> {
+        self.hub_status.as_ref()
     }
 }
 
@@ -423,6 +443,14 @@ fn route(request: &http::Request, node: &Node) -> Response {
             "GET" => json_response(200, &node.machine()),
             _ => method_not_allowed("GET"),
         },
+        "/api/v0/hub" => match request.method() {
+            "GET" => proxy_hub(node, "/status"),
+            _ => method_not_allowed("GET"),
+        },
+        "/api/v0/hub/healthz" => match request.method() {
+            "GET" => proxy_hub(node, "/healthz"),
+            _ => method_not_allowed("GET"),
+        },
         "/api/v0/runs" => match request.method() {
             "GET" => list_runs(node),
             "POST" => create_run(node, request.body()),
@@ -457,6 +485,28 @@ fn run_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
         "GET" => get_run(node, rest),
         "DELETE" => delete_run(node, rest),
         _ => method_not_allowed("GET, DELETE"),
+    }
+}
+
+/// `GET /api/v0/hub` and `GET /api/v0/hub/healthz`: the hub's status surface,
+/// proxied so the console can read it from this daemon's own origin (its CSP's
+/// `connect-src 'self'` blocks the cross-origin fetch the hub would need).
+///
+/// The hub's answer is passed through as it is - the body byte for byte and
+/// the hub's own status - so the console parses one shape. The failure modes
+/// stay apart: a hub that is unreachable or unreadable is a 502 naming why,
+/// and a daemon that was never told where the hub is a 503. Both are JSON
+/// errors, never an empty registry dressed up as an answer.
+fn proxy_hub(node: &Node, path: &str) -> Response {
+    let Some(hub) = node.hub_status() else {
+        return Response::error(503, "hub status is not configured");
+    };
+    match hub::get(hub, path) {
+        Ok(answer) => {
+            let (status, content_type, body) = answer.into_parts();
+            Response::bytes(status, Cow::Owned(content_type), body)
+        }
+        Err(reason) => Response::error(502, &format!("hub unreachable: {reason}")),
     }
 }
 
