@@ -76,6 +76,20 @@ fn machine_from(port: u16) -> Model {
     model
 }
 
+/// A model that has read the machine and nothing else: no list poll has
+/// answered, so the session has not observed anything yet.
+fn machine_only(port: u16) -> Model {
+    let mut model = Model::at(Endpoint::loopback_at("127.0.0.1", port).expect("loopback"));
+    let machine = Client::new(model.endpoint.clone())
+        .machine()
+        .expect("the stub answers the machine");
+    model.apply(Message::Machine {
+        at_ms: 1_760_000_500_000,
+        result: Ok(machine),
+    });
+    model
+}
+
 /// Does what the runtime does for an effect, synchronously: the calls a click
 /// asked for, against the same client the application uses.
 fn perform(effect: Effect, model: &mut Model, client: &Client) {
@@ -136,11 +150,20 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
     if let Some(call) = effect.export {
         // What the runtime does for an export: the register's own write, not
         // a request to the daemon.
-        let result = agentplaza_desktop::export::write_transcript(&call.path, &call.contents);
+        let result = agentplaza_desktop::export::write_export(&call.path, &call.contents);
         model.apply(Message::Exported {
             at_ms: model.now_ms,
             run: call.run,
             vm: call.vm,
+            path: call.path,
+            result,
+        });
+    }
+    if let Some(call) = effect.csv {
+        // The session CSV goes through the same one write.
+        let result = agentplaza_desktop::export::write_export(&call.path, &call.contents);
+        model.apply(Message::CsvExported {
+            at_ms: model.now_ms,
             path: call.path,
             result,
         });
@@ -1202,6 +1225,303 @@ fn amber(pixel: &[u8]) -> bool {
         && pixel[0] - pixel[2] <= 0x95
         && pixel[1] - pixel[2] > 0x18
         && pixel[2] < 0xb0
+}
+
+/// The stub's list body for a run of `live` VMs of `memory_mib` each: the
+/// scale preset's shape, which is the session chart's own story.
+fn scale_body(memory_mib: u32, live: u32) -> String {
+    let vms: Vec<String> = (0..live)
+        .map(|id| {
+            format!(
+                "{{\"id\":{id},\"guest_cid\":{},\"state\":\"running\"}}",
+                10 + id
+            )
+        })
+        .collect();
+    format!(
+        "{{\"runs\":[{{\"id\":\"r9\",\"state\":\"running\",\"vcpus\":1,\"memory_mib\":{memory_mib},\
+         \"beats\":12,\"created_at\":1760000000000,\"ended_at\":null,\"vms\":[{}]}}]}}",
+        vms.join(",")
+    )
+}
+
+/// A model whose session is the sequence of list answers given, each read off
+/// a real socket by the real client and applied the way the runtime applies
+/// it: the observations the charts draw are the ones a poll would produce.
+fn observed(bodies: &[String]) -> Model {
+    let mut queue: Vec<(u16, String)> = vec![(200, MACHINE.to_string())];
+    for body in bodies {
+        queue.push((200, body.clone()));
+    }
+    let stub = common::replies(queue);
+    let mut model = Model::at(Endpoint::loopback_at("127.0.0.1", stub.port).expect("loopback"));
+    let client = Client::new(model.endpoint.clone());
+
+    let machine = client.machine().expect("the stub answers the machine");
+    model.apply(Message::Machine {
+        at_ms: 1_760_000_499_000,
+        result: Ok(machine),
+    });
+    for (step, _) in bodies.iter().enumerate() {
+        let page = client.runs().expect("the stub answers the list");
+        model.apply(Message::Runs {
+            at_ms: 1_760_000_500_000 + step as u64 * 2_000,
+            result: Ok(page),
+        });
+    }
+    model
+}
+
+/// The scale preset's ramp, as the session saw it: fifty 128 MiB guests come
+/// up, hold, drain to eleven behind their heartbeat deadline, and go.
+fn scale_ramp() -> Vec<String> {
+    [(0u32), 50, 50, 50, 11, 0]
+        .into_iter()
+        .map(|live| scale_body(128, live))
+        .collect()
+}
+
+#[test]
+fn the_telemetry_pane_says_so_before_it_has_a_figure() {
+    let server = common::fleet(LIST, DETAIL);
+    // The machine alone: no list poll yet, so nothing has been observed.
+    let mut model = machine_only(server.port);
+    model.apply(Message::Show(Pane::Telemetry));
+    assert_eq!(model.pane, Pane::Telemetry);
+    assert!(model.history.is_empty());
+
+    // No observation at all: every chart says so instead of drawing junk.
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("only 0 observation(s) so far")).is_ok(),
+        "an empty session says so"
+    );
+    assert!(ui.find(says("Telemetry")).is_ok());
+    assert!(ui.find(says("Export the session (CSV)")).is_ok());
+    assert!(ui.find(says("the whole fleet")).is_ok());
+    assert!(ui.find(says("committed guest RAM · over 0s")).is_ok());
+    assert!(ui.find(says("fleet serial throughput")).is_ok());
+
+    // Two observations: still a start, not a figure.
+    let mut model = observed(&scale_ramp()[..2]);
+    model.apply(Message::Show(Pane::Telemetry));
+    assert_eq!(model.history.len(), 2);
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("only 2 observation(s) so far")).is_ok(),
+        "two observations are still a start"
+    );
+    assert!(ui.find(says("6.3 GiB")).is_ok(), "the commitment is named");
+    assert!(ui.find(says("2 kept of 2")).is_ok());
+
+    // Three: the figure lands, and the caption says what it covers.
+    let mut model = observed(&scale_ramp()[..3]);
+    model.apply(Message::Show(Pane::Telemetry));
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("only 3 observation(s) so far")).is_err(),
+        "three observations are a figure"
+    );
+    assert!(
+        ui.find(says("committed guest RAM · over 4s · now 6.3 GiB · peak 6.3 GiB"))
+            .is_ok(),
+        "the caption names the figure and its window"
+    );
+    assert!(ui.find(says("every poll consecutive")).is_ok());
+}
+
+#[test]
+fn the_telemetry_plate_is_drawn_and_a_picked_runs_band_is_the_signal() {
+    let mut model = observed(&scale_ramp());
+    model.apply(Message::Show(Pane::Telemetry));
+    assert_eq!(model.history.len(), 6);
+    assert_eq!(
+        model.history.latest().expect("an observation").ram_mib,
+        0,
+        "the drain is the last thing the session saw"
+    );
+    assert_eq!(model.fleet_lps(), 0.0, "nothing runs, so nothing is counted");
+
+    // With no pick, the fleet's own series is ink and nothing carries the
+    // register's one hot signal.
+    let plain = frame_of(model.clone());
+    assert_eq!((plain.size.width, plain.size.height), (1280, 860));
+    assert!(
+        count_near(&plain, INK, 6) > 5_000,
+        "the charts draw their series in the register's ink"
+    );
+    assert_eq!(
+        count_near(&plain, SIGNAL, 6),
+        0,
+        "nothing is picked, so nothing is drawn in the signal"
+    );
+
+    // Picked, r9's own band is the signal stroke.
+    let mut picked = model.clone();
+    picked.telemetry_run = Some("r9".to_string());
+    assert_eq!(picked.telemetry_pick(), Some("r9"));
+    let with_pick = frame_of(picked);
+    let signal = count_near(&with_pick, SIGNAL, 8);
+    assert!(
+        signal > 1_000,
+        "the picked run's band was not drawn in the signal ({signal} pixels)"
+    );
+
+    // A fleet that has been asked for more guest memory than the host has is
+    // where the host's own total becomes a ruled line inside the chart.
+    let mut over = observed(&[scale_body(200_000, 1), scale_body(200_000, 1), scale_body(200_000, 1)]);
+    over.apply(Message::Show(Pane::Telemetry));
+    assert_eq!(
+        over.machine.as_ref().expect("the machine").memory_mib,
+        128_320
+    );
+    let over_frame = frame_of(over);
+    assert!(
+        count_near(&over_frame, WARN, 8) > 500,
+        "the host's total is not ruled on an overcommitted chart ({} warn pixels)",
+        count_near(&over_frame, WARN, 8)
+    );
+
+    for (name, frame) in [
+        ("telemetry-frame", &plain),
+        ("telemetry-picked-frame", &with_pick),
+    ] {
+        let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.rgba"));
+        std::fs::write(&path, frame.rgba.as_ref()).expect("the frame should be written");
+        println!(
+            "{name}: {} signal pixels, {} distinct colours, raw RGBA at {}",
+            count_near(frame, SIGNAL, 8),
+            distinct_colors(frame.rgba.as_ref()),
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn the_csv_button_writes_the_sessions_ramp_and_reads_the_bytes_back() {
+    let mut model = observed(&scale_ramp());
+    model.apply(Message::Show(Pane::Telemetry));
+    let client = Client::new(model.endpoint.clone());
+
+    let path = model.csv.path.clone();
+    assert!(path.ends_with(".csv"), "the box is pre-filled: {path}");
+    let _ = std::fs::remove_file(&path);
+
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("6 fleet row(s) + 6 run row(s)")).is_ok());
+        assert!(ui.find(says("observed_at, elapsed_s, scope, vms_live,")).is_ok());
+        ui.click("EXPORT CSV").expect("EXPORT CSV is clickable");
+        ui.into_messages().collect()
+    };
+    assert!(
+        messages.contains(&Message::CsvExport),
+        "pressing EXPORT CSV asks the model to export, got {messages:?}"
+    );
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+
+    // The bytes on disk are exactly the session's own observations, and the
+    // ramp reads out of them: none, the 6.3 GiB plateau, the drain, none.
+    let written = std::fs::read_to_string(&path).expect("the session was written");
+    assert_eq!(
+        written,
+        agentplaza_desktop::history::telemetry_csv(&model.history)
+    );
+    let rows: Vec<&str> = written.lines().skip(1).collect();
+    assert_eq!(rows.len(), 12, "six observations, fleet and r9 each");
+    assert_eq!(rows[0], "1760000500000,0.000,fleet,0,0,0.00");
+    assert_eq!(rows[1], "1760000500000,0.000,r9,0,0,0.00");
+    assert_eq!(rows[2], "1760000502000,2.000,fleet,50,6400,0.00");
+    assert_eq!(rows[6], "1760000506000,6.000,fleet,50,6400,0.00");
+    assert_eq!(rows[7], "1760000506000,6.000,r9,50,6400,0.00");
+    assert_eq!(rows[8], "1760000508000,8.000,fleet,11,1408,0.00");
+    assert_eq!(rows[10], "1760000510000,10.000,fleet,0,0,0.00");
+    assert_eq!(rows[11], "1760000510000,10.000,r9,0,0,0.00");
+    assert_eq!(
+        model.notice.as_ref().expect("a notice").kind,
+        NoticeKind::Done
+    );
+    assert_eq!(
+        model.notice.as_ref().expect("a notice").text,
+        format!("exported {} byte(s) of the session to {path}", written.len())
+    );
+
+    // The export is a pure function of the window: the same observations write
+    // the same bytes again.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("EXPORT CSV").expect("EXPORT CSV is clickable");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the session was written"),
+        written
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_run_pane_charts_the_selected_vms_rate_and_keeps_the_numeric_column() {
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = machine_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    perform(
+        model.apply(Message::Show(Pane::Run("r1".to_string()))),
+        &mut model,
+        &client,
+    );
+    assert_eq!(model.pane, Pane::Run("r1".to_string()));
+
+    // Three serial observations of the run the pane is following, so the
+    // selected VM's ring has a shape.
+    for (step, lines) in [(0u32, 3usize), (1, 40), (2, 90)] {
+        let capture: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        let mut run = model.detail.clone().expect("the run");
+        run.vms.truncate(1);
+        run.vms[0].serial = Some(capture);
+        model.apply(Message::Run {
+            at_ms: 1_760_000_500_000 + u64::from(step) * 2_000,
+            id: "r1".to_string(),
+            result: Ok(run),
+        });
+    }
+    // One observation from opening the pane, then three more: the ring holds
+    // what the run's own fetches measured.
+    let series = model.history.vm_series("r1", 0);
+    assert_eq!(series.len(), 4);
+    assert_eq!(series[0], 0.0, "the first sighting is a baseline");
+    assert!(
+        series[3] > series[2],
+        "the burst is still climbing: {series:?}"
+    );
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Serial rate · vm 0 (lines/s)")).is_ok());
+    assert!(ui.find(says("4 point(s) of 120")).is_ok());
+    // The VM row keeps its own number; the chart is the shape beside it.
+    assert!(ui.find(says("ln/s")).is_ok(), "the rate column stays");
+
+    let frame = frame_of(model.clone());
+    assert!(
+        holds(&frame, INK, 6),
+        "the sparkline draws the vm's series in the register's ink"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("sparkline-frame.rgba");
+    std::fs::write(&path, frame.rgba.as_ref()).expect("the frame should be written");
+    println!(
+        "run pane with a sparkline: {} distinct colours, raw RGBA at {}",
+        distinct_colors(frame.rgba.as_ref()),
+        path.display()
+    );
 }
 
 /// The colour covering the most pixels of a frame, and how many it covers.

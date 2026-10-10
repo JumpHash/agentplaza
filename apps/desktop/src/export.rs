@@ -98,6 +98,56 @@ pub struct ExportCall {
     pub contents: String,
 }
 
+/// The session's telemetry export box: the CSV's path, and whether the
+/// operator typed one.
+///
+/// The same shape as the transcript's box and the same one write at the end of
+/// it: a path in a text box, derived from the temp directory until the
+/// operator types their own, and the disk's own words when it cannot land.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsvExport {
+    /// The path in the box.
+    pub path: String,
+    /// Whether the operator has typed a path of their own.
+    pub edited: bool,
+}
+
+impl Default for CsvExport {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            edited: false,
+        }
+    }
+}
+
+impl CsvExport {
+    /// Fills an empty box with the session's default path, stamped where the
+    /// session's first observation was taken; a path the operator typed is
+    /// never replaced.
+    pub fn derive(&mut self, dir: &Path, at_ms: u64) {
+        if self.edited || !self.to_write().is_empty() {
+            return;
+        }
+        self.path = telemetry_path(dir, at_ms);
+    }
+
+    /// What an export will write to: the box, less the surrounding space a
+    /// paste tends to carry.
+    pub fn to_write(&self) -> &str {
+        self.path.trim()
+    }
+}
+
+/// One session CSV the runtime has to write: the bytes, and where they go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsvCall {
+    /// The path to write it to.
+    pub path: String,
+    /// The bytes to write.
+    pub contents: String,
+}
+
 /// The directory a derived path is built in: the process's temp directory, so
 /// an export never lands in the current directory by accident.
 pub fn default_dir() -> PathBuf {
@@ -116,6 +166,17 @@ pub fn export_path(dir: &Path, run: &str, vm: u32, target: ExportTarget) -> Stri
         ExportTarget::Run => format!("plaza-{run}-all.txt"),
     };
     dir.join(name).to_string_lossy().into_owned()
+}
+
+/// The path a session's telemetry CSV gets in `dir`.
+///
+/// The name carries the wall clock it was derived at, in milliseconds since
+/// the Unix epoch, so two sessions in the same directory sort by the time they
+/// started and never overwrite one another's file by accident.
+pub fn telemetry_path(dir: &Path, at_ms: u64) -> String {
+    dir.join(format!("plaza-telemetry-{at_ms}.csv"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// A run id as a filename token: ASCII letters, digits, `-` and `_` are kept,
@@ -209,12 +270,13 @@ fn vm_facts(vm: &Vm) -> String {
     facts
 }
 
-/// Writes a transcript and answers how many bytes it wrote, or the operating
-/// system's own words for why it could not.
+/// Writes an export — a transcript or a session CSV — and answers how many
+/// bytes it wrote, or the operating system's own words for why it could not.
 ///
-/// This is the export path's only side effect: one `std::fs::write` to the
-/// path in the box, with no directory created and no file removed first.
-pub fn write_transcript(path: &str, contents: &str) -> Result<usize, String> {
+/// This is the export path's only side effect, and there is exactly one of it:
+/// one `std::fs::write` to the path in the box, with no directory created and
+/// no file removed first.
+pub fn write_export(path: &str, contents: &str) -> Result<usize, String> {
     std::fs::write(path, contents)
         .map(|()| contents.len())
         .map_err(|error| error.to_string())
@@ -395,7 +457,7 @@ mod tests {
         let run = run();
         let contents = vm_transcript(&run, &run.vms[1], 0);
 
-        let written = write_transcript(&path, &contents).expect("the write lands");
+        let written = write_export(&path, &contents).expect("the write lands");
         assert_eq!(written, contents.len());
         let read_back = std::fs::read_to_string(&path).expect("the file is there");
         assert_eq!(read_back, contents);
@@ -408,8 +470,47 @@ mod tests {
             "/nonexistent-plaza-dir-{}/plaza-r1-0.txt",
             std::process::id()
         );
-        let error = write_transcript(&path, "hello").expect_err("the directory cannot exist");
+        let error = write_export(&path, "hello").expect_err("the directory cannot exist");
         assert!(!error.is_empty(), "the system's words are carried, not swallowed");
         assert!(!Path::new(&path).exists(), "nothing was written");
+    }
+
+    #[test]
+    fn the_sessions_path_is_stamped_in_the_directory_it_was_given() {
+        let dir = Path::new("/tmp/plaza-test");
+        assert_eq!(
+            telemetry_path(dir, 1_760_000_500_000),
+            "/tmp/plaza-test/plaza-telemetry-1760000500000.csv"
+        );
+        // Two sessions in the same directory do not collide, and the names
+        // sort by the time each began.
+        assert!(
+            telemetry_path(dir, 1_760_000_500_000) < telemetry_path(dir, 1_760_000_502_000)
+        );
+    }
+
+    #[test]
+    fn the_sessions_box_is_derived_until_the_operator_types_a_path() {
+        let dir = Path::new("/tmp/plaza-test");
+        let mut csv = CsvExport::default();
+        csv.derive(dir, 1_760_000_500_000);
+        assert_eq!(csv.path, "/tmp/plaza-test/plaza-telemetry-1760000500000.csv");
+        assert!(!csv.edited);
+
+        // A later stamp never overwrites what is already in the box.
+        csv.derive(dir, 1_760_000_999_000);
+        assert_eq!(csv.path, "/tmp/plaza-test/plaza-telemetry-1760000500000.csv");
+
+        // A path the operator typed, whitespace and all, is what is written.
+        csv.path = "  /tmp/mine.csv  ".to_string();
+        csv.edited = true;
+        csv.derive(dir, 1_760_000_999_000);
+        assert_eq!(csv.to_write(), "/tmp/mine.csv");
+
+        // Emptying the box hands it back to the derived default.
+        csv.path = "   ".to_string();
+        csv.edited = false;
+        csv.derive(dir, 1_760_000_500_000);
+        assert_eq!(csv.path, "/tmp/plaza-test/plaza-telemetry-1760000500000.csv");
     }
 }

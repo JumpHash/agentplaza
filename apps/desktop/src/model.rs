@@ -7,8 +7,11 @@
 //! nothing more.
 
 use crate::api::{ApiError, CreateRun, Endpoint, Machine, Run, RunsPage};
-use crate::export::{self, Export, ExportCall, ExportTarget, run_transcript, vm_transcript};
+use crate::export::{
+    self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_transcript, vm_transcript,
+};
 use crate::form::{Field, Preset, SpawnForm};
+use crate::history::{self, SessionHistory};
 use crate::map::Activity;
 
 /// How often a healthy daemon is polled unless `--refresh-ms` says otherwise.
@@ -48,6 +51,8 @@ pub enum Pane {
     Machine,
     /// The fleet as a map: the machine's substrate, run lanes and VM cells.
     Map,
+    /// The session's own figures, one observation per poll, as charts.
+    Telemetry,
 }
 
 /// Which VM of which run the operator has selected: the console's target and
@@ -78,6 +83,8 @@ pub enum KeyAction {
     Machine,
     /// `f`: the fleet map.
     Map,
+    /// `t`: the session's telemetry.
+    Telemetry,
     /// Escape: back to the register.
     Back,
     /// `?`: the help sheet, or away from it.
@@ -234,6 +241,8 @@ pub struct Effect {
     pub input: Option<ConsoleCall>,
     /// Write this transcript with `std::fs` — the register's only local write.
     pub export: Option<ExportCall>,
+    /// Write this session CSV with the same one write.
+    pub csv: Option<CsvCall>,
 }
 
 impl Effect {
@@ -414,6 +423,21 @@ pub enum Message {
     },
     /// The help sheet was toggled by its button.
     Help(bool),
+    /// A run was picked for the telemetry pane, or `None` for the whole fleet.
+    TelemetryPick(Option<String>),
+    /// The session CSV's path box was edited.
+    CsvEdited(String),
+    /// The CSV export button was pressed.
+    CsvExport,
+    /// A session CSV write answered.
+    CsvExported {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Where it was written.
+        path: String,
+        /// How many bytes were written, or why they were not.
+        result: Result<usize, String>,
+    },
     /// Dismiss the notice line.
     DismissNotice,
 }
@@ -429,7 +453,8 @@ impl Message {
             | Message::Input { at_ms, .. }
             | Message::Killed { at_ms, .. }
             | Message::Spawned { at_ms, .. }
-            | Message::Exported { at_ms, .. } => Some(*at_ms),
+            | Message::Exported { at_ms, .. }
+            | Message::CsvExported { at_ms, .. } => Some(*at_ms),
             Message::Show(_)
             | Message::Key(_)
             | Message::Select { .. }
@@ -447,6 +472,9 @@ impl Message {
             | Message::ExportTarget(_)
             | Message::Export
             | Message::Help(_)
+            | Message::TelemetryPick(_)
+            | Message::CsvEdited(_)
+            | Message::CsvExport
             | Message::DismissNotice => None,
         }
     }
@@ -473,6 +501,12 @@ pub struct Model {
     pub console: Console,
     /// The transcript export: what it covers, and the path in its box.
     pub export: Export,
+    /// The session CSV export: the path in its box.
+    pub csv: CsvExport,
+    /// The session's own observations: one per poll that saw something.
+    pub history: SessionHistory,
+    /// The run the telemetry pane is decomposed by, when one is picked.
+    pub telemetry_run: Option<String>,
     /// Whether the help sheet is up, over whatever pane is showing.
     pub help: bool,
     /// Every VM's serial rate, from the deltas between polls.
@@ -515,6 +549,9 @@ impl Default for Model {
             selection: None,
             console: Console::default(),
             export: Export::default(),
+            csv: CsvExport::default(),
+            history: SessionHistory::default(),
+            telemetry_run: None,
             help: false,
             activity: Activity::default(),
             refresh_ms: DEFAULT_REFRESH_MS,
@@ -619,10 +656,21 @@ impl Model {
     /// The guest memory the register's live VMs have committed, in MiB: what
     /// the host has been asked to hold right now.
     pub fn committed_mib(&self) -> u64 {
-        self.runs
-            .iter()
-            .map(|run| run.live_vms() as u64 * u64::from(run.memory_mib))
-            .sum()
+        history::committed_mib(&self.runs)
+    }
+
+    /// The fleet's serial throughput right now: every running VM's smoothed
+    /// rate, added up.
+    pub fn fleet_lps(&self) -> f32 {
+        history::fleet_lps(&self.runs, &self.activity)
+    }
+
+    /// The run the telemetry pane is decomposed by, when it is still in the
+    /// register: a pick that has left it falls back to the whole fleet.
+    pub fn telemetry_pick(&self) -> Option<&str> {
+        self.telemetry_run
+            .as_deref()
+            .filter(|id| self.runs.iter().any(|run| run.id == *id))
     }
 
     /// Whether the live VMs have been asked for more guest memory than the
@@ -671,6 +719,17 @@ impl Model {
                     Ok(page) => {
                         self.runs = page.runs;
                         self.activity.retain(&self.runs);
+                        // A run that left the register takes its rings with it;
+                        // the observations already written stay.
+                        self.history.retain(&self.runs);
+                        // The one place an observation is written: this poll
+                        // saw the fleet, so the session's window grows by one.
+                        // A failed poll returns further down without sampling,
+                        // so unobserved time is never inked.
+                        self.history.sample(at_ms, &self.runs, &self.activity);
+                        // The session's own export path is stamped where its
+                        // first observation landed, once, if the box is empty.
+                        self.derive_csv();
                         self.succeeded(at_ms);
                     }
                     Err(error) => self.failed(at_ms, &error),
@@ -852,6 +911,46 @@ impl Model {
                 self.help = open;
                 Effect::none()
             }
+            Message::TelemetryPick(run) => {
+                self.telemetry_run = run;
+                Effect::none()
+            }
+            Message::CsvEdited(path) => {
+                self.csv.path = path;
+                // Emptying the box hands it back to the register, which fills
+                // it with the session's default path again.
+                self.csv.edited = !self.csv.to_write().is_empty();
+                if !self.csv.edited {
+                    self.derive_csv();
+                }
+                Effect::none()
+            }
+            Message::CsvExport => self.csv_now(),
+            Message::CsvExported {
+                at_ms,
+                path,
+                result,
+            } => {
+                match result {
+                    Ok(bytes) => {
+                        self.succeeded(at_ms);
+                        self.notice = Some(Notice {
+                            kind: NoticeKind::Done,
+                            text: format!("exported {bytes} byte(s) of the session to {path}"),
+                        });
+                    }
+                    Err(error) => {
+                        // The daemon was never asked: this failure is the local
+                        // disk's, so it is shown in its own words and the
+                        // register's connection stamp is left alone.
+                        self.notice = Some(Notice {
+                            kind: NoticeKind::Failed,
+                            text: format!("export {path}: {error}"),
+                        });
+                    }
+                }
+                Effect::none()
+            }
             Message::DismissNotice => {
                 self.notice = None;
                 Effect::none()
@@ -878,6 +977,14 @@ impl Model {
             Pane::Run(id) if self.follow => effect.fetch_run = Some(id.clone()),
             Pane::Machine => effect.poll_machine = true,
             Pane::Map => {
+                effect.poll_machine = true;
+                effect.fetch_map = self.run_ids();
+            }
+            // The session's charts are per-run decompositions of serial
+            // throughput, so the telemetry pane watches every run's serial the
+            // same way the map's pulse does, and takes the machine's total for
+            // the RAM chart's ceiling.
+            Pane::Telemetry => {
                 effect.poll_machine = true;
                 effect.fetch_map = self.run_ids();
             }
@@ -971,6 +1078,16 @@ impl Model {
                 // both at once.
                 Effect::map(self.run_ids())
             }
+            Pane::Telemetry => {
+                self.pane = Pane::Telemetry;
+                self.detail = None;
+                self.armed = None;
+                // The session's figures come from the register's own answers:
+                // the list poll, every run's serial for the decomposition, and
+                // the machine's total for the RAM chart's ceiling.
+                self.derive_csv();
+                Effect::map(self.run_ids())
+            }
         }
     }
 
@@ -1049,6 +1166,51 @@ impl Model {
         }
     }
 
+    /// Fills the session CSV's box with its default path, stamped where the
+    /// session's first observation landed. A path the operator typed is kept.
+    fn derive_csv(&mut self) {
+        let at_ms = self
+            .history
+            .samples()
+            .first()
+            .map(|sample| sample.at_ms)
+            .unwrap_or(self.now_ms);
+        self.csv.derive(&export::default_dir(), at_ms);
+    }
+
+    /// The session CSV write the export button asks for, or why it cannot be
+    /// built: nothing observed yet, or no path to write it to.
+    fn csv_call(&self) -> Result<CsvCall, String> {
+        if self.history.is_empty() {
+            return Err("export: no poll has observed the fleet yet".to_string());
+        }
+        let path = self.csv.to_write().to_string();
+        if path.is_empty() {
+            return Err("export: the csv path box is empty".to_string());
+        }
+        Ok(CsvCall {
+            path,
+            contents: history::telemetry_csv(&self.history),
+        })
+    }
+
+    /// Presses the CSV export: writes the session, or says why it cannot.
+    fn csv_now(&mut self) -> Effect {
+        match self.csv_call() {
+            Ok(call) => Effect {
+                csv: Some(call),
+                ..Effect::none()
+            },
+            Err(why) => {
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Failed,
+                    text: why,
+                });
+                Effect::none()
+            }
+        }
+    }
+
     /// Acts on a key the register binds.
     fn key(&mut self, action: KeyAction) -> Effect {
         // The help sheet is over the register, so while it is up no key
@@ -1063,6 +1225,7 @@ impl Model {
             KeyAction::Register => self.show(Pane::Fleet),
             KeyAction::Machine => self.show(Pane::Machine),
             KeyAction::Map => self.show(Pane::Map),
+            KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
                 Effect::none()
@@ -1141,14 +1304,17 @@ impl Model {
     }
 
     /// Feeds every VM's serial length into the activity tracker, so the map's
-    /// pulse is the delta between this poll and the last.
+    /// pulse is the delta between this poll and the last, and records the
+    /// smoothed rate in the VM's own ring for the run pane's sparkline.
     fn observe(&mut self, run: &Run) {
         for vm in &run.vms {
             let Some(serial) = vm.serial.as_deref() else {
                 continue;
             };
-            self.activity
+            let lps = self
+                .activity
                 .observe(&run.id, vm.id, serial.lines().count(), self.now_ms);
+            self.history.observe_vm(&run.id, vm.id, lps);
         }
     }
 
@@ -1240,6 +1406,7 @@ pub fn title(model: &Model) -> String {
         Pane::Spawn => "AgentPlaza register — new run".to_string(),
         Pane::Machine => "AgentPlaza register — machine".to_string(),
         Pane::Map => "AgentPlaza register — fleet map".to_string(),
+        Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
 
@@ -2201,6 +2368,8 @@ mod tests {
         assert_eq!(title(&model), "AgentPlaza register — machine");
         model.apply(Message::Show(Pane::Map));
         assert_eq!(title(&model), "AgentPlaza register — fleet map");
+        model.apply(Message::Show(Pane::Telemetry));
+        assert_eq!(title(&model), "AgentPlaza register — telemetry");
         model.apply(Message::Show(Pane::Spawn));
         assert_eq!(title(&model), "AgentPlaza register — new run");
         model.apply(Message::Show(Pane::Run("r7".to_string())));
@@ -2576,5 +2745,241 @@ mod tests {
         assert_eq!(model.apply(Message::Key(KeyAction::Back)), Effect::poll());
         assert_eq!(model.pane, Pane::Fleet);
         assert!(!model.help);
+    }
+
+    #[test]
+    fn a_poll_that_failed_writes_no_observation() {
+        let mut model = Model::new();
+
+        // The poll never reached the daemon: nothing observed, nothing inked.
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: Err(ApiError::Connect("refused".into())),
+        });
+        assert!(model.history.is_empty());
+        assert_eq!(model.history.written(), 0);
+
+        // The next poll answered: one observation, numbered from one.
+        model.apply(Message::Runs {
+            at_ms: 9_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.history.len(), 1);
+        assert_eq!(model.history.written(), 1);
+        let sample = model.history.latest().expect("an observation");
+        assert_eq!(sample.no, 1);
+        assert_eq!(sample.ram_mib, 512);
+        assert_eq!(sample.vms, 1);
+    }
+
+    #[test]
+    fn the_telemetry_pane_watches_every_runs_serial_and_the_machine() {
+        let mut model = Model::new();
+        model.runs = vec![run("r1", RunState::Running), run("r2", RunState::Done)];
+        model.apply(Message::Show(Pane::Telemetry));
+        assert_eq!(model.pane, Pane::Telemetry);
+
+        let effect = model.apply(Message::Tick { at_ms: 10_000 });
+        assert!(effect.poll_list, "the list poll is the observation");
+        assert!(effect.poll_machine, "the RAM chart takes the host's total");
+        assert_eq!(effect.fetch_map, vec!["r1", "r2"], "the decomposition");
+    }
+
+    #[test]
+    fn the_telemetry_key_shows_the_pane_and_escape_comes_back() {
+        let mut model = Model::new();
+        model.runs = vec![run("r1", RunState::Running)];
+        let effect = model.apply(Message::Key(KeyAction::Telemetry));
+        assert_eq!(model.pane, Pane::Telemetry);
+        assert!(effect.poll_list, "opening the pane asks what there is to draw");
+        assert_eq!(effect.fetch_map, vec!["r1"]);
+        assert_eq!(title(&model), "AgentPlaza register — telemetry");
+        model.apply(Message::Key(KeyAction::Back));
+        assert_eq!(model.pane, Pane::Fleet);
+    }
+
+    #[test]
+    fn a_pick_that_left_the_register_falls_back_to_the_whole_fleet() {
+        let mut model = Model::new();
+        model.runs = vec![run("r1", RunState::Running)];
+
+        assert_eq!(
+            model.apply(Message::TelemetryPick(Some("r1".to_string()))),
+            Effect::none()
+        );
+        assert_eq!(model.telemetry_pick(), Some("r1"));
+
+        // The pick is still remembered, but the charts fall back quietly.
+        model.telemetry_run = Some("r9".to_string());
+        assert_eq!(model.telemetry_pick(), None);
+        assert_eq!(model.telemetry_run.as_deref(), Some("r9"));
+
+        model.apply(Message::TelemetryPick(None));
+        assert_eq!(model.telemetry_pick(), None);
+        assert_eq!(model.telemetry_run, None);
+    }
+
+    #[test]
+    fn the_run_panes_rings_hold_what_each_serial_observation_measured() {
+        let mut model = Model::new();
+        let first = run("r1", RunState::Running);
+        model.apply(Message::Run {
+            at_ms: 1_000,
+            id: "r1".to_string(),
+            result: Ok(Run {
+                vms: vec![vm(0, VmState::Running, Some(50), Some("a\nb\n"))],
+                ..first.clone()
+            }),
+        });
+        let second = run("r1", RunState::Running);
+        model.apply(Message::Run {
+            at_ms: 3_000,
+            id: "r1".to_string(),
+            result: Ok(Run {
+                vms: vec![vm(0, VmState::Running, Some(50), Some("a\nb\nc\nd\ne\nf\n"))],
+                ..second
+            }),
+        });
+
+        let series = model.history.vm_series("r1", 0);
+        assert_eq!(series.len(), 2, "one point per observation");
+        assert_eq!(series[0], 0.0, "the first sighting is a baseline");
+        assert!(series[1] > 0.0, "the second measured a burst: {series:?}");
+        assert!(model.history.vm_series("r1", 3).is_empty());
+    }
+
+    #[test]
+    fn a_run_that_left_the_register_takes_its_rings_with_it() {
+        let mut model = Model::new();
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        let observed = run("r1", RunState::Running);
+        model.apply(Message::Run {
+            at_ms: 2_000,
+            id: "r1".to_string(),
+            result: Ok(Run {
+                vms: vec![vm(0, VmState::Running, Some(50), Some("a\nb\n"))],
+                ..observed
+            }),
+        });
+        assert!(!model.history.vm_series("r1", 0).is_empty());
+
+        model.apply(Message::Runs {
+            at_ms: 3_000,
+            result: page(vec![]),
+        });
+        assert!(model.history.vm_series("r1", 0).is_empty());
+        assert_eq!(model.history.len(), 2, "the observations stay");
+    }
+
+    #[test]
+    fn the_csv_box_is_stamped_where_the_session_started_and_a_typed_path_is_kept() {
+        let mut model = Model::new();
+        model.apply(Message::Runs {
+            at_ms: 1_760_000_000_000,
+            result: page(vec![]),
+        });
+        assert_eq!(
+            model.csv.path,
+            export::telemetry_path(&export::default_dir(), 1_760_000_000_000)
+        );
+        assert!(model.csv.path.ends_with(".csv"));
+
+        model.apply(Message::CsvEdited("/tmp/plaza-session.csv".to_string()));
+        assert!(model.csv.edited);
+        model.apply(Message::Runs {
+            at_ms: 1_760_000_002_000,
+            result: page(vec![]),
+        });
+        assert_eq!(model.csv.path, "/tmp/plaza-session.csv", "a typed path is kept");
+
+        // Emptying the box hands it back to the derived default.
+        model.apply(Message::CsvEdited("   ".to_string()));
+        assert!(!model.csv.edited);
+        assert_eq!(
+            model.csv.path,
+            export::telemetry_path(&export::default_dir(), 1_760_000_000_000)
+        );
+    }
+
+    #[test]
+    fn the_csv_export_refuses_before_any_observation_and_writes_after_one() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::CsvExport);
+        assert!(effect.csv.is_none(), "there is nothing to write yet");
+        assert_eq!(
+            model.notice.as_ref().map(|notice| notice.kind),
+            Some(NoticeKind::Failed)
+        );
+        assert!(
+            model
+                .notice
+                .as_ref()
+                .expect("a notice")
+                .text
+                .contains("no poll has observed the fleet"),
+            "{:?}",
+            model.notice
+        );
+
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        let call = model
+            .apply(Message::CsvExport)
+            .csv
+            .expect("the session is written");
+        assert_eq!(call.path, model.csv.path);
+        assert_eq!(
+            call.contents,
+            crate::history::telemetry_csv(&model.history),
+            "the file holds exactly the session's own observations"
+        );
+
+        // A write that lands is a done notice; one that cannot is the disk's.
+        model.apply(Message::CsvExported {
+            at_ms: 2_000,
+            path: call.path.clone(),
+            result: Ok(call.contents.len()),
+        });
+        assert_eq!(
+            model.notice.as_ref().map(|notice| notice.kind),
+            Some(NoticeKind::Done)
+        );
+        model.apply(Message::CsvExported {
+            at_ms: 3_000,
+            path: "/nope/plaza.csv".to_string(),
+            result: Err("No such file or directory".to_string()),
+        });
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Failed);
+        assert!(notice.text.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn a_missing_csv_path_is_a_refusal_rather_than_a_write() {
+        let mut model = Model::new();
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![]),
+        });
+        model.apply(Message::CsvEdited("   ".to_string()));
+        model.csv.path.clear();
+        model.csv.edited = true;
+        let effect = model.apply(Message::CsvExport);
+        assert!(effect.csv.is_none());
+        assert!(
+            model
+                .notice
+                .as_ref()
+                .expect("a notice")
+                .text
+                .contains("path box is empty"),
+            "{:?}",
+            model.notice
+        );
     }
 }

@@ -15,11 +15,13 @@ use crate::api::{Run, RunState, Vm, VmState};
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
 use crate::form::{Field, Preset};
+use crate::history;
 use crate::mapview::{self, FleetMap};
 use crate::model::{
     Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, SERIAL_TAIL_LINES,
-    clock_label, duration_label, preset_footprint, serial_tail, tally_line,
+    clock_label, duration_label, memory_label, preset_footprint, serial_tail, tally_line,
 };
+use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
 
 /// The guest's command set, as the node's console offers it: the quick buttons
@@ -75,6 +77,17 @@ fn index(model: &Model) -> Container<'_, Message> {
                 model.runs.iter().map(|run| run.vms.len()).sum::<usize>()
             ),
             Pane::Map,
+        ),
+        index_entry(
+            model,
+            "3",
+            "Telemetry",
+            format!(
+                "{} observation(s) · {} lines/s",
+                model.history.len(),
+                model.fleet_lps()
+            ),
+            Pane::Telemetry,
         ),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
@@ -188,10 +201,11 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 6] = [
+const KEYS: [(&str, &str); 7] = [
     ("r", "register"),
     ("m", "machine"),
     ("f", "fleet map"),
+    ("t", "telemetry"),
     ("?", "this help"),
     ("esc", "back; closes this sheet"),
     ("↑ ↓", "console history"),
@@ -296,6 +310,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Spawn => body.push(spawn_pane(model)),
         Pane::Machine => body.push(machine_pane(model)),
         Pane::Map => body.push(map_pane(model)),
+        Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
         .style(theme::sheet)
@@ -323,6 +338,14 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         Pane::Map => (
             "Fleet map".to_string(),
             "the machine's substrate, its runs as lanes, its VMs as cells".to_string(),
+        ),
+        Pane::Telemetry => (
+            "Telemetry".to_string(),
+            format!(
+                "one observation per poll · {} kept of {}",
+                model.history.len(),
+                model.history.written()
+            ),
         ),
     };
     let health = model.health();
@@ -642,6 +665,218 @@ fn map_status(model: &Model) -> String {
     text
 }
 
+/// The session's figures: what the register observed, one observation per
+/// poll, as three charts and the tally of the window.
+fn telemetry_pane(model: &Model) -> Element<'_, Message> {
+    let history = &model.history;
+    let gap_ms = model.refresh_ms * history::GAP_FACTOR;
+    let pick = model.telemetry_pick();
+    let cap = model.machine.as_ref().map(|machine| machine.memory_mib as f32);
+
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "Every figure on this sheet is the register's own answer to a poll: nothing is \
+             estimated, and a poll that fails writes nothing, so a blank stretch in a line is \
+             time nobody observed. Throughput counts only the VMs that are still up — a VM that \
+             has left the running state keeps a frozen rate in the feed, and counting that \
+             would inflate the fleet line forever.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+        lead(vec![
+            ("committed", memory_label(model.committed_mib())),
+            ("vms live", model.running_vms().to_string()),
+            ("lines/s now", format!("{:.1}", model.fleet_lps())),
+            (
+                "observations",
+                format!("{} kept of {}", history.len(), history.written()),
+            ),
+        ]),
+        telemetry_picker(model),
+        // The session's export sits above the charts: a sheet this long is
+        // scrolled, and the export is not something to have to scroll to.
+        csv_row(model),
+    ];
+
+    for kind in [ChartKind::Ram, ChartKind::Vms, ChartKind::Throughput] {
+        // The host's own total is a memory figure: it belongs on the RAM
+        // chart and nowhere else.
+        let cap = (kind == ChartKind::Ram).then_some(cap).flatten();
+        body.push(chart_block(model, kind, pick, cap, gap_ms));
+    }
+
+    scrollable(Column::with_children(body).spacing(12.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// One chart: its caption, and the figure itself or the honest note that
+/// there is not one yet.
+fn chart_block<'a>(
+    model: &'a Model,
+    kind: ChartKind,
+    pick: Option<&'a str>,
+    cap: Option<f32>,
+    gap_ms: u64,
+) -> Element<'a, Message> {
+    let samples = model.history.samples();
+    let mut rows: Vec<Element<'a, Message>> = vec![mono(chart_caption(kind, model, gap_ms), 10.5, INK_2).into()];
+    if samples.len() < history::CHART_MIN_SAMPLES {
+        // Fewer than three observations is not a figure: it is a start.
+        rows.push(
+            serif(
+                format!(
+                    "only {} observation(s) so far — the figure lands as the register is polled",
+                    samples.len()
+                ),
+                11.5,
+                INK_3,
+            )
+            .into(),
+        );
+    } else {
+        rows.push(
+            container(telemetryview::chart(telemetryview::FleetChart {
+                samples,
+                kind,
+                picked: pick,
+                cap,
+                gap_ms,
+            }))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .height(Length::Fixed(150.0))
+            .padding(edge(4.0, 4.0, 4.0, 4.0))
+            .into(),
+        );
+    }
+    Column::with_children(rows).spacing(4.0).into()
+}
+
+/// What one chart is showing, in prose: the figure, where it stands now, its
+/// peak in the window, and how much of the window nobody observed.
+fn chart_caption(kind: ChartKind, model: &Model, gap_ms: u64) -> String {
+    let samples = model.history.samples();
+    let peak = samples
+        .iter()
+        .map(|sample| kind.value(sample))
+        .fold(0.0f32, f32::max);
+    let now = model.history.latest().map_or(0.0, |sample| kind.value(sample));
+    let mut caption = format!(
+        "{} · over {} · now {} · peak {}",
+        kind.label(),
+        duration_label(model.history.span_ms()),
+        kind.tick(now),
+        kind.tick(peak)
+    );
+    match history::gap_count(samples, gap_ms) {
+        0 => caption.push_str(" · every poll consecutive"),
+        1 => caption.push_str(" · 1 unobserved stretch"),
+        gaps => caption.push_str(&format!(" · {gaps} unobserved stretches")),
+    }
+    caption
+}
+
+/// The picks the charts decompose by: the whole fleet, or one run.
+fn telemetry_picker(model: &Model) -> Element<'_, Message> {
+    let picked = model.telemetry_pick();
+    let mut buttons: Vec<Element<'_, Message>> = vec![
+        button(mono("the whole fleet", 10.0, INK))
+            .on_press(Message::TelemetryPick(None))
+            .style(theme::register_row(picked.is_none()))
+            .padding(edge(4.0, 9.0, 4.0, 9.0))
+            .into(),
+    ];
+    for run in &model.runs {
+        buttons.push(
+            button(mono(run.id.as_str(), 10.0, INK))
+                .on_press(Message::TelemetryPick(Some(run.id.clone())))
+                .style(theme::register_row(picked == Some(run.id.as_str())))
+                .padding(edge(4.0, 9.0, 4.0, 9.0))
+                .into(),
+        );
+    }
+    let note = match picked {
+        Some(run) => picked_line(&model.history, run),
+        None => match &model.telemetry_run {
+            Some(id) => format!("{id} has left the register: the charts are the whole fleet again"),
+            None => "a picked run's band is the one hot stroke; the rest are the register's ink"
+                .to_string(),
+        },
+    };
+    Column::with_children(vec![
+        Row::with_children(buttons).spacing(4.0).wrap().into(),
+        mono(note, 10.0, INK_3).into(),
+    ])
+    .spacing(4.0)
+    .into()
+}
+
+/// What a picked run's own slice of the newest observation is.
+fn picked_line(history: &history::SessionHistory, run: &str) -> String {
+    let Some(sample) = history.latest() else {
+        return format!("picked {run} · nothing observed yet");
+    };
+    let Some(slice) = sample.runs.iter().find(|slice| slice.run == run) else {
+        return format!("picked {run} · not in the newest observation");
+    };
+    format!(
+        "picked {run} · {} live · {} committed · {:.1} lines/s now",
+        slice.vms,
+        memory_label(slice.ram_mib),
+        slice.lps
+    )
+}
+
+/// The session export: the CSV's path, and the button that writes it, through
+/// the same one write the transcript uses.
+fn csv_row(model: &Model) -> Element<'_, Message> {
+    Column::with_children(vec![
+        row![
+            mono("Export the session (CSV)", 10.5, INK_3),
+            text_input("a path to write the session's CSV to", &model.csv.path)
+                .on_input(Message::CsvEdited)
+                .font(MONO)
+                .size(11.5)
+                .padding(edge(5.0, 8.0, 5.0, 8.0))
+                .width(Length::Fill)
+                .style(theme::input),
+            button(mono("EXPORT CSV", 10.5, INK))
+                .on_press(Message::CsvExport)
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+        mono(csv_line(model), 10.0, INK_3).into(),
+    ])
+    .spacing(4.0)
+    .into()
+}
+
+/// What the CSV button will write, and where: one row per observation for the
+/// fleet and one for each of its runs, and never anything the guest wrote.
+fn csv_line(model: &Model) -> String {
+    let path = match model.csv.path.trim() {
+        "" => "— (no path)".to_string(),
+        path => path.to_string(),
+    };
+    let samples = model.history.len() as u64;
+    let runs: u64 = model
+        .history
+        .samples()
+        .iter()
+        .map(|sample| sample.runs.len() as u64)
+        .sum();
+    format!(
+        "{} fleet row(s) + {runs} run row(s) · observed_at, elapsed_s, scope, vms_live, \
+         ram_mib, lines_per_s → {path}",
+        samples
+    )
+}
+
 /// One run: its facts, its VMs, its controls, its console and its serial.
 fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
     let Some(run) = model.detail.as_ref().filter(|run| run.id == id) else {
@@ -697,6 +932,7 @@ fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
         ]),
         controls(model, run),
         Column::with_children(vm_rows).spacing(4.0).into(),
+        rate_pane(model, run),
         console(model, run),
         export_row(model, run),
         serial_pane(model, run),
@@ -704,6 +940,62 @@ fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
     .spacing(12.0)
     .height(Length::Fill)
     .into()
+}
+
+/// The selected VM's own serial rate over the session, as a sparkline.
+///
+/// One chart for the VM the console targets rather than one in every row: the
+/// run pane can hold fifty rows (the scale preset), and an iced canvas per row
+/// is a geometry, a program and a redraw each, all of them rebuilt every poll
+/// and none of them reachable by the register's own hit-testing. The numeric
+/// rate stays in every row, so nothing is lost by charting the one VM the
+/// operator is actually reading.
+fn rate_pane<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
+    let target = model.target_vm(&run.id);
+    let series = model.history.vm_series(&run.id, target);
+    let live = run
+        .vms
+        .iter()
+        .find(|vm| vm.id == target)
+        .is_some_and(|vm| vm.state == VmState::Running);
+
+    let caption = if series.is_empty() {
+        format!("vm {target} · no observation yet")
+    } else {
+        let peak = series.iter().copied().fold(0.0f32, f32::max);
+        format!(
+            "vm {target} · now {:.1} · peak {peak:.1} · {} point(s) of {}",
+            series.last().copied().unwrap_or(0.0),
+            series.len(),
+            history::HISTORY_CAP
+        )
+    };
+
+    let mut rows: Vec<Element<'a, Message>> = vec![
+        row![
+            mono(format!("Serial rate · vm {target} (lines/s)"), 10.5, INK_3),
+            space::horizontal(),
+            mono(caption, 10.0, INK_3),
+        ]
+        .align_y(Alignment::Center)
+        .into(),
+    ];
+    if series.len() < history::CHART_MIN_SAMPLES {
+        rows.push(serif("too few observations to draw a shape yet", 11.5, INK_3).into());
+    } else {
+        rows.push(
+            container(telemetryview::sparkline(telemetryview::Sparkline {
+                points: series,
+                live,
+            }))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .height(Length::Fixed(28.0))
+            .padding(edge(2.0, 4.0, 2.0, 4.0))
+            .into(),
+        );
+    }
+    Column::with_children(rows).spacing(4.0).into()
 }
 
 /// The follow, refresh and kill controls of a run.
@@ -1241,6 +1533,7 @@ mod tests {
             Pane::Spawn,
             Pane::Machine,
             Pane::Map,
+            Pane::Telemetry,
         ] {
             model.pane = pane;
             let _: Element<'_, Message> = view(&model);
@@ -1248,9 +1541,97 @@ mod tests {
     }
 
     #[test]
+    fn the_telemetry_pane_names_its_figures_and_its_quiet_note() {
+        let mut model = Model::new();
+        model.pane = Pane::Telemetry;
+
+        // Nothing observed yet: every chart says so instead of drawing junk.
+        assert_eq!(chart_caption(ChartKind::Ram, &model, 4_000), "committed guest RAM · over 0s · now 0 MiB · peak 0 MiB · every poll consecutive");
+        assert!(csv_line(&model).contains("0 fleet row(s)"));
+        let _ = view(&model);
+
+        // Two observations: still a start, not a figure.
+        for (at_ms, live) in [(1_000u64, 1u32), (3_000, 2)] {
+            let runs = vec![Run {
+                vms: (0..live)
+                    .map(|id| Vm {
+                        id,
+                        guest_cid: Some(50 + u64::from(id)),
+                        state: VmState::Running,
+                        serial: None,
+                    })
+                    .collect(),
+                ..run()
+            }];
+            model.apply(Message::Runs {
+                at_ms,
+                result: Ok(crate::api::RunsPage { runs }),
+            });
+        }
+        assert_eq!(model.history.len(), 2);
+        assert!(model.history.len() < history::CHART_MIN_SAMPLES);
+        assert_eq!(
+            chart_caption(ChartKind::Ram, &model, 4_000),
+            "committed guest RAM · over 2s · now 1.0 GiB · peak 1.0 GiB · every poll consecutive"
+        );
+        let _ = view(&model);
+
+        // Three: the figure lands, and the caption says what it covers.
+        model.apply(Message::Runs {
+            at_ms: 5_000,
+            result: Ok(crate::api::RunsPage {
+                runs: vec![Run {
+                    vms: vec![Vm {
+                        id: 0,
+                        guest_cid: Some(50),
+                        state: VmState::Running,
+                        serial: None,
+                    }],
+                    ..run()
+                }],
+            }),
+        });
+        assert!(model.history.len() >= history::CHART_MIN_SAMPLES);
+        assert_eq!(
+            chart_caption(ChartKind::Vms, &model, 4_000),
+            "live vms · over 4s · now 1 · peak 2 · every poll consecutive"
+        );
+        // A picked run's own slice, and the figure the charts decompose by.
+        model.telemetry_run = Some("r1".to_string());
+        assert_eq!(model.telemetry_pick(), Some("r1"));
+        assert!(
+            picked_line(&model.history, "r1").starts_with("picked r1 · 1 live"),
+            "{:?}",
+            picked_line(&model.history, "r1")
+        );
+        let _ = view(&model);
+
+        // A poll four cadences later is unobserved time, and the caption says
+        // how many stretches there were.
+        model.apply(Message::Runs {
+            at_ms: 30_000,
+            result: Ok(crate::api::RunsPage { runs: vec![] }),
+        });
+        assert!(chart_caption(ChartKind::Vms, &model, 4_000).ends_with("1 unobserved stretch"));
+        assert_eq!(history::gap_count(model.history.samples(), 4_000), 1);
+        assert_eq!(csv_line(&model), "4 fleet row(s) + 3 run row(s) · observed_at, elapsed_s, scope, vms_live, ram_mib, lines_per_s → /tmp/plaza-telemetry-1000.csv");
+        let _ = view(&model);
+
+        // A pick that is in the register is decomposed; one that has gone says
+        // so and the charts fall back to the whole fleet.
+        model.telemetry_run = Some("r9".to_string());
+        assert_eq!(model.telemetry_pick(), None, "r9 is not in the register");
+        assert_eq!(
+            picked_line(&model.history, "r9"),
+            "picked r9 · not in the newest observation"
+        );
+        let _ = view(&model);
+    }
+
+    #[test]
     fn the_machine_and_map_panes_build_with_and_without_a_machine() {
         let mut model = Model::new();
-        for pane in [Pane::Machine, Pane::Map] {
+        for pane in [Pane::Machine, Pane::Map, Pane::Telemetry] {
             model.pane = pane;
             let _ = view(&model);
             model.machine = Some(machine());
@@ -1305,7 +1686,7 @@ mod tests {
     #[test]
     fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
         let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
-        for bound in ["r", "m", "f", "?", "esc", "↑ ↓"] {
+        for bound in ["r", "m", "f", "t", "?", "esc", "↑ ↓"] {
             assert!(keys.contains(&bound), "the register binds {bound:?}");
         }
         for (_, what) in KEYS {

@@ -78,6 +78,7 @@ KEYS:
     r                      the fleet register
     m                      the machine (GET /api/v0/machine)
     f                      the fleet map
+    t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
     Escape                 back to the register
     up / down              walk the console's command history
@@ -86,8 +87,8 @@ The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
 GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
 POST /api/v0/runs/{id}/input, spawns runs with POST /api/v0/runs and kills
 them with DELETE /api/v0/runs/{id}. The spawn form's quick boots fill the
-form; the run pane exports a transcript to the path in its box with plain
-std::fs.
+form; the run pane exports a transcript, and the telemetry pane the session's
+CSV, to the path in its box with plain std::fs.
 ";
 
 /// Parses the arguments, with `env` standing in for the process environment.
@@ -261,12 +262,13 @@ mod tests {
     fn the_help_documents_the_cadence_and_the_keys() {
         assert!(HELP.contains("--refresh-ms"));
         assert!(HELP.contains("250–30000"));
-        for key in ["r ", "m ", "f ", "? ", "Escape"] {
+        for key in ["r ", "m ", "f ", "t ", "? ", "Escape"] {
             assert!(HELP.contains(key), "the help should document {key:?}");
         }
         // The two local behaviours the help names.
         assert!(HELP.contains("quick boots fill the"));
         assert!(HELP.contains("exports a transcript"));
+        assert!(HELP.contains("the session's\nCSV"));
     }
 
     #[test]

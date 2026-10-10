@@ -6,7 +6,7 @@
 
 use crate::api::Client;
 use crate::cli::Config;
-use crate::export::{self, ExportCall};
+use crate::export::{self, CsvCall, ExportCall};
 use crate::model::{ConsoleCall, Effect, KeyAction, Message, Model, title};
 use crate::{epoch_ms, theme, view};
 
@@ -84,6 +84,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "r" => Some(KeyAction::Register),
             "m" => Some(KeyAction::Machine),
             "f" => Some(KeyAction::Map),
+            "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
         },
@@ -205,13 +206,25 @@ fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
             async move {
                 (
                     epoch_ms(),
-                    export::write_transcript(&path, &contents),
+                    export::write_export(&path, &contents),
                 )
             },
             move |(at_ms, result)| Message::Exported {
                 at_ms,
                 run: run.clone(),
                 vm,
+                path: written.clone(),
+                result,
+            },
+        ));
+    }
+    if let Some(CsvCall { path, contents }) = effect.csv {
+        // The same one write, over the session instead of a transcript.
+        let written = path.clone();
+        tasks.push(Task::perform(
+            async move { (epoch_ms(), export::write_export(&path, &contents)) },
+            move |(at_ms, result)| Message::CsvExported {
+                at_ms,
                 path: written.clone(),
                 result,
             },
@@ -230,10 +243,12 @@ mod tests {
             (Key::Character("r".into()), KeyAction::Register),
             (Key::Character("m".into()), KeyAction::Machine),
             (Key::Character("f".into()), KeyAction::Map),
+            (Key::Character("t".into()), KeyAction::Telemetry),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
             (Key::Character("M".into()), KeyAction::Machine),
             (Key::Character("F".into()), KeyAction::Map),
+            (Key::Character("T".into()), KeyAction::Telemetry),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
             (Key::Character("?".into()), KeyAction::Help),
             (Key::Named(keyboard::key::Named::ArrowUp), KeyAction::HistoryPrev),

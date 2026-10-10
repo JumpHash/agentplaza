@@ -9,16 +9,20 @@
 //!
 //! * [`api`] — the daemon's JSON API over a tiny blocking HTTP/1.1 client,
 //!   loopback only, no client dependency.
+//! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
 //! * [`exit`] — how a VM left the running state, read off its serial tail.
 //! * [`export`] — where a transcript goes, the bytes it holds, and the one
 //!   `std::fs` write that puts it there.
 //! * [`form`] — the spawn form, its quick-boot presets, and the validation
 //!   that mirrors the daemon's.
+//! * [`history`] — the session's rolling telemetry history and its CSV.
 //! * [`map`] — the fleet map's geometry and its serial-activity feed: pure,
 //!   no iced types.
 //! * [`mapview`] — the map as an iced canvas, painting what [`map`] computes.
 //! * [`model`] — the panes, the reducer and the poll arithmetic: pure state,
 //!   no iced types.
+//! * [`telemetryview`] — the session's figures as iced canvases, painting what
+//!   [`chart`] and [`history`] compute.
 //! * [`theme`] — the register's palette, stamps and rulings.
 //! * [`view`] — iced widgets built from the model.
 //! * [`cli`] — `--url` / `--refresh-ms` / `APZ_DESKTOP_URL` and the call
@@ -26,13 +30,16 @@
 
 pub mod api;
 pub mod app;
+pub mod chart;
 pub mod cli;
 pub mod exit;
 pub mod export;
 pub mod form;
+pub mod history;
 pub mod map;
 pub mod mapview;
 pub mod model;
+pub mod telemetryview;
 pub mod theme;
 pub mod view;
 

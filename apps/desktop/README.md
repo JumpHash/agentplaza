@@ -39,6 +39,7 @@ agentplaza-desktop [--url <url>] [--refresh-ms <milliseconds>]
 | `r` | the fleet register |
 | `m` | the machine (the index also lists it) |
 | `f` | the fleet map |
+| `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
 | `Escape` | back to the register |
 | `↑` / `↓` | walk the console's command history |
@@ -104,6 +105,31 @@ cargo run -- --refresh-ms 500
   a refusal in the notice line, in the disk's own words, and never touches the
   daemon's connection stamp. A path you type is kept; emptying the box hands it
   back to the derived default;
+* the **telemetry** pane (`t`): the session's own figures, one observation per
+  poll that *observed* something — a failed poll writes nothing, so a blank
+  stretch in a line is time nobody observed, and a dotted rule in the margin's
+  red marks each stretch the register missed. A capped rolling window
+  (120 observations, ≈2 min at the default cadence) of the fleet's committed
+  guest RAM, live VMs and serial throughput, drawn as iced canvases with ruled
+  gridlines, mono figures, a ceiling on a figure a person would write, and the
+  host's own total ruled inside the RAM chart when the fleet has been asked for
+  more than it has. A run picked from the row above the charts decomposes the
+  RAM and live-VM charts into that run's closed bands (the picked run's band in
+  the register's one hot stroke) and lays its own line over the fleet's
+  throughput. Fewer than three observations is not a figure: it is an honest
+  note that says so;
+* the run pane's **serial rate chart**: the selected VM's own lines/s over the
+  session, in a 28-px canvas over a faint baseline, with the numeric rate still
+  in every VM row. One chart for the VM the console targets rather than one in
+  every row — a fifty-VM run would otherwise rebuild fifty canvas programs on
+  every poll, and a small canvas beside a number is hard to read at any size;
+* **session CSV export**: `observed_at, elapsed_s, scope, vms_live, ram_mib,
+  lines_per_s`, long form — one `fleet` row per observation and one row per run
+  of it, because runs arrive and leave mid-session and a wide sheet would lie
+  with empty cells. Only run ids and figures: never anything the guest wrote.
+  The path box is pre-filled with `{temp}/plaza-telemetry-{first observation}.csv`,
+  derived once from where the session began, and it goes to disk through the
+  same single `std::fs::write` as a transcript;
 * **New run**: the daemon's own create fields — `n`, `vcpus`, `memory_mib`,
   `beats`, `vsock_cid` — validated client-side with the daemon's ranges
   (`n`/`vcpus` 1–64, `memory_mib` ≥ 128, `vsock_cid` ≥ 3, and the run's last
@@ -127,13 +153,15 @@ cargo run -- --refresh-ms 500
   `crates/noded/tests/common/mod.rs` uses to test the daemon.
 * The model (`src/model.rs`), the map's geometry and activity (`src/map.rs`),
   the exit kinds (`src/exit.rs`), the form and its presets (`src/form.rs`), the
-  export (`src/export.rs`), the client (`src/api.rs`) and the CLI
-  (`src/cli.rs`) know nothing about iced, so the reducer, the layout and its
-  hit-testing, the rate arithmetic, validation, preset bodies, transcript
-  bytes, parsing and poll arithmetic are unit-tested headlessly; `src/app.rs`
-  is the only place that turns an effect into an iced `Task` (and the only
-  place that writes a transcript), and `src/mapview.rs` the only place that
-  paints.
+  export (`src/export.rs`), the session's rolling history (`src/history.rs`),
+  the charts' arithmetic (`src/chart.rs`), the client (`src/api.rs`) and the
+  CLI (`src/cli.rs`) know nothing about iced, so the reducer, the layout and
+  its hit-testing, the rate arithmetic, the observation ring and its gap
+  segmentation, the CSV bytes, validation, preset bodies, transcript bytes,
+  parsing and poll arithmetic are unit-tested headlessly; `src/app.rs` is the
+  only place that turns an effect into an iced `Task` (and the only place that
+  writes a file), and `src/mapview.rs` and `src/telemetryview.rs` the only
+  places that paint.
 * `src/theme.rs` and the widgets in `src/view.rs` echo
   `docs/ux-draft/owner-console.html`: the Plaza palette, mono for data and
   serif for prose, ruled sheets, and stamps for state.
@@ -168,8 +196,16 @@ cargo test
   against the pane's and read back off the disk, an export that cannot land
   drawn as a `REFUSED` notice, the help `?` sheet drawn over a dimmed register
   (its box, its scrim and the ink still showing through asserted in pixels),
-  and a full application frame written to `target/tmp/fleet-frame.rgba` (and
-  the map's to `target/tmp/fleet-map-frame.rgba`).
+  the telemetry pane over a real six-observation session (the honest
+  `<3 observations` notes, the captions with their window and peak, a real
+  canvas frame whose fleet line is ink and which holds no signal until a run is
+  picked and then holds its band in the signal, the host's total ruled in amber
+  on an overcommitted RAM chart, and the CSV button writing the scale run's
+  ramp — `0, 6,400, 6,400, 1,408, 0` MiB — whose rows are asserted byte-exact
+  and read back off the disk, twice), the run pane's selected-VM rate chart
+  with its numeric column kept, and a full application frame written to
+  `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
+  the telemetry pane's to `target/tmp/telemetry-frame.rgba`).
 
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
 read a running daemon (read-only: it reads the machine, lists runs, and reads
