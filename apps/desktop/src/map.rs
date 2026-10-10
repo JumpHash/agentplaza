@@ -100,6 +100,28 @@ pub struct Cell {
     pub lps: f32,
 }
 
+/// How many of a lane's cells fit across the plate, and how many are past its
+/// right edge.
+///
+/// The plate is a fixed scale — cells sit [`CELL_STEP`] apart by index — so a
+/// run with more VMs than its width holds has its tail clipped. Nothing here
+/// hides a VM: the register and the run pane list every one, and the map says
+/// how many of them it can draw.
+pub fn lane_overflow(plate: &Layout, lane: usize) -> (usize, usize) {
+    let right = plate.substrate.right();
+    plate
+        .cells
+        .iter()
+        .filter(|cell| cell.lane == lane)
+        .fold((0, 0), |(drawn, past), cell| {
+            if cell.x + MARK_R <= right {
+                (drawn + 1, past)
+            } else {
+                (drawn, past + 1)
+            }
+        })
+}
+
 /// The plate: the substrate, its lanes and their cells.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
@@ -470,5 +492,45 @@ mod tests {
         let plate = layout(&fleet(), &activity, 900.0, 500.0);
         let cell = plate.cells.iter().find(|c| c.run_id == "r1" && c.vm == 0).expect("r1/vm0");
         assert!(cell.lps > 0.0, "the pulse reaches the plate");
+    }
+
+    #[test]
+    fn a_fifty_vm_run_lays_fifty_cells_and_the_plate_clips_the_tail() {
+        // The scale preset's fleet, as the plate sees it: one lane with every
+        // cell placed by index at the fixed step. The plate is a fixed scale,
+        // so a lane this wide runs past its right edge and the canvas clips it;
+        // the register and the run pane are where all fifty stay legible.
+        let vms = (0..50)
+            .map(|id| vm(id, VmState::Running, Some(10 + u64::from(id))))
+            .collect();
+        let plate = layout(&[run("r1", RunState::Running, vms)], &Activity::default(), 950.0, 700.0);
+
+        assert_eq!(plate.lanes.len(), 1, "one run, one lane");
+        assert_eq!(plate.cells.len(), 50);
+        assert_eq!(plate.cells[0].x, PLOT_LEFT + CELL_INSET);
+        assert_eq!(plate.cells[49].x, PLOT_LEFT + CELL_INSET + CELL_STEP * 49.0);
+        assert_eq!(plate.cells[49].vm, 49, "the cells keep the VMs' own order");
+        assert!(
+            plate.cells[49].x > plate.substrate.right(),
+            "the fiftieth cell is past the plate's edge: {} > {}",
+            plate.cells[49].x,
+            plate.substrate.right()
+        );
+
+        // What the plate can draw, and what it can only count: at this width
+        // the fifteenth cell is the last that fits (166 + 54×14 + 7 = 929).
+        assert_eq!(lane_overflow(&plate, 0), (15, 35));
+        assert_eq!(plate.cells[14].x + MARK_R, 929.0);
+        assert!(plate.cells[15].x + MARK_R > plate.substrate.right());
+
+        // A lane that fits says nothing about clipping.
+        let wide = layout(
+            &[run("r1", RunState::Running, vec![vm(0, VmState::Running, None)])],
+            &Activity::default(),
+            900.0,
+            500.0,
+        );
+        assert_eq!(lane_overflow(&wide, 0), (1, 0));
+        assert_eq!(lane_overflow(&wide, 7), (0, 0), "no such lane, no cells");
     }
 }

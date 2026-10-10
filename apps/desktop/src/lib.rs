@@ -10,7 +10,10 @@
 //! * [`api`] — the daemon's JSON API over a tiny blocking HTTP/1.1 client,
 //!   loopback only, no client dependency.
 //! * [`exit`] — how a VM left the running state, read off its serial tail.
-//! * [`form`] — the spawn form and the validation that mirrors the daemon's.
+//! * [`export`] — where a transcript goes, the bytes it holds, and the one
+//!   `std::fs` write that puts it there.
+//! * [`form`] — the spawn form, its quick-boot presets, and the validation
+//!   that mirrors the daemon's.
 //! * [`map`] — the fleet map's geometry and its serial-activity feed: pure,
 //!   no iced types.
 //! * [`mapview`] — the map as an iced canvas, painting what [`map`] computes.
@@ -25,6 +28,7 @@ pub mod api;
 pub mod app;
 pub mod cli;
 pub mod exit;
+pub mod export;
 pub mod form;
 pub mod map;
 pub mod mapview;

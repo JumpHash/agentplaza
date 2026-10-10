@@ -7,7 +7,8 @@
 //! nothing more.
 
 use crate::api::{ApiError, CreateRun, Endpoint, Machine, Run, RunsPage};
-use crate::form::{Field, SpawnForm};
+use crate::export::{self, Export, ExportCall, ExportTarget, run_transcript, vm_transcript};
+use crate::form::{Field, Preset, SpawnForm};
 use crate::map::Activity;
 
 /// How often a healthy daemon is polled unless `--refresh-ms` says otherwise.
@@ -79,6 +80,8 @@ pub enum KeyAction {
     Map,
     /// Escape: back to the register.
     Back,
+    /// `?`: the help sheet, or away from it.
+    Help,
     /// Up: the older console line.
     HistoryPrev,
     /// Down: the newer console line.
@@ -229,6 +232,8 @@ pub struct Effect {
     pub spawn: Option<CreateRun>,
     /// `POST /api/v0/runs/{id}/input` with this console write.
     pub input: Option<ConsoleCall>,
+    /// Write this transcript with `std::fs` — the register's only local write.
+    pub export: Option<ExportCall>,
 }
 
 impl Effect {
@@ -386,6 +391,29 @@ pub enum Message {
         /// Its new text.
         value: String,
     },
+    /// A quick-boot preset was pressed: it fills the form.
+    Preset(Preset),
+    /// The export path box was edited.
+    ExportEdited(String),
+    /// The export target was switched.
+    ExportTarget(ExportTarget),
+    /// The export button was pressed.
+    Export,
+    /// A transcript write answered.
+    Exported {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which run the transcript was of.
+        run: String,
+        /// Which VM, or `None` for the whole run.
+        vm: Option<u32>,
+        /// Where it was written.
+        path: String,
+        /// How many bytes were written, or why they were not.
+        result: Result<usize, String>,
+    },
+    /// The help sheet was toggled by its button.
+    Help(bool),
     /// Dismiss the notice line.
     DismissNotice,
 }
@@ -400,7 +428,8 @@ impl Message {
             | Message::Machine { at_ms, .. }
             | Message::Input { at_ms, .. }
             | Message::Killed { at_ms, .. }
-            | Message::Spawned { at_ms, .. } => Some(*at_ms),
+            | Message::Spawned { at_ms, .. }
+            | Message::Exported { at_ms, .. } => Some(*at_ms),
             Message::Show(_)
             | Message::Key(_)
             | Message::Select { .. }
@@ -413,6 +442,11 @@ impl Message {
             | Message::KillClicked(_)
             | Message::SpawnClicked
             | Message::Edit { .. }
+            | Message::Preset(_)
+            | Message::ExportEdited(_)
+            | Message::ExportTarget(_)
+            | Message::Export
+            | Message::Help(_)
             | Message::DismissNotice => None,
         }
     }
@@ -437,6 +471,10 @@ pub struct Model {
     pub selection: Option<Selection>,
     /// The console's input line, its history and its position in that history.
     pub console: Console,
+    /// The transcript export: what it covers, and the path in its box.
+    pub export: Export,
+    /// Whether the help sheet is up, over whatever pane is showing.
+    pub help: bool,
     /// Every VM's serial rate, from the deltas between polls.
     pub activity: Activity,
     /// How often a healthy daemon is polled, in milliseconds.
@@ -476,6 +514,8 @@ impl Default for Model {
             follow: true,
             selection: None,
             console: Console::default(),
+            export: Export::default(),
+            help: false,
             activity: Activity::default(),
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
@@ -514,6 +554,15 @@ impl Model {
             refresh_ms,
             ..Self::default()
         }
+    }
+
+    /// The register's first effect: the first poll, and the machine once, so
+    /// the index's memory reading has the host's total to measure against
+    /// from the start rather than after a visit to the machine sheet.
+    pub fn boot(&mut self, at_ms: u64) -> Effect {
+        let mut effect = self.apply(Message::Tick { at_ms });
+        effect.poll_machine = true;
+        effect
     }
 
     /// How long a run has been up: created to ended, or created to now.
@@ -565,6 +614,40 @@ impl Model {
         cids.sort_unstable();
         cids.dedup();
         cids
+    }
+
+    /// The guest memory the register's live VMs have committed, in MiB: what
+    /// the host has been asked to hold right now.
+    pub fn committed_mib(&self) -> u64 {
+        self.runs
+            .iter()
+            .map(|run| run.live_vms() as u64 * u64::from(run.memory_mib))
+            .sum()
+    }
+
+    /// Whether the live VMs have been asked for more guest memory than the
+    /// host has, as the machine reports it. Unknown machine: not over.
+    pub fn overcommitted(&self) -> bool {
+        self.machine
+            .as_ref()
+            .is_some_and(|machine| self.committed_mib() > machine.memory_mib)
+    }
+
+    /// The register's memory line: what the fleet has committed, against the
+    /// host's total once the machine has been reported.
+    pub fn committed_line(&self) -> String {
+        let committed = memory_label(self.committed_mib());
+        match &self.machine {
+            Some(machine) if self.overcommitted() => format!(
+                "committed {committed} guest RAM of {} · overcommit",
+                memory_label(machine.memory_mib)
+            ),
+            Some(machine) => format!(
+                "committed {committed} guest RAM of {}",
+                memory_label(machine.memory_mib)
+            ),
+            None => format!("committed {committed} guest RAM"),
+        }
     }
 
     /// The last line a VM's capture wrote, if it wrote any.
@@ -622,6 +705,7 @@ impl Model {
             Message::SelectVm(vm) => {
                 if let Pane::Run(id) = self.pane.clone() {
                     self.selection = Some(Selection { run: id, vm });
+                    self.derive_export();
                 }
                 Effect::none()
             }
@@ -708,6 +792,64 @@ impl Model {
                 // The field changed, so the last submission's complaint about
                 // it no longer describes what is in the box.
                 self.errors.retain(|(errored, _)| *errored != field);
+                Effect::none()
+            }
+            Message::Preset(preset) => {
+                // A preset only fills the form: it is visible, and adjustable,
+                // before anything is sent.
+                preset.fill(&mut self.form);
+                self.errors.clear();
+                Effect::none()
+            }
+            Message::ExportEdited(path) => {
+                self.export.path = path;
+                // Emptying the box hands it back to the register, which fills
+                // it with the current target's default path again.
+                self.export.edited = !self.export.to_write().is_empty();
+                if !self.export.edited {
+                    self.derive_export();
+                }
+                Effect::none()
+            }
+            Message::ExportTarget(target) => {
+                self.export.target = target;
+                self.derive_export();
+                Effect::none()
+            }
+            Message::Export => self.export_now(),
+            Message::Exported {
+                at_ms,
+                run,
+                vm,
+                path,
+                result,
+            } => {
+                let what = match vm {
+                    Some(vm) => format!("run {run} vm {vm}"),
+                    None => format!("run {run}, every vm"),
+                };
+                match result {
+                    Ok(bytes) => {
+                        self.succeeded(at_ms);
+                        self.notice = Some(Notice {
+                            kind: NoticeKind::Done,
+                            text: format!("exported {bytes} byte(s) of {what} to {path}"),
+                        });
+                    }
+                    Err(error) => {
+                        // The daemon was never asked: this failure is the local
+                        // disk's, so it is shown in its own words and the
+                        // register's connection stamp is left alone.
+                        self.notice = Some(Notice {
+                            kind: NoticeKind::Failed,
+                            text: format!("export {path}: {error}"),
+                        });
+                    }
+                }
+                Effect::none()
+            }
+            Message::Help(open) => {
+                self.help = open;
                 Effect::none()
             }
             Message::DismissNotice => {
@@ -804,6 +946,7 @@ impl Model {
                 };
                 self.pane = Pane::Run(id.clone());
                 self.follow = true;
+                self.derive_export();
                 Effect::fetch(id)
             }
             Pane::Spawn => {
@@ -841,12 +984,89 @@ impl Model {
         self.show(Pane::Run(run))
     }
 
+    /// Keeps the export box's default pointing at the console's target. The
+    /// box keeps a path the operator typed; this only fills in a default.
+    fn derive_export(&mut self) {
+        if let Pane::Run(id) = &self.pane {
+            let id = id.clone();
+            let vm = self.target_vm(&id);
+            self.export.derive(&id, vm, &export::default_dir());
+        }
+    }
+
+    /// The transcript write the export button asks for, or why it cannot be
+    /// built: no path, no run read yet, or no such VM in the run.
+    fn export_call(&self) -> Result<ExportCall, String> {
+        let Pane::Run(id) = &self.pane else {
+            return Err("export: no run is open".to_string());
+        };
+        let path = self.export.to_write().to_string();
+        if path.is_empty() {
+            return Err("export: the path box is empty".to_string());
+        }
+        let run = self
+            .detail
+            .as_ref()
+            .filter(|run| run.id == *id)
+            .ok_or_else(|| format!("export {id}: the run has not been read yet"))?;
+        if run.vms.is_empty() {
+            return Err(format!("export {id}: the run has no VMs"));
+        }
+        let (vm, contents) = match self.export.target {
+            ExportTarget::Vm => {
+                let target = self.target_vm(id);
+                let vm = run
+                    .vms
+                    .iter()
+                    .find(|vm| vm.id == target)
+                    .ok_or_else(|| format!("export {id}: the run has no vm {target}"))?;
+                (Some(vm.id), vm_transcript(run, vm, self.now_ms))
+            }
+            ExportTarget::Run => (None, run_transcript(run, self.now_ms)),
+        };
+        Ok(ExportCall {
+            run: id.clone(),
+            vm,
+            path,
+            contents,
+        })
+    }
+
+    /// Presses export: writes the transcript, or says why it cannot.
+    fn export_now(&mut self) -> Effect {
+        match self.export_call() {
+            Ok(call) => Effect {
+                export: Some(call),
+                ..Effect::none()
+            },
+            Err(why) => {
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Failed,
+                    text: why,
+                });
+                Effect::none()
+            }
+        }
+    }
+
     /// Acts on a key the register binds.
     fn key(&mut self, action: KeyAction) -> Effect {
+        // The help sheet is over the register, so while it is up no key
+        // reaches a pane: Escape and `?` take it down, everything else waits.
+        if self.help {
+            if matches!(action, KeyAction::Help | KeyAction::Back) {
+                self.help = false;
+            }
+            return Effect::none();
+        }
         match action {
             KeyAction::Register => self.show(Pane::Fleet),
             KeyAction::Machine => self.show(Pane::Machine),
             KeyAction::Map => self.show(Pane::Map),
+            KeyAction::Help => {
+                self.help = true;
+                Effect::none()
+            }
             // There is nothing behind the register, so Escape at the register
             // is not an action rather than a reload.
             KeyAction::Back if self.pane == Pane::Fleet => Effect::none(),
@@ -1031,6 +1251,28 @@ pub fn tally_line(model: &Model) -> String {
         "{runs} run(s) · {vms} vm(s) up · {} cid(s) · {} vsock run(s)",
         model.guest_cids().len(),
         model.vsock_runs()
+    )
+}
+
+/// Guest memory as the register writes it: MiB below a gibibyte (where a
+/// fraction would say less), gibibytes to one decimal above it.
+pub fn memory_label(mib: u64) -> String {
+    if mib < 1_024 {
+        return format!("{mib} MiB");
+    }
+    // Rounded half up: a footprint hint that understates is a hint that lies.
+    format!("{:.1} GiB", (mib as f64 * 10.0 / 1_024.0).round() / 10.0)
+}
+
+/// A preset's footprint as the static label text beside its button: the VMs it
+/// boots, the memory each is given, and the total that asks the host for.
+pub fn preset_footprint(preset: Preset) -> String {
+    let shape = preset.shape();
+    format!(
+        "{} × {} MiB ≈ {} guest RAM",
+        shape.n,
+        shape.memory_mib,
+        memory_label(shape.total_mib())
     )
 }
 
@@ -1978,5 +2220,361 @@ mod tests {
         for health in [Health::Unknown, Health::Live, Health::Stale, Health::Down] {
             assert!(!health.label().is_empty());
         }
+    }
+
+    #[test]
+    fn boot_polls_the_register_and_the_machine_once() {
+        let mut model = Model::new();
+        let effect = model.boot(1_000);
+        assert!(effect.poll_list, "the register is polled");
+        assert!(
+            effect.poll_machine,
+            "the machine is asked once, so the index's memory reading has the host's total"
+        );
+        assert!(effect.fetch_run.is_none(), "no pane is open at boot");
+        assert_eq!(model.polls, 1);
+        assert_eq!(model.now_ms, 1_000);
+
+        // The panes' own ticks still decide for themselves.
+        model.apply(Message::Runs {
+            at_ms: 1_100,
+            result: page(vec![]),
+        });
+        let effect = model.apply(Message::Tick { at_ms: 3_100 });
+        assert!(effect.poll_list);
+        assert!(!effect.poll_machine, "the register pane polls the list only");
+    }
+
+    #[test]
+    fn pressing_a_preset_fills_the_form_and_submitting_sends_exactly_that() {
+        let mut model = Model::new();
+        // A form the operator had already typed into is replaced whole, and
+        // the complaint about the old numbers goes with it.
+        model.apply(Message::Edit {
+            field: Field::N,
+            value: "7".to_string(),
+        });
+        model.errors = vec![(Field::MemoryMib, "memory_mib must be at least 128".to_string())];
+
+        assert!(
+            model.apply(Message::Preset(Preset::Pair)).is_idle(),
+            "a preset only fills the form; it boots nothing"
+        );
+        assert_eq!(model.form.field(Field::N), "2");
+        assert_eq!(model.form.field(Field::Vcpus), "2");
+        assert_eq!(model.form.field(Field::MemoryMib), "512");
+        assert_eq!(model.form.field(Field::VsockCid), "10");
+        assert!(model.errors.is_empty(), "{:?}", model.errors);
+        assert_eq!(
+            model.apply(Message::SpawnClicked),
+            Effect {
+                spawn: Some(CreateRun {
+                    n: 2,
+                    vcpus: 2,
+                    memory_mib: 512,
+                    beats: None,
+                    vsock_cid: Some(10),
+                }),
+                ..Effect::none()
+            }
+        );
+
+        // Another preset replaces the first one's numbers, including the cid
+        // a run without vsock devices must not carry.
+        model.apply(Message::Preset(Preset::Eight));
+        assert_eq!(model.form.field(Field::VsockCid), "");
+        assert_eq!(
+            model.apply(Message::SpawnClicked),
+            Effect {
+                spawn: Some(CreateRun {
+                    n: 8,
+                    vcpus: 2,
+                    memory_mib: 512,
+                    beats: None,
+                    vsock_cid: None,
+                }),
+                ..Effect::none()
+            }
+        );
+
+        model.apply(Message::Preset(Preset::Scale));
+        assert_eq!(
+            model.apply(Message::SpawnClicked),
+            Effect {
+                spawn: Some(CreateRun {
+                    n: 50,
+                    vcpus: 1,
+                    memory_mib: 128,
+                    beats: None,
+                    vsock_cid: None,
+                }),
+                ..Effect::none()
+            }
+        );
+    }
+
+    #[test]
+    fn the_presets_footprint_is_the_memory_they_ask_the_host_for() {
+        assert_eq!(preset_footprint(Preset::Pair), "2 × 512 MiB ≈ 1.0 GiB guest RAM");
+        assert_eq!(preset_footprint(Preset::Eight), "8 × 512 MiB ≈ 4.0 GiB guest RAM");
+        assert_eq!(preset_footprint(Preset::Scale), "50 × 128 MiB ≈ 6.3 GiB guest RAM");
+    }
+
+    #[test]
+    fn memory_reads_in_mib_below_a_gibibyte_and_gibibytes_above_it() {
+        assert_eq!(memory_label(0), "0 MiB");
+        assert_eq!(memory_label(128), "128 MiB");
+        assert_eq!(memory_label(1_023), "1023 MiB");
+        assert_eq!(memory_label(1_024), "1.0 GiB");
+        assert_eq!(memory_label(6_400), "6.3 GiB");
+        assert_eq!(memory_label(128_320), "125.3 GiB");
+        assert_eq!(memory_label(1_048_576), "1024.0 GiB");
+    }
+
+    #[test]
+    fn the_register_reads_the_guest_memory_its_live_vms_have_committed() {
+        let mut model = Model::new();
+        assert_eq!(model.committed_mib(), 0);
+        assert_eq!(model.committed_line(), "committed 0 MiB guest RAM");
+        assert!(!model.overcommitted(), "no machine, no claim about the host");
+
+        // One live VM at 512 MiB, and a killed run that commits nothing.
+        let mut stopped = run("r2", RunState::Killed);
+        stopped.vms[0].state = VmState::Killed;
+        stopped.memory_mib = 4_096;
+        model.apply(Message::Runs {
+            at_ms: 1_000,
+            result: page(vec![run("r1", RunState::Running), stopped]),
+        });
+        assert_eq!(model.committed_mib(), 512, "a killed VM does not hold memory");
+        assert_eq!(model.committed_line(), "committed 512 MiB guest RAM");
+
+        model.apply(Message::Machine {
+            at_ms: 2_000,
+            result: Ok(machine()),
+        });
+        assert_eq!(
+            model.committed_line(),
+            "committed 512 MiB guest RAM of 125.3 GiB"
+        );
+        assert!(!model.overcommitted());
+
+        // A run that asks for more than the host has is named as such.
+        let mut heavy = run("r3", RunState::Running);
+        heavy.memory_mib = 200_000;
+        model.apply(Message::Runs {
+            at_ms: 3_000,
+            result: page(vec![heavy]),
+        });
+        assert_eq!(model.committed_mib(), 200_000);
+        assert!(model.overcommitted());
+        assert_eq!(
+            model.committed_line(),
+            "committed 195.3 GiB guest RAM of 125.3 GiB · overcommit"
+        );
+
+        // Without the machine there is no total to be over.
+        let mut unknown = model.clone();
+        unknown.machine = None;
+        assert!(!unknown.overcommitted());
+        assert_eq!(unknown.committed_line(), "committed 195.3 GiB guest RAM");
+    }
+
+    /// A run that is open with a readable transcript.
+    fn open_run(model: &mut Model) {
+        model.apply(Message::Show(Pane::Run("r1".to_string())));
+        let mut detail = run("r1", RunState::Running);
+        detail.memory_mib = 512;
+        detail.vms[0].serial = Some("login: plaza\n$ uname -a\nLinux\n".to_string());
+        detail.vms.push(vm(1, VmState::Running, Some(51), Some("up\n")));
+        model.apply(Message::Run {
+            at_ms: 2_000,
+            id: "r1".to_string(),
+            result: Ok(detail),
+        });
+    }
+
+    /// The path the register derives for the open run and the VM in hand.
+    fn derived(run: &str, vm: u32) -> String {
+        crate::export::export_path(
+            &crate::export::default_dir(),
+            run,
+            vm,
+            crate::export::ExportTarget::Vm,
+        )
+    }
+
+    #[test]
+    fn opening_a_run_fills_the_export_box_with_the_selected_vms_default_path() {
+        let mut model = Model::new();
+        assert_eq!(model.export.path, "", "nothing is derived before a run is open");
+
+        model.apply(Message::Show(Pane::Run("r1".to_string())));
+        assert_eq!(model.export.path, derived("r1", 0));
+        assert!(model.export.path.ends_with("plaza-r1-0.txt"), "{}", model.export.path);
+
+        open_run(&mut model);
+        // Aiming the console at another VM moves the default with it.
+        model.apply(Message::SelectVm(1));
+        assert_eq!(model.export.path, derived("r1", 1));
+    }
+
+    #[test]
+    fn an_export_before_the_run_has_been_read_says_so_instead_of_writing() {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Run("r1".to_string())));
+        assert!(model.apply(Message::Export).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "export r1: the run has not been read yet"
+        );
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").kind,
+            NoticeKind::Failed
+        );
+    }
+
+    #[test]
+    fn the_export_asks_for_the_selected_vms_transcript_at_the_path_in_the_box() {
+        let mut model = Model::new();
+        open_run(&mut model);
+
+        let effect = model.apply(Message::Export);
+        let call = effect.export.expect("an export was asked for");
+        assert_eq!(call.run, "r1");
+        assert_eq!(call.vm, Some(0));
+        assert_eq!(call.path, derived("r1", 0));
+        let detail = model.detail.clone().expect("the run");
+        assert_eq!(
+            call.contents,
+            vm_transcript(&detail, &detail.vms[0], 2_000),
+            "the bytes are the transcript, not a summary of it"
+        );
+
+        // All VMs, labelled, to the run's own default path.
+        model.apply(Message::ExportTarget(ExportTarget::Run));
+        assert!(model.export.path.ends_with("plaza-r1-all.txt"), "{}", model.export.path);
+        let effect = model.apply(Message::Export);
+        let call = effect.export.expect("an export was asked for");
+        assert_eq!(call.vm, None);
+        assert_eq!(call.contents, run_transcript(&detail, 2_000));
+        assert!(call.contents.contains("# vm 1 · running · cid 51"), "{}", call.contents);
+    }
+
+    #[test]
+    fn a_path_the_operator_typed_is_kept_and_an_empty_box_gets_the_default_back() {
+        let mut model = Model::new();
+        open_run(&mut model);
+
+        model.apply(Message::ExportEdited("/tmp/mine.txt".to_string()));
+        assert!(model.export.edited);
+        // Another VM, another target: a typed path is not second-guessed.
+        model.apply(Message::SelectVm(1));
+        model.apply(Message::ExportTarget(ExportTarget::Run));
+        assert_eq!(model.export.to_write(), "/tmp/mine.txt");
+
+        // Emptying the box hands it back to the register.
+        model.apply(Message::ExportEdited("  ".to_string()));
+        assert!(!model.export.edited);
+        assert!(model.export.path.ends_with("plaza-r1-all.txt"), "{}", model.export.path);
+
+        // And the guard the box cannot produce: a path that is not there is
+        // refused rather than handed to `std::fs`.
+        model.export.path.clear();
+        assert_eq!(
+            model.export_call().expect_err("no path"),
+            "export: the path box is empty"
+        );
+        assert!(model.apply(Message::Export).is_idle());
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "export: the path box is empty"
+        );
+    }
+
+    #[test]
+    fn an_export_that_wrote_says_so_and_a_write_that_failed_is_surfaced() {
+        let mut model = Model::new();
+        open_run(&mut model);
+        model.apply(Message::Exported {
+            at_ms: 3_000,
+            run: "r1".to_string(),
+            vm: Some(1),
+            path: "/tmp/plaza-r1-1.txt".to_string(),
+            result: Ok(64),
+        });
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Done);
+        assert_eq!(
+            notice.text,
+            "exported 64 byte(s) of run r1 vm 1 to /tmp/plaza-r1-1.txt"
+        );
+
+        model.apply(Message::Exported {
+            at_ms: 4_000,
+            run: "r1".to_string(),
+            vm: None,
+            path: "/nope/plaza-r1-all.txt".to_string(),
+            result: Err("No such file or directory (os error 2)".to_string()),
+        });
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Failed);
+        assert_eq!(
+            notice.text,
+            "export /nope/plaza-r1-all.txt: No such file or directory (os error 2)"
+        );
+        // The daemon was never asked, so its connection is still whatever it
+        // was: a local disk failure is not a daemon failure.
+        assert_eq!(model.health(), Health::Live);
+        assert_eq!(model.failures, 0);
+    }
+
+    #[test]
+    fn the_help_key_opens_the_sheet_and_escape_or_the_key_closes_it() {
+        let mut model = Model::new();
+        assert!(!model.help);
+
+        assert!(model.apply(Message::Key(KeyAction::Help)).is_idle());
+        assert!(model.help);
+        assert_eq!(model.pane, Pane::Fleet, "the sheet changes no pane");
+
+        // While it is up, no key reaches a pane: the sheet is over the
+        // register, not beside it.
+        model.apply(Message::Key(KeyAction::Machine));
+        assert_eq!(model.pane, Pane::Fleet);
+        assert!(model.help);
+        model.apply(Message::Key(KeyAction::Register));
+        assert!(model.help, "r does not close it either");
+
+        // `?` again, then Escape.
+        model.apply(Message::Key(KeyAction::Help));
+        assert!(!model.help);
+        model.apply(Message::Key(KeyAction::Help));
+        assert!(model.help);
+        model.apply(Message::Key(KeyAction::Back));
+        assert!(!model.help, "escape closes the sheet");
+
+        // The console's arrows wait behind it like everything else.
+        model.apply(Message::ConsoleEdit("stale".to_string()));
+        model.apply(Message::Key(KeyAction::Help));
+        model.apply(Message::Key(KeyAction::HistoryPrev));
+        assert!(model.help);
+        assert_eq!(model.console.line, "stale");
+
+        // And the button is the same switch.
+        assert!(model.apply(Message::Help(false)).is_idle());
+        assert!(!model.help);
+        assert!(model.apply(Message::Help(true)).is_idle());
+        assert!(model.help);
+    }
+
+    #[test]
+    fn escape_without_the_sheet_still_only_leaves_a_pane() {
+        let mut model = Model::new();
+        assert!(model.apply(Message::Key(KeyAction::Back)).is_idle());
+        model.apply(Message::Show(Pane::Machine));
+        assert_eq!(model.apply(Message::Key(KeyAction::Back)), Effect::poll());
+        assert_eq!(model.pane, Pane::Fleet);
+        assert!(!model.help);
     }
 }

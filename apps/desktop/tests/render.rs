@@ -15,7 +15,7 @@ use common::{DETAIL, EXITS, LIST, MACHINE};
 use agentplaza_desktop::api::{Client, Endpoint};
 use agentplaza_desktop::cli::Config;
 use agentplaza_desktop::model::{
-    Effect, Message, Model, Pane, Selection, DEFAULT_REFRESH_MS,
+    Effect, Message, Model, NoticeKind, Pane, Selection, DEFAULT_REFRESH_MS,
 };
 use agentplaza_desktop::{app, theme, view};
 
@@ -37,6 +37,8 @@ const CRIT: [u8; 4] = [0xa3, 0x18, 0x2b, 0xff];
 const SUBSTRATE: [u8; 4] = [0xee, 0xf1, 0xe9, 0xff];
 /// The one hot signal: the map's outline around the selected cell.
 const SIGNAL: [u8; 4] = [0xe8, 0x59, 0x0c, 0xff];
+/// A sheet laid on the page: the help box, and every ruled sheet behind it.
+const SHEET: [u8; 4] = [0xf4, 0xf6, 0xf1, 0xff];
 
 /// The daemon stub's configuration.
 fn config(port: u16) -> Config {
@@ -128,6 +130,18 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             at_ms: model.now_ms,
             id: call.run,
             vm: call.vm,
+            result,
+        });
+    }
+    if let Some(call) = effect.export {
+        // What the runtime does for an export: the register's own write, not
+        // a request to the daemon.
+        let result = agentplaza_desktop::export::write_transcript(&call.path, &call.contents);
+        model.apply(Message::Exported {
+            at_ms: model.now_ms,
+            run: call.run,
+            vm: call.vm,
+            path: call.path,
             result,
         });
     }
@@ -337,9 +351,10 @@ fn distinct_colors(pixels: &[u8]) -> usize {
 /// The register's panes write prose (the machine's model line, the map's
 /// legend, the poll line), so a sheet is checked for what it says rather than
 /// for a widget that happens to be one whole sentence.
-fn says(needle: &'static str) -> impl FnMut(Candidate<'_>) -> Option<()> {
+fn says(needle: impl Into<String>) -> impl FnMut(Candidate<'_>) -> Option<()> {
+    let needle = needle.into();
     move |candidate| match candidate {
-        Candidate::Text { content, .. } if content.contains(needle) => Some(()),
+        Candidate::Text { content, .. } if content.contains(needle.as_str()) => Some(()),
         _ => None,
     }
 }
@@ -775,4 +790,431 @@ fn the_stubbed_machine_body_is_the_shape_the_daemon_sends() {
     assert_eq!(machine.name, "plaza-node");
     assert_eq!(machine.class, "server");
     assert_eq!(machine.memory_mib, 128_320);
+}
+
+#[test]
+fn the_spawn_form_offers_the_presets_with_their_footprints() {
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = model_from(server.port);
+    model.apply(Message::Show(Pane::Spawn));
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "2 VMs + vsock",
+        "8 VMs",
+        "50-VM scale",
+        "Quick boots",
+        "2 × 512 MiB ≈ 1.0 GiB guest RAM",
+        "8 × 512 MiB ≈ 4.0 GiB guest RAM",
+        "50 × 128 MiB ≈ 6.3 GiB guest RAM",
+        "two VMs on cid 10, a full session each",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the form should show {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn a_preset_click_fills_the_form_and_boot_run_sends_exactly_that_body() {
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = model_from(server.port);
+    model.apply(Message::Show(Pane::Spawn));
+    let client = Client::new(model.endpoint.clone());
+
+    // The click the operator makes: the scale preset, nothing else.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("50-VM scale").expect("the preset is clickable");
+        ui.into_messages().collect()
+    };
+    assert!(
+        messages.contains(&Message::Preset(agentplaza_desktop::form::Preset::Scale)),
+        "the preset button asks for its own numbers, got {messages:?}"
+    );
+    for message in messages {
+        let effect = model.apply(message);
+        assert!(effect.is_idle(), "a preset fills the form and sends nothing");
+    }
+    // The form now says exactly what the preset means, and every box is filled
+    // with something the operator can still change.
+    assert_eq!(model.form.field(agentplaza_desktop::form::Field::N), "50");
+    assert_eq!(model.form.field(agentplaza_desktop::form::Field::Vcpus), "1");
+    assert_eq!(
+        model.form.field(agentplaza_desktop::form::Field::MemoryMib),
+        "128"
+    );
+    assert_eq!(model.form.field(agentplaza_desktop::form::Field::Beats), "");
+    assert_eq!(
+        model.form.field(agentplaza_desktop::form::Field::VsockCid),
+        ""
+    );
+
+    // The form the operator submits: what went on the wire, byte for byte.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("BOOT RUN").expect("the boot button is clickable");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+
+    let requests = server.requests();
+    let created = requests
+        .iter()
+        .find(|request| request.method == "POST" && request.target == "/api/v0/runs")
+        .expect("the preset's form was sent");
+    assert_eq!(
+        created.body,
+        r#"{"n":50,"vcpus":1,"memory_mib":128,"beats":null,"vsock_cid":null}"#
+    );
+    assert_eq!(
+        model.notice.as_ref().expect("a notice").text,
+        "run r1 created",
+        "the stub answered the create, and the register says so"
+    );
+}
+
+#[test]
+fn the_export_button_writes_the_selected_vms_transcript_and_reads_back_the_same_bytes() {
+    let server = common::fleet(LIST, EXITS);
+    let mut model = model_from(server.port);
+    model.apply(Message::Show(Pane::Run("r1".to_string())));
+    let run = Client::new(model.endpoint.clone())
+        .run("r1")
+        .expect("the stub answers the run");
+    // A fixed clock, so the transcript's header is a known string.
+    model.apply(Message::Run {
+        at_ms: 1_760_000_500_000,
+        id: "r1".to_string(),
+        result: Ok(run),
+    });
+    let client = Client::new(model.endpoint.clone());
+
+    let path = model.export.path.clone();
+    assert!(
+        path.ends_with("plaza-r1-0.txt"),
+        "the box is pre-filled for the selected vm: {path}"
+    );
+    let _ = std::fs::remove_file(&path);
+
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        // What the row says it will write, before anything is written.
+        let bytes = model.detail.as_ref().expect("the run").vms[0]
+            .serial
+            .as_deref()
+            .expect("the first VM's capture")
+            .len();
+        assert_eq!(bytes, 42, "the fixture's first capture");
+        assert!(
+            ui.find(says(&format!("vm 0 · {bytes} byte(s) of capture →")))
+                .is_ok(),
+            "the row names the file"
+        );
+        assert!(ui.find(says("Export the transcript")).is_ok());
+        assert!(ui.find(says("this vm")).is_ok());
+        assert!(ui.find(says("all vms")).is_ok());
+        ui.click("EXPORT").expect("EXPORT is clickable");
+        ui.into_messages().collect()
+    };
+    assert!(
+        messages.contains(&Message::Export),
+        "pressing EXPORT asks the model to export, got {messages:?}"
+    );
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+
+    // The bytes on disk are the transcript the pane holds, header and all.
+    let written = std::fs::read_to_string(&path).expect("the transcript was written");
+    let detail = model.detail.clone().expect("the run");
+    assert_eq!(
+        written,
+        agentplaza_desktop::export::vm_transcript(&detail, &detail.vms[0], 1_760_000_500_000)
+    );
+    assert!(written.starts_with("# AgentPlaza transcript\n# run r1 · vm 0 · exited"));
+    assert!(written.ends_with("reboot: Power down\r\n"), "{written:?}");
+    assert_eq!(
+        model.notice.as_ref().expect("a notice").text,
+        format!("exported {} byte(s) of run r1 vm 0 to {path}", written.len())
+    );
+
+    // Every VM, labelled, to the run's own file.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("all vms").expect("the target switch is clickable");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    let run_path = model.export.path.clone();
+    assert!(run_path.ends_with("plaza-r1-all.txt"), "{run_path}");
+
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("EXPORT").expect("EXPORT is clickable");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+    let all = std::fs::read_to_string(&run_path).expect("the run's transcript was written");
+    assert_eq!(
+        all,
+        agentplaza_desktop::export::run_transcript(&detail, 1_760_000_500_000)
+    );
+    assert!(all.contains("# vm 1 · killed · cid 41 · exit reset\n"), "{all:?}");
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&run_path);
+}
+
+#[test]
+fn an_export_that_cannot_land_is_a_refusal_on_the_sheet_not_a_silent_nothing() {
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = model_from(server.port);
+    model.apply(Message::Show(Pane::Run("r1".to_string())));
+    let run = Client::new(model.endpoint.clone())
+        .run("r1")
+        .expect("the stub answers the run");
+    model.apply(Message::Run {
+        at_ms: model.now_ms,
+        id: "r1".to_string(),
+        result: Ok(run),
+    });
+    let client = Client::new(model.endpoint.clone());
+
+    // A path under a directory that does not exist.
+    let path = format!(
+        "/nonexistent-plaza-dir-{}/plaza-r1-0.txt",
+        std::process::id()
+    );
+    model.apply(Message::ExportEdited(path.clone()));
+    assert_eq!(model.export.to_write(), path);
+
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("EXPORT").expect("EXPORT is clickable");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, &mut model, &client);
+    }
+
+    let notice = model.notice.as_ref().expect("a notice");
+    assert_eq!(notice.kind, NoticeKind::Failed);
+    assert!(
+        notice.text.starts_with(&format!("export {path}: ")),
+        "the refusal names the path it could not write: {}",
+        notice.text
+    );
+    assert!(!std::path::Path::new(&path).exists());
+    // The registry is still live: the disk failed, not the daemon.
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find("REFUSED").is_ok(), "the sheet shows the refusal");
+}
+
+#[test]
+fn the_help_key_lays_the_sheet_over_the_frame_the_register_was_drawing() {
+    let server = common::fleet(LIST, DETAIL);
+    let mut model = machine_from(server.port);
+    model.pane = Pane::Map;
+    model.selection = Some(Selection {
+        run: "r1".to_string(),
+        vm: 1,
+    });
+
+    // The key the runtime routes, then the sheet it puts up.
+    let effect = model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    assert!(effect.is_idle());
+    assert!(model.help);
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "keys",
+        "this help",
+        "back; closes this sheet",
+        "console history",
+        "CLOSE",
+        "the register keeps polling behind this sheet",
+        "are buttons on the run pane, not keys",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the help sheet should show {expected:?}"
+        );
+    }
+
+    // The close button is the same switch.
+    let messages: Vec<Message> = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("CLOSE").expect("CLOSE is clickable");
+        ui.into_messages().collect()
+    };
+    assert!(
+        messages.contains(&Message::Help(false)),
+        "CLOSE takes the sheet down, got {messages:?}"
+    );
+
+    // And the frame: the sheet drawn over a register that is still there.
+    let mut with_help = model.clone();
+    with_help.help = true;
+    let mut plain = model.clone();
+    plain.help = false;
+    let covered = frame_of(with_help);
+    let uncovered = frame_of(plain);
+
+    assert_eq!((covered.size.width, covered.size.height), (1280, 860));
+    // The help box is the sheet's own colour: a solid run of it, centred.
+    let boxed = count_near(&covered, SHEET, 2);
+    assert!(
+        boxed > 100_000,
+        "the help sheet was not drawn ({boxed} sheet pixels)"
+    );
+    // The register behind is still drawn: ink, wherever the index's text was,
+    // survives a scrim that blends ink over ink.
+    assert!(
+        holds(&covered, INK, 2),
+        "the frame under the sheet is gone rather than covered"
+    );
+    // The page is covered: its own colour is essentially absent, and what
+    // covers it is one blend that the plain frame does not hold at all.
+    let page_covered = count_near(&covered, PAPER, 2);
+    let page_plain = count_near(&uncovered, PAPER, 2);
+    assert!(page_plain > 100_000, "the plain frame is a page ({page_plain})");
+    assert!(
+        page_covered < page_plain / 50,
+        "the page is not dimmed under the sheet ({page_covered} of {page_plain} pixels)"
+    );
+    let (dim, dim_pixels) = dominant(&covered);
+    assert!(
+        dim_pixels > 300_000,
+        "a scrim should cover most of the window ({dim_pixels} pixels)"
+    );
+    // That blend is the window's own colour: it covers a hundred times more of
+    // the frame under the sheet than the antialiased edges it happens to
+    // coincide with elsewhere.
+    let dim_elsewhere = count_near(&uncovered, dim, 2);
+    assert!(
+        dim_pixels > 100 * dim_elsewhere.max(1),
+        "the dimmed colour {dim:?} exists only under the sheet ({dim_pixels} vs {dim_elsewhere})"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("help-frame.rgba");
+    std::fs::write(&path, covered.rgba.as_ref()).expect("the help frame should be written");
+    println!(
+        "help frame: {boxed} sheet pixels over {dim_pixels} scrim pixels, raw RGBA at {}",
+        path.display()
+    );
+}
+
+#[test]
+fn a_lane_wider_than_the_plate_draws_what_fits_and_says_what_it_could_not() {
+    // The scale preset's fleet, without a daemon: one run of fifty VMs.
+    let mut model = Model::new();
+    model.machine = Some(agentplaza_desktop::api::Machine {
+        name: "plaza-node".to_string(),
+        arch: "x86_64".to_string(),
+        backend: "kvm".to_string(),
+        irqchip: "ioapic".to_string(),
+        class: "server".to_string(),
+        cpus: 24,
+        memory_mib: 128_320,
+        vsock_mode: "uds-muxer".to_string(),
+        started_at_ms: 1_760_000_000_000,
+    });
+    model.runs = vec![agentplaza_desktop::api::Run {
+        id: "r1".to_string(),
+        state: agentplaza_desktop::api::RunState::Running,
+        vcpus: 1,
+        memory_mib: 128,
+        beats: None,
+        created_at: 1_760_000_000_000,
+        ended_at: None,
+        vms: (0..50)
+            .map(|id| agentplaza_desktop::api::Vm {
+                id,
+                guest_cid: None,
+                state: agentplaza_desktop::api::VmState::Running,
+                serial: None,
+            })
+            .collect(),
+    }];
+    model.pane = Pane::Map;
+
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says("1 lane(s) · 50 cell(s)")).is_ok(),
+            "the counts stay real"
+        );
+    }
+
+    let frame = frame_of(model);
+    // Fifteen of the fifty marks fit; the rest is past the plate's edge.
+    let running = count_near(&frame, OK, 8) as f32;
+    let one_mark = std::f32::consts::PI * 7.0 * 7.0; // π r² for the 7 px mark
+    assert!(
+        running > one_mark * 12.0 && running < one_mark * 18.0,
+        "the plate should draw the fifteen marks it can hold, not fifty or one: {running} green pixels"
+    );
+    // And it says so, in the caution's amber. Nine-pixel canvas text
+    // antialiases into the substrate, so this is the hue of the amber ink
+    // rather than one exact colour, and it excludes the light taint a selected
+    // register row is pressed in.
+    let note = frame
+        .rgba
+        .chunks_exact(4)
+        .filter(|pixel| amber(pixel))
+        .count();
+    assert!(
+        note > 100,
+        "the clipped lane drew no note ({note} amber pixels)"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("clipped-lane-frame.rgba");
+    std::fs::write(&path, frame.rgba.as_ref()).expect("the frame should be written");
+    println!(
+        "clipped lane frame: {running} mark pixels, {note} note pixels at {}",
+        path.display()
+    );
+}
+
+/// Whether a pixel is the caution's amber ink: red over green over blue, clear
+/// of the greys, of the map's red and green, and of the light taint a selected
+/// register row is pressed in.
+fn amber(pixel: &[u8]) -> bool {
+    pixel.len() == 4
+        && pixel[0] > pixel[1]
+        && pixel[1] > pixel[2]
+        && pixel[0] - pixel[2] > 0x30
+        && pixel[0] - pixel[2] <= 0x95
+        && pixel[1] - pixel[2] > 0x18
+        && pixel[2] < 0xb0
+}
+
+/// The colour covering the most pixels of a frame, and how many it covers.
+fn dominant(frame: &iced::window::Screenshot) -> ([u8; 4], usize) {
+    use std::collections::HashMap;
+    let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
+    for pixel in frame.rgba.chunks_exact(4) {
+        *counts
+            .entry([pixel[0], pixel[1], pixel[2], pixel[3]])
+            .or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .expect("a frame has pixels")
 }

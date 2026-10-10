@@ -99,7 +99,7 @@ impl FleetMap<'_> {
 
         // One lane per run: its label at the left of the substrate, then its
         // ruled baseline, then its cells.
-        for lane in &plate.lanes {
+        for (index, lane) in plate.lanes.iter().enumerate() {
             let live = lane.state.is_live();
             frame.fill_text(canvas_text(
                 lane.run_id.clone(),
@@ -125,6 +125,20 @@ impl FleetMap<'_> {
                 ),
                 Stroke::default().with_color(theme::RULE).with_width(1.0),
             );
+
+            // A lane wider than the plate draws what fits and says how many it
+            // could not: the plate is a fixed scale, so a fifty-VM run would
+            // otherwise look like a fifteen-VM one.
+            let (drawn, past) = map::lane_overflow(&plate, index);
+            if past > 0 {
+                frame.fill_text(canvas_text(
+                    format!("{drawn} of {} cells · {past} past", lane.vms),
+                    Point::new(8.0, lane.y + 6.0),
+                    9.0,
+                    theme::WARN,
+                    Alignment::Left,
+                ));
+            }
         }
         for cell in &plate.cells {
             self.paint_cell(frame, cell);

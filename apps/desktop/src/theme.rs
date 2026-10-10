@@ -159,6 +159,16 @@ pub fn boxed(_theme: &Theme) -> container::Style {
     }
 }
 
+/// The help sheet's scrim: the register dimmed under a sheet that is over it,
+/// not instead of it.
+pub fn scrim(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba8(0x15, 0x19, 0x16, 0.55).into()),
+        snap: true,
+        ..container::Style::default()
+    }
+}
+
 /// The notice line: the last action's outcome.
 pub fn notice(tone: Tone) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {

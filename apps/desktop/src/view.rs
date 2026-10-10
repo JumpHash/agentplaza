@@ -6,18 +6,19 @@
 
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{
-    Column, Container, Row, Text, button, column, container, row, rule, scrollable, space, text,
-    text_input,
+    Column, Container, Row, Text, button, column, container, opaque, row, rule, scrollable, space,
+    stack, text, text_input,
 };
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::api::{Run, RunState, Vm, VmState};
 use crate::exit::{ExitKind, exit_kind};
-use crate::form::Field;
+use crate::export::ExportTarget;
+use crate::form::{Field, Preset};
 use crate::mapview::{self, FleetMap};
 use crate::model::{
     Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, SERIAL_TAIL_LINES,
-    clock_label, duration_label, serial_tail, tally_line,
+    clock_label, duration_label, preset_footprint, serial_tail, tally_line,
 };
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
 
@@ -25,13 +26,19 @@ use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone};
 /// beside the serial input, mirroring the web console.
 pub const QUICK_COMMANDS: [&str; 6] = ["help", "uname", "cpu", "mem", "uptime", "poweroff"];
 
-/// The whole register.
+/// The whole register: the index and the sheet, with the help sheet over them
+/// while it is up.
 pub fn view(model: &Model) -> Element<'_, Message> {
-    container(row![index(model), sheet(model)])
+    let register = container(row![index(model), sheet(model)])
         .style(theme::paper)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+    if !model.help {
+        return register.into();
+    }
+    // The scrim is opaque to the mouse, so nothing behind the sheet can be
+    // pressed while it is up; `?` or Escape takes it down.
+    stack([register.into(), opaque(help_overlay())]).into()
 }
 
 /// The index column: the brand, the fleet, the machine, the map, the runs, the
@@ -106,9 +113,32 @@ fn index(model: &Model) -> Container<'_, Message> {
             .width(Length::Fill)
             .into(),
     );
+    entries.push(vertical(6.0));
+    entries.push(
+        button(mono("Help (?)", 11.0, INK_2))
+            .on_press(Message::Help(true))
+            .style(theme::primary_button)
+            .padding(edge(8.0, 10.0, 8.0, 10.0))
+            .width(Length::Fill)
+            .into(),
+    );
     entries.push(vertical(14.0));
     entries.push(rule_heading());
     entries.push(mono(tally_line(model), 10.0, INK_2).into());
+    entries.push(
+        mono(
+            model.committed_line(),
+            10.0,
+            // The one number in the index that turns critical: the fleet has
+            // been asked for more guest memory than the host has.
+            if model.overcommitted() {
+                theme::CRIT
+            } else {
+                INK_2
+            },
+        )
+        .into(),
+    );
     entries.push(
         mono(
             format!(
@@ -156,13 +186,80 @@ fn index(model: &Model) -> Container<'_, Message> {
         .padding(edge(18.0, 14.0, 18.0, 18.0))
 }
 
-/// The register's keyboard shortcuts, as the index prints them.
-const KEYS: [(&str, &str); 4] = [
+/// The register's keyboard shortcuts, as the index and the help sheet print
+/// them: one table, so the sheet cannot drift from the index.
+const KEYS: [(&str, &str); 6] = [
     ("r", "register"),
     ("m", "machine"),
     ("f", "fleet map"),
-    ("esc", "back"),
+    ("?", "this help"),
+    ("esc", "back; closes this sheet"),
+    ("↑ ↓", "console history"),
 ];
+
+/// The help sheet, centred over the register: every key the register binds,
+/// and what the sheet is not.
+fn help_sheet() -> Element<'static, Message> {
+    let mut hints: Vec<Element<'static, Message>> = vec![
+        mono("AgentPlaza register", 13.0, INK).into(),
+        mono("keys", 10.0, INK_3).into(),
+        vertical(4.0),
+        rule::horizontal(1.0).style(theme::rule_ink).into(),
+    ];
+    for (key, what) in KEYS {
+        hints.push(
+            row![
+                mono(key, 11.0, INK).width(Length::Fixed(44.0)),
+                mono(what, 11.0, INK_2),
+            ]
+            .spacing(6.0)
+            .into(),
+        );
+    }
+    hints.push(vertical(10.0));
+    hints.push(rule_heading());
+    hints.push(
+        serif(
+            "A focused text box captures its own keys, so typing a console line never trips a \
+             shortcut. The guest's own commands — help, uname, cpu, mem, uptime, poweroff — are \
+             buttons on the run pane, not keys. Escape or ? closes this sheet.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    );
+    hints.push(vertical(8.0));
+    hints.push(
+        row![
+            button(mono("CLOSE", 10.5, INK))
+                .on_press(Message::Help(false))
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+            mono("the register keeps polling behind this sheet", 10.0, INK_3),
+        ]
+        .spacing(12.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+
+    container(Column::with_children(hints).spacing(4.0))
+        .style(theme::sheet)
+        .width(Length::Fixed(560.0))
+        .padding(edge(20.0, 24.0, 20.0, 24.0))
+        .into()
+}
+
+/// The help sheet over the register: a scrim across the window with the sheet
+/// centred on it.
+fn help_overlay() -> Element<'static, Message> {
+    container(help_sheet())
+        .style(theme::scrim)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+}
 
 /// One index entry: the number in the margin, the name, and what it holds.
 fn index_entry<'a>(
@@ -601,6 +698,7 @@ fn run_pane<'a>(model: &'a Model, id: &str) -> Element<'a, Message> {
         controls(model, run),
         Column::with_children(vm_rows).spacing(4.0).into(),
         console(model, run),
+        export_row(model, run),
         serial_pane(model, run),
     ])
     .spacing(12.0)
@@ -770,6 +868,81 @@ fn console<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
     Column::with_children(rows).spacing(6.0).into()
 }
 
+/// The transcript export: what it covers, where it goes, and the button that
+/// writes it. The path is a box (iced offers no file dialog and the crate
+/// takes no dependency for one), pre-filled with a default in the temp
+/// directory.
+fn export_row<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
+    let mut toggles: Vec<Element<'a, Message>> = Vec::new();
+    for target in ExportTarget::ALL {
+        toggles.push(
+            button(mono(target.label(), 10.0, INK))
+                .on_press(Message::ExportTarget(target))
+                .style(theme::register_row(target == model.export.target))
+                .padding(edge(4.0, 9.0, 4.0, 9.0))
+                .into(),
+        );
+    }
+
+    Column::with_children(vec![
+        row![
+            mono("Export the transcript", 10.5, INK_3),
+            Row::with_children(toggles).spacing(4.0),
+            text_input("a path to write the transcript to", &model.export.path)
+                .on_input(Message::ExportEdited)
+                .font(MONO)
+                .size(11.5)
+                .padding(edge(5.0, 8.0, 5.0, 8.0))
+                .width(Length::Fill)
+                .style(theme::input),
+            button(mono("EXPORT", 10.5, INK))
+                .on_press(Message::Export)
+                .style(theme::primary_button)
+                .padding(edge(6.0, 12.0, 6.0, 12.0)),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+        mono(export_line(model, run), 10.0, INK_3).into(),
+    ])
+    .spacing(4.0)
+    .into()
+}
+
+/// What the export button will write, and where: the box names one path, so
+/// the line under it says exactly what lands there.
+fn export_line(model: &Model, run: &Run) -> String {
+    let path = match model.export.path.trim() {
+        "" => "— (no path)".to_string(),
+        path => path.to_string(),
+    };
+    match model.export.target {
+        ExportTarget::Vm => {
+            let vm = model.target_vm(&run.id);
+            let bytes = run
+                .vms
+                .iter()
+                .find(|vm_of_run| vm_of_run.id == vm)
+                .and_then(|vm_of_run| vm_of_run.serial.as_deref())
+                .map_or(0, str::len);
+            format!("vm {vm} · {bytes} byte(s) of capture → {path}")
+        }
+        ExportTarget::Run => {
+            let bytes: usize = run
+                .vms
+                .iter()
+                .filter_map(|vm| vm.serial.as_deref())
+                .map(str::len)
+                .sum();
+            format!(
+                "every vm of {} · {} section(s) · {bytes} byte(s) of capture → {path}",
+                run.id,
+                run.vms.len()
+            )
+        }
+    }
+}
+
 /// The serial transcript: the last lines of the VM the console is aimed at.
 fn serial_pane<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
     let target = model.target_vm_in(run);
@@ -799,6 +972,30 @@ fn serial_pane<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
         .into()
 }
 
+/// The quick-boot presets: three buttons and the footprint each one asks the
+/// host for. A press only fills the form — the numbers stay visible and
+/// adjustable before anything is sent.
+fn presets() -> Element<'static, Message> {
+    let mut columns: Vec<Element<'static, Message>> = Vec::with_capacity(Preset::ALL.len());
+    for preset in Preset::ALL {
+        columns.push(
+            column![
+                button(mono(preset.label(), 11.0, INK))
+                    .on_press(Message::Preset(preset))
+                    .style(theme::primary_button)
+                    .padding(edge(7.0, 12.0, 7.0, 12.0))
+                    .width(Length::Fill),
+                mono(preset.what(), 9.5, INK_3),
+                mono(preset_footprint(preset), 9.5, INK_2),
+            ]
+            .spacing(4.0)
+            .width(Length::FillPortion(1))
+            .into(),
+        );
+    }
+    Row::with_children(columns).spacing(14.0).into()
+}
+
 /// The spawn form.
 fn spawn_pane(model: &Model) -> Element<'_, Message> {
     let mut body: Vec<Element<'_, Message>> = vec![
@@ -810,6 +1007,10 @@ fn spawn_pane(model: &Model) -> Element<'_, Message> {
         )
         .into(),
         rule::horizontal(1.0).style(theme::rule_ink).into(),
+        mono("Quick boots — each one fills the form below; nothing is sent until BOOT RUN", 10.5, INK_3).into(),
+        presets(),
+        vertical(6.0),
+        rule::horizontal(1.0).style(theme::rule).into(),
     ];
     for field in Field::ALL {
         body.push(form_row(model, field));
@@ -1099,5 +1300,78 @@ mod tests {
         let form = SpawnForm::default();
         assert_eq!(form.field(Field::N), "1");
         assert_eq!(form.field(Field::VsockCid), "");
+    }
+
+    #[test]
+    fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
+        let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
+        for bound in ["r", "m", "f", "?", "esc", "↑ ↓"] {
+            assert!(keys.contains(&bound), "the register binds {bound:?}");
+        }
+        for (_, what) in KEYS {
+            assert!(!what.is_empty(), "every key says what it does");
+        }
+    }
+
+    #[test]
+    fn the_help_sheet_renders_and_says_what_the_quick_commands_are_not() {
+        let mut model = Model::new();
+        let sheet = help_sheet();
+        let _: Element<'_, Message> = sheet;
+
+        model.help = true;
+        let _ = view(&model);
+        assert!(model.help, "building the tree changes nothing");
+    }
+
+    #[test]
+    fn the_export_line_names_the_target_and_where_it_lands() {
+        let mut model = Model::new();
+        model.pane = Pane::Run("r1".to_string());
+        let mut detail = run();
+        detail.vms[0].serial = Some("login: plaza\n".to_string());
+        detail.vms.push(Vm {
+            id: 1,
+            guest_cid: Some(51),
+            state: VmState::Running,
+            serial: Some("up\n".to_string()),
+        });
+        model.detail = Some(detail.clone());
+        model.export.path = "/tmp/plaza-r1-0.txt".to_string();
+
+        assert_eq!(
+            export_line(&model, &detail),
+            "vm 0 · 13 byte(s) of capture → /tmp/plaza-r1-0.txt"
+        );
+
+        model.export.target = ExportTarget::Run;
+        assert_eq!(
+            export_line(&model, &detail),
+            "every vm of r1 · 2 section(s) · 16 byte(s) of capture → /tmp/plaza-r1-0.txt"
+        );
+
+        // A VM whose serial the pane has not seen counts nothing.
+        model.export.target = ExportTarget::Vm;
+        model.selection = Some(crate::model::Selection {
+            run: "r1".to_string(),
+            vm: 7,
+        });
+        assert_eq!(
+            export_line(&model, &detail),
+            "vm 7 · 0 byte(s) of capture → /tmp/plaza-r1-0.txt"
+        );
+    }
+
+    #[test]
+    fn the_preset_names_and_footprints_are_the_static_labels_the_form_carries() {
+        let labels: Vec<&str> = Preset::ALL.iter().map(|preset| preset.label()).collect();
+        assert_eq!(labels, vec!["2 VMs + vsock", "8 VMs", "50-VM scale"]);
+        assert_eq!(
+            preset_footprint(Preset::Scale),
+            "50 × 128 MiB ≈ 6.3 GiB guest RAM"
+        );
+        for preset in Preset::ALL {
+            assert!(!preset.what().is_empty());
+        }
     }
 }

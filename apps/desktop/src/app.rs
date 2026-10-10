@@ -6,6 +6,7 @@
 
 use crate::api::Client;
 use crate::cli::Config;
+use crate::export::{self, ExportCall};
 use crate::model::{ConsoleCall, Effect, KeyAction, Message, Model, title};
 use crate::{epoch_ms, theme, view};
 
@@ -24,7 +25,7 @@ pub fn application(
     let boot_client = client.clone();
     let boot = move || {
         let mut model = model.clone();
-        let effect = model.apply(Message::Tick { at_ms: epoch_ms() });
+        let effect = model.boot(epoch_ms());
         (model, dispatch(effect, &boot_client))
     };
     let update = move |model: &mut Model, message: Message| {
@@ -76,13 +77,14 @@ fn keys() -> Subscription<Message> {
 }
 
 /// The action a key names, if the register binds it: `r`, `m`, `f` in either
-/// case, Escape, and the console's arrows.
+/// case, `?`, Escape, and the console's arrows.
 pub fn shortcut(key: &Key) -> Option<KeyAction> {
     match key.as_ref() {
         Key::Character(character) => match character.to_ascii_lowercase().as_str() {
             "r" => Some(KeyAction::Register),
             "m" => Some(KeyAction::Machine),
             "f" => Some(KeyAction::Map),
+            "?" => Some(KeyAction::Help),
             _ => None,
         },
         Key::Named(key) => match key {
@@ -189,6 +191,32 @@ fn dispatch(effect: Effect, client: &Client) -> Task<Message> {
             },
         ));
     }
+    if let Some(ExportCall {
+        run,
+        vm,
+        path,
+        contents,
+    }) = effect.export
+    {
+        // The register's one local side effect: a transcript written to the
+        // path in the box, with the disk's own words if it cannot land.
+        let written = path.clone();
+        tasks.push(Task::perform(
+            async move {
+                (
+                    epoch_ms(),
+                    export::write_transcript(&path, &contents),
+                )
+            },
+            move |(at_ms, result)| Message::Exported {
+                at_ms,
+                run: run.clone(),
+                vm,
+                path: written.clone(),
+                result,
+            },
+        ));
+    }
     Task::batch(tasks)
 }
 
@@ -207,6 +235,7 @@ mod tests {
             (Key::Character("M".into()), KeyAction::Machine),
             (Key::Character("F".into()), KeyAction::Map),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
+            (Key::Character("?".into()), KeyAction::Help),
             (Key::Named(keyboard::key::Named::ArrowUp), KeyAction::HistoryPrev),
             (
                 Key::Named(keyboard::key::Named::ArrowDown),

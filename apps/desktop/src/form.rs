@@ -25,6 +25,102 @@ pub const MIN_GUEST_CID: u64 = 3;
 /// (`vmm::spawner::MAX_GUEST_CID`).
 pub const MAX_GUEST_CID: u64 = u32::MAX as u64 - 1;
 
+/// A quick-boot preset: the numbers one named scenario wants, filled into the
+/// form so the operator sees (and may change) exactly what will be sent — a
+/// preset never boots anything on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    /// Two VMs with vsock devices from CID 10, so each session can be watched
+    /// end to end.
+    Pair,
+    /// Eight VMs at 512 MiB: a working fleet.
+    Eight,
+    /// Fifty VMs at the daemon's floor of 128 MiB: the scale scenario.
+    Scale,
+}
+
+/// What a preset puts in the form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresetShape {
+    /// How many VMs to boot.
+    pub n: u32,
+    /// vCPUs per VM.
+    pub vcpus: u32,
+    /// Guest memory per VM, in MiB.
+    pub memory_mib: u32,
+    /// The base guest CID, or `None` for a run without vsock devices.
+    pub vsock_cid: Option<u64>,
+}
+
+impl PresetShape {
+    /// The guest memory the whole run asks for, in MiB.
+    pub fn total_mib(self) -> u64 {
+        u64::from(self.n) * u64::from(self.memory_mib)
+    }
+}
+
+impl Preset {
+    /// Every preset, in the order the form offers them.
+    pub const ALL: [Preset; 3] = [Preset::Pair, Preset::Eight, Preset::Scale];
+
+    /// The word on the preset's button.
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::Pair => "2 VMs + vsock",
+            Preset::Eight => "8 VMs",
+            Preset::Scale => "50-VM scale",
+        }
+    }
+
+    /// What the preset is for, as the form's second line of label.
+    pub fn what(self) -> &'static str {
+        match self {
+            Preset::Pair => "two VMs on cid 10, a full session each",
+            Preset::Eight => "a working fleet, 512 MiB each",
+            Preset::Scale => "the daemon's floor, 128 MiB each",
+        }
+    }
+
+    /// The numbers the preset fills in.
+    pub fn shape(self) -> PresetShape {
+        match self {
+            Preset::Pair => PresetShape {
+                n: 2,
+                vcpus: 2,
+                memory_mib: 512,
+                vsock_cid: Some(10),
+            },
+            Preset::Eight => PresetShape {
+                n: 8,
+                vcpus: 2,
+                memory_mib: 512,
+                vsock_cid: None,
+            },
+            Preset::Scale => PresetShape {
+                n: 50,
+                vcpus: 1,
+                memory_mib: 128,
+                vsock_cid: None,
+            },
+        }
+    }
+
+    /// Fills the form: every field, so the boxes hold exactly what the preset
+    /// means. A preset has no opinion on heartbeats, so the run it describes
+    /// is long-lived.
+    pub fn fill(self, form: &mut SpawnForm) {
+        let shape = self.shape();
+        form.set(Field::N, shape.n.to_string());
+        form.set(Field::Vcpus, shape.vcpus.to_string());
+        form.set(Field::MemoryMib, shape.memory_mib.to_string());
+        form.set(Field::Beats, String::new());
+        form.set(
+            Field::VsockCid,
+            shape.vsock_cid.map(|cid| cid.to_string()).unwrap_or_default(),
+        );
+    }
+}
+
 /// One field of the spawn form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Field {
@@ -457,5 +553,115 @@ mod tests {
             assert!(!field.hint().is_empty());
         }
         assert_eq!(Field::MemoryMib.name(), "memory_mib");
+    }
+
+    #[test]
+    fn a_preset_fills_every_box_and_the_filled_form_validates() {
+        let cases = [
+            (
+                Preset::Pair,
+                form("2", "2", "512", "", "10"),
+                CreateRun {
+                    n: 2,
+                    vcpus: 2,
+                    memory_mib: 512,
+                    beats: None,
+                    vsock_cid: Some(10),
+                },
+            ),
+            (
+                Preset::Eight,
+                form("8", "2", "512", "", ""),
+                CreateRun {
+                    n: 8,
+                    vcpus: 2,
+                    memory_mib: 512,
+                    beats: None,
+                    vsock_cid: None,
+                },
+            ),
+            (
+                Preset::Scale,
+                form("50", "1", "128", "", ""),
+                CreateRun {
+                    n: 50,
+                    vcpus: 1,
+                    memory_mib: 128,
+                    beats: None,
+                    vsock_cid: None,
+                },
+            ),
+        ];
+        for (preset, expected, create) in cases {
+            let mut form = SpawnForm::default();
+            preset.fill(&mut form);
+            assert_eq!(form, expected, "{} fills every box", preset.label());
+            // The request is exactly the daemon's own body, and the daemon
+            // accepts it: a preset that the form itself refuses would be a
+            // preset nobody can boot.
+            assert_eq!(form.validate().expect("the preset is valid"), create);
+        }
+    }
+
+    #[test]
+    fn the_presets_bodies_are_byte_for_byte_the_daemons_own() {
+        let mut form = SpawnForm::default();
+        Preset::Pair.fill(&mut form);
+        assert_eq!(
+            serde_json::to_string(&form.validate().expect("valid")).expect("a body"),
+            r#"{"n":2,"vcpus":2,"memory_mib":512,"beats":null,"vsock_cid":10}"#
+        );
+
+        Preset::Eight.fill(&mut form);
+        assert_eq!(
+            serde_json::to_string(&form.validate().expect("valid")).expect("a body"),
+            r#"{"n":8,"vcpus":2,"memory_mib":512,"beats":null,"vsock_cid":null}"#
+        );
+
+        Preset::Scale.fill(&mut form);
+        assert_eq!(
+            serde_json::to_string(&form.validate().expect("valid")).expect("a body"),
+            r#"{"n":50,"vcpus":1,"memory_mib":128,"beats":null,"vsock_cid":null}"#
+        );
+    }
+
+    #[test]
+    fn a_preset_leaves_nothing_of_the_form_it_replaced() {
+        let mut form = form("7", "3", "4096", "9", "70");
+        Preset::Scale.fill(&mut form);
+        assert_eq!(form.field(Field::N), "50");
+        assert_eq!(form.field(Field::MemoryMib), "128");
+        assert_eq!(form.field(Field::Beats), "", "the old heartbeats are gone");
+        assert_eq!(form.field(Field::VsockCid), "", "the old cid is gone");
+
+        // And a preset with a cid puts one back.
+        Preset::Pair.fill(&mut form);
+        assert_eq!(form.field(Field::VsockCid), "10");
+    }
+
+    #[test]
+    fn every_preset_has_a_label_a_scenario_and_a_footprint() {
+        for preset in Preset::ALL {
+            assert!(!preset.label().is_empty());
+            assert!(!preset.what().is_empty());
+            let shape = preset.shape();
+            assert!((1..=MAX_VMS).contains(&shape.n), "{}", preset.label());
+            assert!((1..=MAX_VCPUS).contains(&shape.vcpus), "{}", preset.label());
+            assert!(shape.memory_mib >= MIN_MEMORY_MIB, "{}", preset.label());
+            if let Some(cid) = shape.vsock_cid {
+                assert!((MIN_GUEST_CID..=MAX_GUEST_CID).contains(&cid));
+            }
+        }
+        assert_eq!(Preset::Pair.shape().total_mib(), 1_024);
+        assert_eq!(Preset::Eight.shape().total_mib(), 4_096);
+        assert_eq!(Preset::Scale.shape().total_mib(), 6_400);
+    }
+
+    #[test]
+    fn the_labels_say_what_the_presets_boot() {
+        assert_eq!(Preset::Pair.label(), "2 VMs + vsock");
+        assert_eq!(Preset::Eight.label(), "8 VMs");
+        assert_eq!(Preset::Scale.label(), "50-VM scale");
+        assert_eq!(Preset::ALL.len(), 3);
     }
 }
