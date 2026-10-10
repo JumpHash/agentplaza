@@ -15,7 +15,7 @@ import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry' | 'roster';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 /** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
@@ -34,6 +34,16 @@ declare global {
       readonly stream: StreamState;
       /** The 3D camera's position and target, when the scene has booted. */
       readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
+      /** What the 3D plot holds — platforms, blocks, live arcs — and the
+          words drawn on the first run's plate and first block. */
+      readonly district3d: {
+        readonly runs: number;
+        readonly vms: number;
+        readonly arcs: number;
+        readonly sessions: number;
+        readonly plate: string | null;
+        readonly label: string | null;
+      } | null;
     };
   }
 }
@@ -194,9 +204,11 @@ export class Store {
          register shows in its pane, never a redirect */
       jobs.push(this.pollDetail(route.compare.a, true));
       if (route.compare.b !== route.compare.a) jobs.push(this.pollDetail(route.compare.b, true));
-    } else if (route.name === 'map' || route.name === 'view3d' || route.name === 'telemetry') {
-      /* The map, 3D view and telemetry read serial activity, which only the
-         single-run GET carries: poll every open run's detail. */
+    } else if (
+      route.name === 'map' || route.name === 'view3d' || route.name === 'telemetry' || route.name === 'roster'
+    ) {
+      /* The map, 3D view, telemetry and the roster read serial activity,
+         which only the single-run GET carries: poll every open run's detail. */
       for (const run of this.runs) {
         if (run.state === 'starting' || run.state === 'running') jobs.push(this.pollDetail(run.id, true));
       }
@@ -285,6 +297,15 @@ export class Store {
   /** The run the run-detail view is open on, with serial when fetched. */
   get openRun(): Run | null {
     return this.detailId ? (this.details.get(this.detailId) ?? null) : null;
+  }
+
+  /** The freshest copy the store holds of a register entry: its fetched
+      detail when it is the same incarnation of the id, else the list entry.
+      Only the single-run GET carries serial, so a view that reads lines or
+      activity must go through this. */
+  detailOf(run: Run): Run {
+    const detail = this.details.get(run.id);
+    return detail && detail.created_at === run.created_at ? detail : run;
   }
 
   /** Fetch one run with serial. `quiet` polls (map/3D) skip the 404 redirect. */

@@ -9,6 +9,10 @@ export interface Vm {
   state: VmState;
   /** vsock guest CID (vsock_cid + index); absent on runs without vsock. */
   guest_cid?: number;
+  /** The role this guest runs as, when it is one of the fleet's agents
+      (the register's VmView carries it only for role VMs; serde skips the
+      field otherwise, so it is absent on every ordinary run). */
+  role?: string;
   /** Serial capture; present only in a single-run GET. */
   serial?: string;
 }
@@ -52,6 +56,15 @@ export function isOpen(run: Run | null | undefined): boolean {
 /** A run is on the wire when any of its VMs reports a vsock guest CID. */
 export function hasVsock(run: Run | null | undefined): boolean {
   return !!run && run.vms.some((v) => v.guest_cid != null);
+}
+
+/** The role the register names for a VM, or null. Defensive on the way in:
+    the field is optional (it lands only for the fleet's agents) and its value
+    comes off the wire, so only a non-empty string counts — an absent field, a
+    blank, or a hostile non-string all read as "no role", never as a role. */
+export function roleOf(vm: Vm | null | undefined): string | null {
+  const role = vm?.role;
+  return typeof role === 'string' && role !== '' ? role : null;
 }
 
 export function modeText(run: Run): string {

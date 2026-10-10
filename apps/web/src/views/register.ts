@@ -4,9 +4,9 @@
 
 import { createRun } from '../api';
 import { announce, byId, el, toast } from '../dom';
-import { fmtDur, fmtNum, fmtTime, pad } from '../format';
+import { fmtDur, fmtNum, fmtStamp, fmtTime, pad } from '../format';
 import type { Run } from '../models/run';
-import { hasVsock, isOpen, modeText, seqOf } from '../models/run';
+import { hasVsock, isOpen, modeText, roleOf, seqOf } from '../models/run';
 import { store } from '../store';
 import { runStateMk } from './chrome';
 
@@ -80,7 +80,7 @@ function renderRuns(): void {
   byId('runs-empty').hidden = !(store.runsError == null && store.runs.length === 0);
 
   const sig = store.runs
-    .map((r) => `${r.id}:${r.state}:${r.ended_at ?? 0}:${r.vms.length}:${hasVsock(r) ? 1 : 0}`)
+    .map((r) => `${r.id}:${r.state}:${r.ended_at ?? 0}:${r.vms.length}:${hasVsock(r) ? 1 : 0}:${r.vms.filter((v) => roleOf(v) != null).length}`)
     .join('|');
   const list = byId('runs-list');
   if (sig !== runsSig) {
@@ -89,9 +89,13 @@ function renderRuns(): void {
     list.textContent = '';
     for (const r of store.runs) {
       const seq = seqOf(r.id);
+      /* a role fleet is not an ordinary run: its VM rows carry roles, so the
+         entry says so in the margin — an ink mark, never a tinted pill, and
+         only when the register actually names one */
+      const roles = r.vms.filter((v) => roleOf(v) != null).length;
       const b = el('b', null, `Run ${r.id} — ${r.vms.length} VMs × ${r.vcpus} vCPUs, ${fmtNum(r.memory_mib)} MiB each`);
       const sub = el('span');
-      sub.appendChild(document.createTextNode(`${modeText(r)} · opened ${fmtTime(r.created_at)}`));
+      sub.appendChild(document.createTextNode(`${modeText(r)} · opened ${fmtStamp(r.created_at)}`));
       const dur = document.createTextNode('');
       sub.appendChild(el('span')).appendChild(dur);
       const matter = el('span', 'matter');
@@ -100,12 +104,14 @@ function renderRuns(): void {
       const btn = el('button', 'entry');
       btn.type = 'button';
       btn.setAttribute('data-go', `#run/${r.id}`);
-      btn.setAttribute('aria-label', `Open run ${r.id}, ${r.state}${hasVsock(r) ? ', vsock' : ''}`);
+      btn.setAttribute('aria-label',
+        `Open run ${r.id}, ${r.state}${hasVsock(r) ? ', vsock' : ''}${roles > 0 ? `, role fleet of ${roles}` : ''}`);
       btn.appendChild(el('span', 'no', pad(seq, 4)));
       btn.appendChild(matter);
-      btn.appendChild(el('span', 'due', fmtTime(r.created_at)));
+      btn.appendChild(el('span', 'due', fmtStamp(r.created_at)));
       const auth = el('span', 'auth');
       if (hasVsock(r)) auth.appendChild(el('span', 'mk vsock', 'vsock'));
+      if (roles > 0) auth.appendChild(el('span', 'mk', `fleet · ${fmtNum(roles)} ${roles === 1 ? 'role' : 'roles'}`));
       auth.appendChild(runStateMk(r.state));
       btn.appendChild(auth);
       list.appendChild(btn);

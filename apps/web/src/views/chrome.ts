@@ -5,7 +5,7 @@ import { byId, el, toast } from '../dom';
 import { fmtNum } from '../format';
 import type { RunState, VmState } from '../models/run';
 import type { Theme } from '../store';
-import { seqOf } from '../models/run';
+import { roleOf, seqOf } from '../models/run';
 import { store } from '../store';
 
 /* The register's marks: one filled colour (the owner's orange); every other
@@ -24,7 +24,15 @@ export function runStateMk(state: RunState | undefined): HTMLElement {
 }
 
 export function vmStateMk(state: VmState | undefined): HTMLElement {
-  return el('span', VM_MARK[state ?? 'exited'] ?? 'mk', state ?? '—');
+  return el('span', VM_MARK[state ?? 'exited'] ?? 'mk', state ?? 'exited');
+}
+
+/** The role tag a VM carries when the register names one: the same small,
+    square, ink-outlined chip as the guest CID, so the run table, the compare
+    panes and the roster read alike. A VM with no role draws nothing — the
+    field is the fleet's alone, and no placeholder is ever invented for it. */
+export function roleChip(role: string | null): HTMLElement | null {
+  return role == null ? null : el('span', 'chip role', role);
 }
 
 /* ------------------------------------------------------------ theme */
@@ -104,6 +112,17 @@ export function renderChrome(): void {
   const vms = store.runs.reduce((n, r) => n + r.vms.length, 0);
   byId('nav-map').textContent = store.runsError != null ? '—' : fmtNum(vms);
   byId('nav-3d').textContent = byId('nav-map').textContent;
+  /* the roster answers one question — how many role agents are running now */
+  let roleAgents = 0;
+  let roleRunning = 0;
+  for (const run of store.runs) {
+    for (const vm of run.vms) {
+      if (roleOf(vm) == null) continue;
+      roleAgents++;
+      if (vm.state === 'running') roleRunning++;
+    }
+  }
+  byId('nav-roster').textContent = roleAgents === 0 ? '—' : fmtNum(roleRunning);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 

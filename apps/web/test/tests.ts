@@ -15,12 +15,13 @@ import {
   type SerialCache,
 } from '../src/serial';
 import { runReportText, runTranscriptText } from '../src/export';
-import { fmtDateTime } from '../src/format';
-import type { Vm } from '../src/models/run';
-import { cidRange } from '../src/models/run';
+import { fmtDateTime, fmtDur, fmtStamp } from '../src/format';
+import type { Run, Vm, VmState } from '../src/models/run';
+import { cidRange, roleOf } from '../src/models/run';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
 import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
+import { readRoster } from '../src/views/roster';
 
 let failures = 0;
 function eq(actual: unknown, expected: unknown, name: string): void {
@@ -365,6 +366,73 @@ eq(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(fmtDateTime(1791664501432)), tru
     'an in-flight session is not summarised as done',
   );
 }
+
+/* ==================== the role fleet: roles, roster, long runs =========
+   The register's VM rows gained an optional `role`; a node boots one
+   long-running agent per role, so the console must read the field
+   defensively, group it into a roster, and keep a fleet's durations honest
+   past a day. */
+
+/* roleOf is defensive: the field is optional and its value comes off the wire */
+eq(roleOf({ id: 0, state: 'running' }), null, 'a VM without a role reads as none');
+eq(roleOf({ id: 0, state: 'running', role: 'architect' }), 'architect', 'a named role reads through');
+eq(roleOf({ id: 0, state: 'running', role: '' }), null, 'a blank role is no role');
+eq(roleOf({ id: 0, state: 'running', role: 42 as unknown as string }), null, 'a hostile non-string role is no role');
+eq(roleOf(null), null, 'no VM, no role');
+
+/* durations past a day roll into days — a role fleet runs for hours, and
+   "72 h 00 m" is not a duration this register would ever write */
+eq(fmtDur(59_000), '59 s', 'under a minute reads in seconds');
+eq(fmtDur(90_000), '1 m 30 s', 'minutes and seconds');
+eq(fmtDur(3 * 3_600_000 + 5 * 60_000), '3 h 05 m', 'hours and minutes');
+eq(fmtDur(23 * 3_600_000 + 59 * 60_000), '23 h 59 m', 'the last hour still reads in hours');
+eq(fmtDur(24 * 3_600_000), '1 d 00 h 00 m', 'the day boundary rolls into days');
+eq(fmtDur(50 * 3_600_000 + 90_000), '2 d 02 h 01 m', 'days, hours and minutes');
+
+/* a row's stamp carries the date once the day differs, so a fleet opened
+   yesterday never reads as though it opened this morning */
+const TODAY = new Date(2026, 9, 10, 12, 0, 0).getTime(); // 2026-10-10, local noon
+eq(fmtStamp(new Date(2026, 9, 10, 21, 50, 5).getTime(), TODAY), '21:50:05', 'a moment today is its clock time');
+eq(fmtStamp(new Date(2026, 9, 9, 23, 28, 1).getTime(), TODAY), '10-09 23:28', 'another day carries its date');
+eq(fmtStamp(new Date(2025, 11, 31, 23, 59, 0).getTime(), TODAY), '2025-12-31 23:59', 'another year carries the year');
+eq(fmtStamp(null, TODAY), '—', 'no time reads as a dash');
+
+/* the roster: role VMs grouped by role, ordered and tallied; a register with
+   no roles reads as an empty roster, never a placeholder one */
+function fleetVm(id: number, role: string | undefined, state: VmState, cid?: number): Vm {
+  const vm: Vm = { id, state };
+  if (role != null) vm.role = role;
+  if (cid != null) vm.guest_cid = cid;
+  return vm;
+}
+function fleetRun(id: string, vms: Vm[], state: 'running' | 'done' = 'running'): Run {
+  return { id, state, vcpus: 1, memory_mib: 128, beats: null, created_at: 1_000, ended_at: state === 'done' ? 2_000 : null, vms };
+}
+const fleetRuns = [
+  fleetRun('r7', [
+    fleetVm(0, 'builder', 'running', 101),
+    fleetVm(1, undefined, 'running', 99), // an ordinary guest: not a roster row
+    fleetVm(2, 'architect', 'running', 100),
+  ]),
+  fleetRun('r8', [fleetVm(0, 'architect', 'exited', 120)], 'done'),
+];
+const roster = readRoster(
+  fleetRuns,
+  (run, vm) => run.id === 'r7' && vm.id === 2 ? 40 : 7,
+  (run, vm) => (vm.state === 'running' ? 1.5 : 0),
+);
+eq(roster.roles, 2, 'the roster counts the roles the register names');
+eq(roster.agents, 3, 'the roster holds only the VMs with roles');
+eq(roster.running, 2, 'the roster counts the agents running now');
+eq(roster.groups.map((g) => g.role), ['architect', 'builder'], 'roles are grouped in alphabetical order');
+eq(roster.groups[0]?.agents.map((a) => a.cid), [100, 120], 'a role\'s agents come by guest CID');
+eq(roster.groups[1]?.agents.map((a) => a.vmId), [0], 'an ordinary guest is not a roster row');
+eq(
+  roster.groups[0]?.agents.map((a) => [a.runId, a.state, a.open, a.lines, a.lps]),
+  [['r7', 'running', true, 40, 1.5], ['r8', 'exited', false, 7, 0]],
+  'each agent carries its place, state, lines and rate',
+);
+eq(readRoster([fleetRun('r1', [fleetVm(0, undefined, 'running', 10)])], () => 0, () => 0), { groups: [], agents: 0, running: 0, roles: 0 }, 'a register with no roles reads as an empty roster');
 
 if (failures > 0) {
   console.error(`\n${failures} assertion(s) failed`);

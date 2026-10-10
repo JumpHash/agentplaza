@@ -9,10 +9,10 @@
 import { byId, el, toast } from '../dom';
 import { fmtNum } from '../format';
 import type { Run, Vm } from '../models/run';
-import { exitKind, exitKindText } from '../models/run';
+import { exitKind, exitKindText, roleOf } from '../models/run';
 import type { CompareTarget } from '../store';
 import { store } from '../store';
-import { vmStateMk } from './chrome';
+import { vmStateMk, roleChip } from './chrome';
 import { txRow } from './txrow';
 
 const MAXROWS = 800; // per-pane render window; older lines elide
@@ -144,6 +144,8 @@ function renderSide(side: Side): { run: Run; vm: Vm; lines: string[] } | null {
   }
 
   head.appendChild(el('span', 'm', `run ${run.id} · vm ${vm.id}`));
+  const role = roleChip(roleOf(vm));
+  if (role) head.appendChild(role);
   if (vm.guest_cid != null) head.appendChild(el('span', 'chip', 'cid ' + vm.guest_cid));
   head.appendChild(vmStateMk(vm.state));
   if (vm.state === 'exited') {

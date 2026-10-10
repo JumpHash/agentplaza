@@ -10,7 +10,7 @@ import { byId } from '../dom';
 import { fmtNum } from '../format';
 import { vmKey } from '../models/activity';
 import type { Run, Vm } from '../models/run';
-import { seqOf } from '../models/run';
+import { roleOf, seqOf } from '../models/run';
 import { store } from '../store';
 import type { Palette } from './plan';
 import { MONO, MONO_SM, palette } from './plan';
@@ -26,12 +26,18 @@ interface Cell {
 const LANE_H = 84;
 const CELL = 30;
 const CELL_GAP = 12;
+/* A role's name is long — the codex's longest runs to 146 px in this font
+   ("legal-agents-ombudsman") — so when the register carries roles the columns
+   are spaced to give the name its own line under the cell, elided only when a
+   role would overrun even that room. */
+const ROLE_PITCH = 156;
 const GUTTER = 108;
 const TOP = 82;
-const ROW_PITCH = 54; // a wrapped row of cells within one lane
+const ROW_PITCH = 70; // a wrapped row of cells within one lane (vm id, cid, role)
 const REDUCED = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 let cells: Cell[] = [];
+let colPitch = CELL + CELL_GAP; // the column pitch layout() chose; drawCell reads it
 /* hover is a run/vm KEY, never a cell object: layout() rebuilds cells from
    the store every render, and a held object would go stale (a killed VM would
    keep reading "running"). The focused index stays valid because lane order
@@ -57,7 +63,14 @@ function layout(width: number): { height: number; lanes: Lane[] } {
   cells = [];
   const lanes: Lane[] = [];
   const runs = store.runs.slice().sort((a, b) => seqOf(a.id) - seqOf(b.id));
-  const perRow = Math.max(1, Math.floor((width - GUTTER - 30) / (CELL + CELL_GAP)));
+  /* a role's name gets its own line under the cell; the column is as wide as
+     the name needs (up to ROLE_PITCH) but never so wide that the plot loses
+     its columns — two across is the floor, where names elide to what fits. */
+  const wantsRoles = runs.some((r) => r.vms.some((v) => roleOf(v) != null));
+  colPitch = wantsRoles
+    ? Math.max(CELL + CELL_GAP, Math.min(ROLE_PITCH, Math.floor((width - GUTTER - 30) / 2)))
+    : CELL + CELL_GAP;
+  const perRow = Math.max(1, Math.floor((width - GUTTER - 30) / colPitch));
   let y = TOP;
   for (const run of runs) {
     const rows = Math.max(1, Math.ceil(run.vms.length / perRow));
@@ -65,7 +78,7 @@ function layout(width: number): { height: number; lanes: Lane[] } {
     run.vms.forEach((vm, index) => {
       const row = Math.floor(index / perRow);
       const col = index % perRow;
-      cells.push({ run, vm, index, x: GUTTER + col * (CELL + CELL_GAP), y: y + row * ROW_PITCH });
+      cells.push({ run, vm, index, x: GUTTER + col * colPitch, y: y + row * ROW_PITCH });
     });
     y += LANE_H + (rows - 1) * ROW_PITCH;
   }
@@ -136,7 +149,7 @@ export function renderMap(): void {
     g.fillText(`${run.vms.length}×${run.vcpus} vCPU`, 24, lane.y + 2);
     g.fillText(`${fmtNum(run.memory_mib)} MiB`, 24, lane.y + 16);
     g.strokeStyle = p.rule;
-    const sepY = lane.y + (lane.rows - 1) * ROW_PITCH + 38.5;
+    const sepY = lane.y + (lane.rows - 1) * ROW_PITCH + 52.5;
     g.beginPath();
     g.moveTo(GUTTER - 12, sepY);
     g.lineTo(cssWidth - 24, sepY);
@@ -204,7 +217,7 @@ function drawCell(g: CanvasRenderingContext2D, cell: Cell, p: Palette): void {
     g.stroke();
   }
 
-  /* labels: vm id above, cid below */
+  /* labels: vm id above, cid and the role below */
   g.font = MONO_SM;
   g.textAlign = 'center';
   g.fillStyle = p.ink3;
@@ -212,6 +225,11 @@ function drawCell(g: CanvasRenderingContext2D, cell: Cell, p: Palette): void {
   if (cell.vm.guest_cid != null) {
     g.fillStyle = p.ink2;
     g.fillText(`cid ${cell.vm.guest_cid}`, cx, cy + 28);
+  }
+  const role = roleOf(cell.vm);
+  if (role != null) {
+    g.fillStyle = p.ink;
+    g.fillText(elide(g, role, colPitch - 8), cx, cy + 40);
   }
   g.textAlign = 'left';
 
@@ -226,6 +244,16 @@ function drawCell(g: CanvasRenderingContext2D, cell: Cell, p: Palette): void {
     g.lineWidth = 1;
     g.strokeRect(cx - 17.5, cy - 17.5, 35, 35);
   }
+}
+
+/** The longest prefix of `text` that fits `maxPx` in the context's current
+    font, elided with one ellipsis. Real data, trimmed only to the room the
+    column gives it — a role name can be longer than a cell. */
+function elide(g: CanvasRenderingContext2D, text: string, maxPx: number): string {
+  if (g.measureText(text).width <= maxPx) return text;
+  let cut = text;
+  while (cut.length > 1 && g.measureText(cut + '…').width > maxPx) cut = cut.slice(0, -1);
+  return cut + '…';
 }
 
 function updateStatus(): void {
@@ -245,8 +273,11 @@ function updateStatus(): void {
     return;
   }
   const lps = target.vm.state === 'running' ? store.activity.get(vmKey(target.run.id, target.vm.id)) : 0;
+  const role = roleOf(target.vm);
   status.textContent =
-    `${target.run.id} · vm ${target.vm.id} · ${target.vm.state}` +
+    `${target.run.id} · vm ${target.vm.id}` +
+    (role != null ? ` · role ${role}` : '') +
+    ` · ${target.vm.state}` +
     (target.vm.guest_cid != null ? ` · cid ${target.vm.guest_cid}` : '') +
     (lps > 0.02 ? ` · ${lps.toFixed(1)} lines/s` : '') +
     ' — Enter or click opens the entry';

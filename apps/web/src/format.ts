@@ -30,5 +30,28 @@ export function fmtDur(ms: number): string {
   const m = Math.floor(s / 60); s %= 60;
   if (m < 60) return m + ' m ' + pad(s, 2) + ' s';
   const h = Math.floor(m / 60); const mm = m % 60;
-  return h + ' h ' + pad(mm, 2) + ' m';
+  /* a fleet's agents run for hours, and a role fleet runs for days: past a
+     day the hours roll into days rather than reading as "72 h 00 m", which
+     is not a duration the register would ever write */
+  if (h < 24) return h + ' h ' + pad(mm, 2) + ' m';
+  const d = Math.floor(h / 24); const hh = h % 24;
+  return d + ' d ' + pad(hh, 2) + ' h ' + pad(mm, 2) + ' m';
+}
+
+/** A moment as the register stamps it in a ruled row: the clock time when it
+    falls on `today`'s day, else the date and time — so a fleet opened
+    yesterday never reads as though it opened this morning. The year joins
+    only when it differs. `today` is a seam for the harness. */
+export function fmtStamp(ms: number | null | undefined, today: number = Date.now()): string {
+  if (ms == null) return '—';
+  const d = new Date(ms);
+  const t = new Date(today);
+  const sameDay =
+    d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
+  if (sameDay) return fmtTime(ms);
+  const date =
+    d.getFullYear() === t.getFullYear()
+      ? `${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}`
+      : `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}`;
+  return `${date} ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}`;
 }

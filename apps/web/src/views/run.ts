@@ -8,11 +8,11 @@ import { downloadText, runReportText, runTranscriptText, vmTranscriptText } from
 import { fmtDur, fmtNum, fmtTime, pad } from '../format';
 import { HISTORY_CAP } from '../models/history';
 import type { Run, Vm } from '../models/run';
-import { exitKind, exitKindText, isOpen, modeText, seqOf } from '../models/run';
+import { exitKind, exitKindText, isOpen, modeText, roleOf, seqOf } from '../models/run';
 import { vmKey } from '../models/activity';
 import { QUICK_COMMANDS } from '../serial';
 import { store } from '../store';
-import { runStateMk, vmStateMk } from './chrome';
+import { roleChip, runStateMk, vmStateMk } from './chrome';
 import type { Palette } from './plan';
 import { palette } from './plan';
 import { txRow } from './txrow';
@@ -149,7 +149,7 @@ function renderVms(run: Run | null): void {
   const sig = vms
     .map((v) => {
       const kind = v.state === 'exited' ? (exitKind(store.linesFor(run?.id ?? '', v.id, v.serial)) ?? 'x') : '';
-      return `${v.id}:${v.state}:${v.guest_cid ?? ''}:${kind}`;
+      return `${v.id}:${v.state}:${v.guest_cid ?? ''}:${v.role ?? ''}:${kind}`;
     })
     .join('|');
   const tb = byId('vm-body');
@@ -158,13 +158,17 @@ function renderVms(run: Run | null): void {
     vmRows = [];
     tb.textContent = '';
     vms.forEach((v, i) => {
+      const role = roleOf(v);
       const tr = el('tr', 'link');
       tr.tabIndex = 0;
       tr.setAttribute('data-sel-vm', String(i));
       tr.setAttribute('aria-label',
-        `Show transcript of vm ${v.id}, ${v.state}${v.guest_cid != null ? `, cid ${v.guest_cid}` : ''}`);
+        `Show transcript of vm ${v.id}, ${v.state}` +
+        `${v.guest_cid != null ? `, cid ${v.guest_cid}` : ''}${role != null ? `, role ${role}` : ''}`);
       tr.appendChild(el('td', null, pad(i + 1, 2)));
       const idTd = el('td', 'm', 'vm ' + v.id);
+      const chip = roleChip(role);
+      if (chip) idTd.appendChild(chip);
       if (v.guest_cid != null) idTd.appendChild(el('span', 'chip', 'cid ' + v.guest_cid));
       tr.appendChild(idTd);
       const stTd = el('td');

@@ -1,6 +1,7 @@
 /* Hash routing: #register (default) / #run/{id} / #machine / #map / #view3d /
-   #compare/{a}/{avm}/{b}/{bvm} / #telemetry. Keys 0–5 walk the six index
-   destinations; the compare address carries its pair so it can be bookmarked. */
+   #compare/{a}/{avm}/{b}/{bvm} / #telemetry / #roster. Keys 0–6 walk the
+   seven index destinations; the compare address carries its pair so it can
+   be bookmarked. */
 
 import type { CompareTarget, Route, ViewName } from './store';
 
@@ -12,6 +13,7 @@ const NAMES: Readonly<Record<string, ViewName>> = {
   view3d: 'view3d',
   compare: 'compare',
   telemetry: 'telemetry',
+  roster: 'roster',
 };
 
 export function parseRoute(hash: string): Route {
@@ -42,9 +44,10 @@ export const NAV_OF: Record<ViewName, ViewName> = {
   view3d: 'view3d',
   compare: 'run',
   telemetry: 'telemetry',
+  roster: 'roster',
 };
 
-/** Key destinations for 0–5. `run` resolves against what the store knows. */
+/** Key destinations for 0–6. `run` resolves against what the store knows. */
 export const KEY_ROUTES: Readonly<Record<string, ViewName>> = {
   '0': 'register',
   '1': 'run',
@@ -52,4 +55,5 @@ export const KEY_ROUTES: Readonly<Record<string, ViewName>> = {
   '3': 'map',
   '4': 'view3d',
   '5': 'telemetry',
+  '6': 'roster',
 };

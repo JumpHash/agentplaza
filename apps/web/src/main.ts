@@ -14,8 +14,9 @@ import { initRegister, renderRegister } from './views/register';
 import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from './views/run';
 import { renderMachine } from './views/machine';
 import { renderMap, syncMapVisibility } from './views/map2d';
+import { initRoster, renderRoster } from './views/roster';
 import { initTelemetry, renderTelemetry } from './views/telemetry';
-import { cameraPreset, cameraState, initView3d, sync3d } from './views/view3d';
+import { cameraPreset, cameraState, districtState, initView3d, sync3d } from './views/view3d';
 
 /* ------------------------------------------------------------ routing */
 function show(): void {
@@ -137,6 +138,7 @@ initCompare();
 initKeys();
 initTelemetry();
 initView3d();
+initRoster();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -148,6 +150,7 @@ store.onRender(() => {
     case 'view3d': sync3d(); break;
     case 'compare': renderCompare(); break;
     case 'telemetry': renderTelemetry(); break;
+    case 'roster': renderRoster(); break;
   }
 });
 
@@ -163,4 +166,5 @@ window.__PLAZA_DIAG__ = {
   get wire() { return { ...store.wire }; },
   get stream() { return store.stream; },
   get camera3d() { return cameraState(); },
+  get district3d() { return districtState(); },
 };

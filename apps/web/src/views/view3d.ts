@@ -36,7 +36,7 @@ import { byId } from '../dom';
 import { fmtNum } from '../format';
 import { vmKey } from '../models/activity';
 import type { Run, Vm } from '../models/run';
-import { isOpen, seqOf } from '../models/run';
+import { isOpen, roleOf, seqOf } from '../models/run';
 import { sessionOf } from '../models/session';
 import { store } from '../store';
 import type { Framing } from './district';
@@ -56,6 +56,10 @@ interface VmObject {
   runId: string;
   index: number;
   state: Vm['state'];
+  /** The block label last textured (vm id, cid and role) — retextured only
+      when the words change, which is how a role that lands a tick late (and
+      a CID that lands with it) reaches a block already on the plot. */
+  labelKey: string;
 }
 
 interface RunObject {
@@ -643,7 +647,7 @@ function syncVm(ro: RunObject, run: Run, vm: Vm, index: number, p: Palette): voi
     const label = makeLabel(vmLabelText(vm), p.ink2);
     /* the label hangs off the run group, not the mesh — a mesh-child sprite
        would stretch with the block's height scale */
-    vo = { mesh, edges, label, mat, edgeMat, runId: run.id, index, state: vm.state };
+    vo = { mesh, edges, label, mat, edgeMat, runId: run.id, index, state: vm.state, labelKey: vmLabelText(vm) };
     ro.vms.set(vm.id, vo);
     ro.group.add(mesh);
     ro.group.add(label);
@@ -662,10 +666,14 @@ function syncVm(ro: RunObject, run: Run, vm: Vm, index: number, p: Palette): voi
   const height = vm.state === 'running' ? 2.2 : vm.state === 'exited' ? 0.7 : 0.35;
   vo.mesh.scale.y += (height - vo.mesh.scale.y) * 0.5;
   vo.mesh.position.y = 0.6 + vo.mesh.scale.y / 2;
-  if (vo.state !== vm.state) {
-    vo.state = vm.state;
-    retextureLabel(vo.label, vmLabelText(vm), p.ink2);
+  /* the block's words — vm id, guest CID, and the role the register names —
+     retextured only when they change (a canvas draw + upload) */
+  const labelText = vmLabelText(vm);
+  if (labelText !== vo.labelKey) {
+    vo.labelKey = labelText;
+    retextureLabel(vo.label, labelText, p.ink2);
   }
+  vo.state = vm.state;
   vo.label.position.set(x, vo.mesh.position.y + vo.mesh.scale.y / 2 + 0.7, z);
 
   const glow = vm.state === 'running'
@@ -682,8 +690,15 @@ function syncVm(ro: RunObject, run: Run, vm: Vm, index: number, p: Palette): voi
   }
 }
 
+/** A block's own words: its index, the guest CID when it has one, and the
+    role the register names for it — the fleet's agent made readable on the
+    plot. Absent fields add nothing; no placeholder is invented. */
 function vmLabelText(vm: Vm): string {
-  return vm.guest_cid != null ? `vm ${vm.id} · cid ${vm.guest_cid}` : `vm ${vm.id}`;
+  const parts = [`vm ${vm.id}`];
+  if (vm.guest_cid != null) parts.push(`cid ${vm.guest_cid}`);
+  const role = roleOf(vm);
+  if (role != null) parts.push(role);
+  return parts.join(' · ');
 }
 
 /* ------------------------------------------------------------ picking */
@@ -783,6 +798,34 @@ export function cameraState(): { pos: [number, number, number]; target: [number,
     pos: [camera.position.x, camera.position.y, camera.position.z],
     target: [controls.target.x, controls.target.y, controls.target.z],
   };
+}
+
+/** Read-only district state for the verification harness; the app never reads
+    it. What the plot actually holds — the platforms, blocks and live arcs —
+    and the words on the first run's plate and first block, so the labels can
+    be read back as drawn, not just as derived. */
+export function districtState(): {
+  runs: number;
+  vms: number;
+  arcs: number;
+  sessions: number;
+  plate: string | null;
+  label: string | null;
+} | null {
+  if (!scene) return null;
+  let vms = 0;
+  let label: string | null = null;
+  for (const ro of runObjects.values()) {
+    vms += ro.vms.size;
+    if (label == null) label = [...ro.vms.values()][0]?.labelKey ?? null;
+  }
+  const first = store.runs.slice().sort((a, b) => seqOf(a.id) - seqOf(b.id))[0];
+  let plate: string | null = null;
+  if (first) {
+    const lines = runPlateLines(first);
+    plate = `${lines.title} · ${lines.sub}`;
+  }
+  return { runs: runObjects.size, vms, arcs: arcs.size, sessions: liveSessions, plate, label };
 }
 
 /* ------------------------------------------------------------ status */
