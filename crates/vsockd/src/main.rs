@@ -296,10 +296,13 @@ fn run(config: Config) -> Result<(), String> {
     // Bind every listener first, so a taken path fails the daemon before it
     // serves any guest (rather than one CID up and one down).
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
+    let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
     let mut handles = Vec::new();
+    let mut listener_paths = Vec::new();
     for cid in &config.cids {
         let cid = *cid;
         let path = uds_path(&config.uds_dir, cid, config.port);
+        clear_stale_listener(&path, cid)?;
         let listener = UnixListener::bind(&path).map_err(|err| {
             format!("cannot listen on {} for guest CID {cid}: {err}", path.display())
         })?;
@@ -311,6 +314,7 @@ fn run(config: Config) -> Result<(), String> {
             path.display(),
             cid
         );
+        listener_paths.push(path);
         let limiter = Arc::clone(&limiter);
         handles.push(thread::spawn(move || accept_loop(cid, listener, limiter)));
     }
@@ -318,7 +322,44 @@ fn run(config: Config) -> Result<(), String> {
         let _ = handle.join();
     }
     println!("vsockd: stop requested, closing the listeners");
+    // The listener sockets are closed with their threads; the socket FILES
+    // outlive them, so remove each one or the next start would find a path
+    // whose socket is dead and fail to bind. Best effort: a file that is
+    // already gone (taken care of elsewhere) is not a failure.
+    for path in &listener_paths {
+        if let Err(err) = std::fs::remove_file(path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                println!(
+                    "vsockd: warning: cannot remove {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
     Ok(())
+}
+
+/// Makes `path` bindable: a socket file left by an earlier `vsockd` (a crash,
+/// or a stop that could not clean up) makes `bind` fail with "address already
+/// in use" although nothing listens on it. The file is stale only if nothing
+/// answers a connection: a live answer means another listener already owns
+/// the path — this daemon refuses to take an orchestrator's place — while an
+/// unanswered probe (a dead socket, or any other leftover file in the
+/// daemon's own 0700 directory) is removed so the listener can bind again.
+#[cfg(target_os = "linux")]
+fn clear_stale_listener(path: &Path, cid: u32) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    match UnixStream::connect(path) {
+        Ok(_) => Err(format!(
+            "another listener is already serving {} for guest CID {cid} — refusing to take it over",
+            path.display()
+        )),
+        Err(_) => std::fs::remove_file(path).map_err(|err| {
+            format!("cannot remove the stale socket {}: {err}", path.display())
+        }),
+    }
 }
 
 /// Accepts sessions for one guest CID and serves each on its own thread.
@@ -480,6 +521,46 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o700, "a pre-existing socket directory is tightened");
+
+        std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    /// A path that does not exist is bindable as-is; a leftover file is
+    /// removed (nothing answers on it); a live listener keeps its path and
+    /// the takeover is refused.
+    #[test]
+    fn stale_listener_files_are_cleared_but_live_listeners_are_kept() {
+        let dir = std::env::temp_dir().join(format!("plaza-vsockd-stale-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        create_uds_dir(&dir).expect("the socket directory is created");
+
+        // Absent: bindable without a word.
+        let fresh = dir.join("vm30_5000");
+        clear_stale_listener(&fresh, 30).expect("an absent path is bindable");
+        assert!(!fresh.exists(), "an absent path stays absent");
+
+        // Stale: a leftover file nothing answers is removed.
+        let stale = dir.join("vm31_5000");
+        std::fs::write(&stale, b"").expect("a leftover socket file");
+        clear_stale_listener(&stale, 31).expect("a stale file is cleared");
+        assert!(!stale.exists(), "the stale file is removed");
+
+        // Live: a listener that answers keeps its path; the takeover is
+        // refused (the probe connection is closed immediately).
+        let live = dir.join("vm32_5000");
+        let listener = UnixListener::bind(&live).expect("a live listener binds");
+        let answer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the probe connects");
+            drop(stream);
+        });
+        let refusal = clear_stale_listener(&live, 32)
+            .expect_err("a live listener must not be taken over");
+        assert!(
+            refusal.contains("refusing to take it over"),
+            "the refusal says why: {refusal}"
+        );
+        answer.join().expect("the probe connection is answered");
+        assert!(live.exists(), "the live listener's path is kept");
 
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
