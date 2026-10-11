@@ -149,6 +149,12 @@ impl Workspace {
         &self.root
     }
 
+    /// The harness's own state directory under the root (the chat threads).
+    /// The model's tools never reach it: see [`PLAZA_DIR`].
+    pub fn plaza_dir(&self) -> PathBuf {
+        self.root.join(PLAZA_DIR)
+    }
+
     /// The root this workspace was configured with, as given.
     ///
     /// The tools work from the *canonical* root ([`Workspace::canonical_root`]);
@@ -225,6 +231,10 @@ impl Workspace {
 /// Where the workspace is mounted in the guest.
 const WORKSPACE_MOUNT: &str = "/workspace";
 
+/// The harness's own state directory under the workspace root. No model-facing
+/// path may name it, and `list` at the root does not show it.
+pub const PLAZA_DIR: &str = ".plaza";
+
 fn relative_parts(raw: &str) -> Result<Vec<String>, ToolError> {
     // Models name the workspace by its mount point; `/workspace/x` is `x`.
     let raw = match raw.strip_prefix(WORKSPACE_MOUNT) {
@@ -235,6 +245,11 @@ fn relative_parts(raw: &str) -> Result<Vec<String>, ToolError> {
     for component in Path::new(raw).components() {
         match component {
             Component::Normal(part) => match part.to_str() {
+                Some(PLAZA_DIR) => {
+                    return Err(denied(format!(
+                        "path {raw:?} names the harness's own state; the model's tools do not reach it"
+                    )));
+                }
                 Some(part) => parts.push(part.to_string()),
                 None => return Err(invalid(format!("path {raw:?} is not valid UTF-8"))),
             },
@@ -955,6 +970,10 @@ pub fn list(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
                 continue;
             }
         };
+        // The harness's state directory is not the model's to see.
+        if label == "." && name == PLAZA_DIR {
+            continue;
+        }
         let metadata = fs::symlink_metadata(entry.path())
             .map_err(|err| io_tool_error(err, format!("cannot list {label}")))?;
         let kind = if metadata.is_dir() {
