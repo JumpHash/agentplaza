@@ -436,6 +436,25 @@ fn read_text(path: &Path, label: &str) -> Result<String, ToolError> {
 /// is created in the target's own directory — a rename cannot cross a
 /// filesystem — which is inside the workspace by construction. A failed rename
 /// removes it again, so a refusal leaves no litter.
+/// In a root guest, hands a file or folder the file tools made to the agent user (uid 1000),
+/// so the agent's own shell — which runs as that user — can change it like anything it made.
+fn give_to_agent(path: &Path) {
+    if crate::bash::runs_as_root().unwrap_or(false) {
+        let id = crate::bash::UNPRIVILEGED;
+        let _ = std::os::unix::fs::lchown(path, Some(id), Some(id));
+    }
+}
+
+/// `create_dir_all`, handing every folder it creates to the agent user.
+fn create_dirs(dir: &Path) -> io::Result<()> {
+    let missing: Vec<PathBuf> = dir.ancestors().take_while(|a| !a.exists()).map(Path::to_path_buf).collect();
+    fs::create_dir_all(dir)?;
+    for made in missing {
+        give_to_agent(&made);
+    }
+    Ok(())
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let temp = dir.join(format!(
@@ -450,6 +469,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
     }
+    give_to_agent(&temp);
     match fs::rename(&temp, path) {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -634,7 +654,7 @@ pub fn download(workspace: &Workspace, args: &Value) -> Result<String, ToolError
     }
     let created = !path.exists();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
+        create_dirs(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
     }
     write_atomic(&path, &fetched.body)
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
@@ -677,7 +697,7 @@ pub fn write_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErr
     // `resolve` proved the deepest existing ancestor is inside the workspace,
     // so the missing directories it creates are too.
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
+        create_dirs(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
     }
     write_atomic(&path, content.as_bytes())
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
@@ -899,6 +919,7 @@ fn append_bytes(
         .append(true)
         .open(&path)
         .map_err(|err| io_tool_error(err, format!("cannot open {label}")))?;
+    give_to_agent(&path);
     file.write_all(content.as_bytes())
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
     file.sync_all()

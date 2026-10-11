@@ -77,7 +77,7 @@ impl Laws {
     /// the laws written for those operations apply too. Only `tool.call`'s default deny is
     /// reported as `unpermitted`.
     pub fn check(&self, agent_cid: &str, role: &str, tool: &str, input: &Json) -> Verdict {
-        let flags = detect_flags(input);
+        let flags = detect_flags(tool, input);
         let agent = Entity { ty: "Agent".into(), id: agent_cid.into() };
         let tool_entity = Entity { ty: "Tool".into(), id: tool.into() };
         let sandbox = Entity { ty: "Sandbox".into(), id: format!("vm-{agent_cid}") };
@@ -177,22 +177,59 @@ fn titles_of(text: &str, titles: &mut BTreeMap<String, String>) {
     }
 }
 
-/// The context flags the laws test, found in the call's input.
-pub fn detect_flags(input: &Json) -> BTreeSet<&'static str> {
+/// The flags the laws test, read from a tool call: an actual secret in the input (not the
+/// mere words "token" or "password", which ordinary code is full of), a read of a credential
+/// store, an attempt to pass as the owner, and — for shell commands only — a long encoded
+/// blob that hides what a command does.
+pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     let text = input.to_string();
     let lower = text.to_lowercase();
     let mut flags = BTreeSet::new();
-    let credential = ["api key", "api_key", "apikey", "token", "password", "sk-", "begin private key"];
-    if credential.iter().any(|p| lower.contains(p)) {
+    if has_secret(&text) || reads_credential_store(&lower) {
         flags.insert("credential_seeking");
     }
     if lower.contains("impersonat") || lower.contains("pretend to be the owner") || lower.contains("pretend to be the operator") {
         flags.insert("impersonation");
     }
-    if longest_base64_run(&text) > 400 {
+    if matches!(tool, "bash" | "bash_start") && longest_base64_run(&text) > 400 {
         flags.insert("obfuscation");
     }
     flags
+}
+
+/// Whether `text` carries a secret by its well-known shape: provider API keys and tokens,
+/// cloud access keys, chat-platform tokens and private-key blocks.
+fn has_secret(text: &str) -> bool {
+    if text.contains("PRIVATE KEY-----") {
+        return true;
+    }
+    // (prefix, minimum length of the token-character run after it)
+    const SHAPES: [(&str, usize); 9] = [
+        ("sk-ant-", 20), ("sk-proj-", 20), ("sk-", 32), ("ghp_", 30), ("github_pat_", 30),
+        ("xoxb-", 20), ("xoxp-", 20), ("AIza", 35), ("AKIA", 16),
+    ];
+    let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    for (prefix, min) in SHAPES {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(prefix) {
+            let start = from + at;
+            // The prefix must start a token, not sit inside a longer word.
+            let boundary = text[..start].chars().next_back().is_none_or(|c| !token_char(c));
+            let run = text[start + prefix.len()..].chars().take_while(|c| token_char(*c)).count();
+            if boundary && run >= min {
+                return true;
+            }
+            from = start + prefix.len();
+        }
+    }
+    false
+}
+
+/// Whether a command reaches for a credential store.
+fn reads_credential_store(lower: &str) -> bool {
+    ["/.ssh/", "id_rsa", "id_ed25519", "/etc/shadow", ".aws/credentials", ".netrc", ".git-credentials", ".docker/config.json"]
+        .iter()
+        .any(|p| lower.contains(p))
 }
 
 /// The longest run of base64 alphabet characters in `text`.
@@ -250,7 +287,7 @@ mod tests {
     #[test]
     fn a_command_carrying_a_credential_is_forbidden_by_a_constitution_law() {
         let laws = Laws::load(&scratch("cred"));
-        let verdict = laws.check("7", "builder", "bash", &json!({"command": "curl -H 'Authorization: sk-live-abc123' x"}));
+        let verdict = laws.check("7", "builder", "bash", &json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"}));
         assert!(verdict.forbid.iter().any(|id| id.starts_with("C-")), "{verdict:?}");
     }
 
@@ -263,8 +300,12 @@ mod tests {
 
     #[test]
     fn credential_shaped_input_is_flagged() {
-        let flags = detect_flags(&json!({"note": "use sk-live-abc123"}));
+        let flags = detect_flags("bash", &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}));
         assert!(flags.contains("credential_seeking"), "{flags:?}");
+        // Code that only talks about tokens and passwords is not seeking credentials.
+        let code = json!({"path": "auth.py", "content": "token = request.headers['Authorization']\npassword_hash = bcrypt(password)"});
+        assert!(detect_flags("write_file", &code).is_empty());
+        assert!(detect_flags("bash", &json!({"command": "cat ~/.ssh/id_rsa"})).contains("credential_seeking"));
     }
 
     #[test]
@@ -272,7 +313,7 @@ mod tests {
         let dir = scratch("persist");
         let _ = std::fs::remove_file(dir.join("violations.json"));
         let laws = Laws::load(&dir);
-        let refusal = laws.refusal(7, "builder", "bash", &json!({"command": "echo sk-live-abc123"}));
+        let refusal = laws.refusal(7, "builder", "bash", &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}));
         assert!(refusal.unwrap_or_default().starts_with("refused by law C-"));
         let again = Laws::load(&dir);
         let found = again.recent(7, apz_plaza::now_ms());

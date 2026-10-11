@@ -366,7 +366,7 @@ struct ReviewBody {
 }
 
 fn list(app: &App) -> Response {
-    Response::json(200, &json!({ "entries": app.library.all() }))
+    Response::json(200, &app.library.all())
 }
 
 /// A version's files; with `?path=`, just that file as `{path, content}` (what the console reads).
