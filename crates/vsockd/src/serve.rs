@@ -3,7 +3,11 @@
 //! * **v1** — welcome, the guest's tool calls (`echo`, `uptime`), `bye`.
 //! * **keepalive** — registered with the [`Hub`]; the hub's commands go out
 //!   as `tool_call`s, raw lines or `stop`, heartbeats keep it alive, and it is
-//!   reaped after [`SessionLimits::keepalive_idle`] without one.
+//!   reaped after [`SessionLimits::keepalive_idle`] without one. Its hello asks
+//!   apid for the agent's profile (the welcome), and its v3 lines are forwarded
+//!   to apid on threads, at most [`MAX_FORWARDS`] at once. Every reply, and the
+//!   refusal that stands in for a failed forward, is written here: this thread
+//!   is the guest's only writer.
 //!
 //! A tool that cannot run answers `ok: false`; a line that is not a valid
 //! guest message drops the session. The CID is the socket's, never the line's.
@@ -11,13 +15,22 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_proto::line::{Lines, ReadTimeout, Recv};
 use apz_proto::wire::{GuestMessage, HostMessage};
 
+use crate::apid::{self, Apid};
 use crate::hub::{Command, Hub, ToolReply};
+
+/// Forwards to apid in flight per session; the next one is refused at once.
+pub const MAX_FORWARDS: usize = 4;
+/// How often a keepalive session without a profile asks apid again.
+const HELLO_RETRY: Duration = Duration::from_secs(10);
 
 /// Where session log lines go.
 pub trait SessionLog {
@@ -144,7 +157,9 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
         return Err(violation("a keepalive hello on a daemon configured for one-shot sessions only"));
     };
     lines.get_ref().set_read_timeout(Some(limits.keepalive_read_slice))?;
-    session.keepalive(lines, role.as_deref().unwrap_or(""), idle, hub, clock)
+    let outcome = session.keepalive(lines, role.as_deref().unwrap_or(""), idle, hub, clock);
+    session.gone(hub, &outcome);
+    outcome
 }
 
 struct Session<'a> {
@@ -205,7 +220,23 @@ impl Session<'_> {
         // Registered before the welcome; the guard unregisters on every exit.
         let (token, steering) = hub.connect(cid, role, last_heartbeat);
         let _registered = Registration { hub, cid, token };
-        self.send(lines, &HostMessage::welcome(Some(role.to_string()), Some(true), None))?;
+        let apid = hub.apid();
+        let (settled_tx, settled) = channel();
+        let bridge = Bridge { apid: Arc::clone(&apid), in_flight: Arc::new(AtomicUsize::new(0)), settled_tx, settled };
+        // The profile is asked for before the welcome. Without one (apid down, or none
+        // for this agent) the hub asks again every HELLO_RETRY until one comes.
+        let mut profile = None;
+        let mut next_hello = None;
+        if apid.enabled() {
+            match apid.hello(cid, role, self.vm) {
+                Ok(found) => profile = found,
+                Err(err) => self.log.line(&format!("vsockd: agent {cid} hello to apid failed: {err}")),
+            }
+            if profile.is_none() {
+                next_hello = Some(clock.now() + HELLO_RETRY);
+            }
+        }
+        self.send(lines, &HostMessage::welcome(Some(role.to_string()), Some(true), profile))?;
 
         let mut calls = 0u64;
         // Dispatched tool calls not yet answered, and who waits on each.
@@ -215,6 +246,20 @@ impl Session<'_> {
             if clock.now().saturating_duration_since(last_heartbeat) > idle {
                 hub.reap_idle(cid, token, idle);
                 return Err(HostError::Reaped);
+            }
+            // apid's answers, written here: this thread is the guest's only writer.
+            while let Ok(done) = bridge.settled.try_recv() {
+                self.log.line(&format!("vsockd: agent {cid} {}", done.note));
+                if let Some(line) = done.line {
+                    if matches!(line, HostMessage::Profile { .. }) {
+                        next_hello = None;
+                    }
+                    self.send(lines, &line)?;
+                }
+            }
+            if next_hello.is_some_and(|due| clock.now() >= due) {
+                next_hello = Some(clock.now() + HELLO_RETRY);
+                bridge.hello(cid, role, self.vm);
             }
             // Once a stop is out, nothing more is dispatched.
             while !stopping && let Ok(command) = steering.try_recv() {
@@ -282,11 +327,62 @@ impl Session<'_> {
                     return Ok(SessionSummary { guest_cid: cid, vm: self.vm, calls, guest_calls, keepalive: true });
                 }
                 GuestMessage::Hello { .. } => return Err(violation(format!("a second hello from agent {cid}"))),
-                other => self.log.line(&format!(
-                    "vsockd: agent {cid} sent {}; this hub relays no agent loop",
-                    guest_kind(&other)
-                )),
+                message @ (GuestMessage::ModelCall { .. }
+                | GuestMessage::ToolRequest { .. }
+                | GuestMessage::ToolReport { .. }
+                | GuestMessage::WorkDone { .. }) => self.forward(lines, &bridge, &line, message)?,
             }
+        }
+    }
+
+    /// Hands one v3 line to apid on a thread, so the session keeps reading. Over
+    /// the cap, a line that expects an answer is refused at once.
+    fn forward<S: Write>(
+        &self,
+        lines: &mut Lines<S>,
+        bridge: &Bridge,
+        line: &str,
+        message: GuestMessage,
+    ) -> Result<(), HostError> {
+        let (cid, kind) = (self.cid, guest_kind(&message));
+        if bridge.in_flight.load(Ordering::SeqCst) >= MAX_FORWARDS {
+            let reason = format!("the hub already has {MAX_FORWARDS} forwards in flight for agent {cid}");
+            self.log.line(&format!("vsockd: agent {cid} {kind} refused: {reason}"));
+            if let Some(reply) = apid::refusal(&message, &reason) {
+                self.send(lines, &reply)?;
+            }
+            return Ok(());
+        }
+        bridge.in_flight.fetch_add(1, Ordering::SeqCst);
+        let (apid, in_flight, tx, line) =
+            (Arc::clone(&bridge.apid), Arc::clone(&bridge.in_flight), bridge.settled_tx.clone(), line.to_string());
+        thread::spawn(move || {
+            let done = match apid.message(cid, &line) {
+                Ok(Some(reply)) => Settled { note: format!("apid answered {kind}"), line: Some(reply) },
+                Ok(None) => Settled {
+                    note: format!("apid sent no reply to {kind}"),
+                    line: apid::refusal(&message, "apid sent no reply"),
+                },
+                Err(err) => Settled { note: format!("apid failed {kind}: {err}"), line: apid::refusal(&message, &err) },
+            };
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            let _ = tx.send(done);
+        });
+        Ok(())
+    }
+
+    /// Posts the session-end notice to apid (best effort), whatever ended it.
+    fn gone(&self, hub: &Hub, outcome: &Result<SessionSummary, HostError>) {
+        let apid = hub.apid();
+        if !apid.enabled() {
+            return;
+        }
+        let reason = match outcome {
+            Ok(_) => "bye".to_string(),
+            Err(err) => err.to_string(),
+        };
+        if let Err(err) = apid.gone(self.cid, &reason) {
+            self.log.line(&format!("vsockd: agent {} gone notice to apid failed: {err}", self.cid));
         }
     }
 
@@ -316,6 +412,38 @@ impl Session<'_> {
         self.log.line(&format!("[<-] guest {} vm{} {line}", self.cid, self.vm));
         lines.send(&line)?;
         Ok(())
+    }
+}
+
+/// The keepalive session's side of the apid forwards.
+struct Bridge {
+    apid: Arc<Apid>,
+    /// Forwards not yet settled; a forward's thread decrements it before it reports.
+    in_flight: Arc<AtomicUsize>,
+    settled_tx: Sender<Settled>,
+    settled: Receiver<Settled>,
+}
+
+/// A forward's or a profile retry's result: a note for the log, and the line to write, if any.
+struct Settled {
+    note: String,
+    line: Option<HostMessage>,
+}
+
+impl Bridge {
+    /// Asks apid for the profile again, on a thread (a hello is bounded at 2 s).
+    fn hello(&self, cid: u32, role: &str, vm: u32) {
+        let (apid, tx, role) = (Arc::clone(&self.apid), self.settled_tx.clone(), role.to_string());
+        thread::spawn(move || {
+            let done = match apid.hello(cid, &role, vm) {
+                Ok(Some(profile)) => {
+                    Settled { note: "got its profile from apid".to_string(), line: Some(HostMessage::Profile { profile }) }
+                }
+                Ok(None) => Settled { note: "has no profile from apid yet".to_string(), line: None },
+                Err(err) => Settled { note: format!("hello to apid failed, retrying: {err}"), line: None },
+            };
+            let _ = tx.send(done);
+        });
     }
 }
 
@@ -386,12 +514,175 @@ fn sanitize_for_log(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::tests::hub_with;
+    use crate::hub::tests::{Recording, hub_with};
     use crate::hub::{SendOutcome, StopOutcome, TellOutcome};
     use std::net::Shutdown;
     use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use serde_json::{Value, json};
+
+    /// What a fake apid saw: (path, token header, body), in arrival order.
+    type Requests = Arc<Mutex<Vec<(String, Option<String>, String)>>>;
+    type SessionThread = thread::JoinHandle<Result<SessionSummary, HostError>>;
+
+    /// A fake apid on loopback that records every request it gets.
+    struct FakeApid {
+        apid: Apid,
+        seen: Requests,
+        token: PathBuf,
+        _server: apz_http::Handle,
+    }
+
+    impl Drop for FakeApid {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.token);
+        }
+    }
+
+    /// Starts a fake apid that answers each request with `answer(path, body)`.
+    fn fake_apid(answer: impl Fn(&str, &str) -> String + Send + Sync + 'static) -> FakeApid {
+        let seen: Requests = Arc::default();
+        let recorded = Arc::clone(&seen);
+        let server = apz_http::Server::bind(0)
+            .unwrap()
+            .spawn(move |request| {
+                let body = String::from_utf8_lossy(&request.body).into_owned();
+                let token = request.header("x-apz-internal").map(str::to_string);
+                let reply = answer(&request.path, &body);
+                recorded.lock().unwrap().push((request.path.clone(), token, body));
+                apz_http::Response::new(200, "application/json", reply)
+            })
+            .unwrap();
+        let token = std::env::temp_dir().join(format!("vsockd-serve-token-{}-{}", std::process::id(), server.port()));
+        fs::write(&token, "s3cret\n").unwrap();
+        let apid = Apid::new(&format!("http://127.0.0.1:{}", server.port()), Some(token.clone())).unwrap();
+        FakeApid { apid, seen, token, _server: server }
+    }
+
+    /// Starts a keepalive session over a socket pair, with `apid` as its forwarding target.
+    fn keepalive_session(
+        apid: Apid,
+    ) -> (Lines<UnixStream>, Arc<Hub>, Arc<Recording>, SessionThread) {
+        let (guest, host) = UnixStream::pair().unwrap();
+        guest.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let (log, hub) = hub_with(Some(apid));
+        let hub = Arc::new(hub);
+        let session = {
+            let (hub, log) = (Arc::clone(&hub), Arc::clone(&log));
+            thread::spawn(move || handle_session(&mut Lines::new(host), 3, keepalive_limits(), &*log, &hub, &SystemClock))
+        };
+        (Lines::new(guest), hub, log, session)
+    }
+
+    fn json_line(line: &str) -> Value {
+        serde_json::from_str(line).unwrap_or_else(|err| panic!("{line:?} is not JSON: {err}"))
+    }
+
+    #[test]
+    fn the_hello_puts_apids_profile_in_the_welcome_and_is_sent_with_the_token() {
+        let profile = json!({
+            "name": "builder-1", "role": "builder", "model": "anthropic/claude-opus-5-5",
+            "system": "You build.", "tools": [], "max_turns": 8
+        });
+        let fake = fake_apid(move |_, _| json!({ "profile": profile }).to_string());
+        let (mut guest, _hub, _log, session) = keepalive_session(fake.apid.clone());
+        guest.send(KEEPALIVE_HELLO).unwrap();
+        let welcome = json_line(&recv(&mut guest));
+        assert_eq!(welcome["profile"]["name"], "builder-1", "{welcome}");
+        guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
+        session.join().unwrap().expect("a clean end");
+        let seen = fake.seen.lock().unwrap();
+        let (path, token, body) = &seen[0];
+        assert_eq!((path.as_str(), token.as_deref()), ("/internal/v1/agents/3/hello", Some("s3cret")));
+        assert_eq!(json_line(body), json!({ "role": "builder", "vm": 0 }));
+    }
+
+    #[test]
+    fn a_model_call_is_forwarded_and_its_reply_written_while_heartbeats_are_still_read() {
+        let (release, gate) = channel::<()>();
+        let gate = Mutex::new(gate);
+        let fake = fake_apid(move |_, body| {
+            if !body.contains(r#""type":"model_call""#) {
+                return json!({ "reply": null }).to_string();
+            }
+            // The model call is out until the test releases it.
+            let _ = gate.lock().unwrap().recv();
+            json!({ "reply": { "type": "model_result", "req": 1, "ok": false, "error": "fake model" } }).to_string()
+        });
+        let (mut guest, hub, _log, session) = keepalive_session(fake.apid.clone());
+        guest.send(KEEPALIVE_HELLO).unwrap();
+        recv(&mut guest);
+        guest.send(r#"{"type":"model_call","req":1,"work":1,"request":{"messages":[]}}"#).unwrap();
+        guest.send(r#"{"type":"heartbeat","seq":1,"busy":true}"#).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !hub.snapshot().rows.first().is_some_and(|row| row.busy) {
+            assert!(Instant::now() < deadline, "the heartbeat was not read while the model call was out");
+            thread::sleep(Duration::from_millis(10));
+        }
+        release.send(()).unwrap();
+        let reply = json_line(&recv(&mut guest));
+        assert_eq!(reply, json!({ "type": "model_result", "req": 1, "ok": false, "error": "fake model" }));
+        guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
+        session.join().unwrap().expect("a clean end");
+        let seen = fake.seen.lock().unwrap();
+        let (path, token, body) = seen.iter().find(|entry| entry.0.ends_with("/message")).expect("forwarded");
+        assert_eq!((path.as_str(), token.as_deref()), ("/internal/v1/agents/3/message", Some("s3cret")));
+        assert_eq!(json_line(body)["type"], "model_call");
+    }
+
+    #[test]
+    fn with_apid_down_a_failed_model_call_and_tool_request_are_refused_and_the_guest_never_waits() {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        let token = std::env::temp_dir().join(format!("vsockd-serve-down-{}", std::process::id()));
+        fs::write(&token, "s3cret").unwrap();
+        let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token.clone())).unwrap();
+        let (mut guest, _hub, log, session) = keepalive_session(apid);
+        guest.send(KEEPALIVE_HELLO).unwrap();
+        let welcome = json_line(&recv(&mut guest));
+        assert!(welcome.get("profile").is_none(), "no profile without apid: {welcome}");
+
+        guest.send(r#"{"type":"model_call","req":7,"work":1,"request":{"messages":[]}}"#).unwrap();
+        let model = json_line(&recv(&mut guest));
+        assert_eq!((model["type"].as_str(), model["req"].as_u64(), model["ok"].as_bool()), (Some("model_result"), Some(7), Some(false)));
+        assert!(model["error"].as_str().unwrap_or_default().starts_with("apid unreachable"), "{model}");
+
+        guest.send(r#"{"type":"tool_request","work":1,"call":"toolu_1","name":"bash","input":{}}"#).unwrap();
+        let decision = json_line(&recv(&mut guest));
+        assert_eq!(
+            (decision["type"].as_str(), decision["call"].as_str(), decision["decision"].as_str(), decision["is_error"].as_bool()),
+            (Some("tool_decision"), Some("toolu_1"), Some("deny"), Some(true)),
+            "{decision}"
+        );
+
+        // A report and a work_done expect no answer, so nothing else is written.
+        guest.send(r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#).unwrap();
+        guest.send(r#"{"type":"work_done","work":1,"status":"done","summary":""}"#).unwrap();
+        guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
+        session.join().unwrap().expect("a clean end");
+        let mut rest = String::new();
+        let mut reader = guest.get_ref();
+        reader.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest, "", "nothing is written after the refusals");
+        let log = log.text();
+        assert!(log.contains("hello to apid failed") && log.contains("apid failed model_call"), "{log}");
+        fs::remove_file(token).unwrap();
+    }
+
+    #[test]
+    fn the_session_end_is_posted_to_apid_as_gone_with_its_reason() {
+        let fake = fake_apid(|_, _| json!({ "reply": null, "profile": null }).to_string());
+        let (mut guest, _hub, _log, session) = keepalive_session(fake.apid.clone());
+        guest.send(KEEPALIVE_HELLO).unwrap();
+        recv(&mut guest);
+        guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
+        session.join().unwrap().expect("a clean end");
+        let seen = fake.seen.lock().unwrap();
+        let (path, token, body) = seen.iter().find(|entry| entry.0.ends_with("/gone")).expect("a gone notice");
+        assert_eq!((path.as_str(), token.as_deref()), ("/internal/v1/agents/3/gone", Some("s3cret")));
+        assert_eq!(json_line(body), json!({ "reason": "bye" }));
+    }
 
     const HELLO: &str = r#"{"type":"hello","vm":0,"guest_cid":3}"#;
     const KEEPALIVE_HELLO: &str = r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder","keepalive":true}"#;

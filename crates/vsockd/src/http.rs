@@ -20,7 +20,7 @@ use apz_http::{Handle, Limits, Request, Response, Router, Server};
 use apz_proto::wire::{HostMessage, MAX_LINE_BYTES};
 use serde::{Deserialize, Serialize};
 
-use crate::hub::{Admission, Hub, SendOutcome, StopOutcome, TellOutcome};
+use crate::hub::{Hub, SendOutcome, StopOutcome, TellOutcome};
 
 /// The longest a `/tell` may wait for its agent (and its default).
 pub const MAX_TELL_TIMEOUT_MS: u64 = 5_000;
@@ -159,11 +159,6 @@ fn tell(surface: &Surface, cid: u32, request: &Request) -> Response {
         return Response::error(400, &format!("timeout_ms must be 1..={MAX_TELL_TIMEOUT_MS}"));
     }
     let answer = |ok: bool, output: &str| serde_json::json!({ "ok": ok, "output": output });
-    match surface.hub.admit(cid, &tell.name) {
-        Admission::Refused { reason } => return Response::json(403, &answer(false, &reason)),
-        Admission::NoSession => return not_connected(cid),
-        Admission::Allowed => {}
-    }
     match surface.hub.tell(cid, &tell.name, tell.args, Duration::from_millis(timeout_ms)) {
         TellOutcome::Answered { ok, output } => Response::json(200, &answer(ok, &output)),
         TellOutcome::NotConnected => not_connected(cid),
@@ -209,7 +204,8 @@ fn stop(surface: &Surface, cid: u32, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::tests::{hub_with, manifest};
+    use crate::apid::Apid;
+    use crate::hub::tests::hub_with;
     use crate::hub::{Command, ToolReply};
     use std::thread;
 
@@ -228,7 +224,7 @@ mod tests {
     fn the_status_shape_is_frozen() {
         let anchor = Instant::now();
         let log = Arc::new(crate::hub::tests::Recording::default());
-        let surface = surface(Hub::started_at(log, None, anchor, 1_700_000_000_000));
+        let surface = surface(Hub::started_at(log, Apid::off(), anchor, 1_700_000_000_000));
         surface.hub.connect(10, "builder", anchor + Duration::from_millis(250));
         surface.hub.note_calls(10, 2);
         assert_eq!(
@@ -262,8 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_tool_never_reaches_the_guest_and_an_allowed_one_is_answered() {
-        let surface = surface(hub_with(Some(manifest(&[("librarian", &["search"])]))).1);
+    fn a_tell_is_trusted_and_its_tool_is_dispatched_with_the_answer_returned() {
+        let surface = surface(hub_with(None).1);
         let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
         let agent = thread::spawn(move || {
             let mut dispatched = Vec::new();
@@ -277,13 +273,9 @@ mod tests {
         });
         assert_eq!(
             post(&surface, "/v1/agents/10/tell", r#"{"name":"write_file"}"#),
-            (403, serde_json::json!({ "ok": false, "output": "role librarian does not grant write_file" }))
+            (200, serde_json::json!({ "ok": true, "output": "ran write_file" }))
         );
-        assert_eq!(
-            post(&surface, "/v1/agents/10/tell", r#"{"name":"search","args":{"pattern":"x"}}"#),
-            (200, serde_json::json!({ "ok": true, "output": "ran search" }))
-        );
-        assert_eq!(agent.join().unwrap(), ["search"], "the refused call was never dispatched");
+        assert_eq!(agent.join().unwrap(), ["write_file"]);
     }
 
     #[test]

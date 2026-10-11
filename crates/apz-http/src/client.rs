@@ -32,8 +32,21 @@ impl Reply {
 
 /// Sends one request and reads the whole answer.
 pub fn send(port: u16, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
+    send_with(port, method, path, &[], body, timeout)
+}
+
+/// [`send`] with extra headers (name, value); a name or value with a line
+/// break is refused, so a header cannot smuggle another into the request.
+pub fn send_with(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
-    let stream = connect(port, method, path, body, timeout)?;
+    let stream = connect(port, method, path, headers, body, timeout)?;
     let mut reader = BufReader::new(Timed { stream, deadline });
     let (status, headers) = read_head(&mut reader)?;
     let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
@@ -72,7 +85,7 @@ pub fn post_json(port: u16, path: &str, body: &Value, timeout: Duration) -> io::
 /// Opens `GET path` as a server-sent event stream. A read waits at most
 /// `idle` (pick more than the server's heartbeat interval).
 pub fn events(port: u16, path: &str, idle: Duration) -> io::Result<EventStream> {
-    let stream = connect(port, "GET", path, None, idle)?;
+    let stream = connect(port, "GET", path, &[], None, idle)?;
     stream.set_read_timeout(Some(idle))?;
     let mut reader = BufReader::new(stream);
     let (status, headers) = read_head(&mut reader)?;
@@ -146,12 +159,25 @@ impl EventStream {
     }
 }
 
-fn connect(port: u16, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<TcpStream> {
+fn connect(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&addr, timeout)
         .map_err(|err| io::Error::new(err.kind(), format!("cannot connect to {addr}: {err}")))?;
     stream.set_write_timeout(Some(timeout))?;
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("header {name:?} has a line break or colon")));
+        }
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
     if let Some(body) = body {
         head.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));
     }
