@@ -284,6 +284,96 @@ pub fn tell(
     }
 }
 
+/// Stops the agent connected as `cid`, through the hub's admin surface:
+/// `POST /stop {"cid","reason"?}`.
+///
+/// The hub ends the session, waits up to its own bound for the agent to say
+/// `bye`, and answers with its own stop view either way: `{"cid","stopped":
+/// true,"calls":K}` or `{"cid","stopped":false,"reason":"..."}` - a session it
+/// could not end is a fact to report, not an error. That view passes through
+/// verbatim (the console reads `stopped` itself); any other status carries the
+/// hub's `{"error": "..."}` - an unserved or unconnected CID - which the caller
+/// surfaces unchanged. A hub that cannot be reached, or that answers something
+/// this client cannot read, is [`StopOutcome::Unreachable`], reported as a 502:
+/// a transport failure is never dressed up as the hub's word.
+pub fn stop(admin: &HubAdmin, cid: u64, reason: Option<&str>) -> StopOutcome {
+    let mut body = serde_json::json!({ "cid": cid });
+    if let Some(reason) = reason {
+        body["reason"] = serde_json::Value::String(reason.to_string());
+    }
+    let body = body.to_string();
+    let answer = match exchange(
+        admin.addr(),
+        ADMIN_TIMEOUT,
+        "POST",
+        "/stop",
+        Some(body.as_bytes()),
+    ) {
+        Ok(answer) => answer,
+        Err(reason) => return StopOutcome::Unreachable(reason),
+    };
+    let status = answer.status();
+    match answer.body_text() {
+        Ok(text) => stop_outcome(cid, status, text),
+        Err(reason) => StopOutcome::Unreachable(reason),
+    }
+}
+
+/// The hub's answer to a `/stop`, or why there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The hub answered 200 with its own stop view: `stopped: true` and the
+    /// session's call count, or `stopped: false` and why it stands. Passed
+    /// through verbatim - the console reads `stopped` from the hub's words.
+    Answered(String),
+    /// The hub refused, in its own words and with its own status: the admin
+    /// surface's `{"error": "..."}` for an unserved or unconnected CID. The
+    /// caller surfaces both unchanged.
+    Refused {
+        /// The status the hub answered with.
+        status: u16,
+        /// The hub's own message.
+        message: String,
+    },
+    /// The admin surface could not be reached, or answered something this
+    /// client cannot read. The caller reports it as a 502.
+    Unreachable(String),
+}
+
+/// The `/stop` answer's envelope, as the admin surface writes it. Only the
+/// identity is read: `stopped` is part of the view the caller passes through
+/// verbatim, not something this client reinterprets.
+#[derive(Debug, serde::Deserialize)]
+struct StopAnswer {
+    cid: u64,
+    #[allow(dead_code)]
+    stopped: bool,
+}
+
+/// Reads one `/stop` answer's body: a 200 is the hub's own `{"cid","stopped",
+/// …}` view, and any other status is the hub's `{"error":"..."}`. An answer for
+/// another CID, or a body that is not the envelope it claims to be, is not
+/// guessed at.
+fn stop_outcome(cid: u64, status: u16, body: &str) -> StopOutcome {
+    if status == 200 {
+        return match serde_json::from_str::<StopAnswer>(body) {
+            Ok(StopAnswer { cid: answered, .. }) if answered == cid => {
+                StopOutcome::Answered(body.trim().to_string())
+            }
+            Ok(StopAnswer { cid: answered, .. }) => StopOutcome::Unreachable(format!(
+                "the hub's /stop answered for guest CID {answered} while {cid} was asked"
+            )),
+            Err(err) => StopOutcome::Unreachable(format!(
+                "the hub's /stop answer is not the admin surface's JSON: {err}"
+            )),
+        };
+    }
+    StopOutcome::Refused {
+        status,
+        message: error_message(body),
+    }
+}
+
 /// The agent's answer to a `/tell`, or why there is none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TellOutcome {

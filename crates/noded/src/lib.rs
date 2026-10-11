@@ -40,6 +40,7 @@
 //! * `GET    /api/v0/conversations`    - the exchanges, newest first (bounded), with the pair summaries
 //! * `GET    /api/v0/conversations/{a}/{b}` - one pair's thread, oldest first
 //! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
+//! * `POST   /api/v0/agents/{cid}/stop`- end one connected agent's session (the hub's own stop view, verbatim)
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
 //! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
 //! * `GET    /` and `GET /<file>`      - the console's static files
@@ -77,7 +78,7 @@ use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
 
 use crate::agora::Agora;
 use crate::http::Response;
-use crate::hub::{HubAdmin, HubStatus, TellOutcome};
+use crate::hub::{HubAdmin, HubStatus, StopOutcome, TellOutcome};
 use crate::registry::{ConnectedAgent, CreateRun, Detail, Registry, VmImages};
 use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
 use crate::treasury::Treasury;
@@ -731,6 +732,18 @@ fn agent_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response 
             return method_not_allowed("POST");
         }
         return agent_say(node, cid, request.body());
+    }
+    if let Some(cid) = rest.strip_suffix("/stop") {
+        if cid.is_empty() || cid.contains('/') {
+            return no_such_endpoint();
+        }
+        // Stopping ends a session, so it is a POST for the same reason `/tell`
+        // is: a request with a real effect on an agent's turn must not be
+        // advertised as safe for a prefetch or a retry to replay.
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return stop_agent(node, cid, request.body());
     }
     let Some(cid) = rest.strip_suffix("/tell") else {
         return no_such_endpoint();
@@ -1523,6 +1536,82 @@ fn tell_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
         // unserved CID (404), an unconnected CID (409) or a timeout (504).
         TellOutcome::Refused { status, message } => Response::error(status, &message),
         TellOutcome::Unreachable(reason) => {
+            Response::error(502, &format!("hub admin unreachable: {reason}"))
+        }
+    }
+}
+
+/// The `POST /api/v0/agents/{cid}/stop` body: the reason the session is being
+/// stopped, which the hub carries to the guest's transcript and the operator's
+/// log. The CID is the path's, not the body's.
+#[derive(Debug, Deserialize)]
+struct StopRequest {
+    /// Why the session is being stopped; the hub's own default when absent.
+    reason: Option<String>,
+}
+
+/// The most a stop's reason may occupy, in bytes - the hub's own bound
+/// (`vsockd`'s `MAX_STOP_REASON`), kept here so the two surfaces refuse the
+/// same reasons.
+const MAX_STOP_REASON: usize = 256;
+
+/// `POST /api/v0/agents/{cid}/stop`: ends the agent's session through the
+/// hub's admin surface - the operator's own hand on a session, and the
+/// console's one-origin path to it.
+///
+/// This ends a real session: the hub delivers its `stop` to the guest, waits
+/// for the agent to say `bye`, and answers with its own stop view either way.
+/// It is a POST for the same reason [`tell_agent`] is: a request that acts on
+/// an agent's turn must not be advertised as safe for a prefetch or a retry to
+/// replay. The console posts it.
+///
+/// The status mapping, in one place:
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the hub's own stop view, verbatim: `{"cid","stopped":true,"calls":K}` or `{"cid","stopped":false,"reason":"..."}` |
+/// | 400 | the body or the CID path segment is outside this endpoint's contract |
+/// | 404 | the hub does not serve the agent's CID |
+/// | 409 | the hub's agent is not connected |
+/// | 502 | the hub could not be reached, or answered something unreadable |
+/// | 503 | `--hub-admin off`: the daemon was never told where the admin surface is |
+///
+/// **Whether the session ended is the hub's to say** - `stopped: true` with the
+/// call count, or `stopped: false` with its reason - and this daemon passes
+/// that view through verbatim rather than reading it and inventing a verdict
+/// of its own. The VM is the registry's: stopping a session never tears a
+/// guest down, and this daemon touches no run state here.
+fn stop_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
+    let Some(admin) = node.hub_admin() else {
+        return Response::error(503, "hub admin is not configured");
+    };
+    let cid = match checked_guest_cid(cid_segment) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let request: StopRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid stop request: {err}")),
+    };
+    if let Some(reason) = &request.reason {
+        if reason.len() > MAX_STOP_REASON {
+            return Response::error(
+                400,
+                &format!("the reason is longer than {MAX_STOP_REASON} bytes"),
+            );
+        }
+    }
+    match hub::stop(admin, cid, request.reason.as_deref()) {
+        // The hub's own view, verbatim: the console reads `stopped` itself.
+        StopOutcome::Answered(view) => Response::bytes(
+            200,
+            Cow::Owned("application/json".to_string()),
+            view.into_bytes(),
+        ),
+        // The hub's own words and its own status (404 unserved, 409 not
+        // connected).
+        StopOutcome::Refused { status, message } => Response::error(status, &message),
+        StopOutcome::Unreachable(reason) => {
             Response::error(502, &format!("hub admin unreachable: {reason}"))
         }
     }

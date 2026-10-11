@@ -482,9 +482,150 @@ fn the_tell_route_leaves_the_other_routes_untouched() {
         let tasks = request(port, "GET", "/api/v0/tasks", None);
         assert_eq!(tasks.status, 200, "{name}: {}", tasks.body);
 
-        // A path under /api/v0/agents/ that is not `{cid}/tell` is no endpoint.
-        let nowhere = request(port, "POST", "/api/v0/agents/300/stop", Some("{}"));
+        // A path under /api/v0/agents/ that is neither `{cid}/tell` nor a
+        // declared sibling is no endpoint.
+        let nowhere = request(port, "POST", "/api/v0/agents/300/drive", Some("{}"));
         assert_eq!(nowhere.status, 404, "{name}: {}", nowhere.body);
         assert_eq!(nowhere.json()["error"], "no such endpoint", "{name}");
+
+        // The stop route is a declared sibling now: with no admin surface it
+        // is the same 503 as `/tell`, and with one it is the hub's to answer -
+        // a dead port is a 502, never this daemon inventing a verdict.
+        let stopped = request(port, "POST", "/api/v0/agents/300/stop", Some("{}"));
+        if admin.is_none() {
+            assert_eq!(stopped.status, 503, "{name}: {}", stopped.body);
+            assert_eq!(stopped.json()["error"], "hub admin is not configured");
+        } else {
+            assert_eq!(stopped.status, 502, "{name}: {}", stopped.body);
+        }
     }
+}
+
+/// The stop endpoint's URL for one agent.
+fn stop_path(cid: &str) -> String {
+    format!("/api/v0/agents/{cid}/stop")
+}
+
+#[test]
+fn the_stop_is_driven_through_the_hub_and_passed_through_verbatim() {
+    // The hub's own stop view - `stopped: true` with the session's call count -
+    // is the answer, byte for byte: this daemon reads no verdict of its own.
+    let view = serde_json::json!({ "cid": 300, "stopped": true, "calls": 3 }).to_string();
+    let (port, hub) = stub_admin(answer("200 OK", &view));
+    let server = start_with_hubs(console_dir("stop-ok"), None, admin_at(port));
+
+    let reply = request(
+        server.port(),
+        "POST",
+        &stop_path("300"),
+        Some(r#"{"reason":"the operator stopped this session"}"#),
+    );
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.body, view, "the hub's view passes through verbatim");
+
+    let seen = hub.join().expect("the stub answered");
+    assert!(seen.starts_with("POST /stop "), "{seen}");
+    assert!(
+        seen.contains(r#""cid":300"#),
+        "the CID is the path's: {seen}"
+    );
+    assert!(
+        seen.contains(r#""reason":"the operator stopped this session""#),
+        "the reason rides to the hub: {seen}"
+    );
+}
+
+#[test]
+fn a_stop_the_hub_refuses_keeps_the_hubs_own_words() {
+    // An unserved or unconnected CID is the hub's own 404/409, in its own
+    // words; and with no reason given, none is sent.
+    let refused = serde_json::json!({ "error": "no live agent has guest CID 300" }).to_string();
+    let (port, hub) = stub_admin(answer("404 Not Found", &refused));
+    let server = start_with_hubs(console_dir("stop-refused"), None, admin_at(port));
+
+    let reply = request(server.port(), "POST", &stop_path("300"), Some("{}"));
+    assert_eq!(reply.status, 404, "{}", reply.body);
+    assert_eq!(reply.json()["error"], "no live agent has guest CID 300");
+
+    let seen = hub.join().expect("the stub answered");
+    assert!(
+        !seen.contains("reason"),
+        "no reason was given, so none rides: {seen}"
+    );
+}
+
+#[test]
+fn the_stop_route_is_post_only() {
+    let server = start_with_hubs(console_dir("stop-get"), None, admin_at(dead_port()));
+    for target in ["/api/v0/agents/300/stop/", "/api/v0/agents//stop"] {
+        let reply = request(server.port(), "GET", target, None);
+        assert!(
+            reply.status == 405 || reply.status == 404,
+            "{target}: {} {}",
+            reply.status,
+            reply.body
+        );
+    }
+    let reply = request(server.port(), "GET", &stop_path("300"), None);
+    assert_eq!(reply.status, 405, "{}", reply.body);
+    assert_eq!(reply.json()["error"], "this endpoint accepts POST");
+}
+
+#[test]
+fn a_long_reason_is_refused_before_the_hub_is_contacted() {
+    // 257 bytes is past the hub's own 256-byte bound (`MAX_STOP_REASON`), so
+    // the daemon refuses it itself - against a dead admin port, a 502 would
+    // mean it had tried anyway.
+    let server = start_with_hubs(console_dir("stop-long"), None, admin_at(dead_port()));
+    let long = "x".repeat(257);
+    let reply = request(
+        server.port(),
+        "POST",
+        &stop_path("300"),
+        Some(&format!(r#"{{"reason":"{long}"}}"#)),
+    );
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert_eq!(reply.json()["error"], "the reason is longer than 256 bytes");
+}
+
+#[test]
+fn an_answer_for_another_cid_is_not_this_agents_stop() {
+    // A stub that answers for a CID this request did not name is not the
+    // answer to it: the daemon refuses to pass it off as one.
+    let (port, hub) = stub_admin(answer(
+        "200 OK",
+        &serde_json::json!({ "cid": 999, "stopped": true, "calls": 0 }).to_string(),
+    ));
+    let server = start_with_hubs(console_dir("stop-other"), None, admin_at(port));
+
+    let reply = request(server.port(), "POST", &stop_path("300"), Some("{}"));
+    assert_eq!(reply.status, 502, "{}", reply.body);
+    let error = reply.json()["error"]
+        .as_str()
+        .expect("an error string")
+        .to_string();
+    assert!(error.contains("999"), "{error}");
+    assert!(error.contains("300"), "{error}");
+    hub.join().expect("the stub answered");
+}
+
+#[test]
+fn the_stop_route_leaves_a_bad_cid_and_a_bad_body_to_its_own_contract() {
+    let server = start_with_hubs(console_dir("stop-bad"), None, admin_at(dead_port()));
+
+    // A segment outside the guest CID range is this endpoint's 400.
+    let bad_cid = request(server.port(), "POST", &stop_path("nope"), Some("{}"));
+    assert_eq!(bad_cid.status, 400, "{}", bad_cid.body);
+
+    // A body that is not the request shape is a 400 naming the parse.
+    let bad_body = request(server.port(), "POST", &stop_path("300"), Some("{"));
+    assert_eq!(bad_body.status, 400, "{}", bad_body.body);
+    assert!(
+        bad_body.json()["error"]
+            .as_str()
+            .expect("an error string")
+            .starts_with("invalid stop request:"),
+        "{}",
+        bad_body.body
+    );
 }
