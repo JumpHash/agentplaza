@@ -601,8 +601,9 @@ export function mount(root: HTMLElement): Cleanup {
     // The role, as a small coloured tag beside the name.
     const labelRole = document.createElement('span');
     labelRole.style.cssText =
-      `display:inline-block;margin-left:6px;padding:0 5px;border:1px solid var(--ink);border-radius:999px;` +
-      `font-size:9px;letter-spacing:.06em;text-transform:uppercase;vertical-align:1px;background:hsl(${district.hue} 65% 82%)`;
+      `display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;font-weight:700;` +
+      `font-size:10px;line-height:1.3;letter-spacing:.05em;text-transform:uppercase;vertical-align:1px;` +
+      `color:#fff;background:hsl(${district.hue} 55% 34%)`;
     labelRole.textContent = roleLabel(agent.role);
     labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const nameText = document.createElement('span');
