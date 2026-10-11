@@ -23,6 +23,10 @@
 //! * `POST   /api/v0/tasks/{id}/claim` - claim an open task as a live agent
 //! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`), refunding its escrow
 //! * `POST   /api/v0/tasks/{id}/artifact` - read a file the task's agent wrote
+//! * `POST   /api/v0/tasks/{id}/bid`   - bid on a roled open task's call
+//! * `POST   /api/v0/tasks/{id}/award` - award the call to a bidder (binding
+//!   the task through the claim)
+//! * `GET    /api/v0/agora`            - the calls, with their bids and awards
 //! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends (refunding its escrow)
 //! * `GET    /api/v0/treasury`         - the accounts and their derived balances, and totals
 //! * `GET    /api/v0/treasury/journal` - the double-entry journal, oldest first (bounded)
@@ -39,6 +43,7 @@
 //! the treasury's journal, minted into the task's escrow on create and
 //! refunded when the task ends: see [`treasury`].
 
+pub mod agora;
 pub mod events;
 pub mod fleet;
 pub mod http;
@@ -60,9 +65,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
 
+use crate::agora::Agora;
 use crate::http::Response;
 use crate::hub::{HubAdmin, HubStatus, TellOutcome};
-use crate::registry::{CreateRun, Detail, Registry, VmImages};
+use crate::registry::{ConnectedAgent, CreateRun, Detail, Registry, VmImages};
 use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
 use crate::treasury::Treasury;
 
@@ -163,12 +169,14 @@ impl Default for Config {
 }
 
 /// The daemon's state: its runs, its task ledger, the treasury its tasks'
-/// budgets are escrowed in, the console directory it serves, the hub's status
-/// surface it proxies, and when it started (the machine view's uptime).
+/// budgets are escrowed in, the agora its calls' bids and awards live in, the
+/// console directory it serves, the hub's status surface it proxies, and when
+/// it started (the machine view's uptime).
 pub struct Node {
     registry: Registry,
     tasks: TaskLedger,
     treasury: Arc<Treasury>,
+    agora: Arc<Agora>,
     console_dir: PathBuf,
     hub_status: Option<HubStatus>,
     hub_admin: Option<HubAdmin>,
@@ -207,6 +215,9 @@ impl Node {
         let events = events::EventBus::new();
         let tasks = TaskLedger::new(Arc::clone(&events));
         let treasury = Arc::clone(tasks.treasury());
+        // The agora publishes its bids and awards to the same bus the ledger
+        // and the registry do, so one events stream carries the whole plaza.
+        let agora = Arc::new(Agora::new(Arc::clone(&events)));
         Self {
             registry: Registry::new(
                 VmImages {
@@ -219,6 +230,7 @@ impl Node {
             ),
             tasks,
             treasury,
+            agora,
             console_dir: config.console_dir,
             hub_status: config.hub_status,
             hub_admin: config.hub_admin,
@@ -255,6 +267,12 @@ impl Node {
     /// are escrowed in.
     pub fn treasury(&self) -> &Treasury {
         &self.treasury
+    }
+
+    /// The node's agora: the calls its roled tasks offer, the bids on them,
+    /// and the awards that closed them.
+    pub fn agora(&self) -> &Agora {
+        &self.agora
     }
 
     /// The node's event bus (`GET /api/v0/events` streams it).
@@ -536,6 +554,10 @@ fn route(request: &http::Request, node: &Node) -> Response {
             "GET" => treasury_view(node),
             _ => method_not_allowed("GET"),
         },
+        "/api/v0/agora" => match request.method() {
+            "GET" => agora_view(node),
+            _ => method_not_allowed("GET"),
+        },
         "/" => match request.method() {
             "GET" => static_files::serve(node.console_dir(), static_files::INDEX),
             _ => method_not_allowed("GET"),
@@ -586,6 +608,18 @@ fn task_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
             return method_not_allowed("POST");
         }
         return finish_task(node, id, request.body());
+    }
+    if let Some(id) = rest.strip_suffix("/bid") {
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return bid_task(node, id, request.body());
+    }
+    if let Some(id) = rest.strip_suffix("/award") {
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return award_task(node, id, request.body());
     }
     if let Some(id) = rest.strip_suffix("/artifact") {
         // The read-through is a POST, not a GET, and deliberately so: it
@@ -798,11 +832,9 @@ fn claim_task(node: &Node, id: &str, body: &[u8]) -> Response {
         Ok(request) => request,
         Err(err) => return Response::error(400, &format!("invalid claim request: {err}")),
     };
-    let Some(agent) = node.registry().connected_agent(request.agent_cid) else {
-        let refused = ClaimError::AgentNotConnected {
-            cid: request.agent_cid,
-        };
-        return Response::error(refused.status(), &refused.to_string());
+    let agent = match connected_agent(node, request.agent_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
     };
     match task.claim(&agent) {
         Ok(()) => json_response(200, &task.view()),
@@ -811,6 +843,23 @@ fn claim_task(node: &Node, id: &str, body: &[u8]) -> Response {
             Response::error(refused.status(), &refused.to_string())
         }
     }
+}
+
+/// The register's answer for a request that names an agent by guest CID: the
+/// connected agent, or the refusal every such endpoint answers with — `no
+/// live agent has guest CID n`, a 409.
+///
+/// The claim, the bid and the award all bind a task to an agent they have not
+/// seen before, and all three ask the same register the same question, so they
+/// ask it here: one check, one message, one status. *That* the agent is
+/// connected is the register's to say; **what** it may do (claim a task, bid
+/// on a call of its role) is the endpoint's own rule, enforced where the rule
+/// lives.
+fn connected_agent(node: &Node, cid: u64) -> Result<ConnectedAgent, Response> {
+    node.registry().connected_agent(cid).ok_or_else(|| {
+        let refused = ClaimError::AgentNotConnected { cid };
+        Response::error(refused.status(), &refused.to_string())
+    })
 }
 
 /// `POST /api/v0/tasks/{id}/finish`: ends a claimed task as `done` or
@@ -830,6 +879,117 @@ fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
         Ok(()) => json_response(200, &task.view()),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
+}
+
+/// The `POST /api/v0/tasks/{id}/bid` body: who bids, and what they ask.
+#[derive(Debug, Deserialize)]
+struct BidRequest {
+    /// The guest CID of the agent making the bid.
+    agent_cid: u64,
+    /// The price the agent asks, in credits. A `u64`, so the schema's floor
+    /// (`price` at or above zero) is the type: a negative price never leaves
+    /// the body.
+    price: u64,
+}
+
+/// The `POST /api/v0/tasks/{id}/award` body: who the call is awarded to. **No
+/// price**: `agora.check_award` awards a bidder at the price they bid, so a
+/// price here could only disagree with the bid.
+#[derive(Debug, Deserialize)]
+struct AwardRequest {
+    /// The guest CID of the bidder the call is awarded to.
+    agent_cid: u64,
+}
+
+/// `POST /api/v0/tasks/{id}/bid`: a connected agent bids on a roled open
+/// task's call.
+///
+/// The rules, each at its own enforcement point:
+///
+/// * the request is well-formed (the body parses, a `price` is present and is
+///   a non-negative integer) — this endpoint's, a 400;
+/// * the task exists — the ledger's, a 404;
+/// * the bidding agent is connected right now — the register's, the same check
+///   and the same words the claim uses ([`connected_agent`]), a 409;
+/// * everything that is the call's own — the agent's role is the call's
+///   capability, the call is open, the price is at or below the call's ceiling,
+///   the call has not reached its bid cap — the agora's ([`agora::Agora::bid`]),
+///   a 409 with its own honest reason.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the bid is recorded: `{"task","agent_cid","bidder","price","created_at"}` (a re-bid replaces the agent's own row and answers with the new one) |
+/// | 400 | the body is outside this endpoint's contract |
+/// | 404 | no task with that id |
+/// | 405 | any method but `POST` |
+/// | 409 | the caller is not a connected agent, or not an agent of the task's role, or the call is not open, or the price is above the task's budget, or the call holds its cap of bids |
+fn bid_task(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Some(task) = node.tasks().find(id) else {
+        return Response::error(404, &format!("no task with id {id}"));
+    };
+    let request: BidRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid bid request: {err}")),
+    };
+    let agent = match connected_agent(node, request.agent_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    match node.agora().bid(&task, &agent, request.price) {
+        Ok(bid) => json_response(200, &bid),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+    }
+}
+
+/// `POST /api/v0/tasks/{id}/award`: awards a roled task's call to one of its
+/// bidders — and **binds the task through the ledger's own claim**, exactly
+/// the transition `POST /api/v0/tasks/{id}/claim` performs.
+///
+/// That integration is the agora's choice and it is deliberate: an award has
+/// one way to bind a task, the same state machine and the same event every
+/// other claim takes, so an awarded task is indistinguishable from a claimed
+/// one afterwards. It is why the award needs a **connected** agent (the
+/// claim's own precondition) and why the answer is the task, exactly as the
+/// claim's is: the record of the award itself is on the board
+/// ([`agora_view`]).
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the call was awarded and the task is bound: the task view, `claimed`, with `assignee_id` and `agent_cid` set |
+/// | 400 | the body is outside this endpoint's contract |
+/// | 404 | no task with that id |
+/// | 405 | any method but `POST` |
+/// | 409 | the caller is not a connected agent, or the task is not a call, or the call already has an award, or the call is not open, or the agent has no bid on it |
+fn award_task(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Some(task) = node.tasks().find(id) else {
+        return Response::error(404, &format!("no task with id {id}"));
+    };
+    let request: AwardRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid award request: {err}")),
+    };
+    let agent = match connected_agent(node, request.agent_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    match node.agora().award(&task, &agent) {
+        Ok(()) => json_response(200, &task.view()),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+    }
+}
+
+/// `GET /api/v0/agora`: the board — the calls the node's roled tasks offer,
+/// each with the bids it holds and the award that closed it.
+///
+/// The calls are **derived from the ledger, oldest first** (see [`agora`]),
+/// and the response is bounded exactly as the journal's is: at most
+/// [`agora::AGORA_LIMIT`] calls, the newest window of them, oldest first
+/// within it, with `total`, `limit` and `truncated` saying what the window
+/// left out. Polling this endpoint is the source of truth for the board; the
+/// `agora` frames on `GET /api/v0/events` are the deltas.
+fn agora_view(node: &Node) -> Response {
+    let tasks = node.tasks().list();
+    json_response(200, &node.agora().calls(&tasks, agora::AGORA_LIMIT))
 }
 
 /// The `POST /api/v0/tasks/{id}/artifact` body.

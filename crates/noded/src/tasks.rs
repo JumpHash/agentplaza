@@ -435,6 +435,10 @@ pub struct Task {
     budget: u64,
     /// The role the task was created for, when it named one.
     role: Option<String>,
+    /// The treasury entry that minted this task's budget into its escrow, when
+    /// it had one: set once, when the task was created, and never changed. The
+    /// agora reads it as a call's `escrow_entry`.
+    escrow_entry: Option<u64>,
     /// When the task was created, in milliseconds since the Unix epoch.
     created_at: u64,
     /// Where this task's transitions are published.
@@ -493,6 +497,48 @@ impl Task {
     /// The task's id (`t<seq>`).
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The role the task was created for, when it named one — what a call's
+    /// `capability` is derived from.
+    pub fn role(&self) -> Option<&str> {
+        self.role.as_deref()
+    }
+
+    /// The task's budget, in credits — what a call's `max_price` is derived
+    /// from.
+    pub fn budget(&self) -> u64 {
+        self.budget
+    }
+
+    /// How the work will be judged complete (the schema's `spec_ref`), when
+    /// the task named one — what a call's `spec_ref` is derived from.
+    pub fn acceptance(&self) -> Option<&str> {
+        self.acceptance.as_deref()
+    }
+
+    /// When the task was created, in milliseconds since the Unix epoch.
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// The task's state name (`open`, `claimed`, ...).
+    pub fn state(&self) -> &'static str {
+        self.lock().state.as_str()
+    }
+
+    /// Whether the task is still `open` — the one state a claim, a bid or an
+    /// award can move it out of.
+    pub fn is_open(&self) -> bool {
+        self.lock().state == TaskState::Open
+    }
+
+    /// The treasury entry that minted this task's budget into its escrow, when
+    /// it had a budget. The agora records it as a call's `escrow_entry`: at v0
+    /// a task's escrow is funded by its own mint, not by a parent task's
+    /// subcontract.
+    pub fn escrow_entry(&self) -> Option<u64> {
+        self.escrow_entry
     }
 
     /// The task as the API reports it.
@@ -670,12 +716,17 @@ impl TaskLedger {
         // The id is reserved here but `next_seq` only advances once the budget
         // is minted, so a refused mint hands out no id.
         let id = format!("t{}", inner.next_seq + 1);
+        // The entry the budget was minted by, when there was one: the task
+        // keeps it, and the agora records it as a call's `escrow_entry`.
+        let mut entry = None;
         if checked.budget > 0 {
             // `checked` bounds the budget to `i64::MAX`.
             let amount = i64::try_from(checked.budget).unwrap_or(i64::MAX);
-            self.treasury
-                .mint_task_budget(&id, amount)
-                .map_err(CreateError::Treasury)?;
+            entry = Some(
+                self.treasury
+                    .mint_task_budget(&id, amount)
+                    .map_err(CreateError::Treasury)?,
+            );
         }
         inner.next_seq += 1;
         let now = now_ms();
@@ -685,6 +736,7 @@ impl TaskLedger {
             acceptance: checked.acceptance,
             budget: checked.budget,
             role: checked.role,
+            escrow_entry: entry,
             created_at: now,
             events: Arc::clone(&self.events),
             treasury: Arc::clone(&self.treasury),

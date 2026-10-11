@@ -28,6 +28,9 @@
 //! event: treasury
 //! data: {"entry":1,"kind":"mint","amount":500,"task":"t1"}
 //!
+//! event: agora
+//! data: {"task":"t1","kind":"bid","agent_cid":100,"price":300}
+//!
 //! : heartbeat
 //!
 //! ```
@@ -81,6 +84,16 @@ pub enum Event {
         amount: i128,
         task: Option<String>,
     },
+    /// A call moved: an agent bid on a roled open task's call (`kind` `bid`,
+    /// at `price`), or the call was awarded to a bidder (`kind` `award`, at
+    /// the price that bidder offered). `task` is the call — the id of the task
+    /// the offer is for — and `agent_cid` the agent that bid or won.
+    Agora {
+        task: String,
+        kind: &'static str,
+        agent_cid: u64,
+        price: u64,
+    },
 }
 
 impl Event {
@@ -133,6 +146,18 @@ impl Event {
                     None => "null".to_string(),
                 }
             ),
+            Event::Agora {
+                task,
+                kind,
+                agent_cid,
+                price,
+            } => format!(
+                "{{\"task\":{},\"kind\":{},\"agent_cid\":{},\"price\":{}}}",
+                quote(task),
+                quote(kind),
+                agent_cid,
+                price
+            ),
         };
         let name = match self {
             Event::Run { .. } => "run",
@@ -140,6 +165,7 @@ impl Event {
             Event::Serial { .. } => "serial",
             Event::Task { .. } => "task",
             Event::Treasury { .. } => "treasury",
+            Event::Agora { .. } => "agora",
         };
         format!("event: {name}\ndata: {data}\n\n")
     }
@@ -309,6 +335,27 @@ mod tests {
             }
             .frame(),
             "event: treasury\ndata: {\"entry\":7,\"kind\":\"fine\",\"amount\":5,\"task\":null}\n\n"
+        );
+        assert_eq!(
+            Event::Agora {
+                task: "t1".to_string(),
+                kind: "bid",
+                agent_cid: 100,
+                price: 300,
+            }
+            .frame(),
+            "event: agora\ndata: {\"task\":\"t1\",\"kind\":\"bid\",\"agent_cid\":100,\"price\":300}\n\n"
+        );
+        // An award frame carries the price the award was made at.
+        assert_eq!(
+            Event::Agora {
+                task: "t1".to_string(),
+                kind: "award",
+                agent_cid: 101,
+                price: 0,
+            }
+            .frame(),
+            "event: agora\ndata: {\"task\":\"t1\",\"kind\":\"award\",\"agent_cid\":101,\"price\":0}\n\n"
         );
     }
 

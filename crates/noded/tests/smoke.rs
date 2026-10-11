@@ -12,6 +12,7 @@
 
 mod common;
 
+use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -272,5 +273,266 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     let killed = request(port, "DELETE", &format!("/api/v0/runs/{}", run.id()), None);
     assert_eq!(killed.status, 200, "{}", killed.body);
     assert_eq!(killed.json()["state"], "killed", "{}", killed.body);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// The agora's one live test: a roled, budgeted task whose call a real
+/// connected agent bids on and is awarded, over the real HTTP API, with a real
+/// VM — and the `agora` frames its events stream carries while it happens.
+///
+/// Gated like the two above (`APZ_NODED_SMOKE=1`): it needs a hypervisor and
+/// the guest images, and it stands up a one-role keepalive fleet so there is
+/// an agent that is genuinely connected. What it proves that the agora's unit
+/// tests cannot is the HTTP wiring of the accepted path — the bid and the
+/// award through the register check, and the award binding the task exactly as
+/// a claim does.
+///
+/// ```text
+/// APZ_NODED_SMOKE=1 cargo test -p noded --test smoke -- --nocapture
+/// ```
+#[test]
+fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
+    if std::env::var("APZ_NODED_SMOKE").as_deref() != Ok("1") {
+        eprintln!("skipping: set APZ_NODED_SMOKE=1 (needs a hypervisor and the guest images)");
+        return;
+    }
+    let root = repo_root();
+    let scratch = std::env::temp_dir().join(format!("noded-agora-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("a scratch directory");
+    let manifest = scratch.join("roles.json");
+    std::fs::write(
+        &manifest,
+        r#"{"source":"noded agora live test","roles":{
+            "builder":{"role":"builder","title":"The builder","permits":["work"],"toolsets":["echo"],"budget":1},
+            "reviewer":{"role":"reviewer","title":"The reviewer","permits":["review"],"toolsets":["echo"],"budget":1}}}"#,
+    )
+    .expect("a two-role manifest");
+
+    // Its own CIDs (well clear of the smoke tests' and the live fleet's) and
+    // its own vsock directory, so nothing here shares a socket path. Two
+    // roles, because the bid's role rule needs an agent that is connected and
+    // is *not* the call's role.
+    const CID: u64 = 400;
+    const REVIEWER_CID: u64 = 401;
+    let uds_dir = scratch.join("vsock");
+    vmm::spawner::create_uds_dir(&uds_dir).expect("the fleet's socket directory");
+    let config = noded::Config {
+        port: 0,
+        kernel: PathBuf::from(noded::DEFAULT_KERNEL),
+        initrd: root.join(noded::DEFAULT_INITRD),
+        console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
+        uds_dir,
+        workspace: None,
+        agents_cid_base: CID,
+        ..noded::Config::default()
+    };
+    let server = noded::Server::start(config).expect("the agora daemon should bind");
+    let port = server.port();
+
+    let id = request(
+        port,
+        "POST",
+        "/api/v0/tasks",
+        Some(r#"{"goal":"ship the agora v0","acceptance":"the board shows the award","budget":500,"role":"builder"}"#),
+    );
+    assert_eq!(id.status, 201, "{}", id.body);
+    let id = id.json()["id"].as_str().expect("an id").to_string();
+    eprintln!("smoke: created roled task {id} for role builder with a 500-credit budget");
+
+    // The board already shows it as a call, before any agent is up.
+    let board = request(port, "GET", "/api/v0/agora", None);
+    assert_eq!(board.status, 200, "{}", board.body);
+    assert_eq!(board.json()["calls"][0]["task"], id.as_str(), "{}", board.body);
+    assert_eq!(board.json()["calls"][0]["state"], "open", "{}", board.body);
+
+    // Nothing is connected until the fleet is up: a bid now is refused.
+    let refused = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/bid"),
+        Some(&format!(r#"{{"agent_cid":{CID},"price":400}}"#)),
+    );
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(
+        refused.json()["error"],
+        format!("no live agent has guest CID {CID}")
+    );
+    eprintln!("smoke: a bid before the fleet was up was refused: {}", refused.body);
+
+    // Stand the fleet up the way the daemon does at startup.
+    let fleet = noded::fleet::Fleet::load(&manifest, CID, 128, 1).expect("a two-role manifest");
+    let run = server
+        .node()
+        .registry()
+        .create_agent_fleet(&fleet)
+        .expect("the fleet is a run");
+    assert_eq!(
+        run.view(noded::registry::Detail::Full).state,
+        "running",
+        "the two-agent fleet is up"
+    );
+
+    // A connected agent of *another* role is refused by the call's own rule —
+    // the invited check, as v0 makes it.
+    let wrong_role = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/bid"),
+        Some(&format!(r#"{{"agent_cid":{REVIEWER_CID},"price":100}}"#)),
+    );
+    assert_eq!(wrong_role.status, 409, "{}", wrong_role.body);
+    assert_eq!(
+        wrong_role.json()["error"],
+        format!("the agent on guest CID {REVIEWER_CID} is role reviewer, not builder")
+    );
+    eprintln!(
+        "smoke: a bid from the connected {REVIEWER_CID} (reviewer) was refused: {}",
+        wrong_role.json()["error"]
+    );
+
+    // Watch the events stream across the whole call, so the `agora` frames are
+    // captured as they happen rather than inferred.
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the stream connects");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a read timeout");
+    stream
+        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .expect("the events request is sent");
+    let mut stream = std::io::BufReader::new(stream);
+    let mut head = String::new();
+    stream.read_line(&mut head).expect("the stream head");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    for _ in 0..3 {
+        let mut header = String::new();
+        stream.read_line(&mut header).expect("a header line");
+    }
+    let mut blank = String::new();
+    stream.read_line(&mut blank).expect("the head ends");
+    assert_eq!(blank, "\r\n");
+    let mut socket = stream.into_inner();
+
+    // The connected agent bids — twice, so the re-bid that replaces is proven
+    // over the wire too — and is awarded at the price it last offered.
+    let bid = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/bid"),
+        Some(&format!(r#"{{"agent_cid":{CID},"price":400}}"#)),
+    );
+    assert_eq!(bid.status, 200, "{}", bid.body);
+    assert_eq!(bid.json()["price"], 400, "{}", bid.body);
+    assert_eq!(bid.json()["bidder"], "builder", "{}", bid.body);
+    assert_eq!(bid.json()["agent_cid"], CID, "{}", bid.body);
+    let rebid = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/bid"),
+        Some(&format!(r#"{{"agent_cid":{CID},"price":300}}"#)),
+    );
+    assert_eq!(rebid.status, 200, "{}", rebid.body);
+    assert_eq!(rebid.json()["price"], 300, "{}", rebid.body);
+    eprintln!("smoke: agent {CID} bid 400 then re-bid 300 on call {id}");
+
+    // A price over the call's budget is refused over the wire too.
+    let over = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/bid"),
+        Some(&format!(r#"{{"agent_cid":{CID},"price":501}}"#)),
+    );
+    assert_eq!(over.status, 409, "{}", over.body);
+    assert_eq!(
+        over.json()["error"],
+        "bid price 501 exceeds max_price 500"
+    );
+
+    // The award binds the task through the ledger's own claim.
+    let awarded = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/award"),
+        Some(&format!(r#"{{"agent_cid":{CID}}}"#)),
+    );
+    assert_eq!(awarded.status, 200, "{}", awarded.body);
+    let task = awarded.json();
+    assert_eq!(task["state"], "claimed", "{task}");
+    assert_eq!(task["assignee_id"], "builder", "{task}");
+    assert_eq!(task["agent_cid"], CID, "{task}");
+    eprintln!(
+        "smoke: awarded call {id} to cid {CID}: task is {} and assigned to {}",
+        task["state"], task["assignee_id"]
+    );
+
+    // A second award is refused in the award's own words.
+    let again = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/award"),
+        Some(&format!(r#"{{"agent_cid":{CID}}}"#)),
+    );
+    assert_eq!(again.status, 409, "{}", again.body);
+    assert_eq!(
+        again.json()["error"],
+        "call t1 is already awarded to builder"
+    );
+
+    // The board now shows the call awarded, holding one bid (the re-bid
+    // replaced the first) at the price the award was made at.
+    let board = request(port, "GET", "/api/v0/agora", None).json();
+    let call = &board["calls"][0];
+    assert_eq!(call["state"], "awarded", "{board}");
+    assert_eq!(call["max_price"], 500, "{board}");
+    assert_eq!(call["bids"].as_array().expect("bids").len(), 1, "{board}");
+    assert_eq!(call["bids"][0]["price"], 300, "{board}");
+    assert_eq!(call["award"]["price"], 300, "{board}");
+    assert_eq!(call["award"]["contractor"], "builder", "{board}");
+    assert_eq!(call["award"]["escrow_entry"], 1, "{board}");
+    eprintln!("smoke: board shows the awarded call: {}", board["calls"][0]);
+
+    // The agent finishes the task it won, and the call keeps its award.
+    let finished = request(
+        port,
+        "POST",
+        &format!("/api/v0/tasks/{id}/finish"),
+        Some(r#"{"outcome":"done","note":"agora v0 is up"}"#),
+    );
+    assert_eq!(finished.status, 200, "{}", finished.body);
+    assert_eq!(finished.json()["state"], "done", "{}", finished.body);
+
+    // The stream carried both bids and the award, as `agora` frames.
+    let mut raw = Vec::new();
+    let deadline = std::time::Instant::now();
+    while std::time::Instant::now().duration_since(deadline) < Duration::from_secs(10) {
+        let mut chunk = [0u8; 4096];
+        match std::io::Read::read(&mut socket, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+        let text = String::from_utf8_lossy(&raw);
+        if text.contains("\"kind\":\"award\"") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    for expected in [
+        format!(
+            "event: agora\ndata: {{\"task\":\"{id}\",\"kind\":\"bid\",\"agent_cid\":{CID},\"price\":400}}"
+        ),
+        format!(
+            "event: agora\ndata: {{\"task\":\"{id}\",\"kind\":\"bid\",\"agent_cid\":{CID},\"price\":300}}"
+        ),
+        format!(
+            "event: agora\ndata: {{\"task\":\"{id}\",\"kind\":\"award\",\"agent_cid\":{CID},\"price\":300}}"
+        ),
+    ] {
+        assert!(text.contains(&expected), "the stream carried {expected:?}: {text}");
+        eprintln!("smoke: stream carried {expected}");
+    }
+
+    let killed = request(port, "DELETE", &format!("/api/v0/runs/{}", run.id()), None);
+    assert_eq!(killed.status, 200, "{}", killed.body);
     let _ = std::fs::remove_dir_all(&scratch);
 }
