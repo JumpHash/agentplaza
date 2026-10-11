@@ -5,14 +5,16 @@ import '../styles/agent.css';
 import { api, ApiError, type Agent, type Block, type Delta, type Entry, type ModelInfo } from '../api';
 import { href } from '../router';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, clip, compact, empty, field, textarea } from '../ui/components';
+import { ago, attempt, badge, button, card, clip, compact, empty, field, tabs, textarea } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
+import { mountMemory } from './memory';
 
 const NEAR_BOTTOM_PX = 80;
 
 type Section = { root: HTMLElement; head: HTMLElement };
 type LiveTurn = { work: number; el: HTMLElement; text: Text; thinking: Text };
+type Tab = 'transcript' | 'memory';
 
 export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const head = h('header.agent-head');
@@ -23,6 +25,33 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const modelLine = h('div.model-line');
   const details = h('div');
   const queue = h('div.stack');
+
+  // The transcript and the memory library share one space; a tab picks which shows.
+  const memoryHost = h('div.memory-host', { style: 'display:none' });
+  const transcriptCard = card(null, transcript, { flush: true });
+  const composerRow = h('div.composer', null, composer, h('div.row', null, h('span', { style: 'flex:1' }), send));
+  const tabLabels: Record<Tab, string> = { transcript: 'Transcript', memory: 'Memory' };
+  let tab: Tab = 'transcript';
+  let unmountMemory: (() => void) | null = null;
+  const showTab = (next: Tab): void => {
+    if (next === tab) return;
+    tab = next;
+    const memory = next === 'memory';
+    transcriptCard.style.display = memory ? 'none' : '';
+    composerRow.style.display = memory ? 'none' : '';
+    memoryHost.style.display = memory ? '' : 'none';
+    unmountMemory?.();
+    unmountMemory = memory ? mountMemory(memoryHost, cid) : null;
+    tabBar.querySelectorAll('button').forEach((b) => b.setAttribute('aria-selected', String(b.textContent === tabLabels[next])));
+  };
+  const tabBar = tabs(
+    [
+      { key: 'transcript', label: tabLabels.transcript },
+      { key: 'memory', label: tabLabels.memory },
+    ],
+    tab,
+    (key) => showTab(key as Tab),
+  );
 
   const sections = new Map<number, Section>();
   const live = new Map<string, LiveTurn>();
@@ -264,8 +293,10 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         h(
           'div.agent-main',
           null,
-          card(null, transcript, { flush: true }),
-          h('div.composer', null, composer, h('div.row', null, h('span', { style: 'flex:1' }), send)),
+          tabBar,
+          transcriptCard,
+          memoryHost,
+          composerRow,
         ),
         h(
           'aside.agent-side',
@@ -302,6 +333,8 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     alive = false;
     offs.forEach((off) => off());
     live.clear();
+    unmountMemory?.();
+    unmountMemory = null;
   };
 }
 
