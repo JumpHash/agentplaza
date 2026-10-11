@@ -143,6 +143,19 @@ export interface Society { agents: SocietyAgent[]; bonds: Bond[]; computed_ms: n
 export interface MemoryNote { slug: string; title: string; kind: 'note' | 'journal' | 'person'; links: string[]; tags: string[]; updated_ms: number; size: number }
 export interface MemoryDoc extends MemoryNote { body: string; backlinks: string[]; provenance: { task: string | null; work: number | null } }
 
+/** One agent's record (GET /v1/agents/{cid}/profile): money, work, standing and conduct. */
+export interface AgentProfile {
+  cid: number; joined_ms: number;
+  wallet: number; earned: number; spent: number;
+  tasks: { posted: number; done: number; verified: number; failed: number };
+  reputation: number; confidence: number; contacts: number; memory_notes: number;
+  /** 0–100: starts at 100, loses points for law violations (30 days), refused tool calls (7 days) and fines. */
+  conduct: number;
+  fines: { count: number; total: number };
+  denials: number;
+  violations: { law: string; at_ms: number; detail: string }[];
+}
+
 // ---- Endpoints -------------------------------------------------------------
 
 export const api = {
@@ -188,6 +201,7 @@ export const api = {
   fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
   agora: () => get<{ calls: unknown[] }>('/v1/agora').then((r) => r.calls),
 
+  profile: (cid: number) => get<AgentProfile>(`/v1/agents/${cid}/profile`),
   society: () => get<Society>('/v1/society'),
   /** The owner rates an agent (AP-072: the owner is the root of trust), value in [-1, 1]. */
   rateAgent: (cid: number, value: number) => post<Opinion>(`/v1/agents/${cid}/rating`, { value }),

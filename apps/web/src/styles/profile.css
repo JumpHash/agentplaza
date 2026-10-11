@@ -1,0 +1,61 @@
+/* Agent profile: a cartoon ID card with the robot's portrait. */
+.avatar {
+  position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center;
+  overflow: hidden; border-radius: 22%; border: 2px solid var(--ink);
+  background: hsl(var(--hue) 70% 84%); box-shadow: 2px 2px 0 var(--ink);
+}
+.avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.avatar.offline img { filter: grayscale(0.85) opacity(0.75); }
+.avatar-initial { font: 700 1.1em/1 var(--serif, Georgia, serif); color: var(--ink); }
+
+.profile-card {
+  display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: start;
+  padding: 20px; margin-bottom: 20px;
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 14px, color-mix(in srgb, var(--rule) 30%, transparent) 14px 15px),
+    var(--sheet);
+  border: 2px solid var(--ink); border-radius: 18px; box-shadow: 5px 5px 0 var(--ink);
+}
+.profile-portrait { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.profile-portrait .avatar { border-width: 3px; border-radius: 20px; box-shadow: 4px 4px 0 var(--ink); transform: rotate(-2deg); }
+.profile-stamp {
+  font: 700 11px/1 var(--mono); letter-spacing: 0.14em; color: var(--signal);
+  border: 2px solid var(--signal); border-radius: 6px; padding: 4px 8px; transform: rotate(3deg);
+  background: color-mix(in srgb, var(--sheet) 85%, transparent);
+}
+.profile-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.profile-name { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.profile-name h1 { margin: 0; font-size: 34px; line-height: 1.05; }
+.profile-tags { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--fs-sm); }
+.role-chip {
+  font: 700 12px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 6px 10px; border-radius: 999px; border: 2px solid var(--ink);
+  background: hsl(var(--hue) 65% 80%); color: var(--ink); box-shadow: 2px 2px 0 var(--ink);
+}
+.profile-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ptile {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; min-width: 0;
+  background: var(--paper); border: 2px solid var(--ink); border-radius: 12px; box-shadow: 3px 3px 0 var(--ink);
+}
+.ptile-label { font: 600 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+.ptile-value { font-size: 20px; font-weight: 700; color: var(--ink); min-height: 26px; display: flex; align-items: center; }
+.ptile-sub { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.money { font-family: var(--mono); }
+.pmeter { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.pmeter-track { height: 14px; border: 2px solid var(--ink); border-radius: 999px; background: var(--sheet); overflow: hidden; }
+.pmeter-fill { height: 100%; border-right: 2px solid var(--ink); background: var(--info); transition: width 0.6s cubic-bezier(.3,1.4,.5,1); }
+.pmeter-fill.rep { background: linear-gradient(90deg, #f2b84b, #3fae6a); }
+.pmeter-fill.ok { background: #3fae6a; }
+.pmeter-fill.info { background: #4c86d9; }
+.pmeter-fill.warn { background: #f2b84b; }
+.pmeter-fill.danger { background: #e5533d; }
+.pmeter-caption { font-size: 13px; font-weight: 600; }
+.profile-record h3 { margin: 0 0 8px; font-size: 14px; }
+.profile-violations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-sm); }
+.profile-violations li { display: flex; gap: 10px; align-items: center; }
+.profile-clean { margin: 0; }
+
+@media (max-width: 900px) {
+  .profile-card { grid-template-columns: 1fr; justify-items: center; }
+  .profile-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

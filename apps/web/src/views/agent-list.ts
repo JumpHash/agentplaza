@@ -24,6 +24,7 @@ import {
   type Tone,
 } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { avatar } from './agent-profile';
 import type { Cleanup } from './index';
 import '../styles/agents.css';
 
@@ -62,8 +63,8 @@ export function mountAgentList(root: HTMLElement): Cleanup {
         h(
           'div.row.agent-cell',
           null,
-          dot(STATUS_TONE[a.status]),
-          h('div', null, h('strong.truncate', null, agentName(a)), h('div.faint.truncate', null, roleLabel(a.role))),
+          avatar(a, 40),
+          h('div', null, h('div.row', null, dot(STATUS_TONE[a.status]), h('strong.truncate', null, agentName(a))), h('div.faint.truncate', null, roleLabel(a.role))),
         ),
     },
     {

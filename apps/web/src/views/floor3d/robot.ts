@@ -8,6 +8,9 @@ import { outline, toonMat } from './toon';
 
 export type RobotState = 'idle' | 'working' | 'walking' | 'offline';
 
+/** A still pose for a portrait. */
+export type RobotPose = 'wave' | 'proud' | 'think' | 'cheer';
+
 export interface Palette {
   ink: string; sheet: string; paper: string; rule: string; signal: string; ok: string; info: string; inkMuted: string;
 }
@@ -21,6 +24,8 @@ export interface Robot {
   /** Advance the animation: `dt` seconds since the last frame, `t` seconds since start. */
   update(dt: number, t: number): void;
   setHighlighted(on: boolean): void;
+  /** Strikes a still pose (for a portrait); the next `update` moves it again. */
+  pose(kind: RobotPose): void;
   dispose(): void;
 }
 
@@ -247,6 +252,30 @@ export function makeRobot(hue: number, orchestrator: boolean, palette: Palette, 
       pupilMat.emissiveIntensity = s === 'working' ? pupilIntensity + 0.3 * Math.sin(t * 5) : pupilIntensity;
 
       if (antennaLight) lightMat.emissiveIntensity = 1.1 + 0.5 * Math.sin(t * 3);
+    },
+
+    pose(kind: RobotPose): void {
+      armL.rotation.set(0, 0, 0);
+      armR.rotation.set(0, 0, 0);
+      head.rotation.set(0, 0, 0);
+      if (kind === 'wave') {
+        armR.rotation.z = 2.5;
+        armL.rotation.z = -0.25;
+        head.rotation.z = -0.15;
+      } else if (kind === 'proud') {
+        armL.rotation.z = -0.55;
+        armR.rotation.z = 0.55;
+        head.rotation.x = -0.12;
+      } else if (kind === 'think') {
+        armR.rotation.x = -1.9;
+        armR.rotation.z = -0.35;
+        head.rotation.z = 0.2;
+        head.rotation.x = 0.08;
+      } else {
+        armL.rotation.z = -2.7;
+        armR.rotation.z = 2.7;
+        head.rotation.x = -0.15;
+      }
     },
 
     setHighlighted(on: boolean): void {
