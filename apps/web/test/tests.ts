@@ -23,6 +23,8 @@ import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq
 import { parseArtifact, readStateOf } from '../src/models/artifact';
 import { parseTell, parseTellArgs, tellStateOf } from '../src/models/tell';
 import { balances, fmtSigned, parseJournal, parseTreasury, postingLabel } from '../src/models/treasury';
+import type { Award, Bid, Call, Calls } from '../src/models/agora';
+import { parseAgora, winningBid } from '../src/models/agora';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
 import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
@@ -145,7 +147,7 @@ store.applyRunEvent('r1', 'done');
 eq(store.details.get('r1')?.state, 'done', 'a run event patches the cached run');
 store.applyVmEvent('r1', 0, 'exited');
 eq(store.details.get('r1')?.vms[0]?.state, 'exited', 'a vm event patches the cached vm');
-eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0 }, 'the wire tallies every frame');
+eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0, agora: 0 }, 'the wire tallies every frame');
 
 /* ------- run ids restart with the daemon: identity is (id, created_at) ---- */
 function runShaped(id: string, createdAt: number, state: 'running' | 'done', serial: string) {
@@ -911,6 +913,99 @@ eq(balances({ ...TOTALS_FIXTURE, credits: 1400 }), false, 'credits that do not e
   await settled;
   eq(typeof s.journalError, 'string', 'the journal was asked for the truth');
   eq(typeof s.treasuryError, 'string', 'and the accounts were asked too');
+}
+
+/* ==================== the market: the agora's calls, bids and awards
+   The board is the node's own derivation of the ledger, read whole and parsed
+   defensively — the relay is untrusted, so a missing or mistyped field is
+   refused by name. A call's state is `awarded` once an award closed it, the
+   task's own state otherwise; an award names the bid it was made at. An
+   `agora` frame carries no row — not the bids list, not the award's contractor
+   or escrow entry — so the store asks the board once and invents no bid. */
+
+const CALL_BID: Bid = { task: 't1', agent_cid: 103, bidder: 'builder', price: 640, created_at: 1791683465342 };
+const CALL_AWARD: Award = {
+  task: 't1',
+  contractor: 'builder',
+  agent_cid: 103,
+  price: 640,
+  escrow_entry: 1,
+  created_at: 1791683465434,
+};
+const CALL_FIXTURE: Call = {
+  task: 't1',
+  capability: 'builder',
+  spec_ref: 'an award binds the task',
+  max_price: 900,
+  state: 'awarded',
+  created_at: 1791683465210,
+  bids: [CALL_BID],
+  award: CALL_AWARD,
+};
+const AGORA_FIXTURE: Calls = { calls: [CALL_FIXTURE], total: 1, limit: 256, truncated: false };
+
+eq(parseAgora(AGORA_FIXTURE), AGORA_FIXTURE, 'a well-formed board parses unchanged');
+eq(parseAgora({ ...AGORA_FIXTURE, git: 'sha' }), AGORA_FIXTURE, 'unknown extra fields are tolerated and dropped');
+throws(() => parseAgora(null), 'agora is missing or not an object', 'a non-object board is rejected by name');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: {} }), 'agora.calls is missing or not an array', 'a calls field that is not an array names the field');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, state: 'pending' }] }), 'agora.calls[0].state', 'an unknown call state is refused by name');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, max_price: 900.5 }] }), 'agora.calls[0].max_price', 'a non-integer ceiling names the field');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, bids: 5 }] }), 'agora.calls[0].bids', 'a bids field that is not an array names the field');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, bids: [{ ...CALL_BID, price: 'x' }] }] }), 'agora.calls[0].bids[0].price', 'a bad bid names its index and field');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, award: 5 }] }), 'agora.calls[0].award is missing or not an object', 'an award that is not an object is refused by name');
+throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, award: { ...CALL_AWARD, escrow_entry: 1.5 } }] }), 'agora.calls[0].award.escrow_entry', 'a non-integer escrow entry names the field');
+throws(() => parseAgora({ ...AGORA_FIXTURE, truncated: 'yes' }), 'agora.truncated', 'a non-boolean truncation names the field');
+{
+  const missing: Record<string, unknown> = { ...CALL_FIXTURE };
+  delete missing['capability'];
+  throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [missing] }), 'agora.calls[0].capability', 'a missing required call field names the path');
+}
+{
+  const missing: Record<string, unknown> = { ...CALL_FIXTURE };
+  delete missing['award'];
+  throws(() => parseAgora({ ...AGORA_FIXTURE, calls: [missing] }), 'agora.calls[0].award', 'a call with no award key at all names the field');
+}
+eq(
+  parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, state: 'open', award: null, bids: [] }] }).calls[0]?.award,
+  null,
+  'an open call reads its null award',
+);
+eq(
+  parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, spec_ref: null }] }).calls[0]?.spec_ref,
+  null,
+  'a call with no spec reads its null spec',
+);
+eq(
+  parseAgora({ ...AGORA_FIXTURE, calls: [{ ...CALL_FIXTURE, award: { ...CALL_AWARD, escrow_entry: null } }] }).calls[0]?.award?.escrow_entry,
+  null,
+  'an award on a task with no budget names no escrow entry',
+);
+
+eq(winningBid(CALL_FIXTURE), CALL_BID, 'the winning bid is the one the award names');
+eq(winningBid({ ...CALL_FIXTURE, state: 'open', award: null }), null, 'an open call has no winning bid');
+eq(
+  winningBid({ ...CALL_FIXTURE, award: { ...CALL_AWARD, agent_cid: 999 } }),
+  null,
+  'an award naming a CID with no bid marks no winner',
+);
+eq(
+  winningBid({ ...CALL_FIXTURE, award: { ...CALL_AWARD, price: 555 } }),
+  null,
+  'an award at a price no bid offered marks no winner',
+);
+
+/* an agora frame carries no row: the board is asked once, and nothing is
+   invented from the frame alone */
+{
+  const s = new Store();
+  s.applyAgoraEvent();
+  eq(s.wire.agora, 1, 'the wire tallies the agora frame');
+  eq(s.calls.length, 0, 'no call is invented from a frame');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.callsError, 'string', 'the board was asked for the truth');
+  eq(s.callsTotal, 0, 'and the frame set no total of its own');
 }
 
 if (failures > 0) {

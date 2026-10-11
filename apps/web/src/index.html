@@ -13,9 +13,10 @@
        POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial/task/treasury deltas)
        GET /api/v0/tasks · GET/DELETE /api/v0/tasks/{id}
        POST /api/v0/tasks/{id}/claim · POST /api/v0/tasks/{id}/finish · POST /api/v0/tasks/{id}/artifact (the ledger)
+       POST /api/v0/tasks/{id}/bid · POST /api/v0/tasks/{id}/award · GET /api/v0/agora (the market)
        GET /api/v0/treasury · GET /api/v0/treasury/journal (the treasury)
-     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury;
-     keys 0–8 walk the nine index destinations, '?' opens the key sheet.
+     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury #market;
+     keys 0–9 walk the ten index destinations, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
      a civic register — ruled rows, entry numbers in the margin, red double margin rule,
      Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
@@ -40,13 +41,14 @@
       <a href="#ledger" data-nav="ledger" aria-keyshortcuts="6"><span class="k">6</span><span>Ledger</span><span class="dots"></span><span class="n" id="nav-ledger">—</span></a>
       <a href="#roster" data-nav="roster" aria-keyshortcuts="7"><span class="k">7</span><span>Roster</span><span class="dots"></span><span class="n" id="nav-roster">—</span></a>
       <a href="#treasury" data-nav="treasury" aria-keyshortcuts="8"><span class="k">8</span><span>Treasury</span><span class="dots"></span><span class="n" id="nav-treasury">—</span></a>
+      <a href="#market" data-nav="market" aria-keyshortcuts="9"><span class="k">9</span><span>Market</span><span class="dots"></span><span class="n" id="nav-market">—</span></a>
     </div>
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
       <span>Bundle <code id="colo-hash">{{BUNDLE_HASH}}</code></span>
       <span id="colo-wire">The wire · opening…</span>
-      <span>Keys 0–8 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
+      <span>Keys 0–9 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
@@ -678,6 +680,43 @@
       </div></div>
     </div>
 
+    <!-- ============================================================ MARKET -->
+    <div data-view="market" data-cmd="apz market --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 10</span>
+        <h1>Market</h1>
+        <span class="aside mk ok" id="market-live" hidden>live</span>
+        <p class="lede">The agora's board: every call a roled task offers — the offer IS the task, so a call's id is the task's and its ceiling is the budget the treasury minted into the task's escrow. Under each call stand the bids a connected agent of its role has made, and, once one is accepted, the award that binds the task to its contractor through the ledger's own claim. Newest first, the way the register reads; a call's task id opens its ledger entry, and an award's escrow entry opens the treasury, where the entry that funded the escrow is listed by its number.</p>
+      </div>
+
+      <div class="parts" id="market-notice" hidden><div class="body">
+        <span class="mk warn">market unreachable</span>
+        <p class="example" id="market-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <div class="tallies">
+          <div class="tally"><div class="figure" id="t-market-calls">0</div><div class="tcap">calls on the board</div></div>
+          <div class="tally"><div class="figure" id="t-market-offers">0</div><div class="tcap">offered · no award</div></div>
+          <div class="tally"><div class="figure" id="t-market-bids">0</div><div class="tcap">bids held</div></div>
+          <div class="tally"><div class="figure" id="t-market-awarded">0</div><div class="tcap">awarded</div></div>
+        </div>
+        <p class="example">A call is a roled task's offer: a roled task appears here while its offer stands (open, with no bid yet) and stays once an agent bids or an award binds it. A task with no role is no call, and a roled task claimed the old way — with no bid and no award — was never offered through the agora, so neither appears. The ceiling is the task's budget, the same credits the treasury's journal minted into its escrow.</p>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The board <span class="c" id="market-count"></span></div></div>
+      <div class="parts bb0" id="market-empty" hidden><div class="body">
+        <p class="example" id="market-empty-text"></p>
+      </div></div>
+      <div class="tablewrap"><table id="market-table" hidden>
+        <thead><tr><th>No.</th><th>Call</th><th>Capability</th><th class="num">Ceiling</th><th>State</th><th>Entered</th></tr></thead>
+        <tbody id="market-body"></tbody>
+      </table></div>
+      <div class="parts bb0"><div class="body">
+        <p class="example">An award performs the claim: it binds the task through the ledger's own transition, so an awarded task is claimed exactly as one claimed by guest CID — its assignee and agent CID are set, and a finish, a withdrawal or a later read sees no difference at all. Every ceiling and price is whole credits, and 1 credit = $0.001 of real spend, so each is shown both ways.</p>
+      </div></div>
+    </div>
+
     </div>
   </main>
 </div>
@@ -700,6 +739,7 @@
         <tr><td class="kc"><kbd>6</kbd></td><td>Ledger — the plaza's tasks: claim, finish and withdraw them</td></tr>
         <tr><td class="kc"><kbd>7</kbd></td><td>Roster — the role agents, grouped by role</td></tr>
         <tr><td class="kc"><kbd>8</kbd></td><td>Treasury — the accounts and the double-entry journal</td></tr>
+        <tr><td class="kc"><kbd>9</kbd></td><td>Market — the calls, their bids, and the award that binds a contractor</td></tr>
         <tr><td class="kc"><kbd>?</kbd></td><td>This sheet — press again, Escape, or click outside to close</td></tr>
         <tr><td class="kc"><kbd>f</kbd></td><td>Follow new transcript lines — run and compare views</td></tr>
         <tr><td class="kc"><kbd>j</kbd></td><td>Jump to the latest line — run and compare views</td></tr>

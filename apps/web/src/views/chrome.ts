@@ -107,10 +107,10 @@ const HEALTH_MARK: Record<string, string> = { live: 'mk ok', stale: 'mk warn', d
    carried, kept honest about being transport — daemon health is the polls'. */
 function renderWire(): void {
   const w = store.wire;
-  const total = w.run + w.vm + w.serial + w.task;
+  const total = w.run + w.vm + w.serial + w.task + w.treasury + w.agora;
   byId('colo-wire').textContent =
     store.stream === 'live'
-      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task)`
+      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task · ${fmtNum(w.treasury)} treasury · ${fmtNum(w.agora)} agora)`
       : store.stream === 'reconnecting'
         ? 'The wire · down — reconnecting; the polls carry the register'
         : 'The wire · opening…';
@@ -143,6 +143,10 @@ export function renderChrome(): void {
   /* the treasury answers one question — how many entries the account-book
      journal holds; a journal the console cannot read reads '—' */
   byId('nav-treasury').textContent = store.journalError != null ? '—' : fmtNum(store.journalTotal);
+  /* the market answers one question — how many calls still offer (a roled
+     task whose offer stands, no award yet); an unreadable board reads '—' */
+  byId('nav-market').textContent =
+    store.callsError != null ? '—' : fmtNum(store.calls.filter((c) => c.state === 'open').length);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 

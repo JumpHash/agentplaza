@@ -11,6 +11,7 @@ import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrom
 import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
 import { initKeys, keysOpen, toggleKeys } from './views/keys';
 import { initLedger, renderLedger } from './views/ledger';
+import { renderMarket } from './views/market';
 import { initRegister, renderRegister } from './views/register';
 import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from './views/run';
 import { renderMachine } from './views/machine';
@@ -166,6 +167,7 @@ store.onRender(() => {
     case 'roster': renderRoster(); break;
     case 'ledger': renderLedger(); break;
     case 'treasury': renderTreasury(); break;
+    case 'market': renderMarket(); break;
   }
 });
 
@@ -200,6 +202,16 @@ window.__PLAZA_DIAG__ = {
       credits: store.treasury?.totals.credits ?? 0,
       error: store.treasuryError,
       journalError: store.journalError,
+    };
+  },
+  get market() {
+    return {
+      calls: store.calls.length,
+      open: store.calls.filter((c) => c.state === 'open').length,
+      bids: store.calls.reduce((n, c) => n + c.bids.length, 0),
+      awarded: store.calls.filter((c) => c.award != null).length,
+      total: store.callsTotal,
+      error: store.callsError,
     };
   },
   get tell() {

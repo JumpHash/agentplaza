@@ -42,6 +42,9 @@ const TASK_STATES: Readonly<Record<string, true>> = {
   failed: true,
   withdrawn: true,
 };
+/* The two things an agora frame can say a call did: a bid landed, or the call
+   was awarded. A frame that names neither is dropped whole. */
+const AGORA_KINDS: Readonly<Record<string, true>> = { bid: true, award: true };
 
 /** The frame's JSON, or null when it is not an object we can use — a
     malformed frame (a hostile or broken relay) is dropped, never fatal. */
@@ -127,5 +130,25 @@ export function startEvents(): void {
     /* the frame is a whole post or it is dropped; the store asks the journal
        for the row's detail the frame does not carry */
     store.applyTreasuryEvent(entry);
+  });
+  source.addEventListener('agora', (e) => {
+    const data = frame(e);
+    const kind = data?.['kind'];
+    if (
+      !data ||
+      typeof data['task'] !== 'string' ||
+      typeof kind !== 'string' ||
+      AGORA_KINDS[kind] !== true ||
+      typeof data['agent_cid'] !== 'number' ||
+      !Number.isInteger(data['agent_cid']) ||
+      typeof data['price'] !== 'number' ||
+      !Number.isInteger(data['price'])
+    ) {
+      return;
+    }
+    /* the frame names the call, the kind, the agent and the price — but no
+       row: not the bids list, not the award's contractor or escrow entry. The
+       store asks the board once (coalesced) and invents no bid or award. */
+    store.applyAgoraEvent();
   });
 }

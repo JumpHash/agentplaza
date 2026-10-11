@@ -1,6 +1,8 @@
 /* The JSON client for the frozen /api/v0 contract. Errors are values the
    store keeps and shows — never thrown away, never swallowed. */
 
+import type { Calls } from './models/agora';
+import { parseAgora } from './models/agora';
 import type { TaskArtifact } from './models/artifact';
 import { parseArtifact } from './models/artifact';
 import type { HubStatus } from './models/hub';
@@ -156,6 +158,18 @@ export async function getTreasury(): Promise<Treasury> {
     its newest entries. */
 export async function getTreasuryJournal(): Promise<Journal> {
   return parseJournal(await api<unknown>('/api/v0/treasury/journal'));
+}
+
+/* ------------------------------------------------------------- the agora
+   The plaza's market: the calls its roled tasks offer, the bids on them and
+   the awards that bind a task to its contractor. A read; the parse is
+   defensive — the relay is untrusted, and a missing field is an error naming
+   it, never a silent zero. */
+
+/** The board: every call, with its bids and its award, oldest first as the
+    daemon lists them, bounded to its newest calls. */
+export async function getAgora(): Promise<Calls> {
+  return parseAgora(await api<unknown>('/api/v0/agora'));
 }
 
 /** Read one file a task's agent wrote, through the daemon's read-through:

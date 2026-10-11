@@ -4,8 +4,9 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, tellAgent } from './api';
+import { getAgora, getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, tellAgent } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
+import type { Call } from './models/agora';
 import type { ArtifactReadState } from './models/artifact';
 import { readStateOf } from './models/artifact';
 import type { RunSlice } from './models/history';
@@ -23,7 +24,7 @@ import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 /** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
@@ -38,7 +39,7 @@ declare global {
     /** Read-only counters for the verification harness; the app never reads them. */
     __PLAZA_DIAG__?: {
       readonly renders: number;
-      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number; readonly task: number };
+      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number; readonly task: number; readonly treasury: number; readonly agora: number };
       readonly stream: StreamState;
       /** What the hub line reads from: whether the hub is reachable, its
           agent and session counts, and the error when it is not. */
@@ -67,6 +68,17 @@ declare global {
         readonly credits: number;
         readonly error: string | null;
         readonly journalError: string | null;
+      };
+      /** The market as the store holds it: how many calls the board carries,
+          how many still offer (stand unclaimed), how many bids and awards they
+          hold, and the error when the board is unreadable. */
+      readonly market: {
+        readonly calls: number;
+        readonly open: number;
+        readonly bids: number;
+        readonly awarded: number;
+        readonly total: number;
+        readonly error: string | null;
       };
       /** The 3D camera's position and target, when the scene has booted. */
       readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
@@ -151,6 +163,7 @@ const MACHINE_EVERY = 15; // ticks between machine polls
 const HUB_EVERY = 15; // ticks between hub polls (the hub's status is frozen and slow)
 const TASKS_EVERY = 2; // ticks between task-ledger polls (the ledger is small and changes fast)
 const TREASURY_EVERY = 2; // ticks between treasury polls (accounts + journal ride the task cadence)
+const AGORA_EVERY = 2; // ticks between agora polls (the board is small and changes fast — bids land in bursts)
 const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
 const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
 const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
@@ -186,6 +199,15 @@ export class Store {
   /** Whether the daemon's response was cut to its own limit. */
   journalTruncated = false;
   journalError: string | null = null;
+  /** The market's own copy of the board, newest first (the daemon lists the
+      calls oldest first, the way the register reads runs). The SSE `agora`
+      frames ask for it, exactly as the task events ask for the ledger. */
+  calls: Call[] = []; // newest first
+  /** How many calls the board holds (may exceed the bounded copy). */
+  callsTotal = 0;
+  /** Whether the daemon's response was cut to its own limit. */
+  callsTruncated = false;
+  callsError: string | null = null;
   /** The task the ledger sheet is pinned to (`#ledger/{id}`), or null. */
   taskDetailId: string | null = null;
   /** The artifact the ledger's sheet last asked for — the one read in flight,
@@ -225,7 +247,7 @@ export class Store {
   /* the live wire (GET /api/v0/events): its own liveness and tallies —
      informational only; daemon health stays with the polls */
   stream: StreamState = 'connecting';
-  readonly wire = { run: 0, vm: 0, serial: 0, task: 0, treasury: 0 };
+  readonly wire = { run: 0, vm: 0, serial: 0, task: 0, treasury: 0, agora: 0 };
   /** Render passes flushed; the harness asserts a burst cannot storm the paint path. */
   renders = 0;
 
@@ -242,6 +264,7 @@ export class Store {
   private listRefreshTimer: number | null = null;
   private tasksRefreshTimer: number | null = null;
   private treasuryRefreshTimer: number | null = null;
+  private callsRefreshTimer: number | null = null;
   private readonly detailRefreshPending = new Set<string>();
   private readonly vmPushAt = new Map<string, number>();
   /** The newest artifact ask's serial: an older answer never overwrites it. */
@@ -331,6 +354,9 @@ export class Store {
       jobs.push(this.pollTreasury());
       jobs.push(this.pollJournal());
     }
+    const wantCalls =
+      first || this.ticks % AGORA_EVERY === 0 || this.callsError != null || this.calls.length === 0;
+    if (wantCalls) jobs.push(this.pollCalls());
     if (first || this.ticks % MACHINE_EVERY === 0 || route.name === 'machine') jobs.push(this.pollMachine());
     if (first || this.ticks % HUB_EVERY === 0) jobs.push(this.pollHub());
 
@@ -471,6 +497,26 @@ export class Store {
       this.noteOk();
     } catch (err) {
       this.journalError = err instanceof Error ? err.message : String(err);
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Poll the agora's board. The daemon lists the calls oldest first and bounds
+      them to its own newest window; the copy reads newest first, the way the
+      register does, and the total says what the bound left behind. */
+  private async pollCalls(): Promise<void> {
+    try {
+      const view = await getAgora();
+      const calls = view.calls.slice();
+      calls.sort((a, b) => taskSeq(b.task) - taskSeq(a.task)); // newest first
+      this.calls = calls;
+      this.callsTotal = view.total;
+      this.callsTruncated = view.truncated;
+      this.callsError = null;
+      this.noteOk();
+    } catch (err) {
+      this.callsError = err instanceof Error ? err.message : String(err);
       this.noteErr();
     }
     this.scheduleRender();
@@ -913,6 +959,29 @@ export class Store {
       this.treasuryRefreshTimer = null;
       void this.pollTreasury();
       void this.pollJournal();
+    }, EVENT_REFRESH_MS);
+  }
+
+  /** A call moved on the agora: an agent bid on a roled open task's call, or
+      the call was awarded to a bidder. Unlike a treasury post — whose entry id
+      the journal is append-only for, so a row the console holds is complete —
+      an `agora` frame carries NO row: not the bids list the bidder's own bid
+      joins, not the award's contractor or the escrow entry that funded it. The
+      board's GET is the only source of a call's row, so the console asks it
+      once, coalesced, and never invents a bid or an award from a frame. An
+      event for a call the console has never seen asks the board the same way. */
+  applyAgoraEvent(): void {
+    this.wire.agora++;
+    this.queueCallsRefresh();
+  }
+
+  /** One board GET shortly after agora events land; a burst of bids collapses
+      into it. */
+  private queueCallsRefresh(): void {
+    if (this.callsRefreshTimer != null) return;
+    this.callsRefreshTimer = setTimeout(() => {
+      this.callsRefreshTimer = null;
+      void this.pollCalls();
     }, EVENT_REFRESH_MS);
   }
 

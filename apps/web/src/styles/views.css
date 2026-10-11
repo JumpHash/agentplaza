@@ -86,6 +86,26 @@ tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
 #journal-table td.postings { white-space: normal; min-width: 200px; max-width: 420px; font: 11.5px var(--mono); color: var(--ink-2); }
 .chip.lkind { border-color: var(--ink-2); color: var(--ink); }
 
+/* the market: the agora's board — one ruled row per call, its bids and its
+   award hanging beneath it as indented sub-rows, the ruled-register way. A
+   sub-row's single cell spans the board, so it overrides the first column's
+   numbered margin and wraps where a call's own line stays tabular. */
+#market-table td.callid a { font: 500 12px var(--mono); letter-spacing: .02em; }
+#market-table tr.sub td { width: auto; text-align: left; white-space: normal; padding: 4px 12px 5px 40px; color: var(--ink-2); font: 11.5px var(--mono); }
+#market-table tr.sub td .lbl { font: 600 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); margin-right: 10px; }
+#market-table tr.sub td > * { margin-right: 10px; }
+#market-table tr.sub td > *:last-child { margin-right: 0; }
+#market-table tr.sub.award td { border-bottom: 1px solid var(--rule); color: var(--ink); }
+#market-table tr.sub td.note, #market-table tr.sub .dot { color: var(--ink-3); }
+#market-table .price { font: 12px var(--mono); color: var(--ink); }
+/* the winning bid's mark: the register's own decision stamp, in ink — orange
+   stays the owner's alone, and a won call needs no colour to read */
+.stamp.sm.won { color: var(--ink); }
+
+@media (max-width: 760px) {
+  #market-table tr.sub td { padding-left: 24px; }
+}
+
 @media (max-width: 760px) {
   canvas#map-canvas { height: 320px; }
   .v3mount { height: 340px; }
