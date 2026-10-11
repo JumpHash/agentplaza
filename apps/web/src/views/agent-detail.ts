@@ -108,7 +108,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       if (!turn) {
         const text = new Text();
         const thinking = new Text();
-        const el = h('div.live-turn', null, h('div.pre-wrap.muted', null, thinking), h('p.prose', null, text));
+        const el = h('div.live-turn', null, h('p.prose', null, text));
         turn = { work: d.work, el, text, thinking };
         live.set(key, turn);
         sectionOf(d.work).root.append(el);
@@ -116,7 +116,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       const part = d.delta;
       if (part.type === 'tool_use') turn.el.append(h('span.chip', null, `→ ${part.name}`));
       else if (part.type === 'text') turn.text.appendData(part.text);
-      else turn.thinking.appendData(part.text);
+
     });
   };
 
@@ -292,8 +292,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     }
     if (!alive) return;
     renderAgent();
-    const view = await attempt(() => api.models());
-    if (alive && view) populateModels(view.models);
+    void api.models().then((view) => alive && populateModels(view.models)).catch(() => undefined);
     await loadHistory();
   };
   void start();
@@ -310,7 +309,6 @@ function responseNodes(data: Record<string, unknown>): Node[] {
   const out: Node[] = [];
   for (const b of blocks) {
     if (b.type === 'text') out.push(h('p.prose', null, b.text));
-    else if (b.type === 'thinking') out.push(h('details.thinking', null, h('summary', null, 'Thinking'), h('div.pre-wrap.muted', null, b.text)));
     else if (b.type === 'tool_use') out.push(h('details.tool', null, h('summary.chip', null, `→ ${b.name}`), h('pre.pre', null, JSON.stringify(b.input, null, 2))));
   }
   return out;

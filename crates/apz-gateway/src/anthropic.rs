@@ -166,7 +166,7 @@ fn body(req: &ChatRequest, model: &str, ep: &Endpoint) -> Value {
         body["tool_choice"] = json!({"type": "auto"});
     }
     if t.adaptive_thinking {
-        body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
+        body["thinking"] = json!({"type": "adaptive"});
         body["output_config"] = json!({"effort": req.effort.as_deref().unwrap_or("high")});
     }
     if let (true, Some(temperature)) = (t.temperature, req.temperature) {
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(b["stream"], true);
         assert_eq!(b["system"], "be brief");
         assert_eq!(b["cache_control"], json!({"type": "ephemeral"}));
-        assert_eq!(b["thinking"], json!({"type": "adaptive", "display": "summarized"}));
+        assert_eq!(b["thinking"], json!({"type": "adaptive"}));
         assert_eq!(b["output_config"], json!({"effort": "medium"}));
         assert_eq!(b["fallbacks"], "default");
         assert!(b.get("temperature").is_none());
@@ -570,7 +570,7 @@ mod tests {
         let sent = server.requests();
         let haiku = sent[0].json();
         assert_eq!(haiku["model"], "claude-haiku-5-5");
-        assert_eq!(haiku["thinking"], json!({"type": "adaptive", "display": "summarized"}));
+        assert_eq!(haiku["thinking"], json!({"type": "adaptive"}));
         assert_eq!(haiku["output_config"], json!({"effort": "low"}));
         let opus = sent[1].json();
         assert_eq!(opus["output_config"], json!({"effort": "high"}));

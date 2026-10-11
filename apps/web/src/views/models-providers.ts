@@ -58,7 +58,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
 
   const body = h('div.prov-body', null, h('p.faint', null, 'Loading providers…'));
   const add = button('Add provider', () => openAdd(), { kind: 'primary' });
-  root.append(h('div.view-head', null, h('h1', null, 'Providers'), add), body);
+  root.append(h('div.prov-bar', null, add), body);
 
   const refresh = async (): Promise<void> => {
     const [k, p] = await Promise.all([attempt(() => api.providerKinds()), attempt(() => api.providers())]);
@@ -93,7 +93,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
     models.hidden = true;
     let loaded = false;
     const modelsBtn = button(
-      'Models',
+      '',
       async () => {
         models.hidden = !models.hidden;
         if (models.hidden || loaded) return;
@@ -107,7 +107,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
             : h('p.faint', null, 'No models listed'),
         );
       },
-      { size: 'sm', icon: 'models' },
+      { size: 'sm', kind: 'ghost', icon: 'models', title: 'Models' },
     );
 
     return h(
@@ -133,11 +133,12 @@ export function mountProviders(root: HTMLElement): Cleanup {
       h(
         'div.prov-actions',
         null,
-        button('Set key', () => openKey(p), { size: 'sm', icon: 'key' }),
-        button('Test', () => void runTest(p), { size: 'sm', icon: 'zap' }),
+        button('Test', () => void runTest(p), { size: 'sm' }),
+        button(p.credential === 'missing' ? 'Add key' : 'Key', () => openKey(p), { size: 'sm' }),
+        h('span.prov-spacer'),
         modelsBtn,
-        button('Edit', () => openEdit(p), { size: 'sm', icon: 'edit' }),
-        button('Remove', () => confirmRemove(p), { size: 'sm', kind: 'danger', icon: 'trash' }),
+        button('', () => openEdit(p), { size: 'sm', kind: 'ghost', icon: 'edit', title: 'Edit' }),
+        button('', () => confirmRemove(p), { size: 'sm', kind: 'ghost', icon: 'trash', title: 'Remove' }),
       ),
       models,
     );

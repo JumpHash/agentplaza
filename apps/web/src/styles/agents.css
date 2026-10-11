@@ -34,3 +34,6 @@
   justify-content: flex-end;
   margin-top: var(--s2);
 }
+
+.table-scroll { overflow-x: auto; }
+.agent-work .truncate { max-width: 420px; }

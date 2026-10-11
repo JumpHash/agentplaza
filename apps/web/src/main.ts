@@ -16,20 +16,21 @@ const counts = new Map<string, HTMLElement>();
 function sidebar(): HTMLElement {
   const nav = h('nav.nav', { 'aria-label': 'Screens' });
   let section = '';
-  for (const s of SCREENS) {
+  SCREENS.forEach((s, i) => {
     if (s.section !== section) {
       section = s.section;
       nav.appendChild(h('div.nav-section', null, section));
     }
     const count = h('span.count');
     counts.set(s.key, count);
-    const link = h('a', { href: href(s.key) }, icon(s.icon), s.label, count);
+    const link = h('a', { href: href(s.key) }, h('span.k', null, String(i + 1)), s.label, h('span.dots'), count);
     navLinks.set(s.key, link);
     nav.appendChild(link);
-  }
+  });
   const foot = h('div.sidebar-foot');
   onConnection((up) => replace(foot, h('span.row', null, dot(up ? 'ok' : 'danger'), up ? 'Live' : 'Reconnecting…')));
-  return h('aside.sidebar', null, h('div.brand', null, h('span.brand-mark', null, icon('sparkles')), 'AgentPlaza'), nav, foot);
+  const brand = h('div.brand', null, h('span.brand-mark'), 'AgentPlaza', h('small', null, 'the plaza register'));
+  return h('aside.sidebar', null, brand, nav, foot);
 }
 
 function topbar(title: HTMLElement): HTMLElement {

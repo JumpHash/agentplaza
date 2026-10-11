@@ -5,7 +5,6 @@ import { api, type Agent, type AgentStatus, type WorkKind } from '../api';
 import { go } from '../router';
 import { agents, refreshAgents } from '../store';
 import {
-  ago,
   attempt,
   badge,
   button,
@@ -84,9 +83,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
           ? h('div.row.agent-work', null, badge(a.work.kind, WORK_TONE[a.work.kind]), h('span.truncate', null, clip(a.work.prompt, 56)))
           : h('span.faint', null, '—'),
     },
-    { label: 'Queue', num: true, cell: (a) => a.queue },
     { label: 'Tokens', num: true, cell: (a) => compact(a.usage.input_tokens + a.usage.output_tokens) },
-    { label: 'Seen', cell: (a) => ago(a.last_seen_ms) },
     { label: '', width: '1%', cell: (a) => actions(a) },
   ];
 
@@ -144,7 +141,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
       replace(body, empty('search', 'No agents match', 'Clear the filters to see the roster.', button('Clear filters', clearFilters, { kind: 'ghost' })));
       return;
     }
-    replace(body, table(columns, rows, (a) => go('agents', a.cid)));
+    replace(body, h('div.table-scroll', null, table(columns, rows, (a) => go('agents', a.cid))));
   }
 
   function syncRoles(list: Agent[]): void {
