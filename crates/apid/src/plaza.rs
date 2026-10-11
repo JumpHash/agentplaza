@@ -68,6 +68,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/tasks/{id}/award", |app, req, p| award_task(app, p.get("id"), &req.body))
         .get("/v1/treasury", |app, _, _| treasury_view(app))
         .get("/v1/treasury/journal", |app, _, _| treasury_journal(app))
+        .post("/v1/treasury/mint", |app, req, _| treasury_mint(app, &req.body))
+        .post("/v1/treasury/fine", |app, req, _| treasury_fine(app, &req.body))
+        .get("/v1/treasury/wallets", |app, _, _| treasury_wallets(app))
         .get("/v1/agora", |app, _, _| agora_view(app))
         .get("/v1/board", |app, _, _| board_view(app))
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
@@ -152,13 +155,69 @@ fn list_tasks(app: &App) -> Response {
 /// `GET /v1/treasury`: balances (derived from the journal), totals and v0's
 /// note on real spend.
 fn treasury_view(app: &App) -> Response {
-    Response::json(200, &app.plaza.treasury.view())
+    let mut view = serde_json::to_value(app.plaza.treasury.view()).unwrap_or(serde_json::Value::Null);
+    if let Some(fields) = view.as_object_mut() {
+        fields.insert("plaza_budget".to_string(), serde_json::json!(app.plaza.treasury.plaza_budget_balance()));
+    }
+    Response::json(200, &view)
 }
 
 /// `GET /v1/treasury/journal`: the double-entry journal, bounded to the newest
 /// [`treasury::JOURNAL_LIMIT`] entries.
 fn treasury_journal(app: &App) -> Response {
     Response::json(200, &app.plaza.treasury.journal(treasury::JOURNAL_LIMIT))
+}
+
+/// `POST /v1/treasury/mint` `{amount}`: mints credits into the plaza's budget.
+fn treasury_mint(app: &App, body: &[u8]) -> Response {
+    #[derive(serde::Deserialize)]
+    struct Mint {
+        amount: i64,
+    }
+    let request: Mint = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(e) => return Response::error(400, &e.to_string()),
+    };
+    match app.plaza.treasury.mint_plaza_budget(request.amount) {
+        Ok(entry) => Response::json(
+            200,
+            &serde_json::json!({ "entry": entry, "plaza_budget": app.plaza.treasury.plaza_budget_balance() }),
+        ),
+        Err(e) => Response::error(e.status(), &format!("{e:?}")),
+    }
+}
+
+/// `POST /v1/treasury/fine` `{cid, amount, memo}`: fines an agent's wallet into the plaza's treasury.
+fn treasury_fine(app: &App, body: &[u8]) -> Response {
+    #[derive(serde::Deserialize)]
+    struct Fine {
+        cid: u64,
+        amount: i64,
+        memo: String,
+    }
+    let request: Fine = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(e) => return Response::error(400, &e.to_string()),
+    };
+    match app.plaza.treasury.fine(request.cid, request.amount, &request.memo) {
+        Ok(entry) => Response::json(200, &serde_json::json!({ "entry": entry })),
+        Err(e) => Response::error(e.status(), &format!("{e:?}")),
+    }
+}
+
+/// `GET /v1/treasury/wallets`: every agent wallet as `{cid, name, balance}`.
+fn treasury_wallets(app: &App) -> Response {
+    let rows: Vec<serde_json::Value> = app
+        .plaza
+        .treasury
+        .wallets()
+        .into_iter()
+        .map(|(cid, balance)| {
+            let name = app.agents.get(cid).map_or_else(String::new, |a| a.name);
+            serde_json::json!({ "cid": cid, "name": name, "balance": balance })
+        })
+        .collect();
+    Response::json(200, &rows)
 }
 
 /// `POST /v1/tasks`: creates a task in `open`. With an `assignee`, the

@@ -41,7 +41,6 @@ pub struct Agent {
     pub run: Option<String>,
     pub vm: Option<u32>,
     pub usage: Usage,
-    pub credits: f64,
 }
 
 #[derive(Default)]
@@ -315,7 +314,6 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
         run: previous.as_ref().and_then(|old| old.run.clone()),
         vm: Some(vm),
         usage: previous.as_ref().map(|old| old.usage.clone()).unwrap_or_default(),
-        credits: previous.as_ref().map_or(0.0, |old| old.credits),
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
@@ -721,7 +719,6 @@ mod route_tests {
             run: None,
             vm: None,
             usage: Usage::default(),
-            credits: 0.0,
         }
     }
 

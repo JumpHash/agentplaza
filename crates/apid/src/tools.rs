@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::agents::{self, Agent};
-use crate::scheduler::Origin;
+use crate::scheduler::{Origin, REVIEWER_ROLE};
 use crate::settings::{tier_of, Tier};
 use crate::state::App;
 
@@ -43,6 +43,7 @@ const ALWAYS: &[&str] = &[
     "fetch_url",
     "download",
     "plaza_set_name",
+    "plaza_pay",
 ];
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
@@ -55,6 +56,7 @@ const GATED: &[&str] = &[
     "plaza_assign",
     "plaza_cancel_task",
     "plaza_task_result",
+    "plaza_verdict",
 ];
 
 /// Where `name` runs, or `None` for an unknown tool.
@@ -66,7 +68,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
-        | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" => Some(Runs::Host),
+        | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         _ => None,
     }
 }
@@ -98,6 +100,7 @@ fn permitted(role: &str, name: &str) -> bool {
         | "plaza_task_result" => orchestrator,
         "plaza_bid" => !orchestrator,
         "plaza_vote" | "plaza_propose" => council::is_seated(role),
+        "plaza_verdict" => role == REVIEWER_ROLE,
         _ => true,
     }
 }
@@ -228,6 +231,20 @@ fn spec(name: &str) -> Option<ToolSpec> {
             "Read a plaza task's state and result.",
             obj(json!({"task": {"type": "string"}}), &["task"]),
         ),
+        "plaza_pay" => (
+            "Pay another agent credits from your earnings, with a memo.",
+            obj(
+                json!({"to": {"type": "integer"}, "amount": {"type": "integer", "minimum": 1}, "memo": {"type": "string"}}),
+                &["to", "amount", "memo"],
+            ),
+        ),
+        "plaza_verdict" => (
+            "Rule on a task you were asked to verify: pass pays the worker and completes the task; fail fails it.",
+            obj(
+                json!({"task": {"type": "string"}, "pass": {"type": "boolean"}, "notes": {"type": "string"}}),
+                &["task", "pass", "notes"],
+            ),
+        ),
         "share_file" => (
             "Publish a file from your workspace so other agents and the operator can read it.",
             obj(json!({"path": {"type": "string"}}), &["path"]),
@@ -268,7 +285,7 @@ fn obj(properties: Value, required: &[&str]) -> Value {
 }
 
 /// Runs an already-gated host tool; `Err` carries the reason for the model.
-fn host_call(app: &App, agent: &Agent, _work: u64, name: &str, input: &Value) -> Result<String, String> {
+fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Result<String, String> {
     let me = agents::connected_agent(agent);
     match name {
         "submit_claim" => {
@@ -391,6 +408,29 @@ fn host_call(app: &App, agent: &Agent, _work: u64, name: &str, input: &Value) ->
             let renamed = agents::rename(app, agent.cid, name)?;
             to_text(&json!({"cid": renamed.cid, "name": renamed.name}))
         }
+        "plaza_pay" => {
+            let to = u64_arg(input, "to")?;
+            let amount = input
+                .get("amount")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "missing integer `amount`".to_string())?;
+            let memo = str_arg(input, "memo")?;
+            let entry = app
+                .plaza
+                .treasury
+                .transfer(agent.cid, to, amount, memo)
+                .map_err(|e| format!("{e:?}"))?;
+            Ok(format!("paid {amount} to {to} (entry {entry})"))
+        }
+        "plaza_verdict" => {
+            let task = str_arg(input, "task")?;
+            let pass = input
+                .get("pass")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "missing boolean `pass`".to_string())?;
+            let notes = str_arg(input, "notes")?;
+            app.work.verdict(app, task, work, pass, notes)
+        }
         other => Err(format!("{other} is not implemented")),
     }
 }
@@ -499,12 +539,12 @@ mod tests {
             "transcript_search", "submit_claim", "plaza_tasks", "plaza_bid", "plaza_board_read",
             "plaza_board_post", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
             "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_get_file",
-            "plaza_set_name",
+            "plaza_set_name", "plaza_pay", "plaza_verdict",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 16);
+        assert_eq!(host.len(), 18);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
