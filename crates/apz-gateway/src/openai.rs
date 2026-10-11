@@ -1,0 +1,428 @@
+//! OpenAI Chat Completions: `openai`, `azure-openai` (v1 API) and every
+//! `openai-compatible` server. Streamed.
+
+use std::collections::BTreeMap;
+use std::io::Read;
+
+use apz_proto::chat::{Block, ChatRequest, ChatResponse, Delta, Role, StopReason, Usage};
+use serde_json::{Value, json};
+
+use crate::config::{Auth, ProviderKind};
+use crate::http::{self, Req};
+use crate::{Ctx, GatewayError, ModelInfo, parse_tool_input, tool_use_count};
+
+pub(crate) const DEFAULT_BASE: &str = "https://api.openai.com/v1";
+
+/// The API root (`…/v1`).
+pub(crate) fn base(ctx: &Ctx) -> Result<String, GatewayError> {
+    match (ctx.p.kind, ctx.p.base()) {
+        (ProviderKind::AzureOpenAi, Some(base)) if base.ends_with("/openai/v1") => Ok(base.to_string()),
+        (ProviderKind::AzureOpenAi, Some(base)) => Ok(format!("{base}/openai/v1")),
+        (_, Some(base)) => Ok(base.to_string()),
+        (ProviderKind::OpenAi | ProviderKind::OpenAiResponses, None) => Ok(DEFAULT_BASE.to_string()),
+        _ => Err(GatewayError::Config(format!("provider `{}` needs a base_url", ctx.p.id))),
+    }
+}
+
+/// Adds the credential (`api-key` for Azure keys, bearer otherwise) and
+/// `extra_headers`.
+pub(crate) fn authorize(ctx: &Ctx, req: Req) -> Result<Req, GatewayError> {
+    let req = match ctx.credential()? {
+        None => req,
+        Some(key) if ctx.p.kind == ProviderKind::AzureOpenAi && !matches!(ctx.p.auth, Auth::Command(_)) => {
+            req.secret_header("api-key", &key, &key)
+        }
+        Some(token) => req.bearer(&token),
+    };
+    Ok(req.extra_headers(ctx.p.extra_headers.iter()))
+}
+
+/// Whether this provider takes `reasoning_effort` (passed through as given):
+/// the `openai` kind, xAI, or any provider with `options.reasoning_effort`.
+fn sends_effort(ctx: &Ctx) -> bool {
+    ctx.p.kind == ProviderKind::OpenAi
+        || ctx.p.options.get("reasoning_effort").and_then(Value::as_bool).unwrap_or(false)
+        || ctx.p.base().is_some_and(|b| b.starts_with("https://api.x.ai/"))
+}
+
+fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Value {
+    let mut body = json!({"model": model, "messages": messages(req), "stream": true});
+    if stream_options {
+        body["stream_options"] = json!({"include_usage": true});
+    }
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}))
+            .collect();
+        body["tools"] = json!(tools);
+    }
+    if req.max_tokens > 0 {
+        let field = ctx.p.option("max_tokens_field").unwrap_or(match ctx.p.kind {
+            ProviderKind::OpenAi => "max_completion_tokens",
+            _ => "max_tokens",
+        });
+        body[field] = json!(req.max_tokens);
+    }
+    if let (true, Some(effort)) = (sends_effort(ctx), req.effort.as_deref()) {
+        body["reasoning_effort"] = json!(effort);
+    }
+    if let Some(t) = req.temperature {
+        body["temperature"] = json!((f64::from(t) * 1000.0).round() / 1000.0);
+    }
+    ctx.finish_body(body)
+}
+
+/// The conversation as Chat Completions messages: tool results become `tool`
+/// messages (ahead of the user's text); reasoning and opaque state are dropped.
+fn messages(req: &ChatRequest) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+        out.push(json!({"role": "system", "content": system}));
+    }
+    for m in &req.messages {
+        let text = m.text();
+        match m.role {
+            Role::User => {
+                for b in &m.content {
+                    if let Block::ToolResult { tool_use_id, content, is_error } = b {
+                        let content = if *is_error { format!("Error: {content}") } else { content.clone() };
+                        out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": content}));
+                    }
+                }
+                if !text.is_empty() {
+                    out.push(json!({"role": "user", "content": text}));
+                }
+            }
+            Role::Assistant => {
+                let calls: Vec<Value> = m
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::ToolUse { id, name, input, .. } => Some(json!({
+                            "id": id, "type": "function",
+                            "function": {"name": name, "arguments": input.to_string()},
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                if text.is_empty() && calls.is_empty() {
+                    continue;
+                }
+                let mut msg = json!({"role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) }});
+                if !calls.is_empty() {
+                    msg["tool_calls"] = json!(calls);
+                }
+                out.push(msg);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn complete(
+    ctx: &Ctx,
+    req: &ChatRequest,
+    model: &str,
+    sink: &mut dyn FnMut(Delta),
+) -> Result<ChatResponse, GatewayError> {
+    let url = format!("{}/chat/completions", base(ctx)?);
+    let mut stream_options = !ctx.gw.no_stream_options.lock().unwrap_or_else(|e| e.into_inner()).contains(&ctx.p.id);
+    let resp = loop {
+        let http_req = authorize(ctx, Req::post_json(&url, &body(ctx, req, model, stream_options)))?;
+        match ctx.http().send(&http_req) {
+            // Some compatible servers reject `stream_options`: drop it, for good.
+            Err(GatewayError::Http { status: 400, body, .. }) if stream_options && body.contains("stream_options") => {
+                ctx.gw.no_stream_options.lock().unwrap_or_else(|e| e.into_inner()).insert(ctx.p.id.clone());
+                stream_options = false;
+            }
+            other => break other?,
+        }
+    };
+    read_stream(http::reader(resp), sink, tool_use_count(&req.messages))
+}
+
+/// A tool call being streamed.
+#[derive(Default)]
+struct Call {
+    id: String,
+    name: String,
+    args: String,
+}
+
+fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta), first_call: usize) -> Result<ChatResponse, GatewayError> {
+    let (mut text, mut thinking, mut model) = (String::new(), String::new(), String::new());
+    let mut calls: BTreeMap<u64, Call> = BTreeMap::new();
+    let mut usage = Usage::default();
+    let mut finish: Option<String> = None;
+    let mut refused = false;
+    let mut done = false;
+    http::sse(body, |_, data| {
+        if data.trim() == "[DONE]" {
+            done = true;
+            return Ok(false);
+        }
+        let v: Value = serde_json::from_str(data).map_err(GatewayError::decode)?;
+        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+            let message = err["message"].as_str().map(str::to_string).unwrap_or_else(|| err.to_string());
+            return Err(GatewayError::Provider { message, retryable: false });
+        }
+        if let Some(m) = v["model"].as_str().filter(|_| model.is_empty()) {
+            model = m.to_string();
+        }
+        if v["usage"].is_object() {
+            let u = &v["usage"];
+            let cached = u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+            usage.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(cached);
+            usage.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
+            usage.cache_read_tokens = cached;
+        }
+        for choice in v["choices"].as_array().into_iter().flatten() {
+            let d = &choice["delta"];
+            // DeepSeek / vLLM say `reasoning_content`; Ollama / OpenRouter say `reasoning`.
+            let reasoning = d["reasoning_content"].as_str().or(d["reasoning"].as_str()).unwrap_or("");
+            if !reasoning.is_empty() {
+                thinking.push_str(reasoning);
+                sink(Delta::Thinking { text: reasoning.to_string() });
+            }
+            for field in ["content", "refusal"] {
+                if let Some(t) = d[field].as_str().filter(|t| !t.is_empty()) {
+                    refused |= field == "refusal";
+                    text.push_str(t);
+                    sink(Delta::Text { text: t.to_string() });
+                }
+            }
+            for (pos, tc) in d["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                let call = calls.entry(tc["index"].as_u64().unwrap_or(pos as u64)).or_default();
+                if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
+                    call.id = id.to_string();
+                }
+                if let Some(name) = tc["function"]["name"].as_str().filter(|s| !s.is_empty()) {
+                    if call.name.is_empty() {
+                        sink(Delta::ToolUse { name: name.to_string() });
+                    }
+                    call.name = name.to_string();
+                }
+                call.args.push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
+            }
+            if let Some(reason) = choice["finish_reason"].as_str() {
+                finish = Some(reason.to_string());
+            }
+        }
+        Ok(true)
+    })?;
+    if !done && finish.is_none() {
+        return Err(GatewayError::Transport("stream ended before the answer finished".into()));
+    }
+    let mut content = Vec::new();
+    if !thinking.is_empty() {
+        content.push(Block::Thinking { text: thinking });
+    }
+    if !text.is_empty() {
+        content.push(Block::Text { text });
+    }
+    let has_calls = !calls.is_empty();
+    for (n, call) in calls.into_values().enumerate() {
+        let (input, meta) = parse_tool_input(&call.args);
+        let id = if call.id.is_empty() { format!("call_{}", first_call + n) } else { call.id };
+        content.push(Block::ToolUse { id, name: call.name, input, meta });
+    }
+    let stop = match finish.as_deref() {
+        _ if refused => StopReason::Refusal,
+        Some("tool_calls" | "function_call") => StopReason::ToolUse,
+        Some("length") => StopReason::MaxTokens,
+        Some("content_filter") => StopReason::Refusal,
+        None | Some("stop") if has_calls => StopReason::ToolUse,
+        None | Some("stop") => StopReason::EndTurn,
+        Some(other) => StopReason::Other(other.to_string()),
+    };
+    Ok(ChatResponse { model, content, stop, usage })
+}
+
+/// `GET {base}/models`.
+pub(crate) fn list_models(ctx: &Ctx) -> Result<Vec<ModelInfo>, GatewayError> {
+    let page = ctx.http().json(&authorize(ctx, Req::get(format!("{}/models", base(ctx)?)))?)?;
+    Ok(page["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            Some(ModelInfo {
+                id: m["id"].as_str()?.to_string(),
+                name: m["name"].as_str().map(str::to_string),
+                context: ["context_length", "context_window", "max_model_len"].iter().find_map(|k| m[*k].as_u64()),
+            })
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ProviderConfig;
+    use crate::testutil::{FakeServer, Reply, gateway, provider, request, sse_data};
+    use apz_proto::chat::{Message, ToolSpec};
+
+    fn conversation() -> ChatRequest {
+        ChatRequest {
+            system: Some("sys".into()),
+            messages: vec![
+                Message::user_text("hi"),
+                Message::assistant(vec![
+                    Block::Thinking { text: "x".into() },
+                    Block::Text { text: "running".into() },
+                    Block::ToolUse { id: "c1".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None },
+                    Block::ToolUse { id: "c2".into(), name: "list".into(), input: json!({}), meta: None },
+                ]),
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        Block::ToolResult { tool_use_id: "c1".into(), content: "a".into(), is_error: false },
+                        Block::ToolResult { tool_use_id: "c2".into(), content: "denied".into(), is_error: true },
+                        Block::Text { text: "go on".into() },
+                    ],
+                },
+            ],
+            tools: vec![ToolSpec { name: "bash".into(), description: "d".into(), input_schema: json!({"type": "object"}) }],
+            max_tokens: 500,
+            effort: Some("xhigh".into()),
+            temperature: None,
+            ..request("")
+        }
+    }
+
+    const STREAM: &[&str] = &[
+        r#"{"model":"gpt-5-2025","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think"}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{"content":"Let me "}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{"content":"look."}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"bash","arguments":""}}]}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"list","arguments":"{}"}}]}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":"}}]}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+        r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":60}}}"#,
+        "[DONE]",
+    ];
+
+    #[test]
+    fn openai_request_translation_and_stream_decoding() {
+        let server = FakeServer::start(vec![Reply::sse(sse_data(STREAM))]);
+        let gw = gateway(vec![provider("o", ProviderKind::OpenAi, &server, Auth::Env("OPENAI_API_KEY".into()))]);
+        let mut deltas = Vec::new();
+        let resp = gw.complete(&ChatRequest { model: "o/gpt-6-astra".into(), ..conversation() }, &mut |d| deltas.push(d)).unwrap();
+        let sent = &server.requests()[0];
+        assert_eq!(sent.path, "/chat/completions");
+        assert_eq!(sent.header("authorization"), Some("Bearer env-OPENAI_API_KEY"));
+        let b = sent.json();
+        assert_eq!(b["stream_options"], json!({"include_usage": true}));
+        assert_eq!(b["max_completion_tokens"], 500);
+        assert_eq!(b["reasoning_effort"], "xhigh");
+        assert_eq!(b["tools"][0], json!({"type": "function", "function": {"name": "bash", "description": "d", "parameters": {"type": "object"}}}));
+        assert_eq!(b["messages"], json!([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "running", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}},
+                {"id": "c2", "type": "function", "function": {"name": "list", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "a"},
+            {"role": "tool", "tool_call_id": "c2", "content": "Error: denied"},
+            {"role": "user", "content": "go on"},
+        ]));
+
+        assert_eq!(resp.model, "o/gpt-5-2025");
+        assert_eq!(resp.stop, StopReason::ToolUse);
+        assert_eq!(resp.usage, Usage { input_tokens: 40, output_tokens: 20, cache_read_tokens: 60, cache_write_tokens: 0 });
+        assert_eq!(resp.content, vec![
+            Block::Thinking { text: "think".into() },
+            Block::Text { text: "Let me look.".into() },
+            Block::ToolUse { id: "call_a".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None },
+            Block::ToolUse { id: "call_b".into(), name: "list".into(), input: json!({}), meta: None },
+        ]);
+        assert_eq!(deltas[0], Delta::Thinking { text: "think".into() });
+        assert_eq!(deltas.iter().filter(|d| matches!(d, Delta::ToolUse { .. })).count(), 2);
+    }
+
+    #[test]
+    fn compatible_server_without_stream_options_or_key() {
+        let stream = sse_data(&[
+            r#"{"model":"qwen3:8b","choices":[{"delta":{"reasoning":"hmm "}}]}"#,
+            r#"{"choices":[{"delta":{"content":"hello"},"finish_reason":"length"}]}"#,
+            "[DONE]",
+        ]);
+        let rejected = Reply::json(400, &json!({"error": {"message": "unknown field stream_options"}}));
+        let server = FakeServer::start(vec![rejected, Reply::sse(stream.clone()), Reply::sse(stream)]);
+        let mut p = provider("ollama", ProviderKind::OpenAiCompatible, &server, Auth::None);
+        p.extra_body = json!({"keep_alive": "5m"});
+        let gw = gateway(vec![p]);
+        let req = ChatRequest { model: "ollama/qwen3:8b".into(), max_tokens: 64, effort: Some("high".into()), ..request("hi") };
+        let resp = gw.complete(&req, &mut |_| {}).unwrap();
+        assert_eq!(resp.content, vec![Block::Thinking { text: "hmm ".into() }, Block::Text { text: "hello".into() }]);
+        assert_eq!(resp.stop, StopReason::MaxTokens);
+        gw.complete(&req, &mut |_| {}).unwrap();
+        let sent = server.requests();
+        assert_eq!(sent.len(), 3);
+        assert!(sent[0].json().get("stream_options").is_some());
+        // Retried without it, and remembered for the next call.
+        for later in &sent[1..] {
+            let b = later.json();
+            assert!(b.get("stream_options").is_none() && b.get("reasoning_effort").is_none());
+            assert_eq!((b["max_tokens"].clone(), b["keep_alive"].clone()), (json!(64), json!("5m")));
+            assert!(later.header("authorization").is_none());
+        }
+    }
+
+    #[test]
+    fn xai_preset_sends_the_pinned_reasoning_effort() {
+        let stream = sse_data(&[r#"{"model":"grok-4.7","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let server = FakeServer::start(vec![Reply::sse(stream)]);
+        let preset = crate::presets().into_iter().find(|p| p.id == "xai").unwrap();
+        assert_eq!(preset.base_url, Some("https://api.x.ai/v1"));
+        let p = ProviderConfig { base_url: Some(server.url()), ..preset.config() };
+        let gw = gateway(vec![p]);
+        let req = ChatRequest { model: "xai/grok-4.7@low".into(), max_tokens: 2000, effort: Some("high".into()), ..request("hi") };
+        assert_eq!(gw.complete(&req, &mut |_| {}).unwrap().model, "xai/grok-4.7");
+        let sent = &server.requests()[0];
+        assert_eq!(sent.header("authorization"), Some("Bearer env-XAI_API_KEY"));
+        let b = sent.json();
+        assert_eq!((b["model"].clone(), b["reasoning_effort"].clone(), b["max_tokens"].clone()), (json!("grok-4.7"), json!("low"), json!(2000)));
+    }
+
+    /// Live: `cargo test -p apz-gateway -- --ignored live_ollama` with Ollama
+    /// serving `qwen3:8b` on its default port.
+    #[test]
+    #[ignore]
+    fn live_ollama_tool_call() {
+        let p = crate::presets().into_iter().find(|p| p.id == "ollama").unwrap().config();
+        let gw = crate::Gateway::new(vec![p], |_: &str| None);
+        let req = ChatRequest {
+            model: "ollama/qwen3:8b".into(),
+            tools: vec![ToolSpec {
+                name: "bash".into(),
+                description: "Run a shell command".into(),
+                input_schema: json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
+            }],
+            ..request("List the files in /workspace using the bash tool.")
+        };
+        let mut deltas = 0;
+        let resp = gw.complete(&req, &mut |_| deltas += 1).unwrap();
+        eprintln!("{deltas} deltas: {resp:#?}");
+        assert_eq!(resp.stop, StopReason::ToolUse);
+        assert!(resp.usage.input_tokens > 0);
+    }
+
+    #[test]
+    fn azure_uses_the_v1_path_and_api_key_header() {
+        let stream = sse_data(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let server = FakeServer::start(vec![Reply::sse(stream)]);
+        let gw = gateway(vec![provider("az", ProviderKind::AzureOpenAi, &server, Auth::Secret("s".into()))]);
+        let resp = gw.complete(&ChatRequest { model: "az/my-deploy".into(), max_tokens: 9, ..request("hi") }, &mut |_| {}).unwrap();
+        assert_eq!((resp.text(), resp.model.as_str(), resp.stop), ("ok".to_string(), "az/my-deploy", StopReason::EndTurn));
+        let sent = &server.requests()[0];
+        assert_eq!(sent.path, "/openai/v1/chat/completions");
+        assert_eq!(sent.header("api-key"), Some("sk-secret-value"));
+        assert_eq!(sent.json()["model"], "my-deploy");
+        assert_eq!(sent.json()["max_tokens"], 9);
+    }
+}

@@ -66,8 +66,12 @@ thread that grows past its budget is closed and a new one starts.
 ## Model gateway
 
 A model is named `<provider-id>/<model-id>`, e.g. `anthropic/claude-opus-5-5`,
-`openai/gpt-5`, `ollama/qwen3:8b`. Every agent has a model: its own
-override, else its role's default, else the plaza default.
+`openai/gpt-5`, `ollama/qwen3:8b`. A name may pin an effort with a trailing
+`@none|minimal|low|medium|high|xhigh|max` (`xai/grok-4.7@low`), which
+overrides the request's effort (`apz_gateway::ModelRef` parses and prints the
+canonical form; any other `@`, like Vertex's `@20250929`, is part of the
+model). Every agent has a model: its own override, else its role's default,
+else the plaza default.
 
 | provider kind | API | auth |
 |---|---|---|
@@ -118,8 +122,12 @@ explicitly go through the scheduler (role match, idle agent).
 
 A provider is configured with `id`, `kind`, `base_url`, `auth`
 (`{"env": NAME}` / `{"secret": NAME}` / `{"command": "..."}` / `"none"`),
-optional `extra_headers`, `extra_body` (merged into every request body) and a
-static `models` list (for endpoints with no model listing). Credentials stay in
+optional `extra_headers`, `extra_body` (deep-merged into every request body;
+a `null` member removes one), a static `models` list (for endpoints with no
+model listing) and kind-specific `options`: `region` (bedrock), `project` and
+`location` (vertex), `max_tokens_field` and `reasoning_effort: true`
+(Chat Completions kinds), `refusal_fallbacks: true` (anthropic; off by
+default because a fallback model may fall outside the allowed models). Credentials stay in
 `apid`: environment variables, or secrets set through the API and stored in
 `<state-dir>/secrets.json` (mode 0600, never returned by the API). The guest
 never sees a credential or a provider URL.
