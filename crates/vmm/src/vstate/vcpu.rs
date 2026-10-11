@@ -278,6 +278,17 @@ impl Vcpu {
         let vcpu_thread = thread::Builder::new()
             .name(format!("apz_vcpu_{}", self.kvm_vcpu.index))
             .spawn(move || {
+                // The jail goes on before this thread can touch the guest:
+                // every setup syscall the boot needs has already run on the
+                // caller's thread, and the thread exists now - this is the
+                // last moment before `KVM_RUN`. A real install failure is
+                // fail-closed: the vCPU signals its exit and never enters the
+                // guest rather than run unconfined (see `crate::jail`).
+                if let Err(err) = crate::jail::Jail::arm_thread() {
+                    eprintln!("vcpu: cannot arm the seccomp jail: {err}");
+                    self.signal_exit();
+                    return;
+                }
                 // Synchronization to make sure thread local data is
                 // initialized - and that a VM whose vCPUs could not all be
                 // started never runs any of them: a gate released in abort

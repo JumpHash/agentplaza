@@ -202,6 +202,15 @@ fn start_exit_watcher<D: Send + 'static>(
     let watcher = thread::Builder::new()
         .name(format!("apz_vm{}_exit", runtime.id))
         .spawn(move || {
+            // The jail goes on before this thread waits: the boot's setup is
+            // all on the caller's thread by now, and this thread only polls,
+            // joins the vCPUs and drops the devices. A real install error is
+            // fail-closed; a platform with no seccomp at all is reported and
+            // tolerated (see `crate::jail`).
+            if let Err(err) = crate::jail::Jail::arm_thread() {
+                eprintln!("vm: cannot arm the seccomp jail: {err}");
+                return;
+            }
             match wait_for_event(&exit_evt) {
                 Ok(()) => {
                     if !watcher_runtime.stop_requested() {

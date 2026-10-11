@@ -52,6 +52,10 @@
 //   * `devices::virtio::vhost` — the `/dev/vhost-vsock` ioctl family.
 //   * `hvf::{sys,vm,vcpu}` (macOS only) — the Hypervisor.framework FFI
 //     declarations, the framework calls, and the exit-structure reads.
+//   * `jail::sys` — the seccomp-bpf install path: the two `prctl(2)` calls that
+//     set `no_new_privs` and hand the kernel the BPF program. See [`jail`] for
+//     the allowlist and where it is armed; its probes are an integration test
+//     (`tests/jail.rs`), in a process of their own.
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
@@ -59,6 +63,12 @@ pub mod builder;
 // The crate's raw-syscall boundary (`poll(2)`, `uname(2)`, `socket(2)`/`connect(2)`).
 #[cfg(target_os = "linux")]
 mod sys;
+
+/// The VMM's confinement layer (v0): the seccomp-bpf allowlist installed per
+/// VMM thread, with `no_new_privs`. Linux/KVM only for now — the
+/// Hypervisor.framework path has its own confinement story.
+#[cfg(target_os = "linux")]
+pub mod jail;
 pub mod devices;
 pub mod spawner;
 

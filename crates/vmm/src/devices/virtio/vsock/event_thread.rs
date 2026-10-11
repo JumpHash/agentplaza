@@ -74,7 +74,18 @@ where
 {
     std::thread::Builder::new()
         .name(format!("apz_vm{vm_id}_vsock"))
-        .spawn(move || run(device, exit_evt, exit_signalled))
+        .spawn(move || {
+            // The jail goes on before this thread's epoll loop: the muxer's
+            // socket and epoll are set up after this point, and they are on
+            // the allowlist. A real install error is fail-closed; a platform
+            // with no seccomp at all is reported and tolerated (see
+            // `crate::jail`).
+            if let Err(err) = crate::jail::Jail::arm_thread() {
+                eprintln!("vsock: cannot arm the seccomp jail: {err}");
+                return;
+            }
+            run(device, exit_evt, exit_signalled)
+        })
 }
 
 fn lock<B>(device: &Arc<Mutex<Vsock<B>>>) -> std::sync::MutexGuard<'_, Vsock<B>> {
