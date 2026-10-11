@@ -1,10 +1,8 @@
-// The props that furnish the Floor: each district's desks, plants, crates, lamp, hedges, signpost and
-// role furniture; the central plaza's paved ring; the fountain and market stalls around it; the paths
-// and the street lamps along them; and the trees, flower beds, benches and rocks scattered outside the
-// districts. Everything is primitives with textured MeshStandardMaterials: the built things in the
-// plaza's palette, the greenery in natural colours. Each group carries what the scene animates in
-// userData (`screens`, `animate(t)`), and every solid piece reports its ground footprint so that the
-// robots collide with it.
+// The props that furnish the Floor outside the district rooms (those are in rooms/): the central
+// plaza's paved ring and its xenon atom; the fountain and market stalls around it; the paths and
+// their street lamps; and the trees, flower beds, benches and rocks scattered over the meadow.
+// Everything is toon-shaded primitives; each group carries what the scene animates in
+// `userData.animate(t)`, and every solid piece reports its ground footprint so robots collide with it.
 
 import * as THREE from 'three';
 import { outline, toonMat } from './toon';
@@ -42,20 +40,11 @@ export interface Furniture {
   animate: (t: number) => void;
 }
 
-const TECH = new Set(['builder', 'qa', 'release', 'security']);
-const LIBRARY = new Set(['researcher', 'librarian', 'planner']);
-const BOARD = new Set(['architect', 'reviewer']);
 const LAMP = new THREE.Color(0xffd79a);
 const CLAY = new THREE.Color(0xc98b66);
 
 function std(color: THREE.Color, roughness: number, metalness = 0.1): THREE.MeshToonMaterial {
   return toonMat({ color, roughness, metalness });
-}
-
-/** `base` mixed a little toward the role hue, so each district carries its own tint. */
-function tint(base: THREE.Color, hue: number, amount: number): THREE.Color {
-  const hued = new THREE.Color().setHSL(hue / 360, 0.45, 0.6, THREE.SRGBColorSpace);
-  return base.clone().lerp(hued, amount);
 }
 
 function part(parent: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
@@ -107,146 +96,6 @@ function bench(mat: THREE.Material): THREE.Group {
   return b;
 }
 
-/** A sign plate: the role name in ink on the sheet colour. */
-function signMaterial(text: string, bg: THREE.Color, ink: THREE.Color): THREE.MeshToonMaterial {
-  const tex = canvasTexture(`sign:${text}:${bg.getStyle()}:${ink.getStyle()}`, 256, 96, 1, (g, w, h) => {
-    g.fillStyle = bg.getStyle();
-    g.fillRect(0, 0, w, h);
-    g.strokeStyle = ink.getStyle();
-    g.lineWidth = 6;
-    g.strokeRect(6, 6, w - 12, h - 12);
-    g.fillStyle = ink.getStyle();
-    g.font = '600 30px ui-monospace, SFMono-Regular, Menlo, monospace';
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(text, w / 2, h / 2 + 2);
-  });
-  return toonMat({ map: tex, roughness: 0.6 });
-}
-
-function desk(parent: THREE.Object3D, x: number, z: number, wood: THREE.Material, metal: THREE.Material, screen: THREE.Material): void {
-  const d = new THREE.Group();
-  d.position.set(x, 0, z);
-  part(d, new THREE.BoxGeometry(1.0, 0.06, 0.55), wood, 0, 0.55, 0);
-  part(d, new THREE.BoxGeometry(0.08, 0.55, 0.5), wood, -0.42, 0.275, 0);
-  part(d, new THREE.BoxGeometry(0.08, 0.55, 0.5), wood, 0.42, 0.275, 0);
-  part(d, new THREE.BoxGeometry(0.3, 0.02, 0.18), metal, 0, 0.59, -0.12);
-  part(d, new THREE.BoxGeometry(0.07, 0.2, 0.05), metal, 0, 0.7, -0.12);
-  part(d, new THREE.BoxGeometry(0.62, 0.38, 0.04), screen, 0, 0.95, -0.14);
-  parent.add(d);
-}
-
-function plant(parent: THREE.Object3D, x: number, z: number, scale: number, pot: THREE.Material, leaf: THREE.Material, leaf2: THREE.Material): void {
-  part(parent, new THREE.CylinderGeometry(0.22 * scale, 0.16 * scale, 0.3 * scale, 14), pot, x, 0.15 * scale, z);
-  part(parent, new THREE.SphereGeometry(0.34 * scale, 14, 10), leaf, x, 0.5 * scale, z);
-  part(parent, new THREE.ConeGeometry(0.22 * scale, 0.45 * scale, 10), leaf2, x, 0.85 * scale, z);
-}
-
-/** One district's furniture, built around its slab: the origin is the slab's centre at its top. */
-export function buildDistrictProps(roleHue: number, size: number, role: string, palette: PropPalette): THREE.Group {
-  const g = new THREE.Group();
-  const s = size;
-  const wood = std(tint(palette.rule, roleHue, 0.3), 0.8, 0);
-  const dark = std(tint(palette.ink3, roleHue, 0.2), 0.6, 0.2);
-  const metal = std(tint(palette.ink3, roleHue, 0.1), 0.45, 0.4);
-  const clay = std(tint(CLAY, roleHue, 0.1), 0.9, 0);
-  const leaf = std(tint(palette.ok, roleHue, 0.2), 0.85, 0);
-  const leaf2 = std(tint(palette.ok, roleHue, 0.45), 0.85, 0);
-  const crate = std(tint(palette.rule, roleHue, 0.55), 0.9, 0);
-  const screen = toonMat({
-    color: tint(palette.ink3, roleHue, 0.3),
-    emissive: palette.info,
-    emissiveIntensity: 0.05,
-    roughness: 0.35,
-  });
-  const ledOk = new THREE.MeshBasicMaterial({ color: palette.ok, toneMapped: false });
-  const ledInfo = new THREE.MeshBasicMaterial({ color: palette.info, toneMapped: false });
-
-  // Two or three desks along the front edge, each with a small monitor.
-  const deskCount = s >= 3 ? 3 : 2;
-  for (let i = 0; i < deskCount; i++) {
-    desk(g, -s + 1.2 + (i * (2 * s - 2.4)) / (deskCount - 1), s - 0.9, wood, metal, screen);
-  }
-
-  // A potted plant or two at the back corners.
-  plant(g, s - 0.5, -s + 0.55, 1, clay, leaf, leaf2);
-  if (s >= 3) plant(g, -s + 0.5, -s + 0.55, 0.9, clay, leaf, leaf2);
-
-  // A couple of crates on the right wall.
-  part(g, new THREE.BoxGeometry(0.5, 0.5, 0.5), crate, s - 0.5, 0.25, 0.05);
-  part(g, new THREE.BoxGeometry(0.45, 0.45, 0.45), crate, s - 0.45, 0.725, 0.1);
-
-  // Low hedges along both side walls, kept off the ramp band.
-  for (const x of [s - 1.6, -s + 1.6]) part(g, new THREE.BoxGeometry(0.3, 0.4, 1.2), leaf, x, 0.2, 0);
-
-  // A lamp post at the front left, with a warm, low, shadowless point light.
-  const lampX = -s + 0.4;
-  const lampZ = s - 0.4;
-  part(g, new THREE.CylinderGeometry(0.035, 0.035, 1.9, 8), metal, lampX, 0.95, lampZ);
-  const bulbMat = new THREE.MeshBasicMaterial({ color: LAMP, toneMapped: false });
-  part(g, new THREE.SphereGeometry(0.13, 12, 8), bulbMat, lampX, 1.95, lampZ);
-  const light = new THREE.PointLight(LAMP, 0.35, 4.5, 2);
-  light.position.set(lampX, 1.8, lampZ);
-  g.add(light);
-
-  // Role flavour on the left wall.
-  const fx = -s + 0.5;
-  if (TECH.has(role)) {
-    // Server racks with blinking LED dots on their faces.
-    for (const z of [-0.55, 0.2]) {
-      part(g, new THREE.BoxGeometry(0.5, 1.5, 0.45), dark, fx, 0.75, z);
-      for (const y of [0.3, 0.6, 0.9, 1.2]) {
-        for (const dz of [-0.12, 0.12]) {
-          part(g, new THREE.BoxGeometry(0.02, 0.05, 0.05), y + dz > 0.7 ? ledOk : ledInfo, fx + 0.26, y, z + dz);
-        }
-      }
-    }
-  } else if (LIBRARY.has(role)) {
-    // A bookshelf: three shelves with spines on the room-facing side.
-    const books = [tint(palette.signal, roleHue, 0.3), tint(palette.info, roleHue, 0.2), tint(palette.ok, roleHue, 0.1)].map((c) => std(c, 0.7, 0));
-    part(g, new THREE.BoxGeometry(0.5, 1.5, 1.0), dark, fx, 0.75, -0.2);
-    for (const y of [0.35, 0.75, 1.15]) {
-      part(g, new THREE.BoxGeometry(0.56, 0.04, 1.0), wood, fx, y, -0.2);
-      for (let k = 0; k < 4; k++) {
-        part(g, new THREE.BoxGeometry(0.02, 0.22, 0.12), books[k % books.length] ?? wood, fx + 0.265, y + 0.13, -0.6 + k * 0.28);
-      }
-    }
-  } else if (BOARD.has(role)) {
-    // A whiteboard on the left wall, with two marker strokes.
-    const white = std(palette.sheet, 0.5, 0);
-    part(g, new THREE.BoxGeometry(0.08, 1.0, 1.5), metal, -s + 0.1, 1.05, 0);
-    part(g, new THREE.BoxGeometry(0.02, 0.8, 1.3), white, -s + 0.15, 1.05, 0);
-    part(g, new THREE.BoxGeometry(0.02, 0.12, 0.4), std(palette.signal, 0.6, 0), -s + 0.17, 1.2, -0.25);
-    part(g, new THREE.BoxGeometry(0.02, 0.1, 0.5), std(palette.info, 0.6, 0), -s + 0.17, 0.9, 0.3);
-  } else {
-    // A long planter with foliage.
-    part(g, new THREE.BoxGeometry(0.4, 0.35, 1.3), clay, fx, 0.175, -0.1);
-    part(g, new THREE.SphereGeometry(0.3, 12, 8), leaf, fx, 0.55, -0.5);
-    part(g, new THREE.SphereGeometry(0.3, 12, 8), leaf2, fx, 0.55, 0.3);
-  }
-
-  // A signpost at the back of the slab, naming the district on its plate.
-  const signMat = signMaterial(role.toUpperCase(), palette.sheet, palette.ink3);
-  const sign = new THREE.Group();
-  sign.position.set(0, 0, -s + 1.5);
-  part(sign, new THREE.CylinderGeometry(0.035, 0.035, 1.2, 8), metal, 0, 0.6, 0);
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.34, 0.04), [wood, wood, wood, wood, signMat, signMat]);
-  plate.position.set(0, 1.05, 0);
-  sign.add(plate);
-  g.add(sign);
-
-  g.userData = {
-    screens: [screen],
-    animate: (t: number) => {
-      ledOk.color.copy(palette.ok).multiplyScalar(0.35 + 0.65 * Math.max(0, Math.sin(t * 2.7)));
-      ledInfo.color.copy(palette.info).multiplyScalar(0.35 + 0.65 * Math.max(0, Math.sin(t * 3.9 + 1)));
-      light.intensity = 0.35 * (1 + 0.03 * Math.sin(t * 7.1) + 0.02 * Math.sin(t * 2.3));
-    },
-  };
-  shadows(g);
-  return g;
-}
-
 /** The central plaza: a round paved square with a darker ring, four benches and a slowly turning hologram above the dais. */
 export function buildPlaza(palette: PropPalette): THREE.Group {
   const g = new THREE.Group();
@@ -269,27 +118,75 @@ export function buildPlaza(palette: PropPalette): THREE.Group {
     g.add(b);
   }
 
-  // A chunky low-poly beacon gem with an orbiting ring: the orchestrator's landmark.
+  // A xenon atom above the orchestrator: a pulsing, glowing nucleus and its 54 electrons on five
+  // shells (2, 8, 18, 18, 8), each shell tilted its own way, the inner ones spinning faster.
+  const XENON = new THREE.Color(0x9fa8ff);
   const globe = new THREE.Group();
-  const gem = new THREE.Mesh(
-    new THREE.OctahedronGeometry(0.5, 0),
-    toonMat({ color: palette.signal, emissive: palette.signal, emissiveIntensity: 0.25 }),
-  );
-  gem.scale.set(1, 1.35, 1);
-  const orbit = new THREE.Mesh(new THREE.TorusGeometry(0.85, 0.05, 8, 48), toonMat({ color: palette.sheet }));
-  orbit.rotation.x = Math.PI / 2.4;
-  globe.add(gem, orbit);
-  globe.position.set(0, 3.7, 0);
+  const nucleus = new THREE.Group();
+  const proton = toonMat({ color: palette.signal, emissive: palette.signal, emissiveIntensity: 0.45 });
+  const neutron = toonMat({ color: palette.sheet, emissive: 0xffe2b0, emissiveIntensity: 0.25 });
+  const nucleonGeo = new THREE.SphereGeometry(0.13, 14, 10);
+  const nr = rng(54);
+  for (let i = 0; i < 24; i++) {
+    const v = new THREE.Vector3(nr() - 0.5, nr() - 0.5, nr() - 0.5).normalize().multiplyScalar(Math.cbrt(nr()) * 0.24);
+    part(nucleus, nucleonGeo, i % 2 ? proton : neutron, v.x, v.y, v.z);
+  }
+  globe.add(nucleus);
+  const haloMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.62, 24, 16), haloMat);
+  globe.add(halo);
+  const auraMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const aura = new THREE.Mesh(new THREE.SphereGeometry(1.9, 24, 16), auraMat);
+  globe.add(aura);
+  const glow = new THREE.PointLight(XENON, 2.2, 9, 1.6);
+  globe.add(glow);
+  const ringMat = toonMat({ color: 0xc9ccff, emissive: XENON, emissiveIntensity: 0.6 });
+  const electronMat = toonMat({ color: 0x8ff0ff, emissive: 0x5fd8ff, emissiveIntensity: 1.1 });
+  const electronGeo = new THREE.SphereGeometry(0.065, 12, 8);
+  const shells: { group: THREE.Group; electrons: THREE.Mesh[]; r: number; speed: number }[] = [];
+  [2, 8, 18, 18, 8].forEach((n, k) => {
+    const r = 0.62 + k * 0.27;
+    const shell = new THREE.Group();
+    shell.rotation.set(nr() * Math.PI, nr() * Math.PI, nr() * Math.PI);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.012, 6, 96), ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.userData.outline = false; // a fine glowing track, not an inked hoop
+    shell.add(ring);
+    const electrons: THREE.Mesh[] = [];
+    for (let i = 0; i < n; i++) electrons.push(part(shell, electronGeo, electronMat, 0, 0, 0));
+    globe.add(shell);
+    shells.push({ group: shell, electrons, r, speed: 1.9 / (1 + k * 0.45) * (k % 2 ? -1 : 1) });
+  });
+  outline(globe, 0.05);
+  globe.scale.setScalar(1.5);
+  globe.position.set(0, 4.2, 0);
   g.add(globe);
 
   g.userData = {
     animate: (t: number) => {
-      globe.rotation.y = t * 0.4;
-      globe.position.y = 3.7 + Math.sin(t * 0.9) * 0.08;
+      globe.position.y = 4.2 + Math.sin(t * 0.9) * 0.1;
+      // The nucleus beats, its halo and light breathing with it.
+      const beat = Math.pow(Math.max(0, Math.sin(t * 2.4)), 6);
+      nucleus.scale.setScalar(1 + 0.12 * beat);
+      nucleus.rotation.y = t * 0.6;
+      halo.scale.setScalar(1 + 0.35 * beat + 0.05 * Math.sin(t * 7));
+      haloMat.opacity = 0.3 + 0.35 * beat;
+      auraMat.opacity = 0.07 + 0.08 * beat;
+      aura.scale.setScalar(1 + 0.1 * beat);
+      glow.intensity = 1.6 + 2.4 * beat;
+      for (const sh of shells) {
+        sh.group.rotation.y += 0.002;
+        const n = sh.electrons.length;
+        sh.electrons.forEach((e, i) => {
+          const a = t * sh.speed + (i / n) * Math.PI * 2;
+          e.position.set(Math.cos(a) * sh.r, 0, Math.sin(a) * sh.r);
+          e.scale.setScalar(1 + 0.25 * beat);
+        });
+      }
     },
   };
   shadows(g);
-  globe.castShadow = false;
+  globe.traverse((o) => (o.castShadow = false));
   outline(g);
   return g;
 }

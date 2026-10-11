@@ -13,8 +13,9 @@ import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
 import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
-import { buildDistrictProps, buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
-import { grass, paving, rng, slabSide, tiles } from './floor3d/textures';
+import { buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
+import { buildRoom, roomStyle } from './floor3d/rooms';
+import { grass, paving, rng, slabSide } from './floor3d/textures';
 import { clouds, grassTufts, outline, sky, toonMat } from './floor3d/toon';
 import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
@@ -45,8 +46,9 @@ interface District {
   role: string;
   cx: number; // centre, grid units
   cy: number;
-  r: number; // half-size, grid units
+  r: number; // half-size (square) or radius (round), grid units
   hue: number;
+  shape: 'square' | 'round';
 }
 
 /** A robot's visit, chat or stroll. In a `talk` the partner stands still, facing it. */
@@ -149,17 +151,28 @@ export function layoutDistricts(list: Agent[]): { districts: District[]; homes: 
     });
   };
   const centre = groups.get('');
-  if (centre) place({ role: 'orchestrator', cx: 0, cy: 0, r: 2, hue: 25 }, centre);
+  if (centre) place({ role: 'orchestrator', cx: 0, cy: 0, r: 2, hue: 25, shape: 'round' }, centre);
   const roles = [...groups.keys()].filter((k) => k).sort();
-  // Slabs are sized by member count; the ring is wide enough that neighbouring slabs do not overlap.
-  const slabR = (n: number): number => Math.ceil(1.5 * Math.max(1, Math.ceil(Math.sqrt(n))) + 1);
-  const rMax = roles.reduce((m, role) => Math.max(m, slabR(groups.get(role)!.length)), 0);
-  const ringR = Math.max(9 + RAMP, Math.ceil((2 * (rMax + RAMP) + 1.5) / (2 * Math.sin(Math.PI / Math.max(3, roles.length)))));
+  // Each room is its style's size (bigger when crowded). Rooms share the ring by width: each gets
+  // an arc as wide as itself plus a gap, and the ring is as large as the arcs need.
+  const sizeOf = (role: string): number => {
+    const n = groups.get(role)!.length;
+    return Math.max(roomStyle(role).size, 1.5 * Math.max(1, Math.ceil(Math.sqrt(n))) + 1.5);
+  };
+  const GAP = 2.4;
+  const widths = roles.map((role) => 2 * (sizeOf(role) + RAMP) + GAP);
+  const total = widths.reduce((a, b) => a + b, 0);
+  const ringR = Math.max(10 + RAMP, total / (2 * Math.PI));
+  let arc = 0;
   roles.forEach((role, i) => {
     const members = groups.get(role)!;
-    const angle = (i / roles.length) * Math.PI * 2 - Math.PI / 2;
+    const angle = ((arc + widths[i]! / 2) / total) * Math.PI * 2 - Math.PI / 2;
+    arc += widths[i]!;
+    const r = sizeOf(role);
+    // A square room's corners reach further out than its side: push it out so it clears its neighbours.
+    const out = roomStyle(role).shape === 'square' ? ringR + r * 0.3 : ringR;
     place(
-      { role, cx: Math.round(Math.cos(angle) * ringR), cy: Math.round(Math.sin(angle) * ringR), r: slabR(members.length), hue: roleHue(role) },
+      { role, cx: Math.cos(angle) * out, cy: Math.sin(angle) * out, r, hue: roleHue(role), shape: roomStyle(role).shape },
       members,
     );
   });
@@ -308,7 +321,7 @@ export function mount(root: HTMLElement): Cleanup {
   const SKY_HORIZON = new THREE.Color(0xfde9c4);
   scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x8fcd62)));
   scene.fog = new THREE.Fog(SKY_HORIZON, 70, 240);
-  const cloudLayer = clouds(14, 70, rng(31));
+  const cloudLayer = clouds(16, 120, rng(31));
   scene.add(cloudLayer.group);
   const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
   const controls = new OrbitControls(camera, canvas);
@@ -467,39 +480,58 @@ export function mount(root: HTMLElement): Cleanup {
       rim.position.set(d.cx, DAIS_H + 0.01, d.cy);
       g.add(dais, rim);
     } else {
-      // A terrace: the flat top plus a sloped band on every side, so robots can walk on and off.
-      const box = new THREE.CylinderGeometry(d.r * Math.SQRT2, (d.r + RAMP) * Math.SQRT2, SLAB_H, 4, 1);
-      box.rotateY(Math.PI / 4);
-      const slab = new THREE.Mesh(
-        box,
-        [slabSide(d.hue), toonMat({ map: tiles(d.hue) }), slabSide(d.hue)],
-      );
+      // A terrace: the flat top plus a sloped band all round, so robots can walk on and off; its
+      // floor is the room's own, laid as a separate surface so the texture runs square to the room.
+      const round = d.shape === 'round';
+      const body = round
+        ? new THREE.CylinderGeometry(d.r, d.r + RAMP, SLAB_H, 48, 1)
+        : new THREE.CylinderGeometry(d.r * Math.SQRT2, (d.r + RAMP) * Math.SQRT2, SLAB_H, 4, 1).rotateY(Math.PI / 4);
+      const slab = new THREE.Mesh(body, slabSide(d.hue));
       slab.position.set(d.cx, SLAB_H / 2, d.cy);
       slab.castShadow = true;
       slab.receiveShadow = true;
       g.add(slab);
-      // Furniture for the district: desks, plants, a lamp, and its role's pieces.
-      const props = buildDistrictProps(d.hue, d.r, d.role, C);
-      props.position.set(d.cx, SLAB_H, d.cy);
-      g.add(props);
-      props.updateMatrixWorld(true);
-      for (const part of props.children) {
+      // The room faces the plaza: square rooms turn in quarter turns so they stay square to their slab.
+      const facing = Math.atan2(-d.cx, -d.cy);
+      const turn = round ? facing : Math.round(facing / (Math.PI / 2)) * (Math.PI / 2);
+      const room = buildRoom(d.role, d.r, d.hue, C);
+      const top = new THREE.Mesh(round ? new THREE.CircleGeometry(d.r, 48) : new THREE.PlaneGeometry(2 * d.r, 2 * d.r), room.floor);
+      top.rotation.set(-Math.PI / 2, 0, turn);
+      top.position.set(d.cx, SLAB_H + 0.004, d.cy);
+      top.receiveShadow = true;
+      g.add(top);
+      room.group.position.set(d.cx, SLAB_H, d.cy);
+      room.group.rotation.y = turn;
+      g.add(room.group);
+      room.group.updateMatrixWorld(true);
+      for (const part of room.group.children) {
+        if (part.userData.walk) continue; // rugs and floor markings
         const box = new THREE.Box3().setFromObject(part);
-        if (box.min.y > SLAB_H + 2.2) continue; // overhead pieces do not block the floor
+        if (box.isEmpty() || box.min.y > SLAB_H + 2.2) continue; // overhead pieces do not block the floor
         propBoxes.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z });
       }
-      litByRole.set(d.role, { screens: (props.userData.screens ?? []) as THREE.MeshToonMaterial[], lit: false });
-      const anim = props.userData.animate as ((t: number) => void) | undefined;
-      if (anim) propAnim.push(anim);
+      litByRole.set(d.role, { screens: room.screens, lit: false });
+      propAnim.push(room.animate);
     }
     // Role plaque lies flat on the back edge of the slab (the dais for the orchestrator).
     const plaque = new THREE.Mesh(
       new THREE.PlaneGeometry(2.6, 0.65),
       new THREE.MeshBasicMaterial({ map: plaqueTexture(d.role.toUpperCase(), orch), transparent: true, depthWrite: false }),
     );
-    plaque.rotation.x = -Math.PI / 2;
-    plaque.position.set(d.cx, topOf(d) + 0.01, orch ? d.cy - 1.6 : d.cy - d.r + 0.55);
-    g.add(plaque);
+    if (orch) {
+      plaque.rotation.x = -Math.PI / 2;
+      plaque.position.set(d.cx, topOf(d) + 0.01, d.cy - 1.6);
+      g.add(plaque);
+    } else {
+      // Flat on the floor at the room's open front, readable from the plaza.
+      const holder = new THREE.Group();
+      holder.position.set(d.cx, topOf(d) + 0.012, d.cy);
+      holder.rotation.y = Math.atan2(-d.cx, -d.cy);
+      plaque.rotation.x = -Math.PI / 2;
+      plaque.position.set(0, 0, d.r - 0.5);
+      holder.add(plaque);
+      g.add(holder);
+    }
     outline(g);
     return g;
   }
@@ -687,10 +719,12 @@ export function mount(root: HTMLElement): Cleanup {
     let top = 0;
     for (const d of districts) {
       const orch = d.role === 'orchestrator';
-      // Distance out from the walkable top: square for slabs, round for the dais.
+      // Distance out from the walkable top: round for the dais and round rooms, square for the rest.
       const out = orch
         ? Math.hypot(x - d.cx, y - d.cy) - DAIS_R
-        : Math.max(Math.abs(x - d.cx), Math.abs(y - d.cy)) - d.r;
+        : d.shape === 'round'
+          ? Math.hypot(x - d.cx, y - d.cy) - d.r
+          : Math.max(Math.abs(x - d.cx), Math.abs(y - d.cy)) - d.r;
       const band = orch ? DAIS_RAMP : RAMP;
       const h = out <= 0 ? topOf(d) : out < band ? topOf(d) * (1 - out / band) : 0;
       top = Math.max(top, h);

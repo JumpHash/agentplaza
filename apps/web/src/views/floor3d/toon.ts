@@ -91,6 +91,7 @@ export function outline(root: THREE.Object3D, minSize = 0.12): void {
   root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh || m.userData.outline === false || m.userData.isOutline) return;
+    if (m.children.some((c) => c.userData.isOutline)) return; // already inked
     const mat = (Array.isArray(m.material) ? m.material[0] : m.material) as THREE.Material | undefined;
     if (!mat || mat.transparent || (mat as THREE.MeshBasicMaterial).isMeshBasicMaterial) return;
     const geo = m.geometry;
@@ -164,7 +165,7 @@ export function clouds(n: number, radius: number, rand: () => number): { group: 
     }
     const a = (i / n) * Math.PI * 2 + rand() * 0.4;
     const r = radius * (0.7 + rand() * 0.5);
-    c.position.set(Math.cos(a) * r, 26 + rand() * 10, Math.sin(a) * r);
+    c.position.set(Math.cos(a) * r, 48 + rand() * 14, Math.sin(a) * r);
     c.rotation.y = rand() * Math.PI;
     group.add(c);
   }
