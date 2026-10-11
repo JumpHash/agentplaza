@@ -426,6 +426,22 @@
     "escalate",
     "submit_device_report"
    ]
+  },
+  "orchestrator": {
+   "role": "orchestrator",
+   "title": "Orchestrator",
+   "permits": [],
+   "toolsets": [],
+   "budget": 1500,
+   "variant": null,
+   "tools": [
+    "read_file",
+    "write_file",
+    "list",
+    "search",
+    "submit_claim",
+    "transcript_search"
+   ]
   }
  }
 }
