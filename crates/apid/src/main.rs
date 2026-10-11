@@ -14,6 +14,7 @@ mod artifacts;
 mod api;
 mod events;
 mod internal;
+mod memory;
 mod plaza;
 mod providers;
 mod role;

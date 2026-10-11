@@ -173,6 +173,7 @@ JSON over HTTP/1.1 on `127.0.0.1:7700`. Errors are `{"error": "..."}` with a
 | `POST /v1/agents/{cid}/cancel` · `/stop` | cancel the current work item · end the session |
 | `POST /v1/agents/{cid}/tell` | `{tool, args}` — operator drives one guest tool directly |
 | `GET /v1/agents/{cid}/transcript?after=SEQ` | the agent's transcript entries after SEQ |
+| `GET /v1/agents/{cid}/memory` · `GET /v1/agents/{cid}/memory/{slug}` | the memory library of linked notes: the list, and one note with its body, backlinks and provenance |
 | `GET/POST /v1/tasks` · `GET/DELETE /v1/tasks/{id}` | the ledger (`POST {title, body, role?, budget?, assignee?}`) |
 | `POST /v1/tasks/{id}/{bid,award,assign,cancel}` | the agora and manual assignment |
 | `GET /v1/treasury` · `GET /v1/treasury/journal` | balances · the double-entry journal |
