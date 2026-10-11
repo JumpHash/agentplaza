@@ -50,6 +50,11 @@ pub struct EntityStore {
 }
 
 impl EntityStore {
+    /// Adds (or replaces) one entity and its attributes.
+    pub fn insert(&mut self, e: &Entity, attrs: BTreeMap<String, Value>) {
+        self.attrs.insert((e.ty.clone(), e.id.clone()), attrs);
+    }
+
     pub fn from_fixture(fx: &Fixture) -> EntityStore {
         let mut store = EntityStore::default();
         for e in &fx.entities {

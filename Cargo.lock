@@ -109,6 +109,7 @@ dependencies = [
  "apz-http",
  "apz-plaza",
  "apz-proto",
+ "jhrl",
  "serde",
  "serde_json",
  "ureq",

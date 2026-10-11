@@ -179,7 +179,7 @@ fn profile(app: &App, segment: &str) -> Response {
         .iter()
         .filter(|e| e.kind == "tool_decision" && e.at_ms >= week && e.data.get("decision").is_some_and(|d| d.to_string().contains("deny")))
         .count() as u64;
-    let violations: Vec<Value> = Vec::new();
+    let violations: Vec<Value> = app.laws.recent(cid, now_ms);
     let conduct = (100.0 - 15.0 * violations.len() as f64 - 3.0 * denials as f64 - 5.0 * fines as f64).clamp(0.0, 100.0);
     let (reputation, confidence) = reputations(app).get(&cid).copied().unwrap_or((0.0, 0.0));
     let posted = lock(&app.society.posted).get(&cid).copied().unwrap_or(0);

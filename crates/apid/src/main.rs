@@ -11,9 +11,11 @@
 
 mod agents;
 mod artifacts;
+mod autoscale;
 mod api;
 mod events;
 mod internal;
+mod laws;
 mod memory;
 mod plaza;
 mod providers;

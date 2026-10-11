@@ -81,6 +81,8 @@ pub struct Settings {
     pub prices: BTreeMap<String, Price>,
     /// Minutes between an idle agent's outreach rounds (finding people to work with); 0 = off.
     pub outreach_minutes: u32,
+    /// Whether apid resizes agents' VM memory with their work (through the balloon).
+    pub memory_autoscale: bool,
 }
 
 impl Default for Settings {
@@ -96,6 +98,7 @@ impl Default for Settings {
             fetch_allow: Vec::new(),
             prices: BTreeMap::new(),
             outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
+            memory_autoscale: true,
         }
     }
 }

@@ -74,6 +74,8 @@ pub struct App {
     pub memory: crate::memory::Memory,
     /// Contacts and opinions between agents (AP-071/AP-072), at `<state-dir>/bonds.json`.
     pub bonds: apz_plaza::bonds::Bonds,
+    /// The plaza's laws (JHRL), enforced on every tool call, and the violations on record.
+    pub laws: crate::laws::Laws,
     /// Hire bonuses, posting counts and outreach times.
     pub society: crate::society::Society,
     pub settings: settings::Store,
@@ -104,6 +106,7 @@ impl App {
             artifacts: crate::artifacts::Artifacts::default(),
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
+            laws: crate::laws::Laws::load(&config.state_dir),
             society: crate::society::Society::default(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
@@ -123,6 +126,7 @@ impl App {
         agents::spawn_reconcile(Arc::clone(&app));
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
+        crate::autoscale::spawn(Arc::clone(&app));
         // Every note an agent writes is a live `memory` event for the console.
         let weak = Arc::downgrade(&app);
         app.memory.set_listener(move |cid, meta| {

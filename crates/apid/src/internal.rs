@@ -290,7 +290,10 @@ fn tool_request(
         json!({ "call": call, "name": name, "input": input }),
     );
     let granted: Vec<String> = profile(app, agent).tools.into_iter().map(|t| t.name).collect();
+    // The plaza's laws come first: a forbid refuses the call and goes on the agent's record.
+    let refused = app.laws.refusal(cid, &agent.role, name, input);
     let (decision, output, is_error) = match decide(&granted, name, runs(name)) {
+        _ if refused.is_some() => (Decision::Deny, refused.unwrap_or_default(), true),
         Err(reason) => (Decision::Deny, reason.to_string(), true),
         Ok(Runs::Guest) => {
             if name == "share_file" {
