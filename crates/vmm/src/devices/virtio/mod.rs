@@ -36,6 +36,7 @@
 //! [`mmio::VirtioDevice`], and the muxer's tests need only host Unix sockets
 //! (see `FACTS.md` next to this module for what was measured on a real host).
 
+pub mod balloon;
 pub mod block;
 pub mod iov_deque;
 pub mod iovec;
@@ -112,4 +113,7 @@ pub enum VirtioError {
     /// Failed to activate the block device: {0}
     #[error("failed to activate the block device: {0}")]
     BlockActivate(#[from] crate::devices::virtio::block::ActivateError),
+    /// The balloon device: {0}
+    #[error("balloon device: {0}")]
+    Balloon(#[from] crate::devices::virtio::balloon::BalloonError),
 }

@@ -62,6 +62,23 @@ pub fn send_signal(pid: i32, signal: libc::c_int) -> io::Result<()> {
     }
 }
 
+/// Gives the host memory `[host, host + len)` back to the kernel
+/// (`madvise(2)` with `MADV_DONTNEED`). The pages drop and fault back in as
+/// zeroes when next touched. This is how the balloon returns guest memory.
+///
+/// `madvise` never reads or writes through the pointer. A range that is not a
+/// mapping of this process fails with an errno, which is returned here.
+pub fn discard(host: *mut u8, len: usize) -> io::Result<()> {
+    // SAFETY: `madvise` takes an address and a length and touches no memory
+    // through them. The guest memory the balloon passes is an anonymous private
+    // mapping of this process, and any other range is rejected with an errno.
+    if unsafe { libc::madvise(host.cast(), len, libc::MADV_DONTNEED) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// The running kernel's release string (`uname -r`), or `None` if the
 /// syscall fails.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
