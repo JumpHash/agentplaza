@@ -214,7 +214,7 @@ mod tests {
                 assert_eq!((answer["call"].clone(), answer["ok"].clone()), ((index + 1).into(), ok.into()), "{answer}");
                 if index == 2 {
                     let output: serde_json::Value = serde_json::from_str(answer["output"].as_str().unwrap()).unwrap();
-                    assert_eq!(output["content"], "one\nTWO\n");
+                    assert_eq!(output["content"], "     1\tone\n     2\tTWO\n");
                 }
             }
             host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();
