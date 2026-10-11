@@ -745,7 +745,7 @@ fn prepare_persistent_workspace(
     let image = dir.join(format!("cid-{cid}.ext4"));
     if !image.exists() {
         let partial = dir.join(format!("cid-{cid}.ext4.partial"));
-        std::fs::copy(base, &partial)?;
+        vmm::spawner::copy_sparse(base, &partial)?;
         std::fs::rename(&partial, &image)?;
     }
     Ok(image)
