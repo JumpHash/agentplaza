@@ -9,9 +9,11 @@ use serde_json::{Value, json};
 
 use crate::config::{Auth, ProviderKind};
 use crate::http::{self, Req};
-use crate::{Ctx, GatewayError, ModelInfo, parse_tool_input, tool_use_count};
+use crate::{Ctx, GatewayError, ModelInfo, parse_tool_input, replayable, tool_use_count};
 
 pub(crate) const DEFAULT_BASE: &str = "https://api.openai.com/v1";
+/// The opaque kind of a turn's reasoning text (a JSON string).
+const TAG: &str = "openai-reasoning";
 
 /// The API root (`…/v1`).
 pub(crate) fn base(ctx: &Ctx) -> Result<String, GatewayError> {
@@ -45,8 +47,14 @@ fn sends_effort(ctx: &Ctx) -> bool {
         || ctx.p.base().is_some_and(|b| b.starts_with("https://api.x.ai/"))
 }
 
+/// Whether this provider needs the assistant's reasoning sent back
+/// (`options.replay_reasoning`: DeepSeek, once tools are in use).
+fn replays_reasoning(ctx: &Ctx) -> bool {
+    ctx.p.options.get("replay_reasoning").and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Value {
-    let mut body = json!({"model": model, "messages": messages(req), "stream": true});
+    let mut body = json!({"model": model, "messages": messages(req, replays_reasoning(ctx)), "stream": true});
     if stream_options {
         body["stream_options"] = json!({"include_usage": true});
     }
@@ -75,8 +83,10 @@ fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Valu
 }
 
 /// The conversation as Chat Completions messages: tool results become `tool`
-/// messages (ahead of the user's text); reasoning and opaque state are dropped.
-fn messages(req: &ChatRequest) -> Vec<Value> {
+/// messages (ahead of the user's text). Reasoning is dropped unless `replay`,
+/// in which case an assistant turn's reasoning text goes back as
+/// `reasoning_content`.
+fn messages(req: &ChatRequest, replay: bool) -> Vec<Value> {
     let mut out = Vec::new();
     if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
         out.push(json!({"role": "system", "content": system}));
@@ -107,12 +117,16 @@ fn messages(req: &ChatRequest) -> Vec<Value> {
                         _ => None,
                     })
                     .collect();
-                if text.is_empty() && calls.is_empty() {
+                let reasoning = m.content.iter().find_map(|b| replayable(b, TAG)).and_then(Value::as_str).filter(|_| replay);
+                if text.is_empty() && calls.is_empty() && reasoning.is_none() {
                     continue;
                 }
                 let mut msg = json!({"role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) }});
                 if !calls.is_empty() {
                     msg["tool_calls"] = json!(calls);
+                }
+                if let Some(reasoning) = reasoning {
+                    msg["reasoning_content"] = json!(reasoning);
                 }
                 out.push(msg);
             }
@@ -217,6 +231,8 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta), first_call: usize) 
     }
     let mut content = Vec::new();
     if !thinking.is_empty() {
+        // Kept whole so a provider that needs it back (`replay_reasoning`) gets it.
+        content.push(Block::Opaque { kind: TAG.into(), raw: Value::String(thinking.clone()) });
         content.push(Block::Thinking { text: thinking });
     }
     if !text.is_empty() {
@@ -292,6 +308,11 @@ mod tests {
         }
     }
 
+    /// The reasoning state a turn keeps for replay.
+    fn opaque(reasoning: &str) -> Block {
+        Block::Opaque { kind: TAG.into(), raw: json!(reasoning) }
+    }
+
     const STREAM: &[&str] = &[
         r#"{"model":"gpt-5-2025","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think"}}]}"#,
         r#"{"choices":[{"index":0,"delta":{"content":"Let me "}}]}"#,
@@ -335,6 +356,7 @@ mod tests {
         assert_eq!(resp.stop, StopReason::ToolUse);
         assert_eq!(resp.usage, Usage { input_tokens: 40, output_tokens: 20, cache_read_tokens: 60, cache_write_tokens: 0 });
         assert_eq!(resp.content, vec![
+            opaque("think"),
             Block::Thinking { text: "think".into() },
             Block::Text { text: "Let me look.".into() },
             Block::ToolUse { id: "call_a".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None },
@@ -358,7 +380,7 @@ mod tests {
         let gw = gateway(vec![p]);
         let req = ChatRequest { model: "ollama/qwen3:8b".into(), max_tokens: 64, effort: Some("high".into()), ..request("hi") };
         let resp = gw.complete(&req, &mut |_| {}).unwrap();
-        assert_eq!(resp.content, vec![Block::Thinking { text: "hmm ".into() }, Block::Text { text: "hello".into() }]);
+        assert_eq!(resp.content, vec![opaque("hmm "), Block::Thinking { text: "hmm ".into() }, Block::Text { text: "hello".into() }]);
         assert_eq!(resp.stop, StopReason::MaxTokens);
         gw.complete(&req, &mut |_| {}).unwrap();
         let sent = server.requests();
@@ -387,6 +409,48 @@ mod tests {
         assert_eq!(sent.header("authorization"), Some("Bearer env-XAI_API_KEY"));
         let b = sent.json();
         assert_eq!((b["model"].clone(), b["reasoning_effort"].clone(), b["max_tokens"].clone()), (json!("grok-4.7"), json!("low"), json!(2000)));
+    }
+
+    #[test]
+    fn deepseek_reasoning_is_replayed_only_when_the_provider_asks() {
+        let done = sse_data(&[r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let server = FakeServer::start(vec![Reply::sse(sse_data(STREAM)), Reply::sse(done.clone()), Reply::sse(done)]);
+        let mut ds = provider("ds", ProviderKind::OpenAiCompatible, &server, Auth::None);
+        ds.options = json!({"replay_reasoning": true});
+        let gw = gateway(vec![ds, provider("plain", ProviderKind::OpenAiCompatible, &server, Auth::None)]);
+        let first = gw.complete(&ChatRequest { model: "ds/deepseek-flash".into(), ..conversation() }, &mut |_| {}).unwrap();
+        assert_eq!(first.content[0], opaque("think"));
+        // The next turn, with tools in use, sent to both providers.
+        let turn = |model: &str| ChatRequest {
+            model: model.into(),
+            messages: vec![Message::user_text("hi"), Message::assistant(first.content.clone()), Message::user_text("go on")],
+            tools: conversation().tools,
+            ..request("")
+        };
+        gw.complete(&turn("ds/deepseek-flash"), &mut |_| {}).unwrap();
+        gw.complete(&turn("plain/deepseek-flash"), &mut |_| {}).unwrap();
+        let sent = server.requests();
+        let replayed = &sent[1].json()["messages"][1];
+        assert_eq!((replayed["reasoning_content"].clone(), replayed["content"].clone()), (json!("think"), json!("Let me look.")));
+        assert!(sent[2].json()["messages"][1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn base_url_joins_without_double_slashes() {
+        let stream = sse_data(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let models = Reply::json(200, &json!({"data": [{"id": "m1"}]}));
+        let server = FakeServer::start(vec![Reply::sse(stream), models]);
+        let mut p = provider("ds", ProviderKind::OpenAiCompatible, &server, Auth::None);
+        p.base_url = Some(format!("{}/", server.url()));
+        let gw = gateway(vec![p]);
+        gw.complete(&ChatRequest { model: "ds/deepseek-flash".into(), ..request("hi") }, &mut |_| {}).unwrap();
+        assert_eq!(gw.list_models("ds").unwrap()[0].id, "m1");
+        let sent = server.requests();
+        assert_eq!((sent[0].path.as_str(), sent[1].path.as_str()), ("/chat/completions", "/models"));
+        // The DeepSeek preset's own root joins the same way.
+        let root = crate::presets().into_iter().find(|p| p.id == "deepseek").unwrap().config().base().unwrap().to_string();
+        assert_eq!(format!("{root}/chat/completions"), "https://api.deepseek.com/chat/completions");
+        assert_eq!(format!("{root}/models"), "https://api.deepseek.com/models");
     }
 
     /// Live: `cargo test -p apz-gateway -- --ignored live_ollama` with Ollama

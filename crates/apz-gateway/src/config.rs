@@ -142,6 +142,8 @@ pub struct Preset {
     pub id: &'static str,
     pub kind: ProviderKind,
     pub label: &'static str,
+    /// The logo the UI shows (`deepseek`, `ollama`, ...).
+    pub brand: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<&'static str>,
     pub auth: Auth,
@@ -177,10 +179,11 @@ pub fn presets() -> Vec<Preset> {
     use ProviderKind::*;
     let env = |name: &str| Auth::Env(name.to_string());
     let gcloud = || Auth::Command("gcloud auth print-access-token".to_string());
-    let p = |id, kind, label, base_url, auth, notes| Preset {
+    let p = |id, kind, label, brand, base_url, auth, notes| Preset {
         id,
         kind,
         label,
+        brand,
         base_url,
         auth,
         notes,
@@ -189,46 +192,54 @@ pub fn presets() -> Vec<Preset> {
     };
     const OPENAI_MODELS: &[&str] = &["gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"];
     vec![
-        p("anthropic", Anthropic, "Anthropic", Some("https://api.anthropic.com"), env("ANTHROPIC_API_KEY"),
+        p("anthropic", Anthropic, "Anthropic", "anthropic", Some("https://api.anthropic.com"), env("ANTHROPIC_API_KEY"),
           "Claude via the Messages API. Use {\"env\": \"ANTHROPIC_AUTH_TOKEN\"} or a command for a bearer token. \
            options.refusal_fallbacks: true enables server-side refusal fallbacks.")
             .with(&["claude-opus-5-5", "claude-haiku-5-5"], Value::Null),
-        p("openai", OpenAi, "OpenAI", Some("https://api.openai.com/v1"), env("OPENAI_API_KEY"), "Chat Completions.")
+        p("openai", OpenAi, "OpenAI", "openai", Some("https://api.openai.com/v1"), env("OPENAI_API_KEY"), "Chat Completions.")
             .with(OPENAI_MODELS, Value::Null),
-        p("openai-responses", OpenAiResponses, "OpenAI (Responses API)", Some("https://api.openai.com/v1"),
+        p("openai-responses", OpenAiResponses, "OpenAI (Responses API)", "openai", Some("https://api.openai.com/v1"),
           env("OPENAI_API_KEY"), "Responses API, stateless (store: false) with encrypted reasoning replay.")
             .with(OPENAI_MODELS, Value::Null),
-        p("azure-openai", AzureOpenAi, "Azure OpenAI", None, env("AZURE_OPENAI_API_KEY"),
+        p("azure-openai", AzureOpenAi, "Azure OpenAI", "azure", None, env("AZURE_OPENAI_API_KEY"),
           "base_url https://<resource>.openai.azure.com; the model id is the deployment name; list deployments in `models`."),
-        p("gemini", Gemini, "Google Gemini", Some("https://generativelanguage.googleapis.com"), env("GEMINI_API_KEY"),
+        p("gemini", Gemini, "Google Gemini", "google", Some("https://generativelanguage.googleapis.com"), env("GEMINI_API_KEY"),
           "Gemini API (AI Studio key)."),
-        p("bedrock", Bedrock, "Amazon Bedrock", None, Auth::None,
+        p("bedrock", Bedrock, "Amazon Bedrock", "aws", None, Auth::None,
           "Converse API. options.region (else AWS_REGION); AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."),
-        p("vertex-anthropic", VertexAnthropic, "Claude on Vertex AI", None, gcloud(),
+        p("vertex-anthropic", VertexAnthropic, "Claude on Vertex AI", "anthropic", None, gcloud(),
           "options.project (else GOOGLE_CLOUD_PROJECT) and options.location (default global); list models in `models`."),
-        p("vertex-gemini", VertexGemini, "Gemini on Vertex AI", None, gcloud(),
+        p("vertex-gemini", VertexGemini, "Gemini on Vertex AI", "google", None, gcloud(),
           "options.project (else GOOGLE_CLOUD_PROJECT) and options.location (default global); list models in `models`."),
-        p("deepseek", OpenAiCompatible, "DeepSeek", Some("https://api.deepseek.com/v1"), env("DEEPSEEK_API_KEY"), ""),
-        p("groq", OpenAiCompatible, "Groq", Some("https://api.groq.com/openai/v1"), env("GROQ_API_KEY"), ""),
-        p("mistral", OpenAiCompatible, "Mistral", Some("https://api.mistral.ai/v1"), env("MISTRAL_API_KEY"), ""),
-        p("xai", OpenAiCompatible, "xAI", Some("https://api.x.ai/v1"), env("XAI_API_KEY"),
+        p("deepseek", OpenAiCompatible, "DeepSeek", "deepseek", Some("https://api.deepseek.com"), env("DEEPSEEK_API_KEY"),
+          "Reasoning content is replayed, which DeepSeek requires once tools are in use. Effort goes out as reasoning_effort.")
+            .with(&["deepseek-flash", "deepseek-v4-pro"], serde_json::json!({"replay_reasoning": true, "reasoning_effort": true})),
+        p("zai", OpenAiCompatible, "Z.ai GLM", "zai", Some("https://api.z.ai/api/paas/v4"), env("ZAI_API_KEY"),
+          "Coding-plan keys use https://api.z.ai/api/coding/paas/v4.")
+            .with(&["glm-5.3"], Value::Null),
+        p("moonshot", OpenAiCompatible, "Moonshot Kimi", "moonshot", Some("https://api.moonshot.ai/v1"), env("MOONSHOT_API_KEY"),
+          "Mainland China accounts use https://api.moonshot.cn/v1.")
+            .with(&["kimi-k3"], Value::Null),
+        p("groq", OpenAiCompatible, "Groq", "groq", Some("https://api.groq.com/openai/v1"), env("GROQ_API_KEY"), ""),
+        p("mistral", OpenAiCompatible, "Mistral", "mistral", Some("https://api.mistral.ai/v1"), env("MISTRAL_API_KEY"), ""),
+        p("xai", OpenAiCompatible, "xAI", "xai", Some("https://api.x.ai/v1"), env("XAI_API_KEY"),
           "Effort goes out as reasoning_effort (low, medium, high, xhigh).")
             .with(&["grok-4.7"], serde_json::json!({"reasoning_effort": true})),
-        p("openrouter", OpenAiCompatible, "OpenRouter", Some("https://openrouter.ai/api/v1"), env("OPENROUTER_API_KEY"), ""),
-        p("together", OpenAiCompatible, "Together AI", Some("https://api.together.xyz/v1"), env("TOGETHER_API_KEY"), ""),
-        p("fireworks", OpenAiCompatible, "Fireworks AI", Some("https://api.fireworks.ai/inference/v1"),
+        p("openrouter", OpenAiCompatible, "OpenRouter", "openrouter", Some("https://openrouter.ai/api/v1"), env("OPENROUTER_API_KEY"), ""),
+        p("together", OpenAiCompatible, "Together AI", "together", Some("https://api.together.xyz/v1"), env("TOGETHER_API_KEY"), ""),
+        p("fireworks", OpenAiCompatible, "Fireworks AI", "fireworks", Some("https://api.fireworks.ai/inference/v1"),
           env("FIREWORKS_API_KEY"), ""),
-        p("perplexity", OpenAiCompatible, "Perplexity", Some("https://api.perplexity.ai"), env("PERPLEXITY_API_KEY"),
+        p("perplexity", OpenAiCompatible, "Perplexity", "perplexity", Some("https://api.perplexity.ai"), env("PERPLEXITY_API_KEY"),
           "No model listing: put the models in `models`."),
-        p("cerebras", OpenAiCompatible, "Cerebras", Some("https://api.cerebras.ai/v1"), env("CEREBRAS_API_KEY"), ""),
-        p("nvidia-nim", OpenAiCompatible, "NVIDIA NIM", Some("https://integrate.api.nvidia.com/v1"),
+        p("cerebras", OpenAiCompatible, "Cerebras", "cerebras", Some("https://api.cerebras.ai/v1"), env("CEREBRAS_API_KEY"), ""),
+        p("nvidia-nim", OpenAiCompatible, "NVIDIA NIM", "nvidia", Some("https://integrate.api.nvidia.com/v1"),
           env("NVIDIA_API_KEY"), ""),
-        p("ollama", OpenAiCompatible, "Ollama", Some("http://127.0.0.1:11434/v1"), Auth::None, "Local; no key."),
-        p("lmstudio", OpenAiCompatible, "LM Studio", Some("http://127.0.0.1:1234/v1"), Auth::None, "Local; no key."),
-        p("vllm", OpenAiCompatible, "vLLM", Some("http://127.0.0.1:8000/v1"), Auth::None, "Local; no key."),
-        p("llamacpp", OpenAiCompatible, "llama.cpp server", Some("http://127.0.0.1:8080/v1"), Auth::None,
+        p("ollama", OpenAiCompatible, "Ollama", "ollama", Some("http://127.0.0.1:11434/v1"), Auth::None, "Local; no key."),
+        p("lmstudio", OpenAiCompatible, "LM Studio", "lmstudio", Some("http://127.0.0.1:1234/v1"), Auth::None, "Local; no key."),
+        p("vllm", OpenAiCompatible, "vLLM", "vllm", Some("http://127.0.0.1:8000/v1"), Auth::None, "Local; no key."),
+        p("llamacpp", OpenAiCompatible, "llama.cpp server", "llamacpp", Some("http://127.0.0.1:8080/v1"), Auth::None,
           "Local; no key."),
-        p("mock", Mock, "Mock (offline)", None, Auth::None,
+        p("mock", Mock, "Mock (offline)", "mock", None, Auth::None,
           "Deterministic, no network: models `agent` (calls a tool, then summarises) and `echo`."),
     ]
 }
@@ -255,6 +266,35 @@ mod tests {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.as_str()));
         }
         let ids: Vec<_> = presets().iter().map(|p| p.id).collect();
-        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.len() == 23, "{ids:?}");
+        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.len() == 25, "{ids:?}");
+    }
+
+    #[test]
+    fn presets_have_unique_ids_and_a_known_brand() {
+        const BRANDS: &[&str] = &[
+            "anthropic", "openai", "google", "aws", "azure", "xai", "deepseek", "zai", "moonshot", "mistral", "groq",
+            "openrouter", "together", "fireworks", "perplexity", "cerebras", "nvidia", "ollama", "lmstudio", "vllm",
+            "llamacpp", "mock",
+        ];
+        let presets = presets();
+        let mut ids: Vec<_> = presets.iter().map(|p| p.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), presets.len());
+        for p in &presets {
+            assert!(BRANDS.contains(&p.brand), "{} has brand `{}`", p.id, p.brand);
+        }
+    }
+
+    #[test]
+    fn deepseek_zai_and_moonshot_presets() {
+        let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
+        let ds = by_id("deepseek");
+        assert_eq!(ds.base_url, Some("https://api.deepseek.com"));
+        assert_eq!(ds.models, vec!["deepseek-flash", "deepseek-v4-pro"]);
+        assert_eq!(ds.options, json!({"replay_reasoning": true, "reasoning_effort": true}));
+        assert_eq!(by_id("zai").base_url, Some("https://api.z.ai/api/paas/v4"));
+        let kimi = by_id("moonshot");
+        assert_eq!((kimi.base_url, kimi.auth), (Some("https://api.moonshot.ai/v1"), Auth::Env("MOONSHOT_API_KEY".into())));
     }
 }
