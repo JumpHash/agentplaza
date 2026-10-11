@@ -3,6 +3,7 @@
 
 import type { IconName } from '../ui/icons.gen';
 import { mount as agents } from './agents';
+import { mount as approvals } from './approvals';
 import { mount as board } from './board';
 import { mount as conversations } from './conversations';
 import { mount as council } from './council';
@@ -30,6 +31,7 @@ export const SCREENS: Screen[] = [
   { key: 'overview', label: 'Overview', icon: 'overview', section: 'Plaza', mount: overview },
   { key: 'agents', label: 'Agents', icon: 'agents', section: 'Plaza', mount: agents },
   { key: 'tasks', label: 'Tasks', icon: 'tasks', section: 'Plaza', mount: tasks },
+  { key: 'approvals', label: 'Approvals', icon: 'alert', section: 'Plaza', mount: approvals },
   { key: 'floor', label: 'Floor', icon: 'floor', section: 'Plaza', mount: floor },
   { key: 'society', label: 'Society', icon: 'society', section: 'Social', mount: society },
   { key: 'conversations', label: 'Conversations', icon: 'conversations', section: 'Social', mount: conversations },

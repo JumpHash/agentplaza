@@ -1,0 +1,95 @@
+/* The approvals queue: waiting cards on top, the decided history below. */
+
+.approval-card {
+  margin-bottom: 12px;
+}
+
+.approval-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  margin-bottom: 10px;
+}
+
+.approval-agent {
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+.approval-agent:hover {
+  text-decoration: underline;
+}
+
+.approval-tool,
+.approval-row-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.approval-age,
+.approval-row-age {
+  margin-left: auto;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+.approval-input {
+  max-height: 14rem;
+  overflow: auto;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.12);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-decide {
+  display: grid;
+  gap: 8px;
+}
+
+.approval-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.approvals-subhead {
+  margin: 28px 0 8px;
+  font-size: 1rem;
+}
+
+.approvals-none {
+  opacity: 0.7;
+}
+
+.approval-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.approval-row-agent {
+  font-weight: 500;
+}
+
+.approval-row-reason {
+  flex: 1 1 200px;
+  min-width: 0;
+  opacity: 0.75;
+}
+
+@media (max-width: 640px) {
+  .approval-age,
+  .approval-row-age {
+    margin-left: 0;
+  }
+}

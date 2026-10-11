@@ -23,7 +23,7 @@ export function onConnection(fn: (up: boolean) => void): () => void {
   return () => connectionListeners.delete(fn);
 }
 
-const KINDS = ['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory'];
+const KINDS = ['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval'];
 
 export function connect(): void {
   if (source) return;

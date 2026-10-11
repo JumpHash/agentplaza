@@ -1,0 +1,134 @@
+// The approvals queue: tool calls an agent has asked to make and is waiting on
+// the owner's yes or no. Pending ones sit on top as cards, longest wait first;
+// decided ones follow as a compact history. Refetches on each `approval` frame.
+
+import '../styles/approvals.css';
+import { api, type Approval } from '../api';
+import { href } from '../router';
+import { agentName } from '../roles';
+import { agents, on } from '../store';
+import { ago, attempt, badge, button, card, empty, textarea } from '../ui/components';
+import { h, replace } from '../ui/dom';
+import type { Cleanup } from './index';
+
+const DEBOUNCE_MS = 300;
+
+const TONE: Record<Approval['state'], 'warn' | 'ok' | 'danger' | 'info'> = {
+  pending: 'warn',
+  approved: 'ok',
+  denied: 'danger',
+  used: 'info',
+};
+const LABEL: Record<Approval['state'], string> = {
+  pending: 'Waiting',
+  approved: 'Approved',
+  denied: 'Denied',
+  used: 'Used',
+};
+
+export function mount(root: HTMLElement, _params: string[]): Cleanup {
+  const pending = h('div.approvals-pending');
+  const decided = h('div.approvals-history');
+  root.append(
+    h('div.view-head', null, h('h1', null, 'Approvals')),
+    pending,
+    h('h2.approvals-subhead', null, 'Decided'),
+    decided,
+  );
+
+  let items: Approval[] = [];
+  let loaded = false;
+  let failed = false;
+  let alive = true;
+  let timer: number | undefined;
+  // Reasons typed but not yet sent survive a re-render, keyed by approval id.
+  const drafts = new Map<string, string>();
+
+  const nameOf = (cid: number): string => {
+    const agent = agents.get().find((a) => a.cid === cid);
+    return agent ? agentName(agent) : `agent ${cid}`;
+  };
+
+  const render = (): void => {
+    if (!loaded) return;
+    if (failed) return replace(pending, empty('alert', 'Could not load approvals.'));
+    const waiting = items.filter((a) => a.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
+    const past = items.filter((a) => a.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
+    replace(
+      pending,
+      waiting.length
+        ? waiting.map((a) => entry(a))
+        : empty('alert', 'Nothing is waiting.', 'Agents ask here before a change when their mode is Ask.'),
+    );
+    replace(decided, past.length ? past.map((a) => row(a)) : h('p.approvals-none', null, 'No decisions yet.'));
+  };
+
+  // One waiting approval: who, what, the input, and the owner's call.
+  const entry = (a: Approval): HTMLElement => {
+    const reason = textarea({ rows: 2, placeholder: 'Reason (optional)', 'aria-label': 'Reason' });
+    reason.value = drafts.get(a.id) ?? '';
+    reason.addEventListener('input', () => drafts.set(a.id, reason.value));
+
+    const decide = async (approve: boolean): Promise<void> => {
+      yes.disabled = true;
+      no.disabled = true;
+      const text = reason.value.trim();
+      const done = await attempt(() => api.decideApproval(a.id, approve, text || undefined), approve ? 'Approved' : 'Denied');
+      if (done !== undefined) drafts.delete(a.id);
+      void load();
+    };
+    const yes = button('Approve', () => void decide(true), { kind: 'primary' });
+    const no = button('Deny', () => void decide(false), { kind: 'danger' });
+
+    const el = card(null, [
+      h(
+        'header.approval-head',
+        null,
+        h('a.approval-agent', { href: href('agents', a.cid) }, nameOf(a.cid)),
+        h('code.approval-tool', null, a.tool),
+        h('time.approval-age', null, ago(a.created_ms)),
+      ),
+      h('pre.approval-input', null, JSON.stringify(a.input, null, 2) ?? 'null'),
+      h('div.approval-decide', null, reason, h('div.approval-buttons', null, no, yes)),
+    ]);
+    el.classList.add('approval-card');
+    return el;
+  };
+
+  // One decided approval, as a single line of the history.
+  const row = (a: Approval): HTMLElement =>
+    h(
+      'div.approval-row',
+      null,
+      badge(LABEL[a.state], TONE[a.state]),
+      h('code.approval-row-tool', null, a.tool),
+      h('span.approval-row-agent', null, nameOf(a.cid)),
+      a.reason ? h('span.approval-row-reason', null, a.reason) : null,
+      h('time.approval-row-age', null, ago(a.created_ms)),
+    );
+
+  const load = async (): Promise<void> => {
+    try {
+      items = await api.approvals();
+      failed = false;
+    } catch {
+      failed = true;
+    }
+    loaded = true;
+    if (alive) render();
+  };
+
+  const refetch = (): void => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => void load(), DEBOUNCE_MS);
+  };
+
+  const offs: (() => void)[] = [on('approval', refetch), agents.watch(() => render())];
+  void load();
+
+  return () => {
+    alive = false;
+    window.clearTimeout(timer);
+    offs.forEach((off) => off());
+  };
+}

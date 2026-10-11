@@ -232,4 +232,15 @@ export const api = {
   setConnectorSecret: (id: string, value: string) => put<unknown>(`/v1/connectors/${id}/secret`, { value }),
   clearConnectorSecret: (id: string) => del<unknown>(`/v1/connectors/${id}/secret`),
   testConnector: (id: string) => post<ConnectorTest>(`/v1/connectors/${id}/test`),
+
+  approvals: () => get<Approval[]>('/v1/approvals'),
+  decideApproval: (id: string, approve: boolean, reason?: string) => post<unknown>(`/v1/approvals/${id}`, { approve, reason }),
+  permissions: (cid: number) => get<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`),
+  setPermissions: (cid: number, mode: PermissionMode) => put<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`, { mode }),
 };
+
+export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used';
+/** A tool call an agent asked to make, waiting on (or recording) the owner's decision. */
+export interface Approval { id: string; cid: number; tool: string; input: unknown; created_ms: number; state: ApprovalState; reason: string | null }
+/** `autonomous` acts freely, `ask` queues changes for approval, `read_only` refuses them. */
+export type PermissionMode = 'autonomous' | 'ask' | 'read_only';
