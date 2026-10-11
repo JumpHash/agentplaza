@@ -12,6 +12,7 @@ import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
 import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
+import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
 
 const PACKET_MS = 1500;
@@ -195,7 +196,24 @@ function toolActivity(tool: string, inp: Record<string, unknown>, nameOf: (cid: 
   return target ? `→ ${tool} ${clip(target, 80)}` : `→ ${tool}`;
 }
 
+/** A WebGL renderer, or null when the browser refuses to make one. */
+function newRenderer(): THREE.WebGLRenderer | null {
+  try {
+    return new THREE.WebGLRenderer({ antialias: true });
+  } catch {
+    return null;
+  }
+}
+
 export function mount(root: HTMLElement): Cleanup {
+  // Without WebGL the 2.5D canvas floor takes over.
+  const probe = document.createElement('canvas');
+  const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
+  const renderer = gl ? newRenderer() : null;
+  if (!renderer) {
+    root.replaceChildren(h('p.faint', null, '3D unavailable (no WebGL) — showing the 2D floor.'));
+    return mountFloor2d(root);
+  }
   const palette = readPalette();
   const C = {
     sheet: colour(palette.sheet, '#ffffff'),
@@ -218,7 +236,6 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   // Renderer, scene, camera, controls.
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
