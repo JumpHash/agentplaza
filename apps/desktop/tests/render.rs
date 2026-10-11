@@ -677,7 +677,7 @@ fn the_map_pane_names_what_it_draws() {
 
     let mut ui = simulator(view::view(&model));
     for expected in [
-        "The machine is the bounded substrate",
+        "up ● · exited ■ · killed ◆",
         "2 lane(s) · 3 cell(s)",
         "substrate · plaza-node · x86_64/kvm · 24 cpus · 128320 MiB",
         "selected r1 vm 1",
@@ -1334,8 +1334,6 @@ fn the_help_key_lays_the_sheet_over_the_frame_the_register_was_drawing() {
         "back; closes this sheet",
         "console history",
         "CLOSE",
-        "the register keeps polling behind this sheet",
-        "are buttons on the run pane, not keys",
     ] {
         assert!(
             ui.find(says(expected)).is_ok(),
@@ -1636,18 +1634,26 @@ fn the_telemetry_plate_is_drawn_and_a_picked_runs_band_is_the_signal() {
     );
 
     // A fleet that has been asked for more guest memory than the host has is
-    // where the host's own total becomes a ruled line inside the chart.
+    // where the host's own total becomes a ruled line inside the chart. The
+    // line is a one-pixel rule over the sheet, so it lands anti-aliased rather
+    // than at the warn ink exactly; what is asserted is that the overcommitted
+    // frame rules warn ink the same session without an overcommit does not.
     let mut over = observed(&[scale_body(200_000, 1), scale_body(200_000, 1), scale_body(200_000, 1)]);
     over.apply(Message::Show(Pane::Telemetry));
     assert_eq!(
         over.machine.as_ref().expect("the machine").memory_mib,
         128_320
     );
+    // The same session on a host whose memory the fleet has not outrun: the
+    // cap line is not ruled, so any warn ink is the overcommit's own.
+    let mut room = over.clone();
+    room.machine.as_mut().expect("the machine").memory_mib = 1_000_000;
     let over_frame = frame_of(over);
+    let room_frame = frame_of(room);
     assert!(
-        count_near(&over_frame, WARN, 8) > 500,
+        count_near(&over_frame, WARN, 40) > count_near(&room_frame, WARN, 40),
         "the host's total is not ruled on an overcommitted chart ({} warn pixels)",
-        count_near(&over_frame, WARN, 8)
+        count_near(&over_frame, WARN, 40)
     );
 
     for (name, frame) in [
@@ -3267,7 +3273,6 @@ fn the_treasury_pane_draws_the_accounts_the_totals_and_the_journal() {
         // The running head and the lede that says what this sheet is.
         "Treasury",
         "the plaza's accounts and its journal",
-        "can write nothing here",
         // The accounts sheet: every column the daemon reports, both figures
         // in credits and the dollars they stand for.
         "Accounts · 2 row(s)",
@@ -3515,12 +3520,9 @@ fn the_market_pane_draws_the_board_the_bids_and_the_award() {
 
     let mut ui = simulator(view::view(&model));
     for expected in [
-        // The running head and the lede, which says the sheet is read-only and
-        // that the escrow entry is the treasury's own.
+        // The running head and the lede.
         "Market",
         "the plaza's calls, the bids on them and the award that closed each",
-        "can write nothing here",
-        "the treasury's own funding entry",
         // The board's tally and its columns.
         "Board · 2 call(s) carried of 2 · 2 bid(s) · 1 awarded",
         "capability",
@@ -3818,7 +3820,6 @@ fn the_floor_pane_draws_the_robots_the_rings_and_the_walk() {
         for expected in [
             "Floor",
             "the plaza's agents as robots",
-            "The plaza floor: the register's agents as small robots",
             "3 robot(s) · 3 pad(s) · 1 talking · 0 working · 0 unreachable",
             "Conversations · 1 exchange(s) carried of 1 · 1 pair(s) active of 1 in the last 120s",
             // The legend: every ring and the two honest notes.
@@ -3829,7 +3830,7 @@ fn the_floor_pane_draws_the_robots_the_rings_and_the_walk() {
             "station pads: (role index → col i%5, row i/5)",
             "camera: 55° tilt · 20° yaw",
             "unreachable = the hub does not report it connected, only when a hub is configured",
-            "The arrows pick a robot across the floor and Enter opens its inspector",
+            "The arrows pick a robot across the floor; Enter opens its inspector",
         ] {
             assert!(
                 ui.find(says(expected)).is_ok(),
@@ -4169,11 +4170,9 @@ fn the_talk_pane_draws_the_exchanges_the_pairs_and_the_marks() {
         "the plaza's conversations, newest first",
         // The pane's tally: exchanges, pairs, the talking, the refused.
         "Talk · 3 exchange(s) carried of 3 · 2 pair(s) of 2 · 1 talking · 0 refused",
-        // The pairs filter, the active mark named as the floor's walk and its
-        // window stated from the daemon's own value.
+        // The pairs filter, with its window stated from the daemon's own value.
         "Filter by pair",
-        "the active window is the daemon's own 120s",
-        "the floor walks an active pair adjacent",
+        "the window is the daemon's own 120s",
         "cid 103 ↔ cid 109 · 2 exchange(s)",
         "cid 100 ↔ cid 103 · 1 exchange(s)",
         // The talking pair's own stamp (caps, so it is the stamp and not the
@@ -4195,8 +4194,6 @@ fn the_talk_pane_draws_the_exchanges_the_pairs_and_the_marks() {
             "the talk sheet should show {expected:?}"
         );
     }
-    // Nothing on the sheet is a write: the pane says so.
-    assert!(ui.find(says("This sheet writes nothing")).is_ok());
 }
 
 #[test]
@@ -4572,9 +4569,6 @@ fn the_council_pane_draws_the_motions_the_votes_and_the_owners_gate() {
             "the council sheet should show {expected:?}"
         );
     }
-    // The sheet writes exactly one thing: the owner's decision. It says so
-    // rather than claiming to write nothing.
-    assert!(ui.find(says("this sheet writes nothing but the owner's decision")).is_ok());
 }
 
 #[test]
@@ -4776,19 +4770,16 @@ fn the_owner_line_and_the_why_line_are_drawn_for_decided_and_other_states() {
     assert_eq!(model.pane, Pane::Council);
     let mut ui = simulator(view::view(&model));
 
-    // The owner's line, for the vetoed tie: the word, the note as prose, and
-    // that the council cannot reopen it.
+    // The owner's line, for the vetoed tie: the word and the note as prose.
     assert!(ui.find(says("the owner's hand")).is_ok());
     assert!(ui.find(says("VETOED")).is_ok());
     assert!(ui.find(says("not this season")).is_ok());
-    assert!(ui.find(says("the owner decides once: the council cannot reopen this")).is_ok());
     // The ratified law proposal carries the same line, without a note.
     assert!(ui.find(says("RATIFIED")).is_ok());
     // The carry has no control and states the rule in one line.
     assert!(
         ui.find(says(
-            "the owner decides only a tie or a carry above the council's authority: m3 carried \
-             on the council's own majority"
+            "the owner decides only a tie or a carry above the council's authority: m3 carried"
         ))
         .is_ok()
     );
@@ -4856,7 +4847,7 @@ fn the_decide_block_arms_confirms_and_reads_the_owners_decision_back() {
     // presses naming the motion.
     {
         let mut ui = simulator(view::view(&model));
-        assert!(ui.find(says("The owner's hand · m1 · the operator decides, once")).is_ok());
+        assert!(ui.find(says("The owner's hand · m1")).is_ok());
         assert!(ui.find(says("RATIFY m1")).is_ok());
         assert!(ui.find(says("VETO m1")).is_ok());
         assert!(ui.find(says("0 / 1000 bytes")).is_ok());
@@ -4921,12 +4912,11 @@ fn the_decide_block_arms_confirms_and_reads_the_owners_decision_back() {
     model.apply(Message::StatePick(agentplaza_desktop::api::MotionState::TieToOwner));
     assert_eq!(model.council_filter, None);
 
-    // The refreshed row is the daemon's: the owner's line, the note as prose,
-    // and the m1 tie is gone — every motion is decided or still gated.
+    // The refreshed row is the daemon's: the owner's line and the note as
+    // prose, and the m1 tie is gone — every motion is decided or still gated.
     let mut ui = simulator(view::view(&model));
     assert!(ui.find(says("carry it")).is_ok(), "the owner's note, as prose");
     assert!(ui.find(says("RATIFIED")).is_ok());
-    assert!(ui.find(says("the owner decides once: the council cannot reopen this")).is_ok());
     assert!(ui.find(says("RATIFY m1")).is_err(), "the tie is decided: no control");
     assert!(ui.find(says("VETO m1")).is_err());
     // The still-gated law proposal keeps its own block.
@@ -5002,3 +4992,7 @@ fn the_whole_application_follows_a_motion_frame_between_polls() {
     );
     assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }
+
+
+
+

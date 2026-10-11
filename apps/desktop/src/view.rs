@@ -261,12 +261,11 @@ const KEYS: [(&str, &str); 16] = [
     ("t", "telemetry"),
     ("?", "this help"),
     ("esc", "back; closes this sheet"),
-    ("↑ ↓", "console history; on the floor cycle the robots, on the talk + council panes walk the filter"),
-    ("↵", "floor: open the picked robot's inspector; talk: narrow to the picked pair (again widens); council: filter to the picked state (again widens)"),
+    ("↑ ↓", "console history; pick on the floor, talk + council"),
+    ("↵", "floor: open the inspector; talk + council: narrow to the picked row"),
 ];
 
-/// The help sheet, centred over the register: every key the register binds,
-/// and what the sheet is not.
+/// The help sheet, centred over the register: every key the register binds.
 fn help_sheet() -> Element<'static, Message> {
     let mut hints: Vec<Element<'static, Message>> = vec![
         mono("AgentPlaza register", 13.0, INK).into(),
@@ -286,28 +285,13 @@ fn help_sheet() -> Element<'static, Message> {
     }
     hints.push(vertical(10.0));
     hints.push(rule_heading());
-    hints.push(
-        serif(
-            "A focused text box captures its own keys, so typing a console line never trips a \
-             shortcut. The guest's own commands — help, uname, cpu, mem, uptime, poweroff — are \
-             buttons on the run pane, not keys. Escape or ? closes this sheet.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    );
     hints.push(vertical(8.0));
     hints.push(
-        row![
-            button(mono("CLOSE", 10.5, INK))
-                .on_press(Message::Help(false))
-                .style(theme::primary_button)
-                .padding(edge(6.0, 12.0, 6.0, 12.0)),
-            mono("the register keeps polling behind this sheet", 10.0, INK_3),
-        ]
-        .spacing(12.0)
-        .align_y(Alignment::Center)
-        .into(),
+        button(mono("CLOSE", 10.5, INK))
+            .on_press(Message::Help(false))
+            .style(theme::primary_button)
+            .padding(edge(6.0, 12.0, 6.0, 12.0))
+            .into(),
     );
 
     container(Column::with_children(hints).spacing(4.0))
@@ -404,8 +388,7 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         Pane::Roster => (
             "Roster".to_string(),
             if model.has_hub() {
-                "who is running right now · the register's role agents, joined by guest CID to \
-                 the hub's connected sessions"
+                "who is running right now · the register, joined to the hub by guest cid"
                     .to_string()
             } else {
                 "who is running right now · every role agent the register reports".to_string()
@@ -413,43 +396,31 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         ),
         Pane::Ledger => (
             "Ledger".to_string(),
-            "the plaza's tasks · every claim, finish and withdrawal the daemon \
-             holds"
-                .to_string(),
+            "the plaza's tasks · every claim, finish and withdrawal".to_string(),
         ),
         Pane::Treasury => (
             "Treasury".to_string(),
-            "the plaza's accounts and its journal · GET /api/v0/treasury".to_string(),
+            "the plaza's accounts and its journal".to_string(),
         ),
         Pane::Market => (
             "Market".to_string(),
-            "the plaza's calls, the bids on them and the award that closed each · \
-             GET /api/v0/agora"
-                .to_string(),
+            "the plaza's calls, the bids on them and the award that closed each".to_string(),
         ),
         Pane::Floor => (
             "Floor".to_string(),
-            "the plaza's agents as robots: a station pad per role, a ground status ring, and a \
-             talking pair walking adjacent · GET /api/v0/conversations + /api/v0/board"
-                .to_string(),
+            "the plaza's agents as robots".to_string(),
         ),
         Pane::Board => (
             "Board".to_string(),
-            "the plaza's public posts, newest first, with the task a post links and who has \
-             read it · GET /api/v0/board"
-                .to_string(),
+            "the plaza's public posts, newest first".to_string(),
         ),
         Pane::Talk => (
             "Talk".to_string(),
-            "the plaza's conversations, newest first: a pair as two identities, the words as the \
-             agent's own, the delivery as the hub's · GET /api/v0/conversations"
-                .to_string(),
+            "the plaza's conversations, newest first".to_string(),
         ),
         Pane::Council => (
             "Council".to_string(),
-            "the seats' motions, the votes beneath them and the owner's gate · \
-             GET /api/v0/motions"
-                .to_string(),
+            "the seats' motions, the votes beneath them and the owner's gate".to_string(),
         ),
         Pane::Telemetry => (
             "Telemetry".to_string(),
@@ -640,16 +611,7 @@ fn machine_pane(model: &Model) -> Element<'_, Message> {
 
     let uptime = model.machine_uptime_ms().unwrap_or(0);
     let mut rows: Vec<Element<'_, Message>> = vec![
-        column![
-            mono(machine.model_label(), 15.0, INK),
-            serif(
-                "the node's own model: the substrate every run of this daemon is booted on",
-                12.0,
-                INK_2,
-            ),
-        ]
-        .spacing(4.0)
-        .into(),
+        mono(machine.model_label(), 15.0, INK).into(),
         rule::horizontal(1.0).style(theme::rule_ink).into(),
         lead(vec![
             ("uptime", duration_label(uptime)),
@@ -751,19 +713,16 @@ fn map_pane(model: &Model) -> Element<'_, Message> {
         "the plate is blank: no run has been booted on this node".to_string()
     } else {
         format!(
-            "{} lane(s) · {cells} cell(s) · press a cell to open its run with that vm selected",
+            "{} lane(s) · {cells} cell(s) · press a cell to open its run",
             model.runs.len()
         )
     };
 
     Column::with_children(vec![
-        serif(
-            "The machine is the bounded substrate. A run is a lane, a VM is a cell, placed \
-             by index. Up is a filled dot, exited a square, killed a diamond; the line through \
-             a mark is the VM's vsock device, and the bar beside it is its serial rate in \
-             lines per second, measured between polls.",
-            12.0,
-            INK_2,
+        mono(
+            "up ● · exited ■ · killed ◆ · line = vsock device · bar = serial rate",
+            10.5,
+            INK_3,
         )
         .into(),
         plate.into(),
@@ -815,35 +774,15 @@ fn roster_pane(model: &Model) -> Element<'_, Message> {
     let hub_known = model.hub_status.is_some();
     let controls = model.has_hub_admin();
 
-    let lede = if controls {
-        "One row per role agent: the register's side (its run, VM, guest CID, state and serial \
-         rate) and the hub's side (the session it holds — when it connected, its last heartbeat \
-         and the calls it has served). The halves are joined by guest CID and never merged, so an \
-         agent only one of the two reports is drawn as exactly that. Grouped by role, in the order \
-         the roles appear. Because a hub admin surface is configured, each row also carries the \
-         operator's controls: the row's drive opens a console that asks the agent to run one \
-         tool, and the row's stop asks it to end its session."
-    } else {
-        "One row per role agent: the register's side (its run, VM, guest CID, state and serial \
-         rate) and the hub's side (the session it holds — when it connected, its last heartbeat \
-         and the calls it has served). The halves are joined by guest CID and never merged, so an \
-         agent only one of the two reports is drawn as exactly that. Grouped by role, in the order \
-         the roles appear."
-    };
-
-    let mut body: Vec<Element<'_, Message>> = vec![serif(lede, 12.0, INK_2).into(), hub_header(model)];
+    let mut body: Vec<Element<'_, Message>> = vec![hub_header(model)];
 
     if groups.is_empty() {
         let message = if model.health() == Health::Unknown && !hub_known {
             "waiting for the daemon's first answer…"
         } else if hub_known {
-            "no role agent is on either surface: the daemon reports a role on a VM's row only \
-             when it booted that VM as one (noded --agents <manifest>), and the hub reports no \
-             connected agent. Nothing here is a role fleet yet."
+            "no role agent is on either surface: no VM was booted with a role"
         } else {
-            "no role agent is in the register: the daemon reports a role on a VM's row only when \
-             it booted that VM as one (noded --agents <manifest>). Nothing here is a role fleet \
-             yet."
+            "no role agent is in the register: no VM was booted with a role"
         };
         body.push(
             container(serif(message, 12.5, INK_2))
@@ -895,13 +834,7 @@ fn roster_pane(model: &Model) -> Element<'_, Message> {
         }
         if live == 0 {
             body.push(
-                serif(
-                    "No role agent is up right now: the register reports every role below, and \
-                     every one of their VMs has stopped.",
-                    12.0,
-                    INK_2,
-                )
-                .into(),
+                serif("No role agent is up right now.", 12.0, INK_2).into(),
             );
         }
     }
@@ -950,15 +883,6 @@ fn agent_console_panel<'a>(model: &'a Model, console: &'a RosterConsole) -> Elem
         ]
         .spacing(8.0)
         .align_y(Alignment::Center)
-        .into(),
-        serif(
-            "Drive one tool on this agent: the hub's admin surface (POST /tell) runs it in the \
-             agent's session and answers with the tool's own output. Name the tool, give its \
-             arguments as a JSON object (empty is {}), and how long to wait. The answer is the \
-             agent's own — displayed here, never interpreted.",
-            11.5,
-            INK_2,
-        )
         .into(),
         rule_heading(),
         drive_form(console),
@@ -1062,13 +986,7 @@ fn drive_region(state: Option<&DriveState>) -> Element<'_, Message> {
 /// here; the console's job is to say what became of it.
 fn stop_outcome(console: &RosterConsole) -> Element<'_, Message> {
     let Some(state) = &console.stop else {
-        return serif(
-            "No stop has been asked of this agent. The row's stop asks it — two presses — to \
-             end its session.",
-            11.0,
-            INK_3,
-        )
-        .into();
+        return serif("No stop has been asked of this agent.", 11.0, INK_3).into();
     };
     column![
         row![
@@ -1338,18 +1256,7 @@ fn hub_half(agent: &RosterAgent, now_ms: u64) -> Element<'static, Message> {
 /// rather than inventing a row from a frame that carries an id, a state and an
 /// assignee and nothing else.
 fn ledger_pane(model: &Model) -> Element<'_, Message> {
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "One row per task: what it is for, the role it was filed for, its budget, the state \
-             it is in, who holds it and the guest CID it is held by, and when it was filed and \
-             last moved. A task is claimed by a live agent, finished as done or failed with a \
-             note, or withdrawn before it ends; a task that has ended is final. Refusals — the \
-             daemon's own, or one of these guards — land in the notice line above.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    ];
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
 
     if model.tasks.is_empty() {
         let message = if !model.ledger_read && model.health() == Health::Unknown {
@@ -1377,7 +1284,7 @@ fn ledger_pane(model: &Model) -> Element<'_, Message> {
         Some(task) => body.push(task_detail(model, task)),
         None if !model.tasks.is_empty() => body.push(
             container(serif(
-                "Press a task's row to open its detail and the moves the daemon accepts on it.",
+                "Press a task's row to open its detail.",
                 11.5,
                 INK_3,
             ))
@@ -1555,8 +1462,7 @@ fn task_detail<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
         body.push(
             container(serif(
                 format!(
-                    "The task has ended ({}) and its state is final: the daemon accepts no \
-                     further claim, finish or withdrawal on it.",
+                    "The task has ended ({}) and its state is final.",
                     task_state_line(task)
                 ),
                 11.5,
@@ -1776,8 +1682,7 @@ fn task_claim_row(model: &Model) -> Element<'_, Message> {
     let agents = model.live_agents();
     if agents.is_empty() {
         body.push(serif(
-            "No live agent is in the register: a claim is accepted only from an agent that is up, \
-             so there is no CID to claim as yet.",
+            "No live agent is in the register: a claim needs an agent that is up.",
             11.5,
             INK_3,
         )
@@ -1965,17 +1870,7 @@ fn tone_for_task(state: TaskState) -> Tone {
 /// the daemon from the postings (never stored), and the journal is
 /// append-only, so what the pane shows only ever grows.
 fn treasury_pane(model: &Model) -> Element<'_, Message> {
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The plaza's accounts and the double-entry journal that moves them, read straight \
-             from the daemon's treasury. Every entry is posted by the daemon's own treasury \
-             service — this console reads the money and can write nothing here. Balances are \
-             derived from the postings, and the journal is append-only.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    ];
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
 
     match &model.treasury {
         Some(read) => {
@@ -2260,18 +2155,7 @@ fn entry_postings(entry: &crate::api::Entry) -> Element<'_, Message> {
 /// treasury's own funding entry; the market does not jump to the treasury
 /// sheet to draw it — the `y` sheet carries it.
 fn market_pane(model: &Model) -> Element<'_, Message> {
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The plaza's market: the calls its roled tasks offer, the bids on them and the award \
-             that closed each, read straight from the daemon's agora. A bid is placed and an \
-             award is made by the daemon's own surface — this console reads the board and can \
-             write nothing here. An award's escrow entry is the treasury's own funding entry; \
-             this sheet names it and does not jump to the treasury sheet to draw it.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    ];
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
 
     match &model.agora {
         Some(board) => body.push(board_sheet(model, board)),
@@ -2556,16 +2440,6 @@ fn telemetry_pane(model: &Model) -> Element<'_, Message> {
     let cap = model.machine.as_ref().map(|machine| machine.memory_mib as f32);
 
     let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "Every figure on this sheet is the register's own answer to a poll: nothing is \
-             estimated, and a poll that fails writes nothing, so a blank stretch in a line is \
-             time nobody observed. Throughput counts only the VMs that are still up — a VM that \
-             has left the running state keeps a frozen rate in the feed, and counting that \
-             would inflate the fleet line forever.",
-            12.0,
-            INK_2,
-        )
-        .into(),
         lead(vec![
             ("committed", memory_label(model.committed_mib())),
             ("vms live", model.running_vms().to_string()),
@@ -3043,12 +2917,9 @@ fn console<'a>(model: &'a Model, run: &'a Run) -> Element<'a, Message> {
     );
     rows.push(serif(
         if run.state.is_live() {
-            "The guest takes one line at a time and answers between heartbeats; the reply \
-             lands in the transcript below. It understands: help, uname, cpu, mem, uptime, \
-             echo <text>, poweroff."
+            "One line at a time; the reply lands in the transcript below."
         } else {
-            "The run is not running: the daemon refuses console input, and says so in the \
-             notice line."
+            "The run is not running: the daemon refuses console input."
         },
         11.5,
         INK_3,
@@ -3225,13 +3096,6 @@ fn presets() -> Element<'static, Message> {
 /// The spawn form.
 fn spawn_pane(model: &Model) -> Element<'_, Message> {
     let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The daemon's own ranges: n and vcpus are 1–64, memory_mib is at \
-             least 128, vsock_cid starts at 3 (1 and 2 are reserved).",
-            12.5,
-            INK_2,
-        )
-        .into(),
         rule::horizontal(1.0).style(theme::rule_ink).into(),
         mono("Quick boots — each one fills the form below; nothing is sent until BOOT RUN", 10.5, INK_3).into(),
         presets(),
@@ -3393,16 +3257,6 @@ fn tone_for_health(health: Health) -> Tone {
 /// divide, and painter-ordered polygons.
 fn floor_pane(model: &Model) -> Element<'_, Message> {
     let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The plaza floor: the register's agents as small robots, one per role station. Every \
-             position derives from the role order and a conversation's activity — it is a \
-             diagram of real state, read from the social API, and this sheet writes nothing. \
-             The floor is projected through a fixed RTS camera (55° tilt, 20° yaw) as 3D \
-             geometry; the walk onto a conversation is eased over 700 ms and always completes.",
-            12.0,
-            INK_2,
-        )
-        .into(),
         mono(floor_tally(model), 11.5, INK).into(),
     ];
 
@@ -3467,8 +3321,7 @@ fn floor_pane(model: &Model) -> Element<'_, Message> {
         Some(cid) => body.push(floor_inspector(model, cid)),
         None => body.push(
             serif(
-                "The arrows pick a robot across the floor and Enter opens its inspector; a press \
-                 on a robot picks it too. Nothing on this sheet is writable.",
+                "The arrows pick a robot across the floor; Enter opens its inspector.",
                 12.0,
                 INK_3,
             )
@@ -3672,17 +3525,7 @@ fn thread_sheet<'a>(model: &'a Model, thread: &'a Thread) -> Element<'a, Message
 /// It is **read-only**: a post and a read cursor are the daemon's own surface,
 /// written by the agents' drivers, and this console draws what it read.
 fn board_pane(model: &Model) -> Element<'_, Message> {
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The plaza's public board: every post, newest first, with the agent that wrote it, \
-             the task it links and how many agents have read it. A post is the daemon's own — \
-             the agents' drivers compose the content from real task data — and this sheet writes \
-             nothing here.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    ];
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
     match (&model.board, &model.board_error) {
         (Some(board), _) => body.push(posts_sheet(model, board)),
         (None, Some(error)) => body.push(
@@ -3776,18 +3619,7 @@ fn post_row<'a>(model: &'a Model, board: &'a Posts, post: &'a Post) -> Element<'
 /// composed), and they are drawn as text, never as anything a reader could act
 /// on.
 fn talk_pane(model: &Model) -> Element<'_, Message> {
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The plaza's conversation log: every exchange between two agents, newest first, with \
-             the pair as two identities, the words as the agent's own, and the delivery mark as \
-             the hub gave it. The pairs are the daemon's own fold, and a pair active inside the \
-             daemon's window is stamped — the floor walks such a pair adjacent. This sheet writes \
-             nothing.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    ];
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
     match (&model.talk, &model.talk_error) {
         (Some(log), _) => {
             body.push(mono(format!("Talk · {}", social::talk_tally(log)), 11.5, INK).into());
@@ -3840,13 +3672,12 @@ fn no_social_layer(error: &str) -> Element<'_, Message> {
 }
 
 /// The pairs filter: one pressable row per pair the daemon folded, with the row
-/// the arrows are on marked, and the active mark named as the floor's own walk
-/// and its window stated from the daemon's value.
+/// the arrows are on marked, and the active window stated from the daemon's
+/// own value.
 fn pairs_filter<'a>(model: &'a Model, log: &'a Conversations) -> Element<'a, Message> {
-    let mut body: Vec<Element<'a, Message>> = vec![mono(
+    let mut body: Vec<Element<'_, Message>> = vec![mono(
         format!(
-            "Filter by pair · ↑ ↓ pick, Enter narrows · the active window is the daemon's own \
-             {}s, exported in the view; the floor walks an active pair adjacent",
+            "Filter by pair · ↑ ↓ pick, Enter narrows · the window is the daemon's own {}s",
             log.active_secs
         ),
         10.5,
@@ -4050,19 +3881,7 @@ fn last_read_age(model: &Model, last_ok_ms: Option<u64>) -> String {
 /// `POST /api/v0/motions/{id}/decide` — because the operator is the owner;
 /// proposing and voting remain seat actions this console does not take.
 fn council_pane(model: &Model) -> Element<'_, Message> {
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "The council's motions, newest first: what was proposed and by which seat, the kind, \
-             the state the count left it in, the tally beside a ruled seat bar, and every seat's \
-             vote beneath it with the reason why. A motion above the council's authority waits at \
-             the owner's gate, and the owner — the operator, here — ratifies or vetoes it, once, \
-             and the council cannot reopen it. Every other word is the daemon's own; this sheet \
-             writes nothing but the owner's decision.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-    ];
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
     match (&model.council, &model.council_error) {
         (Some(page), _) => {
             body.push(mono(format!("Council · {}", council_tally(page)), 11.5, INK).into());
@@ -4236,7 +4055,7 @@ fn motion_row<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> 
     if !motion.tally_is_tidy() {
         cells.push(
             mono(
-                "the tally disagrees with the votes it carries: flagged, never corrected",
+                "the tally disagrees with the votes it carries",
                 10.5,
                 WARN,
             )
@@ -4370,22 +4189,10 @@ fn owner_control<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Messag
 fn owner_why(motion: &Motion) -> String {
     let rule = "the owner decides only a tie or a carry above the council's authority";
     match motion.state {
-        MotionState::Open => format!(
-            "{rule}: {} is open — the council has not decided it yet",
-            motion.id
-        ),
-        MotionState::Carried => format!(
-            "{rule}: {} carried on the council's own majority",
-            motion.id
-        ),
-        MotionState::Rejected => format!(
-            "{rule}: {} was rejected on the council's own majority",
-            motion.id
-        ),
-        _ => format!(
-            "{rule}: {} is in a state this console does not know",
-            motion.id
-        ),
+        MotionState::Open => format!("{rule}: {} is open", motion.id),
+        MotionState::Carried => format!("{rule}: {} carried", motion.id),
+        MotionState::Rejected => format!("{rule}: {} was rejected", motion.id),
+        _ => format!("{rule}: {} is in a state this console does not know", motion.id),
     }
 }
 
@@ -4423,14 +4230,6 @@ fn owner_line<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> 
     if let Some(note) = owner.note() {
         cells.push(serif(note.to_string(), 11.5, INK_2).into());
     }
-    cells.push(
-        mono(
-            "the owner decides once: the council cannot reopen this",
-            10.0,
-            INK_3,
-        )
-        .into(),
-    );
     Column::with_children(cells).spacing(3.0).into()
 }
 
@@ -4441,14 +4240,10 @@ fn owner_line<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> 
 fn decide_block<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
     let armed = model.decide_armed(&motion.id);
     let mut cells: Vec<Element<'a, Message>> = Vec::new();
-    // What the hand is, and that it cannot be taken back.
+    // What the hand is: which motion the operator decides.
     cells.push(
         mono(
-            format!(
-                "The owner's hand · {} · the operator decides, once, and the council cannot \
-                 reopen it",
-                motion.id
-            ),
+            format!("The owner's hand · {}", motion.id),
             11.0,
             theme::SIGNAL,
         )
@@ -4831,20 +4626,17 @@ mod tests {
         // m4 is open, m3 carried: the rule, then the state it is in.
         assert_eq!(
             owner_why(&rows[0]),
-            "the owner decides only a tie or a carry above the council's authority: m4 is open — \
-             the council has not decided it yet"
+            "the owner decides only a tie or a carry above the council's authority: m4 is open"
         );
         assert_eq!(
             owner_why(&rows[1]),
-            "the owner decides only a tie or a carry above the council's authority: m3 carried on \
-             the council's own majority"
+            "the owner decides only a tie or a carry above the council's authority: m3 carried"
         );
         // A rejected motion, and one in a state this console does not know.
         rows[1].state = MotionState::Rejected;
         assert_eq!(
             owner_why(&rows[1]),
-            "the owner decides only a tie or a carry above the council's authority: m3 was \
-             rejected on the council's own majority"
+            "the owner decides only a tie or a carry above the council's authority: m3 was rejected"
         );
         rows[0].state = MotionState::Unknown;
         assert_eq!(
@@ -5184,7 +4976,7 @@ mod tests {
     }
 
     #[test]
-    fn the_help_sheet_renders_and_says_what_the_quick_commands_are_not() {
+    fn the_help_sheet_renders_over_the_register() {
         let mut model = Model::new();
         let sheet = help_sheet();
         let _: Element<'_, Message> = sheet;
