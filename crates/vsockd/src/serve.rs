@@ -556,7 +556,7 @@ fn run_keepalive<T: LineTransport>(
                                 "vsockd: agent {cid} counted {guest_calls} tool calls, this side counted {calls}"
                             ));
                         }
-                        hub.end_clean(cid, token, calls);
+                        hub.end_clean(cid, token, calls, guest_calls);
                         return Ok(SessionSummary {
                             peer_cid,
                             guest_cid: cid,
@@ -677,7 +677,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    use crate::hub::TellOutcome;
+    use crate::hub::{StopOutcome, TellOutcome};
     use crate::line::StreamLines;
 
     /// A [`LineTransport`] over a channel, so a test can put a scripted guest
@@ -1596,6 +1596,127 @@ mod tests {
         );
     }
 
+    /// The session loop's stop arm, driven the way the admin surface's
+    /// `POST /stop` drives it: a `Hub::stop` while a `Hub::tell` is in flight.
+    ///
+    /// The sequencing this asserts: the in-flight call is dispatched first and
+    /// the guest never answers it, so the call is **abandoned** — the session
+    /// does not wait for its answer before honoring the stop. The stop is
+    /// served on the session's next turn (the steering channel is drained at
+    /// the top of the loop), the guest answers `bye`, and the session ends. The
+    /// caller waiting on the call gets its honest `NotConnected` (the session
+    /// ended, so nobody can answer), and the stop's waiter gets `Ended` — with
+    /// the guest's own `bye` count.
+    #[test]
+    fn a_stop_while_a_tell_is_in_flight_ends_the_session() {
+        use std::os::unix::net::UnixStream;
+
+        let (guest_stream, hub_stream) = UnixStream::pair().expect("a Unix socket pair");
+        guest_stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("the stub's read timeout");
+        let log = Arc::new(Recording::default());
+        let hub = Arc::new(hub(&log));
+
+        let limits = keepalive_limits();
+        let session_hub = Arc::clone(&hub);
+        let session_log = Arc::clone(&log);
+        let session = thread::spawn(move || {
+            let mut transport = StreamLines::new(hub_stream);
+            handle_session(
+                &mut transport,
+                20,
+                limits,
+                &*session_log,
+                &session_hub,
+                &SystemClock,
+            )
+        });
+
+        let mut guest = StreamLines::new(guest_stream);
+        guest
+            .send_line(
+                r#"{"type":"hello","vm":0,"guest_cid":20,"role":"builder","keepalive":true}"#,
+            )
+            .expect("hello sends");
+        assert_eq!(
+            strand(&mut guest),
+            r#"{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}"#
+        );
+
+        // The caller asks for a tool on its own thread: `tell` blocks for an
+        // answer that will never come.
+        let caller_hub = Arc::clone(&hub);
+        let caller = thread::spawn(move || {
+            caller_hub.tell(
+                20,
+                "read_file",
+                serde_json::json!({ "path": "notes.txt" }),
+                Duration::from_secs(5),
+            )
+        });
+
+        // The session takes the dispatch; the guest reads the `tool_call` and
+        // deliberately never answers it.
+        guest
+            .send_line(r#"{"type":"heartbeat","seq":1}"#)
+            .expect("a heartbeat sends");
+        let dispatched: serde_json::Value =
+            serde_json::from_str(&strand(&mut guest)).expect("the dispatch is JSON");
+        assert_eq!(dispatched["type"], "tool_call");
+        assert_eq!(dispatched["name"], "read_file");
+
+        // The hub stops the session while that call is in flight. The stop
+        // waits for the end, so it runs on its own thread too.
+        let stop_hub = Arc::clone(&hub);
+        let stopper =
+            thread::spawn(move || stop_hub.stop(20, "slice proof", Duration::from_secs(5)));
+
+        // A second heartbeat wakes the session, which serves the stop: the
+        // guest reads the wire's `stop`.
+        guest
+            .send_line(r#"{"type":"heartbeat","seq":2}"#)
+            .expect("a heartbeat sends");
+        assert_eq!(strand(&mut guest), r#"{"type":"stop","reason":"slice proof"}"#);
+
+        // The guest answers `bye`; the session ends.
+        guest
+            .send_line(r#"{"type":"bye","calls":1}"#)
+            .expect("bye sends");
+
+        assert_eq!(
+            stopper.join().expect("the stop returns"),
+            StopOutcome::Ended { calls: 1 }
+        );
+        assert_eq!(
+            caller.join().expect("the caller finishes"),
+            TellOutcome::NotConnected,
+            "the abandoned call's waiter is told nobody can answer"
+        );
+        let summary = session
+            .join()
+            .expect("the session thread finishes")
+            .expect("the session completes");
+        assert_eq!(
+            summary,
+            SessionSummary {
+                peer_cid: 20,
+                guest_cid: 20,
+                vm: 0,
+                calls: 1,
+                guest_calls: 1,
+                keepalive: true,
+            }
+        );
+        assert_eq!(hub.agent_count(), 0, "the registry is drained");
+        assert!(
+            log.text()
+                .contains("vsockd: agent 20 session ended cleanly after 1 tool calls"),
+            "log: {}",
+            log.text()
+        );
+    }
+
     /// A dispatch nobody waits on is still served: the session runs the tool
     /// call and the agent's answer is simply dropped, never mis-delivered.
     #[test]
@@ -1687,7 +1808,7 @@ mod tests {
         assert_eq!(agent.calls, 0);
         hub.note_calls(30, 7);
         assert_eq!(hub.agent(30).expect("registered").calls, 7);
-        hub.end_clean(30, token, 7);
+        hub.end_clean(30, token, 7, 7);
         assert!(hub.agent(30).is_none());
         assert_eq!(hub.agent_count(), 0);
         assert!(

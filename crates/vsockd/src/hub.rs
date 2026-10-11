@@ -17,6 +17,14 @@
 //! ([`crate::serve`]) is the one that dispatches it and matches the
 //! `tool_result`, so a dispatch is never guessed at from the next line.
 //!
+//! [`Hub::stop`] is the same road for the end of a session: it sends the live
+//! session a [`Command::Stop`] — which the session forwards to the guest as
+//! the wire's `stop` — and then *waits* on the session's own end signal, so it
+//! answers with what happened (the session ended, or it did not) rather than
+//! with what was sent. The signal is a one-way slot plus a `Condvar`, fired by
+//! whichever path ends the session (a clean `bye`, a reap, a dropped
+//! connection), so a waiter never polls the registry.
+//!
 //! Every dispatch passes one gate first: [`Hub::admit`], the codex's tool
 //! grants ([`crate::roles`]). With `--roles` the hub holds the manifest, knows
 //! each session's role (the one its `hello` declared and the hub accepted), and
@@ -31,10 +39,11 @@
 //! mutexes here only guard the two maps, and the log line is always written
 //! after the lock is released, so a slow stdout cannot couple two agents.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::roles::{Decision, Manifest};
@@ -138,13 +147,10 @@ pub enum Command {
     },
     /// End the session, in the hub's words.
     ///
-    /// The session loop serves this and the round-trip tests drive it, but
-    /// nothing in the daemon *sends* it yet: the control plane's own stop is a
-    /// later slice, exactly as the pre-existing steering accessor was
-    /// test-only before this one. It is marked unconstructed rather than
-    /// removed, so the stop path the keepalive contract defines stays served
-    /// (and tested).
-    #[allow(dead_code)]
+    /// The session loop forwards this to the guest as the wire's
+    /// `{"type":"stop","reason":...}`, the guest answers `bye`, and the session
+    /// ends. [`Hub::stop`] is the producer: the admin surface's `POST /stop`
+    /// sends it and waits for the session to actually end.
     Stop {
         /// Why the session is ending.
         reason: String,
@@ -203,14 +209,99 @@ pub enum TellOutcome {
     NotConnected,
 }
 
+/// What came of [`Hub::stop`]: the admin surface's request to end a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The session ended within the wait. `calls` is what the guest's `bye`
+    /// counted when the session ended on one — the guest's own answer — and
+    /// the session's own count otherwise (a dropped connection, a reap): the
+    /// number the guest last reported, or the number this side saw.
+    Ended {
+        /// How many tool calls the session served.
+        calls: u64,
+    },
+    /// The stop was delivered but the session was still up when the wait
+    /// lapsed. Nothing is torn down: the hub has no way to kill a session, and
+    /// ending is the guest's decision to act on. The session is still live,
+    /// still steerable, and still bounded by its own idle deadline.
+    StillUp {
+        /// How long the caller waited.
+        waited: Duration,
+    },
+    /// No live session owns the CID: it never connected, or it had already
+    /// ended.
+    NotConnected,
+}
+
+/// One live session's control-plane state: the token that owns it, the channel
+/// the hub steers it by, and the signal a stop waits on.
+#[derive(Clone)]
+struct Live {
+    /// The session token; a predecessor's cleanup must not touch this row.
+    token: u64,
+    /// What the hub sends the session.
+    commands: Sender<Command>,
+    /// Fired when the session ends, whichever path ends it.
+    ended: Arc<SessionEnd>,
+}
+
+/// A one-way signal that a session has ended, and what its end left behind.
+///
+/// [`Hub::stop`] waits on this rather than polling the registry: a session
+/// ends exactly once — a clean `bye`, a reap, or a dropped connection — so one
+/// slot plus a `Condvar` is the whole mechanism, and a waiter is woken rather
+/// than looped. The first ending wins; a later path that finds the row already
+/// gone never reaches here, and if it did the slot would just be left as it is.
+#[derive(Default)]
+struct SessionEnd {
+    /// `Some` once the session has ended; `None` while it is live.
+    ended: Mutex<Option<Ended>>,
+    /// Wakes the waiters in [`SessionEnd::wait`].
+    signal: Condvar,
+}
+
+/// What a session's end recorded, for whoever waits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ended {
+    /// How many tool calls the session served, in its own count.
+    calls: u64,
+    /// How many the guest's `bye` counted, when it ended on a `bye`.
+    guest_calls: Option<u64>,
+}
+
+impl SessionEnd {
+    /// Records the end and wakes every waiter. The first ending wins.
+    fn fire(&self, ended: Ended) {
+        let mut slot = self.ended.lock().unwrap_or_else(|err| err.into_inner());
+        if slot.is_none() {
+            *slot = Some(ended);
+        }
+        self.signal.notify_all();
+    }
+
+    /// Waits up to `wait` for the session to end: `Some` with what its end
+    /// recorded, or `None` if the wait lapsed with the session still up.
+    fn wait(&self, wait: Duration) -> Option<Ended> {
+        let slot = self.ended.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(ended) = *slot {
+            return Some(ended);
+        }
+        let (slot, _timeout) = self
+            .signal
+            .wait_timeout(slot, wait)
+            .unwrap_or_else(|err| err.into_inner());
+        *slot
+    }
+}
+
 /// The hub every keepalive session registers with.
 pub struct Hub {
     registry: Mutex<Registry>,
     /// The outbound channel per live session — the hub's way to send a
     /// keepalive agent a tool call or a stop at will. The row carries the
     /// session token beside the sender, so a predecessor's cleanup can never
-    /// evict the session that replaced it.
-    steering: Mutex<HashMap<u32, (u64, Sender<Command>)>>,
+    /// evict the session that replaced it, and the end signal a stop waits on.
+    steering: Mutex<HashMap<u32, Live>>,
     /// Bumped on every connect: a session's token.
     epoch: AtomicU64,
     /// What the registry's monotonic instants are reported against: the wall
@@ -268,7 +359,7 @@ impl Hub {
     }
 
     /// The steering map, poison-proof.
-    fn steering(&self) -> MutexGuard<'_, HashMap<u32, (u64, Sender<Command>)>> {
+    fn steering(&self) -> MutexGuard<'_, HashMap<u32, Live>> {
         self.steering.lock().unwrap_or_else(|err| err.into_inner())
     }
 
@@ -282,7 +373,14 @@ impl Hub {
     pub fn connect(&self, cid: u32, role: &str, now: Instant) -> (u64, Receiver<Command>) {
         let token = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let (sender, receiver) = channel();
-        self.steering().insert(cid, (token, sender));
+        self.steering().insert(
+            cid,
+            Live {
+                token,
+                commands: sender,
+                ended: Arc::new(SessionEnd::default()),
+            },
+        );
         let previous = {
             let mut registry = self.registry();
             registry.beats.remove(&cid);
@@ -347,10 +445,11 @@ impl Hub {
 
     /// Ends a session that said `bye`: logs the clean end and drops the row.
     ///
-    /// `token` is checked against the live session, so a reconnect that
-    /// replaced this session keeps its registration.
-    pub fn end_clean(&self, cid: u32, token: u64, calls: u64) {
-        if self.forget(cid, token) {
+    /// `calls` is the session's own count (the log line's), `guest_calls` what
+    /// the guest's `bye` carried. `token` is checked against the live session,
+    /// so a reconnect that replaced this session keeps its registration.
+    pub fn end_clean(&self, cid: u32, token: u64, calls: u64, guest_calls: u64) {
+        if self.forget(cid, token, Some(guest_calls)) {
             self.log.line(&format!(
                 "vsockd: agent {cid} session ended cleanly after {calls} tool calls"
             ));
@@ -360,7 +459,7 @@ impl Hub {
     /// Reaps a session that stopped heartbeating: logs the reap and drops the
     /// row, so a dead guest is never leaked.
     pub fn reap_idle(&self, cid: u32, token: u64, idle: Duration) {
-        if self.forget(cid, token) {
+        if self.forget(cid, token, None) {
             self.log.line(&format!(
                 "vsockd: agent {cid} reaped idle > {}s",
                 idle.as_secs()
@@ -372,24 +471,35 @@ impl Hub {
     /// I/O failure, a protocol violation, a `stop` never answered. Logs
     /// nothing: the session layer logs why it ended.
     pub fn hangup(&self, cid: u32, token: u64) {
-        self.forget(cid, token);
+        self.forget(cid, token, None);
     }
 
     /// Removes a session's steering channel and row, if `token` still owns
-    /// them. Returns whether it did.
-    fn forget(&self, cid: u32, token: u64) -> bool {
-        {
+    /// them, and wakes whoever is waiting on the session's end. Returns
+    /// whether it did.
+    ///
+    /// `guest_calls` is what the guest's `bye` counted when the session ended
+    /// on one (`None` for every other ending). The session's own count comes
+    /// from the row, which is the running count the session kept there.
+    fn forget(&self, cid: u32, token: u64, guest_calls: Option<u64>) -> bool {
+        let live = {
             let mut steering = self.steering();
-            match steering.get(&cid) {
-                Some((owner, _)) if *owner == token => {
-                    steering.remove(&cid);
-                }
+            match steering.entry(cid) {
+                Entry::Occupied(entry) if entry.get().token == token => entry.remove(),
                 _ => return false,
             }
-        }
-        let mut registry = self.registry();
-        registry.agents.remove(&cid);
-        registry.beats.remove(&cid);
+        };
+        let calls = {
+            let mut registry = self.registry();
+            let calls = registry
+                .agents
+                .get(&cid)
+                .map_or(0, |agent| agent.calls);
+            registry.agents.remove(&cid);
+            registry.beats.remove(&cid);
+            calls
+        };
+        live.ended.fire(Ended { calls, guest_calls });
         true
     }
 
@@ -399,7 +509,7 @@ impl Hub {
     /// [`Hub::tell`] is the production caller (the admin surface's
     /// `POST /tell`); the session tests steer a session with it directly.
     pub(crate) fn steer(&self, cid: u32) -> Option<Sender<Command>> {
-        self.steering().get(&cid).map(|(_, sender)| sender.clone())
+        self.steering().get(&cid).map(|live| live.commands.clone())
     }
 
     /// The gate every dispatch passes: what the hub makes of driving tool
@@ -477,6 +587,51 @@ impl Hub {
             Err(RecvTimeoutError::Timeout) => TellOutcome::TimedOut { waited: wait },
             // The session ended without answering: the sender went with it.
             Err(RecvTimeoutError::Disconnected) => TellOutcome::NotConnected,
+        }
+    }
+
+    /// Asks the live session for `cid` to end, and waits — bounded by `wait` —
+    /// for it to actually end.
+    ///
+    /// The stop is a [`Command::Stop`] on the session's steering channel: the
+    /// session forwards it to the guest as the wire's
+    /// `{"type":"stop","reason":...}`, the guest answers `bye`, and the session
+    /// unregisters itself. What comes back is what *happened*, not what was
+    /// sent: [`StopOutcome::Ended`] when the session ended within the wait,
+    /// [`StopOutcome::StillUp`] when it did not.
+    ///
+    /// A session that does not end is **not killed here**: the hub has no way
+    /// to tear a session down, and the contract makes ending the guest's
+    /// decision to act on. The operator's recourse is the VM's own lifecycle
+    /// (`vmctl`), not the hub; and a guest that ignores the stop stops being
+    /// counted as live traffic, so its session is still reaped at its own idle
+    /// deadline rather than holding the slot forever.
+    pub fn stop(&self, cid: u32, reason: &str, wait: Duration) -> StopOutcome {
+        // The session's end signal is taken with the sender, so a waiter sees
+        // an end that races the send — and the lock is released before waiting.
+        let live = {
+            let steering = self.steering();
+            match steering.get(&cid) {
+                Some(live) => live.clone(),
+                None => return StopOutcome::NotConnected,
+            }
+        };
+        if live
+            .commands
+            .send(Command::Stop {
+                reason: reason.to_string(),
+            })
+            .is_err()
+        {
+            // The row outlived its session's worker by a moment; either way the
+            // agent is gone and there is nothing left to wait for.
+            return StopOutcome::NotConnected;
+        }
+        match live.ended.wait(wait) {
+            Some(ended) => StopOutcome::Ended {
+                calls: ended.guest_calls.unwrap_or(ended.calls),
+            },
+            None => StopOutcome::StillUp { waited: wait },
         }
     }
 
@@ -581,7 +736,7 @@ mod tests {
         assert_eq!(hub.agent_count(), 1);
         hub.heartbeat(10, 1, now);
         hub.note_calls(10, 1);
-        hub.end_clean(10, token, 1);
+        hub.end_clean(10, token, 1, 1);
         assert_eq!(hub.agent_count(), 0);
 
         let (token, _steering) = hub.connect(11, "", now);
@@ -659,7 +814,7 @@ mod tests {
         assert!(hub.steer(10).is_some(), "a live session is steerable");
         hub.reap_idle(10, token, Duration::from_secs(300));
         assert!(hub.steer(10).is_none(), "an ended session is not steerable");
-        assert!(!hub.forget(10, token), "a stale token owns nothing");
+        assert!(!hub.forget(10, token, None), "a stale token owns nothing");
         assert_eq!(hub.agent_count(), 0);
     }
 
@@ -676,7 +831,7 @@ mod tests {
         // A session that ended is gone, whichever door it left by.
         let now = Instant::now();
         let (token, steering) = hub.connect(10, "builder", now);
-        hub.end_clean(10, token, 0);
+        hub.end_clean(10, token, 0, 0);
         drop(steering);
         assert_eq!(
             hub.tell(10, "echo", serde_json::json!({}), Duration::from_millis(10)),
@@ -863,6 +1018,116 @@ mod tests {
         );
     }
 
+    /// `stop` on a CID nothing serves is `NotConnected` — the same answer for
+    /// a CID that never connected and one whose session has already ended.
+    #[test]
+    fn stop_reports_not_connected_when_no_session_owns_the_cid() {
+        let (_log, hub) = hub();
+        assert_eq!(
+            hub.stop(99, "operator stop", Duration::from_millis(10)),
+            StopOutcome::NotConnected
+        );
+
+        let (token, _steering) = hub.connect(10, "builder", Instant::now());
+        hub.end_clean(10, token, 0, 0);
+        assert_eq!(
+            hub.stop(10, "operator stop", Duration::from_millis(10)),
+            StopOutcome::NotConnected
+        );
+    }
+
+    /// `stop` waits for the session to *end*, not merely for the send to
+    /// succeed, and answers with the count the guest's `bye` carried.
+    #[test]
+    fn stop_waits_for_the_end_and_answers_with_the_guests_count() {
+        use std::thread;
+
+        let (_log, hub) = hub();
+        let hub = Arc::new(hub);
+        let (token, steering) = hub.connect(10, "builder", Instant::now());
+        let session = {
+            let hub = Arc::clone(&hub);
+            thread::spawn(move || {
+                match steering.recv() {
+                    Ok(Command::Stop { reason }) => assert_eq!(reason, "operator stop"),
+                    other => panic!("expected a stop, got {other:?}"),
+                }
+                // The session answers the stop only after a moment — the guest
+                // took its time to say bye. A stop that returned on the send
+                // would be wrong here.
+                thread::sleep(Duration::from_millis(150));
+                hub.note_calls(10, 2);
+                hub.end_clean(10, token, 2, 2);
+            })
+        };
+
+        let started = Instant::now();
+        assert_eq!(
+            hub.stop(10, "operator stop", Duration::from_secs(5)),
+            StopOutcome::Ended { calls: 2 }
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "the stop waited for the end: {:?}",
+            started.elapsed()
+        );
+        session.join().expect("the session thread finishes");
+        assert_eq!(hub.agent_count(), 0, "the session unregistered itself");
+    }
+
+    /// A session that never ends is the honest `StillUp`: the wait lapses, the
+    /// session is not torn down, and it is still live and steerable.
+    #[test]
+    fn stop_reports_still_up_without_tearing_the_session_down() {
+        let (_log, hub) = hub();
+        // The receiver is held but never read: the stop is accepted and the
+        // session simply does not end.
+        let (_token, _steering) = hub.connect(10, "builder", Instant::now());
+
+        let started = Instant::now();
+        assert_eq!(
+            hub.stop(10, "operator stop", Duration::from_millis(50)),
+            StopOutcome::StillUp {
+                waited: Duration::from_millis(50),
+            }
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(50),
+            "the wait really lapsed: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(hub.agent_count(), 1, "a lapse does not reap the session");
+        assert!(hub.steer(10).is_some(), "the session stays steerable");
+    }
+
+    /// A session that ends without a `bye` — a dropped connection — still wakes
+    /// a stop: the end signal is fired by whichever path ends the session, and
+    /// the count is then the session's own.
+    #[test]
+    fn stop_is_woken_by_a_session_that_drops_without_a_bye() {
+        use std::thread;
+
+        let (_log, hub) = hub();
+        let hub = Arc::new(hub);
+        let (token, steering) = hub.connect(10, "builder", Instant::now());
+        let session = {
+            let hub = Arc::clone(&hub);
+            thread::spawn(move || {
+                let _ = steering.recv();
+                hub.note_calls(10, 3);
+                // The connection dropped: the RAII registration hangs it up.
+                hub.hangup(10, token);
+            })
+        };
+
+        assert_eq!(
+            hub.stop(10, "operator stop", Duration::from_secs(5)),
+            StopOutcome::Ended { calls: 3 }
+        );
+        session.join().expect("the session thread finishes");
+        assert_eq!(hub.agent_count(), 0);
+    }
+
     /// The hub is shared by every session thread, so its registry has to
     /// survive concurrent connects, beats and ends — and end up empty when
     /// every session is gone.
@@ -885,7 +1150,7 @@ mod tests {
                     }
                     hub.note_calls(cid, 3);
                     if index % 2 == 0 {
-                        hub.end_clean(cid, token, 3);
+                        hub.end_clean(cid, token, 3, 3);
                     } else {
                         hub.reap_idle(cid, token, Duration::from_secs(300));
                     }
@@ -962,7 +1227,7 @@ mod tests {
             ]
         );
 
-        hub.end_clean(11, first, 0);
+        hub.end_clean(11, first, 0, 0);
         let snapshot = hub.snapshot();
         assert_eq!(snapshot.rows.len(), 1, "the ended session is gone");
         assert_eq!(snapshot.sessions_active, 1);
@@ -1136,7 +1401,7 @@ mod tests {
         let hub = hub_with_roles(roles_manifest(&[("builder", &["read_file"])]));
         let (token, _steering) = hub.connect(300, "builder", Instant::now());
         assert_eq!(hub.admit(300, "read_file"), Admission::Allowed);
-        hub.end_clean(300, token, 0);
+        hub.end_clean(300, token, 0, 0);
         assert_eq!(hub.admit(300, "read_file"), Admission::NoSession);
     }
 

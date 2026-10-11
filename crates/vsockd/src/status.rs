@@ -893,7 +893,7 @@ mod tests {
         let json = status_json(&hub.snapshot(), &facts(anchor), 0);
         assert!(json.contains(r#""role":"builder""#), "{json}");
 
-        hub.end_clean(10, token, 0);
+        hub.end_clean(10, token, 0, 0);
         let json = status_json(&hub.snapshot(), &facts(anchor), 1);
         assert_eq!(
             json,

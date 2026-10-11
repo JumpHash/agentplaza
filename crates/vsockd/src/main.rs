@@ -23,8 +23,10 @@
 //! `--admin-port` adds the control plane's surface on `127.0.0.1`:
 //! `POST /tell` sends one `tool_call` into a connected agent's session and
 //! answers with that agent's own `tool_result`, bounded by a wait the caller
-//! asks for. It is off unless asked for, and it is how the dispatcher
-//! (`dispatchd`) drives the fleet — see [`admin`].
+//! asks for; `POST /stop` sends the session the hub's `stop` and answers
+//! whether the session ended (the guest's `bye` count, or an honest
+//! `stopped: false` when it did not). It is off unless asked for, and it is
+//! how the dispatcher (`dispatchd`) drives the fleet — see [`admin`].
 //!
 //! `--roles <manifest>` adds the codex's tool grants ([`roles`]): the manifest
 //! (`docs/agents/initial-roles.json`) names, per role, the tools that role may
@@ -210,8 +212,9 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--status-port P]
                  JSON; GET /healthz — a liveness probe; default: off)
   --admin-port P   also serve the control plane's admin surface on 127.0.0.1:P
                  (POST /tell — send one tool_call into a connected agent's
-                 session and answer with its tool_result; GET /healthz;
-                 default: off)
+                 session and answer with its tool_result; POST /stop — send a
+                 session the hub's stop and answer whether it ended;
+                 GET /healthz; default: off)
   --roles MANIFEST  enforce the codex's per-role tool grants from MANIFEST
                  (docs/agents/initial-roles.json): a POST /tell for a tool the
                  agent's role does not grant answers 403 and never reaches the
@@ -272,8 +275,8 @@ struct Config {
     /// The loopback TCP port the read-only status surface answers on, when
     /// `--status-port` asks for it.
     status_port: Option<u16>,
-    /// The loopback TCP port the admin surface (`POST /tell`) answers on,
-    /// when `--admin-port` asks for it.
+    /// The loopback TCP port the admin surface (`POST /tell`, `POST /stop`)
+    /// answers on, when `--admin-port` asks for it.
     admin_port: Option<u16>,
     /// The roles manifest the admin surface's tool grants are enforced from,
     /// when `--roles` names one. `None` is the daemon with no policy: every
@@ -448,7 +451,9 @@ fn run(config: Config) -> Result<(), String> {
         listener
             .set_nonblocking(true)
             .map_err(|err| format!("cannot make the admin listener non-blocking: {err}"))?;
-        println!("vsockd: admin on http://127.0.0.1:{bound} (POST /tell, GET /healthz)");
+        println!(
+            "vsockd: admin on http://127.0.0.1:{bound} (POST /tell, POST /stop, GET /healthz)"
+        );
         let hub = Arc::clone(&hub);
         let facts = Arc::clone(&facts);
         handles.push(thread::spawn(move || admin::serve(listener, hub, facts)));
