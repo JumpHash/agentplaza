@@ -178,6 +178,15 @@ export interface AgentProfile {
   violations: { law: string; at_ms: number; detail: string }[];
 }
 
+/** An agent-made tool in the plaza's library. */
+export interface LibraryTool {
+  name: string; version: number; author_cid: number; author: string; description: string;
+  command: string[]; requires: string[]; input_schema: unknown;
+  /** private: only its author; pending: awaiting review to publish; published: every agent; rejected. */
+  state: 'private' | 'pending' | 'published' | 'rejected';
+  files: { path: string; size: number }[]; created_ms: number; calls: number; review_note: string | null;
+}
+
 // ---- Endpoints -------------------------------------------------------------
 
 export const api = {
@@ -239,6 +248,10 @@ export const api = {
   createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),
   killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
 
+  library: () => get<LibraryTool[]>('/v1/library'),
+  libraryFile: (name: string, version: number, path: string) => get<{ path: string; content: string }>(`/v1/library/${name}/${version}/files?path=${encodeURIComponent(path)}`),
+  reviewLibraryTool: (name: string, version: number, approve: boolean, note?: string) => post<LibraryTool>(`/v1/library/${name}/${version}/review`, { approve, note }),
+  removeLibraryTool: (name: string, version: number) => del<unknown>(`/v1/library/${name}/${version}`),
   connectors: () => get<Connector[]>('/v1/connectors'),
   updateConnector: (id: string, patch: { enabled?: boolean; roles?: string[] }) => put<Connector>(`/v1/connectors/${id}`, patch),
   /** Stores one credential field in the vault (`field` omitted: the connector's main key). */

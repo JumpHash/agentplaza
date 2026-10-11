@@ -211,7 +211,7 @@ fn longest_base64_run(text: &str) -> usize {
 
 /// Guest tools that act in the agent's own VM: `tool.exec` on its sandbox as well.
 const GUEST_EXEC: &[&str] = &[
-    "bash", "bash_start", "write_file", "edit_file", "multi_edit", "download", "fetch_url", "install_packages", "code_engine",
+    "bash", "bash_start", "write_file", "edit_file", "multi_edit", "download", "fetch_url", "install_packages", "code_engine", "tool_package",
     "checkpoint_restore",
 ];
 

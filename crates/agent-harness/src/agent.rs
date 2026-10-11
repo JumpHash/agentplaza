@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use crate::bash;
 use crate::files::{self, Workspace};
-use crate::{checkpoints, engines, plan, search_tools, shells};
+use crate::{checkpoints, engines, library, plan, search_tools, shells};
 use crate::session::{SessionError, escape_for_transcript, kind_of, note, send};
 use crate::tools;
 
@@ -464,16 +464,20 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             name: name.to_string(),
             input: input.clone(),
         })?;
-        let (decision, output, is_error) = self.await_message("tool_decision", |message| match message {
-            HostMessage::ToolDecision { call, decision, output, is_error, .. } if call == id => {
-                Ok((decision, output, is_error))
+        let (decision, output, is_error, program) = self.await_message("tool_decision", |message| match message {
+            HostMessage::ToolDecision { call, decision, output, is_error, program } if call == id => {
+                Ok((decision, output, is_error, program))
             }
             other => Err(other),
         })?;
         match decision {
             Decision::Allow => {
                 let workspace = self.workspace;
-                let outcome = self.run_local(move || run_guest_tool(workspace, name, input))?;
+                // A library tool comes with its program; built-in tools run from this harness.
+                let outcome = match program {
+                    Some(program) => self.run_local(move || library::run(workspace, &program, input))?,
+                    None => self.run_local(move || run_guest_tool(workspace, name, input))?,
+                };
                 let (ok, output) = match outcome {
                     Ok(output) => (true, output),
                     Err(err) => (false, err),
@@ -519,6 +523,7 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "bash_kill" => shells::kill(workspace, input),
         "todo_write" => plan::todo_write(workspace, input),
         "code_engine" => engines::run(workspace, input),
+        "tool_package" => library::package(workspace, input),
         "checkpoint_diff" => checkpoints::diff(workspace, input),
         "checkpoint_restore" => checkpoints::restore(workspace, input),
         "checkpoint_list" => checkpoints::list(workspace, input),
