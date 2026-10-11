@@ -1,7 +1,13 @@
 /* Floor */
 .floor-view { max-width: none; height: calc(100vh - var(--topbar-h)); }
+/* While the Floor is mounted the page never scrolls: the view fills the window below the top bar. */
+body.floor-mode { overflow: hidden; }
+body.floor-mode .view {
+  height: calc(100vh - var(--topbar-h) - 48px); margin-bottom: 0;
+  display: flex; flex-direction: column;
+}
 .floor-stage {
-  position: relative; flex: 1; min-height: 420px; overflow: hidden;
+  position: relative; flex: 1; min-height: 0; overflow: hidden;
   border: 1px solid var(--border); border-radius: var(--r-lg);
   background:
     radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),

@@ -1,22 +1,32 @@
-// The Floor: districts of robots on an isometric plaza.
+// The Floor: districts of robots on a three.js plaza. The scene owns placement,
+// wandering, packets and labels; each robot owns its own animation (floor3d/robot).
 
 import '../styles/floor.css';
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 import { type Agent, type Conversation, type Entry } from '../api';
 import { go } from '../router';
 import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
+import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
 import type { Cleanup } from './index';
 
-const TW = 64;
-const TH = 32;
-const BUBBLE_MS = 4000;
 const PACKET_MS = 1500;
-const SPEED = 1.6; // grid units per second
-const PLATFORM_Z = 10; // platform top height, screen px before zoom
-const BODY_Z = 24; // hover and packet anchor height above the floor
+const SPEED = 1.6; // grid units per second; one grid cell is one world unit
 const MAX_PACKETS = 60;
+const SLAB_H = 0.5; // district slab height
+const DAIS_H = 0.8; // orchestrator dais height
+const DAIS_R = 2.3;
+const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
+const AZIMUTH = Math.PI / 4;
+const LABEL_CSS =
+  'position:absolute;left:0;top:0;display:none;max-width:220px;padding:3px 6px;' +
+  'background:var(--sheet);border:1px solid var(--ink);color:var(--ink);' +
+  'font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;' +
+  'pointer-events:none;will-change:transform';
 
 interface District {
   role: string;
@@ -34,15 +44,28 @@ interface Bot {
   y: number;
   tx: number; // wander target
   ty: number;
-  facing: number; // -1 left, 1 right
-  walk: number; // walk phase
+  heading: number; // radians about the vertical axis
   moving: boolean;
+  state: RobotState | null;
   nextWander: number;
-  bubble: { text: string; until: number; tone: 'info' | 'ok' | 'danger' } | null;
-  activity: string; // what the agent is doing right now, shown on its card
+  activity: string; // what the agent is doing right now, shown on its label and card
+  robot: Robot;
+  robotKey: string;
+  pad: THREE.Mesh; // console pad under the home slot, tinted by state
+  padMat: THREE.MeshBasicMaterial;
+  highlighted: boolean;
+  label: HTMLDivElement;
+  labelName: HTMLElement;
+  labelLine: HTMLElement;
 }
 
-interface Packet { from: number; to: number; start: number; tone: 'accent' | 'ok' }
+interface Packet {
+  from: number;
+  to: number;
+  start: number;
+  core: THREE.Mesh;
+  halo: THREE.Mesh;
+}
 
 interface Palette {
   paper: string;
@@ -61,11 +84,6 @@ export function roleHue(role: string): number {
   let hash = 0;
   for (const ch of role) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   return hash % 360;
-}
-
-/** World (grid) → screen px, before pan and zoom. */
-function iso(x: number, y: number, z = 0): [number, number] {
-  return [(x - y) * (TW / 2), (x + y) * (TH / 2) - z];
 }
 
 /** Districts by role around a central dais; each agent gets a console slot. */
@@ -119,6 +137,21 @@ function readPalette(): Palette {
   };
 }
 
+let probe: CanvasRenderingContext2D | null = null;
+
+/** Any CSS colour (including oklch) as a three.js colour: the browser resolves it to sRGB. */
+function colour(css: string, fallback: string): THREE.Color {
+  probe ??= document.createElement('canvas').getContext('2d');
+  const c = new THREE.Color();
+  if (!probe) return c.set(fallback);
+  probe.fillStyle = fallback;
+  probe.fillStyle = css; // invalid CSS is ignored and keeps the fallback
+  probe.clearRect(0, 0, 1, 1);
+  probe.fillRect(0, 0, 1, 1);
+  const px = probe.getImageData(0, 0, 1, 1).data;
+  return c.setRGB((px[0] ?? 0) / 255, (px[1] ?? 0) / 255, (px[2] ?? 0) / 255, THREE.SRGBColorSpace);
+}
+
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
@@ -127,8 +160,127 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
+const topOf = (d: District): number => (d.role === 'orchestrator' ? DAIS_H : SLAB_H);
+
+/** Free geometry, materials and textures under an object. */
+function disposeTree(obj: THREE.Object3D): void {
+  obj.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    mesh.geometry?.dispose();
+    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
+    for (const m of mats) {
+      (m as THREE.MeshBasicMaterial).map?.dispose();
+      m.dispose();
+    }
+  });
+}
+
+/** The cid a tool call hands a message or a task to, if any. */
+function recipientOf(tool: string, inp: Record<string, unknown>): number | null {
+  const to = inp.to_cid ?? inp.assignee;
+  const sends = tool === 'plaza_send_message';
+  const assigns = tool === 'plaza_assign' || tool === 'plaza_post_task';
+  return (sends || assigns) && typeof to === 'number' ? to : null;
+}
+
+/** The one line that says what a tool call is doing. */
+function toolActivity(tool: string, inp: Record<string, unknown>, nameOf: (cid: unknown) => string): string {
+  if (tool === 'bash') return `$ ${clip(str(inp.command).split('\n')[0] ?? '', 120)}`;
+  if (tool === 'plaza_send_message') return `✉ to ${nameOf(inp.to_cid)}: ${clip(str(inp.text), 100)}`;
+  if (tool === 'plaza_assign' || (tool === 'plaza_post_task' && inp.assignee != null)) {
+    return `→ task for ${nameOf(inp.assignee ?? inp.to_cid)}: ${str(inp.title)}`;
+  }
+  if (tool === 'share_file') return `⇪ shared ${str(inp.path)}`;
+  const target = str(inp.path) || str(inp.url);
+  return target ? `→ ${tool} ${clip(target, 80)}` : `→ ${tool}`;
+}
+
 export function mount(root: HTMLElement): Cleanup {
-  const canvas = h('canvas.floor-canvas', { 'aria-label': 'The plaza floor' });
+  const palette = readPalette();
+  const C = {
+    sheet: colour(palette.sheet, '#ffffff'),
+    rule: colour(palette.rule, '#d6d2c8'),
+    ink3: colour(palette.ink3, '#8a8a8a'),
+    signal: colour(palette.signal, '#d9482b'),
+    ok: colour(palette.ok, '#2f8f5b'),
+    info: colour(palette.info, '#2f6fb0'),
+    paper: colour(palette.paper, '#f5f3ee'),
+  };
+  const robotPalette: RobotPalette = {
+    ink: palette.ink,
+    sheet: palette.sheet,
+    paper: palette.paper,
+    rule: palette.rule,
+    signal: palette.signal,
+    ok: palette.ok,
+    info: palette.info,
+    inkMuted: palette.ink3,
+  };
+
+  // Renderer, scene, camera, controls.
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  const canvas = renderer.domElement;
+  canvas.classList.add('floor-canvas');
+  canvas.setAttribute('aria-label', 'The plaza floor');
+  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab';
+
+  const scene = new THREE.Scene();
+  scene.background = C.paper;
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  controls.minPolarAngle = 0.2;
+  controls.maxPolarAngle = 1.3; // keeps the floor in view
+  controls.minDistance = 6;
+  controls.maxDistance = 300;
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a9a, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+  sun.position.set(22, 40, 16);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0008;
+  const sc = sun.shadow.camera;
+  Object.assign(sc, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 140 });
+  sc.updateProjectionMatrix();
+  scene.add(sun);
+
+  // Ground: a large sheet with a subtle grid.
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200),
+    new THREE.MeshStandardMaterial({ color: C.sheet, roughness: 1 }),
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.01;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  const grid = new THREE.GridHelper(200, 100, C.rule, C.rule);
+  const gridMat = grid.material as THREE.LineBasicMaterial;
+  gridMat.transparent = true;
+  gridMat.opacity = 0.35;
+  gridMat.depthWrite = false;
+  scene.add(grid);
+
+  // Shared resources.
+  const districtGroup = new THREE.Group();
+  scene.add(districtGroup);
+  const padGeo = new THREE.CircleGeometry(0.42, 28);
+  const packetGeo = new THREE.SphereGeometry(0.13, 14, 10);
+  const haloGeo = new THREE.SphereGeometry(0.34, 14, 10);
+  const mats = {
+    accent: new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false }),
+    ok: new THREE.MeshBasicMaterial({ color: C.ok, toneMapped: false }),
+    accentHalo: new THREE.MeshBasicMaterial({ color: C.signal, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }),
+    okHalo: new THREE.MeshBasicMaterial({ color: C.ok, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }),
+  };
+
+  // DOM: stage with the canvas, name labels, the card, the legend.
   const card = h('div.floor-card', { hidden: true });
   const legend = h(
     'div.floor-legend',
@@ -137,117 +289,226 @@ export function mount(root: HTMLElement): Cleanup {
     h('span', null, h('i.floor-key.idle'), 'Idle'),
     h('span', null, h('i.floor-key.offline'), 'Offline'),
   );
-  const stage = h('div.floor-stage', null, canvas, card, legend);
+  const tags = document.createElement('div');
+  tags.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
+  const stage = h('div.floor-stage', null, tags, card, legend);
+  stage.style.position = 'relative';
+  stage.prepend(canvas);
   root.classList.add('floor-view');
-  root.append(h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => fit(), { kind: 'ghost', icon: 'refresh' }))), stage);
+  document.body.classList.add('floor-mode');
+  root.append(
+    h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { kind: 'ghost', icon: 'refresh' }))),
+    stage,
+  );
 
-  const ctx = canvas.getContext('2d')!;
   let districts: District[] = [];
+  let districtSig = '';
   let bots: Bot[] = [];
   const byCid = new Map<number, Bot>();
   const packets: Packet[] = [];
-  let pan = { x: 0, y: 0 };
-  let zoom = 1;
   let width = 0;
   let height = 0;
-  let dpr = 1;
   let hovered: Bot | null = null;
   let selected: Bot | null = null;
   let cardSig = '';
-  let drag: { x: number; y: number; moved: number } | null = null;
   let fitted = false;
-  let running = true;
-  let raf = 0;
   let last = performance.now();
-  const palette = readPalette();
+  const ndcVec = new THREE.Vector2();
+  const raycaster = new THREE.Raycaster();
+  const camDir = new THREE.Vector3();
+
+  // Plaques, slabs and the dais.
+  function plaqueTexture(text: string, orch: boolean): THREE.CanvasTexture {
+    const cv = document.createElement('canvas');
+    cv.width = 512;
+    cv.height = 128;
+    const g = cv.getContext('2d')!;
+    g.beginPath();
+    g.moveTo(24, 4);
+    g.arcTo(508, 4, 508, 124, 20);
+    g.arcTo(508, 124, 4, 124, 20);
+    g.arcTo(4, 124, 4, 4, 20);
+    g.arcTo(4, 4, 508, 4, 20);
+    g.closePath();
+    g.fillStyle = palette.sheet;
+    g.fill();
+    g.lineWidth = 6;
+    g.strokeStyle = orch ? palette.signal : palette.rule;
+    g.stroke();
+    g.fillStyle = palette.ink2;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    const base = '500 48px ui-monospace, SFMono-Regular, Menlo, monospace';
+    g.font = base;
+    const w = g.measureText(text).width;
+    if (w > 460) g.font = `500 ${Math.floor((48 * 460) / w)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    g.fillText(text, 256, 66);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  function districtMesh(d: District): THREE.Group {
+    const g = new THREE.Group();
+    const orch = d.role === 'orchestrator';
+    if (orch) {
+      const dais = new THREE.Mesh(
+        new THREE.CylinderGeometry(DAIS_R, DAIS_R + 0.2, DAIS_H, 48),
+        new THREE.MeshStandardMaterial({ color: C.sheet, roughness: 0.9 }),
+      );
+      dais.position.set(d.cx, DAIS_H / 2, d.cy);
+      dais.castShadow = true;
+      dais.receiveShadow = true;
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(DAIS_R, 0.05, 8, 64), new THREE.MeshBasicMaterial({ color: C.signal }));
+      rim.rotation.x = Math.PI / 2;
+      rim.position.set(d.cx, DAIS_H + 0.01, d.cy);
+      g.add(dais, rim);
+    } else {
+      const box = new THREE.BoxGeometry(2 * d.r, SLAB_H, 2 * d.r);
+      const slab = new THREE.Mesh(
+        box,
+        new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.25, 0.86, THREE.SRGBColorSpace), roughness: 0.95 }),
+      );
+      slab.position.set(d.cx, SLAB_H / 2, d.cy);
+      slab.castShadow = true;
+      slab.receiveShadow = true;
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: C.rule }));
+      edges.position.copy(slab.position);
+      g.add(slab, edges);
+    }
+    // Role plaque lies flat on the back edge of the slab (the dais for the orchestrator).
+    const plaque = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.6, 0.65),
+      new THREE.MeshBasicMaterial({ map: plaqueTexture(d.role.toUpperCase(), orch), transparent: true, depthWrite: false }),
+    );
+    plaque.rotation.x = -Math.PI / 2;
+    plaque.position.set(d.cx, topOf(d) + 0.01, orch ? d.cy - 1.6 : d.cy - d.r + 0.55);
+    g.add(plaque);
+    return g;
+  }
+
+  function buildDistricts(ds: District[]): void {
+    for (const child of [...districtGroup.children]) {
+      districtGroup.remove(child);
+      disposeTree(child);
+    }
+    for (const d of ds) districtGroup.add(districtMesh(d));
+  }
+
+  // Robots, labels, pads.
+  function createBot(agent: Agent, district: District, hx: number, hy: number): Bot {
+    const orch = agent.tier === 'orchestrator';
+    const robot = makeRobot(district.hue, orch, robotPalette);
+    robot.group.traverse((o) => {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    });
+    scene.add(robot.group);
+    const padMat = new THREE.MeshBasicMaterial({ color: C.ink3, transparent: true, opacity: 0.6, depthWrite: false });
+    const pad = new THREE.Mesh(padGeo, padMat);
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.set(hx, topOf(district) + 0.02, hy);
+    scene.add(pad);
+    const label = document.createElement('div');
+    label.style.cssText = LABEL_CSS;
+    const labelName = document.createElement('strong');
+    labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis';
+    const labelLine = document.createElement('div');
+    labelLine.style.cssText = 'color:var(--ink-2);overflow:hidden;text-overflow:ellipsis';
+    label.append(labelName, labelLine);
+    tags.append(label);
+    return {
+      agent,
+      district,
+      home: [hx, hy],
+      x: hx,
+      y: hy,
+      tx: hx,
+      ty: hy,
+      heading: 0,
+      moving: false,
+      state: null,
+      nextWander: performance.now() + Math.random() * 3000,
+      activity: 'idle',
+      robot,
+      robotKey: `${district.hue}|${orch}`,
+      pad,
+      padMat,
+      highlighted: false,
+      label,
+      labelName,
+      labelLine,
+    };
+  }
+
+  function removeBot(b: Bot): void {
+    scene.remove(b.robot.group);
+    b.robot.dispose();
+    scene.remove(b.pad);
+    b.padMat.dispose();
+    b.label.remove();
+  }
 
   function sync(list: Agent[]): void {
     const laid = layoutDistricts(list);
     districts = laid.districts;
-    const next: Bot[] = [];
+    const sig = JSON.stringify(districts);
+    if (sig !== districtSig) {
+      districtSig = sig;
+      buildDistricts(districts);
+    }
+    const seen = new Set<number>();
     for (const agent of list) {
       const slot = laid.homes.get(agent.cid);
       if (!slot) continue;
       const [district, hx, hy] = slot;
-      const old = byCid.get(agent.cid);
-      next.push(
-        old
-          ? Object.assign(old, { agent, district, home: [hx, hy] as [number, number] })
-          : {
-              agent,
-              district,
-              home: [hx, hy],
-              x: hx,
-              y: hy,
-              tx: hx,
-              ty: hy,
-              facing: 1,
-              walk: 0,
-              moving: false,
-              nextWander: performance.now() + Math.random() * 3000,
-              bubble: null,
-              activity: 'idle',
-            },
-      );
+      seen.add(agent.cid);
+      let bot = byCid.get(agent.cid);
+      if (bot && bot.robotKey !== `${district.hue}|${agent.tier === 'orchestrator'}`) {
+        removeBot(bot);
+        bot = undefined;
+      }
+      if (!bot) {
+        bot = createBot(agent, district, hx, hy);
+        byCid.set(agent.cid, bot);
+      }
+      Object.assign(bot, { agent, district, home: [hx, hy] as [number, number] });
+      bot.pad.position.set(hx, topOf(district) + 0.02, hy);
     }
-    bots = next;
-    byCid.clear();
-    bots.forEach((b) => byCid.set(b.agent.cid, b));
+    for (const [cid, bot] of byCid) {
+      if (seen.has(cid)) continue;
+      removeBot(bot);
+      byCid.delete(cid);
+    }
+    bots = [...byCid.values()];
     if (selected) selected = byCid.get(selected.agent.cid) ?? null;
     if (hovered) hovered = byCid.get(hovered.agent.cid) ?? null;
     renderCard();
   }
 
-  /** Screen px of a world point, with pan and zoom applied. */
-  function project(gx: number, gy: number, z = 0): [number, number] {
-    const ox = width / 2 + pan.x;
-    const oy = height / 2 + pan.y;
-    const [ix, iy] = iso(gx, gy, z);
-    return [ox + ix * zoom, oy + iy * zoom];
+  /** Where the camera sits for the default view, fitted to the districts. */
+  function resetView(): void {
+    let extent = 6;
+    for (const d of districts) extent = Math.max(extent, Math.abs(d.cx) + d.r, Math.abs(d.cy) + d.r);
+    const dist = extent * 2.6 + 6;
+    controls.target.set(0, 0.4, 0);
+    camera.position.copy(controls.target).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
+    controls.update();
   }
 
-  function fit(): void {
-    if (!districts.length) {
-      pan = { x: 0, y: 0 };
-      zoom = 1;
-      return;
-    }
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const d of districts) {
-      const corners: [number, number][] = [
-        [d.cx - d.r, d.cy - d.r],
-        [d.cx + d.r, d.cy - d.r],
-        [d.cx + d.r, d.cy + d.r],
-        [d.cx - d.r, d.cy + d.r],
-      ];
-      for (const [gx, gy] of corners) {
-        const [ix, iy] = iso(gx, gy);
-        minX = Math.min(minX, ix);
-        maxX = Math.max(maxX, ix);
-        minY = Math.min(minY, iy - 60); // room for robots and bubbles
-        maxY = Math.max(maxY, iy + PLATFORM_Z);
-      }
-    }
-    const w = Math.max(1, maxX - minX);
-    const hgt = Math.max(1, maxY - minY);
-    zoom = clamp(Math.min((width * 0.85) / w, (height * 0.85) / hgt), 0.4, 2.5);
-    pan = { x: -((minX + maxX) / 2) * zoom, y: -((minY + maxY) / 2) * zoom };
-  }
-
-  function update(dt: number, now: number): void {
+  /** Robots: wander when idle, head home when working or offline, animate, tint pads. */
+  function updateBots(dt: number, now: number): void {
+    const t = now / 1000;
     for (const b of bots) {
-      const idle = b.agent.status === 'idle';
-      if (idle && now >= b.nextWander) {
+      const status = b.agent.status;
+      const roaming = status === 'idle';
+      if (roaming && now >= b.nextWander) {
         const span = Math.max(0.5, b.district.r - 0.7);
         b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
         b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
         b.nextWander = now + 3000 + Math.random() * 4000;
       }
-      // Working and offline bots head for their console; idle bots wander.
-      const [gx, gy] = idle ? [b.tx, b.ty] : b.home;
+      const [gx, gy] = roaming ? [b.tx, b.ty] : b.home;
       const dx = gx - b.x;
       const dy = gy - b.y;
       const dist = Math.hypot(dx, dy);
@@ -261,328 +522,65 @@ export function mount(root: HTMLElement): Cleanup {
         b.y = gy;
       }
       if (b.moving) {
-        b.walk += dt * 9;
-        const screenDx = dx - dy;
-        if (Math.abs(screenDx) > 0.05) b.facing = screenDx > 0 ? 1 : -1;
+        // Local +Z is forward; turn toward the direction of travel.
+        const want = Math.atan2(dx, dy);
+        const diff = Math.atan2(Math.sin(want - b.heading), Math.cos(want - b.heading));
+        b.heading += diff * Math.min(1, dt * 8);
       }
+      const state: RobotState = status === 'working' ? 'working' : status === 'offline' ? 'offline' : b.moving ? 'walking' : 'idle';
+      if (state !== b.state) {
+        b.state = state;
+        b.robot.setState(state);
+      }
+      const highlight = b === selected || b === hovered;
+      if (highlight !== b.highlighted) {
+        b.highlighted = highlight;
+        b.robot.setHighlighted(highlight);
+      }
+      b.robot.group.position.set(b.x, topOf(b.district), b.y);
+      b.robot.group.rotation.y = b.heading;
+      b.robot.update(dt, t);
+      b.padMat.color.copy(status === 'working' ? C.info : status === 'idle' ? C.ok : C.ink3);
     }
   }
 
-  function fillPoly(pts: [number, number][], fill: string): void {
-    ctx.beginPath();
-    pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
+  // Packets: glowing spheres on a curved arc between two robots.
+  function sendPacket(from: number, to: number, tone: 'accent' | 'ok'): void {
+    if (from === to) return;
+    const core = new THREE.Mesh(packetGeo, tone === 'ok' ? mats.ok : mats.accent);
+    const halo = new THREE.Mesh(haloGeo, tone === 'ok' ? mats.okHalo : mats.accentHalo);
+    scene.add(core, halo);
+    packets.push({ from, to, start: performance.now(), core, halo });
+    while (packets.length > MAX_PACKETS) dropPacket(packets.shift()!);
   }
 
-  function rrect(x: number, y: number, w: number, hgt: number, r: number): void {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + hgt, r);
-    ctx.arcTo(x + w, y + hgt, x, y + hgt, r);
-    ctx.arcTo(x, y + hgt, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
+  function dropPacket(p: Packet): void {
+    scene.remove(p.core, p.halo);
   }
 
-  function drawPlatform(d: District): void {
-    const x0 = d.cx - d.r;
-    const x1 = d.cx + d.r;
-    const y0 = d.cy - d.r;
-    const y1 = d.cy + d.r;
-    const top = (x: number, y: number): [number, number] => project(x, y, PLATFORM_Z);
-    const base = (x: number, y: number): [number, number] => project(x, y, 0);
-    // Side faces facing the viewer.
-    fillPoly([top(x1, y0), top(x1, y1), base(x1, y1), base(x1, y0)], `hsl(${d.hue} 30% 32% / 0.5)`);
-    fillPoly([top(x1, y1), top(x0, y1), base(x0, y1), base(x1, y1)], `hsl(${d.hue} 30% 22% / 0.6)`);
-    const topFace: [number, number][] = [top(x0, y0), top(x1, y0), top(x1, y1), top(x0, y1)];
-    fillPoly(topFace, palette.sheet);
-    fillPoly(topFace, `hsl(${d.hue} 30% 50% / 0.12)`);
-    const isBoss = d.role === 'orchestrator';
-    ctx.beginPath();
-    topFace.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
-    ctx.closePath();
-    ctx.strokeStyle = isBoss ? palette.signal : palette.rule;
-    ctx.lineWidth = isBoss ? 2 : 1;
-    ctx.stroke();
-    // Mono plaque with the role, on the back edge.
-    const [px, py] = top(x0, y0);
-    const label = d.role.toUpperCase();
-    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-    const w = ctx.measureText(label).width + 12;
-    const plaqueY = py + 10;
-    rrect(px - w / 2, plaqueY, w, 16, 3);
-    ctx.fillStyle = palette.sheet;
-    ctx.fill();
-    ctx.strokeStyle = isBoss ? palette.signal : palette.rule;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = palette.ink2;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, px, plaqueY + 8.5);
-  }
-
-  function drawConsole(gx: number, gy: number, working: boolean): void {
-    const s = 0.32;
-    const s2 = 0.2;
-    const top = (x: number, y: number): [number, number] => project(x, y, PLATFORM_Z + 12);
-    const base = (x: number, y: number): [number, number] => project(x, y, PLATFORM_Z);
-    const A: [number, number] = [gx - s, gy - s];
-    const B: [number, number] = [gx + s, gy - s];
-    const C: [number, number] = [gx + s, gy + s];
-    const D: [number, number] = [gx - s, gy + s];
-    fillPoly([top(B[0], B[1]), top(C[0], C[1]), base(C[0], C[1]), base(B[0], B[1])], palette.ink3);
-    fillPoly([top(C[0], C[1]), top(D[0], D[1]), base(D[0], D[1]), base(C[0], C[1])], palette.ink2);
-    fillPoly([top(A[0], A[1]), top(B[0], B[1]), top(C[0], C[1]), top(D[0], D[1])], palette.sheet);
-    const screenPts: [number, number][] = [
-      top(gx - s2, gy - s2),
-      top(gx + s2, gy - s2),
-      top(gx + s2, gy + s2),
-      top(gx - s2, gy + s2),
-    ];
-    ctx.save();
-    ctx.globalAlpha = working ? 1 : 0.6;
-    fillPoly(screenPts, working ? palette.info : palette.rule);
-    ctx.restore();
-  }
-
-  function drawBot(b: Bot, now: number): void {
-    const [fx, fy] = project(b.x, b.y, PLATFORM_Z);
-    const status = b.agent.status;
-    const tone = status === 'working' ? palette.info : status === 'idle' ? palette.ok : palette.ink3;
-    const hue = b.district.hue;
-    const swing = b.moving ? Math.sin(b.walk) * 3 : 0;
-    const tap = (side: number): number => (status === 'working' ? Math.sin(now / 110 + (side > 0 ? Math.PI : 0)) * 2 : 0);
-    ctx.save();
-    ctx.globalAlpha = status === 'offline' ? 0.4 : 1;
-    ctx.translate(fx, fy);
-    ctx.scale(zoom * b.facing, zoom);
-
-    // Shadow.
-    ctx.save();
-    ctx.globalAlpha *= 0.18;
-    ctx.fillStyle = palette.ink;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 9, 4.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    // Legs swing while walking.
-    ctx.strokeStyle = palette.ink2;
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round';
-    for (const side of [-1, 1]) {
-      const off = side === -1 ? swing : -swing;
-      ctx.beginPath();
-      ctx.moveTo(side * 3.5, -12);
-      ctx.lineTo(side * 3.5 + off, 0);
-      ctx.stroke();
-    }
-
-    // Body with a role-hue gradient and a chest panel.
-    const grad = ctx.createLinearGradient(0, -30, 0, -12);
-    grad.addColorStop(0, `hsl(${hue} 55% 66%)`);
-    grad.addColorStop(1, `hsl(${hue} 50% 44%)`);
-    rrect(-7, -30, 14, 18, 4);
-    ctx.fillStyle = grad;
-    ctx.fill();
-    ctx.strokeStyle = palette.ink2;
-    ctx.lineWidth = 0.8;
-    ctx.stroke();
-    rrect(-4, -25, 8, 7, 1.5);
-    ctx.fillStyle = palette.sheet;
-    ctx.fill();
-    ctx.fillStyle = palette.ink;
-    ctx.font = 'bold 7px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(b.agent.role.charAt(0).toUpperCase() || '?', 0, -21.5);
-
-    // Arms, tapping while working.
-    ctx.strokeStyle = `hsl(${hue} 45% 36%)`;
-    ctx.lineWidth = 2;
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(side * 7, -27);
-      ctx.lineTo(side * 10, -19 + tap(side));
-      ctx.stroke();
-    }
-
-    // Head with a dark visor and status eyes.
-    rrect(-6, -41, 12, 10, 3);
-    ctx.fillStyle = palette.sheet;
-    ctx.fill();
-    ctx.strokeStyle = palette.ink2;
-    ctx.stroke();
-    rrect(-4.5, -38.5, 9, 5, 1.5);
-    ctx.fillStyle = palette.ink;
-    ctx.fill();
-    ctx.fillStyle = tone;
-    for (const ex of [-2, 2]) {
-      ctx.beginPath();
-      ctx.arc(ex, -36, 1.1, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Antenna light.
-    ctx.strokeStyle = palette.ink2;
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    ctx.moveTo(0, -41);
-    ctx.lineTo(0, -46);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, -47, 1.8, 0, Math.PI * 2);
-    ctx.fillStyle = tone;
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function drawOverlay(b: Bot, now: number): void {
-    const [fx, fy] = project(b.x, b.y, PLATFORM_Z);
-    if (b.bubble && now < b.bubble.until) {
-      const [bx, by] = project(b.x, b.y, PLATFORM_Z + 52);
-      const alpha = clamp((b.bubble.until - now) / 800, 0, 1);
-      const text = clip(b.bubble.text, 30);
-      ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
-      const w = ctx.measureText(text).width + 14;
-      const bh = 18;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      rrect(bx - w / 2, by - bh - 6, w, bh, 6);
-      ctx.fillStyle = palette.sheet;
-      ctx.fill();
-      ctx.strokeStyle = b.bubble.tone === 'danger' ? palette.danger : b.bubble.tone === 'ok' ? palette.ok : palette.info;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = palette.ink;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(text, bx, by - bh / 2 - 6);
-      ctx.restore();
-    }
-    if (b === hovered || b === selected || zoom > 0.9) {
-      ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = palette.paper;
-      ctx.strokeText(b.agent.name, fx, fy + 14);
-      ctx.fillStyle = palette.ink;
-      ctx.fillText(b.agent.name, fx, fy + 14);
-    }
-  }
-
-  function drawPackets(now: number): void {
+  function updatePackets(now: number): void {
     for (let i = packets.length - 1; i >= 0; i--) {
-      const p = packets[i];
-      if (!p) continue;
+      const p = packets[i]!;
       const t = (now - p.start) / PACKET_MS;
-      if (t >= 1) {
+      const a = byCid.get(p.from);
+      const b = byCid.get(p.to);
+      if (t >= 1 || !a || !b) {
+        dropPacket(p);
         packets.splice(i, 1);
         continue;
       }
-      const a = byCid.get(p.from);
-      const b = byCid.get(p.to);
-      if (!a || !b) continue;
-      const [x0, y0] = project(a.x, a.y, PLATFORM_Z + BODY_Z);
-      const [x2, y2] = project(b.x, b.y, PLATFORM_Z + BODY_Z);
-      const mx = (x0 + x2) / 2;
-      const my = (y0 + y2) / 2 - 60 * zoom;
+      const p0 = a.robot.labelAnchor(new THREE.Vector3());
+      const p2 = b.robot.labelAnchor(new THREE.Vector3());
+      const mid = p0.clone().lerp(p2, 0.5);
+      mid.y += 0.8 + p0.distanceTo(p2) * 0.3;
       const u = 1 - t;
-      const x = u * u * x0 + 2 * u * t * mx + t * t * x2;
-      const y = u * u * y0 + 2 * u * t * my + t * t * y2;
-      const color = p.tone === 'ok' ? palette.ok : palette.signal;
-      ctx.save();
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 12;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      const pos = p0.multiplyScalar(u * u).addScaledVector(mid, 2 * u * t).addScaledVector(p2, t * t);
+      p.core.position.copy(pos);
+      p.halo.position.copy(pos);
     }
   }
 
-  function draw(now: number): void {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = palette.paper;
-    ctx.fillRect(0, 0, width, height);
-
-    // Faint floor grid.
-    let extent = 8;
-    for (const d of districts) extent = Math.max(extent, Math.abs(d.cx) + d.r + 3, Math.abs(d.cy) + d.r + 3);
-    ctx.save();
-    ctx.globalAlpha = 0.3;
-    ctx.strokeStyle = palette.rule;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let g = -extent; g <= extent; g++) {
-      const [ax, ay] = project(g, -extent);
-      const [bx, by] = project(g, extent);
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      const [cx, cy] = project(-extent, g);
-      const [dx, dy] = project(extent, g);
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(dx, dy);
-    }
-    ctx.stroke();
-    ctx.restore();
-
-    for (const d of districts) drawPlatform(d);
-
-    // Consoles and robots, back to front.
-    const items: { depth: number; paint: () => void }[] = [];
-    for (const b of bots) {
-      const working = b.agent.status === 'working';
-      const [hx, hy] = b.home;
-      items.push({ depth: hx + hy - 0.01, paint: () => drawConsole(hx, hy, working) });
-      items.push({ depth: b.x + b.y, paint: () => drawBot(b, now) });
-    }
-    items.sort((p, q) => p.depth - q.depth);
-    for (const item of items) item.paint();
-
-    drawPackets(now);
-    for (const b of bots) drawOverlay(b, now);
-    positionCard();
-  }
-
-  function sendPacket(from: number, to: number, tone: 'accent' | 'ok'): void {
-    if (from === to) return;
-    packets.push({ from, to, start: performance.now(), tone });
-    if (packets.length > MAX_PACKETS) packets.shift();
-  }
-
-  function say(bot: Bot, text: string, tone: 'info' | 'ok' | 'danger'): void {
-    bot.bubble = { text, until: performance.now() + BUBBLE_MS, tone };
-  }
-
-  function findBot(mx: number, my: number): Bot | null {
-    let best: Bot | null = null;
-    let bestDist = 22 * zoom;
-    for (const b of bots) {
-      const [fx, fy] = project(b.x, b.y, PLATFORM_Z);
-      const dist = Math.hypot(mx - fx, my - (fy - 24 * zoom));
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = b;
-      }
-    }
-    return best;
-  }
-
-  function select(bot: Bot | null): void {
-    selected = bot;
-    cardSig = '';
-    renderCard();
-  }
-
-  /** What the card shows: offline overrides whatever the transcript last said. */
+  /** What labels and the card show: offline overrides whatever the transcript last said. */
   const shown = (b: Bot): string => (b.agent.status === 'offline' ? 'offline' : b.activity);
 
   const nameOf = (cid: unknown): string => {
@@ -595,24 +593,27 @@ export function mount(root: HTMLElement): Cleanup {
     if (bot === selected) renderCard();
   }
 
-  /** The cid a tool call hands a message or a task to, if any. */
-  function recipientOf(tool: string, inp: Record<string, unknown>): number | null {
-    const to = inp.to_cid ?? inp.assignee;
-    const sends = tool === 'plaza_send_message';
-    const assigns = tool === 'plaza_assign' || tool === 'plaza_post_task';
-    return (sends || assigns) && typeof to === 'number' ? to : null;
+  // Projection onto the stage and the HTML labels.
+  function toScreen(p: THREE.Vector3): { x: number; y: number; visible: boolean } {
+    const ndc = p.clone().project(camera);
+    camera.getWorldDirection(camDir);
+    const inFront = p.clone().sub(camera.position).dot(camDir) > 0;
+    return { x: ((ndc.x + 1) / 2) * width, y: ((1 - ndc.y) / 2) * height, visible: inFront && ndc.z <= 1 };
   }
 
-  /** The one line that says what a tool call is doing. */
-  function toolActivity(tool: string, inp: Record<string, unknown>): string {
-    if (tool === 'bash') return `$ ${clip(str(inp.command).split('\n')[0] ?? '', 120)}`;
-    if (tool === 'plaza_send_message') return `✉ to ${nameOf(inp.to_cid)}: ${clip(str(inp.text), 100)}`;
-    if (tool === 'plaza_assign' || (tool === 'plaza_post_task' && inp.assignee != null)) {
-      return `→ task for ${nameOf(inp.assignee ?? inp.to_cid)}: ${str(inp.title)}`;
+  function updateLabels(): void {
+    for (const b of bots) {
+      const s = toScreen(b.robot.labelAnchor(new THREE.Vector3()));
+      if (!s.visible) {
+        b.label.style.display = 'none';
+        continue;
+      }
+      b.label.style.display = 'block';
+      b.label.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%) translateY(-6px)`;
+      if (b.labelName.textContent !== b.agent.name) b.labelName.textContent = b.agent.name;
+      const line = shown(b);
+      if (b.labelLine.textContent !== line) b.labelLine.textContent = line;
     }
-    if (tool === 'share_file') return `⇪ shared ${str(inp.path)}`;
-    const target = str(inp.path) || str(inp.url);
-    return target ? `→ ${tool} ${clip(target, 80)}` : `→ ${tool}`;
   }
 
   function renderCard(): void {
@@ -632,85 +633,91 @@ export function mount(root: HTMLElement): Cleanup {
 
   function positionCard(): void {
     if (!selected || card.hidden) return;
-    const [sx, sy] = project(selected.x, selected.y, PLATFORM_Z + 40);
-    const left = clamp(sx + 24, 8, Math.max(8, width - 308));
-    const top = clamp(sy - 120, 8, Math.max(8, height - 260));
+    const s = toScreen(selected.robot.labelAnchor(new THREE.Vector3()));
+    const left = clamp(s.x + 24, 8, Math.max(8, width - 308));
+    const top = clamp(s.y - 120, 8, Math.max(8, height - 260));
     card.style.left = `${left}px`;
     card.style.top = `${top}px`;
   }
 
-  // Pointer: drag to pan, click to select, hover to highlight.
-  const local = (ev: MouseEvent): [number, number] => {
-    const r = canvas.getBoundingClientRect();
-    return [ev.clientX - r.left, ev.clientY - r.top];
-  };
-  canvas.addEventListener('pointerdown', (ev) => {
-    drag = { x: ev.clientX, y: ev.clientY, moved: 0 };
-    canvas.setPointerCapture(ev.pointerId);
-    canvas.style.cursor = 'grabbing';
-  });
-  canvas.addEventListener('pointermove', (ev) => {
-    if (drag) {
-      const dx = ev.clientX - drag.x;
-      const dy = ev.clientY - drag.y;
-      drag.moved += Math.abs(dx) + Math.abs(dy);
-      drag.x = ev.clientX;
-      drag.y = ev.clientY;
-      pan = { x: pan.x + dx, y: pan.y + dy };
-      return;
-    }
-    const [mx, my] = local(ev);
-    hovered = findBot(mx, my);
-    canvas.style.cursor = hovered ? 'pointer' : 'grab';
-  });
-  canvas.addEventListener('pointerup', (ev) => {
-    if (!drag) return;
-    const moved = drag.moved;
-    drag = null;
-    canvas.style.cursor = 'grab';
-    if (moved < 4) {
-      const [mx, my] = local(ev);
-      select(findBot(mx, my));
-    }
-  });
-  canvas.addEventListener('pointercancel', () => {
-    drag = null;
-    canvas.style.cursor = 'grab';
-  });
-  canvas.addEventListener('pointerleave', () => {
-    hovered = null;
-  });
-  canvas.addEventListener(
-    'wheel',
-    (ev) => {
-      ev.preventDefault();
-      const [mx, my] = local(ev);
-      const ox = width / 2 + pan.x;
-      const oy = height / 2 + pan.y;
-      const ix = (mx - ox) / zoom;
-      const iy = (my - oy) / zoom;
-      zoom = clamp(zoom * Math.exp(-ev.deltaY * 0.0015), 0.4, 2.5);
-      pan = { x: mx - ix * zoom - width / 2, y: my - iy * zoom - height / 2 };
-    },
-    { passive: false },
-  );
+  function select(bot: Bot | null): void {
+    selected = bot;
+    cardSig = '';
+    renderCard();
+  }
 
+  /** The robot under a pointer event, found by raycasting against the robot groups. */
+  function pick(ev: MouseEvent): Bot | null {
+    const r = canvas.getBoundingClientRect();
+    ndcVec.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    raycaster.setFromCamera(ndcVec, camera);
+    const hits = raycaster.intersectObjects(
+      bots.map((b) => b.robot.group),
+      true,
+    );
+    for (const hit of hits) {
+      let o: THREE.Object3D | null = hit.object;
+      while (o) {
+        const found = bots.find((b) => b.robot.group === o);
+        if (found) return found;
+        o = o.parent;
+      }
+    }
+    return null;
+  }
+
+  /** Live transcript activity, as the card and labels show it. */
+  function toolActivityFor(tool: string, inp: Record<string, unknown>): string {
+    return toolActivity(tool, inp, nameOf);
+  }
+
+  // Resize.
   const resize = (): void => {
-    dpr = window.devicePixelRatio || 1;
-    width = canvas.clientWidth;
-    height = canvas.clientHeight;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
+    const box = stage.getBoundingClientRect();
+    width = box.width;
+    height = box.height;
+    if (!width || !height) return;
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
   };
   const ro = new ResizeObserver(() => resize());
-  ro.observe(canvas);
+  ro.observe(stage);
   resize();
+  resetView();
+
+  // Pointer: drag (OrbitControls) to orbit and pan, click to select, hover to highlight.
+  const ac = new AbortController();
+  const listen = <K extends keyof HTMLElementEventMap>(type: K, fn: (ev: HTMLElementEventMap[K]) => void): void =>
+    canvas.addEventListener(type, fn, { signal: ac.signal });
+  let downAt: { x: number; y: number } | null = null;
+  listen('pointerdown', (ev) => {
+    downAt = { x: ev.clientX, y: ev.clientY };
+  });
+  listen('pointermove', (ev) => {
+    if (ev.buttons !== 0) return;
+    hovered = pick(ev);
+    canvas.style.cursor = hovered ? 'pointer' : 'grab';
+  });
+  listen('pointerup', (ev) => {
+    if (!downAt) return;
+    const moved = Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y);
+    downAt = null;
+    if (moved < 4) select(pick(ev));
+  });
+  listen('pointerleave', () => {
+    hovered = null;
+  });
+  listen('dblclick', (ev) => {
+    const bot = pick(ev);
+    if (bot) go('agents', bot.agent.cid);
+  });
 
   // Live data.
   const offAgents = agents.watch((list) => {
     sync(list);
     if (!fitted && list.length) {
-      fit();
+      resetView();
       fitted = true;
     }
   });
@@ -721,10 +728,7 @@ export function mount(root: HTMLElement): Cleanup {
       case 'tool_request': {
         const tool = str(e.data.tool) || str(e.data.name) || 'tool';
         const inp = (e.data.input ?? {}) as Record<string, unknown>;
-        if (bot) {
-          say(bot, `→ ${tool}`, 'info');
-          setActivity(bot, toolActivity(tool, inp));
-        }
+        if (bot) setActivity(bot, toolActivityFor(tool, inp));
         const to = recipientOf(tool, inp);
         if (to !== null) sendPacket(e.cid, to, 'accent');
         break;
@@ -732,14 +736,9 @@ export function mount(root: HTMLElement): Cleanup {
       case 'model_request':
         if (bot) setActivity(bot, 'thinking…');
         break;
-      case 'work_end': {
-        const status = str(e.data.status) || 'done';
-        if (bot) {
-          say(bot, status, /err|fail/i.test(status) ? 'danger' : 'ok');
-          setActivity(bot, 'idle');
-        }
+      case 'work_end':
+        if (bot) setActivity(bot, 'idle');
         break;
-      }
       case 'work_start': {
         const origin = (e.data.origin ?? {}) as { from_cid?: unknown };
         if (typeof origin.from_cid === 'number') sendPacket(origin.from_cid, e.cid, 'accent');
@@ -757,36 +756,47 @@ export function mount(root: HTMLElement): Cleanup {
     const bot = byCid.get((data as { cid: number }).cid);
     if (bot) setActivity(bot, 'thinking…');
   });
-  canvas.addEventListener('dblclick', (ev) => {
-    const [mx, my] = local(ev);
-    const bot = findBot(mx, my);
-    if (bot) go('agents', bot.agent.cid);
-  });
   const offConversation = on('conversation', (data) => {
     const c = data as Conversation;
     sendPacket(c.from_cid, c.to_cid, 'ok');
   });
 
   // Loop.
-  const tick = (now: number): void => {
-    if (!running) return;
+  const frame = (now: number): void => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    update(dt, now);
-    draw(now);
-    raf = requestAnimationFrame(tick);
+    updateBots(dt, now);
+    updatePackets(now);
+    controls.update();
+    renderer.render(scene, camera);
+    updateLabels();
+    positionCard();
   };
-  raf = requestAnimationFrame(tick);
+  renderer.setAnimationLoop(frame);
 
   return () => {
-    running = false;
-    cancelAnimationFrame(raf);
+    ac.abort();
+    renderer.setAnimationLoop(null);
     ro.disconnect();
     offAgents();
     offTranscript();
     offDelta();
     offConversation();
+    controls.dispose();
+    for (const b of [...bots]) removeBot(b);
+    bots = [];
+    byCid.clear();
+    for (const p of packets.splice(0)) dropPacket(p);
+    disposeTree(districtGroup);
+    disposeTree(ground);
+    disposeTree(grid);
+    padGeo.dispose();
+    packetGeo.dispose();
+    haloGeo.dispose();
+    for (const m of Object.values(mats)) m.dispose();
+    renderer.dispose();
     root.classList.remove('floor-view');
+    document.body.classList.remove('floor-mode');
     root.replaceChildren();
   };
 }
