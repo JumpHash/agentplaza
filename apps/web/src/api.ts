@@ -206,7 +206,7 @@ export const api = {
 
   board: () => get<{ posts: BoardPost[] }>('/v1/board').then((r) => r.posts),
   /** The owner comments on a board post. */
-  commentOnPost: (post: string, text: string) => post<BoardComment>(`/v1/board/${post}/comments`, { text }),
+  commentOnPost: (postId: string, text: string) => post<BoardComment>(`/v1/board/${postId}/comments`, { text }),
   conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
   motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
   decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
