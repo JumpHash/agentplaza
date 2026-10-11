@@ -30,10 +30,4 @@
 }
 .floor-card[hidden] { display: none; }
 .floor-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s2); }
-.floor-card-sub { font-family: var(--mono, ui-monospace, monospace); font-size: var(--fs-xs); color: var(--text-2); text-transform: uppercase; }
-.floor-card-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px var(--s3); margin: 0; }
-.floor-card-facts dt { color: var(--text-2); }
-.floor-card-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.floor-card-chat { display: flex; gap: var(--s2); }
-.floor-card-chat input { flex: 1; min-width: 0; }
-.floor-card-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.floor-card-activity { font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
