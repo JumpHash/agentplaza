@@ -50,6 +50,10 @@ const ALWAYS: &[&str] = &[
     "bash_output",
     "bash_kill",
     "todo_write",
+    "code_engine",
+    "checkpoint_diff",
+    "checkpoint_restore",
+    "checkpoint_list",
     "plaza_set_name",
     "plaza_pay",
     "plaza_contacts",
@@ -81,7 +85,8 @@ pub fn runs(name: &str) -> Option<Runs> {
     match name {
         "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
         | "fetch_url" | "download" | "install_packages" | "glob" | "grep" | "multi_edit" | "bash_start"
-        | "bash_output" | "bash_kill" | "todo_write" => Some(Runs::Guest),
+        | "bash_output" | "bash_kill" | "todo_write" | "code_engine" | "checkpoint_diff" | "checkpoint_restore"
+        | "checkpoint_list" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
@@ -211,6 +216,22 @@ fn spec(name: &str) -> Option<ToolSpec> {
             "Stop a background command.",
             obj(json!({"id": {"type": "string"}}), &["id"]),
         ),
+        "code_engine" => (
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode). It works in your workspace with its own tools and returns its final report. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            obj(
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}}),
+                &["engine", "prompt"],
+            ),
+        ),
+        "checkpoint_diff" => (
+            "Show what changed in your workspace since a checkpoint (default: since this work started), as a unified diff with a file summary.",
+            obj(json!({"since": {"type": "string"}, "path": {"type": "string"}}), &[]),
+        ),
+        "checkpoint_restore" => (
+            "Roll your workspace (or one path in it) back to a checkpoint. Use checkpoint_list to see them.",
+            obj(json!({"id": {"type": "string"}, "path": {"type": "string"}}), &["id"]),
+        ),
+        "checkpoint_list" => ("List your workspace checkpoints, newest first.", obj(json!({}), &[])),
         "todo_write" => (
             "Keep your plan for this work as a todo list: pass the whole list each time, each item pending, in_progress (one at a time) or completed. Use it for anything with 3+ steps.",
             obj(

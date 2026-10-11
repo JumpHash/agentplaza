@@ -210,7 +210,10 @@ fn longest_base64_run(text: &str) -> usize {
 }
 
 /// Guest tools that act in the agent's own VM: `tool.exec` on its sandbox as well.
-const GUEST_EXEC: &[&str] = &["bash", "bash_start", "write_file", "edit_file", "multi_edit", "download", "fetch_url", "install_packages"];
+const GUEST_EXEC: &[&str] = &[
+    "bash", "bash_start", "write_file", "edit_file", "multi_edit", "download", "fetch_url", "install_packages", "code_engine",
+    "checkpoint_restore",
+];
 
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. No tool is `irreversible` yet: payments are capped transfers and verdicts are reviewable, and
@@ -219,7 +222,7 @@ fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks" | "plaza_agents" | "memory_read"
         | "memory_search" | "memory_list" | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
-        | "todo_write" => "read",
+        | "todo_write" | "checkpoint_diff" | "checkpoint_list" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         _ => "write",
     }

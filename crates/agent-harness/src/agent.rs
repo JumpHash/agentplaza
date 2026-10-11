@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use crate::bash;
 use crate::files::{self, Workspace};
-use crate::{plan, search_tools, shells};
+use crate::{checkpoints, engines, plan, search_tools, shells};
 use crate::session::{SessionError, escape_for_transcript, kind_of, note, send};
 use crate::tools;
 
@@ -517,6 +517,10 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "bash_output" => shells::output(workspace, input),
         "bash_kill" => shells::kill(workspace, input),
         "todo_write" => plan::todo_write(workspace, input),
+        "code_engine" => engines::run(workspace, input),
+        "checkpoint_diff" => checkpoints::diff(workspace, input),
+        "checkpoint_restore" => checkpoints::restore(workspace, input),
+        "checkpoint_list" => checkpoints::list(workspace, input),
         "edit_file" => {
             let args = edit_args(input)?;
             tools::serve(workspace, name, &args).map_err(|err| err.to_string())
