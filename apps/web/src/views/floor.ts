@@ -11,6 +11,7 @@ import { type Agent, type Conversation, type Entry } from '../api';
 import { go } from '../router';
 import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
+import { roleLabel } from '../roles';
 import { h } from '../ui/dom';
 import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
 import { buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
@@ -88,6 +89,7 @@ interface Bot {
   label: HTMLDivElement;
   labelName: HTMLElement;
   labelLine: HTMLElement;
+  labelRole: HTMLElement;
 }
 
 interface Packet {
@@ -596,6 +598,15 @@ export function mount(root: HTMLElement): Cleanup {
     labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis';
     const labelLine = document.createElement('div');
     labelLine.style.cssText = 'color:var(--ink-2);overflow:hidden;text-overflow:ellipsis';
+    // The role, as a small coloured tag beside the name.
+    const labelRole = document.createElement('span');
+    labelRole.style.cssText =
+      `display:inline-block;margin-left:6px;padding:0 5px;border:1px solid var(--ink);border-radius:999px;` +
+      `font-size:9px;letter-spacing:.06em;text-transform:uppercase;vertical-align:1px;background:hsl(${district.hue} 65% 82%)`;
+    labelRole.textContent = roleLabel(agent.role);
+    labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const nameText = document.createElement('span');
+    labelName.append(nameText, labelRole);
     label.append(labelName, labelLine);
     tags.append(label);
     return {
@@ -623,8 +634,9 @@ export function mount(root: HTMLElement): Cleanup {
       token,
       highlighted: false,
       label,
-      labelName,
+      labelName: nameText,
       labelLine,
+      labelRole,
     };
   }
 
@@ -955,7 +967,10 @@ export function mount(root: HTMLElement): Cleanup {
     const sig = [a.name, line].join('|');
     if (sig === cardSig) return;
     cardSig = sig;
-    card.replaceChildren(h('header.floor-card-head', null, h('strong', null, a.name)), h('div.floor-card-activity', null, line));
+    card.replaceChildren(
+      h('header.floor-card-head', null, h('strong', null, a.name), h('span.faint', null, roleLabel(a.role))),
+      h('div.floor-card-activity', null, line),
+    );
   }
 
   function positionCard(): void {
