@@ -57,6 +57,8 @@ struct Thread {
     messages: Vec<Message>,
     /// The summary of the thread's last work item.
     summary: String,
+    /// When the thread was last stored, on the agent's clock: the oldest go first.
+    at: u64,
 }
 
 /// What one turn of the read loop saw.
@@ -98,6 +100,8 @@ struct Agent<'a, S, W> {
     profile: Option<AgentProfile>,
     queue: VecDeque<Job>,
     threads: HashMap<String, Thread>,
+    /// Orders the stored threads: the next value a stored thread takes.
+    clock: u64,
     /// The work item in progress, if any.
     current: Option<u64>,
     /// A cancel for the work item in progress, taken at its next step.
@@ -124,10 +128,12 @@ pub fn serve<S: Read + Write + ReadTimeout, W: Write>(
         req: 0,
         profile,
         queue: VecDeque::new(),
-        threads: HashMap::new(),
+        threads: load_threads(workspace),
+        clock: 0,
         current: None,
         cancelled: None,
     };
+    agent.clock = agent.threads.values().map(|thread| thread.at).max().unwrap_or(0);
     loop {
         let halt = match agent.queue.pop_front() {
             Some(job) => agent.run_job(job).err(),
@@ -315,7 +321,12 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         self.current = None;
         let (status, summary) = result?;
         if chat {
-            self.threads.insert(job.thread, Thread { messages, summary: summary.clone() });
+            self.clock += 1;
+            let at = self.clock;
+            self.threads.insert(job.thread, Thread { messages, summary: summary.clone(), at });
+            if let Err(err) = save_threads(self.workspace, &self.threads) {
+                note(self.log, &format!("agent-harness: chat threads not saved: {err}"));
+            }
         }
         self.finish(job.work, status, &summary)?;
         Ok(())
@@ -522,6 +533,103 @@ fn edit_args(input: &Value) -> Result<Value, String> {
 /// The size of a conversation as it is sent, in bytes.
 fn serialized_len(messages: &[Message]) -> usize {
     serde_json::to_vec(messages).map_or(0, |bytes| bytes.len())
+}
+
+/// The file, under the workspace's state directory, that holds the operator's
+/// chat threads across restarts.
+const THREADS_FILE: &str = "threads.json";
+/// The most a saved thread file may hold; the oldest threads are dropped first.
+const THREADS_MAX_BYTES: usize = 1024 * 1024;
+
+fn thread_json(thread: &Thread) -> Value {
+    json!({
+        "messages": serde_json::to_value(&thread.messages).unwrap_or(Value::Null),
+        "summary": thread.summary,
+        "at": thread.at,
+    })
+}
+
+fn thread_from_json(value: &Value) -> Option<Thread> {
+    Some(Thread {
+        messages: serde_json::from_value(value.get("messages")?.clone()).ok()?,
+        summary: value.get("summary")?.as_str()?.to_string(),
+        at: value.get("at")?.as_u64()?,
+    })
+}
+
+/// The operator's chat threads a previous session saved; none when the file is
+/// absent or unreadable.
+fn load_threads(workspace: &Workspace) -> HashMap<String, Thread> {
+    let Ok(bytes) = std::fs::read(workspace.plaza_dir().join(THREADS_FILE)) else {
+        return HashMap::new();
+    };
+    let Ok(Value::Object(saved)) = serde_json::from_slice::<Value>(&bytes) else {
+        return HashMap::new();
+    };
+    saved
+        .iter()
+        .filter(|(id, _)| id.starts_with("op-"))
+        .filter_map(|(id, value)| Some((id.clone(), thread_from_json(value)?)))
+        .collect()
+}
+
+/// Saves the operator's chat threads (the `op-*` ones) by writing a temp file
+/// and renaming it over the old one. Past [`THREADS_MAX_BYTES`] the oldest
+/// threads are dropped first. Skips silently when the workspace is not mounted.
+fn save_threads(workspace: &Workspace, threads: &HashMap<String, Thread>) -> std::io::Result<()> {
+    if !workspace.dir().is_dir() {
+        return Ok(());
+    }
+    // Newest first, so the oldest is last and goes first.
+    let mut kept: Vec<(&String, &Thread)> = threads.iter().filter(|(id, _)| id.starts_with("op-")).collect();
+    kept.sort_by(|a, b| b.1.at.cmp(&a.1.at));
+    let render = |kept: &[(&String, &Thread)]| {
+        let object: serde_json::Map<String, Value> =
+            kept.iter().map(|(id, thread)| ((*id).clone(), thread_json(thread))).collect();
+        serde_json::to_vec(&object)
+    };
+    let mut bytes = render(&kept)?;
+    while bytes.len() > THREADS_MAX_BYTES && !kept.is_empty() {
+        kept.pop();
+        bytes = render(&kept)?;
+    }
+
+    let dir = workspace.plaza_dir();
+    std::fs::create_dir_all(&dir)?;
+    let temp = dir.join(format!("{THREADS_FILE}.tmp"));
+    std::fs::write(&temp, &bytes)?;
+    std::fs::rename(&temp, dir.join(THREADS_FILE))
+}
+
+#[cfg(test)]
+mod thread_store_tests {
+    use super::*;
+
+    #[test]
+    fn saved_threads_load_back_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("apz-harness-threads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch workspace");
+        let workspace = Workspace::at(&dir);
+
+        let mut threads = HashMap::new();
+        threads.insert(
+            "op-1".to_string(),
+            Thread { messages: vec![Message::user_text("hello".to_string())], summary: "greeted".into(), at: 1 },
+        );
+        // A non-operator thread is not kept across restarts.
+        threads.insert("job-9".to_string(), Thread { messages: Vec::new(), summary: String::new(), at: 2 });
+        save_threads(&workspace, &threads).expect("threads save");
+
+        let loaded = load_threads(&workspace);
+        assert_eq!(loaded.len(), 1);
+        let thread = &loaded["op-1"];
+        assert_eq!(thread.messages, threads["op-1"].messages);
+        assert_eq!(thread.summary, "greeted");
+        assert_eq!(thread.at, 1);
+        assert!(!dir.join(format!("{THREADS_FILE}.tmp")).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
