@@ -988,7 +988,8 @@ mod tests {
 
     #[test]
     fn the_file_tools_are_served_over_the_wire_and_refuse_escapes() {
-        // The hub drives the file tools: every call is one `tool_call` and one
+        // The hub drives the file tools, and the social channel goes through
+        // the same dispatch: every call is one `tool_call` and one
         // `tool_result` whose `output` is the tool's own JSON, and a refused
         // call is `ok:false` data on the same connection, not a disconnect.
         let dir = std::env::temp_dir().join(format!("apz-harness-wire-{}", std::process::id()));
@@ -1014,6 +1015,7 @@ mod tests {
                 r#"{"type":"tool_call","call":7,"name":"append_file","args":{"path":"notes.txt","content":"three\n"}}"#,
                 r#"{"type":"tool_call","call":8,"name":"read_file","args":{"path":"../escape"}}"#,
                 r#"{"type":"tool_call","call":9,"name":"read_file","args":{"path":"/etc/passwd"}}"#,
+                r#"{"type":"tool_call","call":10,"name":"conversation","args":{"from_role":"builder","from_cid":100,"text":"hello from the hub"}}"#,
             ];
             let mut answers = Vec::new();
             for call in calls {
@@ -1037,7 +1039,7 @@ mod tests {
             HEARTBEAT,
         )
         .expect("the hub stops the agent cleanly");
-        assert_eq!(calls, 9, "every call is served, refused or not");
+        assert_eq!(calls, 10, "every call is served, refused or not");
 
         let (answers, bye) = hub.join().expect("the hub thread finished");
         // Each answer is the wire's shape: the call it answers, its `ok`, and
@@ -1092,7 +1094,20 @@ mod tests {
             "{}",
             parsed[8]
         );
-        assert_eq!(bye, r#"{"type":"bye","calls":9}"#);
+        // The social channel through the same dispatch: the call is served as
+        // an ordinary tool, and the line lands in the agent's own log.
+        assert_eq!(parsed[9]["ok"], true);
+        assert_eq!(payload(9)["received"], true);
+        assert_eq!(payload(9)["log"], "messages.log");
+        assert_eq!(payload(9)["lines"], 1);
+        let messages = std::fs::read_to_string(dir.join("messages.log")).expect("the log");
+        let (stamp, rest) = messages
+            .trim_end()
+            .split_once(' ')
+            .expect("a stamp then the message");
+        assert!(stamp.ends_with('Z') && stamp.contains('T'), "{stamp:?}");
+        assert_eq!(rest, "from builder (cid 100): hello from the hub");
+        assert_eq!(bye, r#"{"type":"bye","calls":10}"#);
 
         // The transcript carries the calls and the refusal in protocol order.
         let log = String::from_utf8(log).expect("the transcript is UTF-8");

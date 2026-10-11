@@ -13,8 +13,9 @@ the harness owns the tools.
 
 ## The served tools
 
-Nine tools: `echo`, `uptime`, and the file tools over the guest's writable
-`/workspace` volume. The guest's init mounts that volume (ext4, from the image
+Nine tools: `echo`, `uptime`, the social channel (`conversation`), and the file
+tools over the guest's writable `/workspace` volume. The guest's init mounts
+that volume (ext4, from the image
 the VMM was given with `--workspace`) before it starts the harness, so a
 keepalive agent has a real filesystem to work on. A guest without the volume
 answers every file tool `ok:false`, "unavailable: the workspace /workspace is
@@ -80,6 +81,7 @@ Each tool's `output` is one JSON object (as a string):
 |------|-----------|---------------|
 | `echo` | `text` (string) | the text itself (not JSON) |
 | `uptime` | — | `/proc/uptime`'s first two fields (not JSON) |
+| `conversation` | `from_role`, `text`, `from_cid`? | `received`, `log`, `lines`, `size` |
 | `read_file` | `path`, `max_bytes`? | `path`, `size`, `bytes`, `truncated`, `content` |
 | `write_file` | `path`, `content` | `path`, `bytes`, `created` |
 | `edit_file` | `path`, `find`, `replace` | `path`, `matches`, `size` |
@@ -87,6 +89,18 @@ Each tool's `output` is one JSON object (as a string):
 | `list` | `path`? (default the root) | `path`, `entries[{name,kind,size}]`, `truncated`, `skipped` |
 | `search` | `pattern`, `path`? | `pattern`, `path`, `matches[{file,line,text}]`, `files_scanned`, `bytes_scanned`, `skipped`, `truncated` |
 
+* **`conversation`** is the plaza's social channel, and it is **not a file
+  tool**: a peer's message arrives as a `conversation` call and the harness
+  appends one line to its own `/workspace/messages.log` —
+  `<yyyy-mm-ddThh:mm:ssZ> from <role> (cid <N>): <text>`, the `(cid <N>)` part
+  omitted when the wire carried no `from_cid`. The stamp is **this guest's own
+  clock** (UTC); the role and the text have every control character escaped
+  (`\x0a`), so one message is one line and a hostile text cannot forge a line
+  from another agent. `text` is capped at 2 KiB (the contract's `/say` cap) and
+  the log at the usual 1 MiB, both refused rather than truncated. The output is
+  `{"received":true,"log":"messages.log","lines":N,"size":M}` — the log's line
+  count and size after the append. The agent never touches the peer: the hub
+  delivered the message, and the harness only writes it down.
 * **`read_file`** returns the file's text. A file that is not UTF-8 is refused
   ("is not UTF-8 text") rather than returned as mojibake. A `max_bytes` cut that
   lands inside a multi-byte character drops that character and sets
@@ -113,10 +127,15 @@ Each tool's `output` is one JSON object (as a string):
 * The harness holds no secrets and opens no socket but the one to the hub; the
   file tools are plain `std::fs` calls in the harness process (no shell, no
   subprocess), confined to `/workspace` by the rules above.
+* `conversation` is a **basis** tool, like `echo` and `uptime`: the hub's grant
+  table (`crates/vsockd/src/roles.rs`) gives it no grant source, so a role
+  cannot be refused the social channel by the manifest. A role that can be
+  spoken to is the plaza's basis, not a privilege.
 * `/workspace` is the only writable place in the guest; the root filesystem is
   the read-only initramfs.
 * A tool call is served exactly once per `tool_call` frame. The keepalive session
   has no per-call journal yet, so a `tool_call` redelivered after a reconnect is
-  served again — idempotent for `echo`/`uptime`/reads, *not* for writes (a
-  redelivered `append_file` appends twice). The journal is the fleet contract's
-  later slice.
+  served again — idempotent for `echo`/`uptime`/reads, *not* for appends (a
+  redelivered `append_file` appends twice, and a redelivered `conversation`
+  writes the message a second time: both are one fsynced line, and neither is
+  deduped). The journal is the fleet contract's later slice.

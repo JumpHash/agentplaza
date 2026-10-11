@@ -1058,6 +1058,47 @@ mod tests {
         stub2.join().expect("the stub agent finishes");
     }
 
+    /// The social channel is the plaza's basis, not a role's privilege: a
+    /// librarian — whose declared tools give it `search` and nothing else among
+    /// the harness's file tools — is still driven with `conversation`, and the
+    /// agent's own receipt comes back. This is the gate the live `POST /say`
+    /// path (`noded`'s delivery, `crates/noded/src/social.rs`) passes through.
+    #[test]
+    fn the_conversation_channel_reaches_a_role_that_grants_nothing_else() {
+        let hub = gated_hub();
+        let facts = facts(vec![310]);
+        let (_token, steering) = hub.connect(310, "librarian", Instant::now());
+        let receipt = r#"{"received":true,"log":"messages.log","lines":1,"size":72}"#;
+        let stub = stub_agent(
+            steering,
+            ToolReply {
+                ok: true,
+                output: receipt.to_string(),
+            },
+        );
+        let response = route(
+            &post(
+                "/tell",
+                r#"{"cid":310,"name":"conversation","args":{"from_role":"builder","from_cid":100,"text":"hello librarian"}}"#,
+            ),
+            &hub,
+            &facts,
+        );
+        assert_eq!(
+            response.status(),
+            200,
+            "the gate admits the basis channel: {}",
+            String::from_utf8_lossy(response.body())
+        );
+        assert_eq!(json(response.body())["ok"], serde_json::json!(true));
+        assert_eq!(
+            json(response.body())["output"],
+            serde_json::json!(receipt),
+            "the agent's own receipt, verbatim"
+        );
+        stub.join().expect("the stub agent finishes");
+    }
+
     /// The two role refusals: an agent whose session accepted no role, and one
     /// whose role the manifest does not carry. Both are 403s with their own
     /// words, and neither reaches the agent.

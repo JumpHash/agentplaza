@@ -24,7 +24,7 @@
 //! | `append_file` | `write_file`, or `bash` — the same authority, another door |
 //! | `list` | `list`, or `bash` |
 //! | `search` | `search`, or `bash` |
-//! | `echo`, `uptime` | nothing — they are diagnostics: they touch nothing, so they are always driven |
+//! | `echo`, `uptime`, `conversation` | nothing — they are basis tools: `echo` and `uptime` touch nothing, and `conversation` touches only the agent's own `/workspace/messages.log`. A channel every agent must have to be an agent is the plaza's basis, not a role's privilege, so none of the three is gated |
 //!
 //! `bash` is in every file tool's set because a shell can do what those tools
 //! do: a role the codex grants a shell is not then refused a file call it could
@@ -44,6 +44,13 @@
 //! policy grants a librarian `search` and nothing else. It may not `list`, may
 //! not read a file and may not write one. The dispatcher's librarian workflow
 //! is read-only for exactly that reason (`crates/dispatchd/src/workflow.rs`).
+//! What the librarian — and every other role, including a role whose declared
+//! tools the harness implements none of — *may* be driven with is the basis:
+//! `echo`, `uptime` and `conversation`. A role that can be spoken to is the
+//! plaza's basis, so the social channel is not a privilege a role could be
+//! denied; the alternative would be a fleet whose agents cannot talk to each
+//! other unless the codex happened to list a `conversation` tool, which no role
+//! declares.
 //!
 //! # The manifest
 //!
@@ -69,6 +76,7 @@ use serde::Deserialize;
 pub const TOOL_GRANTS: &[(&str, &[&str])] = &[
     ("echo", &[]),
     ("uptime", &[]),
+    ("conversation", &[]),
     ("read_file", &["read_file", "bash"]),
     ("write_file", &["write_file", "bash"]),
     ("edit_file", &["edit_file", "bash"]),
@@ -79,7 +87,8 @@ pub const TOOL_GRANTS: &[(&str, &[&str])] = &[
 
 /// The manifest tool names any one of which grants harness tool `tool`.
 ///
-/// `Some(&[])` for a diagnostic (it needs no grant), and `None` for a tool the
+/// `Some(&[])` for a basis tool — `echo`, `uptime`, `conversation`: it needs no
+/// grant, so no manifest tool name is its source — and `None` for a tool the
 /// harness does not serve: nothing grants it, so under a loaded manifest a call
 /// for it is refused.
 pub fn grant_sources(tool: &str) -> Option<&'static [&'static str]> {
@@ -93,7 +102,7 @@ pub fn grant_sources(tool: &str) -> Option<&'static [&'static str]> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     /// The role is in the manifest and the tool is granted (or the tool is a
-    /// diagnostic): the call may be driven.
+    /// basis tool): the call may be driven.
     Allow,
     /// The agent declared no role at its handshake, and a loaded manifest
     /// admits only roled agents.
@@ -297,10 +306,16 @@ impl Manifest {
 mod tests {
     use super::*;
 
-    /// The diagnostics, read off the table itself: the rows that carry no
+    /// The basis tools, read off the table itself: the rows that carry no
     /// grant. Deriving them (rather than duplicating a list) is what keeps
     /// [`TOOL_GRANTS`] the single source of truth for the mapping.
-    fn diagnostics() -> Vec<&'static str> {
+    ///
+    /// They are the **basis**, not "diagnostics": `echo` and `uptime` touch
+    /// nothing, and `conversation` touches only the agent's own workspace log.
+    /// A channel every agent needs in order to be an agent at all is the
+    /// plaza's basis — it is not a privilege a role can be denied, which is
+    /// exactly why the table gives it no grant source.
+    fn basis_tools() -> Vec<&'static str> {
         TOOL_GRANTS
             .iter()
             .filter(|(_, sources)| sources.is_empty())
@@ -492,6 +507,7 @@ mod tests {
         let harness = [
             "echo",
             "uptime",
+            "conversation",
             "read_file",
             "write_file",
             "edit_file",
@@ -502,10 +518,13 @@ mod tests {
         let table: Vec<&str> = TOOL_GRANTS.iter().map(|(name, _)| *name).collect();
         assert_eq!(table, harness, "the harness's tools, in its own order");
 
-        // The diagnostics are the rows that carry no grant, and no other row
-        // does: a diagnostic is the only thing granted without a grant.
-        assert_eq!(diagnostics(), vec!["echo", "uptime"]);
-        for tool in diagnostics() {
+        // The basis tools are the rows that carry no grant, and no other row
+        // does: the basis is the only thing granted without a grant. What is
+        // ungated is asserted here explicitly — a row added to the table
+        // without a source joins this list, and a file tool that lost its
+        // sources would have to be spelled out again.
+        assert_eq!(basis_tools(), vec!["echo", "uptime", "conversation"]);
+        for tool in basis_tools() {
             assert_eq!(grant_sources(tool), Some(&[][..]), "{tool}");
         }
         // A tool the harness does not serve grants nothing.
@@ -532,8 +551,9 @@ mod tests {
                 "{tool}"
             );
         }
-        // The diagnostics too: they touch nothing.
-        for tool in diagnostics() {
+        // The basis tools too: they need no grant, so no role can be without
+        // them.
+        for tool in basis_tools() {
             assert_eq!(
                 decide(&[("builder", BUILDER)], "builder", tool),
                 Decision::Allow,
@@ -543,10 +563,12 @@ mod tests {
     }
 
     /// The consequence the policy has to own: the librarian's declared tools
-    /// give it `search` among the harness's, and nothing else — not `list`, not
-    /// a read, not a write.
+    /// give it `search` among the harness's file tools, and nothing else — not
+    /// `list`, not a read, not a write. What it does hold is the basis, the
+    /// conversation channel among it: a librarian that could not be spoken to
+    /// would not be an agent on the plaza.
     #[test]
-    fn the_librarian_grants_only_search() {
+    fn the_librarian_grants_only_search_of_the_file_tools() {
         let roles = [("librarian", LIBRARIAN)];
         assert_eq!(decide(&roles, "librarian", "search"), Decision::Allow);
         for tool in [
@@ -562,6 +584,13 @@ mod tests {
                 "{tool}"
             );
         }
+        // `conversation` is not a grant: it is the basis, so the role that
+        // holds only `search` holds it too.
+        assert_eq!(
+            decide(&roles, "librarian", "conversation"),
+            Decision::Allow,
+            "the social channel is the plaza's basis, not a role's privilege"
+        );
         // The codex tools the harness does not implement map to nothing, so a
         // call for one of them is refused rather than allowed by its name.
         for tool in ["read_memory", "transcript_search", "submit_memory_change"] {
@@ -571,6 +600,33 @@ mod tests {
                 "{tool}"
             );
         }
+    }
+
+    /// The whole point of the basis: **every** role the shipped manifest names
+    /// may be driven with `conversation`, the librarian included (it holds only
+    /// `search` among the harness's file tools). A role that says nothing more
+    /// than "I am an agent" must be speakable — the plaza's social channel is
+    /// not something the codex's per-role tool lists can switch off.
+    #[test]
+    fn every_role_in_the_shipped_manifest_may_be_spoken_to() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/agents/initial-roles.json");
+        let manifest = Manifest::load(&path).expect("the shipped manifest");
+        assert_eq!(manifest.len(), 21, "the fleet's initial roles");
+        for role in manifest.roles.keys() {
+            assert_eq!(
+                manifest.decide(role, "conversation"),
+                Decision::Allow,
+                "role {role} must be speakable"
+            );
+        }
+        // The librarian is the role the policy is narrowest for: `search` is
+        // its only file tool, and it is still speakable.
+        assert_eq!(manifest.decide("librarian", "search"), Decision::Allow);
+        assert_eq!(
+            manifest.decide("librarian", "write_file"),
+            Decision::Ungranted
+        );
     }
 
     /// The mayor reads and lists but never writes, so this vault's file tools
@@ -590,11 +646,11 @@ mod tests {
     }
 
     /// A role whose declared tools the harness implements none of may still be
-    /// sent the diagnostics — and nothing else, however the call is spelled.
+    /// sent the basis — and nothing else, however the call is spelled.
     #[test]
-    fn a_role_with_no_harness_tools_gets_the_diagnostics_alone() {
+    fn a_role_with_no_harness_tools_gets_the_basis_tools_alone() {
         let roles = [("legal-gov-judge", JUDGE)];
-        for tool in diagnostics() {
+        for tool in basis_tools() {
             assert_eq!(
                 decide(&roles, "legal-gov-judge", tool),
                 Decision::Allow,

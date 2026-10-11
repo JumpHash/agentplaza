@@ -4,8 +4,10 @@
 //! the guest ask for them, because the point of that session was the wire
 //! rather than the work. In the agent fleet the direction is the other way
 //! round: the hub asks, the agent serves, and these are the tools it serves
-//! today — `echo` and `uptime`, plus the file tools that work on the guest's
-//! writable `/workspace` volume (see [`crate::files`]).
+//! today — `echo` and `uptime`, the social channel (`conversation`, which
+//! writes the message to the agent's own `/workspace/messages.log`), and the
+//! file tools that work on the guest's writable `/workspace` volume (see
+//! [`crate::files`]).
 //!
 //! A tool's failure is data, not a protocol error: it is answered as
 //! `{"ok":false,"output":"<why>"}`, so the hub can tell an agent that refused
@@ -27,7 +29,7 @@ use serde_json::Value;
 use crate::files::{self, Workspace};
 
 /// The tools, by name.
-const TOOLS: [Tool; 8] = [
+const TOOLS: [Tool; 9] = [
     Tool {
         name: "echo",
         run: echo,
@@ -35,6 +37,10 @@ const TOOLS: [Tool; 8] = [
     Tool {
         name: "uptime",
         run: uptime,
+    },
+    Tool {
+        name: "conversation",
+        run: files::conversation,
     },
     Tool {
         name: "read_file",
@@ -265,13 +271,14 @@ mod tests {
     }
 
     #[test]
-    fn the_served_tools_are_echo_uptime_and_the_file_tools() {
+    fn the_served_tools_are_echo_uptime_conversation_and_the_file_tools() {
         let names: Vec<&str> = TOOLS.iter().map(|tool| tool.name).collect();
         assert_eq!(
             names,
             vec![
                 "echo",
                 "uptime",
+                "conversation",
                 "read_file",
                 "write_file",
                 "edit_file",

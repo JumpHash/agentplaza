@@ -25,7 +25,9 @@ v2 adds, on the same port and framing (JSON lines):
   - the guest sends `{"type":"heartbeat","seq":N}` every
     `HEARTBEAT_SECS = 5`;
   - the hub sends `tool_call`s at will; the guest answers `tool_result`s
-    (the v1 tools: `echo`, `uptime`; more tools are later slices);
+    (the harness's tools: `echo`, `uptime`, the social channel
+    `conversation`, and the `/workspace` file tools — the table lives in
+    `crates/agent-harness/README.md`);
   - the hub may send `{"type":"stop","reason":"..."}`; the guest answers
     `{"type":"bye","calls":N}` and the session ends cleanly;
   - a guest whose connection drops reconnects with backoff

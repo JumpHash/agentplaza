@@ -1309,10 +1309,13 @@ mod tests {
         assert_eq!(hub.admit(300, "write_file"), Admission::Allowed);
         assert_eq!(hub.admit(300, "list"), Admission::Allowed);
         assert_eq!(hub.admit(310, "search"), Admission::Allowed);
-        // A diagnostic, for both of them.
+        // The basis tools, for both of them: no role can be without them, and
+        // `conversation` is the plaza's social channel — the librarian, which
+        // holds only `search` of the file tools, may still be spoken to.
         for cid in [300, 310] {
-            assert_eq!(hub.admit(cid, "echo"), Admission::Allowed, "cid {cid}");
-            assert_eq!(hub.admit(cid, "uptime"), Admission::Allowed, "cid {cid}");
+            for tool in ["echo", "uptime", "conversation"] {
+                assert_eq!(hub.admit(cid, tool), Admission::Allowed, "cid {cid} {tool}");
+            }
         }
 
         // The librarian's own reach: `search`, and nothing else — the honest
