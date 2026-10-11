@@ -42,6 +42,7 @@ const ALWAYS: &[&str] = &[
     "plaza_get_file",
     "fetch_url",
     "download",
+    "install_packages",
     "plaza_set_name",
     "plaza_pay",
     "plaza_contacts",
@@ -72,7 +73,7 @@ pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
         "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
-        | "fetch_url" | "download" => Some(Runs::Guest),
+        | "fetch_url" | "download" | "install_packages" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
@@ -269,6 +270,13 @@ fn spec(name: &str) -> Option<ToolSpec> {
         "fetch_url" => (
             "Fetch a web page or file over the internet (through the plaza's gateway) and return its text.",
             obj(json!({"url": {"type": "string"}}), &["url"]),
+        ),
+        "install_packages" => (
+            "Install system packages in your own VM with Alpine's apk, e.g. python3 py3-pip, go, nodejs npm, git, build-base. They persist on your workspace volume. Afterwards use pip, npm and go as usual (pip install --user, go install, npm with a prefix in your home).",
+            obj(
+                json!({"packages": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20}}),
+                &["packages"],
+            ),
         ),
         "download" => (
             "Download a file from the internet into your workspace.",

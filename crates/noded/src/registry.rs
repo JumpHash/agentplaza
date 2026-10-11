@@ -219,7 +219,9 @@ impl CreateRun {
             None => String::new(),
         };
         match &self.role {
-            Some(role) => format!("{CONSOLE}{beats} {}", agent_flags(role, index)),
+            // An agent's console carries its session: kernel chatter below warnings
+            // (the balloon's inflate retries, for one) stays out of it.
+            Some(role) => format!("{CONSOLE}{beats} loglevel=4 {}", agent_flags(role, index)),
             None => {
                 let keepalive = if keepalive { " plaza.keepalive=1" } else { "" };
                 format!("{CONSOLE}{beats} plaza.harness=1{keepalive} plaza.vm={index}")

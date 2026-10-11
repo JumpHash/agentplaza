@@ -245,6 +245,12 @@ impl VirtioDevice for VirtioBalloon {
         }
         self.irq = Some(irq.try_clone().map_err(BalloonError::from)?);
         self.mem = Some(mem.clone());
+        // Linux queues its first stats buffer while probing, before the driver
+        // is ready: that kick reached a device with no rings yet. Pick the
+        // buffer up now, or the guest never reports its memory.
+        if let Some(head) = take_stats(&mut self.rings[STATS_QUEUE], mem, &mut self.stats).map_err(VirtioError::from)? {
+            self.stats_held = Some(head);
+        }
         Ok(())
     }
 

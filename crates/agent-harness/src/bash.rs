@@ -1,4 +1,5 @@
-//! The `bash` tool: one shell command in the workspace.
+//! The `bash` tool: one shell command in the workspace; and `install_packages`,
+//! which installs system packages in the VM with apk (as root, in the VM only).
 //!
 //! `/bin/sh -c <command>` runs in the workspace root with a cleared environment
 //! (`HOME` the workspace, `PATH` the system bins), stdin closed and its own
@@ -25,7 +26,14 @@ use crate::files::Workspace;
 const DEFAULT_TIMEOUT_S: u64 = 60;
 const MAX_TIMEOUT_S: u64 = 300;
 const SHELL: &str = "/bin/sh";
-const SYSTEM_PATH: &str = "/bin:/usr/bin";
+/// The agent's PATH: the system bins, then what it installs for itself (pip
+/// `--user`, `go install`, npm's global prefix under its home).
+const USER_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/workspace/.local/bin:/workspace/go/bin:/workspace/.npm-global/bin";
+/// PATH for package installs, which run as root inside the VM.
+const ADMIN_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/// A package install may take a while (toolchains are large).
+const INSTALL_TIMEOUT_S: u64 = 600;
+const MAX_PACKAGES: usize = 20;
 /// The egress shim's listen address and the proxy URL every guest client is given
 /// (see [`crate::egress`]).
 pub const PROXY_ADDR: &str = "127.0.0.1:3128";
@@ -57,17 +65,63 @@ pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
             .min(MAX_TIMEOUT_S),
     };
 
-    let root = workspace.dir();
+    execute(workspace.dir(), SHELL, &["-c", script], timeout_s, Privilege::Agent)
+}
+
+/// `install_packages`: installs system packages in this VM with Alpine's apk,
+/// as root — inside the agent's own VM only; the host is never touched. Names
+/// are checked against apk's package-name shape before anything runs.
+pub fn install_packages(_workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let names: Vec<&str> = match input.get("packages").and_then(Value::as_array) {
+        Some(list) => list
+            .iter()
+            .map(|v| v.as_str().ok_or_else(|| "invalid input: \"packages\" must be a list of names".to_string()))
+            .collect::<Result<_, _>>()?,
+        None => return Err("invalid input: \"packages\" must be a list of names".to_string()),
+    };
+    if names.is_empty() || names.len() > MAX_PACKAGES {
+        return Err(format!("invalid input: give 1 to {MAX_PACKAGES} package names"));
+    }
+    if let Some(bad) = names.iter().find(|name| !package_name_ok(name)) {
+        return Err(format!("invalid input: {bad:?} is not a package name"));
+    }
+    let apk = ["/sbin/apk", "/usr/sbin/apk", "/bin/apk", "/usr/bin/apk"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .ok_or_else(|| "this VM has no package manager yet".to_string())?;
+    let mut args = vec!["add", "--no-cache"];
+    args.extend(names.iter().copied());
+    execute(std::path::Path::new("/"), apk, &args, INSTALL_TIMEOUT_S, Privilege::Root)
+}
+
+/// apk's package-name shape: lowercase letters, digits and `._+-`, 1–64 characters.
+fn package_name_ok(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.len() <= 64
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+/// Who a command runs as: the agent (uid 1000 in a root guest), or root for package installs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Privilege {
+    Agent,
+    Root,
+}
+
+/// Runs `program args` in `dir` with a cleared environment (the proxy set), output captured
+/// and capped, killed after `timeout_s`. `Ok` on exit 0, else `Err` with the output and status.
+fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeout_s: u64, privilege: Privilege) -> Result<String, String> {
+    let root = dir;
     let (reader, writer) = io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
     let stderr = writer.try_clone().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
-    let mut builder = Command::new(SHELL);
+    let mut builder = Command::new(program);
     builder
-        .arg("-c")
-        .arg(script)
+        .args(args)
         .current_dir(root)
         .env_clear()
-        .env("HOME", root)
-        .env("PATH", SYSTEM_PATH)
+        .env("HOME", if privilege == Privilege::Root { std::path::Path::new("/root") } else { root })
+        .env("PATH", if privilege == Privilege::Root { ADMIN_PATH } else { USER_PATH })
         .env("http_proxy", PROXY_URL)
         .env("https_proxy", PROXY_URL)
         .env("HTTP_PROXY", PROXY_URL)
@@ -76,7 +130,7 @@ pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
         .stdout(writer)
         .stderr(stderr)
         .process_group(0);
-    if runs_as_root()? {
+    if privilege == Privilege::Agent && runs_as_root()? {
         builder.uid(UNPRIVILEGED).gid(UNPRIVILEGED);
     }
     let mut child = builder.spawn().map_err(|err| format!("internal: cannot start the shell: {err}"))?;
@@ -173,7 +227,7 @@ mod tests {
         let workspace = scratch("env");
         let script = "echo \"$HOME\"; echo \"$PATH\"; cat; echo hi";
         let output = run(&workspace, &json!({ "command": script })).expect("exit 0");
-        assert_eq!(output, format!("{}\n/bin:/usr/bin\nhi\nexit 0", workspace.dir().display()));
+        assert_eq!(output, format!("{}\n{USER_PATH}\nhi\nexit 0", workspace.dir().display()));
     }
 
     #[test]
@@ -199,4 +253,15 @@ mod tests {
         assert!(output.len() <= MAX_TOOL_OUTPUT, "{}", output.len());
         assert!(output.contains("bytes cut") && output.ends_with("exit 0"), "{}", output.len());
     }
+
+    #[test]
+    fn package_names_follow_apks_shape() {
+        for good in ["python3", "py3-pip", "go", "nodejs", "build-base", "g++", "libstdc++", "font-noto.ttf"] {
+            assert!(package_name_ok(good), "{good}");
+        }
+        for bad in ["", "-rf", "Python3", "a b", "x;rm", "../etc", &"a".repeat(65)] {
+            assert!(!package_name_ok(bad), "{bad}");
+        }
+    }
+
 }

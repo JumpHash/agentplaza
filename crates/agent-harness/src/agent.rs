@@ -508,6 +508,7 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
 fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
     match name {
         "bash" => bash::run(workspace, input),
+        "install_packages" => bash::install_packages(workspace, input),
         "edit_file" => {
             let args = edit_args(input)?;
             tools::serve(workspace, name, &args).map_err(|err| err.to_string())

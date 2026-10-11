@@ -210,7 +210,7 @@ fn longest_base64_run(text: &str) -> usize {
 }
 
 /// Guest tools that act in the agent's own VM: `tool.exec` on its sandbox as well.
-const GUEST_EXEC: &[&str] = &["bash", "write_file", "edit_file", "download", "fetch_url"];
+const GUEST_EXEC: &[&str] = &["bash", "write_file", "edit_file", "download", "fetch_url", "install_packages"];
 
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. No tool is `irreversible` yet: payments are capped transfers and verdicts are reviewable, and

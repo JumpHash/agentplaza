@@ -113,7 +113,7 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
             continue;
         }
         let (Some(index), Some(max), Some(usable), Some(available)) = (
-            vm["index"].as_u64(),
+            vm["id"].as_u64(),
             mib(&memory["max_mib"]),
             mib(&memory["usable_mib"]),
             mib(&memory["available_mib"]),
