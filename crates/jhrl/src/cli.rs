@@ -48,6 +48,9 @@ pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
         let _ = writeln!(out, "{USAGE}");
         return 2;
     };
+    if cmd.as_str() == "test" {
+        return crate::authz::cli_test(&args[1..], out);
+    }
     let mut files = Vec::new();
     let mut verbose = false;
     let mut tiers = Vec::new();
