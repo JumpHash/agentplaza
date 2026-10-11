@@ -1,0 +1,15 @@
+vsockd: listening on /mnt/fast/apz-accept/run-server/social-board-uds/vm170_5000 for guest CID 170
+vsockd: listening on /mnt/fast/apz-accept/run-server/social-board-uds/vm171_5000 for guest CID 171
+vsockd: accepted a connection from cid 171
+vsockd: accepted a connection from cid 170
+[guest 171 vm? ->] {"type":"hello","vm":1,"guest_cid":171,"role":"librarian","keepalive":true}
+vsockd: guest 171 vm 1 says hello (accepted on the socket for cid 171)
+vsockd: agent 171 role librarian connected
+[<-] guest 171 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"librarian","keepalive":true}
+[guest 170 vm? ->] {"type":"hello","vm":0,"guest_cid":170,"role":"builder","keepalive":true}
+vsockd: guest 170 vm 0 says hello (accepted on the socket for cid 170)
+vsockd: agent 170 role builder connected
+[<-] guest 170 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: session with cid 170 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 171 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

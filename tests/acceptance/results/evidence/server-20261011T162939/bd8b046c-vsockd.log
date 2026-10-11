@@ -1,0 +1,40 @@
+vsockd: status on http://127.0.0.1:42821 (GET /status, GET /healthz, read-only)
+vsockd: listening on /mnt/fast/apz-accept/run-server/fleet-reap-uds/vm54_5000 for guest CID 54
+vsockd: accepted a connection from cid 54
+[guest 54 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 54, "role": "reviewer", "keepalive": true}
+vsockd: guest 54 vm 0 says hello (accepted on the socket for cid 54)
+vsockd: agent 54 role reviewer connected
+[<-] guest 54 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"reviewer","keepalive":true}
+[guest 54 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 54 heartbeat 1
+[guest 54 vm0 ->] {"type": "heartbeat", "seq": 2}
+[guest 54 vm0 ->] {"type": "heartbeat", "seq": 3}
+[guest 54 vm0 ->] {"type": "tool_call", "call": 1, "name": "echo", "args": {"text": "alive-after-silence"}}
+[<-] guest 54 vm0 {"type":"tool_result","call":1,"ok":true,"output":"alive-after-silence"}
+vsockd: answered call 1 (echo) for agent 54
+vsockd: session with cid 54 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: accepted a connection from cid 54
+[guest 54 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 54, "role": "reviewer", "keepalive": true}
+vsockd: guest 54 vm 0 says hello (accepted on the socket for cid 54)
+vsockd: agent 54 role reviewer connected
+[<-] guest 54 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"reviewer","keepalive":true}
+[guest 54 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 54 heartbeat 1
+vsockd: session with cid 54 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: accepted a connection from cid 54
+[guest 54 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 54, "role": "reviewer", "keepalive": true}
+vsockd: guest 54 vm 0 says hello (accepted on the socket for cid 54)
+vsockd: agent 54 role reviewer connected
+[<-] guest 54 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"reviewer","keepalive":true}
+[guest 54 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 54 heartbeat 1
+vsockd: session with cid 54 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: accepted a connection from cid 54
+[guest 54 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 54, "role": "reviewer", "keepalive": true}
+vsockd: guest 54 vm 0 says hello (accepted on the socket for cid 54)
+vsockd: agent 54 role reviewer connected
+[<-] guest 54 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"reviewer","keepalive":true}
+[guest 54 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 54 heartbeat 1
+vsockd: session with cid 54 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

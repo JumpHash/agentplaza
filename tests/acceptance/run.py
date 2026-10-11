@@ -250,7 +250,9 @@ def main(argv: list[str]) -> int:
     if audit["available"]:
         audit_path.write_text("\n".join(audit["lines"]) + "\n")
         ctx.register_artifact(audit_path)
-    attributed = [line for line in audit.get("lines", []) if apz.vmm_audit_attribution(line)]
+    attributed = [
+        line for line in audit.get("lines", []) if apz.vmm_audit_attribution(line, ctx.bin_dir)
+    ]
     kills = [line for line in attributed if "code=0x80000000" in line]
     if kills:
         ctx.findings.append(

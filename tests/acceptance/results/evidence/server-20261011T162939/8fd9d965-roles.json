@@ -1,0 +1,37 @@
+{
+  "source": "tests/acceptance/suite_treasury.py",
+  "roles": {
+    "builder": {
+      "role": "builder",
+      "title": "The builder",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list",
+        "search",
+        "fetch_url"
+      ]
+    },
+    "librarian": {
+      "role": "librarian",
+      "title": "The librarian",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "read_memory",
+        "search",
+        "transcript_search",
+        "read_artifact",
+        "submit_memory_change"
+      ]
+    }
+  }
+}

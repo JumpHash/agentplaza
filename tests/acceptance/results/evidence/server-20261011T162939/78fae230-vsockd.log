@@ -1,0 +1,16 @@
+vsockd: status on http://127.0.0.1:45145 (GET /status, GET /healthz, read-only)
+vsockd: listening on /mnt/fast/apz-accept/run-server/fleet-agents-uds/vm100_5000 for guest CID 100
+vsockd: listening on /mnt/fast/apz-accept/run-server/fleet-agents-uds/vm101_5000 for guest CID 101
+vsockd: accepted a connection from cid 101
+[guest 101 vm? ->] {"type":"hello","vm":1,"guest_cid":101,"role":"reviewer","keepalive":true}
+vsockd: guest 101 vm 1 says hello (accepted on the socket for cid 101)
+vsockd: agent 101 role reviewer connected
+[<-] guest 101 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"reviewer","keepalive":true}
+vsockd: accepted a connection from cid 100
+[guest 100 vm? ->] {"type":"hello","vm":0,"guest_cid":100,"role":"builder","keepalive":true}
+vsockd: guest 100 vm 0 says hello (accepted on the socket for cid 100)
+vsockd: agent 100 role builder connected
+[<-] guest 100 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: session with cid 100 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 101 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

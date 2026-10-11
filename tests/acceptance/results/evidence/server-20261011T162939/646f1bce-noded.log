@@ -1,0 +1,2 @@
+noded: listening on http://127.0.0.1:46199 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/apz-accept/pin/initrd.x86_64.gz, console apps/web/dist)
+vmm: this process cannot be jailed (this process has 3 threads: a user namespace (and so a mount namespace) can only be created by a single-threaded process, and chroot/pivot_root would change the root of every thread); the VMM runs with its seccomp jail only

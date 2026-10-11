@@ -330,21 +330,41 @@ def kernel_seccomp_audit(since_epoch: float) -> dict:
     return {"available": True, "since_epoch": int(since_epoch), "lines": lines, "kills": kills}
 
 
-def vmm_audit_attribution(line: str) -> str | None:
-    """Why a ``type=1326`` line is this repository's VMM, or ``None``.
+def vmm_audit_attribution(line: str, bin_dir: Path | None = None) -> str | None:
+    """Why a ``type=1326`` line is *this run's* VMM, or ``None``.
 
     ``crates/vmm/tests/jail.rs`` makes ``the_probe_child`` records *on purpose*
     (it arms the pre-fix allowlist to show what it refused), so those are not
-    attributed. Everything else the kernel names as a VMM thread
-    (``comm="apz_*"``), a KVM-created thread that inherited an armed parent's
-    filter (``comm="kvm-nx-lpage-re"``), or one of the daemon binaries is: that
-    is a syscall one of this port's VMM threads reached that the allowlist did
-    not cover.
+    attributed: their comm is the probe's own name and their exe is a test
+    binary, not one of the harness's.
+
+    Everything else the kernel names as a VMM thread (``comm="apz_*"``), a
+    KVM-created thread that inherited an armed parent's filter
+    (``comm="kvm-nx-lpage-re"``), or one of the daemon binaries is a syscall one
+    of this port's VMM threads reached that the allowlist did not cover —
+    **provided it is this run's binary**. When ``bin_dir`` is given, a record is
+    attributed only when the ``exe`` it names is a binary of that directory:
+    the thread and binary *names* are not unique on a shared host. Found
+    2026-10-11: the matrix, whose SUT was a pinned copy in
+    ``/mnt/fast/apz-accept/pin``, attributed two refusals from the live stack's
+    ``/mnt/fast/AgentPlaza/target/debug/apz-vmm`` children to the run under
+    test and reported them as its own daemon deaths (the runner's verdict went
+    to FAIL and a product-defect finding named the wrong process). ``bin_dir``
+    is optional so a caller that really does mean "any VMM on this host" can
+    still ask for that, but every harness caller passes it.
     """
     comm = re.search(r'comm="([^"]*)"', line)
     exe = re.search(r'exe="([^"]*)"', line)
     name = comm.group(1) if comm else ""
     binary = Path(exe.group(1)).name if exe else ""
+    if bin_dir is not None:
+        if not exe:
+            return None
+        try:
+            if Path(exe.group(1)).resolve().parent != Path(bin_dir).resolve():
+                return None
+        except OSError:
+            return None
     if name.startswith("apz_") or name == "kvm-nx-lpage-re":
         return f"comm={name}"
     if binary in ("noded", "vsockd", "vmctl"):
@@ -1170,6 +1190,19 @@ class Ctx:
             # Refused, not used: see `work_dir_reuse_reason`. A run that reuses a
             # work directory reports results that belong to a *mix* of two runs.
             raise LabError(f"the work directory {self.artifacts_dir} cannot be used afresh: {reused}")
+        # A *fresh* work directory that does not exist yet is created here, not
+        # by the first lab: `work_dir_reuse_reason` deliberately accepts a path
+        # that does not exist, and a run whose every suite is BLOCKED for its
+        # machine class never brings a lab up (`ctx.new_dir` is what creates the
+        # directory otherwise) while the runner still writes this run's
+        # kernel-seccomp audit into the work directory. Found 2026-10-11: an
+        # explicit `--artifacts` path that did not exist made that write crash a
+        # fully-blocked run (FileNotFoundError) instead of recording its BLOCKED
+        # result, so the hardware-class rows were lost.
+        try:
+            self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            raise LabError(f"the work directory {self.artifacts_dir} cannot be created: {err}") from err
         self.stamp = time.strftime("%Y%m%dT%H%M%S")
         self.findings: list[dict] = []
         self.suites: list[Suite] = []

@@ -1,0 +1,4 @@
+{"error":"guest CID 175 cannot speak to itself"}
+{"error":"text must not be empty"}
+{"error":"text must be at most 2048 bytes"}
+{"ok":false,"output":"role librarian does not grant read_file"}

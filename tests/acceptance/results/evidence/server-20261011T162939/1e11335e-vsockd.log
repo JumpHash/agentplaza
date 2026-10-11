@@ -1,0 +1,20 @@
+vsockd: status on http://127.0.0.1:45269 (GET /status, GET /healthz, read-only)
+vsockd: admin on http://127.0.0.1:35519 (POST /tell, POST /stop, GET /healthz)
+vsockd: listening on /mnt/fast/apz-accept/run-server/jail-proc-uds/vm64_5000 for guest CID 64
+vsockd: listening on /mnt/fast/apz-accept/run-server/jail-proc-uds/vm65_5000 for guest CID 65
+vsockd: accepted a connection from cid 64
+[guest 64 vm? ->] {"type":"hello","vm":0,"guest_cid":64,"role":"builder","keepalive":true}
+vsockd: guest 64 vm 0 says hello (accepted on the socket for cid 64)
+vsockd: agent 64 role builder connected
+[<-] guest 64 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: accepted a connection from cid 65
+[guest 65 vm? ->] {"type":"hello","vm":1,"guest_cid":65,"role":"reviewer","keepalive":true}
+vsockd: guest 65 vm 1 says hello (accepted on the socket for cid 65)
+vsockd: agent 65 role reviewer connected
+[<-] guest 65 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"reviewer","keepalive":true}
+[<-] guest 64 vm0 {"type":"tool_call","call":1,"name":"uptime","args":{}}
+[guest 64 vm0 ->] {"type":"tool_result","call":1,"ok":true,"output":"3.19 3.10"}
+vsockd: agent 64 answered tool call 1 (ok: true)
+vsockd: session with cid 65 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 64 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

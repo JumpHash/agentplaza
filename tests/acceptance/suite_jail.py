@@ -133,6 +133,25 @@ PROC_API_SETTLE_S = 3.0
 #: The CID the API-created run case serves (disjoint from every other suite's).
 PROC_API_CID = 66
 
+#: The console-growth regression case (the `mremap` gap): a 1-VM run in process
+#: mode whose console output is driven past glibc's 128 KiB mmap threshold,
+#: where `realloc` calls `mremap` and the armed allowlist kills the thread that
+#: owns the capture. `wspace <text>` prints the whole notes file back (bounded
+#: at 4 KiB per call), so a 40-byte payload grows the serial capture
+#: quadratically — ~41 B per call per line, to ~205 KiB by the 100th call.
+GROW_CID = 68
+GROW_CALLS = 140
+GROW_PAUSE_S = 0.35
+#: 7 bytes of `wspace ` plus 40: under the guest's 63-byte console read.
+GROW_PAYLOAD = "m" * 40
+#: The drive's goal: past the threshold with room to spare.
+GROW_TARGET = 256 << 10
+#: The non-vacuity floor: the capture reached the threshold's neighbourhood. A
+#: run killed by the defect stops just *below* 128 KiB of captured bytes (the
+#: realloc that needs `mremap` is the one growing the buffer *to* 128 KiB;
+#: measured: 131,066 B), so the floor cannot be the threshold itself.
+GROW_REACHED = 120 << 10
+
 
 def _guarded(case, body) -> None:
     """Run a case body; a harness exception fails the case, never the suite."""
@@ -422,7 +441,11 @@ def _case_armed(suite: Suite, ctx) -> None:
             if not audit["available"]:
                 case.note(f"kernel audit not readable here: {audit['reason']}")
             else:
-                own = [line for line in audit["lines"] if vmm_audit_attribution(line)]
+                own = [
+                    line
+                    for line in audit["lines"]
+                    if vmm_audit_attribution(line, ctx.bin_dir)
+                ]
                 case.task(
                     "the kernel logged no seccomp refusal for the daemon during the boot",
                     not own,
@@ -529,7 +552,11 @@ def _case_soak(suite: Suite, ctx) -> None:
             if not audit["available"]:
                 case.note(f"kernel audit not readable here: {audit['reason']}")
             else:
-                own = [line for line in audit["lines"] if vmm_audit_attribution(line)]
+                own = [
+                    line
+                    for line in audit["lines"]
+                    if vmm_audit_attribution(line, ctx.bin_dir)
+                ]
                 case.task(
                     "the kernel logged no seccomp refusal for the daemon during the soak",
                     not own,
@@ -910,13 +937,172 @@ def _case_process_api_run(suite: Suite, ctx) -> None:
     _guarded(case, body)
 
 
+def _case_grown_console_buffer(suite: Suite, ctx) -> None:
+    """The jail must admit the allocator: a grown console capture is not `mremap`-free.
+
+    New failure mode, 2026-10-11 — surfaced by this run's own kernel soak and
+    confirmed against a pinned HEAD build; added to the fixed suite as its
+    regression case. ``crates/vmm/src/jail``'s armed allowlist excludes
+    ``mremap`` on the stated ground that "the guest-memory regions are mapped
+    once; nothing remaps", and its derivation trace (``TRACE_OBSERVED``) never
+    saw it either, because the traced fleet was short-lived and none of its
+    buffers crossed the threshold. The VMM's serial capture is a growing ``Vec``
+    (``MAX_SERIAL_CAPTURE``, 4 MiB), and glibc's ``realloc`` issues ``mremap``
+    for any chunk past its mmap threshold — 128 KiB by default — so a guest
+    whose console output crosses that threshold kills the VMM thread that owns
+    the capture under the shipped ``SECCOMP_RET_KILL_PROCESS``. In per-VM
+    process mode that is the VM's ``apz-vmm`` child; in the shipped in-process
+    mode the same thread is a thread of ``noded`` itself.
+
+    Measured on the pinned build (``pin/apz-vmm``, process mode) before this case
+    existed: the run's VM went ``killed`` with its capture at 131,066 B, and the
+    kernel logged ``type=1326 comm="apz_vcpu_0" sig=31 syscall=25
+    code=0x80000000`` — syscall 25 is ``mremap`` and ``code=0x80000000`` is
+    ``SECCOMP_RET_KILL_PROCESS``. The in-process mode did *not* reproduce it in
+    the same experiment (its allocator stayed on the heap past 368 KiB of
+    capture), which is why the case drives the mode where the threshold is
+    deterministic: a fresh ``apz-vmm`` child starts with glibc's initial 128 KiB
+    threshold.
+    """
+    case = suite.case(
+        "the jail admits the allocator: a VMM thread survives a guest console that grows past the mmap "
+        "threshold (mremap)",
+        vector=(
+            f"process mode; a 1-VM run is booted through POST and its console driven with `wspace <text>` "
+            f"(the guest prints the whole notes file back, so the serial capture grows ~41 B/call) until the "
+            f"capture passes {GROW_TARGET >> 10} KiB, past glibc's 128 KiB mmap threshold where "
+            "realloc calls mremap; the VM must stay running and the kernel must log no type=1326 refusal "
+            "for this lab's own VMM processes"
+        ),
+    )
+    if ctx.host_os != "linux":
+        case.blocked(f"the per-VM process mode is Linux-only (apz-vmm); this host is {ctx.host_os}")
+        return
+    if not (ctx.bin_dir / "apz-vmm").exists():
+        case.blocked(
+            f"the per-VM process binary {ctx.bin_dir / 'apz-vmm'} is not built; the case is SKIPPED"
+        )
+        return
+    if not ctx.workspace_image.is_file():
+        case.blocked(
+            f"the workspace base image {ctx.workspace_image} is absent; the guest's `wspace` amplifier "
+            "needs a mounted volume, so the case is SKIPPED"
+        )
+        return
+
+    def body() -> None:
+        started = time.time()
+        with Lab(
+            ctx,
+            [GROW_CID],
+            "jail-grow",
+            env={"APZ_VMM_SPAWN": "process"},
+            workspace=ctx.workspace_image,
+            status_port=0,
+            admin_port=0,
+            hub_status="off",
+            hub_admin="self",
+        ) as lab:
+            daemon = lab.noded.pid
+            _, view = lab.create(n=1, vcpus=1, memory_mib=128, beats=None, vsock_cid=GROW_CID)
+            run_id = view["id"]
+            children = _await_children(daemon, 1, PROC_SETTLE_S)
+            case.invariant(
+                "the run's VM is a live apz-vmm child before the drive (the case cannot be vacuous)",
+                len(children) == 1,
+                f"children={children} run={view.get('state')}",
+            )
+            calls = 0
+            capture = 0
+            state = "running"
+            for calls in range(1, GROW_CALLS + 1):
+                lab.input(run_id, 0, f"wspace {GROW_PAYLOAD}")
+                time.sleep(GROW_PAUSE_S)
+                try:
+                    current = lab.get(run_id)
+                except Exception as err:  # the daemon itself is gone
+                    state = f"api refused ({type(err).__name__})"
+                    break
+                vms = current.get("vms") or [{}]
+                capture = len(vms[0].get("serial", ""))
+                state = vms[0].get("state", "?")
+                if capture >= GROW_TARGET or state != "running":
+                    break
+            case.invariant(
+                f"the guest's console capture reached the mmap threshold's neighbourhood ({GROW_REACHED >> 10} "
+                "KiB) — the case is not vacuous",
+                capture >= GROW_REACHED,
+                f"capture={capture} B after {calls} call(s)",
+            )
+            case.task(
+                "the run's VM is still running after its capture crossed glibc's 128 KiB mmap threshold "
+                "(its VMM thread survived the allocator)",
+                state == "running",
+                f"state={state} capture={capture} B calls={calls}",
+            )
+            pids = set(children) | {daemon}
+            audit = kernel_seccomp_audit(started)
+            if not audit["available"]:
+                case.note(f"kernel audit not readable here: {audit['reason']}")
+            else:
+                own = [
+                    line
+                    for line in audit["lines"]
+                    if vmm_audit_attribution(line, ctx.bin_dir)
+                    and any(f"pid={pid} " in line for pid in pids)
+                ]
+                case.task(
+                    "the kernel logged no seccomp refusal for this lab's own VMM processes",
+                    not own,
+                    f"records={own}" if own else f"scanned {len(audit['lines'])} type=1326 record(s), none ours",
+                )
+            if state != "running":
+                suite.finding(
+                    "a VMM thread is killed by the jail's own allowlist when a growable buffer crosses "
+                    "glibc's mmap threshold: `mremap` is excluded but the serial capture remaps",
+                    classification="product-defect",
+                    severity="high",
+                    affected_cell=f"{ctx.machine_class} process mode, a guest with a long console capture",
+                    observed=(
+                        f"the run's VM left `running` ({state}) with its serial capture at {capture} B "
+                        f"after {calls} console calls; the kernel recorded "
+                        "comm=\"apz_vcpu_0\" sig=31 syscall=25 (mremap) code=0x80000000 "
+                        "(SECCOMP_RET_KILL_PROCESS) for one of this lab's own apz-vmm children"
+                    ),
+                    expected=(
+                        "a jailed VMM thread survives its own allocator: the guest's console may grow to "
+                        "MAX_SERIAL_CAPTURE (4 MiB) without the process being killed"
+                    ),
+                    mechanism=(
+                        "crates/vmm/src/jail/mod.rs's armed ALLOWLIST covers mmap/munmap/madvise/mprotect/brk "
+                        "and excludes mremap, with the stated ground 'the guest-memory regions are mapped once; "
+                        "nothing remaps'. The serial capture is a growing Vec: glibc's realloc calls mremap for "
+                        "a chunk past its mmap threshold (128 KiB by default), which fires the shipped "
+                        "SECCOMP_RET_KILL_PROCESS. The derivation trace missed it because the traced 3-VM fleet "
+                        "was short-lived. In the shipped in-process mode the same thread is a thread of noded, "
+                        "so the death would be the whole daemon's"
+                    ),
+                    evidence=[str(lab.noded_log)],
+                    suspected_component="crates/vmm/src/jail/mod.rs (the ALLOWLIST's allocator group)",
+                    reproducer=(
+                        "scripts/acceptance.sh jail  ->  the case 'the jail admits the allocator ...'; or by "
+                        "hand: APZ_VMM_SPAWN=process noded --workspace <image>, POST /api/v0/runs n=1, then "
+                        "send `wspace <text>` until the run view's serial passes 128 KiB (the VM goes killed "
+                        "at ~131 KiB and journalctl -k shows syscall=25 code=0x80000000 for the child)"
+                    ),
+                )
+
+    _guarded(case, body)
+
+
 def run(ctx) -> Suite:
     suite = Suite(
         "jail-in-the-boot-path",
         "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch "
         "unconfined, a 50-VM soak with no daemon death and no kernel refusal, the per-VM process mode's "
-        "children jailed and backed by the parent-death signal, and an API-created run in process mode "
-        "surviving its own request",
+        "children jailed and backed by the parent-death signal, an API-created run in process mode "
+        "surviving its own request, and a jailed VMM thread surviving a console capture grown past "
+        "glibc's mmap threshold (the mremap gap)",
         ctx,
     )
     reason = ctx.can_run("jail")
@@ -928,4 +1114,5 @@ def run(ctx) -> Suite:
     _case_soak(suite, ctx)
     _case_process_mode(suite, ctx)
     _case_process_api_run(suite, ctx)
+    _case_grown_console_buffer(suite, ctx)
     return suite

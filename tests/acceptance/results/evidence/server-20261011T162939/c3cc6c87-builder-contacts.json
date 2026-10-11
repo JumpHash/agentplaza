@@ -1,0 +1,20 @@
+{
+  "agent_cid": 173,
+  "contacts": [
+    {
+      "peer_cid": 174,
+      "role": "librarian",
+      "since": 1791730116449,
+      "kind": "met"
+    },
+    {
+      "peer_cid": 172,
+      "role": "architect",
+      "since": 1791730116465,
+      "kind": "was-hired"
+    }
+  ],
+  "total": 2,
+  "limit": 256,
+  "truncated": false
+}

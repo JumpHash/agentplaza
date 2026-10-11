@@ -2,25 +2,25 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "BLOCKED",
   "machine_class": "pi4",
-  "generated_at": "2026-10-11T13:58:53+0200",
-  "wall_seconds": 0.059,
+  "generated_at": "2026-10-11T16:49:06+0200",
+  "wall_seconds": 0.057,
   "manifest": {
     "suite": "all",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "d940a5d4b88d628b9c68dc87f7ce79b9e3a2eb2d",
+      "head": "906660fb8956ddaefb32ba62ddddd5c5c8dfd973",
       "dirty": true,
-      "harness_tree_sha256": "bdad85355ec7a7181a62902fbccb21f43096b4496d9725110fcf4a855697611a"
+      "harness_tree_sha256": "509381f4123e5931e2ebfbb0356369b2cceac2e3fb03d6f6657d907230e345c5"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
       "kernel": "/boot/vmlinuz-linux",
       "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
-      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
-      "initrd_sha256": "bc4dd19fd0d5eef3fd98b8a36453573881dbfd2f19304c694a32f89306a491b2",
-      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "initrd": "/mnt/fast/apz-accept/pin/initrd.x86_64.gz",
+      "initrd_sha256": "e46a580bab8eeba6731ac6b8be4107e0a2faa1e84bffa726c3d30e00c6c91ebc",
+      "workspace": "/mnt/fast/apz-accept/pin/workspace.ext4",
       "workspace_bytes": 16777216,
-      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+      "workspace_sha256": "e075f8251d5d161c0cc8114aca1aa60c67a876a833ca0e75fbdbed35575215ab"
     },
     "host": {
       "machine_class": "pi4",
@@ -35,25 +35,25 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-pi4-GmjR",
-    "started_at": "2026-10-11T13:58:53+0200",
+    "artifacts_dir": "/mnt/fast/apz-accept/run-pi4",
+    "started_at": "2026-10-11T16:49:06+0200",
     "binaries": {
       "noded": {
-        "path": "/tmp/apz-pin4/noded",
-        "sha256": "d60ed1d82dc568c198c04627bd75b3b0d21cc27ff2d62b3d1ba0de79edfff855"
+        "path": "/mnt/fast/apz-accept/pin/noded",
+        "sha256": "b8ffa813c9fa003e1b1c9348b1043bb6d3574b35274e425e726689f6d809917b"
       },
       "vsockd": {
-        "path": "/tmp/apz-pin4/vsockd",
-        "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
+        "path": "/mnt/fast/apz-accept/pin/vsockd",
+        "sha256": "ef8cc459c069a3951861f627a33b1add5859f3a0d085f454b991092191b64a18"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-pi4-GmjR/kernel-seccomp-audit.log",
+        "source": "/mnt/fast/apz-accept/run-pi4/kernel-seccomp-audit.log",
         "bytes": 1,
         "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-        "excerpt": "tests/acceptance/results/evidence/pi4-20261011T135853/01ba4719-kernel-seccomp-audit.log",
+        "excerpt": "tests/acceptance/results/evidence/pi4-20261011T164906/01ba4719-kernel-seccomp-audit.log",
         "excerpt_bytes": 1
       }
     ]
@@ -73,23 +73,23 @@
   "kernel_seccomp_audit": {
     "available": true,
     "reason": null,
-    "since_epoch": 1791719933,
+    "since_epoch": 1791730146,
     "records": 0,
     "attributed": [],
     "kills": [],
-    "artifact": "/tmp/apz-pi4-GmjR/kernel-seccomp-audit.log"
+    "artifact": "/mnt/fast/apz-accept/run-pi4/kernel-seccomp-audit.log"
   },
   "sut_binary": {
-    "bin_dir": "/tmp/apz-pin4",
+    "bin_dir": "/mnt/fast/apz-accept/pin",
     "digests": {
-      "noded": "d60ed1d82dc568c198c04627bd75b3b0d21cc27ff2d62b3d1ba0de79edfff855",
-      "vsockd": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
+      "noded": "b8ffa813c9fa003e1b1c9348b1043bb6d3574b35274e425e726689f6d809917b",
+      "vsockd": "ef8cc459c069a3951861f627a33b1add5859f3a0d085f454b991092191b64a18"
     },
     "changed_mid_run": {},
     "sut_git_at_start": {
-      "head": "d940a5d4b88d628b9c68dc87f7ce79b9e3a2eb2d",
+      "head": "906660fb8956ddaefb32ba62ddddd5c5c8dfd973",
       "dirty": true,
-      "harness_tree_sha256": "bdad85355ec7a7181a62902fbccb21f43096b4496d9725110fcf4a855697611a"
+      "harness_tree_sha256": "509381f4123e5931e2ebfbb0356369b2cceac2e3fb03d6f6657d907230e345c5"
     }
   },
   "suites": [
@@ -104,7 +104,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -118,7 +118,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -132,12 +132,12 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
       "suite": "jail-in-the-boot-path",
-      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, a 50-VM soak with no daemon death and no kernel refusal, the per-VM process mode's children jailed and backed by the parent-death signal, and an API-created run in process mode surviving its own request",
+      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, a 50-VM soak with no daemon death and no kernel refusal, the per-VM process mode's children jailed and backed by the parent-death signal, an API-created run in process mode surviving its own request, and a jailed VMM thread surviving a console capture grown past glibc's mmap threshold (the mremap gap)",
       "status": "BLOCKED",
       "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
       "cases_passed": 0,
@@ -146,7 +146,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -160,7 +160,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -174,7 +174,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -188,7 +188,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -202,7 +202,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -216,7 +216,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     },
     {
@@ -230,7 +230,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T13:58:53+0200",
+      "started_at": "2026-10-11T16:49:06+0200",
       "duration_s": 0.0
     }
   ],

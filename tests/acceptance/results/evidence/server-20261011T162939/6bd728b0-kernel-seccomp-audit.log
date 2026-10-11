@@ -1,0 +1,1 @@
+2026-10-11T16:39:30+02:00 zarathos-pc kernel: audit: type=1326 audit(1791729570.748:1879145): auid=1000 uid=1000 gid=1000 ses=3 pid=3040961 comm="apz_vcpu_0" exe="/mnt/fast/apz-accept/pin/apz-vmm" sig=31 arch=c000003e syscall=25 compat=0 ip=0x7effb9320eb6 code=0x80000000

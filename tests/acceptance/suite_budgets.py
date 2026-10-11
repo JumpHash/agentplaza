@@ -272,6 +272,7 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
     )
     cpu_peak = 0.0
     small_cpu = 0.0
+    host_mhz: dict | None = None
     with Lab(ctx, [], "budgets-footprint") as lab:
         baseline = lab.rss()
         reply, view = lab.create(n=FLEET_N, vcpus=1, memory_mib=128, beats=FLEET_BEATS)
@@ -285,15 +286,17 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
         hz = os.sysconf("SC_CLK_TCK")
         rss_samples: list[int] = []
         cpu_samples: list[float] = []
+        mhz_samples: list[dict | None] = []
         for _ in range(CPU_WINDOWS):
             rss_samples.append(lab.rss())
             ticks = lab.cpu_ticks()
             started = now()
             time.sleep(CPU_WINDOW_S)
-            elapsed = now() - started
-            cpu_samples.append(100.0 * (lab.cpu_ticks() - ticks) / hz / elapsed)
+            cpu_samples.append(100.0 * (lab.cpu_ticks() - ticks) / hz / (now() - started))
+            mhz_samples.append(host_cpu_mhz())
         peak = max(rss_samples)
         cpu_peak = max(cpu_samples)
+        host_mhz = _merge_mhz(mhz_samples)
         case.invariant(
             f"whole-fleet RSS under the {FLEET_RSS_BUDGET >> 30} GiB budget",
             peak < FLEET_RSS_BUDGET,
@@ -302,11 +305,13 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
         case.invariant(
             f"steady-state CPU under {FLEET_CPU_BUDGET_PCT}% of one core",
             cpu_peak < FLEET_CPU_BUDGET_PCT,
-            f"peak={cpu_peak:.3f}% samples={[round(value, 3) for value in cpu_samples]}",
+            f"peak={cpu_peak:.3f}% samples={[round(value, 3) for value in cpu_samples]}"
+            + (f" host_cores={host_mhz['min']}-{host_mhz['max']}MHz" if host_mhz else ""),
         )
         case.note(
             f"fleet {FLEET_N}: RSS baseline {baseline >> 20} MiB peak {peak >> 20} MiB; "
             f"CPU {[round(value, 3) for value in cpu_samples]}% of one core"
+            + (f" (host cores {host_mhz['min']}-{host_mhz['max']} MHz across the windows)" if host_mhz else "")
         )
         final, _ = lab.await_state(view["id"], {"done", "failed", "killed"}, now() + FLEET_DEADLINE_S)
         case.invariant(
@@ -327,6 +332,7 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
             "cpu_peak_pct": cpu_peak,
             "cpu_budget_pct": FLEET_CPU_BUDGET_PCT,
             "recorded_cpu_baseline_pct": RECORDED_CPU_BASELINE_PCT,
+            "host_cpu_mhz": host_mhz,
         }
 
         # A small fleet, for the per-VM CPU scaling behind the baseline note.
@@ -343,21 +349,36 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
         case.note(f"CPU at n={SCALE_N}: {small_cpu:.3f}% of one core (per-VM scaling evidence)")
 
     if cpu_peak > max(1.0, 10 * RECORDED_CPU_BASELINE_PCT):
+        # The bar sentence states what was actually measured: it used to claim
+        # the configured bar "still passes", which was false on the 2026-10-11
+        # run that failed it (13.75 % against a 5 % bar).
+        bar_sentence = (
+            f"The configured bar ({FLEET_CPU_BUDGET_PCT}%) is met ({cpu_peak:.3f}%)."
+            if cpu_peak < FLEET_CPU_BUDGET_PCT
+            else f"The configured bar ({FLEET_CPU_BUDGET_PCT}%) is NOT met ({cpu_peak:.3f}%)."
+        )
+        clock_sentence = (
+            f" Host cores ran at {host_mhz['min']}-{host_mhz['max']} MHz across the windows, and CPU "
+            "time is frequency-dependent on this host, so the peak is the same guest work counted at "
+            "that clock, not a property of the SUT alone (see `host_cpu_mhz`)."
+            if host_mhz
+            else ""
+        )
         suite.finding(
             "steady-state CPU does not reproduce the recorded 0.03% baseline",
             classification="baseline-discrepancy",
             detail=(
                 f"measured peak {cpu_peak:.3f}% of one core for {FLEET_N} guests with the fleet's own "
                 f"beats configuration versus the {RECORDED_CPU_BASELINE_PCT}% recorded in PORT_STATUS "
-                f"slice 16. The configured bar ({FLEET_CPU_BUDGET_PCT}%) still passes, with a thin "
-                f"margin. At n={SCALE_N} the same configuration measures {small_cpu:.3f}%. The recorded "
-                "figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes "
-                "and no console polling; noded never boots a parked guest (its cmdline builder has no "
-                "halt option), and every guest it does boot writes a heartbeat every 5 s and polls its "
-                "console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the "
-                "measured cost. A like-for-like baseline is needed: either re-sample the recorded figure "
-                "with the same guest configuration, or expose a parked-guest option through noded so "
-                "both states can be measured."
+                f"slice 16. {bar_sentence} At n={SCALE_N} the same configuration measures "
+                f"{small_cpu:.3f}%. The recorded figure was sampled with the guests 'parked in HLT', "
+                "which measures no heartbeat writes and no console polling; noded never boots a parked "
+                "guest (its cmdline builder has no halt option), and every guest it does boot writes a "
+                "heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms "
+                "poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: "
+                "either re-sample the recorded figure with the same guest configuration, or expose a "
+                "parked-guest option through noded so both states can be measured."
+                + clock_sentence
             ),
             measured_cpu_pct=cpu_peak,
             measured_cpu_pct_at_scale={f"n{SCALE_N}": small_cpu},
@@ -824,14 +845,17 @@ def _budget_case_workspace_footprint(suite: Suite, ctx, image: Path) -> None:
         hz = os.sysconf("SC_CLK_TCK")
         rss_samples: list[int] = []
         cpu_samples: list[float] = []
+        mhz_samples: list[dict | None] = []
         for _ in range(CPU_WINDOWS):
             rss_samples.append(lab.rss())
             ticks = lab.cpu_ticks()
             started = now()
             time.sleep(CPU_WINDOW_S)
             cpu_samples.append(100.0 * (lab.cpu_ticks() - ticks) / hz / (now() - started))
+            mhz_samples.append(host_cpu_mhz())
         peak = max(rss_samples)
         cpu_peak = max(cpu_samples)
+        host_mhz = _merge_mhz(mhz_samples)
         cached_busy = meminfo_bytes("Cached")
         shmem_busy = meminfo_bytes("Shmem")
         case.invariant(
@@ -842,11 +866,13 @@ def _budget_case_workspace_footprint(suite: Suite, ctx, image: Path) -> None:
         case.invariant(
             f"steady-state CPU under {FLEET_CPU_BUDGET_PCT}% of one core with a workspace volume",
             cpu_peak < FLEET_CPU_BUDGET_PCT,
-            f"peak={cpu_peak:.3f}% samples={[round(value, 3) for value in cpu_samples]}",
+            f"peak={cpu_peak:.3f}% samples={[round(value, 3) for value in cpu_samples]}"
+            + (f" host_cores={host_mhz['min']}-{host_mhz['max']}MHz" if host_mhz else ""),
         )
         case.note(
             f"fleet {FLEET_N} with workspace: RSS baseline {baseline >> 20} MiB peak {peak >> 20} MiB; "
             f"CPU {[round(value, 3) for value in cpu_samples]}% of one core"
+            + (f" (host cores {host_mhz['min']}-{host_mhz['max']} MHz across the windows)" if host_mhz else "")
         )
         final, _ = lab.await_state(view["id"], {"done", "failed", "killed"}, now() + FLEET_DEADLINE_S)
         case.invariant(
@@ -877,6 +903,7 @@ def _budget_case_workspace_footprint(suite: Suite, ctx, image: Path) -> None:
             "cpu_samples_pct": cpu_samples,
             "cpu_peak_pct": cpu_peak,
             "cpu_budget_pct": FLEET_CPU_BUDGET_PCT,
+            "host_cpu_mhz": host_mhz,
             "host_cached_bytes": {
                 "before": cached_before,
                 "busy": cached_busy,
@@ -1318,20 +1345,71 @@ def _await_rss(lab: Lab, target: int, settle: float = 8.0) -> None:
         time.sleep(0.1)
 
 
-def _compare_p95s(suite: Suite, source: str, label: str, current: dict | None, previous: dict | None, scale: float) -> None:
-    """Flag every per-size p95 in ``current`` that regressed past both bars."""
+def host_cpu_mhz() -> dict | None:
+    """The host's per-core clock right now (``/proc/cpuinfo``), min/avg/max.
+
+    The footprint cell counts the daemon's CPU **time**, and on a host with an
+    aggressive frequency governor that is not a property of the daemon alone:
+    the same guest work costs more counted CPU seconds when the cores sit at a
+    low clock. Measured on this host 2026-10-11 with the identical pinned SUT,
+    guest image and configuration (50 x 1 vCPU x 128 MiB, ``beats=12``, the
+    footprint cell's own shape): a peak of **14.25 %** with the cores averaging
+    2.2 GHz and **4.00 %** with them averaging 4.4 GHz (24 spinners holding the
+    clock up). The failing 13.75 % and the passing 4.25 % are the same work at
+    different host clocks, so the clock is recorded next to the samples that
+    would otherwise be read as a property of the SUT.
+    """
+    try:
+        values = [
+            float(line.split(":")[1])
+            for line in Path("/proc/cpuinfo").read_text().splitlines()
+            if line.startswith("cpu MHz")
+        ]
+    except (OSError, ValueError, IndexError):
+        return None
+    if not values:
+        return None
+    return {"min": round(min(values)), "avg": round(sum(values) / len(values)), "max": round(max(values))}
+
+
+def _merge_mhz(samples: list[dict | None]) -> dict | None:
+    """The host-clock summary over a cell's sampling windows, or ``None``."""
+    seen = [sample for sample in samples if sample]
+    if not seen:
+        return None
+    return {
+        "min": min(sample["min"] for sample in seen),
+        "avg": round(sum(sample["avg"] for sample in seen) / len(seen)),
+        "max": max(sample["max"] for sample in seen),
+        "windows": len(seen),
+    }
+
+
+def _compare_p95s(suite: Suite, source: str, label: str, current: dict | None, previous: dict | None) -> None:
+    """Flag every per-size p95 in ``current`` that regressed past both bars.
+
+    Every sweep records wall time in **seconds** (``summary`` over
+    ``now() - started``) while the floor is in milliseconds, so the comparison
+    converts to ms before applying it. Found 2026-10-11: the lifecycle call
+    passed a scale of ``1.0`` for a seconds-scale metric, so
+    ``delta * scale > REGRESSION_FLOOR_MS`` meant "a regression past 250
+    seconds" and no lifecycle regression could ever be flagged — the check was
+    dead for every cell but the boot sweep. The run that found this carried a
+    real workspace-lifecycle p95 regression (7.15 s -> 12.78 s, n=50) that the
+    dead check did not report.
+    """
     if not current or not previous:
         return
     for size, stats in current.items():
         old = previous.get(size)
         if not old or old.get("p95") is None or stats.get("p95") is None:
             continue
-        delta = stats["p95"] - old["p95"]
-        if delta > 0 and (delta / old["p95"] > REGRESSION_TOLERANCE) and (delta * scale > REGRESSION_FLOOR_MS):
+        delta_ms = (stats["p95"] - old["p95"]) * 1000.0
+        if delta_ms > 0 and (delta_ms / (old["p95"] * 1000.0) > REGRESSION_TOLERANCE) and delta_ms > REGRESSION_FLOOR_MS:
             suite.finding(
                 f"{label} p95 regressed for n={size}",
                 classification="budget-regression",
-                detail=f"{old['p95'] * scale:.0f} -> {stats['p95'] * scale:.0f} (previous {source})",
+                detail=f"{old['p95'] * 1000:.0f} ms -> {stats['p95'] * 1000:.0f} ms (previous {source})",
             )
 
 
@@ -1363,8 +1441,7 @@ def _regression_findings(suite: Suite, ctx) -> None:
     for key in ("boot_ms", "lifecycle_s"):
         if key == "boot_ms" and not boot_guest_same:
             continue
-        scale = 1000.0 if key == "boot_ms" else 1.0
-        _compare_p95s(suite, path.name, key, suite.data.get(key), previous.get(key), scale)
+        _compare_p95s(suite, path.name, key, suite.data.get(key), previous.get(key))
     # The `--workspace` cells are compared against the previous run's own
     # workspace numbers, which only exist once a run has recorded them.
     current_workspace = suite.data.get("workspace") or {}
@@ -1378,14 +1455,12 @@ def _regression_findings(suite: Suite, ctx) -> None:
         for key in ("boot_ms", "lifecycle_s"):
             if key == "boot_ms" and not boot_guest_same:
                 continue
-            scale = 1000.0 if key == "boot_ms" else 1.0
             _compare_p95s(
                 suite,
                 path.name,
                 f"workspace {key}",
                 current_workspace.get(key),
                 previous_workspace.get(key),
-                scale,
             )
 
 

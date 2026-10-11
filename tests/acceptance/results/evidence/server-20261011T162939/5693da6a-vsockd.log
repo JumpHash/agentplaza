@@ -1,0 +1,37 @@
+vsockd: role tool grants enforced from /mnt/fast/apz-accept/run-server/social-manifest-say/roles.json (2 roles)
+vsockd: status on http://127.0.0.1:36859 (GET /status, GET /healthz, read-only)
+vsockd: admin on http://127.0.0.1:43589 (POST /tell, POST /stop, GET /healthz)
+vsockd: listening on /mnt/fast/apz-accept/run-server/social-say-uds/vm175_5000 for guest CID 175
+vsockd: listening on /mnt/fast/apz-accept/run-server/social-say-uds/vm176_5000 for guest CID 176
+vsockd: accepted a connection from cid 176
+vsockd: accepted a connection from cid 175
+[guest 175 vm? ->] {"type":"hello","vm":0,"guest_cid":175,"role":"builder","keepalive":true}
+vsockd: guest 175 vm 0 says hello (accepted on the socket for cid 175)
+vsockd: agent 175 role builder connected
+[<-] guest 175 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+[guest 176 vm? ->] {"type":"hello","vm":1,"guest_cid":176,"role":"librarian","keepalive":true}
+vsockd: guest 176 vm 1 says hello (accepted on the socket for cid 176)
+vsockd: agent 176 role librarian connected
+[<-] guest 176 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"librarian","keepalive":true}
+[<-] guest 175 vm0 {"type":"tool_call","call":1,"name":"conversation","args":{"from_cid":176,"from_role":"librarian","text":"the plaza says hello apz-acceptance-v1"}}
+[guest 175 vm0 ->] {"type":"tool_result","call":1,"ok":true,"output":"{\"lines\":1,\"log\":\"messages.log\",\"received\":true,\"size\":86}"}
+vsockd: agent 175 answered tool call 1 (ok: true)
+[<-] guest 175 vm0 {"type":"tool_call","call":2,"name":"read_file","args":{"path":"messages.log"}}
+[guest 175 vm0 ->] {"type":"tool_result","call":2,"ok":true,"output":"{\"bytes\":86,\"content\":\"2026-10-11T14:48:38Z from librarian (cid 176): the plaza says hello apz-acceptance-v1\\n\",\"path\":\"messages.log\",\"size\":86,\"truncated\":false}"}
+vsockd: agent 175 answered tool call 2 (ok: true)
+[<-] guest 176 vm1 {"type":"tool_call","call":1,"name":"conversation","args":{"from_cid":175,"from_role":"builder","text":"on my way apz-acceptance-v1"}}
+[guest 176 vm1 ->] {"type":"tool_result","call":1,"ok":true,"output":"{\"lines\":1,\"log\":\"messages.log\",\"received\":true,\"size\":73}"}
+vsockd: agent 176 answered tool call 1 (ok: true)
+vsockd: refused a call to agent 176: role librarian does not grant read_file
+[<-] guest 176 vm1 {"type":"tool_call","call":2,"name":"search","args":{"pattern":"on my way apz-acceptance-v1"}}
+[guest 176 vm1 ->] {"type":"tool_result","call":2,"ok":true,"output":"{\"bytes_scanned\":73,\"files_scanned\":1,\"matches\":[{\"file\":\"messages.log\",\"line\":1,\"text\":\"2026-10-11T14:48:40Z from builder (cid 175): on my way apz-acceptance-v1\"}],\"path\":\".\",\"pattern\":\"on my way apz-acceptance-v1\",\"skipped\":0,\"truncated\":false}"}
+vsockd: agent 176 answered tool call 2 (ok: true)
+[guest 175 vm0 ->] {"type":"heartbeat","seq":1}
+vsockd: agent 175 heartbeat 1
+[guest 176 vm1 ->] {"type":"heartbeat","seq":1}
+vsockd: agent 176 heartbeat 1
+[<-] guest 176 vm1 {"type":"stop","reason":"acceptance: the social suite ended this session"}
+[guest 176 vm1 ->] {"type":"bye","calls":2}
+vsockd: agent 176 session ended cleanly after 2 tool calls
+vsockd: session with cid 175 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

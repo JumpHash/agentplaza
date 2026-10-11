@@ -1,0 +1,9 @@
+vsockd: status on http://127.0.0.1:40519 (GET /status, GET /healthz, read-only)
+vsockd: listening on /mnt/fast/apz-accept/run-server/treasury-cycle-uds/vm130_5000 for guest CID 130
+vsockd: accepted a connection from cid 130
+[guest 130 vm? ->] {"type":"hello","vm":0,"guest_cid":130,"role":"builder","keepalive":true}
+vsockd: guest 130 vm 0 says hello (accepted on the socket for cid 130)
+vsockd: agent 130 role builder connected
+[<-] guest 130 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: session with cid 130 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

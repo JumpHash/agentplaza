@@ -1,0 +1,12 @@
+vsockd: status on http://127.0.0.1:36391 (GET /status, GET /healthz, read-only)
+vsockd: listening on /mnt/fast/apz-accept/run-server/fleet-status-uds/vm55_5000 for guest CID 55
+vsockd: accepted a connection from cid 55
+[guest 55 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 55, "role": "architect", "keepalive": true}
+vsockd: guest 55 vm 0 says hello (accepted on the socket for cid 55)
+vsockd: agent 55 role architect connected
+[<-] guest 55 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"architect","keepalive":true}
+[guest 55 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 55 heartbeat 1
+[guest 55 vm0 ->] {"type": "bye", "calls": 0}
+vsockd: agent 55 session ended cleanly after 0 tool calls
+vsockd: stop requested, closing the listeners
