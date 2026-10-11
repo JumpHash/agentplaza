@@ -177,3 +177,16 @@ AcpiShutdownDevice (Apache-2.0, Copyright 2019 Intel Corporation).
 
 The acpi_tables crate (crates/acpi-tables) this crate depends on is derived
 from Firecracker's src/acpi-tables crate; see crates/acpi-tables/NOTICE.
+
+crates/vmm/src/jail/{jailer.rs,jailer_sys.rs} are written for this port
+(Copyright 2026 AgentPlaza, Apache-2.0): the VMM's jailer. Its shape follows
+Firecracker's `src/jailer` crate (Apache-2.0, Copyright 2018 Amazon.com, Inc.
+or its affiliates) — src/chroot.rs's mount namespace, bind-over-itself,
+`pivot_root`, `chdir("/")` and lazy unmount of the old root, and src/env.rs's
+`/dev` nodes and uid/gid drop — but no code was copied: this port's VMMs are
+threads inside `noded`/`vmctl` rather than a program that forks and `exec`s a
+VMM child, so the jailer is an in-process step on the VMM's own thread, with no
+control plane, no cgroup, no netns, no daemonize and no `exec`. The bind/syscall
+wrappers are reimplemented against the Linux UAPI headers. See
+crates/vmm/src/jail/jailer.rs for the shape, the post-pivot path audit and the
+namespaces deliberately not used.

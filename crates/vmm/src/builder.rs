@@ -58,6 +58,54 @@ pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     }
 }
 
+/// The confinement step of a VM's build: enters the jailer's per-VM root
+/// ([`crate::jail::jailer`]) when it is armed and this process can.
+///
+/// It runs **once per VM, on the calling thread, before any VMM thread exists**
+/// — the precondition the jailer states — and before the devices that open
+/// paths are built. Every path opened after it (the kernel image, the initrd,
+/// the block image, the muxer's socket) resolves inside the new root, which
+/// mirrors each source at its own path; see the jailer's module documentation
+/// for that audit. The descriptors the setup already holds (`/dev/kvm`, the
+/// image files) are unaffected.
+///
+/// The one tolerated outcome is "this process cannot be jailed by
+/// construction" (a multi-threaded caller such as `noded`), reported once by
+/// [`crate::jail::jailer::enter_thread`]; there the VM keeps its seccomp jail.
+/// A *real* failure — the jail was supposed to land and a step did not — is
+/// returned, and the boot must not continue unjailed.
+fn jail_the_vm(spec: &VmSpec, id: u32) -> Result<(), crate::jail::jailer::JailerError> {
+    use crate::jail::jailer::{self, Access, Jailer};
+
+    // The VM's socket directory is the base when there is one, so a run's jails
+    // live beside its sockets (a sibling, never a child: the muxer's UDS
+    // directory is itself mirrored into the jail).
+    let uds_dir = spec
+        .vsock
+        .as_ref()
+        .and_then(|vsock| vsock.uds_path.parent());
+    let base = jailer::default_base(uds_dir);
+
+    let mut plan = Jailer::new(jailer::root_for(&base, id));
+    plan.bind(&spec.kernel, Access::ReadOnly);
+    if let Some(initrd) = spec.initrd.as_ref() {
+        plan.bind(initrd, Access::ReadOnly);
+    }
+    if let Some(workspace) = spec.workspace.as_ref() {
+        // The one writable source in the whole jail (invariant 3).
+        plan.bind(workspace, Access::ReadWrite);
+    }
+    for dev in ["/dev/kvm", "/dev/null", "/dev/urandom"] {
+        plan.bind(dev, Access::ReadOnly);
+    }
+    if let Some(uds_dir) = uds_dir {
+        plan.bind_dir(uds_dir, Access::ReadWrite);
+    }
+    plan.tmpfs("/run");
+
+    jailer::enter_thread(plan, id).map(|_| ())
+}
+
 /// Kernel command line handed to the guest: the caller's, plus the defaults
 /// this port needs.
 ///
@@ -531,6 +579,9 @@ mod x86_64 {
         /// Failed to watch the VM exit event fd: {0}
         #[error("failed to watch the VM exit event fd: {0}")]
         WaitExitEvent(io::Error),
+        /// Failed to enter the jailer's per-VM root: {0}
+        #[error("failed to enter the jail: {0}")]
+        Jail(#[from] crate::jail::jailer::JailerError),
     }
 
     /// Builds and boots the VM, leaving its vCPUs running.
@@ -552,6 +603,10 @@ mod x86_64 {
         let mut vcpus = vm.create_vcpus(spec.vcpus).map_err(BootError::from)?;
         vm.register_dram_memory_regions(guest_regions)
             .map_err(BootError::from)?;
+
+        // The jailer, before the first device opens a path and before any VMM
+        // thread exists (see `jail_the_vm` and `crate::jail::jailer`).
+        super::jail_the_vm(spec, runtime.id).map_err(BootError::from)?;
 
         // The guest's only devices: the serial console and the i8042
         // controller (which emulates just enough to reset the machine), plus
@@ -856,6 +911,9 @@ mod aarch64 {
         /// Failed to watch the VM exit event fd: {0}
         #[error("failed to watch the VM exit event fd: {0}")]
         WaitExitEvent(io::Error),
+        /// Failed to enter the jailer's per-VM root: {0}
+        #[error("failed to enter the jail: {0}")]
+        Jail(#[from] crate::jail::jailer::JailerError),
     }
 
     /// Builds and boots the VM, leaving its vCPUs running.
@@ -879,6 +937,10 @@ mod aarch64 {
         // guest memory is registered.
         let mut vcpus = vm.create_vcpus(spec.vcpus)?;
         vm.register_dram_memory_regions(guest_regions)?;
+
+        // The jailer, before the first device opens a path and before any VMM
+        // thread exists (see `jail_the_vm` and `crate::jail::jailer`).
+        super::jail_the_vm(spec, runtime.id).map_err(BootError::from)?;
 
         // The guest's only device: the serial console, on the MMIO bus (there
         // is no network device by design).

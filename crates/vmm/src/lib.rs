@@ -58,6 +58,10 @@
 //     mode switch (`log` audits a missing entry instead of killing the daemon);
 //     its probes are an integration test (`tests/jail.rs`), in a process of
 //     their own.
+//   * `jail::jailer_sys` — the jailer's raw-syscall boundary: `unshare(2)`,
+//     `mount(2)`, `pivot_root(2)`, `chdir(2)`, `mkdir(2)`, `rmdir(2)`,
+//     `umount2(2)` and the `setresgid(2)`/`setresuid(2)` drop. See
+//     [`jail::jailer`] and its probe (`tests/jailer.rs`).
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]

@@ -133,13 +133,25 @@
 //! [`Jail::arm_logged`] is the mode-independent arm: it installs the logged
 //! filter whatever the environment says, which is what a diagnosis run wants.
 //!
-//! **What this v0 does not do.** No namespaces, no chroot/pivot_root, no
-//! cgroup, no uid/capability drop, no `Landlock`. It is the seccomp +
-//! `no_new_privs` slice of the confinement layer, applied to the VMM's threads
-//! inside a daemon that still holds the host's privileges. The remaining pieces
-//! are the node daemon's, and are a stated open item.
+//! **The rest of the confinement layer: [`jailer`].** This module is the
+//! seccomp half — a filter per VMM thread, which needs no privilege and applies
+//! wherever the process runs. [`jailer`] is the other half: a per-VM root, a
+//! mount namespace and `pivot_root`, entered once at the top of a VM's build
+//! (before any thread exists) and switched by its own variable
+//! (`APZ_VMM_JAILER=on|off`). It has its own precondition — a process that is
+//! single-threaded at build time — and reports [`jailer::Entered::Unsupported`]
+//! where that does not hold, which is what keeps the two halves honest about
+//! which one is actually confining a given VM. Read [`jailer`] for the shape,
+//! the post-pivot path audit and the namespaces that are deliberately *not*
+//! used.
+//!
+//! **What this layer still does not do.** No cgroup, no uid/capability drop
+//! beyond the jailer's namespace (or a root caller's explicit target), no
+//! `Landlock`, no PID namespace — see [`jailer`] for why each is absent.
 
 mod sys;
+pub mod jailer;
+mod jailer_sys;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
