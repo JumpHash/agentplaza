@@ -37,7 +37,7 @@ const MAX_PACKAGES: usize = 20;
 pub const PROXY_ADDR: &str = "127.0.0.1:3128";
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 /// The uid and gid a root guest runs commands as.
-const UNPRIVILEGED: u32 = 1000;
+pub(crate) const UNPRIVILEGED: u32 = 1000;
 /// The most output kept; past it the rest is drained and dropped.
 const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Room kept under the tool cap for the `exit` line.
@@ -202,7 +202,7 @@ fn describe_exit(status: ExitStatus) -> String {
 
 /// Whether this process runs as root, from the effective uid in
 /// `/proc/self/status`. An unreadable status is an error, not a guess.
-fn runs_as_root() -> Result<bool, String> {
+pub(crate) fn runs_as_root() -> Result<bool, String> {
     let status = std::fs::read_to_string("/proc/self/status")
         .map_err(|err| format!("unavailable: cannot read the guest's uid: {err}"))?;
     let effective = status

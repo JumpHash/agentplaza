@@ -218,7 +218,7 @@ fn unpack(
         process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    if let Err(err) = write_tree(&staging, files) {
+    if let Err(err) = write_tree(&staging, files).and_then(|()| give_to_agent(&staging)) {
         let _ = fs::remove_dir_all(&staging);
         return Err(err);
     }
@@ -658,4 +658,23 @@ mod tests {
         assert!(base64_decode("Zm9").is_err());
         assert!(base64_decode("Z!9v").is_err());
     }
+}
+
+/// In a root guest, hands the unpacked tree to the agent user (uid 1000), so a tool that
+/// writes beside itself works when it runs as the agent.
+fn give_to_agent(dir: &Path) -> Result<(), String> {
+    if !crate::bash::runs_as_root().unwrap_or(false) {
+        return Ok(());
+    }
+    let id = crate::bash::UNPRIVILEGED;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        std::os::unix::fs::lchown(&path, Some(id), Some(id)).map_err(|e| format!("cannot hand {} to the agent: {e}", path.display()))?;
+        if path.is_dir() {
+            for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+                stack.push(entry.map_err(|e| e.to_string())?.path());
+            }
+        }
+    }
+    Ok(())
 }
