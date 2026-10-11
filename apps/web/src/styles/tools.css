@@ -1,0 +1,84 @@
+/* Setup > Tools. Cards reuse the provider card classes from models.css. */
+
+.tool-note {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+}
+
+.tool-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.tool-filter {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.tool-filter[aria-pressed='true'] {
+  opacity: 1;
+  font-weight: 600;
+}
+
+.tool-desc {
+  margin: 8px 0 0;
+  font-size: 0.9rem;
+}
+
+.tool-actions {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.tool-actions .badge {
+  font-size: 0.75rem;
+}
+
+.tool-cli {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+}
+
+.tool-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.tool-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.tool-card .field {
+  margin-top: 10px;
+}
+
+.tool-card .prov-actions {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.tool-result {
+  font-size: 0.85rem;
+}
+
+.tool-docs {
+  font-size: 0.85rem;
+}

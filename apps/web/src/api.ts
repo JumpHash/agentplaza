@@ -74,6 +74,18 @@ export interface ProviderInput {
 }
 
 export interface TestReport { ok: boolean; model: string; latency_ms: number; reply: string | null; error: string | null }
+
+export type ConnectorCategory = 'research' | 'media' | 'infra' | 'messaging' | 'dev';
+export type ConnectorRisk = 'read' | 'write' | 'irreversible';
+export interface ConnectorAction { name: string; description: string; risk: ConnectorRisk }
+/** A tool an agent can be lent through the plaza. Its key lives in the vault, never in a VM. */
+export interface Connector {
+  id: string; label: string; brand: string; kind: 'api' | 'cli'; category: ConnectorCategory;
+  description: string; docs_url: string; key_hint: string; configured: boolean; enabled: boolean;
+  /** Empty means every role may use it. */
+  roles: string[]; actions: ConnectorAction[]; cli: { package: string; binary: string } | null;
+}
+export interface ConnectorTest { ok: boolean; latency_ms: number; detail: string }
 export interface ModelInfo { provider: string; id: string; name: string | null }
 export interface ModelsView { models: ModelInfo[]; errors: { provider: string; error: string }[] }
 
@@ -214,4 +226,10 @@ export const api = {
   run: (id: string) => get<Run & { vms: (Vm & { serial?: string })[] }>(`/v1/runs/${id}`),
   createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),
   killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
+
+  connectors: () => get<Connector[]>('/v1/connectors'),
+  updateConnector: (id: string, patch: { enabled?: boolean; roles?: string[] }) => put<Connector>(`/v1/connectors/${id}`, patch),
+  setConnectorSecret: (id: string, value: string) => put<unknown>(`/v1/connectors/${id}/secret`, { value }),
+  clearConnectorSecret: (id: string) => del<unknown>(`/v1/connectors/${id}/secret`),
+  testConnector: (id: string) => post<ConnectorTest>(`/v1/connectors/${id}/test`),
 };

@@ -13,6 +13,7 @@ import { mount as overview } from './overview';
 import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
+import { mount as tools } from './tools';
 
 export type Cleanup = () => void;
 export type Mount = (root: HTMLElement, params: string[]) => Cleanup;
@@ -36,5 +37,6 @@ export const SCREENS: Screen[] = [
   { key: 'council', label: 'Council', icon: 'council', section: 'Social', mount: council },
   { key: 'treasury', label: 'Treasury', icon: 'treasury', section: 'Social', mount: treasury },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
+  { key: 'tools', label: 'Tools', icon: 'zap', section: 'Setup', mount: tools },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
 ];
