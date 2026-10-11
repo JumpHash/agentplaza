@@ -17,6 +17,8 @@ const SPEED = 1.6; // grid units per second
 const PLATFORM_Z = 10; // platform top height, screen px before zoom
 const BODY_Z = 24; // hover and packet anchor height above the floor
 const MAX_PACKETS = 60;
+const DRONE_SPEED = 2.2; // grid units per second
+const DRONE_Z = 64; // drone height above the platform top, screen px
 
 interface District {
   role: string;
@@ -40,9 +42,29 @@ interface Bot {
   nextWander: number;
   bubble: { text: string; until: number; tone: 'info' | 'ok' | 'danger' } | null;
   activity: string; // what the agent is doing right now, shown on its card
+  talk: number | null; // cid of the robot this one is walking over to
+  talkUntil: number; // give up walking over after this time
 }
 
 interface Packet { from: number; to: number; start: number; tone: 'accent' | 'ok' }
+
+type PropKind = 'desk' | 'plant' | 'crate' | 'lamp' | 'rack' | 'shelf' | 'board' | 'bench';
+
+interface Prop {
+  kind: PropKind;
+  x: number; // grid units
+  y: number;
+  d?: District; // the district it furnishes; none for the central square
+}
+
+interface Drone {
+  x: number; // grid units
+  y: number;
+  tx: number;
+  ty: number;
+  pause: number; // seconds left before flying on
+  phase: number; // bob phase
+}
 
 interface Palette {
   paper: string;
@@ -127,6 +149,84 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
+/** Benches on the central square, clear of the dais. */
+const BENCHES: [number, number][] = [
+  [2.6, 2.6],
+  [-2.6, -2.6],
+  [2.6, -2.6],
+  [-2.6, 2.6],
+];
+
+/** Role flavour: what stands against the back edge of a district. */
+const FLAVOUR: Record<string, PropKind> = {
+  builder: 'rack',
+  qa: 'rack',
+  release: 'rack',
+  security: 'rack',
+  researcher: 'shelf',
+  librarian: 'shelf',
+  planner: 'shelf',
+  architect: 'board',
+  reviewer: 'board',
+};
+
+/** Furniture for every district but the orchestrator's dais, plus the square's benches. */
+function buildProps(ds: District[]): Prop[] {
+  const out: Prop[] = BENCHES.map(([x, y]): Prop => ({ kind: 'bench', x, y }));
+  for (const d of ds) {
+    if (d.role === 'orchestrator') continue;
+    const e = d.r - 0.7; // inset from the platform edge
+    out.push(
+      { kind: 'plant', x: d.cx - e, y: d.cy - e, d },
+      { kind: 'desk', x: d.cx + e, y: d.cy - e, d },
+      { kind: 'desk', x: d.cx - e, y: d.cy + e, d },
+      { kind: 'lamp', x: d.cx + e, y: d.cy + e, d },
+      { kind: 'crate', x: d.cx - e, y: d.cy, d },
+      { kind: FLAVOUR[d.role] ?? 'crate', x: d.cx, y: d.cy - e, d },
+    );
+    if (d.r >= 4) out.push({ kind: 'desk', x: d.cx + e, y: d.cy, d });
+  }
+  return out;
+}
+
+function randomSpot(ds: District[]): [number, number] {
+  if (!ds.length) return [(Math.random() * 2 - 1) * 8, (Math.random() * 2 - 1) * 8];
+  const d = ds[Math.floor(Math.random() * ds.length)] ?? ds[0]!;
+  return [d.cx + (Math.random() * 2 - 1) * (d.r - 0.5), d.cy + (Math.random() * 2 - 1) * (d.r - 0.5)];
+}
+
+function newDrone(i: number, ds: District[]): Drone {
+  const [x, y] = randomSpot(ds);
+  return { x, y, tx: x, ty: y, pause: i * 0.8, phase: i * 2.1 };
+}
+
+/** Glide towards the target, hover a moment, then pick the next district. */
+function stepDrone(dr: Drone, dt: number, ds: District[]): void {
+  if (dr.pause > 0) {
+    dr.pause -= dt;
+    return;
+  }
+  const dx = dr.tx - dr.x;
+  const dy = dr.ty - dr.y;
+  const dist = Math.hypot(dx, dy);
+  const step = DRONE_SPEED * dt;
+  if (dist > step) {
+    dr.x += (dx / dist) * step;
+    dr.y += (dy / dist) * step;
+    return;
+  }
+  dr.x = dr.tx;
+  dr.y = dr.ty;
+  dr.pause = 1 + Math.random() * 2;
+  [dr.tx, dr.ty] = randomSpot(ds);
+}
+
+/** A nearby idle robot to walk over and chat with, if any. */
+function neighbourOf(b: Bot, all: Bot[]): Bot | null {
+  const near = all.filter((o) => o !== b && o.agent.status === 'idle' && Math.hypot(o.x - b.x, o.y - b.y) < 8);
+  return near[Math.floor(Math.random() * near.length)] ?? null;
+}
+
 export function mountFloor2d(root: HTMLElement): Cleanup {
   const canvas = h('canvas.floor-canvas', { 'aria-label': 'The plaza floor' });
   const card = h('div.floor-card', { hidden: true });
@@ -144,6 +244,8 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
   const ctx = canvas.getContext('2d')!;
   let districts: District[] = [];
   let bots: Bot[] = [];
+  let props: Prop[] = [];
+  let drones: Drone[] = [];
   const byCid = new Map<number, Bot>();
   const packets: Packet[] = [];
   let pan = { x: 0, y: 0 };
@@ -187,10 +289,13 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
               nextWander: performance.now() + Math.random() * 3000,
               bubble: null,
               activity: 'idle',
+              talk: null,
+              talkUntil: 0,
             },
       );
     }
     bots = next;
+    props = buildProps(districts);
     byCid.clear();
     bots.forEach((b) => byCid.set(b.agent.cid, b));
     if (selected) selected = byCid.get(selected.agent.cid) ?? null;
@@ -240,14 +345,33 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
   function update(dt: number, now: number): void {
     for (const b of bots) {
       const idle = b.agent.status === 'idle';
+      if (!idle) b.talk = null;
       if (idle && now >= b.nextWander) {
-        const span = Math.max(0.5, b.district.r - 0.7);
-        b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
-        b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
-        b.nextWander = now + 3000 + Math.random() * 4000;
+        const roll = Math.random();
+        const friend = roll < 0.3 ? neighbourOf(b, bots) : null;
+        if (friend) {
+          // Walk over to a neighbour; the chat bubble shows on arrival.
+          b.talk = friend.agent.cid;
+          b.talkUntil = now + 9000;
+          b.nextWander = now + 9000;
+        } else if (roll < 0.5) {
+          // Stroll to the central square; the next wander walks back.
+          b.tx = (Math.random() * 2 - 1) * 2.5;
+          b.ty = (Math.random() * 2 - 1) * 2.5;
+          b.nextWander = now + 5000 + Math.random() * 3000;
+        } else {
+          const span = Math.max(0.5, b.district.r - 0.7);
+          b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
+          b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
+          b.nextWander = now + 3000 + Math.random() * 4000;
+        }
       }
-      // Working and offline bots head for their console; idle bots wander.
-      const [gx, gy] = idle ? [b.tx, b.ty] : b.home;
+      // Working and offline bots head for their console; idle bots wander or chat.
+      const partner = idle && b.talk !== null && now < b.talkUntil ? byCid.get(b.talk) : undefined;
+      if (b.talk !== null && !partner) b.talk = null;
+      const [hx, hy] = b.home;
+      const target: [number, number] = partner ? [partner.x + 0.9, partner.y + 0.9] : idle ? [b.tx, b.ty] : [hx, hy];
+      const [gx, gy] = target;
       const dx = gx - b.x;
       const dy = gy - b.y;
       const dist = Math.hypot(dx, dy);
@@ -265,7 +389,16 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
         const screenDx = dx - dy;
         if (Math.abs(screenDx) > 0.05) b.facing = screenDx > 0 ? 1 : -1;
       }
+      if (partner && !b.moving) {
+        // Arrived: turn to the neighbour and show the chat bubble.
+        b.facing = partner.x - b.x - (partner.y - b.y) >= 0 ? 1 : -1;
+        b.bubble = { text: '· · ·', until: now + 3000, tone: 'info' };
+        b.talk = null;
+        b.nextWander = now + 2500 + Math.random() * 2000;
+      }
     }
+    if (!drones.length) drones = [0, 1, 2].map((i) => newDrone(i, districts));
+    for (const dr of drones) stepDrone(dr, dt, districts);
   }
 
   function fillPoly(pts: [number, number][], fill: string): void {
@@ -345,6 +478,324 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
     ctx.save();
     ctx.globalAlpha = working ? 1 : 0.6;
     fillPoly(screenPts, working ? palette.info : palette.rule);
+    ctx.restore();
+  }
+
+  /** Paths from the square to each district, and the central square with its benches. */
+  function drawGround(): void {
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const d of districts) {
+      if (d.role === 'orchestrator') continue;
+      const [ax, ay] = project(0, 0);
+      const [bx, by] = project(d.cx, d.cy);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = palette.rule;
+      ctx.lineWidth = 11 * zoom;
+      ctx.stroke();
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = palette.sheet;
+      ctx.lineWidth = 6 * zoom;
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const S = 3.5;
+    const sq: [number, number][] = [project(-S, -S), project(S, -S), project(S, S), project(-S, S)];
+    fillPoly(sq, palette.sheet);
+    ctx.save();
+    ctx.strokeStyle = palette.rule;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    sq.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    ctx.closePath();
+    ctx.stroke();
+    // A dashed inner band, like paving joints.
+    const I = 2.4;
+    ctx.globalAlpha = 0.6;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(...project(-I, -I));
+    ctx.lineTo(...project(I, -I));
+    ctx.lineTo(...project(I, I));
+    ctx.lineTo(...project(-I, I));
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Warm light on the platform under a lamp post. */
+  function drawLampPool(gx: number, gy: number): void {
+    const [sx, sy] = project(gx, gy, PLATFORM_Z);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.scale(1, 0.5);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 36 * zoom);
+    g.addColorStop(0, 'rgba(255, 214, 140, 0.5)');
+    g.addColorStop(1, 'rgba(255, 214, 140, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, 36 * zoom, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** An axis-aligned box on the grid, drawn as its three visible faces. */
+  function block(gx: number, gy: number, s: number, z: number, h: number, top: string, left: string, right: string): void {
+    const at = (x: number, y: number, zz: number): [number, number] => project(x, y, zz);
+    const lo = z;
+    const hi = z + h;
+    fillPoly([at(gx + s, gy - s, hi), at(gx + s, gy + s, hi), at(gx + s, gy + s, lo), at(gx + s, gy - s, lo)], right);
+    fillPoly([at(gx + s, gy + s, hi), at(gx - s, gy + s, hi), at(gx - s, gy + s, lo), at(gx + s, gy + s, lo)], left);
+    fillPoly([at(gx - s, gy - s, hi), at(gx + s, gy - s, hi), at(gx + s, gy + s, hi), at(gx - s, gy + s, hi)], top);
+  }
+
+  function drawDesk(gx: number, gy: number, working: boolean, now: number): void {
+    const z = PLATFORM_Z;
+    block(gx, gy, 0.42, z, 9, 'hsl(32 30% 74%)', 'hsl(32 25% 52%)', 'hsl(32 25% 60%)');
+    // Monitor on the desk; its screen glows while the district works.
+    const mx = gx;
+    const my = gy - 0.12;
+    const ms = 0.12;
+    block(mx, my, ms, z + 9, 11, palette.ink2, palette.ink, palette.ink2);
+    const f = (x: number, zz: number): [number, number] => project(x, my + ms, zz);
+    ctx.save();
+    if (working) {
+      ctx.shadowColor = palette.info;
+      ctx.shadowBlur = 8 + 4 * Math.sin(now / 400);
+    }
+    fillPoly(
+      [f(mx - ms * 0.8, z + 11), f(mx + ms * 0.8, z + 11), f(mx + ms * 0.8, z + 18), f(mx - ms * 0.8, z + 18)],
+      working ? palette.info : palette.rule,
+    );
+    ctx.restore();
+  }
+
+  function drawPlant(gx: number, gy: number): void {
+    const z = PLATFORM_Z;
+    block(gx, gy, 0.2, z, 6, 'hsl(18 35% 52%)', 'hsl(18 30% 38%)', 'hsl(18 30% 44%)');
+    const [lx, ly] = project(gx, gy, z + 6);
+    const leaves: [number, number, number][] = [
+      [-4, -9, -0.6],
+      [4, -9, 0.6],
+      [0, -13, 0],
+      [-2, -6, -1.2],
+      [3, -6, 1.1],
+    ];
+    ctx.save();
+    ctx.fillStyle = 'hsl(118 38% 40%)';
+    for (const [ox, oy, rot] of leaves) {
+      ctx.beginPath();
+      ctx.ellipse(lx + ox * zoom, ly + oy * zoom, 5 * zoom, 2.8 * zoom, rot, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawCrate(gx: number, gy: number): void {
+    block(gx, gy, 0.22, PLATFORM_Z, 10, 'hsl(35 45% 64%)', 'hsl(35 40% 42%)', 'hsl(35 40% 50%)');
+  }
+
+  function drawLamp(gx: number, gy: number): void {
+    const [bx, by] = project(gx, gy, PLATFORM_Z);
+    const [hx, hy] = project(gx, gy, PLATFORM_Z + 44);
+    ctx.save();
+    ctx.strokeStyle = palette.ink2;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(hx, hy);
+    ctx.stroke();
+    ctx.shadowColor = 'hsl(42 95% 62%)';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = 'hsl(42 95% 74%)';
+    ctx.beginPath();
+    ctx.arc(hx, hy, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Server rack for builder, qa, release and security: blinking LEDs on the front. */
+  function drawRack(gx: number, gy: number, now: number): void {
+    const z = PLATFORM_Z;
+    block(gx, gy, 0.22, z, 26, 'hsl(220 10% 34%)', 'hsl(220 10% 16%)', 'hsl(220 10% 24%)');
+    const front = gy + 0.22;
+    for (let row = 0; row < 5; row++) {
+      for (let col = 0; col < 2; col++) {
+        const [lx, ly] = project(gx - 0.1 + col * 0.12, front, z + 4 + row * 4.5);
+        const lit = Math.sin(now / 170 + row * 1.7 + col * 2.9) > 0.1;
+        ctx.beginPath();
+        ctx.arc(lx, ly, 1.3, 0, Math.PI * 2);
+        ctx.fillStyle = lit ? (col ? palette.ok : palette.info) : palette.ink3;
+        ctx.fill();
+      }
+    }
+  }
+
+  /** Bookshelf for researcher, librarian and planner: coloured spines. */
+  function drawShelf(gx: number, gy: number): void {
+    const z = PLATFORM_Z;
+    block(gx, gy, 0.3, z, 24, 'hsl(28 30% 62%)', 'hsl(28 28% 40%)', 'hsl(28 28% 48%)');
+    const front = gy + 0.3;
+    for (let row = 0; row < 2; row++) {
+      const top = z + 4 + row * 10;
+      for (let i = 0; i < 6; i++) {
+        const x0 = gx - 0.26 + i * 0.09;
+        const quad: [number, number][] = [
+          project(x0, front, top + 7),
+          project(x0 + 0.07, front, top + 7),
+          project(x0 + 0.07, front, top),
+          project(x0, front, top),
+        ];
+        fillPoly(quad, `hsl(${(i * 53 + row * 140) % 360} 45% ${row ? 46 : 58}%)`);
+      }
+    }
+  }
+
+  /** Whiteboard for architect and reviewer, with a few marks on it. */
+  function drawBoard(gx: number, gy: number, working: boolean): void {
+    const z = PLATFORM_Z;
+    ctx.save();
+    ctx.strokeStyle = palette.ink2;
+    ctx.lineWidth = 1.2;
+    for (const x of [gx - 0.5, gx + 0.5]) {
+      const [px, py] = project(x, gy, z);
+      const [px2, py2] = project(x, gy, z + 28);
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px2, py2);
+      ctx.stroke();
+    }
+    const board: [number, number][] = [
+      project(gx - 0.55, gy, z + 26),
+      project(gx + 0.55, gy, z + 26),
+      project(gx + 0.55, gy, z + 12),
+      project(gx - 0.55, gy, z + 12),
+    ];
+    fillPoly(board, palette.sheet);
+    ctx.strokeStyle = palette.ink3;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    board.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    ctx.closePath();
+    ctx.stroke();
+    ctx.strokeStyle = working ? palette.info : palette.signal;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const lineZ = z + 22 - i * 3.5;
+      const [sx, sy] = project(gx - 0.4, gy, lineZ);
+      const [ex, ey] = project(gx - 0.4 + 0.25 + i * 0.12, gy, lineZ);
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** A low bench on the square, on the ground. */
+  function drawBench(gx: number, gy: number): void {
+    block(gx, gy, 0.3, 0, 6, 'hsl(30 22% 66%)', 'hsl(30 20% 44%)', 'hsl(30 20% 52%)');
+  }
+
+  function paintProp(p: Prop, now: number): void {
+    const working = bots.some((b) => b.district === p.d && b.agent.status === 'working');
+    switch (p.kind) {
+      case 'desk':
+        drawDesk(p.x, p.y, working, now);
+        break;
+      case 'plant':
+        drawPlant(p.x, p.y);
+        break;
+      case 'crate':
+        drawCrate(p.x, p.y);
+        break;
+      case 'lamp':
+        drawLamp(p.x, p.y);
+        break;
+      case 'rack':
+        drawRack(p.x, p.y, now);
+        break;
+      case 'shelf':
+        drawShelf(p.x, p.y);
+        break;
+      case 'board':
+        drawBoard(p.x, p.y, working);
+        break;
+      case 'bench':
+        drawBench(p.x, p.y);
+        break;
+    }
+  }
+
+  function drawDroneShadow(dr: Drone): void {
+    const [sx, sy] = project(dr.x, dr.y, 0);
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = palette.ink;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, 7 * zoom, 3.5 * zoom, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawDrone(dr: Drone, now: number): void {
+    const bob = Math.sin(now / 420 + dr.phase) * 3;
+    const [fx, fy] = project(dr.x, dr.y, PLATFORM_Z + DRONE_Z + bob);
+    ctx.save();
+    ctx.translate(fx, fy);
+    ctx.scale(zoom, zoom);
+    // Spinning rotors.
+    const spin = now / 90 + dr.phase;
+    const rotors: [number, number][] = [
+      [-7, -2],
+      [7, -2],
+    ];
+    ctx.strokeStyle = palette.ink3;
+    ctx.lineWidth = 0.8;
+    for (const [ox, oy] of rotors) {
+      ctx.beginPath();
+      ctx.ellipse(ox, oy - 3, 5, 1.1, spin, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 5, 3, 0, 0, Math.PI * 2);
+    ctx.fillStyle = palette.sheet;
+    ctx.fill();
+    ctx.strokeStyle = palette.ink2;
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 1, 1.1, 0, Math.PI * 2);
+    ctx.fillStyle = Math.floor(now / 500 + dr.phase) % 2 === 1 ? palette.signal : palette.ink3;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Slowly turning ring above the orchestrator's dais. */
+  function drawHolo(now: number): void {
+    const boss = districts.find((d) => d.role === 'orchestrator');
+    if (!boss) return;
+    const [hx, hy] = project(boss.cx, boss.cy, PLATFORM_Z + 60 + Math.sin(now / 900) * 2);
+    const R = 22 * zoom;
+    const t = now / 2600;
+    ctx.save();
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = palette.signal;
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([6 * zoom, 5 * zoom]);
+    ctx.lineDashOffset = -now / 60;
+    ctx.beginPath();
+    ctx.ellipse(hx, hy, R, R * 0.36, t, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.4;
+    ctx.strokeStyle = palette.info;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.ellipse(hx, hy, R * 0.66, R * 0.24, -t * 1.6, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -437,6 +888,18 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
     ctx.arc(0, -47, 1.8, 0, Math.PI * 2);
     ctx.fillStyle = tone;
     ctx.fill();
+
+    // A glowing token above the head while working.
+    if (status === 'working') {
+      const pulse = 0.5 + 0.5 * Math.sin(now / 300);
+      ctx.shadowColor = palette.info;
+      ctx.shadowBlur = 8 + 6 * pulse;
+      ctx.beginPath();
+      ctx.arc(0, -56, 2.6 + pulse * 0.6, 0, Math.PI * 2);
+      ctx.fillStyle = palette.info;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
     ctx.restore();
   }
 
@@ -534,19 +997,25 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
     ctx.stroke();
     ctx.restore();
 
+    drawGround();
     for (const d of districts) drawPlatform(d);
+    for (const p of props) if (p.kind === 'lamp') drawLampPool(p.x, p.y);
+    for (const dr of drones) drawDroneShadow(dr);
 
-    // Consoles and robots, back to front.
+    // Props, consoles, robots and drones, back to front.
     const items: { depth: number; paint: () => void }[] = [];
+    for (const p of props) items.push({ depth: p.x + p.y, paint: () => paintProp(p, now) });
     for (const b of bots) {
       const working = b.agent.status === 'working';
       const [hx, hy] = b.home;
       items.push({ depth: hx + hy - 0.01, paint: () => drawConsole(hx, hy, working) });
       items.push({ depth: b.x + b.y, paint: () => drawBot(b, now) });
     }
+    for (const dr of drones) items.push({ depth: dr.x + dr.y + 1, paint: () => drawDrone(dr, now) });
     items.sort((p, q) => p.depth - q.depth);
     for (const item of items) item.paint();
 
+    drawHolo(now);
     drawPackets(now);
     for (const b of bots) drawOverlay(b, now);
     positionCard();
