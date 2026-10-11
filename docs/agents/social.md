@@ -67,9 +67,7 @@ content is composed from the task/role data (no invented claims).
 
 ## The view (front ends)
 
-- **The RTS floor** replaces the web's 3D view (three.js is removed from the
-  bundle for this view; the floor is canvas 2D): the plaza floor grid with
-  each role's station cluster; every connected agent a small robot glyph
+- **The RTS floor** replaces the web's 3D view **as a 3D RTS** (owner's correction: keep 3D geometry — a fixed angled RTS camera (~55–60° tilt), a 3D ground plane with per-role station pads, agents as small **3D robot meshes** with ground status rings, raycast picking; three.js stays in the bundle). The floor shows:
   (role-tinted, a status ring: working/talking/idle/unreachable) standing at
   its station; **a conversation moves the pair adjacent** (a short walk
   animation on join/leave, the speech marks above them, reduced-motion
