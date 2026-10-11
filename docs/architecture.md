@@ -47,12 +47,19 @@ reading heartbeats meanwhile.
 `write_file`, `edit_file`, `list`, `search` — all confined to `/workspace`,
 output capped (`wire::MAX_TOOL_OUTPUT`), `bash` with a timeout.
 
+**The containment rule (owner's rule):** an agent never runs anything on the
+host and never reaches the host or another agent to run something there.
+Commands run only inside the agent's own VM (no NIC; vsock reaches only the
+hub). Host tools are the plaza's data operations and nothing else: no
+processes, no host files, no network. Agents interact only through plaza data:
+tasks, the board, messages, and files another agent chose to publish.
+`apid/src/tools.rs` pins this with a test.
+
 **Host tools** (run by `apid` with the agent's identity): every agent has
 `plaza_tasks`, `plaza_bid`, `plaza_board_read`, `plaza_board_post`,
 `plaza_send_message`, `submit_claim`, `transcript_search`; council seats add
 `plaza_vote`, `plaza_propose`; the orchestrator adds its delegation tools (see
-"Model policy"); `fetch_url` where the role grants it (allowlisted hosts only;
-the result is marked untrusted).
+"Model policy"). There is no host-side network tool.
 
 Which tools an agent is offered is its role's grant list
 (`docs/agents/initial-roles.json`); a tool not granted is never offered, and a
