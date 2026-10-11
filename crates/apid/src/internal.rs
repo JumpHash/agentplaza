@@ -94,7 +94,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
 }
 
 /// Checks the internal token and the CID, then runs `f`.
-fn authorized(
+pub(crate) fn authorized(
     app: &App,
     req: &Request,
     cid: &str,

@@ -447,6 +447,7 @@ pub fn spawn(app: Arc<App>) {
         loop {
             ask_names(&app);
             crate::society::outreach(&app);
+            crate::llm_proxy::drain_usage(&app);
             assign_tasks(&app);
             offer_motions(&app, &mut motions_seen);
             thread::sleep(Duration::from_secs(2));

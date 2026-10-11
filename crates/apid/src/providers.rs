@@ -140,6 +140,23 @@ impl Store {
             || std::env::var(name).is_ok_and(|v| !v.is_empty())
     }
 
+    /// A provider's endpoint and key, for the pass-through model gateway (`llm_proxy`): the
+    /// configured base URL (or the kind's default for anthropic/openai) and the key from the
+    /// secret store or `apid`'s environment. `None` for an unknown provider.
+    pub fn upstream(&self, id: &str) -> Option<(String, Option<String>)> {
+        let p = self.find(id).ok()?;
+        let base = p.base_url.clone().unwrap_or_else(|| match id {
+            "openai" => "https://api.openai.com/v1".to_string(),
+            _ => "https://api.anthropic.com".to_string(),
+        });
+        let key = match &p.auth {
+            Auth::Secret(name) => self.secrets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(name).cloned(),
+            Auth::Env(name) => self.env.get(name).cloned().or_else(|| std::env::var(name).ok()),
+            _ => None,
+        };
+        Some((base, key))
+    }
+
     fn find(&self, id: &str) -> Result<ProviderConfig, Failure> {
         self.gateway
             .providers()

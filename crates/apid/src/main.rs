@@ -16,6 +16,7 @@ mod autoscale;
 mod api;
 mod events;
 mod internal;
+mod llm_proxy;
 mod laws;
 mod memory;
 mod plaza;
