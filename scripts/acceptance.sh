@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# AgentPlaza acceptance suites — the four fixed suites, runnable from CI.
+# AgentPlaza acceptance suites — the four fixed suites plus the fleet suite,
+# runnable from CI.
 #
-#   scripts/acceptance.sh [demo|redteam|killresume|budgets|all] [run.py options]
+#   scripts/acceptance.sh [demo|redteam|killresume|budgets|fleet|all] [run.py options]
 #
 # This is a thin wrapper around tests/acceptance/run.py (the repository's
 # convention: a shell entry point per test tree, docs/*/check.sh). It needs

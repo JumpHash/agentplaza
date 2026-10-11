@@ -1,0 +1,9 @@
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm20_5000 for guest CID 20
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm21_5000 for guest CID 21
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm22_5000 for guest CID 22
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm23_5000 for guest CID 23
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm24_5000 for guest CID 24
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm25_5000 for guest CID 25
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm26_5000 for guest CID 26
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/kill-restart-a-uds/vm27_5000 for guest CID 27
+vsockd: stop requested, closing the listeners

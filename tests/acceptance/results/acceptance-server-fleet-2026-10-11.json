@@ -1,0 +1,691 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-11T02:00:09+0200",
+  "wall_seconds": 21.222,
+  "manifest": {
+    "suite": "fleet",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "33b2c992c2907a43562b164abc1147a7f9fa3db9",
+      "dirty": true,
+      "harness_tree_sha256": "27d21da6d158ac47b0157fb5da95bb8aef54dd41f3e7914238bd8be70f1d0b65"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/tmp/apz-fleet-pin/initrd.x86_64.gz",
+      "initrd_sha256": "74f06ccd984228fdada67d38edc965129e1c05e8fe109452c7c5263abbf5b7e8",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-server-ilp9az9j",
+    "started_at": "2026-10-11T02:00:09+0200",
+    "binaries": {
+      "noded": {
+        "path": "/tmp/apz-fleet-pin/noded",
+        "sha256": "9af4eab4515f3e0d997a798a8f3d9301b70a32d5956c4ffccf985d6fca330c1f"
+      },
+      "vsockd": {
+        "path": "/tmp/apz-fleet-pin/vsockd",
+        "sha256": "6b5b628528e03b7b0532e24620877ce739edc01c9bb78839f243b5da866c1840"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-lifecycle-logs/noded.log",
+        "bytes": 139,
+        "sha256": "8e5bddbcaca2c0e9697a07776c78b76fd852f4be40ad37c82a141fbe85911005",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/8e5bddbc-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-lifecycle-logs/vsockd.log",
+        "bytes": 1804,
+        "sha256": "2be2cdcaef46cc25278a9501e4ef05c7f680ba8b2a9ffe872fe3073c15a00b4a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/2be2cdca-vsockd.log",
+        "excerpt_bytes": 1804
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-a-logs/noded.log",
+        "bytes": 139,
+        "sha256": "5ac93c6e9d8a6867cba8271ef3f2e0cef0e87d876aec99e932a41798c32d1dc0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/5ac93c6e-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-a-logs/vsockd.log",
+        "bytes": 717,
+        "sha256": "470accaae9ae71608551b4fd8f6ddab0d7c59e761d49bb80323266dcc086df28",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/470accaa-vsockd.log",
+        "excerpt_bytes": 717
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-b-logs/noded.log",
+        "bytes": 139,
+        "sha256": "3276d16697c61c2f1becb063ef8d09dc2cd5c9efab3ec084c18eb499aed62fd6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/3276d166-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-b-logs/vsockd.log",
+        "bytes": 2447,
+        "sha256": "0a7772ab578b3eca7658a76a13cd5bc0327e01945be09f23267ccef946e4fbe8",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/0a7772ab-vsockd.log",
+        "excerpt_bytes": 2447
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-readopt-logs/noded.log",
+        "bytes": 139,
+        "sha256": "e0332d06beeb205f2bd7222f9a329d3f98bc86ab82a861b57cd690f223b79bab",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/e0332d06-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-readopt-logs/vsockd.log",
+        "bytes": 1538,
+        "sha256": "112d062c10c49011b4bfe52e5ff8f7b57700d80c0613f9828832951fc97170bf",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/112d062c-vsockd.log",
+        "excerpt_bytes": 1538
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-reap-logs/noded.log",
+        "bytes": 139,
+        "sha256": "d0c759114d85a5ba029c33f620564dab19c5bce79d697898bbf73850f83b180e",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/d0c75911-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-reap-logs/vsockd.log",
+        "bytes": 2792,
+        "sha256": "26336618ecd3d8c6da786b1ca01f439877af618ac29bb94a8eb78e4f361b112b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/26336618-vsockd.log",
+        "excerpt_bytes": 2792
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-status-logs/noded.log",
+        "bytes": 139,
+        "sha256": "fcacfb63eec07382a7a19c8781f566e45be4d0a723a03f3045affb0486aa71e9",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/fcacfb63-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-status-logs/vsockd.log",
+        "bytes": 766,
+        "sha256": "e10f74a8aea25fb6edd294a0d8f97ba240bf4d69b14dc7fda52f6cd256bd89d5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/e10f74a8-vsockd.log",
+        "excerpt_bytes": 766
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-logs/noded.log",
+        "bytes": 139,
+        "sha256": "5dc3a76484fe2a2bd2525cd7f22768b623c6d0c2f16ef31d5a3d78eb37697870",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/5dc3a764-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-logs/vsockd.log",
+        "bytes": 785,
+        "sha256": "3751654ed83c1611f632ddf33f229d5301dc4b803eec31b30d337511ca0bda8d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/3751654e-vsockd.log",
+        "excerpt_bytes": 785
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-off-logs/noded.log",
+        "bytes": 139,
+        "sha256": "651161e0fc33b0faadac5844f0af162f0736170c34e30f9636c602a503068eb1",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/651161e0-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-off-logs/vsockd.log",
+        "bytes": 150,
+        "sha256": "f9cc5442c68cedede320c9665685d510526c50dab9a11e38b113bc28b8c3909f",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/f9cc5442-vsockd.log",
+        "excerpt_bytes": 150
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-down-logs/noded.log",
+        "bytes": 139,
+        "sha256": "01117ab6647077e63cd364c3e002682de41ece3cccf66edae4821f7e0f47bad1",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/01117ab6-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-down-logs/vsockd.log",
+        "bytes": 151,
+        "sha256": "f4f071eea3f3638abf73237466b93994131799eb3a9d1069420b12c3fcfa6632",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/f4f071ee-vsockd.log",
+        "excerpt_bytes": 151
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-manifest/roles.json",
+        "bytes": 396,
+        "sha256": "778f9362abb60a5efdb66198fa24e68b54cf5d887786bdddb96d4c1dd4d02cc2",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/778f9362-roles.json",
+        "excerpt_bytes": 396
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-logs/noded.log",
+        "bytes": 16398,
+        "sha256": "b2bd213ae3ba49170248cbeafbf74c80e4af6c75ac14debec05768a919018861",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/b2bd213a-noded.log",
+        "excerpt_bytes": 16398
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-logs/vsockd.log",
+        "bytes": 1141,
+        "sha256": "4933c0734c750326dea582dad76dbeebcfa2ebaf7f1db9a9a4ddcc2ac0eaf9bc",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/4933c073-vsockd.log",
+        "excerpt_bytes": 1141
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-hub2-logs/noded.log",
+        "bytes": 139,
+        "sha256": "da80fb0216c9f05def1f4d19b784756bfb03aff8192e85f9f657a30023ef0ca6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/da80fb02-noded.log",
+        "excerpt_bytes": 139
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-hub2-logs/vsockd.log",
+        "bytes": 1281,
+        "sha256": "05c5c2da5eed47876a7ff458813854d4a6b5f37a246237208a7428e9e3faf65a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/05c5c2da-vsockd.log",
+        "excerpt_bytes": 1281
+      }
+    ]
+  },
+  "suites_run": [
+    "fleet"
+  ],
+  "suites": [
+    {
+      "suite": "fleet",
+      "pass_bar": "every case passes; a case whose required flag/binary is absent is BLOCKED with the reason (never a pass)",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 7,
+      "cases_total": 7,
+      "cases": [
+        {
+          "name": "keepalive lifecycle: role welcome, heartbeats, tool call/answer, clean end",
+          "detail": "",
+          "vector": "stub agent role=architect keepalive: hello -> welcome(role,keepalive) -> 12 heartbeats (the hub's rate-limited line) -> guest tool_call -> hub tool_result -> bye -> the row drains",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "welcome echoes the accepted role and the keepalive flag",
+              "ok": true,
+              "detail": "welcome={'type': 'welcome', 'echo': 'plaza-orchestrator', 'role': 'architect', 'keepalive': True}"
+            },
+            {
+              "name": "the hub logged the connect transition with the role",
+              "ok": true,
+              "detail": "welcome={'type': 'welcome', 'echo': 'plaza-orchestrator', 'role': 'architect', 'keepalive': True}"
+            },
+            {
+              "name": "the hub logged exactly the rate-limited heartbeat lines (1st and 12th)",
+              "ok": true,
+              "detail": "lines=['vsockd: agent 50 heartbeat 1', 'vsockd: agent 50 heartbeat 12']"
+            },
+            {
+              "name": "the hub answered the guest's echo tool call",
+              "ok": true,
+              "detail": "result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-agent-50'}"
+            },
+            {
+              "name": "the hub logged the answered guest call",
+              "ok": true,
+              "detail": "] {\"type\": \"heartbeat\", \"seq\": 10}\n[guest 50 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 11}\n[guest 50 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 12}\nvsockd: agent 50 heartbeat 12\n[guest 50 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"plaza-agent-50\"}}\n[<-] guest 50 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"plaza-agent-50\"}\nvsockd: answered call 1 (echo) for agent 50\n"
+            },
+            {
+              "name": "the hub answered the guest's uptime tool call",
+              "ok": true,
+              "detail": "result={'type': 'tool_result', 'call': 2, 'ok': True, 'output': '285642.60 6072452.19'}"
+            },
+            {
+              "name": "the registry row carries the cid, the accepted role and the call count",
+              "ok": true,
+              "detail": "row={'cid': 50, 'role': 'architect', 'connected_at_ms': 1791676788401, 'last_heartbeat_ms': 1791676788459, 'calls': 2}"
+            },
+            {
+              "name": "last_heartbeat advanced across the beats",
+              "ok": true,
+              "detail": "first=1791676788402 last=1791676788459"
+            },
+            {
+              "name": "the hub logged a clean end after 2 tool calls",
+              "ok": true,
+              "detail": ":true,\"output\":\"plaza-agent-50\"}\nvsockd: answered call 1 (echo) for agent 50\n[guest 50 vm0 ->] {\"type\": \"tool_call\", \"call\": 2, \"name\": \"uptime\", \"args\": {}}\n[<-] guest 50 vm0 {\"type\":\"tool_result\",\"call\":2,\"ok\":true,\"output\":\"285642.60 6072452.19\"}\nvsockd: answered call 2 (uptime) for agent 50\n[guest 50 vm0 ->] {\"type\": \"bye\", \"calls\": 2}\nvsockd: agent 50 session ended cleanly after 2 tool calls\n"
+            },
+            {
+              "name": "the hub closed the session after the bye",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the registry row drained after the bye",
+              "ok": true,
+              "detail": "status={'node': {'cids': [50], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [], 'sessions_active': 0}"
+            }
+          ],
+          "notes": [
+            "direction covered: the guest-initiated tool_call -> hub tool_result (and the guest's bye). The hub-initiated tool_call/stop direction has no producer in this build (the session's steering sender, Hub::steer, is #[cfg(test)]; nothing in the daemon fills it this slice), so it is exercised by the crate's own UDS test and is not drivable from an acceptance stub."
+          ]
+        },
+        {
+          "name": "reconnect across a hub restart: clean rebind over stale listeners, re-registration, v1 unaffected",
+          "detail": "",
+          "vector": "stub keepalive builder -> SIGKILL vsockd (its listener files are left behind) -> restart on the SAME uds dir and CIDs -> re-hello registers afresh -> one v1 session after the restart",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the first session is a keepalive builder session",
+              "ok": true,
+              "detail": "welcome={'type': 'welcome', 'echo': 'plaza-orchestrator', 'role': 'builder', 'keepalive': True}"
+            },
+            {
+              "name": "the daemon died ungracefully (SIGKILL)",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the ungraceful death left a stale listener file behind (the path a restart must clear)",
+              "ok": true,
+              "detail": "probe=refused"
+            },
+            {
+              "name": "the agent's connection dropped with the daemon",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the restarted hub rebound over the stale listener files",
+              "ok": true,
+              "detail": "probes={51: 'answers', 52: 'answers'}"
+            },
+            {
+              "name": "the agent reconnects and is welcomed again",
+              "ok": true,
+              "detail": "welcome={'type': 'welcome', 'echo': 'plaza-orchestrator', 'role': 'builder', 'keepalive': True}"
+            },
+            {
+              "name": "the restarted hub logged the agent's registration",
+              "ok": true,
+              "detail": "kd: session with cid 51 dropped: protocol violation (the guest closed before sending hello)\n[guest 51 vm? ->] {\"type\": \"hello\", \"vm\": 0, \"guest_cid\": 51, \"role\": \"builder\", \"keepalive\": true}\nvsockd: guest 51 vm 0 says hello (accepted on the socket for cid 51)\nvsockd: agent 51 role builder connected\n[<-] guest 51 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n"
+            },
+            {
+              "name": "the registry shows the agent again with a fresh connected_at",
+              "ok": true,
+              "detail": "before=1791676788829 after=1791676788936"
+            },
+            {
+              "name": "the re-registered session serves a tool call",
+              "ok": true,
+              "detail": "result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'after-restart'}"
+            },
+            {
+              "name": "the re-registered session ends cleanly",
+              "ok": true,
+              "detail": "\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n[guest 51 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"after-restart\"}}\n[<-] guest 51 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"after-restart\"}\nvsockd: answered call 1 (echo) for agent 51\n[guest 51 vm0 ->] {\"type\": \"bye\", \"calls\": 1}\nvsockd: agent 51 session ended cleanly after 1 tool calls\n"
+            },
+            {
+              "name": "a v1 session after the restart gets the frozen welcome byte-shape",
+              "ok": true,
+              "detail": "welcome={'type': 'welcome', 'echo': 'plaza-orchestrator'}"
+            },
+            {
+              "name": "the v1 session's tool calls are answered end to end",
+              "ok": true,
+              "detail": "echo={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-52-hello'} uptime={'type': 'tool_result', 'call': 2, 'ok': True, 'output': '285643.08 6072462.29'}"
+            },
+            {
+              "name": "the v1 session ends cleanly and the hub logs it",
+              "ok": true,
+              "detail": "closed=True"
+            }
+          ],
+          "notes": [
+            "the contract's `re-adopted` line fires when a reconnect replaces a LIVE row; a restarted hub has an empty in-memory registry, so a post-restart reconnect registers afresh (asserted here). Live-row replacement is proven deterministically by the re-adoption case."
+          ]
+        },
+        {
+          "name": "re-adoption: a same-CID reconnect replaces a live row (the contract's re-adopted line)",
+          "detail": "",
+          "vector": "two concurrent sessions on one CID: the second re-adopts the live row (logged), and the predecessor's disconnect cannot evict its successor's row",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "both sessions are welcomed as keepalive builders",
+              "ok": true,
+              "detail": "first={'type': 'welcome', 'echo': 'plaza-orchestrator', 'role': 'builder', 'keepalive': True} second={'type': 'welcome', 'echo': 'plaza-orchestrator', 'role': 'builder', 'keepalive': True}"
+            },
+            {
+              "name": "the hub logged the re-adoption of the live row",
+              "ok": true,
+              "detail": "kd: agent 53 role builder connected\n[<-] guest 53 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n[guest 53 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 1}\nvsockd: agent 53 heartbeat 1\n[guest 53 vm? ->] {\"type\": \"hello\", \"vm\": 0, \"guest_cid\": 53, \"role\": \"builder\", \"keepalive\": true}\nvsockd: guest 53 vm 0 says hello (accepted on the socket for cid 53)\nvsockd: agent 53 role builder connected\nvsockd: agent 53 re-adopted (previous session role builder, connected 0s ago)\n[<-] guest 53 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n"
+            },
+            {
+              "name": "the adopted session is still served after the predecessor leaves",
+              "ok": true,
+              "detail": "result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'still-mine'}"
+            },
+            {
+              "name": "the registry still carries the adopted row (the predecessor could not evict it)",
+              "ok": true,
+              "detail": "row={'cid': 53, 'role': 'builder', 'connected_at_ms': 1791676789253, 'last_heartbeat_ms': 1791676789253, 'calls': 1} log=ccepted on the socket for cid 53)\nvsockd: agent 53 role builder connected\nvsockd: agent 53 re-adopted (previous session role builder, connected 0s ago)\n[<-] guest 53 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\nvsockd: session with cid 53 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)\n[guest 53 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"still-mine\"}}\n[<-] guest 53 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"still-mine\"}\nvsockd: answered call 1 (echo) for agent 53\n"
+            },
+            {
+              "name": "the adopted session ends cleanly",
+              "ok": true,
+              "detail": "(the keepalive agent's connection dropped; it reconnects with backoff)\n[guest 53 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"still-mine\"}}\n[<-] guest 53 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"still-mine\"}\nvsockd: answered call 1 (echo) for agent 53\n[guest 53 vm0 ->] {\"type\": \"bye\", \"calls\": 1}\nvsockd: agent 53 session ended cleanly after 1 tool calls\n"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "reap/hangup contract: no premature reap, a silent agent stays alive, every row drains",
+          "detail": "",
+          "vector": "keepalive reviewer silent 10s (the deadline is 300s) then still served; a disconnect without bye drains the row; 3 further connect/drop cycles leave 0 rows",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the agent is welcomed as a keepalive reviewer",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "no premature reap inside the observation window",
+              "ok": true,
+              "detail": "ve\": true}\nvsockd: guest 54 vm 0 says hello (accepted on the socket for cid 54)\nvsockd: agent 54 role reviewer connected\n[<-] guest 54 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"reviewer\",\"keepalive\":true}\n[guest 54 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 1}\nvsockd: agent 54 heartbeat 1\n[guest 54 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 2}\n[guest 54 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 3}\n"
+            },
+            {
+              "name": "the registry row persists across the silence",
+              "ok": true,
+              "detail": "row={'cid': 54, 'role': 'reviewer', 'connected_at_ms': 1791676789572, 'last_heartbeat_ms': 1791676789572, 'calls': 0}"
+            },
+            {
+              "name": "the silent agent is still served (it was not reaped)",
+              "ok": true,
+              "detail": "result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'alive-after-silence'}"
+            },
+            {
+              "name": "the hub reported the dropped connection as a loss, not a protocol violation",
+              "ok": true,
+              "detail": " {\"type\": \"heartbeat\", \"seq\": 3}\n[guest 54 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"alive-after-silence\"}}\n[<-] guest 54 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"alive-after-silence\"}\nvsockd: answered call 1 (echo) for agent 54\nvsockd: session with cid 54 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)\n"
+            },
+            {
+              "name": "the dropped session's row drained",
+              "ok": true,
+              "detail": "status={'node': {'cids': [54], 'port': 5000, 'uptime_s': 10, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [], 'sessions_active': 0}"
+            },
+            {
+              "name": "every churn connection was accepted",
+              "ok": true,
+              "detail": "accepted=3"
+            },
+            {
+              "name": "3 connect/drop cycles leave the registry at 0 (no row leak)",
+              "ok": true,
+              "detail": "status={'node': {'cids': [54], 'port': 5000, 'uptime_s': 10, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [], 'sessions_active': 0}"
+            },
+            {
+              "name": "no reap was ever logged (nothing went silent past the deadline)",
+              "ok": true,
+              "detail": " 54 vm 0 says hello (accepted on the socket for cid 54)\nvsockd: agent 54 role reviewer connected\n[<-] guest 54 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"reviewer\",\"keepalive\":true}\n[guest 54 vm0 ->] {\"type\": \"heartbeat\", \"seq\": 1}\nvsockd: agent 54 heartbeat 1\nvsockd: session with cid 54 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)\n"
+            }
+          ],
+          "notes": [
+            "the 300s reap deadline itself is unit-tested in the crate with an injected clock (a real 300 s wait has no place in an acceptance run); this case asserts the observable half \u2014 no reap inside a bounded silence, and a drained registry on every disconnect path."
+          ]
+        },
+        {
+          "name": "the read-only status surface reports the hub's registry",
+          "detail": "",
+          "vector": "GET /status (node facts + agent rows) and GET /healthz against a live agent",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the node facts carry the served CIDs, the port and the frozen limits",
+              "ok": true,
+              "detail": "node={'cids': [55], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}"
+            },
+            {
+              "name": "the registry is empty before any agent connects",
+              "ok": true,
+              "detail": "body={'node': {'cids': [55], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [], 'sessions_active': 0}"
+            },
+            {
+              "name": "GET /healthz answers ok",
+              "ok": true,
+              "detail": "200 'ok'"
+            },
+            {
+              "name": "an unknown path is a 404",
+              "ok": true,
+              "detail": "status=404"
+            },
+            {
+              "name": "a connected agent appears as a row with cid/role/connected_at/last_heartbeat/calls",
+              "ok": true,
+              "detail": "row={'cid': 55, 'role': 'architect', 'connected_at_ms': 1791676800547, 'last_heartbeat_ms': 1791676800547, 'calls': 0}"
+            },
+            {
+              "name": "sessions_active is 1 while the agent is connected",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "the surface drains after a clean end",
+              "ok": true,
+              "detail": "status={'node': {'cids': [55], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [], 'sessions_active': 0}"
+            }
+          ],
+          "notes": [
+            "the surface is read-only by contract; a mutating method is answered 405 and is not exercised here"
+          ]
+        },
+        {
+          "name": "the hub's status surface through noded's one-origin proxy",
+          "detail": "",
+          "vector": "GET /api/v0/hub[/healthz] proxies vsockd's /status[/healthz] verbatim; 502 when the hub is unreachable, 503 when noded was not told where it is",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "GET /api/v0/hub is vsockd's /status byte-for-byte",
+              "ok": true,
+              "detail": "proxied='{\"node\":{\"cids\":[56],\"port\":5000,\"uptime_s\":0,\"max_sessions\":64,\"keepalive_idle_s\":300},\"agents\":[],\"sessions_active\":0}' direct='{\"node\":{\"cids\":[56],\"port\":5000,\"uptime_s\":0,\"max_sessions\":64,\"keepalive_idle_s\":300},\"agents\":[],\"sessions_active\":0}'"
+            },
+            {
+              "name": "GET /api/v0/hub/healthz is the hub's /healthz byte-for-byte",
+              "ok": true,
+              "detail": "proxied=200 'ok'"
+            },
+            {
+              "name": "the proxied view is live: a connected agent appears in it",
+              "ok": true,
+              "detail": "agents=[{'cid': 56, 'role': 'architect', 'connected_at_ms': 1791676800869, 'last_heartbeat_ms': 1791676800870, 'calls': 0}]"
+            },
+            {
+              "name": "a noded not told where the hub is answers 503",
+              "ok": true,
+              "detail": "status=503"
+            },
+            {
+              "name": "a noded whose hub is unreachable answers 502",
+              "ok": true,
+              "detail": "status=502"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "the real keepalive fleet: noded --agents boots role guests that connect, beat, stay up, and survive a hub restart",
+          "detail": "",
+          "vector": "noded --agents <2-role manifest>: 2 long-lived keepalive guests; the register carries their roles, the hub registers both, the guest transcript shows the accepted role + heartbeats and no reboot; SIGKILL the hub and both guests reconnect; DELETE tears the fleet down cleanly",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "noded booted the initial role fleet at startup",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, reviewer, CIDs 100..=101)\nnoded: listening on http://127.0.0.1:39497 (kernel /boot/vmlinuz-linux, initrd /tmp/apz-fleet-pin/initrd.x86_64.gz, console apps/web/dist)\n"
+            },
+            {
+              "name": "the startup line names the fleet run",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, reviewer, CIDs 100..=101)"
+            },
+            {
+              "name": "the fleet run is running (long-lived; beats unset)",
+              "ok": true,
+              "detail": "state=running"
+            },
+            {
+              "name": "both VM rows carry their role",
+              "ok": true,
+              "detail": "roles=['builder', 'reviewer']"
+            },
+            {
+              "name": "both role guests connected to the hub",
+              "ok": true,
+              "detail": "connected=['vsockd: agent 100 role builder connected', 'vsockd: agent 101 role reviewer connected']"
+            },
+            {
+              "name": "the hub's registry shows both agents, sessions_active == 2",
+              "ok": true,
+              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 2, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 100, 'role': 'builder', 'connected_at_ms': 1791676803928, 'last_heartbeat_ms': 1791676803928, 'calls': 0}, {'cid': 101, 'role': 'reviewer', 'connected_at_ms': 1791676803948, 'last_heartbeat_ms': 1791676803948, 'calls': 0}], 'sessions_active': 2}"
+            },
+            {
+              "name": "each guest's transcript shows its role accepted",
+              "ok": true,
+              "detail": "streams={'builder': '\"role\":\"builder\",\"keepalive\":true}[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}agent-harness: role builder accepted', 'reviewer': 'le\":\"reviewer\",\"keepalive\":true}[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"reviewer\",\"keepalive\":true}agent-harness: role reviewer accepted'}"
+            },
+            {
+              "name": "each guest beats its heartbeat on the console",
+              "ok": true,
+              "detail": "beat_seen={'builder': True, 'reviewer': True}"
+            },
+            {
+              "name": "no guest rebooted (a keepalive guest stays up)",
+              "ok": true,
+              "detail": "streams={'builder': 'r\",\"keepalive\":true}agent-harness: role builder acceptedplaza guest alive: heartbeat 2 uptime~5s[vsock->] {\"type\":\"heartbeat\",\"seq\":1}agent-harness: heartbeat 1', 'reviewer': '\",\"keepalive\":true}agent-harness: role reviewer acceptedplaza guest alive: heartbeat 2 uptime~5s[vsock->] {\"type\":\"heartbeat\",\"seq\":1}agent-harness: heartbeat 1'}"
+            },
+            {
+              "name": "the fleet is still running after the guests greeted and beat",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "both real guests reconnect to the restarted hub",
+              "ok": true,
+              "detail": "hub_log=['vsockd: agent 100 role builder connected', 'vsockd: agent 101 role reviewer connected']"
+            },
+            {
+              "name": "the restarted hub's registry shows both agents again",
+              "ok": true,
+              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 100, 'role': 'builder', 'connected_at_ms': 1791676809231, 'last_heartbeat_ms': 1791676809231, 'calls': 0}, {'cid': 101, 'role': 'reviewer', 'connected_at_ms': 1791676809234, 'last_heartbeat_ms': 1791676809234, 'calls': 0}], 'sessions_active': 2}"
+            },
+            {
+              "name": "no guest rebooted across the hub restart",
+              "ok": true,
+              "detail": "streams={'builder': '\"role\":\"builder\",\"keepalive\":true}[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}agent-harness: role builder accepted', 'reviewer': 'le\":\"reviewer\",\"keepalive\":true}[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"reviewer\",\"keepalive\":true}agent-harness: role reviewer accepted'}"
+            },
+            {
+              "name": "the fleet is still running after the hub restart",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "DELETE kills the fleet run",
+              "ok": true,
+              "detail": "state=killed"
+            },
+            {
+              "name": "no VM hit the kill timeout",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "no muxer socket is left behind",
+              "ok": true,
+              "detail": "stale=[]"
+            },
+            {
+              "name": "the restarted hub's registry drains after the fleet is killed",
+              "ok": true,
+              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [], 'sessions_active': 0}"
+            },
+            {
+              "name": "the daemon still serves after the teardown",
+              "ok": true,
+              "detail": ""
+            }
+          ],
+          "notes": []
+        }
+      ],
+      "data": {},
+      "notes": [
+        "vsockd --status-port: present (the registry assertions run)",
+        "noded --agents: present (the real-guest fleet case runs)",
+        "noded --hub-status: present (the one-origin proxy case runs)"
+      ],
+      "findings": [],
+      "started_at": "2026-10-11T01:59:48+0200",
+      "duration_s": 21.22
+    }
+  ],
+  "findings": []
+}

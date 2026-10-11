@@ -1,0 +1,22 @@
+vsockd: status on http://127.0.0.1:39913 (GET /status, GET /healthz, read-only)
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/fleet-readopt-uds/vm53_5000 for guest CID 53
+vsockd: accepted a connection from cid 53
+vsockd: accepted a connection from cid 53
+[guest 53 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 53, "role": "builder", "keepalive": true}
+vsockd: guest 53 vm 0 says hello (accepted on the socket for cid 53)
+vsockd: agent 53 role builder connected
+[<-] guest 53 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+[guest 53 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 53 heartbeat 1
+[guest 53 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 53, "role": "builder", "keepalive": true}
+vsockd: guest 53 vm 0 says hello (accepted on the socket for cid 53)
+vsockd: agent 53 role builder connected
+vsockd: agent 53 re-adopted (previous session role builder, connected 0s ago)
+[<-] guest 53 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: session with cid 53 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+[guest 53 vm0 ->] {"type": "tool_call", "call": 1, "name": "echo", "args": {"text": "still-mine"}}
+[<-] guest 53 vm0 {"type":"tool_result","call":1,"ok":true,"output":"still-mine"}
+vsockd: answered call 1 (echo) for agent 53
+[guest 53 vm0 ->] {"type": "bye", "calls": 1}
+vsockd: agent 53 session ended cleanly after 1 tool calls
+vsockd: stop requested, closing the listeners

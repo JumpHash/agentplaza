@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""AgentPlaza acceptance runner — the four fixed suites.
+"""AgentPlaza acceptance runner — the four fixed suites plus the fleet suite.
 
 ```text
-tests/acceptance/run.py [demo|redteam|killresume|budgets|all] [options]
+tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|all] [options]
 ```
 
 Design (the stated choice):
@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apz
 import suite_budgets
 import suite_demo
+import suite_fleet
 import suite_killresume
 import suite_redteam
 
@@ -56,6 +57,7 @@ SUITES = {
     "redteam": suite_redteam,
     "killresume": suite_killresume,
     "budgets": suite_budgets,
+    "fleet": suite_fleet,
 }
 
 

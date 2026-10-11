@@ -337,6 +337,9 @@ class Lab:
         canary_env: dict[str, str] | None = None,
         uds_dir: Path | None = None,
         workspace: Path | None = None,
+        status_port: int | None = None,
+        agents: Path | None = None,
+        hub_status: str | None = None,
     ):
         self.ctx = ctx
         self.tag = tag
@@ -353,6 +356,18 @@ class Lab:
         # The base image of every run's writable workspace volume, or `None`
         # for a daemon that boots no block device (`noded --workspace`).
         self.workspace = Path(workspace) if workspace is not None else None
+        # The hub's read-only status surface (`vsockd --status-port`), when the
+        # caller asks for it: `0` binds an ephemeral port, whose real number is
+        # parsed from the daemon's log line (`self.status_bound`).
+        self.status_port = status_port
+        self.status_bound: int | None = None
+        # The roles manifest the daemon boots its initial fleet from
+        # (`noded --agents`), or `None` for a daemon with no fleet.
+        self.agents = Path(agents) if agents is not None else None
+        # Where `noded` proxies the hub's status surface (`--hub-status`):
+        # the literal `HOST:PORT`, the sentinel `"self"` for this lab's own
+        # vsockd status port, or `None` to leave the flag off.
+        self.hub_status = hub_status
         self.noded: subprocess.Popen | None = None
         self.vsockd: subprocess.Popen | None = None
         self.port: int = 0
@@ -383,24 +398,42 @@ class Lab:
             # image and boots it as the guest's writable `/workspace` volume.
             argv_noded += ["--workspace", str(self.workspace)]
         if self.cids:
-            self.vsockd = self._spawn(
-                "vsockd",
-                [
-                    str(self.ctx.bin("vsockd")),
-                    "--uds-dir",
-                    str(self.uds_dir),
-                    "--cids",
-                    ",".join(str(cid) for cid in self.cids),
-                    "--port",
-                    str(VSOCK_PORT),
-                ],
-                self.vsockd_log,
-            )
+            argv_vsockd = [
+                str(self.ctx.bin("vsockd")),
+                "--uds-dir",
+                str(self.uds_dir),
+                "--cids",
+                ",".join(str(cid) for cid in self.cids),
+                "--port",
+                str(VSOCK_PORT),
+            ]
+            if self.status_port is not None:
+                # The read-only registry surface, on an ephemeral port by
+                # default (`--status-port 0`).
+                argv_vsockd += ["--status-port", str(self.status_port)]
+            self.vsockd = self._spawn("vsockd", argv_vsockd, self.vsockd_log)
             self._await_line(self.vsockd_log, "listening on")
             # The daemon binds its listeners one CID at a time, so wait for
             # every one of them: a probe or a UDS enumeration before the last
             # bind would see a half-started daemon.
             self._await_listeners()
+            if self.status_port is not None:
+                self._await_status_port()
+        if self.agents is not None:
+            # The daemon boots its initial role fleet from this manifest before
+            # it serves, one long-lived keepalive VM per role.
+            argv_noded += ["--agents", str(self.agents)]
+        if self.hub_status is not None:
+            # `noded --hub-status` points the daemon's `/api/v0/hub` proxy at
+            # the hub's status surface: the sentinel `"self"` resolves to this
+            # lab's own vsockd, anything else is passed through (`off`, or a
+            # literal HOST:PORT — a closed port exercises the 502 path).
+            if self.hub_status == "self":
+                if self.status_bound is None:
+                    raise LabError("hub_status='self' needs the lab's own status_port")
+                argv_noded += ["--hub-status", f"127.0.0.1:{self.status_bound}"]
+            else:
+                argv_noded += ["--hub-status", str(self.hub_status)]
         self.noded = self._spawn("noded", argv_noded, self.noded_log)
         line = self._await_line(self.noded_log, "listening on")
         match = re.search(r"127\.0\.0\.1:(\d+)", line)
@@ -452,6 +485,18 @@ class Lab:
         missing = sorted(expected - set(self.uds_entries()))
         raise LabError(f"vsockd never bound {missing}")
 
+    def _await_status_port(self) -> None:
+        """Wait for the daemon's status line and record the port it bound.
+
+        ``--status-port 0`` binds an ephemeral port, so the real number is only
+        known once the daemon prints it.
+        """
+        line = self._await_line(self.vsockd_log, "status on http")
+        match = re.search(r"127\.0\.0\.1:(\d+)", line)
+        if not match:
+            raise LabError(f"vsockd did not report a status port: {line!r}")
+        self.status_bound = int(match.group(1))
+
     def _await_line(self, log: Path, needle: str) -> str:
         deadline = now() + START_DEADLINE_S
         while now() < deadline:
@@ -481,6 +526,27 @@ class Lab:
             return Result(err.code, err.read().decode(), now() - started)
     def machine(self) -> dict:
         return self._request("GET", "/api/v0/machine").json
+    def api_get(self, path: str) -> "Result":
+        """``GET`` a path on ``noded``'s own HTTP API (the raw reply)."""
+        return self._request("GET", path)
+    # -- the hub's read-only status surface --------------------------------
+    def status(self) -> dict:
+        """``GET /status`` — the hub's registry, from its read-only surface."""
+        return self.status_get("/status").json
+    def healthz(self) -> "Result":
+        """``GET /healthz`` — the status surface's liveness probe."""
+        return self.status_get("/healthz")
+    def status_get(self, path: str, timeout: float = 5.0) -> "Result":
+        """One request to the hub's read-only status surface (``/status`` + ``/healthz``)."""
+        if self.status_bound is None:
+            raise LabError("this lab has no status surface (start it with status_port=...)")
+        request = urllib.request.Request(f"http://127.0.0.1:{self.status_bound}{path}")
+        started = now()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as reply:
+                return Result(reply.status, reply.read().decode(), now() - started)
+        except urllib.error.HTTPError as err:
+            return Result(err.code, err.read().decode(), now() - started)
     def ping(self) -> bool:
         """Whether the daemon is still answering its API."""
         try:

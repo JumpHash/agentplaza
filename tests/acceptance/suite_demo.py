@@ -267,22 +267,31 @@ def judge_cell(lab: Lab, case, spec: dict, log_from: int) -> dict:
         # be split mid-way; the reconstructed view re-concatenates it.
         serial = next(vm.get("serial", "") for vm in final["vms"] if vm["guest_cid"] == cid)
         guest_stream = reconstruct_console(serial)
+        # The guest reboots through one of two paths, whichever comes first:
+        # the harness reap ("agent harness session complete, rebooting") or,
+        # for a `beats` cell, its beat budget ("N beats done, rebooting").
+        # The beat budget can win — it always does at a small N, and can at the
+        # matrix's N=2 when the host is loaded — so the guest's exit evidence is
+        # "exactly one reboot line of either kind", not one specific path. (The
+        # session itself is judged on the wire, above; both paths reboot.)
+        reboots = len(
+            re.findall(r"plaza guest: (?:agent harness session complete|\d+ beats done), rebooting", guest_stream)
+        )
         case.task(
             f"guest transcript cid {cid}",
             (
                 "agent-harness: handshake complete" in guest_stream
                 and f'echo call 1 verified: "{wanted}"' in guest_stream
                 and "agent-harness: session complete after 2 tool calls" in guest_stream
-                and "plaza guest: agent harness session complete, rebooting" in guest_stream
+                and reboots == 1
             ),
-            f"serial_bytes={len(serial)}",
+            f"serial_bytes={len(serial)} reboots={reboots}",
         )
         # Hermeticity: each capture is fresh, from this VM's own boot.
         case.invariant(
             f"fresh capture cid {cid}",
-            serial.count("Linux version") == 1
-            and guest_stream.count("plaza guest: agent harness session complete, rebooting") == 1,
-            f"boot banners={serial.count('Linux version')}",
+            serial.count("Linux version") == 1 and reboots == 1,
+            f"boot banners={serial.count('Linux version')} reboots={reboots}",
         )
 
     # The run's sockets are gone once the VMs are; nothing stale is left for

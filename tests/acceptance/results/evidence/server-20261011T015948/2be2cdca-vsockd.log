@@ -1,0 +1,30 @@
+vsockd: status on http://127.0.0.1:41787 (GET /status, GET /healthz, read-only)
+vsockd: listening on /tmp/apz-acceptance-server-ilp9az9j/fleet-lifecycle-uds/vm50_5000 for guest CID 50
+vsockd: accepted a connection from cid 50
+[guest 50 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 50, "role": "architect", "keepalive": true}
+vsockd: guest 50 vm 0 says hello (accepted on the socket for cid 50)
+vsockd: agent 50 role architect connected
+[<-] guest 50 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"architect","keepalive":true}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 50 heartbeat 1
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 2}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 3}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 4}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 5}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 6}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 7}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 8}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 9}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 10}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 11}
+[guest 50 vm0 ->] {"type": "heartbeat", "seq": 12}
+vsockd: agent 50 heartbeat 12
+[guest 50 vm0 ->] {"type": "tool_call", "call": 1, "name": "echo", "args": {"text": "plaza-agent-50"}}
+[<-] guest 50 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-agent-50"}
+vsockd: answered call 1 (echo) for agent 50
+[guest 50 vm0 ->] {"type": "tool_call", "call": 2, "name": "uptime", "args": {}}
+[<-] guest 50 vm0 {"type":"tool_result","call":2,"ok":true,"output":"285642.60 6072452.19"}
+vsockd: answered call 2 (uptime) for agent 50
+[guest 50 vm0 ->] {"type": "bye", "calls": 2}
+vsockd: agent 50 session ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

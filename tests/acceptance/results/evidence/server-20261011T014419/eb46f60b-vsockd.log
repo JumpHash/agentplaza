@@ -1,0 +1,2 @@
+vsockd: listening on /tmp/apz-acceptance-server-x5lj_ifg/fleet-proxy-off-uds/vm56_5000 for guest CID 56
+vsockd: stop requested, closing the listeners
