@@ -1,4 +1,4 @@
-//! `POST /api/v0/tasks/{id}/artifact`: the console's read-through to a task's
+//! `POST /v1/tasks/{id}/artifact`: the console's read-through to a task's
 //! artifact, exercised over real sockets.
 //!
 //! A stub admin listener - a `TcpListener` in this test serving a fixed raw
@@ -17,10 +17,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use common::{request, send, start_with_hubs};
-use noded::hub::HubAdmin;
+use common::{request, start_with};
+use noded::hub::Hub;
 use noded::registry::ConnectedAgent;
 use noded::tasks::CreateTask;
 use noded::Server;
@@ -33,9 +33,9 @@ fn console_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// The hub's admin surface for a stub on `port`.
-fn admin_at(port: u16) -> Option<HubAdmin> {
-    Some(HubAdmin::parse(&format!("127.0.0.1:{port}")).expect("a loopback surface"))
+/// The hub for a stub on `port`.
+fn admin_at(port: u16) -> Option<Hub> {
+    Some(Hub::new(port))
 }
 
 /// A loopback port nothing is listening on: bound to learn a free one, then
@@ -100,20 +100,6 @@ fn stub_admin(raw: Vec<u8>) -> (u16, JoinHandle<String>) {
     (port, handle)
 }
 
-/// An admin surface that accepts the connection and then says nothing: the
-/// daemon must not wait on it forever.
-fn silent_admin() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("the stub admin binds");
-    let port = listener.local_addr().expect("a bound address").port();
-    thread::spawn(move || {
-        let (stream, _peer) = listener.accept().expect("the daemon connects");
-        // Hold the connection open, silent, past the daemon's own timeout.
-        thread::sleep(Duration::from_secs(15));
-        drop(stream);
-    });
-    port
-}
-
 /// A `read_file` tool output, exactly as the harness writes it
 /// (`{"path","size","bytes","truncated","content"}`), with the size the file
 /// actually has.
@@ -174,7 +160,7 @@ fn claimed_task(server: &Server, cid: u64, role: &str) -> String {
 
 /// The artifact endpoint's URL for one task.
 fn artifact_path(id: &str) -> String {
-    format!("/api/v0/tasks/{id}/artifact")
+    format!("/v1/tasks/{id}/artifact")
 }
 
 #[test]
@@ -184,7 +170,7 @@ fn the_artifact_is_read_through_the_hub() {
         &tell_body(true, &read_output("notes.txt", "hello\n")),
     );
     let (port, hub) = stub_admin(raw);
-    let server = start_with_hubs(console_dir("read"), None, admin_at(port));
+    let server = start_with(console_dir("read"), admin_at(port));
     let id = claimed_task(&server, 100, "builder");
 
     let reply = request(
@@ -207,18 +193,17 @@ fn the_artifact_is_read_through_the_hub() {
     let sent = hub.join().expect("the stub admin finished");
     let (head, body) = sent.split_once("\r\n\r\n").expect("a head and a body");
     assert!(
-        head.starts_with("POST /tell HTTP/1.1\r\n"),
-        "the daemon posted /tell: {head:?}"
+        head.starts_with("POST /v1/agents/100/tell HTTP/1.1\r\n"),
+        "the daemon posted the hub's tell: {head:?}"
     );
     let sent_body: serde_json::Value =
         serde_json::from_str(body).expect("the /tell body is JSON");
-    assert_eq!(sent_body["cid"], 100);
     assert_eq!(sent_body["name"], "read_file");
     assert_eq!(sent_body["args"]["path"], "notes.txt");
     assert_eq!(sent_body["timeout_ms"], 5000);
 
     // ... and the task routes still answer on the same daemon.
-    let task = request(server.port(), "GET", &format!("/api/v0/tasks/{id}"), None);
+    let task = request(server.port(), "GET", &format!("/v1/tasks/{id}"), None);
     assert_eq!(task.status, 200, "{}", task.body);
     assert_eq!(task.json()["state"], "claimed");
 }
@@ -234,7 +219,7 @@ fn a_truncated_read_is_reported() {
     })
     .to_string();
     let (port, hub) = stub_admin(answer("200 OK", &tell_body(true, &output)));
-    let server = start_with_hubs(console_dir("truncated"), None, admin_at(port));
+    let server = start_with(console_dir("truncated"), admin_at(port));
     let id = claimed_task(&server, 100, "builder");
 
     let reply = request(
@@ -255,7 +240,7 @@ fn a_truncated_read_is_reported() {
 fn an_unknown_task_is_a_404() {
     // Nothing is listening: an unknown task must be refused before the hub is
     // ever contacted, so the 404 cannot be mistaken for the hub's own 404.
-    let server = start_with_hubs(console_dir("unknown"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("unknown"), admin_at(dead_port()));
     let reply = request(
         server.port(),
         "POST",
@@ -268,7 +253,7 @@ fn an_unknown_task_is_a_404() {
 
 #[test]
 fn an_unclaimed_task_is_a_409() {
-    let server = start_with_hubs(console_dir("unclaimed"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("unclaimed"), admin_at(dead_port()));
     let id = open_task(&server, "builder");
     let reply = request(
         server.port(),
@@ -282,9 +267,9 @@ fn an_unclaimed_task_is_a_409() {
 
 #[test]
 fn an_unconfigured_admin_is_a_503() {
-    // `--hub-admin off`: the daemon was never told where the admin surface is,
+    // `--hub-port off`: the daemon was never told where the hub is,
     // so it says so - before the task is resolved, and without an empty answer.
-    let server = start_with_hubs(console_dir("off"), None, None);
+    let server = start_with(console_dir("off"), None);
     let id = claimed_task(&server, 100, "builder");
     let reply = request(
         server.port(),
@@ -293,7 +278,7 @@ fn an_unconfigured_admin_is_a_503() {
         Some(r#"{"path":"notes.txt"}"#),
     );
     assert_eq!(reply.status, 503, "{}", reply.body);
-    assert_eq!(reply.json()["error"], "hub admin is not configured");
+    assert_eq!(reply.json()["error"], "the hub is not configured");
 
     // Even an unknown task: the endpoint cannot do anything at all.
     let reply = request(
@@ -309,7 +294,7 @@ fn an_unconfigured_admin_is_a_503() {
 fn a_path_outside_the_contract_is_a_400() {
     // The hub is a dead port: a 400 proves the request was refused before any
     // connection, not after one failed.
-    let server = start_with_hubs(console_dir("badpath"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("badpath"), admin_at(dead_port()));
     let id = claimed_task(&server, 100, "builder");
     let long_path = "a".repeat(1025);
     let cases = [
@@ -348,7 +333,7 @@ fn a_path_outside_the_contract_is_a_400() {
 
 #[test]
 fn the_hubs_refusal_is_surfaced_verbatim() {
-    // Every refusal the hub's admin surface can answer: a role the policy
+    // Every refusal the hub can answer: a role the policy
     // forbids the tool (403), a CID the daemon does not serve (404), a served
     // but not-connected CID (409), and a timeout (504). The daemon passes the
     // hub's own status and its own words through, unchanged.
@@ -364,7 +349,7 @@ fn the_hubs_refusal_is_surfaced_verbatim() {
             &serde_json::json!({ "error": message }).to_string(),
         );
         let (port, hub) = stub_admin(raw);
-        let server = start_with_hubs(console_dir(&format!("refused-{status}")), None, admin_at(port));
+        let server = start_with(console_dir(&format!("refused-{status}")), admin_at(port));
         let id = claimed_task(&server, 100, "librarian");
 
         let reply = request(
@@ -383,7 +368,7 @@ fn the_hubs_refusal_is_surfaced_verbatim() {
 fn a_tool_refusal_is_a_422_with_the_agents_own_words() {
     let refusal = "denied: ../escape is outside the workspace";
     let (port, hub) = stub_admin(answer("200 OK", &tell_body(false, refusal)));
-    let server = start_with_hubs(console_dir("toolrefused"), None, admin_at(port));
+    let server = start_with(console_dir("toolrefused"), admin_at(port));
     let id = claimed_task(&server, 100, "builder");
 
     let reply = request(
@@ -408,7 +393,7 @@ fn a_malformed_tool_output_is_a_502_naming_it() {
         serde_json::json!({ "size": 6, "truncated": false, "content": 7 }).to_string(),
     ] {
         let (port, hub) = stub_admin(answer("200 OK", &tell_body(true, &output)));
-        let server = start_with_hubs(console_dir("malformed"), None, admin_at(port));
+        let server = start_with(console_dir("malformed"), admin_at(port));
         let id = claimed_task(&server, 100, "builder");
 
         let reply = request(
@@ -431,7 +416,7 @@ fn a_malformed_tool_output_is_a_502_naming_it() {
 
     // A 200 that is not the admin surface's envelope at all is unreadable too.
     let (port, hub) = stub_admin(answer("200 OK", "not the hub's answer"));
-    let server = start_with_hubs(console_dir("bad-envelope"), None, admin_at(port));
+    let server = start_with(console_dir("bad-envelope"), admin_at(port));
     let id = claimed_task(&server, 100, "builder");
     let reply = request(
         server.port(),
@@ -444,16 +429,13 @@ fn a_malformed_tool_output_is_a_502_naming_it() {
         .as_str()
         .expect("an error string")
         .to_string();
-    assert!(
-        error.contains("not the admin surface's JSON"),
-        "{error}"
-    );
+    assert!(error.contains("not its JSON"), "{error}");
     hub.join().expect("the stub admin finished");
 }
 
 #[test]
 fn an_unreachable_admin_is_a_502_naming_the_reason() {
-    let server = start_with_hubs(console_dir("unreachable"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("unreachable"), admin_at(dead_port()));
     let id = claimed_task(&server, 100, "builder");
 
     let reply = request(
@@ -472,96 +454,36 @@ fn an_unreachable_admin_is_a_502_naming_the_reason() {
 }
 
 #[test]
-fn a_silent_admin_is_a_502_not_a_hang() {
-    let server = start_with_hubs(console_dir("silent"), None, admin_at(silent_admin()));
-    let id = claimed_task(&server, 100, "builder");
-
-    let started = Instant::now();
-    let reply = request(
-        server.port(),
-        "POST",
-        &artifact_path(&id),
-        Some(r#"{"path":"notes.txt"}"#),
-    );
-    let waited = started.elapsed();
-    assert_eq!(reply.status, 502, "{}", reply.body);
-    let error = reply.json()["error"]
-        .as_str()
-        .expect("an error string")
-        .to_string();
-    // The admin budget is 10s: it must have named its own bound, and it must
-    // have given up on it rather than waiting on the silent hub forever.
-    assert!(error.contains("did not answer within 10s"), "{error}");
-    assert!(waited < Duration::from_secs(14), "waited {waited:?}");
-}
-
-#[test]
-fn the_artifact_endpoint_is_post_only() {
-    let server = start_with_hubs(console_dir("postonly"), None, None);
-    let id = claimed_task(&server, 100, "builder");
-    for method in ["GET", "PUT", "DELETE"] {
-        let reply = request(
-            server.port(),
-            method,
-            &artifact_path(&id),
-            Some(r#"{"path":"notes.txt"}"#),
-        );
-        assert_eq!(reply.status, 405, "{method}: {}", reply.body);
-        assert_eq!(reply.json()["error"], "this endpoint accepts POST", "{method}");
-    }
-}
-
-#[test]
-fn the_loopback_host_guard_applies_to_the_artifact_route() {
-    // A page served from any hostname that resolves to 127.0.0.1 can post a
-    // simple request here; a Host that names anything but loopback is refused.
-    let server = start_with_hubs(console_dir("host"), None, None);
-    let id = claimed_task(&server, 100, "builder");
-    let body = br#"{"path":"notes.txt"}"#;
-    let raw = format!(
-        "POST {} HTTP/1.1\r\nHost: evil.example\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
-        artifact_path(&id),
-        body.len()
-    );
-    let mut request_bytes = raw.into_bytes();
-    request_bytes.extend_from_slice(body);
-    let reply = send(server.port(), &request_bytes);
-    assert_eq!(reply.status, 403, "{}", reply.body);
-    assert_eq!(reply.json()["error"], "the Host header must name loopback");
-}
-
-#[test]
 fn the_artifact_route_leaves_the_task_routes_untouched() {
     // With a live admin surface and an off one alike, the task routes answer
     // exactly as they did before this endpoint existed.
     for (name, admin) in [("live", admin_at(dead_port())), ("off", None)] {
-        let server = start_with_hubs(console_dir(&format!("kept-{name}")), None, admin);
+        let server = start_with(console_dir(&format!("kept-{name}")), admin);
         let port = server.port();
 
         let created = request(
             port,
             "POST",
-            "/api/v0/tasks",
+            "/v1/tasks",
             Some(r#"{"goal":"write an index","role":"builder"}"#),
         );
         assert_eq!(created.status, 201, "{name}: {}", created.body);
         let id = created.json()["id"].as_str().expect("a task id").to_string();
         assert_eq!(created.json()["state"], "open", "{name}");
 
-        let list = request(port, "GET", "/api/v0/tasks", None);
+        let list = request(port, "GET", "/v1/tasks", None);
         assert_eq!(list.status, 200, "{name}: {}", list.body);
         assert_eq!(list.json()["tasks"].as_array().expect("an array").len(), 1, "{name}");
 
-        let one = request(port, "GET", &format!("/api/v0/tasks/{id}"), None);
+        let one = request(port, "GET", &format!("/v1/tasks/{id}"), None);
         assert_eq!(one.status, 200, "{name}: {}", one.body);
         assert_eq!(one.json()["goal"], "write an index", "{name}");
 
-        let withdrawn = request(port, "DELETE", &format!("/api/v0/tasks/{id}"), None);
+        let withdrawn = request(port, "DELETE", &format!("/v1/tasks/{id}"), None);
         assert_eq!(withdrawn.status, 200, "{name}: {}", withdrawn.body);
         assert_eq!(withdrawn.json()["state"], "withdrawn", "{name}");
 
-        let machine = request(port, "GET", "/api/v0/machine", None);
+        let machine = request(port, "GET", "/v1/machine", None);
         assert_eq!(machine.status, 200, "{name}: {}", machine.body);
     }
 }

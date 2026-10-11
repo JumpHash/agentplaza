@@ -196,8 +196,11 @@ contents of `<state-dir>/internal.token` (vsockd `--internal-token-file`).
 
 `GET /v1/status` (node facts + sessions: cid, role, connected_at,
 last_heartbeat, busy, calls), `GET /healthz`, `POST /v1/agents/{cid}/send`
-(`{message: HostMessage}` → written to the guest), `POST /v1/agents/{cid}/tell`
-(`{name, args, timeout_ms?}` → `{ok, output}`), `POST /v1/agents/{cid}/stop`.
+(`{message: HostMessage}` → written to the guest; not `tool_call`, which `/tell`
+numbers and gates, nor `welcome`), `POST /v1/agents/{cid}/tell`
+(`{name, args, timeout_ms?}` → `{ok, output}`), `POST /v1/agents/{cid}/stop`
+(`{reason?}` → `{cid, stopped, calls | reason}`). An unserved CID is 404, a
+served one with no session 409.
 
 ## noded HTTP (`127.0.0.1:8899`)
 

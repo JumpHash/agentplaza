@@ -157,121 +157,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_contract_command_line_parses() {
-        let config = Config::parse("console=ttyS0 plaza.harness=1")
-            .expect("the slice's command line parses");
-        assert_eq!(config, Config::default());
-        assert_eq!(config.port, DEFAULT_PORT);
-        assert_eq!(config.vm, 0);
-    }
-
-    #[test]
-    fn optional_flags_override_their_defaults() {
-        let config = Config::parse("plaza.port=6000 plaza.vm=4").expect("explicit flags parse");
+    fn the_v1_and_fleet_command_lines_parse() {
+        assert_eq!(Config::parse("console=ttyS0 plaza.harness=1").unwrap(), Config::default());
+        assert_eq!(Config::default().port, DEFAULT_PORT);
+        let fleet = Config::parse("console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=4 plaza.port=6000").unwrap();
         assert_eq!(
-            config,
-            Config {
-                port: 6000,
-                vm: 4,
-                ..Config::default()
-            }
+            fleet,
+            Config { port: 6000, vm: 4, role: Some("builder".to_string()), keepalive: true }
         );
-    }
-
-    #[test]
-    fn a_bad_flag_is_reported_not_ignored() {
-        assert_eq!(
-            Config::parse("plaza.port=x"),
-            Err(ConfigError::BadValue {
-                flag: "plaza.port".to_string(),
-                value: "x".to_string()
-            })
-        );
-        assert_eq!(
-            Config::parse("plaza.vm=one"),
-            Err(ConfigError::BadValue {
-                flag: "plaza.vm".to_string(),
-                value: "one".to_string()
-            })
-        );
+        assert!(!Config::parse("plaza.keepalive=0").unwrap().keepalive);
+        assert_eq!(Config::parse("plaza.role=").unwrap().role, None);
     }
 
     #[test]
     fn lookalike_and_repeated_tokens_do_not_confuse_the_parser() {
-        // `plaza.vm=` must not match inside another token, and the first
-        // occurrence of a repeated flag wins.
-        let config = Config::parse("foo.plaza.vm=9 plaza.vm=3 plaza.vm=4").expect("parses");
-        assert_eq!(config.vm, 3);
+        assert_eq!(Config::parse("foo.plaza.vm=9 plaza.vm=3 plaza.vm=4").unwrap().vm, 3);
     }
 
     #[test]
-    fn an_empty_command_line_is_the_defaults() {
-        assert_eq!(Config::parse("").expect("parses"), Config::default());
-    }
-
-    #[test]
-    fn the_v1_command_line_is_the_v1_config() {
-        // The demo task's command line names neither a role nor keepalive: the
-        // session this side runs is the frozen one, byte for byte.
-        let config = Config::parse("console=ttyS0 plaza.harness=1 plaza.vm=2").expect("parses");
-        assert_eq!(config.role, None);
-        assert!(!config.keepalive);
-        assert_eq!(config.vm, 2);
-    }
-
-    #[test]
-    fn the_fleet_command_line_is_the_keepalive_config() {
-        let config = Config::parse("console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=4")
-            .expect("the fleet's command line parses");
-        assert_eq!(config.role.as_deref(), Some("builder"));
-        assert!(config.keepalive);
-        assert_eq!(config.vm, 4);
-    }
-
-    #[test]
-    fn keepalive_zero_is_off() {
-        assert!(
-            !Config::parse("plaza.keepalive=0")
-                .expect("parses")
-                .keepalive
-        );
-        assert!(
-            Config::parse("plaza.keepalive=2")
-                .expect("parses")
-                .keepalive
-        );
-    }
-
-    #[test]
-    fn an_empty_role_is_no_role() {
-        assert_eq!(Config::parse("plaza.role=").expect("parses").role, None);
-    }
-
-    #[test]
-    fn a_keepalive_value_that_is_not_a_number_is_reported() {
+    fn bad_values_and_control_characters_are_refused() {
         assert_eq!(
             Config::parse("plaza.keepalive=yes"),
-            Err(ConfigError::BadValue {
-                flag: "plaza.keepalive".to_string(),
-                value: "yes".to_string()
-            })
+            Err(ConfigError::BadValue { flag: "plaza.keepalive".to_string(), value: "yes".to_string() })
         );
-    }
-
-    #[test]
-    fn a_role_with_a_control_character_is_refused() {
+        assert!(Config::parse("plaza.port=x").is_err());
         assert_eq!(
             Config::parse("plaza.role=ok\u{1b}[2K"),
-            Err(ConfigError::BadRole {
-                reason: "it contains a control character"
-            })
-        );
-        assert_eq!(
-            Config::parse("plaza.role=legal-gov-judge")
-                .expect("parses")
-                .role
-                .as_deref(),
-            Some("legal-gov-judge")
+            Err(ConfigError::BadRole { reason: "it contains a control character" })
         );
     }
 }

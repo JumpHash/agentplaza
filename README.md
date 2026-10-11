@@ -62,7 +62,7 @@ python3 -I tests/acceptance/run.py all
 # The hub (serve the fleet's CIDs and the run range 20..=99)
 ./target/debug/vsockd --uds-dir /tmp/plaza-vsock \
   --cids 10,11,12,13,14,15,20,...,99,100,...,120 \
-  --port 5000 --status-port 19080 --admin-port 19081 \
+  --port 5000 --http-port 19080 \
   --roles docs/agents/initial-roles.json
 
 # The node daemon: the 21-role fleet boots at startup, each VM its own jailed

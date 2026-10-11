@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::request;
-use noded::hub::HubAdmin;
+use noded::hub::Hub;
 
 /// How long the churn run is given to finish: the guests heartbeat every five
 /// seconds and reboot after two beats.
@@ -75,7 +75,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
     let reply = request(
         port,
         "POST",
-        "/api/v0/runs",
+        "/v1/runs",
         Some(r#"{"n":2,"vcpus":2,"memory_mib":512,"beats":2}"#),
     );
     assert_eq!(reply.status, 201, "{}", reply.body);
@@ -130,7 +130,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
     let second = request(
         port,
         "POST",
-        "/api/v0/runs",
+        "/v1/runs",
         Some(r#"{"n":1,"vcpus":1,"memory_mib":128,"beats":null}"#),
     );
     assert_eq!(second.status, 201, "{}", second.body);
@@ -148,7 +148,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         "two live runs were given the same CID: {cids:?} and {second_cid}"
     );
     let second_id = second["id"].as_str().expect("an id").to_string();
-    let killed = request(port, "DELETE", &format!("/api/v0/runs/{second_id}"), None);
+    let killed = request(port, "DELETE", &format!("/v1/runs/{second_id}"), None);
     assert_eq!(killed.status, 200, "{}", killed.body);
     assert_eq!(killed.json()["state"], "killed", "{}", killed.body);
     eprintln!("smoke: {second_id} ran one VM on CID {second_cid} and was killed");
@@ -158,7 +158,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
     // life (measured: 5.6 s for a 5 s run), which is what the watcher's
     // sleep-outside-the-lock shape exists to prevent.
     let asked = Instant::now();
-    let live = request(port, "GET", &format!("/api/v0/runs/{id}"), None);
+    let live = request(port, "GET", &format!("/v1/runs/{id}"), None);
     let waited = asked.elapsed();
     assert_eq!(live.status, 200, "{}", live.body);
     assert_eq!(live.json()["state"], "running", "{}", live.body);
@@ -173,14 +173,14 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
     let bad_vm = request(
         port,
         "POST",
-        &format!("/api/v0/runs/{id}/input"),
+        &format!("/v1/runs/{id}/input"),
         Some(r#"{"data":"cpu","vm":2}"#),
     );
     assert_eq!(bad_vm.status, 400, "{}", bad_vm.body);
     let queued = request(
         port,
         "POST",
-        &format!("/api/v0/runs/{id}/input"),
+        &format!("/v1/runs/{id}/input"),
         Some(r#"{"data":"cpu","vm":0}"#),
     );
     assert_eq!(queued.status, 200, "{}", queued.body);
@@ -188,7 +188,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
 
     let deadline = Instant::now() + RUN_DEADLINE;
     loop {
-        let reply = request(port, "GET", &format!("/api/v0/runs/{id}"), None);
+        let reply = request(port, "GET", &format!("/v1/runs/{id}"), None);
         assert_eq!(reply.status, 200, "{}", reply.body);
         let run = reply.json();
         assert_ne!(run["state"], "failed", "the run failed: {}", reply.body);
@@ -288,7 +288,7 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     let reply = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"ship the ledger v0"}"#),
     );
     assert_eq!(reply.status, 201, "{}", reply.body);
@@ -297,7 +297,7 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     let refused = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/claim"),
+        &format!("/v1/tasks/{id}/claim"),
         Some(&format!(r#"{{"agent_cid":{AGENT_CID}}}"#)),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -326,7 +326,7 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     let claimed = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/claim"),
+        &format!("/v1/tasks/{id}/claim"),
         Some(&format!(r#"{{"agent_cid":{AGENT_CID}}}"#)),
     );
     assert_eq!(claimed.status, 200, "{}", claimed.body);
@@ -340,7 +340,7 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     let again = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/claim"),
+        &format!("/v1/tasks/{id}/claim"),
         Some(&format!(r#"{{"agent_cid":{AGENT_CID}}}"#)),
     );
     assert_eq!(again.status, 409, "{}", again.body);
@@ -354,7 +354,7 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     let finished = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/finish"),
+        &format!("/v1/tasks/{id}/finish"),
         Some(r#"{"outcome":"done","note":"ledger v0 is up"}"#),
     );
     assert_eq!(finished.status, 200, "{}", finished.body);
@@ -363,13 +363,13 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
     assert_eq!(task["outcome"], "accepted", "{task}");
     assert_eq!(task["note"], "ledger v0 is up", "{task}");
     assert_eq!(
-        request(port, "GET", &format!("/api/v0/tasks/{id}"), None).json()["state"],
+        request(port, "GET", &format!("/v1/tasks/{id}"), None).json()["state"],
         "done"
     );
     eprintln!("smoke: task {id} finished as done/accepted");
 
     // Stop the fleet, so the test leaves no VM behind.
-    let killed = request(port, "DELETE", &format!("/api/v0/runs/{}", run.id()), None);
+    let killed = request(port, "DELETE", &format!("/v1/runs/{}", run.id()), None);
     assert_eq!(killed.status, 200, "{}", killed.body);
     assert_eq!(killed.json()["state"], "killed", "{}", killed.body);
     let _ = std::fs::remove_dir_all(&scratch);
@@ -432,7 +432,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let id = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"ship the agora v0","acceptance":"the board shows the award","budget":500,"role":"builder"}"#),
     );
     assert_eq!(id.status, 201, "{}", id.body);
@@ -440,7 +440,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     eprintln!("smoke: created roled task {id} for role builder with a 500-credit budget");
 
     // The board already shows it as a call, before any agent is up.
-    let board = request(port, "GET", "/api/v0/agora", None);
+    let board = request(port, "GET", "/v1/agora", None);
     assert_eq!(board.status, 200, "{}", board.body);
     assert_eq!(board.json()["calls"][0]["task"], id.as_str(), "{}", board.body);
     assert_eq!(board.json()["calls"][0]["state"], "open", "{}", board.body);
@@ -449,7 +449,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let refused = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/bid"),
+        &format!("/v1/tasks/{id}/bid"),
         Some(&format!(r#"{{"agent_cid":{CID},"price":400}}"#)),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -477,7 +477,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let wrong_role = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/bid"),
+        &format!("/v1/tasks/{id}/bid"),
         Some(&format!(r#"{{"agent_cid":{REVIEWER_CID},"price":100}}"#)),
     );
     assert_eq!(wrong_role.status, 409, "{}", wrong_role.body);
@@ -497,7 +497,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("a read timeout");
     stream
-        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("the events request is sent");
     let mut stream = std::io::BufReader::new(stream);
     let mut head = String::new();
@@ -517,7 +517,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let bid = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/bid"),
+        &format!("/v1/tasks/{id}/bid"),
         Some(&format!(r#"{{"agent_cid":{CID},"price":400}}"#)),
     );
     assert_eq!(bid.status, 200, "{}", bid.body);
@@ -527,7 +527,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let rebid = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/bid"),
+        &format!("/v1/tasks/{id}/bid"),
         Some(&format!(r#"{{"agent_cid":{CID},"price":300}}"#)),
     );
     assert_eq!(rebid.status, 200, "{}", rebid.body);
@@ -538,7 +538,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let over = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/bid"),
+        &format!("/v1/tasks/{id}/bid"),
         Some(&format!(r#"{{"agent_cid":{CID},"price":501}}"#)),
     );
     assert_eq!(over.status, 409, "{}", over.body);
@@ -551,7 +551,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let awarded = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/award"),
+        &format!("/v1/tasks/{id}/award"),
         Some(&format!(r#"{{"agent_cid":{CID}}}"#)),
     );
     assert_eq!(awarded.status, 200, "{}", awarded.body);
@@ -568,7 +568,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let again = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/award"),
+        &format!("/v1/tasks/{id}/award"),
         Some(&format!(r#"{{"agent_cid":{CID}}}"#)),
     );
     assert_eq!(again.status, 409, "{}", again.body);
@@ -579,7 +579,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
 
     // The board now shows the call awarded, holding one bid (the re-bid
     // replaced the first) at the price the award was made at.
-    let board = request(port, "GET", "/api/v0/agora", None).json();
+    let board = request(port, "GET", "/v1/agora", None).json();
     let call = &board["calls"][0];
     assert_eq!(call["state"], "awarded", "{board}");
     assert_eq!(call["max_price"], 500, "{board}");
@@ -594,7 +594,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
     let finished = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{id}/finish"),
+        &format!("/v1/tasks/{id}/finish"),
         Some(r#"{"outcome":"done","note":"agora v0 is up"}"#),
     );
     assert_eq!(finished.status, 200, "{}", finished.body);
@@ -631,7 +631,7 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
         eprintln!("smoke: stream carried {expected}");
     }
 
-    let killed = request(port, "DELETE", &format!("/api/v0/runs/{}", run.id()), None);
+    let killed = request(port, "DELETE", &format!("/v1/runs/{}", run.id()), None);
     assert_eq!(killed.status, 200, "{}", killed.body);
     let _ = std::fs::remove_dir_all(&scratch);
 }
@@ -697,7 +697,7 @@ fn stub_answer(status: &str, body: &str) -> String {
 /// Gated like the three above (`APZ_NODED_SMOKE=1`): it needs a hypervisor and
 /// the guest images. What it proves that the store's unit tests cannot is the
 /// whole accepted path over HTTP — the register check on both CIDs, the unread
-/// counts the register's agent list feeds, the delivery the hub's admin surface
+/// counts the register's agent list feeds, the delivery the hub
 /// is asked for, and the award's note landing on the board.
 ///
 /// ```text
@@ -742,12 +742,8 @@ fn the_social_layer_is_live_over_two_connected_agents() {
         console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir,
         workspace: None,
-        // The live hub's surfaces are not this test's business: the status
-        // proxy is off, and the admin surface is the stub above.
-        hub_status: None,
-        hub_admin: Some(
-            HubAdmin::parse(&format!("127.0.0.1:{admin_port}")).expect("a loopback surface"),
-        ),
+        // The hub is the stub above.
+        hub: Some(Hub::new(admin_port)),
         agents_cid_base: BUILDER,
         ..noded::Config::default()
     };
@@ -756,7 +752,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
 
     // Nothing is connected until the fleet is up: every social action that
     // needs an agent is refused by the register, in the register's words.
-    let refused = request(port, "POST", "/api/v0/board", Some(&format!(
+    let refused = request(port, "POST", "/v1/board", Some(&format!(
         r#"{{"agent_cid":{BUILDER},"subject":"hello","body":"anybody home?"}}"#
     )));
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -765,7 +761,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
         format!("no live agent has guest CID {BUILDER}")
     );
     assert_eq!(
-        request(port, "GET", &format!("/api/v0/agents/{BUILDER}/contacts"), None).status,
+        request(port, "GET", &format!("/v1/agents/{BUILDER}/contacts"), None).status,
         404
     );
     eprintln!("smoke: a post before the fleet was up was refused: {}", refused.body);
@@ -799,7 +795,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("a read timeout");
     stream
-        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("the events request is sent");
     let mut stream = std::io::BufReader::new(stream);
     let mut head = String::new();
@@ -818,7 +814,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let posted = request(
         port,
         "POST",
-        "/api/v0/board",
+        "/v1/board",
         Some(&format!(
             r#"{{"agent_cid":{BUILDER},"subject":"hiring for the social layer","body":"the board is up — who wants it?","posted_by":"dispatchd"}}"#
         )),
@@ -832,7 +828,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     assert_eq!(post["posted_by"], "dispatchd");
     eprintln!("smoke: the builder posted {post}");
 
-    let board = request(port, "GET", "/api/v0/board", None).json();
+    let board = request(port, "GET", "/v1/board", None).json();
     assert_eq!(board["total"], 1, "{board}");
     assert_eq!(board["limit"], 256, "{board}");
     assert_eq!(board["truncated"], false, "{board}");
@@ -849,12 +845,12 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let read = request(
         port,
         "POST",
-        "/api/v0/board/read",
+        "/v1/board/read",
         Some(&format!(r#"{{"agent_cid":{LIBRARIAN},"up_to":"p1"}}"#)),
     );
     assert_eq!(read.status, 200, "{}", read.body);
     assert_eq!(read.json()["unread"], 0, "{}", read.body);
-    let board = request(port, "GET", "/api/v0/board", None).json();
+    let board = request(port, "GET", "/v1/board", None).json();
     assert_eq!(
         board["unread"],
         serde_json::json!([
@@ -869,7 +865,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let replayed = request(
         port,
         "POST",
-        "/api/v0/board/read",
+        "/v1/board/read",
         Some(&format!(r#"{{"agent_cid":{LIBRARIAN},"up_to":"p1"}}"#)),
     );
     assert_eq!(replayed.status, 200, "{}", replayed.body);
@@ -877,7 +873,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let future = request(
         port,
         "POST",
-        "/api/v0/board/read",
+        "/v1/board/read",
         Some(&format!(r#"{{"agent_cid":{LIBRARIAN},"up_to":"p2"}}"#)),
     );
     assert_eq!(future.status, 409, "{}", future.body);
@@ -887,7 +883,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let said = request(
         port,
         "POST",
-        &format!("/api/v0/agents/{BUILDER}/say"),
+        &format!("/v1/agents/{BUILDER}/say"),
         Some(&format!(
             r#"{{"to_cid":{LIBRARIAN},"text":"do you have the index?"}}"#
         )),
@@ -904,7 +900,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let refused_delivery = request(
         port,
         "POST",
-        &format!("/api/v0/agents/{BUILDER}/say"),
+        &format!("/v1/agents/{BUILDER}/say"),
         Some(&format!(r#"{{"to_cid":{LIBRARIAN},"text":"again?"}}"#)),
     );
     assert_eq!(refused_delivery.status, 201, "{}", refused_delivery.body);
@@ -913,19 +909,18 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     assert_eq!(exchange["delivery"], "denied: no such tool", "{exchange}");
     eprintln!("smoke: the peer refused the second call, recorded as {exchange}");
 
-    // What the daemon asked the hub's admin surface for: the contract's tool,
+    // What the daemon asked the hub for: the contract's tool,
     // on the peer's CID, with the speaker and the words.
     let asked = admin.join().expect("the stub read every request");
     assert_eq!(asked.len(), 2);
     for request in &asked {
-        assert!(request.starts_with("POST /tell HTTP/1.1"), "{request}");
+        assert!(request.starts_with(&format!("POST /v1/agents/{LIBRARIAN}/tell HTTP/1.1")), "{request}");
         assert!(request.contains(r#""name":"conversation""#), "{request}");
-        assert!(request.contains(&format!(r#""cid":{LIBRARIAN}"#)), "{request}");
         assert!(request.contains(r#""from_role":"builder""#), "{request}");
     }
     assert!(asked[0].contains(r#""text":"do you have the index?""#), "{}", asked[0]);
 
-    let record = request(port, "GET", "/api/v0/conversations", None).json();
+    let record = request(port, "GET", "/v1/conversations", None).json();
     assert_eq!(record["total"], 2, "{record}");
     assert_eq!(record["active_secs"], 120, "{record}");
     assert_eq!(record["pairs"].as_array().expect("pairs").len(), 1, "{record}");
@@ -936,7 +931,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let thread = request(
         port,
         "GET",
-        &format!("/api/v0/conversations/{BUILDER}/{LIBRARIAN}"),
+        &format!("/v1/conversations/{BUILDER}/{LIBRARIAN}"),
         None,
     )
     .json();
@@ -950,7 +945,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let created = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"build the social layer","acceptance":"the board shows it","budget":500,"role":"builder"}"#),
     );
     assert_eq!(created.status, 201, "{}", created.body);
@@ -958,7 +953,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let bid = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{task}/bid"),
+        &format!("/v1/tasks/{task}/bid"),
         Some(&format!(r#"{{"agent_cid":{BUILDER},"price":300}}"#)),
     );
     assert_eq!(bid.status, 200, "{}", bid.body);
@@ -967,14 +962,14 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let awarded = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{task}/award"),
+        &format!("/v1/tasks/{task}/award"),
         Some(&format!(r#"{{"agent_cid":{BUILDER},"awarder_cid":{LIBRARIAN}}}"#)),
     );
     assert_eq!(awarded.status, 200, "{}", awarded.body);
     assert_eq!(awarded.json()["state"], "claimed", "{}", awarded.body);
     eprintln!("smoke: awarded {task} to {BUILDER} as {LIBRARIAN}");
 
-    let board = request(port, "GET", "/api/v0/board", None).json();
+    let board = request(port, "GET", "/v1/board", None).json();
     assert_eq!(board["total"], 2, "{board}");
     let note = &board["posts"][0];
     assert_eq!(note["id"], "p2", "the note is the newest post: {board}");
@@ -994,7 +989,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let awarder = request(
         port,
         "GET",
-        &format!("/api/v0/agents/{LIBRARIAN}/contacts"),
+        &format!("/v1/agents/{LIBRARIAN}/contacts"),
         None,
     )
     .json();
@@ -1004,7 +999,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     assert_eq!(awarder["contacts"][0]["peer_cid"], BUILDER, "{awarder}");
     assert_eq!(awarder["contacts"][0]["role"], "builder", "{awarder}");
     assert_eq!(awarder["contacts"][0]["kind"], "hired", "{awarder}");
-    let contractor = request(port, "GET", &format!("/api/v0/agents/{BUILDER}/contacts"), None).json();
+    let contractor = request(port, "GET", &format!("/v1/agents/{BUILDER}/contacts"), None).json();
     assert_eq!(contractor["contacts"][0]["peer_cid"], LIBRARIAN, "{contractor}");
     assert_eq!(contractor["contacts"][0]["role"], "librarian", "{contractor}");
     assert_eq!(contractor["contacts"][0]["kind"], "was-hired", "{contractor}");
@@ -1015,13 +1010,13 @@ fn the_social_layer_is_live_over_two_connected_agents() {
     let handshake = request(
         port,
         "POST",
-        &format!("/api/v0/agents/{BUILDER}/contacts"),
+        &format!("/v1/agents/{BUILDER}/contacts"),
         Some(&format!(r#"{{"peer_cid":{LIBRARIAN}}}"#)),
     );
     assert_eq!(handshake.status, 200, "{}", handshake.body);
     assert_eq!(handshake.json()["kind"], "was-hired", "{}", handshake.body);
     assert_eq!(
-        request(port, "GET", &format!("/api/v0/agents/{BUILDER}/contacts"), None).json()["total"],
+        request(port, "GET", &format!("/v1/agents/{BUILDER}/contacts"), None).json()["total"],
         1,
         "no second link"
     );
@@ -1056,7 +1051,7 @@ fn the_social_layer_is_live_over_two_connected_agents() {
         eprintln!("smoke: stream carried {expected}");
     }
 
-    let killed = request(port, "DELETE", &format!("/api/v0/runs/{}", run.id()), None);
+    let killed = request(port, "DELETE", &format!("/v1/runs/{}", run.id()), None);
     assert_eq!(killed.status, 200, "{}", killed.body);
     let _ = std::fs::remove_dir_all(&scratch);
 }

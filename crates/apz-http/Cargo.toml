@@ -1,0 +1,11 @@
+[package]
+name = "apz-http"
+description = "AgentPlaza's one tiny HTTP/1.1 server, client and SSE implementation, with the loopback Host guard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

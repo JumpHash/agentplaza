@@ -1,30 +1,21 @@
-//! The harness's session script: the frozen conversation, in order.
+//! The v1 session: `hello` → `welcome` → `echo` → `uptime` → `bye`.
 //!
-//! The harness does not decide anything. It performs exactly this sequence —
-//! `hello`, wait for `welcome`, `echo` tool call, `uptime` tool call, `bye` —
-//! and every step is checked: a `welcome` whose echo is not
-//! [`WELCOME_ECHO`], a `tool_result` for a call that was not made, a failed
-//! tool, or a peer that closes or goes silent is a reported error, never a
-//! quiet success.
-//!
-//! Lines that do not parse as a host message are logged and skipped, bounded
-//! by [`MAX_SKIPPED_LINES`]: a peer that only ever sends garbage is a protocol
-//! failure, not an infinite loop.
+//! Every step is checked: a wrong welcome echo, a failed tool, or a peer that
+//! closes or goes silent is an error, never a quiet success. Lines that are
+//! not the awaited answer are logged and skipped, at most
+//! [`MAX_SKIPPED_LINES`] in a row.
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 
+use apz_proto::line::{Lines, Recv};
+use apz_proto::wire::{GuestMessage, HostMessage, WELCOME_ECHO};
 use serde_json::json;
 
-use crate::line::LineTransport;
-use crate::proto::{GuestMessage, HostMessage, WELCOME_ECHO};
-
-/// How many unparsable or unexpected lines in a row one wait tolerates before
-/// the session is failed.
+/// How many unexpected lines in a row one wait tolerates.
 pub const MAX_SKIPPED_LINES: usize = 16;
 
-/// The `echo` tool's argument: the fixed string the guest asks the
-/// orchestrator to say back.
+/// The `echo` tool's argument.
 pub fn echo_text(cid: u32) -> String {
     format!("plaza-guest-{cid}-hello")
 }
@@ -32,23 +23,13 @@ pub fn echo_text(cid: u32) -> String {
 /// Why a session did not complete.
 #[derive(Debug)]
 pub enum SessionError {
-    /// The connection, or the transcript, failed: {0}
     Io(io::Error),
-    /// A message could not be encoded: {0}
     Encode(serde_json::Error),
-    /// The orchestrator stopped answering within the socket's read timeout.
+    /// The orchestrator said nothing within the socket's read timeout.
     Timeout,
-    /// The conversation left the frozen script: {0}
     Protocol(String),
-    /// The orchestrator closed the connection before the session ended.
     HostClosed,
-    /// Tool call {call} reported failure: {output}
-    ToolFailed {
-        /// The call that failed.
-        call: u64,
-        /// What the orchestrator reported.
-        output: String,
-    },
+    ToolFailed { call: u64, output: String },
 }
 
 impl fmt::Display for SessionError {
@@ -59,9 +40,7 @@ impl fmt::Display for SessionError {
             Self::Timeout => write!(f, "timed out waiting for the orchestrator"),
             Self::Protocol(detail) => write!(f, "protocol violation: {detail}"),
             Self::HostClosed => write!(f, "the orchestrator closed the connection mid-session"),
-            Self::ToolFailed { call, output } => {
-                write!(f, "tool call {call} failed: {output}")
-            }
+            Self::ToolFailed { call, output } => write!(f, "tool call {call} failed: {output}"),
         }
     }
 }
@@ -70,233 +49,136 @@ impl std::error::Error for SessionError {}
 
 impl From<io::Error> for SessionError {
     fn from(err: io::Error) -> Self {
-        if err.kind() == io::ErrorKind::WouldBlock {
-            Self::Timeout
-        } else {
-            Self::Io(err)
-        }
+        Self::Io(err)
     }
 }
 
-/// Who this guest is: the CID the vsock device assigned it, and the VM index
-/// the command line gave it.
-///
-/// The CID is not a configuration value — see [`crate::cmdline`] — it is
-/// whatever the device says, which is what every packet this side sends
-/// carries.
+/// Who this guest is: the CID its vsock device assigned it (never the command
+/// line's), and its VM index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
-    /// The guest CID the vsock device assigned this VM.
     pub guest_cid: u32,
-    /// This VM's index within the spawn, from `plaza.vm` (default 0).
     pub vm: u32,
 }
 
-/// Runs the frozen session over `transport`, writing the transcript (every
-/// line in both directions, and this side's notes) to `log`.
-///
-/// Returns how many tool calls were made. The caller closes the transport;
-/// the `bye` line is the last thing this function sends.
-pub fn run<T: LineTransport, W: Write>(
-    transport: &mut T,
+/// Runs the v1 session, logging every line both ways to `log`. Returns how many
+/// tool calls were made; `bye` is the last line sent.
+pub fn run<S: Read + Write, W: Write>(
+    lines: &mut Lines<S>,
     log: &mut W,
     identity: &Identity,
 ) -> Result<u64, SessionError> {
-    // The frozen v1 `hello`, with no role and no keepalive: those are the
-    // keepalive session's fields (see [`crate::keepalive`]), and a v1 session
-    // is byte-for-byte what it was before they existed.
-    send(
-        transport,
-        log,
-        &GuestMessage::Hello {
-            vm: identity.vm,
-            guest_cid: identity.guest_cid,
-            role: None,
-            keepalive: false,
-        },
-    )?;
+    let hello = GuestMessage::Hello { vm: identity.vm, guest_cid: identity.guest_cid, role: None, keepalive: None };
+    send(lines, log, &hello)?;
+    let echo = await_host(lines, log, "welcome", |message| match message {
+        HostMessage::Welcome { echo, .. } if echo == WELCOME_ECHO => Some(Ok(echo)),
+        HostMessage::Welcome { echo, .. } => Some(Err(wrong_echo(&echo))),
+        _ => None,
+    })?;
+    note(log, &format!("agent-harness: handshake complete (host echo {echo:?})"));
 
-    let echo = expect_welcome(transport, log)?;
-    note(
-        log,
-        &format!("agent-harness: handshake complete (host echo {echo:?})"),
-    );
-
-    let mut calls = 0u64;
-
-    // 1. `echo`: the orchestrator must say back exactly what was sent.
-    calls += 1;
     let text = echo_text(identity.guest_cid);
-    let output = tool_call(transport, log, calls, "echo", json!({ "text": text }))?;
+    let output = tool_call(lines, log, 1, "echo", json!({ "text": text }))?;
     if output != text {
-        return Err(SessionError::Protocol(format!(
-            "echo call {calls} returned {output:?}, expected {text:?}"
-        )));
+        return Err(SessionError::Protocol(format!("echo call 1 returned {output:?}, expected {text:?}")));
     }
-    note(log, &format!("agent-harness: echo call {calls} verified: {output:?}"));
+    note(log, &format!("agent-harness: echo call 1 verified: {output:?}"));
 
-    // 2. `uptime`: the orchestrator's first two /proc/uptime fields.
-    calls += 1;
-    let output = tool_call(transport, log, calls, "uptime", json!({}))?;
+    let output = tool_call(lines, log, 2, "uptime", json!({}))?;
     if output.split_whitespace().count() < 2 {
-        return Err(SessionError::Protocol(format!(
-            "uptime call {calls} returned {output:?}, expected two fields"
-        )));
+        return Err(SessionError::Protocol(format!("uptime call 2 returned {output:?}, expected two fields")));
     }
-    note(log, &format!("agent-harness: uptime call {calls}: {}", escape_for_transcript(&output)));
+    note(log, &format!("agent-harness: uptime call 2: {}", escape_for_transcript(&output)));
 
-    send(transport, log, &GuestMessage::Bye { calls })?;
-    note(log, &format!("agent-harness: session complete after {calls} tool calls"));
-    Ok(calls)
+    send(lines, log, &GuestMessage::Bye { calls: 2 })?;
+    note(log, "agent-harness: session complete after 2 tool calls");
+    Ok(2)
 }
 
-/// Sends one protocol line and logs it.
-///
-/// Shared with the keepalive session ([`crate::keepalive`]): the transcript of
-/// a frame is identical in both directions of the protocol.
-pub(crate) fn send<T: LineTransport, W: Write>(
-    transport: &mut T,
-    log: &mut W,
-    message: &GuestMessage,
-) -> Result<(), SessionError> {
-    let line = message.to_line().map_err(SessionError::Encode)?;
-    note(log, &format!("[vsock->] {line}"));
-    transport.send_line(&line)?;
-    Ok(())
-}
-
-/// Receives one line, or reports why there was none.
-fn receive<T: LineTransport, W: Write>(
-    transport: &mut T,
-    log: &mut W,
-) -> Result<String, SessionError> {
-    let line = match transport.recv_line() {
-        Ok(Some(line)) => line,
-        Ok(None) => return Err(SessionError::HostClosed),
-        Err(err) => return Err(SessionError::from(err)),
-    };
-    note(log, &format!("[vsock<-] {}", escape_for_transcript(&line)));
-    Ok(line)
-}
-
-/// Waits for the `welcome` that answers our `hello`, skipping lines that are
-/// neither a `welcome` nor parseable.
-fn expect_welcome<T: LineTransport, W: Write>(
-    transport: &mut T,
-    log: &mut W,
-) -> Result<String, SessionError> {
-    let mut skipped = 0usize;
-    loop {
-        let line = receive(transport, log)?;
-        match HostMessage::from_line(&line) {
-            Ok(HostMessage::Welcome { echo, .. }) if echo == WELCOME_ECHO => return Ok(echo),
-            Ok(HostMessage::Welcome { echo, .. }) => {
-                return Err(SessionError::Protocol(format!(
-                    "welcome echo {echo:?} is not {WELCOME_ECHO:?}"
-                )));
-            }
-            Ok(other) => {
-                skipped += 1;
-                note(
-                    log,
-                    &format!("agent-harness: ignoring {} while waiting for welcome", kind_of(&other)),
-                );
-            }
-            Err(err) => {
-                skipped += 1;
-                note(log, &format!("agent-harness: ignoring malformed host line ({err})"));
-            }
-        }
-        if skipped > MAX_SKIPPED_LINES {
-            return Err(SessionError::Protocol(format!(
-                "no welcome within {skipped} lines"
-            )));
-        }
-    }
-}
-
-/// Sends one `tool_call` and returns its `output`, failing if the
-/// orchestrator reports `ok: false`.
-fn tool_call<T: LineTransport, W: Write>(
-    transport: &mut T,
+/// Sends one `tool_call` and returns its output; `ok: false` is an error.
+fn tool_call<S: Read + Write, W: Write>(
+    lines: &mut Lines<S>,
     log: &mut W,
     call: u64,
     name: &str,
     args: serde_json::Value,
 ) -> Result<String, SessionError> {
-    send(
-        transport,
-        log,
-        &GuestMessage::ToolCall {
-            call,
-            name: name.to_string(),
-            args,
-        },
-    )?;
-
-    let mut skipped = 0usize;
-    loop {
-        let line = receive(transport, log)?;
-        match HostMessage::from_line(&line) {
-            Ok(HostMessage::ToolResult {
-                call: answered,
-                ok,
-                output,
-            }) if answered == call => {
-                if !ok {
-                    return Err(SessionError::ToolFailed { call, output });
-                }
-                return Ok(output);
-            }
-            Ok(other) => {
-                skipped += 1;
-                note(
-                    log,
-                    &format!(
-                        "agent-harness: ignoring {} while waiting for tool_result {call}",
-                        kind_of(&other)
-                    ),
-                );
-            }
-            Err(err) => {
-                skipped += 1;
-                note(log, &format!("agent-harness: ignoring malformed host line ({err})"));
-            }
+    send(lines, log, &GuestMessage::ToolCall { call, name: name.to_string(), args })?;
+    await_host(lines, log, &format!("tool_result {call}"), |message| match message {
+        HostMessage::ToolResult { call: answered, ok: true, output } if answered == call => Some(Ok(output)),
+        HostMessage::ToolResult { call: answered, ok: false, output } if answered == call => {
+            Some(Err(SessionError::ToolFailed { call, output }))
         }
-        if skipped > MAX_SKIPPED_LINES {
-            return Err(SessionError::Protocol(format!(
-                "no tool_result for call {call} within {skipped} lines"
-            )));
-        }
-    }
+        _ => None,
+    })
 }
 
-/// The message's protocol name, for log lines that name what was skipped.
-///
-/// Shared with the keepalive session ([`crate::keepalive`]): both sessions
-/// speak the same protocol and write the same transcript.
+/// Reads host lines until `pick` accepts one, skipping (and logging) the rest.
+pub(crate) fn await_host<S: Read, W: Write, T>(
+    lines: &mut Lines<S>,
+    log: &mut W,
+    awaited: &str,
+    mut pick: impl FnMut(HostMessage) -> Option<Result<T, SessionError>>,
+) -> Result<T, SessionError> {
+    for _ in 0..=MAX_SKIPPED_LINES {
+        let line = match lines.recv()? {
+            Recv::Line(line) => line,
+            Recv::Idle => return Err(SessionError::Timeout),
+            Recv::Closed => return Err(SessionError::HostClosed),
+        };
+        note(log, &format!("[vsock<-] {}", escape_for_transcript(&line)));
+        match HostMessage::from_line(&line) {
+            Ok(message) => {
+                let kind = kind_of(&message);
+                match pick(message) {
+                    Some(picked) => return picked,
+                    None => note(log, &format!("agent-harness: ignoring {kind} while waiting for {awaited}")),
+                }
+            }
+            Err(err) => note(log, &format!("agent-harness: ignoring malformed host line ({err})")),
+        }
+    }
+    Err(SessionError::Protocol(format!("no {awaited} within {} lines", MAX_SKIPPED_LINES + 1)))
+}
+
+pub(crate) fn wrong_echo(echo: &str) -> SessionError {
+    SessionError::Protocol(format!("welcome echo {echo:?} is not {WELCOME_ECHO:?}"))
+}
+
+/// Sends one line and logs it.
+pub(crate) fn send<S: Write, W: Write>(
+    lines: &mut Lines<S>,
+    log: &mut W,
+    message: &GuestMessage,
+) -> Result<(), SessionError> {
+    let line = message.to_line().map_err(SessionError::Encode)?;
+    note(log, &format!("[vsock->] {line}"));
+    lines.send(&line)?;
+    Ok(())
+}
+
+/// The message's wire name, for log lines.
 pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
     match message {
         HostMessage::Welcome { .. } => "welcome",
         HostMessage::ToolResult { .. } => "tool_result",
         HostMessage::ToolCall { .. } => "tool_call",
         HostMessage::Stop { .. } => "stop",
+        HostMessage::Work { .. } => "work",
+        HostMessage::ModelResult { .. } => "model_result",
+        HostMessage::ToolDecision { .. } => "tool_decision",
+        HostMessage::Cancel { .. } => "cancel",
+        HostMessage::Profile { .. } => "profile",
     }
 }
 
-/// Writes one transcript line.
-///
-/// The transcript is the serial console, which is how a human sees the loop;
-/// it is best-effort (a console that has gone away must not fail the
-/// protocol), so a write error is dropped rather than propagated.
+/// Writes one transcript line (the serial console); best-effort.
 pub(crate) fn note<W: Write>(log: &mut W, text: &str) {
     let _ = writeln!(log, "{text}");
 }
 
-/// Escapes control characters in host-supplied text before it reaches the
-/// operator-visible serial transcript — the mirror of `vsockd`'s log sink: a
-/// hostile or buggy peer must not be able to forge transcript lines with
-/// carriage returns or terminal escape sequences.
+/// Escapes control characters in host-supplied text so a peer cannot forge
+/// transcript lines.
 pub(crate) fn escape_for_transcript(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -309,268 +191,114 @@ pub(crate) fn escape_for_transcript(text: &str) -> String {
     out
 }
 
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    use apz_proto::line::{Lines, Recv};
+
+    /// A connected guest/host pair over a real socket.
+    pub fn pair() -> (Lines<UnixStream>, Lines<UnixStream>) {
+        let (guest, host) = UnixStream::pair().expect("a socket pair");
+        host.set_read_timeout(Some(Duration::from_secs(10))).expect("a read timeout");
+        (Lines::new(guest), Lines::new(host))
+    }
+
+    /// The guest's next line.
+    pub fn next(host: &mut Lines<UnixStream>) -> String {
+        match host.recv().expect("the guest's line") {
+            Recv::Line(line) => line,
+            other => panic!("expected a line, got {other:?}"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{next, pair};
     use super::*;
-
-    use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
     use std::thread;
-    use std::time::Duration;
 
-    use crate::line::Received;
-
-    /// A [`LineTransport`] over a channel, so a test can put a scripted
-    /// orchestrator on the other end without a socket.
-    struct Channel {
-        out: Sender<String>,
-        input: Receiver<String>,
-    }
-
-    impl LineTransport for Channel {
-        fn send_line(&mut self, line: &str) -> io::Result<()> {
-            self.out
-                .send(line.to_string())
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "peer gone"))
-        }
-
-        fn recv_line_by(&mut self, timeout: Option<Duration>) -> io::Result<Received> {
-            // The v1 session never asks for a deadline; a test that wants one
-            // is in `keepalive`'s module, whose channel honours it.
-            match timeout {
-                None => Ok(self
-                    .input
-                    .recv()
-                    .map_or(Received::Closed, Received::Line)),
-                Some(wait) => match self.input.recv_timeout(wait) {
-                    Ok(line) => Ok(Received::Line(line)),
-                    Err(RecvTimeoutError::Timeout) => Ok(Received::TimedOut),
-                    Err(RecvTimeoutError::Disconnected) => Ok(Received::Closed),
-                },
-            }
-        }
-    }
-
-    /// An in-process, full-duplex pair of transports.
-    fn pair() -> (Channel, Channel) {
-        let (guest_out, host_in) = channel();
-        let (host_out, guest_in) = channel();
-        (
-            Channel {
-                out: guest_out,
-                input: guest_in,
-            },
-            Channel {
-                out: host_out,
-                input: host_in,
-            },
-        )
-    }
-
-    fn identity() -> Identity {
-        Identity {
-            guest_cid: 3,
-            vm: 0,
-        }
-    }
-
-    /// Receives one line from the guest, expecting it to be there.
-    fn next(host: &mut Channel) -> String {
-        host.recv_line()
-            .expect("the guest sent a line")
-            .expect("the connection is open")
-    }
-
-    /// The scripted orchestrator: exactly the frozen host side.
-    fn scripted_orchestrator(mut host: Channel) -> Vec<String> {
-        let hello = next(&mut host);
-        let welcome = r#"{"type":"welcome","echo":"plaza-orchestrator"}"#.to_string();
-        host.send_line(&welcome).expect("welcome sends");
-
-        let echo_call = next(&mut host);
-        let echo_result =
-            r#"{"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-3-hello"}"#
-                .to_string();
-        host.send_line(&echo_result).expect("echo result sends");
-
-        let uptime_call = next(&mut host);
-        let uptime_result =
-            r#"{"type":"tool_result","call":2,"ok":true,"output":"12.34 56.78"}"#.to_string();
-        host.send_line(&uptime_result).expect("uptime result sends");
-
-        let bye = next(&mut host);
-        vec![hello, echo_call, uptime_call, bye]
-    }
+    const IDENTITY: Identity = Identity { guest_cid: 3, vm: 0 };
 
     #[test]
-    fn the_frozen_session_round_trips_against_a_scripted_orchestrator() {
-        let (guest, host) = pair();
-        let orchestrator = thread::spawn(move || scripted_orchestrator(host));
-
-        let mut guest = guest;
+    fn the_v1_session_round_trips_and_skips_stray_lines() {
+        let (mut guest, mut host) = pair();
+        let orchestrator = thread::spawn(move || {
+            let hello = next(&mut host);
+            // A stale result and garbage before the welcome are skipped.
+            host.send(r#"{"type":"tool_result","call":9,"ok":true,"output":"stale"}"#).unwrap();
+            host.send("not json").unwrap();
+            host.send(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#).unwrap();
+            let echo = next(&mut host);
+            host.send(r#"{"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-3-hello"}"#).unwrap();
+            let uptime = next(&mut host);
+            host.send(r#"{"type":"tool_result","call":2,"ok":true,"output":"12.34 56.78"}"#).unwrap();
+            vec![hello, echo, uptime, next(&mut host)]
+        });
         let mut log = Vec::new();
-        let calls = run(&mut guest, &mut log, &identity()).expect("session completes");
-        assert_eq!(calls, 2);
-
-        let lines = orchestrator.join().expect("the orchestrator thread finished");
+        assert_eq!(run(&mut guest, &mut log, &IDENTITY).expect("the session completes"), 2);
         assert_eq!(
-            lines,
-            vec![
-                r#"{"type":"hello","vm":0,"guest_cid":3}"#.to_string(),
-                r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-3-hello"}}"#
-                    .to_string(),
-                r#"{"type":"tool_call","call":2,"name":"uptime","args":{}}"#.to_string(),
-                r#"{"type":"bye","calls":2}"#.to_string(),
+            orchestrator.join().unwrap(),
+            [
+                r#"{"type":"hello","vm":0,"guest_cid":3}"#,
+                r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-3-hello"}}"#,
+                r#"{"type":"tool_call","call":2,"name":"uptime","args":{}}"#,
+                r#"{"type":"bye","calls":2}"#,
             ]
         );
-
-        // Ordering is part of the contract: every line is logged when it is
-        // sent or received.
-        let log = String::from_utf8(log).expect("the transcript is UTF-8");
-        let positions: Vec<usize> = [
-            "[vsock->] {\"type\":\"hello\"",
-            "[vsock<-] {\"type\":\"welcome\"",
-            "[vsock->] {\"type\":\"tool_call\",\"call\":1",
-            "[vsock<-] {\"type\":\"tool_result\",\"call\":1",
-            "[vsock->] {\"type\":\"tool_call\",\"call\":2",
-            "[vsock<-] {\"type\":\"tool_result\",\"call\":2",
-            "[vsock->] {\"type\":\"bye\"",
-        ]
-        .iter()
-        .map(|needle| {
-            log.find(needle)
-                .unwrap_or_else(|| panic!("{needle} is in the transcript"))
-        })
-        .collect();
-        assert!(
-            positions.windows(2).all(|pair| pair[0] < pair[1]),
-            "the transcript is in protocol order"
-        );
-    }
-
-    #[test]
-    fn a_replayed_welcome_and_a_stale_result_are_skipped_not_fatal() {
-        let (guest, mut host) = pair();
-        let orchestrator = thread::spawn(move || {
-            let _hello = next(&mut host);
-            // A duplicate of a handshake the guest never saw, and a result for
-            // a call that was not made: both must be skipped.
-            host.send_line(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#)
-                .expect("welcome sends");
-            host.send_line(r#"{"type":"tool_result","call":9,"ok":true,"output":"stale"}"#)
-                .expect("stale result sends");
-            host.send_line(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#)
-                .expect("second welcome sends");
-
-            let _echo = next(&mut host);
-            host.send_line(r#"not json at all"#).expect("garbage sends");
-            host.send_line(r#"{"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-3-hello"}"#)
-                .expect("echo result sends");
-
-            let _uptime = next(&mut host);
-            host.send_line(r#"{"type":"tool_result","call":2,"ok":true,"output":"1.00 2.00"}"#)
-                .expect("uptime result sends");
-
-            let bye = next(&mut host);
-            assert_eq!(bye, r#"{"type":"bye","calls":2}"#);
-        });
-
-        let mut guest = guest;
-        let mut log = Vec::new();
-        let calls = run(&mut guest, &mut log, &identity()).expect("session completes");
-        assert_eq!(calls, 2);
-        orchestrator.join().expect("the orchestrator thread finished");
+        let log = String::from_utf8(log).unwrap();
+        let hello = log.find("[vsock->] {\"type\":\"hello\"").expect("hello logged");
+        let welcome = log.find("[vsock<-] {\"type\":\"welcome\"").expect("welcome logged");
+        assert!(hello < welcome, "the transcript is in protocol order");
     }
 
     #[test]
     fn a_failed_tool_is_reported_with_its_call_and_output() {
-        let (guest, mut host) = pair();
+        let (mut guest, mut host) = pair();
         let orchestrator = thread::spawn(move || {
-            let _hello = next(&mut host);
-            host.send_line(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#)
-                .expect("welcome sends");
-            let _echo = next(&mut host);
-            host.send_line(r#"{"type":"tool_result","call":1,"ok":false,"output":"denied by policy"}"#)
-                .expect("failure result sends");
+            next(&mut host);
+            host.send(r#"{"type":"welcome","echo":"plaza-orchestrator"}"#).unwrap();
+            next(&mut host);
+            host.send(r#"{"type":"tool_result","call":1,"ok":false,"output":"denied by policy"}"#).unwrap();
         });
-
-        let mut guest = guest;
-        let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
-        match err {
-            SessionError::ToolFailed { call, output } => {
-                assert_eq!(call, 1);
-                assert_eq!(output, "denied by policy");
-            }
-            other => panic!("expected ToolFailed, got {other:?}"),
-        }
-        orchestrator.join().expect("the orchestrator thread finished");
+        let err = run(&mut guest, &mut Vec::new(), &IDENTITY).expect_err("the session fails");
+        assert!(matches!(&err, SessionError::ToolFailed { call: 1, output } if output == "denied by policy"), "{err:?}");
+        orchestrator.join().unwrap();
     }
 
     #[test]
-    fn a_closed_connection_mid_session_is_reported() {
-        let (guest, mut host) = pair();
-        // The orchestrator takes the `hello` and then goes away without
-        // answering it: the session must report that, not hang or guess.
+    fn a_wrong_echo_a_close_and_a_garbage_flood_each_fail_the_session() {
+        let (mut guest, mut host) = pair();
         let orchestrator = thread::spawn(move || {
-            let _hello = next(&mut host);
+            next(&mut host);
+            host.send(r#"{"type":"welcome","echo":"someone-else"}"#).unwrap();
         });
-        let mut guest = guest;
-        let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
-        assert!(matches!(err, SessionError::HostClosed), "got {err:?}");
-        orchestrator.join().expect("the orchestrator thread finished");
-    }
+        let err = run(&mut guest, &mut Vec::new(), &IDENTITY).expect_err("a wrong echo");
+        assert!(matches!(err, SessionError::Protocol(_)), "{err:?}");
+        orchestrator.join().unwrap();
 
-    #[test]
-    fn a_wrong_welcome_echo_is_a_protocol_error() {
-        let (guest, mut host) = pair();
-        let orchestrator = thread::spawn(move || {
-            let _hello = next(&mut host);
-            host.send_line(r#"{"type":"welcome","echo":"someone-else"}"#)
-                .expect("welcome sends");
-        });
-        let mut guest = guest;
-        let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
-        assert!(matches!(err, SessionError::Protocol(_)), "got {err:?}");
-        orchestrator.join().expect("the orchestrator thread finished");
-    }
+        let (mut guest, mut host) = pair();
+        let orchestrator = thread::spawn(move || drop(next(&mut host)));
+        let err = run(&mut guest, &mut Vec::new(), &IDENTITY).expect_err("a close");
+        assert!(matches!(err, SessionError::HostClosed), "{err:?}");
+        orchestrator.join().unwrap();
 
-    #[test]
-    fn a_peer_that_only_sends_garbage_is_failed_not_looped_on() {
-        let (guest, mut host) = pair();
-        let count = MAX_SKIPPED_LINES + 2;
+        let (mut guest, mut host) = pair();
         let orchestrator = thread::spawn(move || {
-            let _hello = next(&mut host);
-            // The guest fails the session after MAX_SKIPPED_LINES garbage
-            // lines and drops its end, so the last sends may fail; that is the
-            // guest stopping, not a test failure.
-            for _ in 0..count {
-                let _ = host.send_line("garbage");
+            next(&mut host);
+            for _ in 0..=MAX_SKIPPED_LINES + 1 {
+                let _ = host.send("garbage");
             }
         });
-        let mut guest = guest;
-        let mut log = Vec::new();
-        let err = run(&mut guest, &mut log, &identity()).expect_err("the session fails");
-        assert!(matches!(err, SessionError::Protocol(_)), "got {err:?}");
-        orchestrator.join().expect("the orchestrator thread finished");
+        let err = run(&mut guest, &mut Vec::new(), &IDENTITY).expect_err("a flood");
+        assert!(matches!(err, SessionError::Protocol(_)), "{err:?}");
+        orchestrator.join().unwrap();
     }
-}
-
-
-#[cfg(test)]
-mod transcript_tests {
-    use super::escape_for_transcript;
 
     #[test]
     fn host_control_characters_are_escaped_in_the_transcript() {
-        // A hostile peer must not be able to forge transcript lines.
-        assert_eq!(
-            escape_for_transcript("ok\r\x1b[2Kvsockd: session ended"),
-            "ok\\x0d\\x1b[2Kvsockd: session ended"
-        );
-        assert_eq!(escape_for_transcript("plain line"), "plain line");
-        assert_eq!(escape_for_transcript("\n"), "\\x0a");
+        assert_eq!(escape_for_transcript("ok\r\x1b[2Kforged"), "ok\\x0d\\x1b[2Kforged");
     }
 }

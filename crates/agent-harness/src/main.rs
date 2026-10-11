@@ -37,10 +37,7 @@
 //! binary must still build, and there it refuses to run rather than pretend to
 //! be a guest harness.
 
-// This crate is safe Rust only: `deny(unsafe_code)` makes any `unsafe` outside
-// the one enumerated module below a compile error. The single entry is
-//   * `vsock` — the AF_VSOCK syscall boundary (`socket`/`connect`/`poll`/
-//     `fcntl`/`ioctl`/`read`/`write`/`close`), which `std` does not expose.
+// Safe Rust except `vsock`, the AF_VSOCK syscall boundary `std` lacks.
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
@@ -49,10 +46,6 @@ mod cmdline;
 mod files;
 #[cfg(target_os = "linux")]
 mod keepalive;
-#[cfg(target_os = "linux")]
-mod line;
-#[cfg(target_os = "linux")]
-mod proto;
 #[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
@@ -80,7 +73,7 @@ use cmdline::{Config, ConfigError};
 #[cfg(target_os = "linux")]
 use files::Workspace;
 #[cfg(target_os = "linux")]
-use line::StreamLines;
+use apz_proto::line::Lines;
 #[cfg(target_os = "linux")]
 use session::{Identity, SessionError};
 #[cfg(target_os = "linux")]
@@ -190,8 +183,8 @@ fn one_shot(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
         guest_cid,
         vm: config.vm,
     };
-    let mut transport = StreamLines::new(stream);
-    session::run(&mut transport, out, &identity).map_err(HarnessError::Session)?;
+    let mut lines = Lines::new(stream);
+    session::run(&mut lines, out, &identity).map_err(HarnessError::Session)?;
     let _ = writeln!(out, "agent-harness: closing the connection");
     let _ = out.flush();
     Ok(())
@@ -260,9 +253,9 @@ fn keepalive_once(config: &Config, out: &mut impl Write) -> Result<u64, (bool, S
     // so a guest that never had the volume is reported by the tools that need
     // it, not by the session.
     let workspace = Workspace::default();
-    let mut transport = StreamLines::new(stream);
+    let mut lines = Lines::new(stream);
     keepalive::session(
-        &mut transport,
+        &mut lines,
         out,
         &identity,
         &workspace,

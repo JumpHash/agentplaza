@@ -60,7 +60,7 @@
 //!
 //! The delivery itself is the contract's: the `conversation` tool call, with
 //! `{from_role, from_cid, text}`, driven to the peer's session through the
-//! hub's admin surface ([`crate::hub::tell`]) — the same client the artifact
+//! hub ([`crate::hub::tell`]) — the same client the artifact
 //! read-through and the operator's tool drive use. **The hub is where the
 //! policy is**: a role the manifest does not grant `conversation` is the hub's
 //! own 403, surfaced verbatim as the row's reason. The tool is asked for under
@@ -97,7 +97,7 @@
 //!   conversations are all *derived* views over it — nothing here is a second
 //!   copy of a fact held elsewhere.
 //! * **A contact is readable while the daemon knows the agent.** `GET
-//!   /api/v0/agents/{cid}/contacts` answers for any CID whose list this store
+//!   /v1/agents/{cid}/contacts` answers for any CID whose list this store
 //!   holds (§ the record is not thrown away when an agent stops), and for a
 //!   connected agent whose list is empty; a CID the store has never heard of
 //!   *and* the register does not show is the endpoint's 404.
@@ -120,7 +120,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::hub::{self, HubAdmin, TellOutcome};
+use crate::hub::{self, Hub, TellOutcome};
 use crate::registry::{ConnectedAgent, now_ms};
 use crate::tasks::{self, Task};
 
@@ -179,7 +179,7 @@ pub const ACTIVE_SECS: u64 = 120;
 /// own word for the caller that acts for an agent.
 pub const DEFAULT_POSTED_BY: &str = "driver";
 
-/// The tool a conversation is delivered as, through the hub's admin surface —
+/// The tool a conversation is delivered as, through the hub —
 /// the contract's name (`conversation` with `{from_role, from_cid, text}`).
 pub const CONVERSATION_TOOL: &str = "conversation";
 
@@ -193,7 +193,7 @@ pub const HIRED: &str = "hired";
 /// `was-hired`.
 pub const WAS_HIRED: &str = "was-hired";
 
-/// The `POST /api/v0/board` body.
+/// The `POST /v1/board` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PostRequest {
     /// The guest CID of the agent the post is for — the author.
@@ -253,7 +253,7 @@ impl PostRequest {
 /// bound (see [`PostRequest::checked`]).
 const MAX_ROLE_LINK: usize = 64;
 
-/// The `POST /api/v0/board/read` body.
+/// The `POST /v1/board/read` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReadRequest {
     /// The guest CID of the agent whose cursor advances.
@@ -262,14 +262,14 @@ pub struct ReadRequest {
     pub up_to: String,
 }
 
-/// The `POST /api/v0/agents/{cid}/contacts` body.
+/// The `POST /v1/agents/{cid}/contacts` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ContactRequest {
     /// The guest CID of the peer to add.
     pub peer_cid: u64,
 }
 
-/// The `POST /api/v0/agents/{cid}/say` body.
+/// The `POST /v1/agents/{cid}/say` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SayRequest {
     /// The guest CID of the agent spoken to.
@@ -744,7 +744,7 @@ impl Social {
     }
 
     /// Records one exchange: `from` speaks `text` to `to`, and the call is
-    /// delivered to `to`'s session through the hub's admin surface.
+    /// delivered to `to`'s session through the hub.
     ///
     /// The row is written **after** the delivery attempt, so it is never a
     /// placeholder: one lock checks the record's room, the delivery runs
@@ -758,7 +758,7 @@ impl Social {
         from: &ConnectedAgent,
         to: &ConnectedAgent,
         text: &str,
-        admin: Option<&HubAdmin>,
+        admin: Option<&Hub>,
     ) -> Result<ConversationView, SocialError> {
         if from.cid == to.cid {
             return Err(SocialError::Conflict(format!(
@@ -982,7 +982,7 @@ fn full(inner: &SocialInner) -> Result<(), SocialError> {
 }
 
 /// Delivers one exchange to the peer's session as the contract's `conversation`
-/// tool call, through the hub's admin surface.
+/// tool call, through the hub.
 ///
 /// Returns whether the peer's session took it, and — when it did not — the
 /// reason the row records: the agent's own refusal, the hub's own words with
@@ -992,7 +992,7 @@ fn deliver(
     from: &ConnectedAgent,
     to: &ConnectedAgent,
     text: &str,
-    admin: Option<&HubAdmin>,
+    admin: Option<&Hub>,
 ) -> (bool, Option<String>) {
     let Some(admin) = admin else {
         return (false, Some("hub admin is not configured".to_string()));
@@ -1879,7 +1879,7 @@ mod tests {
                 r#"{"ok":false,"output":"role librarian does not grant conversation"}"#,
             ),
         ]);
-        let admin = HubAdmin::parse(&format!("127.0.0.1:{port}")).expect("a loopback surface");
+        let admin = Hub::new(port);
         let (social, _notes) = lab();
         let builder = agent(100, "builder");
         let librarian = agent(101, "librarian");
@@ -1914,12 +1914,11 @@ mod tests {
         let seen = stub.join().expect("the stub read every request");
         assert_eq!(seen.len(), 3);
         for request in &seen {
-            assert!(request.starts_with("POST /tell HTTP/1.1"), "{request}");
+            assert!(request.starts_with("POST /v1/agents/101/tell HTTP/1.1"), "{request}");
             assert!(
                 request.contains(r#""name":"conversation""#),
                 "the contract's tool name: {request}"
             );
-            assert!(request.contains(r#""cid":101"#), "{request}");
             assert!(request.contains(r#""from_role":"builder""#), "{request}");
             assert!(request.contains(r#""from_cid":100"#), "{request}");
         }
@@ -1934,7 +1933,7 @@ mod tests {
         let free = TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = free.local_addr().expect("a bound address").port();
         drop(free);
-        let admin = HubAdmin::parse(&format!("127.0.0.1:{port}")).expect("a loopback surface");
+        let admin = Hub::new(port);
         let (social, _notes) = lab();
         let row = social
             .say(&agent(100, "builder"), &agent(101, "librarian"), "hello?", Some(&admin))

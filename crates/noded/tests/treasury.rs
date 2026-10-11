@@ -26,16 +26,16 @@ fn console_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// `GET /api/v0/treasury`'s body.
+/// `GET /v1/treasury`'s body.
 fn treasury_view(port: u16) -> serde_json::Value {
-    let reply = request(port, "GET", "/api/v0/treasury", None);
+    let reply = request(port, "GET", "/v1/treasury", None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     reply.json()
 }
 
-/// `GET /api/v0/treasury/journal`'s body.
+/// `GET /v1/treasury/journal`'s body.
 fn journal_view(port: u16) -> serde_json::Value {
-    let reply = request(port, "GET", "/api/v0/treasury/journal", None);
+    let reply = request(port, "GET", "/v1/treasury/journal", None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     reply.json()
 }
@@ -87,7 +87,7 @@ fn a_budgeted_task_mints_its_escrow_and_withdrawing_refunds_it() {
     let created = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"paid work","budget":500}"#),
     );
     assert_eq!(created.status, 201, "{}", created.body);
@@ -126,7 +126,7 @@ fn a_budgeted_task_mints_its_escrow_and_withdrawing_refunds_it() {
     assert!(amounts.contains(&-500) && amounts.contains(&500), "{entry}");
 
     // Withdrawing it refunds the whole escrow (v0 meters no real spend).
-    let withdrawn = request(port, "DELETE", "/api/v0/tasks/t1", None);
+    let withdrawn = request(port, "DELETE", "/v1/tasks/t1", None);
     assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
     assert_eq!(withdrawn.json()["state"], "withdrawn");
 
@@ -158,7 +158,7 @@ fn a_budgeted_task_mints_its_escrow_and_withdrawing_refunds_it() {
 fn an_unbudgeted_task_posts_nothing() {
     let server = common::start(console_dir("unbudgeted"));
     let port = server.port();
-    let created = request(port, "POST", "/api/v0/tasks", Some(r#"{"goal":"free work"}"#));
+    let created = request(port, "POST", "/v1/tasks", Some(r#"{"goal":"free work"}"#));
     assert_eq!(created.status, 201, "{}", created.body);
     assert_eq!(created.json()["budget"], 0);
 
@@ -169,7 +169,7 @@ fn an_unbudgeted_task_posts_nothing() {
     assert_eq!(journal_view(port)["total"], 0);
 
     // Ending it is a no-op to the treasury.
-    let withdrawn = request(port, "DELETE", "/api/v0/tasks/t1", None);
+    let withdrawn = request(port, "DELETE", "/v1/tasks/t1", None);
     assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
     assert_eq!(treasury_view(port)["totals"]["entries"], 0);
 }
@@ -180,7 +180,7 @@ fn the_treasury_endpoints_answer_only_their_own_methods_and_paths() {
     let port = server.port();
 
     // GET is the only method the two endpoints accept.
-    for target in ["/api/v0/treasury", "/api/v0/treasury/journal"] {
+    for target in ["/v1/treasury", "/v1/treasury/journal"] {
         for method in ["POST", "PUT", "DELETE"] {
             let reply = request(port, method, target, Some("{}"));
             assert_eq!(reply.status, 405, "{method} {target}: {}", reply.body);
@@ -190,12 +190,12 @@ fn the_treasury_endpoints_answer_only_their_own_methods_and_paths() {
     }
 
     // A path under the treasury that is not the journal is not an endpoint.
-    let reply = request(port, "GET", "/api/v0/treasury/nope", None);
+    let reply = request(port, "GET", "/v1/treasury/nope", None);
     assert_eq!(reply.status, 404, "{}", reply.body);
     assert_eq!(reply.json()["error"], "no such endpoint");
     // And the journal accepts no trailing segment.
     assert_eq!(
-        request(port, "GET", "/api/v0/treasury/journal/extra", None).status,
+        request(port, "GET", "/v1/treasury/journal/extra", None).status,
         404
     );
 }
@@ -212,7 +212,7 @@ fn an_events_stream_carries_the_mint_and_the_refund() {
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .expect("the stream gets a read timeout");
     stream
-        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("the events request is sent");
     let mut stream = std::io::BufReader::new(stream);
     let mut head = String::new();
@@ -229,11 +229,11 @@ fn an_events_stream_carries_the_mint_and_the_refund() {
     let created = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"budgeted","budget":500}"#),
     );
     assert_eq!(created.status, 201, "{}", created.body);
-    let withdrawn = request(port, "DELETE", "/api/v0/tasks/t1", None);
+    let withdrawn = request(port, "DELETE", "/v1/tasks/t1", None);
     assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
 
     let mut sock = stream.into_inner();

@@ -10,8 +10,7 @@
 //! `tests/smoke.rs` (a real two-role fleet behind `APZ_NODED_SMOKE=1`) and in
 //! `src/social.rs`'s own tests against the store.
 //!
-//! The daemon here is given **no** hub surfaces (`start_with_hubs(…, None,
-//! None)`), so nothing in this suite can reach the live `vsockd` — and a `say`
+//! The daemon here is given **no** hub surfaces (`start_with(…, //! None)`), so nothing in this suite can reach the live `vsockd` — and a `say`
 //! never gets far enough to try, because no agent is connected.
 
 mod common;
@@ -22,7 +21,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use common::{request, send, start_with_hubs};
+use common::{request, send, start_with};
 use noded::events::Event;
 
 /// A fresh directory to serve as the console, unique to the calling test.
@@ -38,7 +37,7 @@ fn console_dir(name: &str) -> PathBuf {
 /// The `Server` is returned, not its port: dropping it stops the daemon, so a
 /// caller must hold it for as long as it makes requests.
 fn daemon(name: &str) -> noded::Server {
-    start_with_hubs(console_dir(name), None, None)
+    start_with(console_dir(name), None)
 }
 
 /// A body inside every cap, for a request whose *other* field is under test.
@@ -48,7 +47,7 @@ const GOOD_POST: &str = r#"{"agent_cid":300,"subject":"hiring for t1","body":"th
 fn an_empty_board_answers_with_an_empty_bounded_view() {
     let server = daemon("board-empty");
     let port = server.port();
-    let board = request(port, "GET", "/api/v0/board", None);
+    let board = request(port, "GET", "/v1/board", None);
     assert_eq!(board.status, 200, "{}", board.body);
     let view = board.json();
     assert_eq!(view["posts"].as_array().expect("posts").len(), 0);
@@ -69,7 +68,7 @@ fn a_post_needs_a_connected_agent_and_a_body_inside_the_caps() {
 
     // The author must be a connected agent — the register's own check, with the
     // register's own words, before the board is touched.
-    let refused = request(port, "POST", "/api/v0/board", Some(GOOD_POST));
+    let refused = request(port, "POST", "/v1/board", Some(GOOD_POST));
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(
         refused.json()["error"],
@@ -92,7 +91,7 @@ fn a_post_needs_a_connected_agent_and_a_body_inside_the_caps() {
             "body must not be empty",
         ),
     ] {
-        let reply = request(port, "POST", "/api/v0/board", Some(body));
+        let reply = request(port, "POST", "/v1/board", Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         let message = reply.json()["error"].as_str().unwrap_or_default().to_string();
         assert!(
@@ -105,7 +104,7 @@ fn a_post_needs_a_connected_agent_and_a_body_inside_the_caps() {
         r#"{{"agent_cid":300,"subject":"s","body":"{}"}}"#,
         "x".repeat(4097)
     );
-    let reply = request(port, "POST", "/api/v0/board", Some(&long));
+    let reply = request(port, "POST", "/v1/board", Some(&long));
     assert_eq!(reply.status, 400, "{}", reply.body);
     assert_eq!(reply.json()["error"], "body must be at most 4096 bytes");
 
@@ -114,7 +113,7 @@ fn a_post_needs_a_connected_agent_and_a_body_inside_the_caps() {
     let dangling = request(
         port,
         "POST",
-        "/api/v0/board",
+        "/v1/board",
         Some(
             r#"{"agent_cid":300,"subject":"hiring for t9","body":"the builder is free","task":"t9"}"#,
         ),
@@ -123,7 +122,7 @@ fn a_post_needs_a_connected_agent_and_a_body_inside_the_caps() {
     assert_eq!(dangling.json()["error"], "no task with id t9");
 
     // The board took nothing from any of that.
-    let board = request(port, "GET", "/api/v0/board", None).json();
+    let board = request(port, "GET", "/v1/board", None).json();
     assert_eq!(board["total"], 0, "{board}");
 }
 
@@ -135,14 +134,14 @@ fn a_read_cursor_needs_a_connected_agent_and_a_post_to_name() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/board/read",
+        "/v1/board/read",
         Some(r#"{"agent_cid":300,"up_to":"p1"}"#),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(refused.json()["error"], "no live agent has guest CID 300");
 
     // A body the endpoint cannot read is a 400, whatever the register says.
-    let malformed = request(port, "POST", "/api/v0/board/read", Some(r#"{"agent_cid":300}"#));
+    let malformed = request(port, "POST", "/v1/board/read", Some(r#"{"agent_cid":300}"#));
     assert_eq!(malformed.status, 400, "{}", malformed.body);
     assert!(
         malformed.json()["error"]
@@ -158,7 +157,7 @@ fn a_read_cursor_needs_a_connected_agent_and_a_post_to_name() {
     // where the cursor is: they are asserted in `src/social.rs`, and over HTTP
     // in `tests/smoke.rs` with two real agents.
     assert_eq!(
-        request(port, "GET", "/api/v0/board/read", None).status,
+        request(port, "GET", "/v1/board/read", None).status,
         405,
         "a cursor advances on a POST"
     );
@@ -170,14 +169,14 @@ fn the_contacts_matrix_refuses_what_it_must_and_answers_a_held_list() {
     let port = server.port();
 
     // A CID the daemon knows nothing about is the 404 ...
-    let unknown = request(port, "GET", "/api/v0/agents/300/contacts", None);
+    let unknown = request(port, "GET", "/v1/agents/300/contacts", None);
     assert_eq!(unknown.status, 404, "{}", unknown.body);
     assert_eq!(unknown.json()["error"], "no agent with guest CID 300");
 
     // ... and a segment that could never name an agent of this node is a 400,
     // before the store is asked.
     for segment in ["x", "0", "4294967296"] {
-        let reply = request(port, "GET", &format!("/api/v0/agents/{segment}/contacts"), None);
+        let reply = request(port, "GET", &format!("/v1/agents/{segment}/contacts"), None);
         assert_eq!(reply.status, 400, "{segment}: {}", reply.body);
     }
 
@@ -185,14 +184,14 @@ fn the_contacts_matrix_refuses_what_it_must_and_answers_a_held_list() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/agents/300/contacts",
+        "/v1/agents/300/contacts",
         Some(r#"{"peer_cid":301}"#),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(refused.json()["error"], "no live agent has guest CID 300");
 
     // ... a body that names no peer at all is the endpoint's 400 ...
-    let malformed = request(port, "POST", "/api/v0/agents/300/contacts", Some("{}"));
+    let malformed = request(port, "POST", "/v1/agents/300/contacts", Some("{}"));
     assert_eq!(malformed.status, 400, "{}", malformed.body);
     assert!(
         malformed.json()["error"]
@@ -205,11 +204,11 @@ fn the_contacts_matrix_refuses_what_it_must_and_answers_a_held_list() {
 
     // ... and the list itself is GET or POST, nothing else.
     assert_eq!(
-        request(port, "DELETE", "/api/v0/agents/300/contacts", None).status,
+        request(port, "DELETE", "/v1/agents/300/contacts", None).status,
         405
     );
     assert_eq!(
-        request(port, "PUT", "/api/v0/agents/300/contacts", Some("{}")).status,
+        request(port, "PUT", "/v1/agents/300/contacts", Some("{}")).status,
         405
     );
 }
@@ -222,7 +221,7 @@ fn saying_needs_two_connected_agents_and_text_inside_the_cap() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/agents/300/say",
+        "/v1/agents/300/say",
         Some(r#"{"to_cid":301,"text":"are you free?"}"#),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -240,7 +239,7 @@ fn saying_needs_two_connected_agents_and_text_inside_the_cap() {
             "text must not be empty",
         ),
     ] {
-        let reply = request(port, "POST", "/api/v0/agents/300/say", Some(body));
+        let reply = request(port, "POST", "/v1/agents/300/say", Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         assert_eq!(reply.json()["error"], expected);
     }
@@ -248,26 +247,26 @@ fn saying_needs_two_connected_agents_and_text_inside_the_cap() {
         r#"{{"to_cid":301,"text":"{}"}}"#,
         "x".repeat(2049)
     );
-    let reply = request(port, "POST", "/api/v0/agents/300/say", Some(&long));
+    let reply = request(port, "POST", "/v1/agents/300/say", Some(&long));
     assert_eq!(reply.status, 400, "{}", reply.body);
     assert_eq!(reply.json()["error"], "text must be at most 2048 bytes");
 
     // A malformed body, a bad CID segment, and the wrong method.
-    let malformed = request(port, "POST", "/api/v0/agents/300/say", Some(r#"{"text":"hi"}"#));
+    let malformed = request(port, "POST", "/v1/agents/300/say", Some(r#"{"text":"hi"}"#));
     assert_eq!(malformed.status, 400, "{}", malformed.body);
     assert_eq!(
-        request(port, "POST", "/api/v0/agents/nope/say", Some(r#"{"to_cid":301,"text":"hi"}"#)).status,
+        request(port, "POST", "/v1/agents/nope/say", Some(r#"{"to_cid":301,"text":"hi"}"#)).status,
         400
     );
     assert_eq!(
-        request(port, "GET", "/api/v0/agents/300/say", None).status,
+        request(port, "GET", "/v1/agents/300/say", None).status,
         405,
         "speaking is a POST"
     );
 
     // Nothing was recorded: a `say` that never passed the register is not an
     // exchange.
-    let record = request(port, "GET", "/api/v0/conversations", None).json();
+    let record = request(port, "GET", "/v1/conversations", None).json();
     assert_eq!(record["total"], 0, "{record}");
 }
 
@@ -276,7 +275,7 @@ fn an_empty_conversation_record_and_a_pair_thread_are_derived_views() {
     let server = daemon("conversations");
     let port = server.port();
 
-    let record = request(port, "GET", "/api/v0/conversations", None);
+    let record = request(port, "GET", "/v1/conversations", None);
     assert_eq!(record.status, 200, "{}", record.body);
     let view = record.json();
     assert_eq!(view["conversations"].as_array().expect("conversations").len(), 0);
@@ -290,7 +289,7 @@ fn an_empty_conversation_record_and_a_pair_thread_are_derived_views() {
 
     // A pair that has never spoken is an empty thread, not a 404 — and the
     // pair is unordered, so both orders answer the same thread.
-    let thread = request(port, "GET", "/api/v0/conversations/300/301", None);
+    let thread = request(port, "GET", "/v1/conversations/300/301", None);
     assert_eq!(thread.status, 200, "{}", thread.body);
     let view = thread.json();
     assert_eq!(view["a"], 300);
@@ -301,31 +300,31 @@ fn an_empty_conversation_record_and_a_pair_thread_are_derived_views() {
     assert_eq!(view["total"], 0);
     assert_eq!(view["limit"], 256);
     assert_eq!(view["truncated"], false);
-    let reversed = request(port, "GET", "/api/v0/conversations/301/300", None).json();
+    let reversed = request(port, "GET", "/v1/conversations/301/300", None).json();
     assert_eq!(reversed["a"], 301, "the path's order is echoed, not sorted");
     assert_eq!(reversed["total"], 0);
 
     // The pair's CIDs are held to the transport's range, and the path must be
     // exactly a pair.
     assert_eq!(
-        request(port, "GET", "/api/v0/conversations/300/x", None).status,
+        request(port, "GET", "/v1/conversations/300/x", None).status,
         400
     );
     assert_eq!(
-        request(port, "GET", "/api/v0/conversations/300/301/302", None).status,
+        request(port, "GET", "/v1/conversations/300/301/302", None).status,
         404,
         "a thread is a pair, not a path"
     );
     assert_eq!(
-        request(port, "GET", "/api/v0/conversations/300", None).status,
+        request(port, "GET", "/v1/conversations/300", None).status,
         404
     );
     assert_eq!(
-        request(port, "POST", "/api/v0/conversations/300/301", None).status,
+        request(port, "POST", "/v1/conversations/300/301", None).status,
         405
     );
     assert_eq!(
-        request(port, "DELETE", "/api/v0/conversations", None).status,
+        request(port, "DELETE", "/v1/conversations", None).status,
         405
     );
 }
@@ -339,7 +338,7 @@ fn the_stream_carries_the_board_and_conversation_frames() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("a read timeout");
     stream
-        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("the events request is sent");
     let mut stream = std::io::BufReader::new(stream);
     let mut head = String::new();
@@ -399,18 +398,18 @@ fn the_social_routes_do_not_shadow_the_others() {
     // The board's own paths are matched exactly, so a near miss is not a
     // cursor and not a 404 dressed as one.
     assert_eq!(
-        request(port, "GET", "/api/v0/boards", None).status,
+        request(port, "GET", "/v1/boards", None).status,
         404,
         "a near miss is not the board"
     );
     assert_eq!(
-        request(port, "GET", "/api/v0/agents/300/contact", None).status,
+        request(port, "GET", "/v1/agents/300/contact", None).status,
         404
     );
     // The loopback guard applies to the new routes like every other.
     let refused = send(
         port,
-        b"POST /api/v0/board HTTP/1.1\r\nHost: evil.example\r\nContent-Length: 2\r\n\r\n{}",
+        b"POST /v1/board HTTP/1.1\r\nHost: evil.example\r\nContent-Length: 2\r\n\r\n{}",
     );
     assert_eq!(refused.status, 403, "{}", refused.body);
     assert_eq!(

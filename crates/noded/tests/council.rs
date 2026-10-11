@@ -33,7 +33,7 @@ fn console_dir(name: &str) -> PathBuf {
 
 /// The motions board the daemon serves.
 fn board(port: u16) -> serde_json::Value {
-    let reply = request(port, "GET", "/api/v0/motions", None);
+    let reply = request(port, "GET", "/v1/motions", None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(
         reply.content_type.starts_with("application/json"),
@@ -151,7 +151,7 @@ fn a_propose_request_outside_the_contract_is_400() {
         String::new(),
     ];
     for body in cases {
-        let reply = request(port, "POST", "/api/v0/motions", Some(&body));
+        let reply = request(port, "POST", "/v1/motions", Some(&body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         assert!(reply.json()["error"].is_string(), "{body}: {}", reply.body);
     }
@@ -159,7 +159,7 @@ fn a_propose_request_outside_the_contract_is_400() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(r#"{"proposer_cid":100,"kind":"budget_move","text":"move some budget"}"#),
     );
     assert!(
@@ -187,7 +187,7 @@ fn a_caller_flag_that_disagrees_with_the_derived_gate_is_400() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(r#"{"proposer_cid":100,"kind":"law_proposal","text":"a law","needs_owner":false}"#),
     );
     assert_eq!(refused.status, 400, "{}", refused.body);
@@ -199,7 +199,7 @@ fn a_caller_flag_that_disagrees_with_the_derived_gate_is_400() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(r#"{"proposer_cid":100,"kind":"priority","text":"an agenda","needs_owner":true}"#),
     );
     assert_eq!(refused.status, 400, "{}", refused.body);
@@ -211,7 +211,7 @@ fn a_caller_flag_that_disagrees_with_the_derived_gate_is_400() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(
             r#"{"proposer_cid":100,"kind":"budget_move","text":"move 1","amount":1,"needs_owner":false}"#,
         ),
@@ -227,7 +227,7 @@ fn a_caller_flag_that_disagrees_with_the_derived_gate_is_400() {
     let agreed = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(r#"{"proposer_cid":100,"kind":"law_proposal","text":"a law","needs_owner":true}"#),
     );
     assert_eq!(agreed.status, 409, "{}", agreed.body);
@@ -247,7 +247,7 @@ fn a_budget_move_is_gated_over_tenth_of_the_minted_total() {
     let minted = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"fund the pool","budget":1000}"#),
     );
     assert_eq!(minted.status, 201, "{}", minted.body);
@@ -257,7 +257,7 @@ fn a_budget_move_is_gated_over_tenth_of_the_minted_total() {
     let agreed = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(
             r#"{"proposer_cid":100,"kind":"budget_move","text":"move 100","amount":100,"needs_owner":false}"#,
         ),
@@ -270,7 +270,7 @@ fn a_budget_move_is_gated_over_tenth_of_the_minted_total() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(
             r#"{"proposer_cid":100,"kind":"budget_move","text":"move 101","amount":101,"needs_owner":false}"#,
         ),
@@ -291,7 +291,7 @@ fn motions_need_a_connected_seated_agent() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(r#"{"proposer_cid":100,"kind":"priority","text":"an agenda"}"#),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -301,7 +301,7 @@ fn motions_need_a_connected_seated_agent() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions/m1/vote",
+        "/v1/motions/m1/vote",
         Some(r#"{"agent_cid":100,"vote":"yes","reason":"sound"}"#),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -314,7 +314,7 @@ fn motions_need_a_connected_seated_agent() {
         r#"{"agent_cid":100,"vote":"yes","reason":""}"#,
         r#"{"agent_cid":100,"vote":"yes"}"#,
     ] {
-        let reply = request(port, "POST", "/api/v0/motions/m1/vote", Some(body));
+        let reply = request(port, "POST", "/v1/motions/m1/vote", Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
     }
 }
@@ -324,10 +324,10 @@ fn unknown_motions_are_404_and_wrong_methods_are_405() {
     let server = common::start(console_dir("404-405"));
     let port = server.port();
 
-    let reply = request(port, "GET", "/api/v0/motions/m7", None);
+    let reply = request(port, "GET", "/v1/motions/m7", None);
     assert_eq!(reply.status, 404, "{}", reply.body);
     assert_eq!(reply.json()["error"], "no motion with id m7");
-    for target in ["/api/v0/motions/m7/vote", "/api/v0/motions/", "/api/v0/motions/x/y"] {
+    for target in ["/v1/motions/m7/vote", "/v1/motions/", "/v1/motions/x/y"] {
         let reply = request(port, "GET", target, None);
         assert!(
             reply.status == 404 || reply.status == 405,
@@ -336,13 +336,13 @@ fn unknown_motions_are_404_and_wrong_methods_are_405() {
         );
     }
     for method in ["PUT", "DELETE", "PATCH"] {
-        let reply = request(port, method, "/api/v0/motions", None);
+        let reply = request(port, method, "/v1/motions", None);
         assert_eq!(reply.status, 405, "{method}: {}", reply.body);
-        let reply = request(port, method, "/api/v0/motions/m1", None);
+        let reply = request(port, method, "/v1/motions/m1", None);
         assert_eq!(reply.status, 405, "{method}: {}", reply.body);
-        let reply = request(port, method, "/api/v0/motions/m1/vote", None);
+        let reply = request(port, method, "/v1/motions/m1/vote", None);
         assert_eq!(reply.status, 405, "{method}: {}", reply.body);
-        let reply = request(port, method, "/api/v0/motions/m1/decide", None);
+        let reply = request(port, method, "/v1/motions/m1/decide", None);
         assert_eq!(reply.status, 405, "{method}: {}", reply.body);
     }
 }
@@ -368,7 +368,7 @@ fn a_decide_request_is_the_owners_and_is_checked_at_the_edge() {
         "not json at all",
         "",
     ] {
-        let reply = request(port, "POST", "/api/v0/motions/m1/decide", Some(body));
+        let reply = request(port, "POST", "/v1/motions/m1/decide", Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         assert!(reply.json()["error"].is_string(), "{body}: {}", reply.body);
     }
@@ -378,7 +378,7 @@ fn a_decide_request_is_the_owners_and_is_checked_at_the_edge() {
     let blank = request(
         port,
         "POST",
-        "/api/v0/motions/m1/decide",
+        "/v1/motions/m1/decide",
         Some(r#"{"approve":true,"note":"   "}"#),
     );
     assert_eq!(blank.status, 400, "{}", blank.body);
@@ -387,7 +387,7 @@ fn a_decide_request_is_the_owners_and_is_checked_at_the_edge() {
     let over = request(
         port,
         "POST",
-        "/api/v0/motions/m1/decide",
+        "/v1/motions/m1/decide",
         Some(&format!(r#"{{"approve":true,"note":"{long}"}}"#)),
     );
     assert_eq!(over.status, 400, "{}", over.body);
@@ -398,7 +398,7 @@ fn a_decide_request_is_the_owners_and_is_checked_at_the_edge() {
     let reply = request(
         port,
         "POST",
-        "/api/v0/motions/m7/decide",
+        "/v1/motions/m7/decide",
         Some(r#"{"approve":true}"#),
     );
     assert_eq!(reply.status, 404, "{}", reply.body);
@@ -467,7 +467,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(r#"{{"proposer_cid":{},"kind":"priority","text":"an agenda"}}"#, CID + 1)),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -481,7 +481,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
         .expect("a read timeout");
     use std::io::{BufRead as _, Write as _};
     stream
-        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("the events request is sent");
     let mut stream = std::io::BufReader::new(stream);
     let mut head = String::new();
@@ -530,7 +530,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let minted = request(
         port,
         "POST",
-        "/api/v0/tasks",
+        "/v1/tasks",
         Some(r#"{"goal":"fund the pool","budget":1000}"#),
     );
     assert_eq!(minted.status, 201, "{}", minted.body);
@@ -539,7 +539,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(
             r#"{{"proposer_cid":{builder},"kind":"priority","text":"a builder's wish"}}"#
         )),
@@ -555,7 +555,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let proposed = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(
             r#"{{"proposer_cid":{finance},"kind":"priority","text":"make the fleet's next priority the observability pass"}}"#
         )),
@@ -576,7 +576,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions/m1/vote",
+        "/v1/motions/m1/vote",
         Some(&format!(r#"{{"agent_cid":{builder},"vote":"yes","reason":"I like it"}}"#)),
     );
     assert_eq!(refused.status, 403, "{}", refused.body);
@@ -589,7 +589,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
         let reply = request(
             port,
             "POST",
-            &format!("/api/v0/motions/{id}/vote"),
+            &format!("/v1/motions/{id}/vote"),
             Some(&format!(
                 r#"{{"agent_cid":{cid},"vote":"{word}","reason":"{reason}"}}"#
             )),
@@ -617,7 +617,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions/m1/vote",
+        "/v1/motions/m1/vote",
         Some(&format!(r#"{{"agent_cid":{finance},"vote":"yes","reason":"again"}}"#)),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -632,7 +632,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let law = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(
             r#"{{"proposer_cid":{counsel},"kind":"law_proposal","text":"codify the retention window"}}"#
         )),
@@ -650,7 +650,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let carried = request(
         port,
         "POST",
-        "/api/v0/motions/m2/vote",
+        "/v1/motions/m2/vote",
         Some(&format!(r#"{{"agent_cid":{mayor_office},"vote":"yes","reason":"the towns agree"}}"#)),
     );
     assert_eq!(carried.status, 200, "{}", carried.body);
@@ -665,7 +665,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let refused = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(
             r#"{{"proposer_cid":{finance},"kind":"budget_move","text":"move 101 of the pool","amount":101,"needs_owner":false}}"#
         )),
@@ -675,7 +675,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let gated = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(
             r#"{{"proposer_cid":{finance},"kind":"budget_move","text":"move 101 of the pool","amount":101}}"#
         )),
@@ -692,7 +692,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     let plain = request(
         port,
         "POST",
-        "/api/v0/motions",
+        "/v1/motions",
         Some(&format!(
             r#"{{"proposer_cid":{incident},"kind":"priority","text":"an ordinary priority"}}"#
         )),
@@ -707,7 +707,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     ] {
         vote("m4", cid, "yes", reason);
     }
-    let carried = request(port, "GET", "/api/v0/motions/m4", None);
+    let carried = request(port, "GET", "/v1/motions/m4", None);
     assert_eq!(carried.status, 200, "{}", carried.body);
     assert_eq!(carried.json()["state"], "carried", "{}", carried.body);
 
@@ -718,7 +718,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
             Some(note) => format!(r#"{{"approve":{approve},"note":"{note}"}}"#),
             None => format!(r#"{{"approve":{approve}}}"#),
         };
-        let reply = request(port, "POST", &format!("/api/v0/motions/{id}/decide"), Some(&body));
+        let reply = request(port, "POST", &format!("/v1/motions/{id}/decide"), Some(&body));
         (reply.status, reply.json())
     };
 
@@ -817,7 +817,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     );
 
     // Stop the fleet, so the test leaves no VM behind.
-    let killed = request(port, "DELETE", &format!("/api/v0/runs/{}", run.id()), None);
+    let killed = request(port, "DELETE", &format!("/v1/runs/{}", run.id()), None);
     assert_eq!(killed.status, 200, "{}", killed.body);
     assert_eq!(killed.json()["state"], "killed", "{}", killed.body);
     let _ = fs::remove_dir_all(&scratch);

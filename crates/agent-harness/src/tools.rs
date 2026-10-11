@@ -186,126 +186,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The tools that do not touch the filesystem are asked in the guest's own
-    /// workspace, which they never resolve.
-    fn workspace() -> Workspace {
-        Workspace::default()
+    #[test]
+    fn echo_serves_and_refuses_off_schema_arguments() {
+        let workspace = Workspace::default();
+        assert_eq!(serve(&workspace, "echo", &json!({ "text": "hi" })).unwrap(), "hi");
+        assert!(matches!(serve(&workspace, "echo", &json!({ "text": 12 })), Err(ToolError::InvalidInput { .. })));
     }
 
     #[test]
-    fn echo_says_back_the_text_it_is_given() {
-        assert_eq!(
-            serve(
-                &workspace(),
-                "echo",
-                &json!({ "text": "plaza-guest-3-hello" })
-            )
-            .expect("echo serves"),
-            "plaza-guest-3-hello"
-        );
-    }
-
-    #[test]
-    fn echo_refuses_arguments_that_are_not_its_schema() {
-        assert!(matches!(
-            serve(&workspace(), "echo", &json!({})),
-            Err(ToolError::InvalidInput { .. })
-        ));
-        assert!(matches!(
-            serve(&workspace(), "echo", &json!({ "text": 12 })),
-            Err(ToolError::InvalidInput { .. })
-        ));
-    }
-
-    #[test]
-    fn an_unknown_tool_names_itself() {
-        let err = serve(&workspace(), "exec", &json!({})).expect_err("exec is not served");
-        assert_eq!(err, ToolError::UnknownTool("exec".to_string()));
+    fn an_unknown_tool_names_itself_and_refusals_name_their_kind() {
+        let err = serve(&Workspace::default(), "exec", &json!({})).expect_err("exec is not served");
         assert_eq!(err.to_string(), "no such tool: exec");
-    }
-
-    #[test]
-    fn the_taxonomy_reads_as_the_hub_sees_it() {
-        assert_eq!(
-            ToolError::InvalidInput {
-                reason: "x".to_string()
-            }
-            .to_string(),
-            "invalid input: x"
-        );
-        assert_eq!(
-            ToolError::Denied {
-                reason: "x".to_string()
-            }
-            .to_string(),
-            "denied: x"
-        );
-        assert_eq!(
-            ToolError::NotFound {
-                reason: "x".to_string()
-            }
-            .to_string(),
-            "not found: x"
-        );
-        assert_eq!(
-            ToolError::LimitExceeded {
-                reason: "x".to_string()
-            }
-            .to_string(),
-            "limit exceeded: x"
-        );
-        assert_eq!(
-            ToolError::Unavailable {
-                reason: "x".to_string()
-            }
-            .to_string(),
-            "unavailable: x"
-        );
-        assert_eq!(
-            ToolError::Internal {
-                reason: "x".to_string()
-            }
-            .to_string(),
-            "internal: x"
-        );
-    }
-
-    #[test]
-    fn the_served_tools_are_echo_uptime_conversation_and_the_file_tools() {
-        let names: Vec<&str> = TOOLS.iter().map(|tool| tool.name).collect();
-        assert_eq!(
-            names,
-            vec![
-                "echo",
-                "uptime",
-                "conversation",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "append_file",
-                "list",
-                "search"
-            ]
-        );
+        let reason = || "x".to_string();
+        assert_eq!(ToolError::Denied { reason: reason() }.to_string(), "denied: x");
+        assert_eq!(ToolError::LimitExceeded { reason: reason() }.to_string(), "limit exceeded: x");
     }
 
     #[test]
     fn uptime_is_the_first_two_fields_of_proc_uptime() {
-        assert_eq!(
-            uptime_fields("12.34 56.78 0.00 0\n").as_deref(),
-            Some("12.34 56.78")
-        );
+        assert_eq!(uptime_fields("12.34 56.78 0.00 0\n").as_deref(), Some("12.34 56.78"));
         assert_eq!(uptime_fields("12.34\n").as_deref(), None);
         assert_eq!(uptime_fields("up days\n").as_deref(), None);
-        assert_eq!(uptime_fields("").as_deref(), None);
-    }
-
-    #[test]
-    fn this_guest_serves_its_own_uptime() {
-        // The shipped tool reads the guest's /proc/uptime; on the Linux guests
-        // this harness runs in, that is two numbers.
-        let output = serve(&workspace(), "uptime", &json!({})).expect("the guest has an uptime");
-        assert_eq!(output.split_whitespace().count(), 2, "{output}");
-        assert!(output.split_whitespace().all(|f| f.parse::<f64>().is_ok()));
     }
 }

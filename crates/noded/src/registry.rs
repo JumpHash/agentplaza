@@ -94,7 +94,7 @@ pub struct VmImages {
     pub workspace: Option<PathBuf>,
 }
 
-/// The `POST /api/v0/runs` body, as the client sent it.
+/// The `POST /v1/runs` body, as the client sent it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateRun {
     /// How many VMs to boot.
@@ -667,7 +667,7 @@ impl Registry {
         self.uds_dir.join(format!("run-{id}-{}", self.epoch_ms))
     }
 
-    /// Creates and boots a run from a `POST /api/v0/runs` request.
+    /// Creates and boots a run from a `POST /v1/runs` request.
     ///
     /// The run's guest CIDs are taken first - the caller's own span when it
     /// named a `vsock_cid`, otherwise the first free span of the run range

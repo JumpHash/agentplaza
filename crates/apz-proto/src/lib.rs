@@ -5,10 +5,13 @@
 //!   API, and the answer comes back as a [`chat::ChatResponse`].
 //! * [`wire`] — the guest↔hub line protocol (one JSON object per line over
 //!   vsock): v1 demo session, v2 keepalive session, v3 agent loop.
+//! * [`line`] — the newline framing `wire` travels in, over any `Read`/`Write`.
 //!
-//! This crate does no I/O.
+//! `chat` and `wire` do no I/O; `line` only reads and writes the stream it is
+//! given.
 
 #![forbid(unsafe_code)]
 
 pub mod chat;
+pub mod line;
 pub mod wire;

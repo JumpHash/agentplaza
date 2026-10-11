@@ -291,7 +291,7 @@ impl std::fmt::Display for EndError {
 
 impl std::error::Error for EndError {}
 
-/// The `POST /api/v0/tasks` body.
+/// The `POST /v1/tasks` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateTask {
     /// What the task is for (the schema's `title`), as the caller wrote it.
@@ -380,7 +380,7 @@ impl FinishOutcome {
     }
 }
 
-/// The `POST /api/v0/tasks/{id}/finish` body.
+/// The `POST /v1/tasks/{id}/finish` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FinishRequest {
     /// How the task ended: `done` or `failed`.
@@ -398,7 +398,7 @@ impl FinishRequest {
     }
 }
 
-/// The `POST /api/v0/tasks/{id}/claim` body.
+/// The `POST /v1/tasks/{id}/claim` body.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct ClaimRequest {
     /// The guest CID the claiming agent is connected as.
