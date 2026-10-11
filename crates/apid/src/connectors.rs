@@ -489,8 +489,15 @@ pub const CATALOG: &[Connector] = &[
     },
 ];
 
+/// Every connector the API serves: the built-in catalog, then the approved proposals.
+pub fn catalog() -> Vec<&'static Connector> {
+    let mut all: Vec<&'static Connector> = CATALOG.iter().collect();
+    all.extend(lock(&CUSTOM).iter().copied());
+    all
+}
+
 fn find(id: &str) -> Option<&'static Connector> {
-    CATALOG.iter().find(|c| c.id == id)
+    catalog().into_iter().find(|c| c.id == id)
 }
 
 /// The connector's main key: the first required field, else the first field.
@@ -536,23 +543,31 @@ pub struct Store {
     vault: Mutex<BTreeMap<String, BTreeMap<String, String>>>,
     /// apid's environment, read once at start: the env file over the process's own.
     env: BTreeMap<String, String>,
-    /// Serializes every write to the two files.
+    /// Serializes every write to the files.
     write: Mutex<()>,
+    /// Every connector proposal an agent made, oldest first. Kept whatever its state.
+    proposals: Mutex<Vec<Proposal>>,
 }
 
 impl Store {
-    /// Loads `<state-dir>/connectors.json` and the vault. A connector without a
-    /// setting is disabled. The vault may hold the old shape, `{connector: "key"}`,
+    /// Loads `<state-dir>/connectors.json`, the vault and the proposals. A connector
+    /// without a setting is disabled. The vault may hold the old shape, `{connector: "key"}`,
     /// which is read as the connector's main key; entries for connectors or fields
-    /// the catalog does not know are dropped.
+    /// the catalog does not know are dropped. Approved proposals join the catalog first,
+    /// so their vaulted fields load too.
     pub fn load(state_dir: &Path, env: BTreeMap<String, String>) -> io::Result<Self> {
         std::fs::create_dir_all(state_dir)?;
+        let proposals = read_proposals(&state_dir.join(PROPOSALS))?;
+        for proposal in proposals.iter().filter(|p| p.state == "approved") {
+            adopt(&proposal.spec);
+        }
         Ok(Self {
             dir: state_dir.to_path_buf(),
             settings: Mutex::new(read_map(&state_dir.join("connectors.json"))?),
             vault: Mutex::new(read_vault(&state_dir.join(VAULT))?),
             env,
             write: Mutex::new(()),
+            proposals: Mutex::new(proposals),
         })
     }
 
@@ -593,7 +608,7 @@ impl Store {
 
     /// The whole catalog with each connector's settings. Never carries a value.
     fn views(&self) -> Vec<Value> {
-        CATALOG.iter().map(|c| self.view(c)).collect()
+        catalog().into_iter().map(|c| self.view(c)).collect()
     }
 
     /// One connector as the API shows it: each field's name, whether it is set and
@@ -634,6 +649,8 @@ impl Store {
             "configured": self.configured(c),
             "enabled": setting.enabled,
             "roles": setting.roles,
+            "custom": is_custom(c.id),
+            "proposer": self.proposer_of(c.id),
         })
     }
 
@@ -733,6 +750,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .route("PUT", "/v1/connectors/{id}/secret", secret_route)
         .delete("/v1/connectors/{id}/secret", delete_secret_route)
         .post("/v1/connectors/{id}/test", test_route)
+        .get("/v1/connectors/proposals", proposals_route)
+        .post("/v1/connectors/proposals/{id}/review", review_route)
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
@@ -1301,8 +1320,8 @@ pub fn tool_name(connector: &Connector, action: &Action) -> String {
 
 /// The connector action behind an agent tool name, if it is one.
 pub fn by_tool(name: &str) -> Option<(&'static Connector, &'static Action)> {
-    CATALOG
-        .iter()
+    catalog()
+        .into_iter()
         .flat_map(|c| c.actions.iter().map(move |a| (c, a)))
         .find(|(c, a)| tool_name(c, a) == name)
 }
@@ -1315,8 +1334,8 @@ pub fn risk_of(name: &str) -> Option<&'static str> {
 /// The connector tools `role` is offered now: enabled, configured, and open to the role.
 pub fn specs_for(app: &App, role: &str) -> Vec<apz_proto::chat::ToolSpec> {
     let store = &app.connectors;
-    CATALOG
-        .iter()
+    catalog()
+        .into_iter()
         .filter(|c| {
             let setting = store.setting(c.id);
             setting.enabled && store.configured(c) && (setting.roles.is_empty() || setting.roles.iter().any(|r| r == role))
@@ -1337,7 +1356,477 @@ pub fn specs_for(app: &App, role: &str) -> Vec<apz_proto::chat::ToolSpec> {
 
 // ---- Connectors proposed by agents ---------------------------------------------------------------
 
+/// The file the proposals are kept in, beside the connector settings and the vault.
+const PROPOSALS: &str = "connector-proposals.json";
+
+/// The approved connectors: each leaked once, when its proposal is approved, and kept for the
+/// life of the process. The built-in entries stay in `CATALOG`.
+static CUSTOM: Mutex<Vec<&'static Connector>> = Mutex::new(Vec::new());
+
+/// A connector an agent proposes: the propose tool's input, as the owner reviews it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Spec {
+    pub id: String,
+    pub label: String,
+    pub category: String,
+    pub description: String,
+    pub docs_url: String,
+    pub base_url: String,
+    pub auth: AuthSpec,
+    pub fields: Vec<FieldSpec>,
+    pub actions: Vec<ActionSpec>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthSpec {
+    pub kind: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FieldSpec {
+    pub name: String,
+    pub label: String,
+    pub env: String,
+    pub hint: String,
+    pub secret: bool,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ActionSpec {
+    pub name: String,
+    pub description: String,
+    pub risk: String,
+    pub method: String,
+    pub path: String,
+    pub input_schema: Value,
+}
+
+/// One proposal as the owner sees it. `state` is pending, approved or rejected; `checks`
+/// names what failed, and an approval needs none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Proposal {
+    pub id: String,
+    pub proposer_cid: u64,
+    pub proposer: String,
+    pub created_ms: u64,
+    pub state: String,
+    pub note: Option<String>,
+    pub checks: Vec<String>,
+    pub spec: Spec,
+}
+
+/// What a proposal must pass before the owner can approve it. Each failure is one sentence.
+fn check(spec: &Spec) -> Vec<String> {
+    let mut out = Vec::new();
+    if !shaped(&spec.id, '-', 2..=30) {
+        out.push("the id must be 3 to 31 characters: a lowercase letter, then lowercase letters, digits or hyphens".to_string());
+    } else if catalog().iter().any(|c| c.id == spec.id) {
+        out.push(format!("the id `{}` is already a connector", spec.id));
+    }
+    match spec.base_url.strip_prefix("https://") {
+        None => out.push("base_url must start with https://".to_string()),
+        Some(rest) => {
+            if let Some(why) = host_problem(host_of(rest)) {
+                out.push(why);
+            }
+        }
+    }
+    match spec.auth.kind.as_str() {
+        "bearer" => {}
+        "header" | "query" => {
+            let name = spec.auth.name.as_deref().unwrap_or("");
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                out.push(format!("auth `{}` needs a name made of letters, digits, - or _", spec.auth.kind));
+            }
+        }
+        "path" => {
+            if !spec.base_url.contains("{secret}") && !spec.actions.iter().any(|a| a.path.contains("{secret}")) {
+                out.push("auth `path` needs {secret} in base_url or in an action path".to_string());
+            }
+        }
+        other => out.push(format!("auth kind `{other}` is not bearer, header, query or path")),
+    }
+    if !spec.fields.iter().any(|f| f.required) {
+        out.push("at least one field must be required (the key)".to_string());
+    }
+    for f in &spec.fields {
+        if !shaped(&f.name, '_', 1..=30) || f.env.is_empty() {
+            out.push(format!("field `{}` needs a name of lowercase letters, digits or underscores, and an env variable", f.name));
+        }
+    }
+    if spec.actions.is_empty() || spec.actions.len() > 20 {
+        out.push(format!("a connector needs 1 to 20 actions, not {}", spec.actions.len()));
+    }
+    for a in &spec.actions {
+        if !shaped(&a.name, '_', 1..=30) {
+            out.push(format!("action name `{}` must be lowercase letters, digits or underscores", a.name));
+        }
+        if !matches!(a.method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+            out.push(format!("action `{}` has method `{}`; use GET, POST, PUT, PATCH or DELETE", a.name, a.method));
+        }
+        if !a.path.starts_with('/') || a.path.contains("..") {
+            out.push(format!("action `{}` path must start with / and must not contain ..", a.name));
+        }
+        if !matches!(a.risk.as_str(), "read" | "write" | "irreversible") {
+            out.push(format!("action `{}` has risk `{}`; use read, write or irreversible", a.name, a.risk));
+        }
+        if !a.input_schema.is_object() {
+            out.push(format!("action `{}` input_schema must be a JSON object", a.name));
+        }
+    }
+    out
+}
+
+/// `^[a-z][a-z0-9<sep>]*$`, with the length of the part after the first letter in `tail`.
+fn shaped(text: &str, sep: char, tail: std::ops::RangeInclusive<usize>) -> bool {
+    let mut chars = text.chars();
+    matches!(chars.next(), Some('a'..='z'))
+        && tail.contains(&chars.clone().count())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == sep)
+}
+
+/// The host of an https URL, given the text after `https://`: no userinfo, no port, no path.
+fn host_of(rest: &str) -> &str {
+    let authority = rest.split('/').next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    if let Some(v6) = authority.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or("");
+    }
+    authority.split(':').next().unwrap_or("")
+}
+
+/// Why a host cannot be a public service, if it cannot.
+fn host_problem(host: &str) -> Option<String> {
+    let host = host.to_ascii_lowercase();
+    if host.is_empty() {
+        return Some("base_url has no host".to_string());
+    }
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal") {
+        return Some(format!("base_url host `{host}` is local, not a public service"));
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) if private_ip(ip) => Some(format!("base_url host `{host}` is a private, loopback or link-local address")),
+        _ => None,
+    }
+}
+
+fn private_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => private_ip(IpAddr::V4(v4)),
+            None => {
+                let first = v6.segments()[0];
+                v6.is_loopback() || v6.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+            }
+        },
+    }
+}
+
+/// Whether the built-in catalog lacks `id`: an approved connector.
+fn is_custom(id: &str) -> bool {
+    !CATALOG.iter().any(|c| c.id == id)
+}
+
+/// Leaks a string for the life of the process: an approved connector is read as long as apid runs.
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// The catalog entry an approved proposal becomes.
+fn to_connector(spec: &Spec) -> &'static Connector {
+    let fields: Vec<Field> = spec
+        .fields
+        .iter()
+        .map(|f| Field {
+            name: leak(f.name.clone()),
+            label: leak(f.label.clone()),
+            env: leak(f.env.clone()),
+            hint: leak(f.hint.clone()),
+            secret: f.secret,
+            required: f.required,
+        })
+        .collect();
+    let auth_name = leak(spec.auth.name.clone().unwrap_or_default());
+    let auth = match spec.auth.kind.as_str() {
+        "header" => Auth::Header { name: auth_name, prefix: "" },
+        "query" => Auth::Query(auth_name),
+        "path" => Auth::Path,
+        _ => Auth::Bearer,
+    };
+    let actions: Vec<Action> = spec
+        .actions
+        .iter()
+        .map(|a| Action {
+            name: leak(a.name.clone()),
+            description: leak(a.description.clone()),
+            risk: match a.risk.as_str() {
+                "write" => Risk::Write,
+                "irreversible" => Risk::Irreversible,
+                _ => Risk::Read,
+            },
+            method: leak(a.method.clone()),
+            path: leak(format!("{}{}", spec.base_url.trim_end_matches('/'), a.path)),
+            input_schema: leak(a.input_schema.to_string()),
+            defaults: "{}",
+            probe: "{}",
+        })
+        .collect();
+    Box::leak(Box::new(Connector {
+        id: leak(spec.id.clone()),
+        label: leak(spec.label.clone()),
+        brand: "",
+        kind: Kind::Api,
+        category: leak(spec.category.clone()),
+        description: leak(spec.description.clone()),
+        docs_url: leak(spec.docs_url.clone()),
+        fields: Box::leak(fields.into_boxed_slice()),
+        auth,
+        actions: Box::leak(actions.into_boxed_slice()),
+        cli: None,
+    }))
+}
+
+/// Puts an approved proposal in the catalog, once per id.
+fn adopt(spec: &Spec) {
+    let mut custom = lock(&CUSTOM);
+    if !is_custom(&spec.id) || custom.iter().any(|c| c.id == spec.id) {
+        return;
+    }
+    custom.push(to_connector(spec));
+}
+
+fn read_proposals(path: &Path) -> io::Result<Vec<Proposal>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+fn save_proposals(path: &Path, proposals: &[Proposal]) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(proposals).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    write_atomic(path, &bytes, 0o600)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+impl Store {
+    /// The proposals, newest first.
+    fn proposals_newest_first(&self) -> Vec<Proposal> {
+        lock(&self.proposals).iter().rev().cloned().collect()
+    }
+
+    /// The agent that proposed the approved connector `id`, if one did.
+    fn proposer_of(&self, id: &str) -> Option<String> {
+        lock(&self.proposals)
+            .iter()
+            .find(|p| p.state == "approved" && p.spec.id == id)
+            .map(|p| p.proposer.clone())
+    }
+
+    /// Stores a proposal with its checks. One that fails a check is kept as pending, so the
+    /// owner sees why.
+    fn submit(&self, cid: u64, name: &str, spec: Spec) -> Result<Proposal, Failure> {
+        let _guard = lock(&self.write);
+        let mut next = lock(&self.proposals).clone();
+        let proposal = Proposal {
+            id: format!("cp{}", next.len() + 1),
+            proposer_cid: cid,
+            proposer: name.to_string(),
+            created_ms: now_ms(),
+            state: "pending".to_string(),
+            note: None,
+            checks: check(&spec),
+            spec,
+        };
+        next.push(proposal.clone());
+        save_proposals(&self.dir.join(PROPOSALS), &next).map_err(io_failure)?;
+        *lock(&self.proposals) = next;
+        Ok(proposal)
+    }
+
+    /// The owner's verdict on a pending proposal. An approval needs no failed checks and a
+    /// free id, and puts the connector in the catalog at once.
+    fn review(&self, id: &str, approve: bool, note: Option<&str>) -> Result<Proposal, Failure> {
+        let _guard = lock(&self.write);
+        let mut next = lock(&self.proposals).clone();
+        let proposal = next
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| (404, format!("no proposal `{id}`")))?;
+        if proposal.state != "pending" {
+            return Err((409, format!("proposal `{id}` is already {}", proposal.state)));
+        }
+        if approve && !proposal.checks.is_empty() {
+            return Err((409, format!("proposal `{id}` fails its checks and cannot be approved")));
+        }
+        if approve && catalog().iter().any(|c| c.id == proposal.spec.id) {
+            return Err((409, format!("the connector id `{}` is already taken", proposal.spec.id)));
+        }
+        proposal.state = if approve { "approved" } else { "rejected" }.to_string();
+        proposal.note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        let reviewed = proposal.clone();
+        save_proposals(&self.dir.join(PROPOSALS), &next).map_err(io_failure)?;
+        *lock(&self.proposals) = next;
+        if approve {
+            adopt(&reviewed.spec);
+        }
+        Ok(reviewed)
+    }
+}
+
 /// `plaza_connector_propose`: an agent proposes a connector (a declarative spec) for the owner's review.
-pub fn propose(_app: &App, _agent: &crate::agents::Agent, _input: &Value) -> Result<String, String> {
-    Err("proposing connectors is not available yet".to_string())
+pub fn propose(app: &App, agent: &crate::agents::Agent, input: &Value) -> Result<String, String> {
+    let spec: Spec = serde_json::from_value(input.clone()).map_err(|e| format!("not a connector spec: {e}"))?;
+    let proposal = app
+        .connectors
+        .submit(agent.cid, &agent.name, spec)
+        .map_err(|(_, message)| message)?;
+    app.bus.publish("connector", &proposal);
+    let mut text = format!("proposed {} ({}) for the owner's review", proposal.spec.label, proposal.id);
+    if !proposal.checks.is_empty() {
+        text.push_str(". It fails these checks and cannot be approved until they pass: ");
+        text.push_str(&proposal.checks.join("; "));
+    }
+    Ok(text)
+}
+
+/// `GET /v1/connectors/proposals`: every proposal, newest first.
+fn proposals_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
+    Response::json(200, &app.connectors.proposals_newest_first())
+}
+
+#[derive(Deserialize)]
+struct ReviewBody {
+    approve: bool,
+    note: Option<String>,
+}
+
+/// `POST /v1/connectors/proposals/{id}/review`: the owner approves or rejects a pending proposal.
+fn review_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let body: ReviewBody = match req.json() {
+        Ok(body) => body,
+        Err(e) => return failure((400, format!("bad body: {e}"))),
+    };
+    match app.connectors.review(p.get("id"), body.approve, body.note.as_deref()) {
+        Ok(proposal) => {
+            app.bus.publish("connector", &proposal);
+            let note = proposal.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default();
+            let text = format!("[plaza] The owner {} your connector proposal {}{note}.", proposal.state, proposal.spec.label);
+            let _ = app.work.enqueue(
+                app,
+                proposal.proposer_cid,
+                apz_proto::wire::WorkKind::Chat,
+                format!("op-{}", proposal.proposer_cid),
+                text,
+                crate::scheduler::Origin::default(),
+            );
+            Response::json(200, &proposal)
+        }
+        Err(f) => failure(f),
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apid-proposals-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// A valid spec under `id`.
+    fn sample(id: &str) -> Spec {
+        serde_json::from_value(json!({
+            "id": id,
+            "label": "Acme Notes",
+            "category": "research",
+            "description": "Notes.",
+            "docs_url": "https://docs.acme-test.example",
+            "base_url": "https://api.acme-test.example",
+            "auth": { "kind": "header", "name": "X-Acme-Key" },
+            "fields": [{ "name": "api_key", "label": "API key", "env": "ACME_TEST_KEY", "hint": "key", "secret": true, "required": true }],
+            "actions": [{
+                "name": "find_note",
+                "description": "Find a note.",
+                "risk": "read",
+                "method": "GET",
+                "path": "/v1/notes",
+                "input_schema": { "type": "object", "properties": { "q": { "type": "string" } } }
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_valid_proposal_passes_its_checks() {
+        assert!(check(&sample("acme-valid")).is_empty());
+    }
+
+    #[test]
+    fn private_hosts_http_and_bad_methods_are_flagged() {
+        for base in [
+            "http://api.acme-test.example",
+            "https://localhost",
+            "https://10.1.2.3",
+            "https://192.168.0.9",
+            "https://169.254.169.254",
+            "https://db.internal",
+            "https://box.local",
+            "https://[::1]",
+        ] {
+            let mut spec = sample("acme-private");
+            spec.base_url = base.to_string();
+            assert!(!check(&spec).is_empty(), "{base} should be refused");
+        }
+        let mut spec = sample("acme-method");
+        spec.actions[0].method = "FETCH".to_string();
+        assert!(check(&spec).iter().any(|c| c.contains("FETCH")));
+    }
+
+    #[test]
+    fn approved_proposals_join_the_catalog_and_persist() {
+        let dir = scratch("proposals");
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let mut bad_spec = sample("acme-bad");
+        bad_spec.base_url = "http://api.acme-test.example".to_string();
+        let bad = store.submit(7, "scout", bad_spec).unwrap();
+        assert_eq!(bad.state, "pending");
+        assert!(!bad.checks.is_empty());
+        assert_eq!(store.review(&bad.id, true, None).unwrap_err().0, 409);
+
+        let good = store.submit(7, "scout", sample("acme-good")).unwrap();
+        assert!(good.checks.is_empty());
+        assert!(!catalog().iter().any(|c| c.id == "acme-good"));
+        let approved = store.review(&good.id, true, Some("looks fine")).unwrap();
+        assert_eq!(approved.state, "approved");
+        let entry = catalog().into_iter().find(|c| c.id == "acme-good").unwrap();
+        assert_eq!(entry.actions[0].name, "find_note");
+        assert_eq!(entry.actions[0].path, "https://api.acme-test.example/v1/notes");
+        assert_eq!(store.review(&good.id, false, None).unwrap_err().0, 409);
+        drop(store);
+
+        let reloaded = Store::load(&dir, BTreeMap::new()).unwrap();
+        let listed = reloaded.proposals_newest_first();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, "cp2");
+        assert_eq!(listed[0].state, "approved");
+        assert_eq!(listed[1].state, "pending");
+        assert_eq!(reloaded.proposer_of("acme-good").as_deref(), Some("scout"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
