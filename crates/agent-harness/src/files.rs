@@ -290,8 +290,6 @@ fn limit(reason: impl Into<String>) -> ToolError {
     }
 }
 
-/// A filesystem error in the tool taxonomy, with `what` naming the operation
-/// and the path it failed on.
 /// Refuses a write whose target is itself a symlink. `resolve` canonicalizes
 /// the deepest existing ANCESTOR, so a dangling link inside the workspace (the
 /// link exists, its target does not) passes the walk and `open` would then
@@ -309,6 +307,8 @@ fn refuse_symlink_target(path: &std::path::Path, label: &str) -> Result<(), Tool
     Ok(())
 }
 
+/// A filesystem error in the tool taxonomy, with `what` naming the operation
+/// and the path it failed on.
 fn io_tool_error(err: io::Error, what: impl fmt::Display) -> ToolError {
     match err.kind() {
         io::ErrorKind::NotFound => not_found(format!("{what}: {err}")),
