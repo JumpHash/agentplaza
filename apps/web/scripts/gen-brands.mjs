@@ -11,6 +11,10 @@ const map = {
   azure: 'siMicrosoftazure', xai: 'siX', deepseek: 'siDeepseek', moonshot: 'siMoonshotai', mistral: 'siMistralai',
   openrouter: 'siOpenrouter', perplexity: 'siPerplexity', nvidia: 'siNvidia', ollama: 'siOllama',
   lmstudio: 'siLmstudio', vllm: 'siVllm', huggingface: 'siHuggingface',
+  // External-tool connectors (Firecrawl, Higgsfield and Magnific have no simple-icons entry: monograms).
+  elevenlabs: 'siElevenlabs', unsplash: 'siUnsplash', pexels: 'siPexels', pixabay: 'siPixabay',
+  replicate: 'siReplicate', telegram: 'siTelegram', cloudflare: 'siCloudflare', digitalocean: 'siDigitalocean',
+  github: 'siGithub', namecheap: 'siNamecheap',
 };
 const out = {};
 for (const [key, name] of Object.entries(map)) {

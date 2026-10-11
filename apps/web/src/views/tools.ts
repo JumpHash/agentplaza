@@ -47,6 +47,7 @@ export function mount(root: HTMLElement): Cleanup {
   const filters = h('div.tool-filters');
   const grid = h('div.prov-grid');
   root.append(
+    h('div.view-head', null, h('h1', null, 'Tools')),
     h('p.faint.tool-note', null, "Keys stay in the plaza's vault and never reach an agent's VM. Agents reach a tool only through the plaza."),
     filters,
     grid,
