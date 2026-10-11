@@ -21,6 +21,7 @@ import type { Run, Vm, VmState } from '../src/models/run';
 import { cidRange, roleOf } from '../src/models/run';
 import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq, artifactPaths } from '../src/models/task';
 import { parseArtifact, readStateOf } from '../src/models/artifact';
+import { parseTell, parseTellArgs, tellStateOf } from '../src/models/tell';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
 import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
@@ -711,6 +712,102 @@ eq(readStateOf(409), 'refused', 'an unassigned task reads refused');
   eq((s.artifact?.error.length ?? 0) > 0, true, 'the failure carries a reason, not silence');
   eq(s.artifact?.content, '', 'no content is invented for a read that failed');
   eq(s.artifact?.status, null, 'and no status the node never sent');
+}
+
+/* ==================== the tool console: the model and the store's drives ===
+   The operator drives a tool call on an agent through the daemon's /tell
+   proxy. The answer is the agent's own (its `ok` and `output`) and is parsed
+   defensively; each failure status is its own honest state; the arguments box
+   must be a JSON object before it is ever sent; and the store keeps only the
+   last few calls per agent, dropping an agent's history when it leaves the
+   fleet — and inventing nothing for a call that never reached the node. */
+
+const TELL_FIXTURE = { cid: 300, ok: true, output: '{"files_scanned":1}' };
+eq(parseTell(TELL_FIXTURE), TELL_FIXTURE, 'a well-formed tell answer parses unchanged');
+eq(parseTell({ ...TELL_FIXTURE, extra: 1 }), TELL_FIXTURE, 'unknown extra fields are tolerated and dropped');
+throws(() => parseTell(null), 'tell is missing or not an object', 'a non-object tell is rejected by name');
+throws(() => parseTell({ ...TELL_FIXTURE, ok: 'yes' }), 'tell.ok', 'a non-boolean ok names the field');
+throws(() => parseTell({ ...TELL_FIXTURE, output: 5 }), 'tell.output', 'a mistyped output names the field');
+throws(() => parseTell({ ...TELL_FIXTURE, cid: 1.5 }), 'tell.cid', 'a non-integer cid names the field');
+
+/* the status, read as the console's own state: each refusal the hub can answer
+   with is its own state, and neither a node that never answered nor a hub out
+   of reach is dressed up as an answer */
+eq(tellStateOf(403), 'policy', 'the hub’s role policy reads as its own state');
+eq(tellStateOf(409), 'not-connected', 'an unconnected agent reads not connected');
+eq(tellStateOf(504), 'timeout', 'a call that did not answer in time reads timeout');
+eq(tellStateOf(503), 'off', 'a daemon with no admin surface reads hub admin off');
+eq(tellStateOf(502), 'unreachable', 'a hub out of reach reads unreachable');
+eq(tellStateOf(null), 'unreachable', 'a node that never answered reads unreachable');
+eq(tellStateOf(400), 'refused', 'a body outside the contract reads refused');
+eq(tellStateOf(404), 'refused', 'an unserved cid reads refused');
+
+/* the arguments box: a JSON object, or nothing is sent */
+eq(parseTellArgs(''), { args: {} }, 'an empty arguments box is the empty object');
+eq(parseTellArgs('{"path":"notes.txt"}'), { args: { path: 'notes.txt' } }, 'an object parses to itself');
+eq(parseTellArgs('  {"a":1}  '), { args: { a: 1 } }, 'surrounding space is trimmed');
+eq('error' in parseTellArgs('[1,2]'), true, 'an array is not an object');
+eq('error' in parseTellArgs('"x"'), true, 'a string is not an object');
+eq('error' in parseTellArgs('5'), true, 'a number is not an object');
+eq('error' in parseTellArgs('null'), true, 'null is not an object');
+eq('error' in parseTellArgs('{oops}'), true, 'a box that is not JSON is refused before it is sent');
+
+/* the drive is the owner's hand alone — and a console that cannot reach the
+   node records that honestly, inventing no output and no success */
+{
+  const s = new Store();
+  await s.driveTool(300, 'list', { path: '.' }, 2000);
+  const read = s.tells.get(300)?.[0];
+  eq(read?.cid, 300, 'the drive records which agent it was for');
+  eq(read?.name, 'list', 'the drive records which tool it asked for');
+  eq(read?.state, 'unreachable', 'a drive that never reached the node reads as unreachable');
+  eq(read?.status, null, 'and no status the node never sent');
+  eq(read?.output, '', 'no output is invented for a drive that failed');
+  eq((read?.error.length ?? 0) > 0, true, 'the failure carries a reason, not silence');
+  eq(s.lastTell?.state, 'unreachable', 'the last drive is the one just made');
+}
+
+/* a newer drive for the same agent supersedes the one still in flight */
+{
+  const s = new Store();
+  const first = s.driveTool(300, 'first', {}, 1000);
+  const second = s.driveTool(300, 'second', {}, 1000);
+  await Promise.all([first, second]);
+  eq(s.tells.get(300)?.length, 1, 'only the newest drive is recorded');
+  eq(s.tells.get(300)?.[0]?.name, 'second', 'and it is the newer one');
+}
+
+/* the history is bounded, and an agent that leaves the fleet loses it */
+{
+  const s = new Store();
+  for (let i = 0; i < 8; i++) await s.driveTool(300, `tool${i}`, {}, 1000);
+  await s.driveTool(301, 'uptime', {}, 1000);
+  eq(s.tells.get(300)?.length, 5, 'the per-agent history is bounded to the last few calls');
+  eq(s.tells.get(300)?.[0]?.name, 'tool7', 'the newest call is first');
+
+  /* the register now names only the agent at cid 301 */
+  s.runs = [
+    {
+      id: 'r1',
+      state: 'running',
+      vcpus: 2,
+      memory_mib: 512,
+      beats: null,
+      created_at: 1,
+      ended_at: null,
+      vms: [{ id: 0, state: 'running', serial: '', guest_cid: 301 }],
+    },
+  ];
+  s.runsError = null;
+  s.pruneTells();
+  eq(s.tells.has(300), false, 'an agent the fleet no longer names loses its history');
+  eq(s.tells.has(301), true, 'an agent the fleet still names keeps it');
+
+  /* a source we cannot read is not read as an absence: the history stands */
+  s.runsError = 'node unreachable';
+  s.runs = [];
+  s.pruneTells();
+  eq(s.tells.has(301), true, 'an unreadable fleet does not erase the history it cannot confirm');
 }
 
 if (failures > 0) {

@@ -9,6 +9,8 @@ import type { Machine } from './models/machine';
 import type { CreateRun, Run, RunsView } from './models/run';
 import type { Task } from './models/task';
 import { parseTask, parseTasksView } from './models/task';
+import type { AgentTell } from './models/tell';
+import { parseTell } from './models/tell';
 
 export class ApiError extends Error {
   readonly status: number | null;
@@ -153,6 +155,33 @@ export async function readTaskArtifact(id: string, path: string): Promise<TaskAr
     await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}/artifact`, {
       method: 'POST',
       body: { path },
+    }),
+  );
+}
+
+/** Drive one tool call on the agent connected as `cid`, through the daemon's
+    `/tell` proxy (crates/noded `tell_agent`) — the operator's own hand on the
+    fleet. A POST, and deliberately so: it runs a real tool in the agent's
+    session (a call with a cost, a refusal mode and an effect on its turn), so a
+    prefetcher must not replay it; only the owner's hand calls this.
+
+    Every status is the daemon's (see crates/noded `tell_agent`): 400 a body or
+    CID outside the contract, 403 the hub's own role policy, 404 a CID the hub
+    does not serve, 409 the agent is not connected, 504 it did not answer in
+    time, 502 an unreachable hub, 503 a daemon never told where the hub's admin
+    surface is. The daemon's, hub's and agent's messages all ride the ApiError
+    verbatim. The tool name and its arguments go to the daemon as written — the
+    hub's policy is the authority, and this client keeps no allow-list. */
+export async function tellAgent(
+  cid: number,
+  name: string,
+  args: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<AgentTell> {
+  return parseTell(
+    await api<unknown>(`/api/v0/agents/${cid}/tell`, {
+      method: 'POST',
+      body: { name, args, timeout_ms: timeoutMs },
     }),
   );
 }

@@ -190,6 +190,10 @@ window.__PLAZA_DIAG__ = {
     const a = store.artifact;
     return a == null ? null : { task: a.task, path: a.path, state: a.state };
   },
+  get tell() {
+    const t = store.lastTell;
+    return t == null ? null : { cid: t.cid, name: t.name, state: t.state, status: t.status };
+  },
   get hub() {
     const readable = store.hub != null && store.hubError == null;
     return {

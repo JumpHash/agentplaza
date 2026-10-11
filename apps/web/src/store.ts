@@ -4,7 +4,7 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getHub, getMachine, getRun, getTask, listRuns, listTasks, readTaskArtifact } from './api';
+import { getHub, getMachine, getRun, getTask, listRuns, listTasks, readTaskArtifact, tellAgent } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { ArtifactReadState } from './models/artifact';
 import { readStateOf } from './models/artifact';
@@ -16,6 +16,8 @@ import type { Run, RunState, VmState } from './models/run';
 import { isOpen, seqOf } from './models/run';
 import type { Task, TaskState } from './models/task';
 import { isFinishedTask, seqOf as taskSeq } from './models/task';
+import type { TellState } from './models/tell';
+import { tellStateOf } from './models/tell';
 import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
@@ -51,6 +53,9 @@ declare global {
       /** The artifact the ledger's sheet last read, if any: which task and
           path, and how the read ended. */
       readonly artifact: { readonly task: string; readonly path: string; readonly state: string } | null;
+      /** The tool console's last drive, if any: which agent, which tool, and
+          how it ended. */
+      readonly tell: { readonly cid: number; readonly name: string; readonly state: string; readonly status: number | null } | null;
       /** The 3D camera's position and target, when the scene has booted. */
       readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
       /** What the 3D plot holds — platforms, blocks, live arcs — and the
@@ -102,6 +107,30 @@ export interface ArtifactRead {
   status: number | null;
 }
 
+/** One tool call the console drove on a connected agent — the agent's own
+    answer, or the refusal, kept as it came. */
+export interface TellRead {
+  /** The guest CID of the agent the call was driven on. */
+  cid: number;
+  /** The tool asked for, as the console sent it. */
+  name: string;
+  /** The arguments sent: a JSON object (the daemon refuses anything else). */
+  args: Record<string, unknown>;
+  /** How long the console asked the agent to take, in ms. */
+  timeoutMs: number;
+  state: TellState;
+  /** The agent's own `ok`, when it answered (state `sent`). */
+  ok: boolean;
+  /** The agent's own output (state `sent`), else empty. */
+  output: string;
+  /** Whoever refused, in their own words — verbatim, never paraphrased. */
+  error: string;
+  /** The HTTP status, or null when the node never answered. */
+  status: number | null;
+  /** When the call settled (or started driving), in the console's clock. */
+  at: number;
+}
+
 const TICK_MS =
   typeof window !== 'undefined' && typeof window.__PLAZA_TICK_MS__ === 'number' && window.__PLAZA_TICK_MS__ > 0
     ? window.__PLAZA_TICK_MS__
@@ -113,6 +142,7 @@ const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
 const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
 const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
 const VM_PUSH_MIN_MS = 1000; // a VM's sparkline ring gains at most one point per this window
+const TELL_HISTORY = 5; // the tool console keeps the last few calls per agent, no more
 
 export class Store {
   /* daemon state */
@@ -137,6 +167,14 @@ export class Store {
       or the last one it answered. Only ever set by the owner's own click: the
       read-through drives the agent's session, so it is never polled. */
   artifact: ArtifactRead | null = null;
+  /** The tool console's own history, per agent CID: the last few tool calls
+      the owner drove, newest first. Bounded ([`TELL_HISTORY`]) and dropped
+      when the agent leaves the fleet. Only ever set by the owner's own click:
+      a drive runs a real tool in the agent's session, so it is never polled. */
+  readonly tells = new Map<number, TellRead[]>();
+  /** The newest drive, whatever agent — the console's own readback of the last
+      call it made. */
+  lastTell: TellRead | null = null;
   /** Every run fetched with serial, by id (map/3D poll each open run). */
   readonly details = new Map<string, Run>();
   detailError: string | null = null;
@@ -182,6 +220,8 @@ export class Store {
   private readonly vmPushAt = new Map<string, number>();
   /** The newest artifact ask's serial: an older answer never overwrites it. */
   private artifactReq = 0;
+  /** The newest drive's serial, per agent: an older answer never overwrites it. */
+  private readonly tellReq = new Map<number, number>();
 
   get health(): Health {
     if (this.lastOkAt === 0) return this.lastErrAt > 0 ? 'down' : 'stale';
@@ -323,6 +363,7 @@ export class Store {
       this.runsError = err instanceof Error ? err.message : String(err);
       this.noteErr();
     }
+    this.pruneTells();
     this.scheduleRender();
   }
 
@@ -349,6 +390,7 @@ export class Store {
     } catch (err) {
       this.hubError = err instanceof Error ? err.message : String(err);
     }
+    this.pruneTells();
     this.scheduleRender();
   }
 
@@ -442,6 +484,117 @@ export class Store {
       this.noteErr();
     }
     this.scheduleRender();
+  }
+
+  /** Drive one tool call on the agent connected as `cid`, through the daemon's
+      `/tell` proxy. This is the owner's hand alone: it runs a real tool in the
+      agent's session — a call with a cost and a refusal mode — so it is called
+      from a click and never from a poll. The newest drive for an agent wins; an
+      older answer that arrives after a newer click is dropped. */
+  async driveTool(
+    cid: number,
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<void> {
+    const req = (this.tellReq.get(cid) ?? 0) + 1;
+    this.tellReq.set(cid, req);
+    this.recordTell({
+      cid,
+      name,
+      args,
+      timeoutMs,
+      state: 'driving',
+      ok: false,
+      output: '',
+      error: '',
+      status: null,
+      at: Date.now(),
+    });
+    this.scheduleRender();
+    try {
+      const answer = await tellAgent(cid, name, args, timeoutMs);
+      if (this.tellReq.get(cid) !== req) return;
+      this.recordTell({
+        cid,
+        name,
+        args,
+        timeoutMs,
+        state: 'sent',
+        ok: answer.ok,
+        output: answer.output,
+        error: '',
+        status: 200,
+        at: Date.now(),
+      });
+      this.noteOk();
+    } catch (err) {
+      /* a refusal is the daemon's, the hub's or the agent's own words — kept
+         verbatim; the status tells them apart (403 the role policy, 409 not
+         connected, 504 a timeout, 503 a node never configured, 502 a hub out
+         of reach) */
+      if (this.tellReq.get(cid) !== req) return;
+      const status = err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      const message = err instanceof Error ? err.message : String(err);
+      this.recordTell({
+        cid,
+        name,
+        args,
+        timeoutMs,
+        state: tellStateOf(status),
+        ok: false,
+        output: '',
+        error: message,
+        status,
+        at: Date.now(),
+      });
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Record a driven call for one agent: newest first, bounded, and at most one
+      call in flight per agent (a fresh drive supersedes a pending one). */
+  private recordTell(entry: TellRead): void {
+    const kept = (this.tells.get(entry.cid) ?? []).filter((t) => t.state !== 'driving');
+    kept.unshift(entry);
+    this.tells.set(entry.cid, kept.slice(0, TELL_HISTORY));
+    this.lastTell = entry;
+  }
+
+  /** The CIDs the console can still drive: the register's role VMs (when the
+      register can be read) union the hub's connected agents (when the hub can).
+      `null` when neither source shows anything — a history is then left alone,
+      since a source we cannot read must not be read as an absence. */
+  private liveAgentCids(): Set<number> | null {
+    const known = new Set<number>();
+    let readable = false;
+    if (this.runsError == null && this.runs.length > 0) {
+      readable = true;
+      for (const run of this.runs) {
+        for (const vm of this.detailOf(run).vms) if (vm.guest_cid != null) known.add(vm.guest_cid);
+      }
+    }
+    if (this.hubError == null && this.hub != null) {
+      readable = true;
+      for (const agent of this.hub.agents) known.add(agent.cid);
+    }
+    return readable ? known : null;
+  }
+
+  /** Drop the tool console's history for agents that have left the fleet: a
+      register role row or a hub connection no longer names their CID. Called
+      after every register and hub observation — the console's calls have no
+      other owner, so the store reconciles them with the fleet here. */
+  pruneTells(): void {
+    const live = this.liveAgentCids();
+    if (live == null) return;
+    for (const cid of [...this.tells.keys()]) {
+      if (!live.has(cid)) {
+        this.tells.delete(cid);
+        this.tellReq.delete(cid);
+      }
+    }
   }
 
   /** One fleet observation, derived from what the client already holds: the

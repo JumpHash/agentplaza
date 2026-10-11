@@ -62,6 +62,18 @@ canvas.spark { display: block; width: 96px; height: 20px; }
 #roster-table tr.grp:first-child td { padding-top: 10px; }
 tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
 
+/* the roster's tool console: the operator's hand on a connected agent. It
+   reuses the ledger's ruled-text box (.ldartbody/.ldarttext) — the answer is
+   the agent's own, so it is bounded, ruled and text-only — and adds the tool
+   form and the recent-calls list, whose entries re-read an earlier answer. */
+#roster-console h2 .m { text-transform: none; letter-spacing: 0; color: var(--ink); }
+#roster-console textarea { font: 12.5px/1.5 var(--mono); resize: vertical; }
+.rcpast { display: grid; gap: 6px; }
+.rcpast h3 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0; }
+.rcpast ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; justify-items: start; }
+.rcpast .rcpastbtn { font-family: var(--mono); text-transform: none; letter-spacing: 0; text-align: left; }
+.rcpast .rcpastbtn[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+
 @media (max-width: 760px) {
   canvas#map-canvas { height: 320px; }
   .v3mount { height: 340px; }

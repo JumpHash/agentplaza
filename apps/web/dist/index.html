@@ -21,10 +21,10 @@
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-F7AXXAZH.css">
-<script type="module" src="main-IEMWXQHX.js"></script>
+<link rel="stylesheet" href="main-R5WVDWFD.css">
+<script type="module" src="main-INOJL2V3.js"></script>
 </head>
-<body data-bundle-hash="2a7fc0e9efa28d38dacd006683c7f27f50609769cb2f3408dd0efd053e65d4a4">
+<body data-bundle-hash="7503375bbd50dc50e11f8e712392cb54bb14b3dbe751d20974204ca0c58c57ba">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -42,7 +42,7 @@
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">2a7fc0e9efa28d38dacd006683c7f27f50609769cb2f3408dd0efd053e65d4a4</code></span>
+      <span>Bundle <code id="colo-hash">7503375bbd50dc50e11f8e712392cb54bb14b3dbe751d20974204ca0c58c57ba</code></span>
       <span id="colo-wire">The wire · opening…</span>
       <span>Keys 0–7 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
@@ -586,9 +586,44 @@
 
       <div class="group bb0" id="roster-group"><div class="hd">The fleet, by role <span class="c" id="roster-c"></span></div></div>
       <div class="tablewrap"><table id="roster-table" hidden>
-        <thead><tr><th>No.</th><th>Role</th><th>Place</th><th>Guest CID</th><th>Hub</th><th>State</th><th class="num">Serial lines</th><th class="num">Lines / s</th><th>Up</th></tr></thead>
+        <thead><tr><th>No.</th><th>Role</th><th>Place</th><th>Guest CID</th><th>Hub</th><th>State</th><th class="num">Serial lines</th><th class="num">Lines / s</th><th>Up</th><th>Drive</th></tr></thead>
         <tbody id="roster-body"></tbody>
       </table></div>
+
+      <!-- the tool console: one agent, one tool call the operator drives
+           through the node (POST /api/v0/agents/{cid}/tell). The tool name is
+           free text — no grant list is served — and the answer is the agent's
+           own, shown as text in the ledger's ruled box. -->
+      <div class="parts" id="roster-console" hidden><div class="body">
+        <h2>Drive <span class="m" id="rc-who">—</span></h2>
+        <p class="example">Driving a tool here runs it in the agent's own session — a real call with a cost, posted by the node, so it is the owner's hand alone. The tool name is free text: the hub's own role policy is the authority on what an agent may run, and this console keeps no allow-list of its own.</p>
+        <form id="rc-form" novalidate>
+          <div class="fields">
+            <div class="f"><label for="rc-name">Tool · free text</label><input id="rc-name" type="text" autocomplete="off" spellcheck="false" placeholder="read_file"></div>
+            <div class="f"><label for="rc-timeout">Timeout · ms</label><input id="rc-timeout" type="number" min="1" max="5000" step="1" value="5000"></div>
+          </div>
+          <div class="f"><label for="rc-args">Arguments · a JSON object</label><textarea id="rc-args" rows="3" spellcheck="false">{}</textarea></div>
+          <div class="lrow">
+            <button type="submit" class="btn owner" id="rc-send">Drive this tool call on the agent</button>
+            <button type="button" class="btn sm" id="rc-close">Close</button>
+            <span class="err" id="rc-form-err" role="alert"></span>
+          </div>
+        </form>
+        <div class="ldartbody" id="rc-result" hidden>
+          <div class="ldarthead">
+            <span class="lbl" id="rc-tool">—</span>
+            <span class="mk" id="rc-mark"></span>
+            <span class="c" id="rc-meta"></span>
+          </div>
+          <p class="err" id="rc-err" role="alert" hidden></p>
+          <pre class="ldarttext" id="rc-text" tabindex="0" aria-label="The tool's output, as the agent returned it" hidden></pre>
+        </div>
+        <div class="rcpast" id="rc-past" hidden>
+          <h3>Recent calls to this agent</h3>
+          <ul id="rc-past-list"></ul>
+        </div>
+        <p class="example">A refusal is the daemon's, the hub's or the agent's own words, written as they wrote them: <em>403</em> is the role policy that forbids the tool, <em>409</em> the agent is not connected, <em>504</em> it did not answer in time, <em>503</em> the node was never told where the hub's admin surface is, and <em>502</em> the hub itself is out of reach. The output is the agent's own, so it is shown as text, never as markup.</p>
+      </div></div>
     </div>
 
     </div>
