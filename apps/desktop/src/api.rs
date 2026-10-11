@@ -1352,6 +1352,10 @@ pub enum MotionState {
     TieToOwner,
     /// Carried, but owner-gated: the decision waits for ratification.
     AwaitingOwner,
+    /// The owner approved a motion the count gated to them.
+    Ratified,
+    /// The owner refused a motion the count gated to them.
+    Vetoed,
     /// A state this console does not know.
     #[serde(other)]
     Unknown,
@@ -1360,12 +1364,14 @@ pub enum MotionState {
 impl MotionState {
     /// Every state the doctrine's table names, in its own order: the pane's
     /// filter strip, and the order a filter walks.
-    pub const ALL: [MotionState; 5] = [
+    pub const ALL: [MotionState; 7] = [
         MotionState::Open,
         MotionState::Carried,
         MotionState::Rejected,
         MotionState::TieToOwner,
         MotionState::AwaitingOwner,
+        MotionState::Ratified,
+        MotionState::Vetoed,
     ];
 
     /// The name the API uses.
@@ -1376,6 +1382,8 @@ impl MotionState {
             MotionState::Rejected => "rejected",
             MotionState::TieToOwner => "tie_to_owner",
             MotionState::AwaitingOwner => "awaiting_owner",
+            MotionState::Ratified => "ratified",
+            MotionState::Vetoed => "vetoed",
             MotionState::Unknown => "unknown",
         }
     }
@@ -1388,15 +1396,25 @@ impl MotionState {
             MotionState::Rejected => "REJECTED",
             MotionState::TieToOwner => "TIE TO THE OWNER",
             MotionState::AwaitingOwner => "AWAITING THE OWNER",
+            MotionState::Ratified => "RATIFIED",
+            MotionState::Vetoed => "VETOED",
             MotionState::Unknown => "UNKNOWN",
         }
     }
 
     /// Whether the state is one the owner's gate produced — a tie sent up, or a
-    /// carry waiting for ratification. These two are the gated ones, toned
-    /// distinctly in the pane.
+    /// carry waiting for ratification. These two are the gated ones, the ones
+    /// the owner may decide, and the ones toned distinctly in the pane; every
+    /// other state is the council's own (a decided motion is not re-decided and
+    /// a majority is not routed around).
     pub fn is_gated(self) -> bool {
         matches!(self, MotionState::TieToOwner | MotionState::AwaitingOwner)
+    }
+
+    /// Whether the state records the owner's own decision: `ratified` or
+    /// `vetoed`, the two no tally can derive.
+    pub fn is_decided(self) -> bool {
+        matches!(self, MotionState::Ratified | MotionState::Vetoed)
     }
 
     /// Whether the motion is still taking votes.
@@ -1492,6 +1510,48 @@ pub fn tally_is_tidy(tally: &Tally, votes: usize) -> bool {
         && tally.yes + tally.no + tally.abstain == tally.voted
 }
 
+/// The most an owner's decision note may occupy, in bytes — the daemon's own
+/// cap (`noded::council::MAX_DECISION_NOTE`). The note is optional, but when
+/// it is there it is held to the same "not blank" rule a motion's `text` and a
+/// vote's `reason` are.
+pub const MAX_DECISION_NOTE: usize = 1000;
+
+/// The owner's decision on a motion, as the daemon records and reports it
+/// (`noded::council::OwnerDecisionView`).
+///
+/// **The owner is the operator, not an agent**: this names no agent CID, only
+/// the operator's act. The rule by which each column is read is the motion
+/// view's own: `approve` and `at` are required-and-named on absence, while
+/// `note` is a [`Column`] — the daemon always writes the key and writes `null`
+/// when the owner left no note, so an **absent** `note` key is not the shape
+/// the daemon sends and is refused by name, while `null` reads as none.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OwnerDecision {
+    /// Whether the owner approved the motion (`true` → `ratified`, `false` →
+    /// `vetoed`).
+    pub approve: bool,
+    /// The owner's note, or `null` when they left none.
+    pub note: Column<String>,
+    /// When the owner decided, in milliseconds since the Unix epoch.
+    pub at: u64,
+}
+
+impl OwnerDecision {
+    /// The owner's note, if they left one.
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+
+    /// The word this decision presses, in caps: what the owner did.
+    pub fn stamp_label(&self) -> &'static str {
+        if self.approve {
+            "RATIFIED"
+        } else {
+            "VETOED"
+        }
+    }
+}
+
 /// One council motion, as `GET /api/v0/motions` reports it
 /// (`noded::council::MotionView`) — the contract's schema, as the daemon stores
 /// it.
@@ -1502,6 +1562,12 @@ pub fn tally_is_tidy(tally: &Tally, votes: usize) -> bool {
 /// is read as a plain `Option` with a default — an absent key is `None`, not an
 /// error. Every other column is a plain field: a missing one is a parse error
 /// that names it, and a column this client does not know is ignored.
+///
+/// `owner` is the **always-keyed** case, the opposite of `amount`: the daemon
+/// writes the key for every motion and writes `null` until the owner decides,
+/// so it is held in a [`Column`] — a missing `owner` key is refused by name
+/// (it is not a motion the daemon sends), while `null` reads as "the owner has
+/// not decided".
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Motion {
     /// The motion's id (`m<seq>`), monotonic and never reused.
@@ -1526,6 +1592,10 @@ pub struct Motion {
     pub votes: Vec<Vote>,
     /// The tally.
     pub tally: Tally,
+    /// The owner's decision, or `null` until the owner makes one. Always keyed:
+    /// a missing key is refused by name, and `null` is "the owner has not
+    /// decided".
+    pub owner: Column<OwnerDecision>,
     /// When the motion was proposed, in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// When the motion last changed (its proposal, or its latest vote), in
@@ -1539,6 +1609,11 @@ impl Motion {
     /// [`tally_is_tidy`]).
     pub fn tally_is_tidy(&self) -> bool {
         tally_is_tidy(&self.tally, self.votes.len())
+    }
+
+    /// The owner's decision on this motion, or `None` until they make one.
+    pub fn owner(&self) -> Option<&OwnerDecision> {
+        self.owner.get()
     }
 }
 
@@ -1555,6 +1630,23 @@ pub struct Motions {
     pub limit: usize,
     /// Whether the council holds more motions than the response carries.
     pub truncated: bool,
+}
+
+/// `POST /api/v0/motions/{id}/decide`: the body sends exactly the fields
+/// `noded` accepts (`noded::council::DecideRequest`).
+///
+/// **The owner is the operator**, so the body names no agent CID and none is
+/// looked up. `approve` is required and typed — the daemon refuses an absent or
+/// non-boolean one — and `note` is sent only when there is one: an absent note
+/// is the daemon's own `null`, the same fact as an explicitly null one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecideRequest {
+    /// Whether the owner approves the motion (`true` → `ratified`, `false` →
+    /// `vetoed`).
+    pub approve: bool,
+    /// Why the owner decided as they did, or none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The floor's own read: the conversations (who is talking — the adjacency)
@@ -2143,9 +2235,11 @@ impl Client {
 
     /// `GET /api/v0/motions`: the council's motions, newest first and bounded.
     ///
-    /// Read-only from the console: this client has no path that proposes a
-    /// motion or votes on one — proposing and voting are seat actions the
-    /// daemon's own surface takes.
+    /// The console proposes no motion and casts no vote — those are seat
+    /// actions the daemon's own surface takes — but it does hold the owner's
+    /// hand: a motion the count gated to the owner is decided with
+    /// [`Client::decide_motion`] (`POST /api/v0/motions/{id}/decide`), which
+    /// is the only write this council client has.
     pub fn motions(&self) -> Result<Motions, ApiError> {
         self.json("GET", "/api/v0/motions", None)
     }
@@ -2153,6 +2247,43 @@ impl Client {
     /// `GET /api/v0/motions/{id}`: one motion, read on its own.
     pub fn motion(&self, id: &str) -> Result<Motion, ApiError> {
         self.json("GET", &format!("/api/v0/motions/{}", checked_id(id)?), None)
+    }
+
+    /// `POST /api/v0/motions/{id}/decide`: the **owner's** hand — ratify or
+    /// veto a motion the count gated to them.
+    ///
+    /// **The owner is the operator, not an agent**: the body names no agent
+    /// CID and none is looked up, so the seat checks that gate proposing and
+    /// voting do not apply. `approve` true ratifies, false vetoes, and the
+    /// optional `note` is recorded with the stamp. The daemon answers `200`
+    /// with the motion, its `owner` set and its state `ratified` or `vetoed`.
+    ///
+    /// Every refusal is the daemon's own, carried through unchanged in its own
+    /// words (via [`ApiError::Status`]): `400` a body outside the endpoint's
+    /// contract, `404` no motion with that id, `405` a method that is not
+    /// `POST`, and the two `409`s — the motion is not owner-gated (the state is
+    /// named and the council's own decision stands), or it is already decided
+    /// (the owner decides a motion once).
+    ///
+    /// It is a POST, not a GET, and deliberately so: it records the owner's
+    /// decision on the daemon's own record, so a request a prefetch or a
+    /// crawler could replay must not be advertised as repeat-safe.
+    pub fn decide_motion(
+        &self,
+        id: &str,
+        approve: bool,
+        note: Option<&str>,
+    ) -> Result<Motion, ApiError> {
+        let body = serde_json::to_string(&DecideRequest {
+            approve,
+            note: note.map(str::to_string),
+        })
+        .map_err(|err| ApiError::Malformed(format!("cannot serialize the decide request: {err}")))?;
+        self.json(
+            "POST",
+            &format!("/api/v0/motions/{}/decide", checked_id(id)?),
+            Some(&body),
+        )
     }
 
     /// The floor's own read: `GET /api/v0/conversations` and
@@ -4156,6 +4287,7 @@ mod tests {
             "reason":"the record: priority names open task t2","at":1791706616816}
          ],
          "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "owner":null,
          "created_at":1791706568274,"updated_at":1791706616816},
         {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
          "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
@@ -4171,6 +4303,7 @@ mod tests {
             "reason":"the record supports it","at":1791705629506}
          ],
          "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "owner":null,
          "created_at":1791705629200,"updated_at":1791705629506},
         {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
          "text":"prioritise the east wing over new towns this week",
@@ -4186,6 +4319,7 @@ mod tests {
             "reason":"the record on the east wing","at":1791705624070}
          ],
          "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+         "owner":null,
          "created_at":1791705623593,"updated_at":1791705628987}
         ],"total":3,"limit":256,"truncated":false}"#;
 
@@ -4234,6 +4368,72 @@ mod tests {
         assert!(tied.state.is_gated());
         assert_eq!(tied.votes[2].vote, VoteWord::No);
         assert!(tied.tally_is_tidy());
+
+        // The owner's column is keyed for every motion and reads none until
+        // the owner decides — never absent, so the console is never misled.
+        for motion in &page.motions {
+            assert_eq!(motion.owner(), None, "{}: the owner has not decided", motion.id);
+        }
+    }
+
+    #[test]
+    fn the_owners_column_is_always_keyed_and_a_missing_one_is_named() {
+        // The decided shape the daemon reports: the owner's act, always keyed,
+        // with `note` written `null` when the owner left none.
+        let vetoed = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
+            "kind":"law_proposal","text":"a new law","needs_owner":true,"state":"vetoed",
+            "votes":[],"tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+            "owner":{"approve":false,"note":null,"at":1791710000000},
+            "created_at":1,"updated_at":2}"#;
+        let motion: Motion = from_body(vetoed);
+        assert_eq!(motion.state, MotionState::Vetoed);
+        let owner = motion.owner().expect("the owner decided");
+        assert!(!owner.approve);
+        assert_eq!(owner.note(), None, "an absent note is null, read as none");
+        assert_eq!(owner.at, 1_791_710_000_000);
+        assert_eq!(owner.stamp_label(), "VETOED");
+
+        // A ratification with a note: read as the owner's own words.
+        let ratified = r#"{"id":"m2","proposer_cid":105,"proposer_role":"finance",
+            "kind":"priority","text":"an agenda","needs_owner":false,"state":"ratified",
+            "votes":[],"tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+            "owner":{"approve":true,"note":"carry it","at":7},
+            "created_at":1,"updated_at":2}"#;
+        let motion: Motion = from_body(ratified);
+        assert_eq!(motion.state, MotionState::Ratified);
+        let owner = motion.owner().expect("the owner decided");
+        assert!(owner.approve);
+        assert_eq!(owner.note(), Some("carry it"));
+        assert_eq!(owner.stamp_label(), "RATIFIED");
+
+        // The key is required-and-named on absence: an absent `owner` is not a
+        // motion the daemon sends.
+        let error = serde_json::from_str::<Motion>(&without(ratified, "owner"))
+            .expect_err("an absent owner is refused");
+        assert!(error.to_string().contains("owner"), "{error}");
+
+        // Inside the decision, `approve` and `at` are required-and-named, while
+        // `note` is always keyed (`null`, never absent) — the same rule the
+        // motion's own columns follow.
+        for (path, named) in [
+            ("owner/approve", "approve"),
+            ("owner/at", "at"),
+            ("owner/note", "note"),
+        ] {
+            let error = serde_json::from_str::<Motion>(&without(ratified, path))
+                .expect_err("a body missing a column must be refused");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+
+        // And a column this client does not know inside the decision is
+        // ignored.
+        let mut body: serde_json::Value = from_body(ratified);
+        body["owner"]["by"] = serde_json::json!("the operator");
+        let motion: Motion = from_body(&body.to_string());
+        assert_eq!(motion.owner().expect("decided").note(), Some("carry it"));
     }
 
     #[test]
@@ -4256,6 +4456,7 @@ mod tests {
             "motions/0/state",
             "motions/0/votes",
             "motions/0/tally",
+            "motions/0/owner",
             "motions/0/created_at",
             "motions/0/updated_at",
             "motions/0/votes/0/seat",
@@ -4295,13 +4496,13 @@ mod tests {
         let nulled = r#"{"id":"m5","proposer_cid":105,"proposer_role":"finance",
             "kind":"budget_move","text":"fund the annex","amount":null,"needs_owner":false,
             "state":"open","votes":[],"tally":{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4},
-            "created_at":1,"updated_at":1}"#;
+            "owner":null,"created_at":1,"updated_at":1}"#;
         assert_eq!(from_body::<Motion>(nulled).amount, None);
         // And a `budget_move` that names one carries it.
         let named = r#"{"id":"m5","proposer_cid":105,"proposer_role":"finance",
             "kind":"budget_move","text":"fund the annex","amount":900,"needs_owner":false,
             "state":"open","votes":[],"tally":{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4},
-            "created_at":1,"updated_at":1}"#;
+            "owner":null,"created_at":1,"updated_at":1}"#;
         let motion: Motion = from_body(named);
         assert_eq!(motion.amount, Some(900));
         assert_eq!(motion.kind, MotionKind::BudgetMove);
@@ -4340,7 +4541,7 @@ mod tests {
                 r#"{{"id":"m1","proposer_cid":1,"proposer_role":"finance","kind":"{word}",
                     "text":"t","needs_owner":false,"state":"open","votes":[],
                     "tally":{{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4}},
-                    "created_at":1,"updated_at":1}}"#
+                    "owner":null,"created_at":1,"updated_at":1}}"#
             );
             let motion: Motion = from_body(&body);
             assert_eq!(motion.kind, kind, "kind {word:?}");
@@ -4351,13 +4552,15 @@ mod tests {
             ("rejected", MotionState::Rejected),
             ("tie_to_owner", MotionState::TieToOwner),
             ("awaiting_owner", MotionState::AwaitingOwner),
-            ("vetoed", MotionState::Unknown),
+            ("ratified", MotionState::Ratified),
+            ("vetoed", MotionState::Vetoed),
+            ("deferred", MotionState::Unknown),
         ] {
             let body = format!(
                 r#"{{"id":"m1","proposer_cid":1,"proposer_role":"finance","kind":"other",
                     "text":"t","needs_owner":false,"state":"{word}","votes":[],
                     "tally":{{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4}},
-                    "created_at":1,"updated_at":1}}"#
+                    "owner":null,"created_at":1,"updated_at":1}}"#
             );
             let motion: Motion = from_body(&body);
             assert_eq!(motion.state, state, "state {word:?}");
@@ -4373,27 +4576,31 @@ mod tests {
                     "text":"t","needs_owner":false,"state":"open",
                     "votes":[{{"seat":"finance","agent_cid":1,"vote":"{word}","reason":"r","at":1}}],
                     "tally":{{"yes":0,"no":0,"abstain":0,"voted":1,"seats":4}},
-                    "created_at":1,"updated_at":1}}"#
+                    "owner":null,"created_at":1,"updated_at":1}}"#
             );
             let motion: Motion = from_body(&body);
             assert_eq!(motion.votes[0].vote, vote, "vote {word:?}");
         }
 
-        // The words are the daemon's own, verbatim, and the gated states are
-        // the two the owner's gate produced.
-        for (state, label, stamp, gated) in [
-            (MotionState::Open, "open", "OPEN", false),
-            (MotionState::Carried, "carried", "CARRIED", false),
-            (MotionState::Rejected, "rejected", "REJECTED", false),
-            (MotionState::TieToOwner, "tie_to_owner", "TIE TO THE OWNER", true),
-            (MotionState::AwaitingOwner, "awaiting_owner", "AWAITING THE OWNER", true),
-            (MotionState::Unknown, "unknown", "UNKNOWN", false),
+        // The words are the daemon's own, verbatim; the two gated states are
+        // the ones the owner may decide, and the two decided states are the
+        // owner's own act.
+        for (state, label, stamp, gated, decided) in [
+            (MotionState::Open, "open", "OPEN", false, false),
+            (MotionState::Carried, "carried", "CARRIED", false, false),
+            (MotionState::Rejected, "rejected", "REJECTED", false, false),
+            (MotionState::TieToOwner, "tie_to_owner", "TIE TO THE OWNER", true, false),
+            (MotionState::AwaitingOwner, "awaiting_owner", "AWAITING THE OWNER", true, false),
+            (MotionState::Ratified, "ratified", "RATIFIED", false, true),
+            (MotionState::Vetoed, "vetoed", "VETOED", false, true),
+            (MotionState::Unknown, "unknown", "UNKNOWN", false, false),
         ] {
             assert_eq!(state.label(), label);
             assert_eq!(state.stamp_label(), stamp);
             assert_eq!(state.is_gated(), gated, "{label}");
+            assert_eq!(state.is_decided(), decided, "{label}");
         }
-        assert_eq!(MotionState::ALL.len(), SEATS + 1);
+        assert_eq!(MotionState::ALL.len(), 7);
         for kind in [
             MotionKind::Priority,
             MotionKind::BudgetMove,
@@ -4439,6 +4646,7 @@ mod tests {
             state: MotionState::Carried,
             votes: Vec::new(),
             tally: disagreeing,
+            owner: Column::filled(None),
             created_at: 1,
             updated_at: 1,
         };

@@ -958,6 +958,7 @@ pub const MOTIONS: &str = r#"{"motions":[
         "reason":"the record: priority names open task t2","at":1791706616816}
      ],
      "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
      "created_at":1791706568274,"updated_at":1791706616816},
     {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
      "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
@@ -973,6 +974,7 @@ pub const MOTIONS: &str = r#"{"motions":[
         "reason":"the record supports it","at":1791705629506}
      ],
      "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
      "created_at":1791705629200,"updated_at":1791705629506},
     {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
      "text":"prioritise the east wing over new towns this week",
@@ -988,7 +990,134 @@ pub const MOTIONS: &str = r#"{"motions":[
         "reason":"the record on the east wing","at":1791705624070}
      ],
      "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
      "created_at":1791705623593,"updated_at":1791705628987}
+    ],"total":3,"limit":256,"truncated":false}"#;
+
+/// The council of [`MOTIONS`] once the owner's hand is on it: the same 4–0
+/// carry, but the gated law proposal ratified and the 2–2 tie vetoed — the
+/// decided shape the daemon reports, with the owner's word, note and stamp.
+pub const MOTIONS_DECIDED: &str = r#"{"motions":[
+    {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise t2 The gable dispute needs a ruling this week",
+     "needs_owner":false,"state":"carried",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706571791},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706586797},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706601806},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706616816}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
+     "created_at":1791706568274,"updated_at":1791706616816},
+    {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+     "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+     "needs_owner":true,"state":"ratified",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record supports it","at":1791705629367},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record supports it","at":1791705629458},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record supports it","at":1791705629412},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record supports it","at":1791705629506}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":{"approve":true,"note":null,"at":1791706000000},
+     "created_at":1791705629200,"updated_at":1791706000000},
+    {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise the east wing over new towns this week",
+     "needs_owner":false,"state":"vetoed",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the wing is the season's work","at":1791705628987},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record on the east wing","at":1791705623911},
+       {"seat":"incident","agent_cid":106,"vote":"no",
+        "reason":"the record on the east wing","at":1791705623782},
+       {"seat":"mayor-office","agent_cid":114,"vote":"no",
+        "reason":"the record on the east wing","at":1791705624070}
+     ],
+     "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+     "owner":{"approve":false,"note":"not this season","at":1791706100000},
+     "created_at":1791705623593,"updated_at":1791706100000}
+    ],"total":3,"limit":256,"truncated":false}"#;
+
+/// The `200` a `POST /api/v0/motions/m1/decide` answers with when the owner
+/// ratifies the tie: the motion, its `owner` set and its state `ratified`.
+pub const DECIDED_RATIFIED: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
+    "kind":"priority","text":"prioritise the east wing over new towns this week",
+    "needs_owner":false,"state":"ratified",
+    "votes":[
+      {"seat":"finance","agent_cid":105,"vote":"yes",
+       "reason":"the wing is the season's work","at":1791705628987},
+      {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+       "reason":"the record on the east wing","at":1791705623911},
+      {"seat":"incident","agent_cid":106,"vote":"no",
+       "reason":"the record on the east wing","at":1791705623782},
+      {"seat":"mayor-office","agent_cid":114,"vote":"no",
+       "reason":"the record on the east wing","at":1791705624070}
+    ],
+    "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+    "owner":{"approve":true,"note":"carry it","at":1791706100000},
+    "created_at":1791705623593,"updated_at":1791706100000}"#;
+
+/// The council of [`MOTIONS_DECIDED`] with `m1` ratified instead of vetoed:
+/// what the pane reads after the owner ratifies the tie.
+pub const MOTIONS_RATIFIED: &str = r#"{"motions":[
+    {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise t2 The gable dispute needs a ruling this week",
+     "needs_owner":false,"state":"carried",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706571791},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706586797},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706601806},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706616816}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
+     "created_at":1791706568274,"updated_at":1791706616816},
+    {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+     "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+     "needs_owner":true,"state":"awaiting_owner",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record supports it","at":1791705629367},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record supports it","at":1791705629458},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record supports it","at":1791705629412},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record supports it","at":1791705629506}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
+     "created_at":1791705629200,"updated_at":1791705629506},
+    {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise the east wing over new towns this week",
+     "needs_owner":false,"state":"ratified",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the wing is the season's work","at":1791705628987},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record on the east wing","at":1791705623911},
+       {"seat":"incident","agent_cid":106,"vote":"no",
+        "reason":"the record on the east wing","at":1791705623782},
+       {"seat":"mayor-office","agent_cid":114,"vote":"no",
+        "reason":"the record on the east wing","at":1791705624070}
+     ],
+     "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+     "owner":{"approve":true,"note":"carry it","at":1791706100000},
+     "created_at":1791705623593,"updated_at":1791706100000}
     ],"total":3,"limit":256,"truncated":false}"#;
 
 /// A single-motion body as `GET /api/v0/motions/m1` sends it: the tie of
@@ -1007,6 +1136,7 @@ pub const MOTION_M1: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"fi
        "reason":"the record on the east wing","at":1791705624070}
     ],
     "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+    "owner":null,
     "created_at":1791705623593,"updated_at":1791705628987}"#;
 
 /// The council of [`MOTIONS`] once one more motion was proposed and is still
@@ -1022,6 +1152,7 @@ pub const MOTIONS_AFTER: &str = r#"{"motions":[
         "reason":"the annex is on the record","at":1791709000000}
      ],
      "tally":{"yes":1,"no":0,"abstain":0,"voted":1,"seats":4},
+     "owner":null,
      "created_at":1791708990000,"updated_at":1791709000000},
     {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
      "text":"prioritise t2 The gable dispute needs a ruling this week",
@@ -1037,6 +1168,7 @@ pub const MOTIONS_AFTER: &str = r#"{"motions":[
         "reason":"the record: priority names open task t2","at":1791706616816}
      ],
      "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
      "created_at":1791706568274,"updated_at":1791706616816},
     {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
      "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
@@ -1052,6 +1184,7 @@ pub const MOTIONS_AFTER: &str = r#"{"motions":[
         "reason":"the record supports it","at":1791705629506}
      ],
      "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
      "created_at":1791705629200,"updated_at":1791705629506},
     {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
      "text":"prioritise the east wing over new towns this week",
@@ -1067,6 +1200,7 @@ pub const MOTIONS_AFTER: &str = r#"{"motions":[
         "reason":"the record on the east wing","at":1791705624070}
      ],
      "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+     "owner":null,
      "created_at":1791705623593,"updated_at":1791705628987}
     ],"total":4,"limit":256,"truncated":false}"#;
 
@@ -1092,6 +1226,56 @@ pub fn council_live(
             ("GET", "/api/v0/machine") => MACHINE,
             ("GET", "/api/v0/runs") => list.as_str(),
             ("GET", "/api/v0/motions") => motions.as_str(),
+            ("GET", target) if target.starts_with("/api/v0/motions/") => motion.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon for the council pane that also holds the owner's hand:
+/// `GET /api/v0/motions` answers `motions` until the decision lands and
+/// `motions_after` from then on, `POST /api/v0/motions/{id}/decide` answers
+/// `decided`, `GET /api/v0/motions/{id}` answers `motion`, and every other read
+/// answers `detail`.
+///
+/// It is how a test proves the pane's own flow: a commit posts the decision,
+/// and the pane reads its own surface again — the row the sheet then draws is
+/// the daemon's, with the owner's line on it.
+pub fn council_deciding(
+    list: &str,
+    detail: &str,
+    events: &str,
+    motions: &str,
+    motion: &str,
+    motions_after: &str,
+    decided: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let motions = motions.to_string();
+    let motion = motion.to_string();
+    let motions_after = motions_after.to_string();
+    let decided = decided.to_string();
+    let decided_yet = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&decided_yet);
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("POST", target) if target.ends_with("/decide") => {
+                flag.store(true, Ordering::SeqCst);
+                decided.as_str()
+            }
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/motions") => {
+                if flag.load(Ordering::SeqCst) {
+                    motions_after.as_str()
+                } else {
+                    motions.as_str()
+                }
+            }
             ("GET", target) if target.starts_with("/api/v0/motions/") => motion.as_str(),
             _ => detail.as_str(),
         };

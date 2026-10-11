@@ -14,7 +14,7 @@ use iced::{Alignment, Element, Length, Padding};
 use crate::api::{
     CallState, Contact, Conversation, Conversations, FinishOutcome, Motion, MotionState, Motions,
     Pair, Post, Posts, Run, RunState, SEATS, Tally, Task, TaskArtifact, TaskState, Thread, Vote,
-    VoteWord, Vm, VmState,
+    VoteWord, Vm, VmState, MAX_DECISION_NOTE,
 };
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
@@ -25,13 +25,13 @@ use crate::history;
 use crate::ledger::{TaskField, artifact_paths};
 use crate::mapview::{self, FleetMap};
 use crate::model::{
-    ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DriveState, Health, HistoryStep, Message,
-    Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES, StopState,
-    award_line, board_line, board_tally, council_line, council_tally, duration_label, entry_task,
-    floor_line, floor_tally, hub_facts, hub_line, instant_label, journal_tally, market_line,
-    memory_label, money_label, posting_account, preset_footprint, roster_line, roster_tally,
-    serial_tail, tally_line, talk_line, task_line, task_state_line, task_tally, totals_line,
-    transcript_span, treasury_line,
+    ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DecideState, DriveState, Health, HistoryStep,
+    Message, Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES,
+    StopState, award_line, board_line, board_tally, council_line, council_tally, duration_label,
+    entry_task, floor_line, floor_tally, hub_facts, hub_line, instant_label, journal_tally,
+    market_line, memory_label, money_label, posting_account, preset_footprint, roster_line,
+    roster_tally, serial_tail, tally_line, talk_line, task_line, task_state_line, task_tally,
+    totals_line, transcript_span, treasury_line,
 };
 use crate::social;
 use crate::telemetryview::{self, ChartKind};
@@ -4040,20 +4040,24 @@ fn last_read_age(model: &Model, last_ok_ms: Option<u64>) -> String {
 }
 
 /// The council: the seats' motions, newest first, each with its votes, the
-/// count that decided it and — where one applies — the owner's gate.
+/// count that decided it, and the owner's hand — the gate, the decision, or the
+/// line saying why neither applies.
 ///
 /// Everything on the sheet is the daemon's own: the motions, the seats that
 /// proposed them, every vote and its reason, and the state and tally the
-/// daemon derived. Nothing here is composed, and nothing here is a write —
-/// proposing and voting are seat actions this console does not take.
+/// daemon derived. Nothing here is composed. The sheet writes exactly one
+/// thing — the owner's decision on a gated motion, through the daemon's own
+/// `POST /api/v0/motions/{id}/decide` — because the operator is the owner;
+/// proposing and voting remain seat actions this console does not take.
 fn council_pane(model: &Model) -> Element<'_, Message> {
     let mut body: Vec<Element<'_, Message>> = vec![
         serif(
             "The council's motions, newest first: what was proposed and by which seat, the kind, \
              the state the count left it in, the tally beside a ruled seat bar, and every seat's \
-             vote beneath it with the reason why. A motion above the council's authority is \
-             stamped as the owner's. Every word is the daemon's own — the motions, the votes and \
-             the reasons — and this sheet writes nothing.",
+             vote beneath it with the reason why. A motion above the council's authority waits at \
+             the owner's gate, and the owner — the operator, here — ratifies or vetoes it, once, \
+             and the council cannot reopen it. Every other word is the daemon's own; this sheet \
+             writes nothing but the owner's decision.",
             12.0,
             INK_2,
         )
@@ -4243,6 +4247,9 @@ fn motion_row<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> 
     if let Some(gate) = gate_line(motion) {
         cells.push(gate);
     }
+    // The owner's hand: the decide block for a gated motion, the owner's own
+    // line for a decided one, and the one-line why when neither applies.
+    cells.push(owner_control(model, motion));
     // Every vote beneath it.
     cells.push(votes_block(model, motion));
     // When it was proposed and when it last moved.
@@ -4338,6 +4345,275 @@ fn gate_line<'a>(motion: &'a Motion) -> Option<Element<'a, Message>> {
     Some(mono(text, 11.0, tone_for_motion_state(motion.state).color()).into())
 }
 
+/// The owner's hand on one motion, in whatever it is:
+///
+/// * a gated motion (`tie_to_owner`, `awaiting_owner`) draws the **decide
+///   block** — the owner's note, the two committing presses, and, once one is
+///   armed, the confirming line that states what the decision means;
+/// * a decided motion (`ratified`, `vetoed`) draws the **owner's line**: the
+///   word, the note as prose and the stamp;
+/// * every other state draws **no control** and the one-line why, so an absent
+///   hand is stated rather than left to be guessed.
+fn owner_control<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
+    if motion.state.is_gated() {
+        decide_block(model, motion)
+    } else if motion.state.is_decided() {
+        owner_line(model, motion)
+    } else {
+        mono(owner_why(motion), 10.5, INK_3).into()
+    }
+}
+
+/// Why the owner's hand does not apply to a motion in this state, in one line:
+/// the council's own rule — the owner decides only a tie or a carry above the
+/// council's authority — applied to the state this motion is actually in.
+fn owner_why(motion: &Motion) -> String {
+    let rule = "the owner decides only a tie or a carry above the council's authority";
+    match motion.state {
+        MotionState::Open => format!(
+            "{rule}: {} is open — the council has not decided it yet",
+            motion.id
+        ),
+        MotionState::Carried => format!(
+            "{rule}: {} carried on the council's own majority",
+            motion.id
+        ),
+        MotionState::Rejected => format!(
+            "{rule}: {} was rejected on the council's own majority",
+            motion.id
+        ),
+        _ => format!(
+            "{rule}: {} is in a state this console does not know",
+            motion.id
+        ),
+    }
+}
+
+/// The owner's own line, for a decided motion: the word — a veto the red of a
+/// no, a ratification the green of a yes — the note as prose when the owner
+/// left one, and the stamp of when. The word is emphasised because the decision
+/// is not the council's to revisit: it decides once.
+fn owner_line<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
+    let Some(owner) = motion.owner() else {
+        // A decided state with no decision recorded is not the shape the
+        // daemon sends; the pane states the gap rather than inventing a
+        // decision.
+        return mono(
+            format!(
+                "the owner's hand: {} is {}, but the daemon recorded no decision",
+                motion.id,
+                motion.state.label()
+            ),
+            10.5,
+            WARN,
+        )
+        .into();
+    };
+    let mut cells: Vec<Element<'a, Message>> = vec![
+        Row::with_children(vec![
+            mono("the owner's hand", 10.5, INK_3).into(),
+            stamp(motion.id.clone(), Tone::Neutral).into(),
+            stamp(owner.stamp_label(), tone_for_motion_state(motion.state)).into(),
+            mono(instant_label(owner.at, model.now_ms), 10.0, INK_3).into(),
+        ])
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+    ];
+    if let Some(note) = owner.note() {
+        cells.push(serif(note.to_string(), 11.5, INK_2).into());
+    }
+    cells.push(
+        mono(
+            "the owner decides once: the council cannot reopen this",
+            10.0,
+            INK_3,
+        )
+        .into(),
+    );
+    Column::with_children(cells).spacing(3.0).into()
+}
+
+/// The decide block, for a gated motion: what the owner's hand is, an optional
+/// note counted against the daemon's own cap, and the two committing presses —
+/// `Ratify` and `Veto` — that name the motion. The first press arms the choice
+/// and the second commits it; the confirming line states what committing means.
+fn decide_block<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
+    let armed = model.decide_armed(&motion.id);
+    let mut cells: Vec<Element<'a, Message>> = Vec::new();
+    // What the hand is, and that it cannot be taken back.
+    cells.push(
+        mono(
+            format!(
+                "The owner's hand · {} · the operator decides, once, and the council cannot \
+                 reopen it",
+                motion.id
+            ),
+            11.0,
+            theme::SIGNAL,
+        )
+        .into(),
+    );
+    // The optional note: the owner's own words, sent only when they said some,
+    // counted against the daemon's own cap.
+    let note = model.decide_note(&motion.id);
+    cells.push(
+        Row::with_children(vec![
+            text_input(
+                "an optional note — why the owner decided (not blank)",
+                note,
+            )
+            .on_input(move |value| Message::DecideEdit {
+                id: motion.id.clone(),
+                value,
+            })
+            .style(theme::input)
+            .padding(edge(5.0, 8.0, 5.0, 8.0))
+            .width(Length::Fill)
+            .into(),
+            mono(note_counter(note), 10.0, note_tone(note).color()).into(),
+        ])
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    // The two committing presses, each naming the motion; the armed one says
+    // so in its label.
+    let ratify_label = if armed == Some(true) {
+        format!("CONFIRM RATIFY {}", motion.id)
+    } else {
+        format!("RATIFY {}", motion.id)
+    };
+    let veto_label = if armed == Some(false) {
+        format!("CONFIRM VETO {}", motion.id)
+    } else {
+        format!("VETO {}", motion.id)
+    };
+    cells.push(
+        Row::with_children(vec![
+            button(mono(ratify_label, 10.5, if armed == Some(true) { theme::SHEET } else { theme::OK }))
+                .on_press(Message::DecideClicked {
+                    id: motion.id.clone(),
+                    approve: true,
+                })
+                .style(theme::act_button(Tone::Ok, armed == Some(true)))
+                .padding(edge(6.0, 12.0, 6.0, 12.0))
+                .into(),
+            button(mono(veto_label, 10.5, if armed == Some(false) { theme::SHEET } else { theme::CRIT }))
+                .on_press(Message::DecideClicked {
+                    id: motion.id.clone(),
+                    approve: false,
+                })
+                .style(theme::act_button(Tone::Crit, armed == Some(false)))
+                .padding(edge(6.0, 12.0, 6.0, 12.0))
+                .into(),
+            space::horizontal().into(),
+        ])
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    // The confirming line: what the armed commit means, in the motion's own
+    // terms.
+    if let Some(approve) = armed {
+        cells.push(
+            mono(
+                decide_confirm_line(motion, approve),
+                11.0,
+                tone_for_motion_state(motion.state).color(),
+            )
+            .into(),
+        );
+        cells.push(
+            mono(
+                "press the confirming button again to commit, or leave the pane to disarm",
+                10.0,
+                INK_3,
+            )
+            .into(),
+        );
+    }
+    // The last decision asked of the daemon, in its own words.
+    if let Some(state) = model.decide_state(&motion.id) {
+        cells.push(
+            Row::with_children(vec![
+                stamp(state.mark(), decide_tone(state)).into(),
+                serif(state.text(), 11.0, INK_2).width(Length::Fill).into(),
+            ])
+            .spacing(8.0)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    container(Column::with_children(cells).spacing(5.0))
+        .style(theme::notice(Tone::Signal))
+        .width(Length::Fill)
+        .padding(edge(7.0, 9.0, 7.0, 9.0))
+        .into()
+}
+
+/// The confirming line: what committing the armed choice means, for the motion
+/// the owner's hand is on. A tie resolved in the motion's favour, or a
+/// ratification of a carry above the council's authority — and, either way, a
+/// decision the council cannot reopen.
+fn decide_confirm_line(motion: &Motion, approve: bool) -> String {
+    let (gate, what) = match motion.state {
+        MotionState::TieToOwner => (
+            format!("the {}–{} tie", motion.tally.yes, motion.tally.no),
+            "the tie",
+        ),
+        _ => (
+            format!(
+                "the {}–{} carry on a {}",
+                motion.tally.yes,
+                motion.tally.no,
+                motion.kind.label()
+            ),
+            "the carry",
+        ),
+    };
+    if approve {
+        format!(
+            "CONFIRMING RATIFIES {}: {} is resolved in the motion's favour — a ratification above \
+             the council's authority, and the council cannot reopen it",
+            motion.id, gate
+        )
+    } else {
+        format!(
+            "CONFIRMING VETOES {}: {} falls — a veto above the council's authority, and the \
+             council cannot reopen it",
+            motion.id, what
+        )
+    }
+}
+
+/// The note, counted against the daemon's own cap, in bytes — the unit the
+/// daemon holds it to.
+fn note_counter(note: &str) -> String {
+    format!("{} / {} bytes", note.trim().len(), MAX_DECISION_NOTE)
+}
+
+/// The tone the note counter is drawn in: the daemon's red once the note would
+/// be refused, its ink while it holds.
+fn note_tone(note: &str) -> Tone {
+    if note.trim().len() > MAX_DECISION_NOTE {
+        Tone::Crit
+    } else {
+        Tone::Neutral
+    }
+}
+
+/// The tone a decision's own outcome is stamped in: a refusal and an unread
+/// surface the red of a no, a decision in flight the one hot signal.
+fn decide_tone(state: &DecideState) -> Tone {
+    match state {
+        DecideState::Deciding { .. } => Tone::Signal,
+        DecideState::Refused { .. } | DecideState::Unreachable { .. } | DecideState::NotSent { .. } => {
+            Tone::Crit
+        }
+    }
+}
+
 /// Every vote beneath a motion: the seat, the cid that cast it, the word toned,
 /// the reason why and the stamp of when. The words are the voters' own.
 fn votes_block<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
@@ -4390,12 +4666,16 @@ fn tone_for_vote(word: VoteWord) -> Tone {
 /// The tone a motion's state is stamped in: the two gated states are the
 /// register's one hot signal, so a motion waiting on the owner stands out from
 /// the settled ones — an open motion neutral, a carry green, a rejection red.
+/// The owner's own act reads the way its sense does: a ratification the green
+/// of a yes, a veto the red of a no.
 fn tone_for_motion_state(state: MotionState) -> Tone {
     match state {
         MotionState::Open => Tone::Neutral,
         MotionState::Carried => Tone::Ok,
         MotionState::Rejected => Tone::Crit,
         MotionState::TieToOwner | MotionState::AwaitingOwner => Tone::Signal,
+        MotionState::Ratified => Tone::Ok,
+        MotionState::Vetoed => Tone::Crit,
         MotionState::Unknown => Tone::Neutral,
     }
 }
@@ -4449,6 +4729,7 @@ mod tests {
          "votes":[{"seat":"finance","agent_cid":105,"vote":"yes",
                    "reason":"the annex is on the record","at":1791709000000}],
          "tally":{"yes":1,"no":0,"abstain":0,"voted":1,"seats":4},
+         "owner":null,
          "created_at":1791708990000,"updated_at":1791709000000},
         {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
          "text":"prioritise t2 The gable dispute needs a ruling this week",
@@ -4463,6 +4744,7 @@ mod tests {
            {"seat":"mayor-office","agent_cid":114,"vote":"yes",
             "reason":"the record: priority names open task t2","at":1791706616816}],
          "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "owner":null,
          "created_at":1791706568274,"updated_at":1791706616816},
         {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
          "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
@@ -4477,6 +4759,7 @@ mod tests {
            {"seat":"mayor-office","agent_cid":114,"vote":"yes",
             "reason":"the record supports it","at":1791705629506}],
          "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "owner":null,
          "created_at":1791705629200,"updated_at":1791705629506},
         {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
          "text":"prioritise the east wing over new towns this week",
@@ -4491,6 +4774,7 @@ mod tests {
            {"seat":"mayor-office","agent_cid":114,"vote":"no",
             "reason":"the record on the east wing","at":1791705624070}],
          "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+         "owner":null,
          "created_at":1791705623593,"updated_at":1791705628987}
         ],"total":4,"limit":256,"truncated":false}"#;
 
@@ -4509,6 +4793,77 @@ mod tests {
         for (index, gated) in [(0usize, false), (1, false), (2, true), (3, true)] {
             assert_eq!(gate_line(&page.motions[index]).is_some(), gated, "{}", page.motions[index].id);
         }
+    }
+
+    #[test]
+    fn the_confirm_line_states_the_meaning_for_each_gate_and_choice() {
+        let page = council();
+        // The fixture's rows: m4 open, m3 carried, m2 awaiting_owner, m1 a tie.
+        let tie = &page.motions[3];
+        assert_eq!(
+            decide_confirm_line(tie, true),
+            "CONFIRMING RATIFIES m1: the 2–2 tie is resolved in the motion's favour — a \
+             ratification above the council's authority, and the council cannot reopen it"
+        );
+        assert_eq!(
+            decide_confirm_line(tie, false),
+            "CONFIRMING VETOES m1: the tie falls — a veto above the council's authority, and the \
+             council cannot reopen it"
+        );
+        let carry = &page.motions[2];
+        assert_eq!(
+            decide_confirm_line(carry, true),
+            "CONFIRMING RATIFIES m2: the 4–0 carry on a law_proposal is resolved in the motion's \
+             favour — a ratification above the council's authority, and the council cannot \
+             reopen it"
+        );
+        assert_eq!(
+            decide_confirm_line(carry, false),
+            "CONFIRMING VETOES m2: the carry falls — a veto above the council's authority, and \
+             the council cannot reopen it"
+        );
+    }
+
+    #[test]
+    fn the_why_line_names_the_rule_and_the_state_for_every_ungated_one() {
+        let page = council();
+        let mut rows = page.motions.clone();
+        // m4 is open, m3 carried: the rule, then the state it is in.
+        assert_eq!(
+            owner_why(&rows[0]),
+            "the owner decides only a tie or a carry above the council's authority: m4 is open — \
+             the council has not decided it yet"
+        );
+        assert_eq!(
+            owner_why(&rows[1]),
+            "the owner decides only a tie or a carry above the council's authority: m3 carried on \
+             the council's own majority"
+        );
+        // A rejected motion, and one in a state this console does not know.
+        rows[1].state = MotionState::Rejected;
+        assert_eq!(
+            owner_why(&rows[1]),
+            "the owner decides only a tie or a carry above the council's authority: m3 was \
+             rejected on the council's own majority"
+        );
+        rows[0].state = MotionState::Unknown;
+        assert_eq!(
+            owner_why(&rows[0]),
+            "the owner decides only a tie or a carry above the council's authority: m4 is in a \
+             state this console does not know"
+        );
+    }
+
+    #[test]
+    fn the_note_counter_is_the_daemons_own_unit_and_cap() {
+        assert_eq!(note_counter(""), "0 / 1000 bytes");
+        assert_eq!(note_counter("carry it"), "8 / 1000 bytes");
+        // The count is the trimmed note — what would be sent — and the tone
+        // turns once the note is over the daemon's cap.
+        assert_eq!(note_counter("  carry it  "), "8 / 1000 bytes");
+        assert_eq!(note_tone("ok"), Tone::Neutral);
+        assert_eq!(note_tone(&"y".repeat(MAX_DECISION_NOTE + 1)), Tone::Crit);
+        assert_eq!(note_tone(&"y".repeat(MAX_DECISION_NOTE)), Tone::Neutral);
     }
 
     #[test]
@@ -4574,13 +4929,16 @@ mod tests {
         assert!(CallState::Open.is_offer());
         assert!(!CallState::Open.is_awarded());
         // A motion's states, plus the unknown one: the two gated states read as
-        // the register's one hot signal, and an unknown word reads neutral.
+        // the register's one hot signal, the owner's own act reads by its
+        // sense, and an unknown word reads neutral.
         for (state, tone) in [
             (MotionState::Open, Tone::Neutral),
             (MotionState::Carried, Tone::Ok),
             (MotionState::Rejected, Tone::Crit),
             (MotionState::TieToOwner, Tone::Signal),
             (MotionState::AwaitingOwner, Tone::Signal),
+            (MotionState::Ratified, Tone::Ok),
+            (MotionState::Vetoed, Tone::Crit),
             (MotionState::Unknown, Tone::Neutral),
         ] {
             assert!(!state.stamp_label().is_empty());
@@ -4588,7 +4946,12 @@ mod tests {
         }
         assert_eq!(MotionState::TieToOwner.stamp_label(), "TIE TO THE OWNER");
         assert_eq!(MotionState::AwaitingOwner.stamp_label(), "AWAITING THE OWNER");
+        assert_eq!(MotionState::Ratified.stamp_label(), "RATIFIED");
+        assert_eq!(MotionState::Vetoed.stamp_label(), "VETOED");
         assert!(MotionState::TieToOwner.is_gated());
+        // The two decided states are the owner's own act, not a door.
+        assert!(MotionState::Ratified.is_decided() && MotionState::Vetoed.is_decided());
+        assert!(!MotionState::Carried.is_decided() && !MotionState::TieToOwner.is_decided());
         // And the vote words: a yes green, a no red, an abstention amber.
         for (word, tone) in [
             (VoteWord::Yes, Tone::Ok),

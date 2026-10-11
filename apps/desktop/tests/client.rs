@@ -1346,7 +1346,125 @@ fn a_missing_motion_and_a_motion_id_that_is_not_plain_are_both_refused() {
             ),
             "{id:?}"
         );
+        // The decision's own path is refused the same way, before any socket
+        // is opened: an id that is not plain cannot change the request.
+        assert!(
+            matches!(
+                Client::default().decide_motion(id, true, None),
+                Err(agentplaza_desktop::api::ApiError::Config(_))
+            ),
+            "decide {id:?}"
+        );
     }
+}
+
+/// A decided motion as `POST /api/v0/motions/{id}/decide` answers it: the tie
+/// of [`common::MOTION_M1`], vetoed by the owner with a note.
+const VETOED: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
+    "kind":"priority","text":"prioritise the east wing over new towns this week",
+    "needs_owner":false,"state":"vetoed",
+    "votes":[
+      {"seat":"finance","agent_cid":105,"vote":"yes",
+       "reason":"the wing is the season's work","at":1791705628987},
+      {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+       "reason":"the record on the east wing","at":1791705623911},
+      {"seat":"incident","agent_cid":106,"vote":"no",
+       "reason":"the record on the east wing","at":1791705623782},
+      {"seat":"mayor-office","agent_cid":114,"vote":"no",
+       "reason":"the record on the east wing","at":1791705624070}
+    ],
+    "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+    "owner":{"approve":false,"note":"not this season","at":1791710000000},
+    "created_at":1791705623593,"updated_at":1791710000000}"#;
+
+/// A ratified motion, its owner's note `null`: the daemon writes the key and
+/// the null both, so an absent note is a fact and not a missing field.
+const RATIFIED: &str = r#"{"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+    "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+    "needs_owner":true,"state":"ratified",
+    "votes":[],"tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+    "owner":{"approve":true,"note":null,"at":7},
+    "created_at":1,"updated_at":2}"#;
+
+#[test]
+fn deciding_posts_the_daemons_decide_body_and_reads_the_owners_line() {
+    // The owner's hand: a veto with a note, on the daemon's own decide path.
+    let server = replies(vec![(200, VETOED.to_string())]);
+    let motion = client(server.port)
+        .decide_motion("m1", false, Some("not this season"))
+        .expect("the decision should parse");
+    assert_eq!(motion.id, "m1");
+    assert_eq!(motion.state, agentplaza_desktop::api::MotionState::Vetoed);
+    let owner = motion.owner().expect("the owner decided");
+    assert!(!owner.approve);
+    assert_eq!(owner.note(), Some("not this season"));
+    assert_eq!(owner.at, 1_791_710_000_000);
+    assert_eq!(owner.stamp_label(), "VETOED");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/api/v0/motions/m1/decide");
+    assert_eq!(requests[0].header("Content-Type"), Some("application/json"));
+    assert_eq!(requests[0].body, r#"{"approve":false,"note":"not this season"}"#);
+
+    // A decision with no note **omits the key**: an absent note is the daemon's
+    // own null, never an empty string it would refuse.
+    let server = replies(vec![(200, RATIFIED.to_string())]);
+    let motion = client(server.port)
+        .decide_motion("m2", true, None)
+        .expect("the decision should parse");
+    assert!(motion.owner().expect("decided").approve);
+    assert_eq!(motion.owner().expect("decided").note(), None);
+    assert_eq!(server.requests()[0].body, r#"{"approve":true}"#);
+}
+
+#[test]
+fn a_decide_refusal_is_the_daemons_own_words() {
+    // Every refusal the decide endpoint writes, carried through verbatim — and
+    // the two `409`s in particular, since they are the council's own rules.
+    for (status, body, message) in [
+        (
+            400u16,
+            r#"{"error":"note must be at most 1000 bytes"}"#,
+            "note must be at most 1000 bytes",
+        ),
+        (404, r#"{"error":"no motion with id m9"}"#, "no motion with id m9"),
+        (405, r#"{"error":"this endpoint accepts POST"}"#, "this endpoint accepts POST"),
+        (
+            409,
+            r#"{"error":"motion m1 is carried: the owner decides only a tie_to_owner or awaiting_owner motion — the council's own decision stands"}"#,
+            "motion m1 is carried: the owner decides only a tie_to_owner or awaiting_owner motion — the council's own decision stands",
+        ),
+        (
+            409,
+            r#"{"error":"motion m1 is already decided (ratified): the owner decides a motion once"}"#,
+            "motion m1 is already decided (ratified): the owner decides a motion once",
+        ),
+    ] {
+        let server = always(status, body);
+        let error = client(server.port)
+            .decide_motion("m1", true, None)
+            .expect_err("the daemon refused the decision");
+        assert_eq!(error.status(), Some(status));
+        assert_eq!(error.to_string(), format!("{status}: {message}"));
+    }
+
+    // An answer that is not the motion shape — a decision the daemon took but
+    // reported with the `owner` column missing — is a named malformed error,
+    // never a silent success.
+    let server = always(
+        200,
+        r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+            "text":"a motion","needs_owner":false,"state":"ratified","votes":[],
+            "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+            "created_at":1,"updated_at":2}"#,
+    );
+    let error = client(server.port)
+        .decide_motion("m1", true, None)
+        .expect_err("the answer is not the motion shape");
+    assert!(matches!(error, agentplaza_desktop::api::ApiError::Malformed(_)), "{error:?}");
+    assert!(error.to_string().contains("owner"), "{error}");
 }
 
 #[test]
@@ -1706,9 +1824,10 @@ fn a_live_daemon_reads_when_one_is_named() {
     assert_eq!(floor.board.total, posts.total);
     assert_eq!(floor.conversations.total, conversations.total);
 
-    // The council, read the same way and mutating nothing: the seats' motions,
-    // newest first, each with its votes and the tally the daemon derived. This
-    // console has no path that proposes a motion or votes on one.
+    // The council, read the same way: the seats' motions, newest first, each
+    // with its votes and the tally the daemon derived. This console proposes no
+    // motion and casts no vote — but it does hold the owner's hand, so a
+    // decided motion carries the owner's own act. Nothing is written here.
     let council = client
         .motions()
         .expect("the live daemon should answer its council");
@@ -1737,6 +1856,14 @@ fn a_live_daemon_reads_when_one_is_named() {
             motion.tally.seats,
             if motion.needs_owner { " · owner-gated" } else { "" }
         );
+        if let Some(owner) = motion.owner() {
+            println!(
+                "    owner {} at {} · note {:?}",
+                owner.stamp_label(),
+                owner.at,
+                owner.note()
+            );
+        }
         for vote in &motion.votes {
             println!(
                 "    seat {} · cid {} · {} · {:?}",
@@ -1750,6 +1877,25 @@ fn a_live_daemon_reads_when_one_is_named() {
         // that did not, and never correct it.
         assert!(motion.tally_is_tidy(), "{}: the tally agrees with its votes", motion.id);
         assert_eq!(motion.tally.seats, 4, "the doctrine's four seats");
+        // The owner's column agrees with the state: a decided motion carries a
+        // decision, an undecided one carries none, and the two never disagree.
+        match motion.owner() {
+            Some(owner) => {
+                assert!(motion.state.is_decided(), "{}: decided but {}", motion.id, motion.state.label());
+                assert_eq!(
+                    owner.approve,
+                    motion.state == agentplaza_desktop::api::MotionState::Ratified,
+                    "{}: the decision and the state agree",
+                    motion.id
+                );
+            }
+            None => assert!(
+                !motion.state.is_decided(),
+                "{}: {} with no decision recorded",
+                motion.id,
+                motion.state.label()
+            ),
+        }
         // Each motion is also readable on its own, which is the client's
         // single-motion read.
         let one = client.motion(&motion.id).expect("the motion should read");

@@ -15,9 +15,11 @@
 //!   too: the one surface the operator's controls drive an agent through. The
 //!   treasury (`GET /api/v0/treasury` and its journal, read together) is a
 //!   read of the daemon's own money, and the council (`GET /api/v0/motions`,
-//!   and one motion by its id) a read of the seats' own motions — proposing
-//!   and voting are seat actions this console does not take, so there is no
-//!   path here that writes.
+//!   and one motion by its id) a read of the seats' own motions. Proposing and
+//!   voting are seat actions this console does not take, but the owner's hand
+//!   is here: the operator *is* the owner, so
+//!   `POST /api/v0/motions/{id}/decide` (ratify or veto a gated motion) is the
+//!   one write the council client has.
 //! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
 //! * [`events`] — the daemon's event stream: the server-sent frames, the
 //!   parser, and the connection that follows the stream.

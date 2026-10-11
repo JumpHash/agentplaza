@@ -238,31 +238,39 @@ pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A destructive action: it has to look like one, at every step.
-pub fn kill_button(armed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+/// A committing press in `tone`: it has to look like one, at every step.
+///
+/// `armed` is the second press's own look — the tone filled, its label spent —
+/// while an unarmed press wears the tone's ink on the sheet. It is the one body
+/// behind every arm-then-confirm press in the register: a run's kill, a task's
+/// withdraw, an agent's stop, and the owner's ratify and veto.
+pub fn act_button(tone: Tone, armed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| button::Style {
         background: Some(
             if armed {
-                CRIT
+                tone.color()
             } else {
                 match status {
-                    button::Status::Hovered | button::Status::Pressed => {
-                        Color::from_rgba8(0xa3, 0x18, 0x2b, 0.12)
-                    }
+                    button::Status::Hovered | button::Status::Pressed => Color {
+                        a: 0.12,
+                        ..tone.color()
+                    },
                     button::Status::Active | button::Status::Disabled => SHEET,
                 }
             }
             .into(),
         ),
-        text_color: if armed {
-            SHEET
-        } else {
-            CRIT
-        },
-        border: Border::default().width(2.0).color(CRIT),
+        text_color: if armed { SHEET } else { tone.color() },
+        border: Border::default().width(2.0).color(tone.color()),
         shadow: Shadow::default(),
         snap: true,
     }
+}
+
+/// A destructive action: it has to look like one, at every step — [`act_button`]
+/// in the register's red.
+pub fn kill_button(armed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    act_button(Tone::Crit, armed)
 }
 
 /// A form field: ruled, on the sheet.

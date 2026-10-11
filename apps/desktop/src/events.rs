@@ -1388,13 +1388,35 @@ mod tests {
                 state: MotionState::AwaitingOwner,
             })]
         );
+        // The owner's decision fires the same frame with the new state word:
+        // `crates/noded/src/council.rs`'s own bytes, with no text on it.
+        assert_eq!(
+            framer.feed(
+                b"event: motion\ndata: {\"id\":\"m1\",\"kind\":\"priority\",\"state\":\"ratified\"}\n\n"
+            ),
+            vec![Frame::Event(Event::Motion {
+                id: "m1".to_string(),
+                kind: MotionKind::Priority,
+                state: MotionState::Ratified,
+            })]
+        );
+        assert_eq!(
+            framer.feed(
+                b"event: motion\ndata: {\"id\":\"m2\",\"kind\":\"priority\",\"state\":\"vetoed\"}\n\n"
+            ),
+            vec![Frame::Event(Event::Motion {
+                id: "m2".to_string(),
+                kind: MotionKind::Priority,
+                state: MotionState::Vetoed,
+            })]
+        );
     }
 
     #[test]
     fn a_motion_frame_with_a_word_this_console_does_not_know_parses_as_unknown() {
         let mut framer = Framer::new();
         assert_eq!(
-            framer.feed(b"event: motion\ndata: {\"id\":\"m7\",\"kind\":\"referendum\",\"state\":\"vetoed\"}\n\n"),
+            framer.feed(b"event: motion\ndata: {\"id\":\"m7\",\"kind\":\"referendum\",\"state\":\"deferred\"}\n\n"),
             vec![Frame::Event(Event::Motion {
                 id: "m7".to_string(),
                 kind: MotionKind::Unknown,

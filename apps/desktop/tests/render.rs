@@ -253,6 +253,19 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if let Some(call) = effect.decide_motion {
+        // The owner's decision goes to the daemon itself, through the same
+        // client the motions are read from.
+        let approve = call.approve;
+        let id = call.id.clone();
+        let result = client.decide_motion(&id, approve, call.note.as_deref());
+        model.apply(Message::Decided {
+            at_ms: model.now_ms,
+            id,
+            approve,
+            result,
+        });
+    }
     if let Some((a, b)) = effect.fetch_thread {
         let result = client.thread(a, b);
         model.apply(Message::Thread {
@@ -4559,8 +4572,9 @@ fn the_council_pane_draws_the_motions_the_votes_and_the_owners_gate() {
             "the council sheet should show {expected:?}"
         );
     }
-    // Nothing on the sheet is a write: the pane says so.
-    assert!(ui.find(says("this sheet writes nothing")).is_ok());
+    // The sheet writes exactly one thing: the owner's decision. It says so
+    // rather than claiming to write nothing.
+    assert!(ui.find(says("this sheet writes nothing but the owner's decision")).is_ok());
 }
 
 #[test]
@@ -4751,6 +4765,172 @@ fn the_council_pane_is_drawn_over_a_real_frame() {
         assert!(holds(&frame, color, tolerance), "{name} is not on the council frame");
     }
     assert!(distinct_colors(frame.rgba.as_ref()) > 100);
+}
+
+#[test]
+fn the_owner_line_and_the_why_line_are_drawn_for_decided_and_other_states() {
+    // The decided council: the tie vetoed with a note, the law proposal
+    // ratified with none, and the plain carry.
+    let server = council_server(common::MOTIONS_DECIDED);
+    let model = council_from(server.port);
+    assert_eq!(model.pane, Pane::Council);
+    let mut ui = simulator(view::view(&model));
+
+    // The owner's line, for the vetoed tie: the word, the note as prose, and
+    // that the council cannot reopen it.
+    assert!(ui.find(says("the owner's hand")).is_ok());
+    assert!(ui.find(says("VETOED")).is_ok());
+    assert!(ui.find(says("not this season")).is_ok());
+    assert!(ui.find(says("the owner decides once: the council cannot reopen this")).is_ok());
+    // The ratified law proposal carries the same line, without a note.
+    assert!(ui.find(says("RATIFIED")).is_ok());
+    // The carry has no control and states the rule in one line.
+    assert!(
+        ui.find(says(
+            "the owner decides only a tie or a carry above the council's authority: m3 carried \
+             on the council's own majority"
+        ))
+        .is_ok()
+    );
+    // A decided motion holds no decide block.
+    assert!(ui.find(says("RATIFY m1")).is_err());
+    assert!(ui.find(says("VETO m1")).is_err());
+}
+
+#[test]
+fn a_decided_motion_takes_no_hot_signal_and_the_strip_carries_the_new_states() {
+    let server = council_server(common::MOTIONS_DECIDED);
+    let model = council_from(server.port);
+    // The strip offers the two new states, in the doctrine's order, after the
+    // gated ones.
+    assert_eq!(
+        model.council_states(),
+        vec![
+            agentplaza_desktop::api::MotionState::Carried,
+            agentplaza_desktop::api::MotionState::Ratified,
+            agentplaza_desktop::api::MotionState::Vetoed,
+        ]
+    );
+    // A decided motion is not the owner's gate: the frame draws strictly less
+    // of the register's one hot signal than the same council before the
+    // decision.
+    let mut gated = model.clone();
+    if let Some(page) = gated.council.as_mut() {
+        page.motions[1].state = agentplaza_desktop::api::MotionState::AwaitingOwner;
+        page.motions[2].state = agentplaza_desktop::api::MotionState::TieToOwner;
+    }
+    assert!(
+        count_near(&frame_of(model), SIGNAL, 8) < count_near(&frame_of(gated), SIGNAL, 8),
+        "a decided motion is stamped in its own tone, not the signal"
+    );
+}
+
+#[test]
+fn the_decide_block_arms_confirms_and_reads_the_owners_decision_back() {
+    // The owner's hand over the live plaza's council shape: a press arms, the
+    // second press commits, and the pane reads its own surface again — the row
+    // it then draws is the daemon's, with the owner's line on it.
+    let server = common::council_deciding(
+        ROLE_LIST,
+        ROLE_DETAIL,
+        "",
+        common::MOTIONS,
+        common::MOTION_M1,
+        common::MOTIONS_RATIFIED,
+        common::DECIDED_RATIFIED,
+    );
+    let mut model = role_model(server.port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Council));
+    perform(effect, &mut model, &client);
+    assert!(model.council.is_some(), "the council read answered");
+    // Narrow to the tie: the block is the sheet's own top, so its presses are
+    // in view (the sheet scrolls; the other rows are only read, never clicked).
+    model.apply(Message::StatePick(agentplaza_desktop::api::MotionState::TieToOwner));
+    assert_eq!(
+        model.council_filter,
+        Some(agentplaza_desktop::api::MotionState::TieToOwner)
+    );
+
+    // The decide block on the tie: the hand, the note box (counted), the two
+    // presses naming the motion.
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("The owner's hand · m1 · the operator decides, once")).is_ok());
+        assert!(ui.find(says("RATIFY m1")).is_ok());
+        assert!(ui.find(says("VETO m1")).is_ok());
+        assert!(ui.find(says("0 / 1000 bytes")).is_ok());
+        assert!(ui.find(says("CONFIRM RATIFY")).is_err(), "it arms on a press");
+    }
+
+    // The first press arms the ratification, and the confirming line states
+    // what committing means.
+    let messages = clicked(&model, "RATIFY m1");
+    assert!(
+        messages.contains(&Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        }),
+        "{messages:?}"
+    );
+    settle(&mut model, &client, messages);
+    assert_eq!(model.decide_armed("m1"), Some(true));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("CONFIRM RATIFY m1")).is_ok());
+        assert!(
+            ui.find(says(
+                "CONFIRMING RATIFIES m1: the 2–2 tie is resolved in the motion's favour — a \
+                 ratification above the council's authority, and the council cannot reopen it"
+            ))
+            .is_ok(),
+            "the confirming line states the meaning"
+        );
+        assert!(
+            ui.find(says("press the confirming button again to commit, or leave the pane to disarm"))
+                .is_ok()
+        );
+    }
+
+    // A note is written; the confirming press commits it to the daemon.
+    model.apply(Message::DecideEdit {
+        id: "m1".to_string(),
+        value: "carry it".to_string(),
+    });
+    let messages = clicked(&model, "CONFIRM RATIFY m1");
+    assert!(
+        messages.contains(&Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        }),
+        "{messages:?}"
+    );
+    settle(&mut model, &client, messages);
+    // The daemon recorded it: the hand closes, the act is named, and the pane's
+    // own read is asked for.
+    assert!(model.decide.is_none(), "the hand closed on the recorded decision");
+    assert_eq!(
+        model.notice.as_ref().expect("a notice").text,
+        "the owner ratified m1"
+    );
+    assert!(model.council_asked, "the decision asks for the pane's own read");
+    perform(Effect::council(), &mut model, &client);
+    assert!(!model.council_asked);
+
+    // Widen back to the whole council — the sheet's own filter.
+    model.apply(Message::StatePick(agentplaza_desktop::api::MotionState::TieToOwner));
+    assert_eq!(model.council_filter, None);
+
+    // The refreshed row is the daemon's: the owner's line, the note as prose,
+    // and the m1 tie is gone — every motion is decided or still gated.
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("carry it")).is_ok(), "the owner's note, as prose");
+    assert!(ui.find(says("RATIFIED")).is_ok());
+    assert!(ui.find(says("the owner decides once: the council cannot reopen this")).is_ok());
+    assert!(ui.find(says("RATIFY m1")).is_err(), "the tie is decided: no control");
+    assert!(ui.find(says("VETO m1")).is_err());
+    // The still-gated law proposal keeps its own block.
+    assert!(ui.find(says("RATIFY m2")).is_ok());
 }
 
 #[test]

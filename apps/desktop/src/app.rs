@@ -617,6 +617,27 @@ fn dispatch(
             ));
         }
     }
+    if let Some(call) = effect.decide_motion {
+        // The owner's hand on the council, through the register's own client:
+        // the decision is recorded on `noded`, the same daemon the motions are
+        // read from — not the hub's admin surface.
+        let client = client.clone();
+        let id = call.id.clone();
+        let reported = call.id.clone();
+        let approve = call.approve;
+        tasks.push(Task::perform(
+            async move {
+                let result = client.decide_motion(&id, approve, call.note.as_deref());
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::Decided {
+                at_ms,
+                id: reported.clone(),
+                approve,
+                result,
+            },
+        ));
+    }
     Task::batch(tasks)
 }
 

@@ -10,7 +10,7 @@ use crate::api::{
     ApiError, Award, Board, Column, Contacts, Conversations, CreateRun, CreateTask, Endpoint,
     Entry, FinishOutcome, FloorRead, HubAgent, HubStatus, Journal, Machine, Motion, MotionState,
     Motions, Post, Posting, Posts, Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact,
-    TaskState, TasksPage, TellAnswer, Thread, Totals, TreasuryRead, VmState,
+    TaskState, TasksPage, TellAnswer, Thread, Totals, TreasuryRead, VmState, MAX_DECISION_NOTE,
 };
 use crate::events::{AgoraKind, Event};
 use crate::export::{
@@ -722,6 +722,134 @@ impl StopState {
     }
 }
 
+/// The owner's hand on the council: which motion the operator is deciding, the
+/// note they are typing, the choice they have armed, and the last decision
+/// asked of the daemon.
+///
+/// It is the roster console's idiom, over the council's own act. A gated motion
+/// draws the block; the first press of `Ratify` or `Veto` aims the hand at that
+/// motion and arms the choice, and a second press on the same choice commits
+/// it. Leaving the pane, or the motion leaving the gated states, closes the
+/// hand — an armed choice never crosses either.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecideConsole {
+    /// The motion the owner's hand is aimed at.
+    pub id: String,
+    /// The note box: the owner's own words, sent only when they are non-blank.
+    pub note: String,
+    /// The choice armed for a confirming second press: `Some(true)` a
+    /// ratification armed, `Some(false)` a veto armed, `None` nothing armed.
+    pub armed: Option<bool>,
+    /// The last decision asked of the daemon, if any.
+    pub state: Option<DecideState>,
+}
+
+impl DecideConsole {
+    /// A fresh hand aimed at `id`: an empty note, nothing armed, nothing
+    /// answered yet.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            note: String::new(),
+            armed: None,
+            state: None,
+        }
+    }
+
+    /// The note that would be sent: the operator's words trimmed, or `None`
+    /// when they said none. A blank note is no note — the daemon's own rule
+    /// (a note that is present must not be blank), applied here so a stray
+    /// space never becomes a refusal.
+    pub fn note_to_send(&self) -> Option<&str> {
+        let note = self.note.trim();
+        (!note.is_empty()).then_some(note)
+    }
+
+    /// How many bytes the note to send would occupy — the daemon's own unit and
+    /// the figure the pane counts against its cap.
+    pub fn note_len(&self) -> usize {
+        self.note.trim().len()
+    }
+}
+
+/// What the operator's last decision on a council motion produced, from what
+/// the daemon actually said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecideState {
+    /// The decision is in flight.
+    Deciding {
+        /// The motion it names.
+        id: String,
+        /// The choice it carries (`true` ratifies, `false` vetoes).
+        approve: bool,
+    },
+    /// The daemon refused the decision, in its own words: the motion is not
+    /// owner-gated (the state is named and the council's own decision stands)
+    /// or it is already decided (the owner decides a motion once) — the two
+    /// `409`s — a `400` for a body outside the contract, or a `404` for an id
+    /// the council does not hold.
+    Refused {
+        /// The motion the decision named.
+        id: String,
+        /// The daemon's HTTP status.
+        status: u16,
+        /// The daemon's own words for the refusal.
+        message: String,
+    },
+    /// The daemon could not be reached, or answered something this console
+    /// cannot read.
+    Unreachable {
+        /// The motion the decision named.
+        id: String,
+        /// Why it could not be read.
+        message: String,
+    },
+    /// This console refused the decision before it was sent: the note is over
+    /// the daemon's cap, so nothing reached the council.
+    NotSent {
+        /// The motion the decision named.
+        id: String,
+        /// What the form itself said.
+        message: String,
+    },
+}
+
+impl DecideState {
+    /// The motion this state names.
+    pub fn id(&self) -> &str {
+        match self {
+            DecideState::Deciding { id, .. }
+            | DecideState::Refused { id, .. }
+            | DecideState::Unreachable { id, .. }
+            | DecideState::NotSent { id, .. } => id,
+        }
+    }
+
+    /// The word the block presses as this state's mark.
+    pub fn mark(&self) -> &'static str {
+        match self {
+            DecideState::Deciding { .. } => "DECIDING",
+            DecideState::Refused { .. } => "REFUSED",
+            DecideState::Unreachable { .. } => "UNREACHABLE",
+            DecideState::NotSent { .. } => "NOT SENT",
+        }
+    }
+
+    /// The honest sentence the block shows: the daemon's own words for a
+    /// refusal, or this console's own reason for a note it would not send.
+    pub fn text(&self) -> String {
+        match self {
+            DecideState::Deciding { id, approve } => {
+                let choice = if *approve { "ratification" } else { "veto" };
+                format!("asking the owner's hand on {id}: the {choice} is in flight…")
+            }
+            DecideState::Refused { message, .. } => message.clone(),
+            DecideState::Unreachable { message, .. } => message.clone(),
+            DecideState::NotSent { message, .. } => message.clone(),
+        }
+    }
+}
+
 /// One `POST /tell` to make on the hub's admin surface: the tool, its
 /// arguments, and how long to wait — already validated against the hub's own
 /// contract.
@@ -735,6 +863,19 @@ pub struct TellCall {
     pub args: serde_json::Value,
     /// How long to wait for the agent, in milliseconds.
     pub timeout_ms: u64,
+}
+
+/// One `POST /api/v0/motions/{id}/decide` to make: the owner's decision on a
+/// gated motion — the choice, and the note the owner left (already validated
+/// against the daemon's own cap).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecideCall {
+    /// The motion to decide.
+    pub id: String,
+    /// Whether the owner approves it (`true` ratifies, `false` vetoes).
+    pub approve: bool,
+    /// The owner's note, or none.
+    pub note: Option<String>,
 }
 
 /// What the reducer asks the runtime to do next.
@@ -810,6 +951,9 @@ pub struct Effect {
     /// `POST /stop` on the hub's admin surface for this guest CID: ask the
     /// agent to end its session.
     pub stop_agent: Option<u64>,
+    /// `POST /api/v0/motions/{id}/decide` with this decision: the owner's hand
+    /// on a gated motion.
+    pub decide_motion: Option<DecideCall>,
 }
 
 impl Effect {
@@ -996,6 +1140,15 @@ impl Effect {
     pub fn stop(cid: u64) -> Self {
         Self {
             stop_agent: Some(cid),
+            ..Self::default()
+        }
+    }
+
+    /// The owner's decision on a gated motion: one
+    /// `POST /api/v0/motions/{id}/decide`.
+    pub fn decide(call: DecideCall) -> Self {
+        Self {
+            decide_motion: Some(call),
             ..Self::default()
         }
     }
@@ -1255,6 +1408,32 @@ pub enum Message {
     /// A state row on the council pane's strip was pressed: filter to that
     /// state, or widen back to the whole council when already filtered to it.
     StatePick(MotionState),
+    /// The owner's hand note box was edited, for the motion it names.
+    DecideEdit {
+        /// The motion whose decide block was edited.
+        id: String,
+        /// The note as it now stands.
+        value: String,
+    },
+    /// A `Ratify` / `Veto` press on a gated motion: the first press arms the
+    /// choice, and a second press on the same choice commits it.
+    DecideClicked {
+        /// The motion the press names.
+        id: String,
+        /// The choice pressed (`true` ratify, `false` veto).
+        approve: bool,
+    },
+    /// `POST /api/v0/motions/{id}/decide` answered.
+    Decided {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The motion the decision named.
+        id: String,
+        /// The choice the decision carried.
+        approve: bool,
+        /// The recorded motion, or why the decision did not land.
+        result: Result<Motion, ApiError>,
+    },
     /// An agent's contacts answered.
     Contacts {
         /// When the answer arrived.
@@ -1413,6 +1592,7 @@ impl Message {
             | Message::Board { at_ms, .. }
             | Message::Talk { at_ms, .. }
             | Message::Motions { at_ms, .. }
+            | Message::Decided { at_ms, .. }
             | Message::Contacts { at_ms, .. }
             | Message::Thread { at_ms, .. }
             | Message::Task { at_ms, .. }
@@ -1454,6 +1634,8 @@ impl Message {
             | Message::InspectClose
             | Message::PairPick(_, _)
             | Message::StatePick(_)
+            | Message::DecideEdit { .. }
+            | Message::DecideClicked { .. }
             | Message::ThreadPick(_)
             | Message::TaskEdit { .. }
             | Message::TaskCreate
@@ -1721,6 +1903,11 @@ pub struct Model {
     /// The state the council pane is filtered to, whose motions are drawn
     /// instead of the whole council. `None` is the whole council.
     pub council_filter: Option<MotionState>,
+    /// The owner's hand: which gated motion the operator is deciding, the note
+    /// they are typing and the choice they have armed. `None` until a
+    /// `Ratify`/`Veto` press on a gated motion aims it — and always `None`
+    /// once the council pane is left, since the hand is the pane's.
+    pub decide: Option<DecideConsole>,
     /// The floor's derived layout, kept current while the floor shows so the
     /// canvas can borrow the model's own copy (a view cannot own the local
     /// [`Model::floor`] returns). Empty until the floor is first shown.
@@ -1847,6 +2034,7 @@ impl Default for Model {
             council_asked: false,
             council_picked: None,
             council_filter: None,
+            decide: None,
             floor_layout: FloorLayout::default(),
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
@@ -2509,6 +2697,17 @@ impl Model {
             Message::ThreadPick(peer) => self.read_thread(peer),
             Message::PairPick(a, b) => self.narrow_pair(a, b),
             Message::StatePick(state) => self.pick_council_state(state),
+            Message::DecideEdit { id, value } => {
+                self.decide_edit(&id, value);
+                Effect::none()
+            }
+            Message::DecideClicked { id, approve } => self.decide_clicked(&id, approve),
+            Message::Decided {
+                at_ms,
+                id,
+                approve,
+                result,
+            } => self.decided(at_ms, &id, approve, result),
             Message::TaskArtifactRead(path) => self.task_artifact_read(path),
             Message::TaskArtifact {
                 at_ms,
@@ -3226,6 +3425,11 @@ impl Model {
                 // cursor back onto one it does, so the strip never points at
                 // nothing.
                 self.reconcile_council_state();
+                // And the owner's hand is kept honest: a hand aimed at a motion
+                // that is gone or has left the gated states is closed, its arm
+                // spent — a decision is only ever taken on a motion the daemon
+                // still gates to the owner.
+                self.reconcile_decide();
             }
             Err(error) => {
                 self.council_unserved = error.is_not_found();
@@ -3392,6 +3596,206 @@ impl Model {
                 None => true,
             })
             .collect()
+    }
+
+    /// The note the owner's hand holds for `id`, or nothing when the hand is
+    /// aimed elsewhere — what a motion's own note box draws.
+    pub fn decide_note(&self, id: &str) -> &str {
+        match &self.decide {
+            Some(console) if console.id == id => console.note.as_str(),
+            _ => "",
+        }
+    }
+
+    /// The choice the owner's hand has armed for `id`, or `None`: what the
+    /// confirming press of a `Ratify`/`Veto` button would commit.
+    pub fn decide_armed(&self, id: &str) -> Option<bool> {
+        match &self.decide {
+            Some(console) if console.id == id => console.armed,
+            _ => None,
+        }
+    }
+
+    /// The last decision the owner's hand asked of the daemon for `id`, or why
+    /// it did not land.
+    pub fn decide_state(&self, id: &str) -> Option<&DecideState> {
+        match &self.decide {
+            Some(console) if console.id == id => console.state.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The note box was edited for `id`: aim the hand at that motion and keep
+    /// the text. A hand already aimed at it keeps its arm (typing a note must
+    /// not disarm the choice); a hand aimed elsewhere starts fresh and unarmed,
+    /// so a note written for one motion can never commit another's decision.
+    fn decide_edit(&mut self, id: &str, value: String) {
+        match self.decide.as_mut() {
+            Some(console) if console.id == id => console.note = value,
+            _ => {
+                self.decide = Some(DecideConsole {
+                    id: id.to_string(),
+                    note: value,
+                    armed: None,
+                    state: None,
+                });
+            }
+        }
+    }
+
+    /// A `Ratify` / `Veto` press on a gated motion: the first press aims the
+    /// owner's hand at that motion and arms the choice, and a second press on
+    /// the **same** choice commits it — the roster's arm-then-confirm stop,
+    /// over two choices. Pressing the other choice moves the arm rather than
+    /// committing it.
+    fn decide_clicked(&mut self, id: &str, approve: bool) -> Effect {
+        // The hand is only ever aimed at a motion the council still gates to
+        // the owner. The pane draws no control for any other state, so a stray
+        // press is refused with the rule named rather than arming a decision
+        // the daemon would refuse — the same rule the daemon's own `409`
+        // states.
+        let gated = self
+            .council
+            .as_ref()
+            .and_then(|page| page.motions.iter().find(|motion| motion.id == id))
+            .map(|motion| (motion.state.is_gated(), motion.state));
+        if let Some((false, state)) = gated {
+            return self.refuse(&format!(
+                "the owner decides only a tie or a carry above the council's authority: {id} is {}",
+                state.label()
+            ));
+        }
+        let armed_already = self
+            .decide
+            .as_ref()
+            .is_some_and(|console| console.id == id && console.armed == Some(approve));
+        if !armed_already {
+            match self.decide.as_mut() {
+                Some(console) if console.id == id => console.armed = Some(approve),
+                _ => {
+                    self.decide = Some(DecideConsole {
+                        id: id.to_string(),
+                        note: String::new(),
+                        armed: Some(approve),
+                        state: None,
+                    });
+                }
+            }
+            return Effect::none();
+        }
+        self.commit_decide()
+    }
+
+    /// The confirming press: the arm is spent, the note is held to the daemon's
+    /// own cap, and the decision is asked of the daemon. A note over the cap is
+    /// recorded as [`DecideState::NotSent`] with the cap named, and nothing is
+    /// sent — so a note the daemon would refuse never reaches the council.
+    fn commit_decide(&mut self) -> Effect {
+        let Some(console) = self.decide.as_ref() else {
+            return Effect::none();
+        };
+        let Some(approve) = console.armed else {
+            return Effect::none();
+        };
+        let id = console.id.clone();
+        if console.note_len() > MAX_DECISION_NOTE {
+            if let Some(console) = self.decide.as_mut() {
+                console.armed = None;
+                console.state = Some(DecideState::NotSent {
+                    id: id.clone(),
+                    message: format!(
+                        "the note is longer than the daemon's {MAX_DECISION_NOTE} bytes: nothing \
+                         was sent"
+                    ),
+                });
+            }
+            return Effect::none();
+        }
+        let note = console.note_to_send().map(str::to_string);
+        if let Some(console) = self.decide.as_mut() {
+            console.armed = None;
+            console.state = Some(DecideState::Deciding {
+                id: id.clone(),
+                approve,
+            });
+        }
+        Effect::decide(DecideCall {
+            id,
+            approve,
+            note,
+        })
+    }
+
+    /// Keeps the owner's hand honest across a re-read: a hand aimed at a motion
+    /// that is gone, or has left the gated states, is closed — the arm and the
+    /// note go with it, because the motion it named is no longer the owner's to
+    /// decide.
+    fn reconcile_decide(&mut self) {
+        let Some(id) = self.decide.as_ref().map(|console| console.id.clone()) else {
+            return;
+        };
+        let still_gated = self
+            .council
+            .as_ref()
+            .and_then(|page| page.motions.iter().find(|motion| motion.id == id))
+            .is_some_and(|motion| motion.state.is_gated());
+        if !still_gated {
+            self.decide = None;
+        }
+    }
+
+    /// The owner's decision came back: the daemon recorded it, or refused it in
+    /// its own words.
+    ///
+    /// A recorded decision is on the daemon's own record, so the hand is closed
+    /// — the motion has left the gated states — and the council is read again
+    /// (coalesced, the pane's own idiom), so the row the pane draws is the
+    /// daemon's, with the owner's line on it; the returned motion is not merged
+    /// into the held list, since the list is read whole or not at all. A
+    /// refusal is kept on the console, in the daemon's own words, so the
+    /// operator reads exactly what the council said.
+    fn decided(
+        &mut self,
+        at_ms: u64,
+        id: &str,
+        approve: bool,
+        result: Result<Motion, ApiError>,
+    ) -> Effect {
+        match result {
+            Ok(_motion) => {
+                let word = if approve { "ratified" } else { "vetoed" };
+                self.succeeded(at_ms);
+                self.decide = None;
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Done,
+                    text: format!("the owner {word} {id}"),
+                });
+                if self.pane == Pane::Council {
+                    self.ask_for_the_council()
+                } else {
+                    Effect::none()
+                }
+            }
+            Err(error) => {
+                let state = decide_error(id, error);
+                let text = format!("{id}: {}", state.text());
+                // The refusal lands on the hand it was asked from when it is
+                // still aimed at the same motion; when it is not — the hand
+                // moved or closed while the decision was in flight — the
+                // one-line notice carries it, so a refusal is never lost.
+                if let Some(console) = self.decide.as_mut() {
+                    if console.id == id {
+                        console.armed = None;
+                        console.state = Some(state);
+                    }
+                }
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Failed,
+                    text,
+                });
+                Effect::none()
+            }
+        }
     }
 
     /// Applies one board frame: the public board moved.
@@ -4442,9 +4846,13 @@ impl Model {
         }
         // The council's filter is the council's: leaving it widens back to the
         // whole council. The state cursor is kept — the next visit reconciles
-        // it onto a state the council carries.
+        // it onto a state the council carries. And the owner's hand is the
+        // council pane's too: leaving it closes the hand and disarms any
+        // choice waiting on a second press, so an armed Ratify or Veto never
+        // survives a pane change.
         if pane != Pane::Council {
             self.council_filter = None;
+            self.decide = None;
         }
         match pane {
             Pane::Fleet => {
@@ -5282,6 +5690,26 @@ fn stop_error(cid: u64, error: ApiError) -> StopState {
         },
         error => StopState::Unreachable {
             cid,
+            message: error.to_string(),
+        },
+    }
+}
+
+/// Why one owner's decision did not land, from what the daemon actually said.
+///
+/// A daemon that answered with a status and its own words is a refusal — the
+/// two `409`s (not owner-gated; already decided), a `400`, a `404` — carried
+/// through verbatim; anything that stopped the answer from arriving is the
+/// surface being unreadable.
+fn decide_error(id: &str, error: ApiError) -> DecideState {
+    match error {
+        ApiError::Status { status, message } => DecideState::Refused {
+            id: id.to_string(),
+            status,
+            message,
+        },
+        error => DecideState::Unreachable {
+            id: id.to_string(),
             message: error.to_string(),
         },
     }
@@ -11429,8 +11857,25 @@ mod tests {
                 "yes": count("yes"), "no": count("no"), "abstain": count("abstain"),
                 "voted": words.len(), "seats": 4,
             },
+            "owner": null,
             "created_at": 8_000, "updated_at": 9_000,
         })
+    }
+
+    /// One motion row carrying the owner's decision: `note` is `None` for a
+    /// decision the owner left none on — the daemon's own `null`.
+    fn decided(
+        id: &str,
+        kind: &str,
+        state: &str,
+        words: &[&str],
+        approve: bool,
+        note: Option<&str>,
+        at: u64,
+    ) -> serde_json::Value {
+        let mut row = motion(id, kind, state, words);
+        row["owner"] = serde_json::json!({ "approve": approve, "note": note, "at": at });
+        row
     }
 
     /// The live plaza's own council shape: a carried priority, a gated law
@@ -11704,6 +12149,376 @@ mod tests {
                     id: "m6".to_string(),
                     kind: MotionKind::Other,
                     state: MotionState::Open,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn the_arm_and_confirm_decide_a_gated_motion_and_name_it() {
+        let mut model = with_council(council_log());
+        assert!(model.decide.is_none(), "nothing is armed until a press");
+        assert_eq!(model.decide_armed("m1"), None);
+
+        // The first press on RATIFY aims the hand at the motion and arms the
+        // choice: nothing is sent.
+        assert_eq!(
+            model.apply(Message::DecideClicked {
+                id: "m1".to_string(),
+                approve: true,
+            }),
+            Effect::none()
+        );
+        assert_eq!(model.decide_armed("m1"), Some(true));
+        assert_eq!(model.decide.as_ref().expect("the hand").id, "m1");
+
+        // A note may be written between the arming and the confirming press,
+        // and the arm survives the typing.
+        model.apply(Message::DecideEdit {
+            id: "m1".to_string(),
+            value: "carry it".to_string(),
+        });
+        assert_eq!(model.decide_note("m1"), "carry it");
+        assert_eq!(model.decide_armed("m1"), Some(true));
+
+        // The second press on the **same** choice commits it, with the note.
+        assert_eq!(
+            model.apply(Message::DecideClicked {
+                id: "m1".to_string(),
+                approve: true,
+            }),
+            Effect::decide(DecideCall {
+                id: "m1".to_string(),
+                approve: true,
+                note: Some("carry it".to_string()),
+            })
+        );
+        assert_eq!(model.decide_armed("m1"), None, "the arm is spent");
+        assert_eq!(model.decide_state("m1").map(DecideState::mark), Some("DECIDING"));
+
+        // Pressing the other choice moves the arm rather than committing it,
+        // and a hand that moved starts a fresh note: one motion's note can
+        // never commit another's decision.
+        model.apply(Message::DecideClicked {
+            id: "m2".to_string(),
+            approve: true,
+        });
+        assert_eq!(model.decide_armed("m2"), Some(true));
+        model.apply(Message::DecideClicked {
+            id: "m2".to_string(),
+            approve: false,
+        });
+        assert_eq!(model.decide_armed("m2"), Some(false), "the arm moved; nothing was sent");
+        assert_eq!(model.decide_note("m2"), "");
+        assert_eq!(
+            model.apply(Message::DecideClicked {
+                id: "m2".to_string(),
+                approve: false,
+            }),
+            Effect::decide(DecideCall {
+                id: "m2".to_string(),
+                approve: false,
+                note: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_motion_the_owner_cannot_decide_arms_nothing() {
+        let mut model = with_council(council_log());
+        // m3 is carried: the council's own majority decided it, and the pane
+        // draws no control for it. A stray press is refused with the rule
+        // named, exactly as the daemon's `409` names it.
+        assert_eq!(
+            model.apply(Message::DecideClicked {
+                id: "m3".to_string(),
+                approve: true,
+            }),
+            Effect::none()
+        );
+        assert!(model.decide.is_none(), "nothing is armed");
+        let notice = model.notice.as_ref().expect("a notice");
+        assert!(
+            notice.text.contains("the owner decides only a tie or a carry above the council's authority"),
+            "{}",
+            notice.text
+        );
+        assert!(notice.text.contains("m3 is carried"), "{}", notice.text);
+    }
+
+    #[test]
+    fn leaving_the_council_closes_the_owners_hand_and_disarms_a_choice() {
+        let mut model = with_council(council_log());
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: false,
+        });
+        assert_eq!(model.decide_armed("m1"), Some(false), "VETO is armed");
+
+        // Showing another sheet is leaving the council: the hand closes and the
+        // arm is spent, so a confirming press can never land off the pane.
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(model.decide.is_none());
+
+        // Re-showing the council does not resurrect the hand.
+        model.apply(Message::Show(Pane::Council));
+        assert!(model.decide.is_none());
+        assert_eq!(model.decide_armed("m1"), None);
+    }
+
+    #[test]
+    fn a_motion_that_leaves_the_gated_states_closes_the_owners_hand() {
+        let mut model = with_council(council_log());
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        model.apply(Message::DecideEdit {
+            id: "m1".to_string(),
+            value: "carry it".to_string(),
+        });
+        assert_eq!(model.decide_armed("m1"), Some(true));
+
+        // Another hand decided it first: the re-read shows m1 no longer gated,
+        // and the hand — arm and note with it — closes.
+        model.apply(Message::Motions {
+            at_ms: 11_000,
+            result: Ok(motions_of(serde_json::json!([decided(
+                "m1",
+                "priority",
+                "ratified",
+                &["yes", "yes", "no", "no"],
+                true,
+                Some("carried by the owner"),
+                9_500
+            )]))),
+        });
+        assert!(model.decide.is_none(), "the motion left the gated states");
+        assert_eq!(model.decide_armed("m1"), None);
+
+        // A hand aimed at a motion that is still gated is kept, arm and all.
+        model.apply(Message::DecideClicked {
+            id: "m2".to_string(),
+            approve: true,
+        });
+        model.apply(Message::Motions {
+            at_ms: 12_000,
+            result: Ok(council_log()),
+        });
+        assert_eq!(model.decide_armed("m2"), Some(true), "a gated motion keeps the hand");
+    }
+
+    #[test]
+    fn a_note_over_the_daemons_cap_is_not_sent() {
+        let mut model = with_council(council_log());
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        model.apply(Message::DecideEdit {
+            id: "m1".to_string(),
+            value: "y".repeat(MAX_DECISION_NOTE + 1),
+        });
+        assert_eq!(
+            model.apply(Message::DecideClicked {
+                id: "m1".to_string(),
+                approve: true,
+            }),
+            Effect::none(),
+            "nothing is sent on a note the daemon would refuse"
+        );
+        let state = model.decide_state("m1").expect("the refusal is recorded");
+        assert_eq!(state.mark(), "NOT SENT");
+        assert!(state.text().contains("1000"), "{}", state.text());
+        assert_eq!(model.decide_armed("m1"), None, "the arm is spent");
+
+        // At the cap exactly, it is sent — the daemon's own bound, not a
+        // stricter one of this console's.
+        model.apply(Message::DecideEdit {
+            id: "m1".to_string(),
+            value: "y".repeat(MAX_DECISION_NOTE),
+        });
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        let effect = model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        let call = effect.decide_motion.expect("at the cap is inside the contract");
+        assert_eq!(call.note.as_deref().map(str::len), Some(MAX_DECISION_NOTE));
+
+        // A blank note is no note: it is sent as none rather than as a bare
+        // string the daemon would refuse.
+        model.apply(Message::DecideEdit {
+            id: "m1".to_string(),
+            value: "   ".to_string(),
+        });
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        let effect = model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        assert_eq!(effect.decide_motion.expect("a decision").note, None);
+    }
+
+    #[test]
+    fn a_decided_motion_is_the_owners_act_and_the_pane_reads_its_own_surface_again() {
+        let mut model = with_council(council_log());
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        let committed = model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        assert!(committed.decide_motion.is_some());
+
+        // The daemon recorded it: the hand closes, a notice names the act, and
+        // the council is read again — coalesced, the pane's own idiom.
+        let recorded: Motion = serde_json::from_value(decided(
+            "m1",
+            "priority",
+            "ratified",
+            &["yes", "yes", "no", "no"],
+            true,
+            None,
+            9_500,
+        ))
+        .expect("the recorded motion parses");
+        let effect = model.apply(Message::Decided {
+            at_ms: 12_000,
+            id: "m1".to_string(),
+            approve: true,
+            result: Ok(recorded),
+        });
+        assert_eq!(effect, Effect::council(), "the pane's own surface is read again");
+        assert!(model.decide.is_none());
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "the owner ratified m1"
+        );
+        assert!(model.council_asked, "the read is in flight");
+        // The read is coalesced: a second recorded decision before the first
+        // read lands asks for nothing new.
+        let second: Motion = serde_json::from_value(decided(
+            "m2",
+            "law_proposal",
+            "vetoed",
+            &["yes", "yes", "yes", "yes"],
+            false,
+            Some("not yet"),
+            9_600,
+        ))
+        .expect("the recorded motion parses");
+        assert_eq!(
+            model.apply(Message::Decided {
+                at_ms: 12_100,
+                id: "m2".to_string(),
+                approve: false,
+                result: Ok(second),
+            }),
+            Effect::none(),
+            "the outstanding read already covers it"
+        );
+        assert_eq!(
+            model.notice.as_ref().expect("a notice").text,
+            "the owner vetoed m2"
+        );
+    }
+
+    #[test]
+    fn a_decide_refusal_keeps_the_daemons_own_words() {
+        let mut model = with_council(council_log());
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        model.apply(Message::DecideClicked {
+            id: "m1".to_string(),
+            approve: true,
+        });
+        // Another hand got there first: the daemon's own `409`, kept verbatim
+        // on the hand, so the operator reads exactly what the council said.
+        let message = "motion m1 is already decided (ratified): the owner decides a motion once";
+        model.apply(Message::Decided {
+            at_ms: 12_000,
+            id: "m1".to_string(),
+            approve: true,
+            result: Err(ApiError::Status {
+                status: 409,
+                message: message.to_string(),
+            }),
+        });
+        let state = model.decide_state("m1").expect("the refusal is kept");
+        assert_eq!(state.mark(), "REFUSED");
+        assert_eq!(state.text(), message);
+        assert_eq!(model.decide_armed("m1"), None, "the arm is spent");
+        assert!(model.notice.as_ref().expect("a notice").text.contains(message));
+
+        // A refusal that arrives after the hand closed is a notice, never lost.
+        model.apply(Message::Show(Pane::Fleet));
+        model.apply(Message::Decided {
+            at_ms: 13_000,
+            id: "m1".to_string(),
+            approve: true,
+            result: Err(ApiError::Connect("connection refused".to_string())),
+        });
+        assert!(model.decide.is_none());
+        assert!(model.notice.as_ref().expect("a notice").text.contains("cannot reach"));
+    }
+
+    #[test]
+    fn a_decided_motion_frame_reads_the_council_and_never_patches_a_row() {
+        let mut model = with_council(council_log());
+        // The decision's own frame: the pane holds m1 as a tie, the frame says
+        // `ratified` — a state the pane does not hold, so it reads its own
+        // surface rather than assembling the row from the frame (which carries
+        // no text, no votes and no owner).
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_000,
+                event: Event::Motion {
+                    id: "m1".to_string(),
+                    kind: MotionKind::Priority,
+                    state: MotionState::Ratified,
+                },
+            }),
+            Effect::council()
+        );
+        // Nothing was patched in: the held motion is still the tie the read
+        // answered.
+        let held = model.council.as_ref().expect("the held council");
+        assert_eq!(held.motions[3].state, MotionState::TieToOwner);
+        assert_eq!(held.motions[3].owner(), None);
+
+        // Once the pane has read the decided row, a frame naming the same state
+        // is a duplicate and a no-op.
+        model.apply(Message::Motions {
+            at_ms: 11_100,
+            result: Ok(motions_of(serde_json::json!([decided(
+                "m1",
+                "priority",
+                "ratified",
+                &["yes", "yes", "no", "no"],
+                true,
+                None,
+                9_500
+            )]))),
+        });
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_200,
+                event: Event::Motion {
+                    id: "m1".to_string(),
+                    kind: MotionKind::Priority,
+                    state: MotionState::Ratified,
                 },
             }),
             Effect::none()
