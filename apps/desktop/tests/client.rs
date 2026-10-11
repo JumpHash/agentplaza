@@ -6,7 +6,7 @@
 //! exercise its parsing over a real connection.
 //!
 //! One test talks to a live daemon when `APZ_DESKTOP_LIVE` names one (for
-//! example `http://127.0.0.1:8899`), and does nothing otherwise.
+//! example `http://127.0.0.1:7700`), and does nothing otherwise.
 
 mod common;
 
@@ -46,7 +46,7 @@ fn listing_runs_sends_the_documented_request_and_reads_the_answer() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/runs");
+    assert_eq!(requests[0].target, "/v1/runs");
     assert_eq!(requests[0].body, "");
 }
 
@@ -71,7 +71,7 @@ fn reading_one_run_follows_the_runs_path() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/runs/r1");
+    assert_eq!(requests[0].target, "/v1/runs/r1");
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn killing_a_run_deletes_the_runs_path() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "DELETE");
-    assert_eq!(requests[0].target, "/api/v0/runs/r1");
+    assert_eq!(requests[0].target, "/v1/runs/r1");
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn reading_the_machine_follows_the_machines_path() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/machine");
+    assert_eq!(requests[0].target, "/v1/machine");
     assert_eq!(requests[0].body, "");
 }
 
@@ -474,7 +474,7 @@ fn writing_to_a_console_posts_exactly_the_daemons_input_body() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/api/v0/runs/r1/input");
+    assert_eq!(requests[0].target, "/v1/runs/r1/input");
     assert_eq!(requests[0].header("Content-Type"), Some("application/json"));
     assert_eq!(
         requests[0].header("Content-Length"),
@@ -517,7 +517,7 @@ fn spawning_posts_exactly_the_daemons_create_body() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/api/v0/runs");
+    assert_eq!(requests[0].target, "/v1/runs");
     assert_eq!(requests[0].header("Content-Type"), Some("application/json"));
     assert_eq!(
         requests[0].header("Content-Length"),
@@ -588,11 +588,11 @@ fn a_response_without_a_length_is_malformed() {
 #[test]
 fn a_non_loopback_endpoint_is_refused_before_any_socket_is_opened() {
     for host in ["example.com", "10.0.0.1", "127.0.0.1.evil.tld", "::1"] {
-        let error = Endpoint::loopback_at(host, 8899).expect_err("must be refused");
+        let error = Endpoint::loopback_at(host, 7700).expect_err("must be refused");
         assert!(matches!(error, ApiError::Config(_)), "{host}: {error:?}");
     }
     assert_eq!(
-        Endpoint::loopback_at("localhost", 8899)
+        Endpoint::loopback_at("localhost", 7700)
             .expect("localhost is loopback")
             .host(),
         "127.0.0.1"
@@ -642,7 +642,7 @@ fn the_stream_client_reads_the_daemons_frames_off_a_real_socket() {
     let requests = server.requests();
     let streamed = requests
         .iter()
-        .find(|request| request.target == "/api/v0/events")
+        .find(|request| request.target == "/v1/events")
         .expect("the console asked for the stream");
     assert_eq!(streamed.method, "GET");
     assert_eq!(streamed.header("Host"), Some("localhost"));
@@ -687,7 +687,7 @@ fn the_stream_client_reconnects_when_the_daemon_closes_the_stream() {
         server
             .requests()
             .iter()
-            .filter(|request| request.target == "/api/v0/events")
+            .filter(|request| request.target == "/v1/events")
             .count(),
         2,
         "two connections"
@@ -731,7 +731,7 @@ fn listing_tasks_sends_the_documented_request_and_reads_the_ledger() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/tasks");
+    assert_eq!(requests[0].target, "/v1/tasks");
     assert_eq!(requests[0].body, "");
 }
 
@@ -745,7 +745,7 @@ fn reading_one_task_follows_the_tasks_path() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/tasks/t1");
+    assert_eq!(requests[0].target, "/v1/tasks/t1");
 }
 
 #[test]
@@ -763,7 +763,7 @@ fn creating_a_task_posts_exactly_the_daemons_create_body() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/api/v0/tasks");
+    assert_eq!(requests[0].target, "/v1/tasks");
     assert_eq!(requests[0].body, CREATE_TASK_BODY);
     assert_eq!(
         requests[0].header("Content-Type"),
@@ -782,7 +782,7 @@ fn claiming_a_task_posts_the_agent_cid_and_a_409_carries_the_daemons_words() {
     assert_eq!(task.state, TaskState::Claimed);
     let requests = server.requests();
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/api/v0/tasks/t1/claim");
+    assert_eq!(requests[0].target, "/v1/tasks/t1/claim");
     assert_eq!(requests[0].body, r#"{"agent_cid":112}"#);
 
     // A CID no live agent holds is refused 409, and the client carries the
@@ -818,7 +818,7 @@ fn finishing_posts_the_outcome_and_note_and_withdrawing_deletes_the_path() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/api/v0/tasks/t1/finish");
+    assert_eq!(requests[0].target, "/v1/tasks/t1/finish");
     assert_eq!(
         requests[0].body,
         r#"{"outcome":"done","note":"21 handbooks committed"}"#
@@ -826,7 +826,7 @@ fn finishing_posts_the_outcome_and_note_and_withdrawing_deletes_the_path() {
 
     let requests = server2.requests();
     assert_eq!(requests[0].method, "DELETE");
-    assert_eq!(requests[0].target, "/api/v0/tasks/t1");
+    assert_eq!(requests[0].target, "/v1/tasks/t1");
     assert_eq!(requests[0].body, "");
 }
 
@@ -872,7 +872,7 @@ fn reading_a_tasks_artifact_posts_the_path_and_reads_the_agents_file() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "POST", "the read-through is a POST");
-    assert_eq!(requests[0].target, "/api/v0/tasks/t3/artifact");
+    assert_eq!(requests[0].target, "/v1/tasks/t3/artifact");
     assert_eq!(requests[0].body, r#"{"path":"build-notes.txt"}"#);
     assert_eq!(
         requests[0].header("Content-Type"),
@@ -977,9 +977,9 @@ fn reading_the_treasury_reads_both_paths_at_once() {
     let requests = server.requests();
     assert_eq!(requests.len(), 2, "the read is both halves or neither");
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/treasury");
+    assert_eq!(requests[0].target, "/v1/treasury");
     assert_eq!(requests[1].method, "GET");
-    assert_eq!(requests[1].target, "/api/v0/treasury/journal");
+    assert_eq!(requests[1].target, "/v1/treasury/journal");
     assert_eq!(requests[0].body, "");
     assert_eq!(requests[1].body, "");
 }
@@ -1051,7 +1051,7 @@ fn reading_the_market_reads_the_whole_board_at_once() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "the board is one read");
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/agora");
+    assert_eq!(requests[0].target, "/v1/agora");
     assert_eq!(requests[0].body, "");
 }
 
@@ -1103,7 +1103,7 @@ fn reading_the_board_reads_the_plaza_posts_newest_first() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/board");
+    assert_eq!(requests[0].target, "/v1/board");
     assert_eq!(requests[0].body, "");
 }
 
@@ -1133,8 +1133,8 @@ fn reading_the_floor_reads_the_conversations_and_the_board_at_once() {
     // Exactly two reads, in the read's own order, with no bodies.
     let requests = server.requests();
     assert_eq!(requests.len(), 2, "the floor is two GETs, one read");
-    assert_eq!(requests[0].target, "/api/v0/conversations");
-    assert_eq!(requests[1].target, "/api/v0/board");
+    assert_eq!(requests[0].target, "/v1/conversations");
+    assert_eq!(requests[1].target, "/v1/board");
     assert!(requests.iter().all(|request| request.method == "GET"));
 }
 
@@ -1158,7 +1158,7 @@ fn reading_an_agents_contacts_follows_the_agents_path() {
     assert_eq!(contacts.contacts[0].role, "reviewer");
     assert_eq!(contacts.contacts[0].kind, "met");
     let requests = server.requests();
-    assert_eq!(requests[0].target, "/api/v0/agents/100/contacts");
+    assert_eq!(requests[0].target, "/v1/agents/100/contacts");
 }
 
 #[test]
@@ -1181,7 +1181,7 @@ fn reading_a_thread_follows_the_pairs_path() {
     assert_eq!(thread.messages[0].text, "can you review it?");
     assert!(thread.messages[0].delivered);
     let requests = server.requests();
-    assert_eq!(requests[0].target, "/api/v0/conversations/100/101");
+    assert_eq!(requests[0].target, "/v1/conversations/100/101");
 }
 
 #[test]
@@ -1226,8 +1226,8 @@ fn reading_the_talk_log_reads_the_pairs_the_daemon_folded() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/conversations");
-    assert_eq!(requests[1].target, "/api/v0/conversations/103/109");
+    assert_eq!(requests[0].target, "/v1/conversations");
+    assert_eq!(requests[1].target, "/v1/conversations/103/109");
 }
 
 #[test]
@@ -1310,7 +1310,7 @@ fn reading_the_council_reads_the_motions_newest_first_with_every_vote() {
 
     let requests = server.requests();
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].target, "/api/v0/motions");
+    assert_eq!(requests[0].target, "/v1/motions");
 }
 
 #[test]
@@ -1327,7 +1327,7 @@ fn reading_one_motion_follows_the_motions_path() {
     // The single read is the list's own row.
     let page = client(server.port).motions().expect("the council should parse");
     assert_eq!(page.motions[2], motion);
-    assert_eq!(server.requests()[0].target, "/api/v0/motions/m1");
+    assert_eq!(server.requests()[0].target, "/v1/motions/m1");
 }
 
 #[test]
@@ -1358,7 +1358,7 @@ fn a_missing_motion_and_a_motion_id_that_is_not_plain_are_both_refused() {
     }
 }
 
-/// A decided motion as `POST /api/v0/motions/{id}/decide` answers it: the tie
+/// A decided motion as `POST /v1/motions/{id}/decide` answers it: the tie
 /// of [`common::MOTION_M1`], vetoed by the owner with a note.
 const VETOED: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
     "kind":"priority","text":"prioritise the east wing over new towns this week",
@@ -1404,7 +1404,7 @@ fn deciding_posts_the_daemons_decide_body_and_reads_the_owners_line() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/api/v0/motions/m1/decide");
+    assert_eq!(requests[0].target, "/v1/motions/m1/decide");
     assert_eq!(requests[0].header("Content-Type"), Some("application/json"));
     assert_eq!(requests[0].body, r#"{"approve":false,"note":"not this season"}"#);
 

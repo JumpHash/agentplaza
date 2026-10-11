@@ -1,4 +1,4 @@
-//! The node daemon's JSON API, spoken over a tiny blocking HTTP/1.1 client.
+//! The apid's JSON API, spoken over a tiny blocking HTTP/1.1 client.
 //!
 //! The dashboard reaches `noded` on loopback only, so this is deliberately not
 //! a general HTTP client: one request per connection, no redirects, no
@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 /// The port `noded` listens on unless `--url` says otherwise.
-pub const DEFAULT_PORT: u16 = 8899;
+pub const DEFAULT_PORT: u16 = 7700;
 
 /// How long one request may take, end to end.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -122,7 +122,7 @@ impl VmState {
     }
 }
 
-/// One VM of a run, as `GET /api/v0/runs/{id}` reports it.
+/// One VM of a run, as `GET /v1/runs/{id}` reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Vm {
     /// The VM's index among the run's VMs.
@@ -223,14 +223,14 @@ impl Run {
     }
 }
 
-/// `GET /api/v0/runs`: the list endpoint's body.
+/// `GET /v1/runs`: the list endpoint's body.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RunsPage {
     /// Every run, oldest first.
     pub runs: Vec<Run>,
 }
 
-/// `GET /api/v0/machine`: the node's machine, as `noded` reports it
+/// `GET /v1/machine`: the node's machine, as `noded` reports it
 /// (`noded::MachineView`; `core.machines`'s fields plus the vsock transport).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Machine {
@@ -599,7 +599,7 @@ impl TaskOutcome {
     }
 }
 
-/// One task, as `GET /api/v0/tasks` and `GET /api/v0/tasks/{id}` report it
+/// One task, as `GET /v1/tasks` and `GET /v1/tasks/{id}` report it
 /// (`noded::tasks::TaskView`).
 ///
 /// Every column the daemon writes is required — a body missing one is an error
@@ -639,14 +639,14 @@ pub struct Task {
     pub updated_at: u64,
 }
 
-/// `GET /api/v0/tasks`: the list endpoint's body.
+/// `GET /v1/tasks`: the list endpoint's body.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TasksPage {
     /// Every task, oldest first.
     pub tasks: Vec<Task>,
 }
 
-/// A task's artifact, as `POST /api/v0/tasks/{id}/artifact` reports it
+/// A task's artifact, as `POST /v1/tasks/{id}/artifact` reports it
 /// (`noded`'s `ArtifactView`): the file the task's agent read back out of its
 /// own workspace, and the terms its `read_file` returned it in.
 ///
@@ -674,7 +674,7 @@ pub struct TaskArtifact {
     pub truncated: bool,
 }
 
-/// `POST /api/v0/tasks/{id}/artifact`: the body names the file to read
+/// `POST /v1/tasks/{id}/artifact`: the body names the file to read
 /// (`noded`'s `ArtifactRequest`).
 ///
 /// The daemon drives the task's agent's `read_file` with this path, so where a
@@ -682,6 +682,7 @@ pub struct TaskArtifact {
 /// this client's: this sends the path as given and the refusal, when there is
 /// one, is the agent's own words.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct ArtifactRequest {
     /// The path of the file to read, as the task's agent wrote it.
     path: String,
@@ -782,7 +783,7 @@ impl EntryKind {
     }
 }
 
-/// One account, as `GET /api/v0/treasury` reports it
+/// One account, as `GET /v1/treasury` reports it
 /// (`noded::treasury::AccountView`).
 ///
 /// Every column the daemon writes is required — none of these is nullable — so
@@ -878,7 +879,7 @@ pub struct Entry {
     pub postings: Vec<Posting>,
 }
 
-/// `GET /api/v0/treasury`: the accounts and the totals
+/// `GET /v1/treasury`: the accounts and the totals
 /// (`noded::treasury::TreasuryView`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Treasury {
@@ -892,7 +893,7 @@ pub struct Treasury {
     pub note: String,
 }
 
-/// `GET /api/v0/treasury/journal`: the journal
+/// `GET /v1/treasury/journal`: the journal
 /// (`noded::treasury::JournalView`).
 ///
 /// The endpoint returns the newest `limit` entries (oldest of those first), so
@@ -926,7 +927,7 @@ pub struct TreasuryRead {
     pub journal: Journal,
 }
 
-/// How a call stands on the board, as `GET /api/v0/agora` reports it.
+/// How a call stands on the board, as `GET /v1/agora` reports it.
 ///
 /// The daemon derives a call from a roled task, so its `state` is `awarded`
 /// once an award closed it and the task's own state otherwise
@@ -994,7 +995,7 @@ impl CallState {
     }
 }
 
-/// One bid, as `GET /api/v0/agora` reports it (`noded::agora::BidView`).
+/// One bid, as `GET /v1/agora` reports it (`noded::agora::BidView`).
 ///
 /// Every column the daemon writes is required — none of these is nullable — so
 /// a body that omits one is an error that names it, while a column this client
@@ -1015,7 +1016,7 @@ pub struct Bid {
     pub created_at: u64,
 }
 
-/// One award, as `GET /api/v0/agora` reports it (`noded::agora::AwardView`).
+/// One award, as `GET /v1/agora` reports it (`noded::agora::AwardView`).
 ///
 /// `escrow_entry` is the one nullable column — `null` for a call whose task
 /// named no budget — so it is a [`Column`], while every other column is
@@ -1038,7 +1039,7 @@ pub struct Award {
     pub created_at: u64,
 }
 
-/// One call, as `GET /api/v0/agora` reports it (`noded::agora::CallView`): the
+/// One call, as `GET /v1/agora` reports it (`noded::agora::CallView`): the
 /// offer a roled task makes, with the bids it holds and the award that closed
 /// it.
 ///
@@ -1083,7 +1084,7 @@ impl Call {
     }
 }
 
-/// `GET /api/v0/agora`: the board
+/// `GET /v1/agora`: the board
 /// (`noded::agora::CallsView`) — the calls with their bids and awards.
 ///
 /// The daemon derives the calls from the ledger (oldest first) and bounds its
@@ -1101,7 +1102,7 @@ pub struct Board {
     pub truncated: bool,
 }
 
-/// One post on the plaza's public board, as `GET /api/v0/board` reports it
+/// One post on the plaza's public board, as `GET /v1/board` reports it
 /// (`noded::social::PostView`).
 ///
 /// Every column the daemon writes is required — a body missing one is an error
@@ -1139,7 +1140,7 @@ pub struct Unread {
     pub count: usize,
 }
 
-/// `GET /api/v0/board`: the plaza's public posts
+/// `GET /v1/board`: the plaza's public posts
 /// (`noded::social::BoardView`) — newest first and bounded, with every agent
 /// the daemon knows carrying its unread count.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1171,7 +1172,7 @@ pub struct Contact {
     pub kind: String,
 }
 
-/// `GET /api/v0/agents/{cid}/contacts`: one agent's list, with the bounding
+/// `GET /v1/agents/{cid}/contacts`: one agent's list, with the bounding
 /// line (`noded::social::ContactsView`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Contacts {
@@ -1187,7 +1188,7 @@ pub struct Contacts {
     pub truncated: bool,
 }
 
-/// One exchange, as `GET /api/v0/conversations` reports it
+/// One exchange, as `GET /v1/conversations` reports it
 /// (`noded::social::ConversationView`): what an agent said to a peer, and
 /// whether the peer's session took the call.
 ///
@@ -1234,7 +1235,7 @@ pub struct Pair {
     pub last_at: u64,
 }
 
-/// `GET /api/v0/conversations`: the exchange record
+/// `GET /v1/conversations`: the exchange record
 /// (`noded::social::ConversationsView`) — newest first and bounded, with the
 /// pair summaries the floor derives proximity from.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1257,7 +1258,7 @@ pub struct Conversations {
     pub pairs_truncated: bool,
 }
 
-/// `GET /api/v0/conversations/{a}/{b}`: one pair's thread
+/// `GET /v1/conversations/{a}/{b}`: one pair's thread
 /// (`noded::social::ThreadView`) — the exchanges between two agents, oldest
 /// first.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1552,7 +1553,7 @@ impl OwnerDecision {
     }
 }
 
-/// One council motion, as `GET /api/v0/motions` reports it
+/// One council motion, as `GET /v1/motions` reports it
 /// (`noded::council::MotionView`) — the contract's schema, as the daemon stores
 /// it.
 ///
@@ -1617,7 +1618,7 @@ impl Motion {
     }
 }
 
-/// `GET /api/v0/motions`: the list endpoint's body
+/// `GET /v1/motions`: the list endpoint's body
 /// (`noded::council::MotionsView`) — the motions, newest first, cut to the
 /// daemon's own bound.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1632,7 +1633,7 @@ pub struct Motions {
     pub truncated: bool,
 }
 
-/// `POST /api/v0/motions/{id}/decide`: the body sends exactly the fields
+/// `POST /v1/motions/{id}/decide`: the body sends exactly the fields
 /// `noded` accepts (`noded::council::DecideRequest`).
 ///
 /// **The owner is the operator**, so the body names no agent CID and none is
@@ -1664,7 +1665,7 @@ pub struct FloorRead {
     pub conversations: Conversations,
 }
 
-/// `POST /api/v0/tasks`: the body sends exactly the fields `noded` accepts
+/// `POST /v1/tasks`: the body sends exactly the fields `noded` accepts
 /// (`noded::tasks::CreateTask`); a field it does not name is absent rather
 /// than null, and the daemon fills its own default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1679,7 +1680,7 @@ pub struct CreateTask {
     pub role: Option<String>,
 }
 
-/// `POST /api/v0/tasks/{id}/claim`: the body names the guest CID the claiming
+/// `POST /v1/tasks/{id}/claim`: the body names the guest CID the claiming
 /// agent is connected as (`noded::tasks::ClaimRequest`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimTask {
@@ -1707,7 +1708,7 @@ impl FinishOutcome {
     }
 }
 
-/// `POST /api/v0/tasks/{id}/finish`: the body sends the outcome and, when the
+/// `POST /v1/tasks/{id}/finish`: the body sends the outcome and, when the
 /// agent says anything, its note (`noded::tasks::FinishRequest`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinishTask {
@@ -1717,7 +1718,7 @@ pub struct FinishTask {
     pub note: Option<String>,
 }
 
-/// `POST /api/v0/runs/{id}/input`: the body writes one line to one VM's
+/// `POST /v1/runs/{id}/input`: the body writes one line to one VM's
 /// console, in exactly the fields `noded` accepts (`noded::InputRequest`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputRequest {
@@ -1727,7 +1728,7 @@ pub struct InputRequest {
     pub vm: u32,
 }
 
-/// `POST /api/v0/runs`: the body sends exactly the fields `noded` accepts.
+/// `POST /v1/runs`: the body sends exactly the fields `noded` accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateRun {
     /// How many VMs to boot.
@@ -1757,7 +1758,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// The default endpoint: the daemon on `127.0.0.1:8899`.
+    /// The default endpoint: the daemon on `127.0.0.1:7700`.
     pub fn loopback() -> Self {
         Self {
             host: Ipv4Addr::LOCALHOST.to_string(),
@@ -1783,7 +1784,7 @@ impl Endpoint {
         };
         if port == 0 {
             return Err(ApiError::Config(
-                "port 0 is not a port to reach the node daemon on".to_string(),
+                "port 0 is not a port to reach the apid on".to_string(),
             ));
         }
         Ok(Self { host, port })
@@ -1889,7 +1890,7 @@ impl Default for Endpoint {
 /// flag turns it on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
-    /// The node daemon: its API is served at the root of a well-known port.
+    /// The apid: its API is served at the root of a well-known port.
     Daemon,
     /// The hub's read-only status surface (`vsockd --status-port`).
     HubStatus,
@@ -2002,14 +2003,14 @@ impl Client {
         &self.endpoint
     }
 
-    /// `GET /api/v0/runs`.
+    /// `GET /v1/runs`.
     pub fn runs(&self) -> Result<RunsPage, ApiError> {
-        self.json("GET", "/api/v0/runs", None)
+        self.json("GET", "/v1/runs", None)
     }
 
-    /// `GET /api/v0/machine`: the node as a machine.
+    /// `GET /v1/machine`: the node as a machine.
     pub fn machine(&self) -> Result<Machine, ApiError> {
-        self.json("GET", "/api/v0/machine", None)
+        self.json("GET", "/v1/machine", None)
     }
 
     /// `GET /status` on the hub's status surface: who is connected right now,
@@ -2051,7 +2052,7 @@ impl Client {
             "timeout_ms": timeout_ms,
         })
         .to_string();
-        let reply = self.send("POST", "/tell", Some(&body))?;
+        let reply = self.send("POST", &format!("/v1/agents/{cid}/tell"), Some(&body))?;
         if !(200..300).contains(&reply.status) {
             return Err(reply.into_error());
         }
@@ -2072,7 +2073,7 @@ impl Client {
     /// session`) is the honest one, and the operator supplies none.
     pub fn hub_stop(&self, cid: u64) -> Result<StopOutcome, ApiError> {
         let body = serde_json::json!({ "cid": cid }).to_string();
-        let reply = self.send("POST", "/stop", Some(&body))?;
+        let reply = self.send("POST", &format!("/v1/agents/{cid}/stop"), Some(&body))?;
         if !(200..300).contains(&reply.status) {
             return Err(reply.into_error());
         }
@@ -2081,26 +2082,26 @@ impl Client {
             .into_outcome()
     }
 
-    /// `GET /api/v0/tasks`: the plaza's ledger, oldest task first.
+    /// `GET /v1/tasks`: the plaza's ledger, oldest task first.
     pub fn tasks(&self) -> Result<TasksPage, ApiError> {
-        self.json("GET", "/api/v0/tasks", None)
+        self.json("GET", "/v1/tasks", None)
     }
 
-    /// `GET /api/v0/tasks/{id}`: one task.
+    /// `GET /v1/tasks/{id}`: one task.
     pub fn task(&self, id: &str) -> Result<Task, ApiError> {
-        self.json("GET", &format!("/api/v0/tasks/{}", checked_id(id)?), None)
+        self.json("GET", &format!("/v1/tasks/{}", checked_id(id)?), None)
     }
 
-    /// `POST /api/v0/tasks`: files a task, which the daemon answers `201` with
+    /// `POST /v1/tasks`: files a task, which the daemon answers `201` with
     /// in its first state, `open`.
     pub fn create_task(&self, create: &CreateTask) -> Result<Task, ApiError> {
         let body = serde_json::to_string(create).map_err(|err| {
             ApiError::Malformed(format!("cannot serialize the create request: {err}"))
         })?;
-        self.json("POST", "/api/v0/tasks", Some(&body))
+        self.json("POST", "/v1/tasks", Some(&body))
     }
 
-    /// `POST /api/v0/tasks/{id}/claim`: binds an open task to the live agent
+    /// `POST /v1/tasks/{id}/claim`: binds an open task to the live agent
     /// connected as `agent_cid`.
     ///
     /// The daemon checks that CID against the register the moment the request
@@ -2112,12 +2113,12 @@ impl Client {
         })?;
         self.json(
             "POST",
-            &format!("/api/v0/tasks/{}/claim", checked_id(id)?),
+            &format!("/v1/tasks/{}/claim", checked_id(id)?),
             Some(&body),
         )
     }
 
-    /// `POST /api/v0/tasks/{id}/finish`: ends a claimed task as `done` or
+    /// `POST /v1/tasks/{id}/finish`: ends a claimed task as `done` or
     /// `failed`, with the agent's note when it has one.
     pub fn finish_task(
         &self,
@@ -2132,17 +2133,17 @@ impl Client {
         .map_err(|err| ApiError::Malformed(format!("cannot serialize the finish request: {err}")))?;
         self.json(
             "POST",
-            &format!("/api/v0/tasks/{}/finish", checked_id(id)?),
+            &format!("/v1/tasks/{}/finish", checked_id(id)?),
             Some(&body),
         )
     }
 
-    /// `DELETE /api/v0/tasks/{id}`: withdraws a task before it ends.
+    /// `DELETE /v1/tasks/{id}`: withdraws a task before it ends.
     pub fn withdraw_task(&self, id: &str) -> Result<Task, ApiError> {
-        self.json("DELETE", &format!("/api/v0/tasks/{}", checked_id(id)?), None)
+        self.json("DELETE", &format!("/v1/tasks/{}", checked_id(id)?), None)
     }
 
-    /// `POST /api/v0/tasks/{id}/artifact`: reads one file the task's agent
+    /// `POST /v1/tasks/{id}/artifact`: reads one file the task's agent
     /// wrote into its own workspace, by driving that agent's `read_file`
     /// through the daemon's hub admin surface.
     ///
@@ -2158,20 +2159,13 @@ impl Client {
     /// longer connected, `400` a path this endpoint cannot carry, and `503` a
     /// daemon never told where the hub's admin surface is.
     pub fn task_artifact(&self, id: &str, path: &str) -> Result<TaskArtifact, ApiError> {
-        let body = serde_json::to_string(&ArtifactRequest {
-            path: path.to_string(),
-        })
-        .map_err(|err| {
-            ApiError::Malformed(format!("cannot serialize the artifact request: {err}"))
-        })?;
-        self.json(
-            "POST",
-            &format!("/api/v0/tasks/{}/artifact", checked_id(id)?),
-            Some(&body),
-        )
+        let _ = (id, path);
+        Err(ApiError::Malformed(
+            "artifacts moved to /v1/artifacts".to_string(),
+        ))
     }
 
-    /// The treasury: `GET /api/v0/treasury` and `GET /api/v0/treasury/journal`,
+    /// The treasury: `GET /v1/treasury` and `GET /v1/treasury/journal`,
     /// read together as one read.
     ///
     /// The two endpoints are two halves of one fact — the accounts with their
@@ -2181,75 +2175,75 @@ impl Client {
     /// count. Nothing here writes: every entry is posted by the daemon's own
     /// treasury service, and this client has no path that would post one.
     pub fn treasury(&self) -> Result<TreasuryRead, ApiError> {
-        let treasury: Treasury = self.json("GET", "/api/v0/treasury", None)?;
-        let journal: Journal = self.json("GET", "/api/v0/treasury/journal", None)?;
+        let treasury: Treasury = self.json("GET", "/v1/treasury", None)?;
+        let journal: Journal = self.json("GET", "/v1/treasury/journal", None)?;
         Ok(TreasuryRead { treasury, journal })
     }
 
-    /// `GET /api/v0/agora`: the market's board — the calls the node's roled
+    /// `GET /v1/agora`: the market's board — the calls the node's roled
     /// tasks offer, each with the bids it holds and the award that closed it.
     ///
     /// It is one GET, so it is one read: the daemon derives the calls from its
     /// ledger and answers them whole, oldest first within its own limit.
     /// Nothing here writes: a bid is made and an award is made by the daemon's
-    /// own surface (`POST /api/v0/tasks/{id}/bid` and `…/award`), and this
+    /// own surface (`POST /v1/tasks/{id}/bid` and `…/award`), and this
     /// client has no path that would place one — the market, like the
     /// treasury, is read-only from the console.
     pub fn agora(&self) -> Result<Board, ApiError> {
-        self.json("GET", "/api/v0/agora", None)
+        self.json("GET", "/v1/agora", None)
     }
 
-    /// `GET /api/v0/board`: the plaza's public posts, newest first and
+    /// `GET /v1/board`: the plaza's public posts, newest first and
     /// bounded, with every agent's unread count.
     ///
     /// One GET, so one read. Nothing here writes: a post and a read cursor are
-    /// the daemon's own surface (`POST /api/v0/board` and `…/board/read`),
+    /// the daemon's own surface (`POST /v1/board` and `…/board/read`),
     /// driven by the agents' drivers, and this client has no path that would
     /// post one.
     pub fn board(&self) -> Result<Posts, ApiError> {
-        self.json("GET", "/api/v0/board", None)
+        self.json("GET", "/v1/board", None)
     }
 
-    /// `GET /api/v0/conversations`: the exchange record, newest first and
+    /// `GET /v1/conversations`: the exchange record, newest first and
     /// bounded, with the pair summaries the floor derives proximity from.
     pub fn conversations(&self) -> Result<Conversations, ApiError> {
-        self.json("GET", "/api/v0/conversations", None)
+        self.json("GET", "/v1/conversations", None)
     }
 
-    /// `GET /api/v0/agents/{cid}/contacts`: one agent's own contact list.
+    /// `GET /v1/agents/{cid}/contacts`: one agent's own contact list.
     ///
     /// A 404 is an answer: the daemon knows no such agent and the register does
     /// not show it.
     pub fn contacts(&self, cid: u64) -> Result<Contacts, ApiError> {
-        self.json("GET", &format!("/api/v0/agents/{cid}/contacts"), None)
+        self.json("GET", &format!("/v1/agents/{cid}/contacts"), None)
     }
 
-    /// `GET /api/v0/conversations/{a}/{b}`: one pair's thread, oldest first.
+    /// `GET /v1/conversations/{a}/{b}`: one pair's thread, oldest first.
     ///
     /// The pair is read as the unordered pair the path names, so the thread is
     /// the same whichever order it is asked in, and a pair that has never
     /// spoken is an empty thread rather than a refusal.
     pub fn thread(&self, a: u64, b: u64) -> Result<Thread, ApiError> {
-        self.json("GET", &format!("/api/v0/conversations/{a}/{b}"), None)
+        self.json("GET", &format!("/v1/conversations/{a}/{b}"), None)
     }
 
-    /// `GET /api/v0/motions`: the council's motions, newest first and bounded.
+    /// `GET /v1/motions`: the council's motions, newest first and bounded.
     ///
     /// The console proposes no motion and casts no vote — those are seat
     /// actions the daemon's own surface takes — but it does hold the owner's
     /// hand: a motion the count gated to the owner is decided with
-    /// [`Client::decide_motion`] (`POST /api/v0/motions/{id}/decide`), which
+    /// [`Client::decide_motion`] (`POST /v1/motions/{id}/decide`), which
     /// is the only write this council client has.
     pub fn motions(&self) -> Result<Motions, ApiError> {
-        self.json("GET", "/api/v0/motions", None)
+        self.json("GET", "/v1/motions", None)
     }
 
-    /// `GET /api/v0/motions/{id}`: one motion, read on its own.
+    /// `GET /v1/motions/{id}`: one motion, read on its own.
     pub fn motion(&self, id: &str) -> Result<Motion, ApiError> {
-        self.json("GET", &format!("/api/v0/motions/{}", checked_id(id)?), None)
+        self.json("GET", &format!("/v1/motions/{}", checked_id(id)?), None)
     }
 
-    /// `POST /api/v0/motions/{id}/decide`: the **owner's** hand — ratify or
+    /// `POST /v1/motions/{id}/decide`: the **owner's** hand — ratify or
     /// veto a motion the count gated to them.
     ///
     /// **The owner is the operator, not an agent**: the body names no agent
@@ -2281,30 +2275,30 @@ impl Client {
         .map_err(|err| ApiError::Malformed(format!("cannot serialize the decide request: {err}")))?;
         self.json(
             "POST",
-            &format!("/api/v0/motions/{}/decide", checked_id(id)?),
+            &format!("/v1/motions/{}/decide", checked_id(id)?),
             Some(&body),
         )
     }
 
-    /// The floor's own read: `GET /api/v0/conversations` and
-    /// `GET /api/v0/board`, read together as one read.
+    /// The floor's own read: `GET /v1/conversations` and
+    /// `GET /v1/board`, read together as one read.
     ///
     /// The two endpoints are two halves of one fact — who is talking (the
     /// adjacency), and what every robot last posted — so a read is both or
     /// neither, which is what gives the floor pane one schedule and one
     /// failure count of its own. Still one GET each; nothing here writes.
     pub fn floor(&self) -> Result<FloorRead, ApiError> {
-        let conversations: Conversations = self.json("GET", "/api/v0/conversations", None)?;
-        let board: Posts = self.json("GET", "/api/v0/board", None)?;
+        let conversations: Conversations = self.json("GET", "/v1/conversations", None)?;
+        let board: Posts = self.json("GET", "/v1/board", None)?;
         Ok(FloorRead { board, conversations })
     }
 
-    /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
+    /// `GET /v1/runs/{id}`, with every VM's serial capture.
     pub fn run(&self, id: &str) -> Result<Run, ApiError> {
-        self.json("GET", &format!("/api/v0/runs/{}", checked_id(id)?), None)
+        self.json("GET", &format!("/v1/runs/{}", checked_id(id)?), None)
     }
 
-    /// `POST /api/v0/runs/{id}/input`: writes `data` to VM `vm`'s serial
+    /// `POST /v1/runs/{id}/input`: writes `data` to VM `vm`'s serial
     /// console. The daemon terminates the line when the caller did not.
     pub fn input(&self, id: &str, vm: u32, data: &str) -> Result<Run, ApiError> {
         let body = serde_json::to_string(&InputRequest {
@@ -2314,21 +2308,21 @@ impl Client {
         .map_err(|err| ApiError::Malformed(format!("cannot serialize the input request: {err}")))?;
         self.json(
             "POST",
-            &format!("/api/v0/runs/{}/input", checked_id(id)?),
+            &format!("/v1/runs/{}/input", checked_id(id)?),
             Some(&body),
         )
     }
 
-    /// `DELETE /api/v0/runs/{id}`: kills the run's VMs.
+    /// `DELETE /v1/runs/{id}`: kills the run's VMs.
     pub fn kill(&self, id: &str) -> Result<Run, ApiError> {
-        self.json("DELETE", &format!("/api/v0/runs/{}", checked_id(id)?), None)
+        self.json("DELETE", &format!("/v1/runs/{}", checked_id(id)?), None)
     }
 
-    /// `POST /api/v0/runs`: boots a run's VMs.
+    /// `POST /v1/runs`: boots a run's VMs.
     pub fn spawn(&self, create: &CreateRun) -> Result<Run, ApiError> {
         let body = serde_json::to_string(create)
             .map_err(|err| ApiError::Malformed(format!("cannot serialize the create request: {err}")))?;
-        self.json("POST", "/api/v0/runs", Some(&body))
+        self.json("POST", "/v1/runs", Some(&body))
     }
 
     /// One request, parsed as JSON on success and as `{"error": ...}` otherwise.
@@ -2536,7 +2530,7 @@ fn from_body<T: DeserializeOwned>(body: &str) -> T {
 mod tests {
     use super::*;
 
-    /// A list body as `GET /api/v0/runs` sends it: no serial captures, and a
+    /// A list body as `GET /v1/runs` sends it: no serial captures, and a
     /// run with vsock devices next to one without.
     const LIST: &str = r#"{"runs":[
         {"id":"r1","state":"running","vcpus":2,"memory_mib":512,"beats":null,
@@ -2548,7 +2542,7 @@ mod tests {
          "vms":[{"id":0,"state":"killed"}]}
     ]}"#;
 
-    /// A single-run body as `GET /api/v0/runs/r1` sends it: every VM's serial.
+    /// A single-run body as `GET /v1/runs/r1` sends it: every VM's serial.
     const DETAIL: &str = "{\"id\":\"r1\",\"state\":\"running\",\"vcpus\":2,\"memory_mib\":512,\
          \"beats\":null,\"created_at\":1760000000000,\"ended_at\":null,\
          \"vms\":[{\"id\":0,\"guest_cid\":50,\"state\":\"running\",\
@@ -2676,7 +2670,7 @@ mod tests {
         let endpoint = Endpoint::default();
         assert_eq!(endpoint.host(), "127.0.0.1");
         assert_eq!(endpoint.port(), DEFAULT_PORT);
-        assert_eq!(endpoint.url(), "http://127.0.0.1:8899");
+        assert_eq!(endpoint.url(), "http://127.0.0.1:7700");
     }
 
     #[test]
@@ -2686,18 +2680,18 @@ mod tests {
         assert_eq!(endpoint.port(), 9000);
 
         assert_eq!(Endpoint::from_url("127.0.0.1:9000").expect("bare host").port(), 9000);
-        assert_eq!(Endpoint::from_url("http://127.0.0.1/").expect("trailing slash").port(), 8899);
+        assert_eq!(Endpoint::from_url("http://127.0.0.1/").expect("trailing slash").port(), 7700);
         assert_eq!(Endpoint::from_url(" http://localhost ").expect("localhost").host(), "127.0.0.1");
     }
 
     #[test]
     fn a_non_loopback_url_is_refused() {
         for url in [
-            "http://0.0.0.0:8899",
-            "http://127.0.0.1.evil.tld:8899",
-            "https://127.0.0.1:8899",
-            "http://[::1]:8899",
-            "http://192.168.1.10:8899",
+            "http://0.0.0.0:7700",
+            "http://127.0.0.1.evil.tld:7700",
+            "https://127.0.0.1:7700",
+            "http://[::1]:7700",
+            "http://192.168.1.10:7700",
         ] {
             let error = Endpoint::from_url(url).expect_err("must be refused");
             assert!(
@@ -2709,8 +2703,8 @@ mod tests {
 
     #[test]
     fn a_url_with_a_path_query_or_portless_garbage_is_refused() {
-        assert!(Endpoint::from_url("http://127.0.0.1:8899/api/v0/runs").is_err());
-        assert!(Endpoint::from_url("http://127.0.0.1:8899?a=b").is_err());
+        assert!(Endpoint::from_url("http://127.0.0.1:7700/v1/runs").is_err());
+        assert!(Endpoint::from_url("http://127.0.0.1:7700?a=b").is_err());
         assert!(Endpoint::from_url("http://127.0.0.1:notaport").is_err());
         assert!(Endpoint::from_url("http://127.0.0.1:0").is_err());
     }
@@ -2766,9 +2760,9 @@ mod tests {
 
     #[test]
     fn a_connect_error_says_so() {
-        let error = ApiError::Connect("http://127.0.0.1:8899: refused".to_string());
+        let error = ApiError::Connect("http://127.0.0.1:7700: refused".to_string());
         assert!(error.is_unreachable());
-        assert_eq!(error.to_string(), "cannot reach http://127.0.0.1:8899: refused");
+        assert_eq!(error.to_string(), "cannot reach http://127.0.0.1:7700: refused");
     }
 
     #[test]
@@ -3075,7 +3069,7 @@ mod tests {
         assert!(Client::default().input("r1/../r2", 0, "uname\n").is_err());
     }
 
-    /// A tasks body as `GET /api/v0/tasks` sends it, byte for byte the shape
+    /// A tasks body as `GET /v1/tasks` sends it, byte for byte the shape
     /// the live daemon answered with: a claimed task with a note next to one
     /// nobody has taken.
     const TASKS: &str = r#"{"tasks":[
@@ -3206,7 +3200,7 @@ mod tests {
         assert!(!task.state.is_withdrawable());
     }
 
-    /// An artifact body as `POST /api/v0/tasks/{id}/artifact` answers it, byte
+    /// An artifact body as `POST /v1/tasks/{id}/artifact` answers it, byte
     /// for byte the shape the live daemon answered with.
     const ARTIFACT: &str = r#"{"task":"t3","agent_cid":103,"path":"build-notes.txt",
         "content":"task t3: verify the fixed loop","size":30,"truncated":false}"#;
@@ -3262,15 +3256,12 @@ mod tests {
     }
 
     #[test]
-    fn an_artifact_task_id_that_is_not_plain_is_refused_before_it_reaches_a_path() {
-        for id in ["", "t1/../t2", "t1?x=1", "t1 t2"] {
-            assert!(
-                matches!(
-                    Client::default().task_artifact(id, "notes.txt"),
-                    Err(ApiError::Config(_))
-                ),
-                "{id:?} should never reach a path"
-            );
+    fn the_retired_task_artifact_names_where_artifacts_moved() {
+        match Client::default().task_artifact("t1", "notes.txt") {
+            Err(ApiError::Malformed(message)) => {
+                assert_eq!(message, "artifacts moved to /v1/artifacts");
+            }
+            _ => panic!("the artifact read-through is retired and must not reach a request"),
         }
     }
 
@@ -3362,7 +3353,7 @@ mod tests {
         assert!(client.withdraw_task("t1/../t2").is_err());
     }
 
-    /// A treasury body as `GET /api/v0/treasury` sends it, byte for byte the
+    /// A treasury body as `GET /v1/treasury` sends it, byte for byte the
     /// shape the live daemon answered with after one budgeted task's cycle:
     /// the mint account and the task's escrow, balanced to zero.
     const TREASURY: &str = r#"{"accounts":[
@@ -3373,7 +3364,7 @@ mod tests {
         "totals":{"accounts":2,"entries":2,"credits":1500,"debits":1500,"balance":0},
         "spent":0,"note":"v0 meters no real spend; a done task refunds its whole escrow"}"#;
 
-    /// A journal body as `GET /api/v0/treasury/journal` sends it: the one
+    /// A journal body as `GET /v1/treasury/journal` sends it: the one
     /// cycle's two entries, each with its postings.
     const JOURNAL: &str = r#"{"entries":[
         {"id":1,"kind":"mint","task_id":"t1","root_task":"t1","memo":"task budget",
@@ -3666,7 +3657,7 @@ mod tests {
         assert_eq!(read.treasury.spent, 0);
     }
 
-    /// A board body as `GET /api/v0/agora` sends it: a call the award closed,
+    /// A board body as `GET /v1/agora` sends it: a call the award closed,
     /// a call still open with no bid, and a call whose award names no escrow
     /// entry (its task named no budget).
     const BOARD: &str = r#"{"calls":[
@@ -3923,7 +3914,7 @@ mod tests {
 
     // ---- the social layer's own views (docs/agents/social.md) ----
 
-    /// A board body as `GET /api/v0/board` writes it: a hiring note that links
+    /// A board body as `GET /v1/board` writes it: a hiring note that links
     /// a task, a plain post that links none, and every agent's unread count.
     const POSTS: &str = r#"{"posts":[
         {"id":"p2","agent_cid":100,"role":"builder","subject":"hiring for t1",
@@ -3936,14 +3927,14 @@ mod tests {
         "unread":[{"agent_cid":100,"count":0},{"agent_cid":101,"count":1},
                   {"agent_cid":102,"count":2}]}"#;
 
-    /// A contacts body as `GET /api/v0/agents/{cid}/contacts` writes it: one
+    /// A contacts body as `GET /v1/agents/{cid}/contacts` writes it: one
     /// link the agent made (`met`), one an award recorded for it (`was-hired`).
     const CONTACTS: &str = r#"{"agent_cid":100,"contacts":[
         {"peer_cid":101,"role":"reviewer","since":1791673000000,"kind":"met"},
         {"peer_cid":103,"role":"auditor","since":1791674000000,"kind":"was-hired"}
         ],"total":2,"limit":256,"truncated":false}"#;
 
-    /// A conversations body as `GET /api/v0/conversations` writes it: an
+    /// A conversations body as `GET /v1/conversations` writes it: an
     /// exchange that reached the peer, one that did not, and the pair summary
     /// the floor derives proximity from.
     const CONVERSATIONS: &str = r#"{"conversations":[
@@ -3956,7 +3947,7 @@ mod tests {
         "active_secs":120,"total":2,"limit":256,"truncated":false,
         "pairs_total":1,"pairs_truncated":false}"#;
 
-    /// A thread body as `GET /api/v0/conversations/{a}/{b}` writes it.
+    /// A thread body as `GET /v1/conversations/{a}/{b}` writes it.
     const THREAD: &str = r#"{"a":100,"b":101,"active":true,"active_secs":120,
         "messages":[
         {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
@@ -4267,7 +4258,7 @@ mod tests {
         }
     }
 
-    /// A motions body as `GET /api/v0/motions` writes it, byte for byte the
+    /// A motions body as `GET /v1/motions` writes it, byte for byte the
     /// shape the live plaza answered with: a priority carried 4–0, a law
     /// proposal carried 4–0 and waiting for the owner, and a priority tied
     /// 2–2 and sent to the owner. None names an amount, so no row carries the

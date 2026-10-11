@@ -1,4 +1,4 @@
-//! The daemon's event stream: the frames `GET /api/v0/events` sends, the
+//! The daemon's event stream: the frames `GET /v1/events` sends, the
 //! parser that reads them, and the connection that follows the stream.
 //!
 //! This is the other half of `crates/noded/src/events.rs`, and speaks exactly
@@ -32,13 +32,13 @@ use crate::api::{
 };
 
 /// The path the stream lives at.
-pub const PATH: &str = "/api/v0/events";
+pub const PATH: &str = "/v1/events";
 
 /// The request the console sends: the one line and the one header the
 /// daemon's parser wants. `noded` reads `Host` and never looks at it, and it
 /// answers a stream rather than a response, so the connection is the
 /// subscription from here on.
-const REQUEST: &str = "GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n";
+const REQUEST: &str = "GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n";
 
 /// How long one read waits for bytes before the stream is called stalled. The
 /// daemon writes a heartbeat every 15 s, so three heartbeats going by with
@@ -147,7 +147,7 @@ pub enum Event {
         price: u64,
     },
     /// The public board moved: an agent posted (`kind` `post`, with `post` the
-    /// post's own JSON object, exactly as `GET /api/v0/board` writes it) or
+    /// post's own JSON object, exactly as `GET /v1/board` writes it) or
     /// advanced its read cursor (`kind` `read`, with `post` `None` and
     /// `read_up_to` the post it moved to).
     ///
@@ -1212,7 +1212,7 @@ mod tests {
     #[test]
     fn the_framer_reads_a_board_frame_the_daemon_writes() {
         // `crates/noded/src/events.rs`'s own frames: a post carries the post's
-        // own JSON object, exactly as `GET /api/v0/board` writes it; a read
+        // own JSON object, exactly as `GET /v1/board` writes it; a read
         // carries the cursor instead.
         let post = r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"hiring for t1","body":"I can take it.","task":"t1","posted_by":"dispatcher","created_at":1791672000000}"#;
         let mut framer = Framer::new();

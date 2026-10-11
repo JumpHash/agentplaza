@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 //! AgentPlaza's desktop register: an iced + wgpu (WebGPU) dashboard for the
-//! node daemon's fleet API.
+//! apid's fleet API.
 //!
 //! The crate is split so the interesting half is testable without a display:
 //!
@@ -13,12 +13,12 @@
 //!   same policy: who is connected, as opposed to who the register reports.
 //!   The hub's *admin* surface (`POST /tell`, `POST /stop`) is the same client
 //!   too: the one surface the operator's controls drive an agent through. The
-//!   treasury (`GET /api/v0/treasury` and its journal, read together) is a
-//!   read of the daemon's own money, and the council (`GET /api/v0/motions`,
+//!   treasury (`GET /v1/treasury` and its journal, read together) is a
+//!   read of the daemon's own money, and the council (`GET /v1/motions`,
 //!   and one motion by its id) a read of the seats' own motions. Proposing and
 //!   voting are seat actions this console does not take, but the owner's hand
 //!   is here: the operator *is* the owner, so
-//!   `POST /api/v0/motions/{id}/decide` (ratify or veto a gated motion) is the
+//!   `POST /v1/motions/{id}/decide` (ratify or veto a gated motion) is the
 //!   one write the council client has.
 //! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
 //! * [`events`] — the daemon's event stream: the server-sent frames, the

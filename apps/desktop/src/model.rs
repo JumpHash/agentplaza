@@ -72,7 +72,7 @@ pub enum Pane {
     Run(String),
     /// The spawn form.
     Spawn,
-    /// The node's machine, as `GET /api/v0/machine` reports it.
+    /// The node's machine, as `GET /v1/machine` reports it.
     Machine,
     /// The fleet as a map: the machine's substrate, run lanes and VM cells.
     Map,
@@ -865,7 +865,7 @@ pub struct TellCall {
     pub timeout_ms: u64,
 }
 
-/// One `POST /api/v0/motions/{id}/decide` to make: the owner's decision on a
+/// One `POST /v1/motions/{id}/decide` to make: the owner's decision on a
 /// gated motion — the choice, and the note the owner left (already validated
 /// against the daemon's own cap).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -888,62 +888,62 @@ pub struct DecideCall {
 /// only field here that cannot be totally ordered.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Effect {
-    /// Poll `GET /api/v0/runs`.
+    /// Poll `GET /v1/runs`.
     pub poll_list: bool,
-    /// Fetch `GET /api/v0/machine`.
+    /// Fetch `GET /v1/machine`.
     pub poll_machine: bool,
     /// Fetch `GET /status` on the hub's status surface, when one is
     /// configured: the other half of the roster, read on its own schedule.
     pub poll_hub: bool,
-    /// Fetch `GET /api/v0/runs/{id}`.
+    /// Fetch `GET /v1/runs/{id}`.
     pub fetch_run: Option<String>,
     /// Fetch each of these runs, with serial: every VM's rate for the map's
     /// pulse, the roster's rows and the telemetry pane's decomposition.
     pub fetch_map: Vec<String>,
-    /// `DELETE /api/v0/runs/{id}`.
+    /// `DELETE /v1/runs/{id}`.
     pub kill: Option<String>,
-    /// `POST /api/v0/runs` with this body.
+    /// `POST /v1/runs` with this body.
     pub spawn: Option<CreateRun>,
-    /// `POST /api/v0/runs/{id}/input` with this console write.
+    /// `POST /v1/runs/{id}/input` with this console write.
     pub input: Option<ConsoleCall>,
     /// Write this transcript with `std::fs` — the register's only local write.
     pub export: Option<ExportCall>,
     /// Write this session CSV with the same one write.
     pub csv: Option<CsvCall>,
-    /// Poll `GET /api/v0/tasks`.
+    /// Poll `GET /v1/tasks`.
     pub poll_tasks: bool,
-    /// Fetch `GET /api/v0/tasks/{id}`.
+    /// Fetch `GET /v1/tasks/{id}`.
     pub fetch_task: Option<String>,
-    /// Read the treasury: `GET /api/v0/treasury` and
-    /// `GET /api/v0/treasury/journal` at once, on the treasury's own
+    /// Read the treasury: `GET /v1/treasury` and
+    /// `GET /v1/treasury/journal` at once, on the treasury's own
     /// schedule.
     pub poll_treasury: bool,
-    /// Read the market: `GET /api/v0/agora`, on the market's own schedule.
+    /// Read the market: `GET /v1/agora`, on the market's own schedule.
     pub poll_agora: bool,
-    /// Read the floor: `GET /api/v0/conversations` and `GET /api/v0/board` at
+    /// Read the floor: `GET /v1/conversations` and `GET /v1/board` at
     /// once, on the floor's own schedule.
     pub poll_floor: bool,
-    /// Read the board: `GET /api/v0/board`, on the board pane's own schedule.
+    /// Read the board: `GET /v1/board`, on the board pane's own schedule.
     pub poll_board: bool,
-    /// Read the talk log: `GET /api/v0/conversations`, on the talk pane's own
+    /// Read the talk log: `GET /v1/conversations`, on the talk pane's own
     /// schedule.
     pub poll_talk: bool,
-    /// Read the council: `GET /api/v0/motions`, on the council pane's own
+    /// Read the council: `GET /v1/motions`, on the council pane's own
     /// schedule.
     pub poll_motions: bool,
-    /// Read an agent's contacts: `GET /api/v0/agents/{cid}/contacts`.
+    /// Read an agent's contacts: `GET /v1/agents/{cid}/contacts`.
     pub fetch_contacts: Option<u64>,
-    /// Read a pair's thread: `GET /api/v0/conversations/{a}/{b}`.
+    /// Read a pair's thread: `GET /v1/conversations/{a}/{b}`.
     pub fetch_thread: Option<(u64, u64)>,
-    /// `POST /api/v0/tasks` with this body.
+    /// `POST /v1/tasks` with this body.
     pub create_task: Option<CreateTask>,
-    /// `POST /api/v0/tasks/{id}/claim` as this agent.
+    /// `POST /v1/tasks/{id}/claim` as this agent.
     pub claim_task: Option<ClaimCall>,
-    /// `POST /api/v0/tasks/{id}/finish` with this outcome and note.
+    /// `POST /v1/tasks/{id}/finish` with this outcome and note.
     pub finish_task: Option<FinishCall>,
-    /// `DELETE /api/v0/tasks/{id}`.
+    /// `DELETE /v1/tasks/{id}`.
     pub withdraw_task: Option<String>,
-    /// `POST /api/v0/tasks/{id}/artifact` with this path.
+    /// `POST /v1/tasks/{id}/artifact` with this path.
     pub artifact: Option<ArtifactCall>,
     /// `POST /tell` on the hub's admin surface with this drive: one tool on
     /// one connected agent.
@@ -951,7 +951,7 @@ pub struct Effect {
     /// `POST /stop` on the hub's admin surface for this guest CID: ask the
     /// agent to end its session.
     pub stop_agent: Option<u64>,
-    /// `POST /api/v0/motions/{id}/decide` with this decision: the owner's hand
+    /// `POST /v1/motions/{id}/decide` with this decision: the owner's hand
     /// on a gated motion.
     pub decide_motion: Option<DecideCall>,
 }
@@ -1145,7 +1145,7 @@ impl Effect {
     }
 
     /// The owner's decision on a gated motion: one
-    /// `POST /api/v0/motions/{id}/decide`.
+    /// `POST /v1/motions/{id}/decide`.
     pub fn decide(call: DecideCall) -> Self {
         Self {
             decide_motion: Some(call),
@@ -1177,14 +1177,14 @@ pub enum Message {
         /// The wall-clock time of the frame.
         at_ms: u64,
     },
-    /// `GET /api/v0/runs` answered.
+    /// `GET /v1/runs` answered.
     Runs {
         /// When the answer arrived.
         at_ms: u64,
         /// The answer.
         result: Result<RunsPage, ApiError>,
     },
-    /// `GET /api/v0/runs/{id}` answered.
+    /// `GET /v1/runs/{id}` answered.
     Run {
         /// When the answer arrived.
         at_ms: u64,
@@ -1193,7 +1193,7 @@ pub enum Message {
         /// The answer.
         result: Result<Run, ApiError>,
     },
-    /// `GET /api/v0/machine` answered.
+    /// `GET /v1/machine` answered.
     Machine {
         /// When the answer arrived.
         at_ms: u64,
@@ -1246,7 +1246,7 @@ pub enum Message {
         /// The outcome, or why it did not arrive.
         result: Result<StopOutcome, ApiError>,
     },
-    /// `POST /api/v0/runs/{id}/input` answered.
+    /// `POST /v1/runs/{id}/input` answered.
     Input {
         /// When the answer arrived.
         at_ms: u64,
@@ -1282,7 +1282,7 @@ pub enum Message {
     Follow(bool),
     /// The kill button was pressed; confirming it kills the run.
     KillClicked(String),
-    /// `DELETE /api/v0/runs/{id}` answered.
+    /// `DELETE /v1/runs/{id}` answered.
     Killed {
         /// When the answer arrived.
         at_ms: u64,
@@ -1293,7 +1293,7 @@ pub enum Message {
     },
     /// The spawn form was submitted; its validity decides whether it is sent.
     SpawnClicked,
-    /// `POST /api/v0/runs` answered.
+    /// `POST /v1/runs` answered.
     Spawned {
         /// When the answer arrived.
         at_ms: u64,
@@ -1350,7 +1350,7 @@ pub enum Message {
     },
     /// Dismiss the notice line.
     DismissNotice,
-    /// `GET /api/v0/tasks` answered.
+    /// `GET /v1/tasks` answered.
     Tasks {
         /// When the answer arrived.
         at_ms: u64,
@@ -1423,7 +1423,7 @@ pub enum Message {
         /// The choice pressed (`true` ratify, `false` veto).
         approve: bool,
     },
-    /// `POST /api/v0/motions/{id}/decide` answered.
+    /// `POST /v1/motions/{id}/decide` answered.
     Decided {
         /// When the answer arrived.
         at_ms: u64,
@@ -1464,7 +1464,7 @@ pub enum Message {
     /// A contact row was pressed: read the thread between the inspected agent
     /// and that peer.
     ThreadPick(u64),
-    /// `GET /api/v0/tasks/{id}` answered: one task, read again.
+    /// `GET /v1/tasks/{id}` answered: one task, read again.
     Task {
         /// When the answer arrived.
         at_ms: u64,
@@ -1486,7 +1486,7 @@ pub enum Message {
     },
     /// The ledger's create button was pressed.
     TaskCreate,
-    /// `POST /api/v0/tasks` answered.
+    /// `POST /v1/tasks` answered.
     TaskCreated {
         /// When the answer arrived.
         at_ms: u64,
@@ -1497,7 +1497,7 @@ pub enum Message {
     ClaimCidEdit(String),
     /// The claim button was pressed.
     TaskClaim,
-    /// `POST /api/v0/tasks/{id}/claim` answered.
+    /// `POST /v1/tasks/{id}/claim` answered.
     TaskClaimed {
         /// When the answer arrived.
         at_ms: u64,
@@ -1512,7 +1512,7 @@ pub enum Message {
     FinishNoteEdit(String),
     /// A finish button was pressed, for one of the two outcomes.
     TaskFinish(FinishOutcome),
-    /// `POST /api/v0/tasks/{id}/finish` answered.
+    /// `POST /v1/tasks/{id}/finish` answered.
     TaskFinished {
         /// When the answer arrived.
         at_ms: u64,
@@ -1525,7 +1525,7 @@ pub enum Message {
     },
     /// The withdraw button was pressed; confirming it withdraws the task.
     TaskWithdrawClicked(String),
-    /// `DELETE /api/v0/tasks/{id}` answered.
+    /// `DELETE /v1/tasks/{id}` answered.
     TaskWithdrawn {
         /// When the answer arrived.
         at_ms: u64,
@@ -1537,7 +1537,7 @@ pub enum Message {
     /// An artifact row was pressed: read that path through the open task's
     /// agent.
     TaskArtifactRead(String),
-    /// `POST /api/v0/tasks/{id}/artifact` answered.
+    /// `POST /v1/tasks/{id}/artifact` answered.
     TaskArtifact {
         /// When the answer arrived.
         at_ms: u64,
@@ -3801,7 +3801,7 @@ impl Model {
     /// Applies one board frame: the public board moved.
     ///
     /// A `post` frame carries the post's own JSON object, exactly as
-    /// `GET /api/v0/board` writes it, so a post the console already holds is a
+    /// `GET /v1/board` writes it, so a post the console already holds is a
     /// duplicate and a no-op. Anything else — a fresh post, or a `read` frame
     /// that carries only a cursor — means the board (and every agent's unread
     /// count) moved past what the pane saw, and the showing pane reads its own
@@ -4212,7 +4212,7 @@ impl Model {
         self.last_ok_ms = Some(at_ms);
     }
 
-    /// Applies one event from `GET /api/v0/events`.
+    /// Applies one event from `GET /v1/events`.
     ///
     /// The daemon's bus has no backlog, so an event that names a run the
     /// register has not read yet is not an event to build a row from — the
@@ -6301,7 +6301,7 @@ mod tests {
         assert_eq!(poll_interval_ms(base, 40), 30_000);
 
         let mut model = Model::new();
-        let error = ApiError::Connect("127.0.0.1:8899: refused".to_string());
+        let error = ApiError::Connect("127.0.0.1:7700: refused".to_string());
         model.apply(Message::Runs {
             at_ms: 1_000,
             result: Err(error.clone()),
@@ -10002,7 +10002,7 @@ mod tests {
         assert!(empty.live_agents().is_empty());
     }
 
-    /// One artifact as `POST /api/v0/tasks/{id}/artifact` answers it: what the
+    /// One artifact as `POST /v1/tasks/{id}/artifact` answers it: what the
     /// task's agent read back out of its workspace.
     fn artifact(task: &str, path: &str, content: &str) -> TaskArtifact {
         TaskArtifact {
@@ -10092,7 +10092,7 @@ mod tests {
             at_ms: 10_300,
             id: "t1".to_string(),
             path: "build-notes.txt".to_string(),
-            result: Err(ApiError::Connect("127.0.0.1:8899: refused".to_string())),
+            result: Err(ApiError::Connect("127.0.0.1:7700: refused".to_string())),
         });
         assert_eq!(model.failures, 1, "an unreachable daemon is a failure");
         assert!(matches!(model.artifact, Some(ArtifactState::Refused { .. })));
@@ -10312,7 +10312,7 @@ mod tests {
         // the register but not the treasury does not read down.
         model.apply(Message::Treasury {
             at_ms: 3_300,
-            result: Err(ApiError::Connect("127.0.0.1:8899: refused".to_string())),
+            result: Err(ApiError::Connect("127.0.0.1:7700: refused".to_string())),
         });
         assert_eq!(model.treasury_failures, 1);
         assert!(model.treasury_error.is_some());
@@ -10497,7 +10497,7 @@ mod tests {
     }
 
     /// The board the daemon answers with after one call's bid-and-award cycle
-    /// and one call still open: the calls, in the shape `GET /api/v0/agora`
+    /// and one call still open: the calls, in the shape `GET /v1/agora`
     /// writes them.
     fn market_calls() -> serde_json::Value {
         serde_json::json!([

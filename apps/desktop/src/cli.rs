@@ -1,7 +1,7 @@
 //! The command line: which daemon to read, and how long a call may take.
 //!
 //! `--url` and `APZ_DESKTOP_URL` both name the daemon; an argument wins over
-//! the environment, and both default to `http://127.0.0.1:8899`. Only a
+//! the environment, and both default to `http://127.0.0.1:7700`. Only a
 //! loopback host is accepted, and only an exact one — see
 //! [`Endpoint::from_url`](crate::api::Endpoint::from_url).
 //!
@@ -96,7 +96,7 @@ USAGE:
                        [--refresh-ms <milliseconds>] [--timeout-secs <seconds>]
 
 OPTIONS:
-    --url <url>            the node daemon to read; http://127.0.0.1:8899 by
+    --url <url>            the apid to read; http://127.0.0.1:7700 by
                            default. Only a loopback host is accepted.
     --hub-url <host:port>  the hub's read-only status surface
                            (vsockd --status-port), whose GET /status says who
@@ -127,7 +127,7 @@ ENVIRONMENT:
 
 KEYS:
     r                      the fleet register
-    m                      the machine (GET /api/v0/machine)
+    m                      the machine (GET /v1/machine)
     f                      the fleet map
     w                      the roster: who is running by role, and — when a
                            hub url is configured — who is connected to it,
@@ -161,36 +161,36 @@ KEYS:
                            narrow the talk pane to its picked pair (again
                            widens)
 
-The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
-GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
-POST /api/v0/runs/{id}/input, spawns runs with POST /api/v0/runs and kills
-them with DELETE /api/v0/runs/{id}. Between polls it follows
-GET /api/v0/events — the daemon's event stream: run and VM state changes,
+The dashboard polls GET /v1/runs and GET /v1/machine, follows
+GET /v1/runs/{id} for the selected run, writes to a VM's console with
+POST /v1/runs/{id}/input, spawns runs with POST /v1/runs and kills
+them with DELETE /v1/runs/{id}. Between polls it follows
+GET /v1/events — the daemon's event stream: run and VM state changes,
 each VM's serial deltas and every task transition — and reconnects to it with
 a bounded backoff. The polls stay the source of truth; the stream only moves
 the same state sooner.
-The ledger pane reads GET /api/v0/tasks while it is up and moves a task with
-POST /api/v0/tasks (file), POST /api/v0/tasks/{id}/claim (as a live agent's
-guest CID), POST /api/v0/tasks/{id}/finish (done or failed, with a note) and
-DELETE /api/v0/tasks/{id} (withdraw); a task event for a task the ledger has
+The ledger pane reads GET /v1/tasks while it is up and moves a task with
+POST /v1/tasks (file), POST /v1/tasks/{id}/claim (as a live agent's
+guest CID), POST /v1/tasks/{id}/finish (done or failed, with a note) and
+DELETE /v1/tasks/{id} (withdraw); a task event for a task the ledger has
 not read asks for the ledger rather than inventing a row.
-The treasury pane (read-only) reads GET /api/v0/treasury and
-GET /api/v0/treasury/journal together while it is up, on its own schedule: the
+The treasury pane (read-only) reads GET /v1/treasury and
+GET /v1/treasury/journal together while it is up, on its own schedule: the
 accounts with their derived balances, the totals line, the daemon's own note on
 real spend, and every journal entry with its postings ruled as the debit and
 credit sides. It writes nothing — every entry is the daemon's own. A treasury
 event for an entry past the newest the pane holds reads the journal again
 rather than assembling an entry from a frame.
-The market pane (read-only) reads GET /api/v0/agora while it is up, on its own
+The market pane (read-only) reads GET /v1/agora while it is up, on its own
 schedule: every call a roled task offers, with its capability, its ceiling in
 credits and the dollars they stand for, its state stamp, the bids on it and
 the award that closed it (the contractor, the price and the treasury entry
 that funded the call). It writes nothing — a bid and an award are made by the
-daemon's own surface (POST /api/v0/tasks/{id}/bid and .../award). An agora
+daemon's own surface (POST /v1/tasks/{id}/bid and .../award). An agora
 event for a bid or an award the board does not hold reads the board again
 rather than assembling a call from a frame.
-The floor pane (read-only) reads GET /api/v0/conversations and
-GET /api/v0/board together while it is up, on its own schedule, and draws the
+The floor pane (read-only) reads GET /v1/conversations and
+GET /v1/board together while it is up, on its own schedule, and draws the
 plaza in the register's own canvas with 3D geometry: a perspective-projected
 ground plane through a fixed RTS camera (55° tilt, 20° yaw), a station pad per
 role (the role's index in the register's order), one robot per roster agent
@@ -199,20 +199,20 @@ talking pair walking adjacent on an eased, bounded (700 ms) clock. Every
 position derives from the role order and a conversation's activity — it is a
 diagram of real state. The arrows cycle the robots and Enter opens a picked
 robot's inspector (its role, CID, state, its contacts from
-GET /api/v0/agents/{cid}/contacts, its last board post, and the thread
-GET /api/v0/conversations/{a}/{b} with a pressed contact). It writes nothing.
+GET /v1/agents/{cid}/contacts, its last board post, and the thread
+GET /v1/conversations/{a}/{b} with a pressed contact). It writes nothing.
 A conversation frame for an exchange the floor does not hold reads it again;
 a board frame for a post it already holds is a no-op.
-The board pane (read-only) reads GET /api/v0/board while it is up, on its own
+The board pane (read-only) reads GET /v1/board while it is up, on its own
 schedule: every post, newest first, with its author and role, the task it links
 and 'read by N of M' from the daemon's per-agent unread counts.
-The talk pane (read-only) reads GET /api/v0/conversations while it is up, on
+The talk pane (read-only) reads GET /v1/conversations while it is up, on
 its own schedule: every exchange, newest first, as two identity-and-role chips,
 the words as the agent's own, the delivery mark (delivered, or the hub's own
 reason verbatim when it did not reach, or a dash when the node said neither),
 and the stamp. Its pairs filter walks the daemon's own pair summaries -- the
 active mark is the floor's walk, within the daemon's exported window -- and
-Enter narrows to the picked pair's thread (GET /api/v0/conversations/{a}/{b}),
+Enter narrows to the picked pair's thread (GET /v1/conversations/{a}/{b}),
 Escape or Enter again widening. It writes nothing. A conversation frame for an
 exchange the pane does not hold reads the log again rather than inventing one.
 When --hub-url names a status surface, GET /status is read at the same
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn no_arguments_means_the_loopbacks_daemon() {
         let config = config(&[]);
-        assert_eq!(config.endpoint.url(), "http://127.0.0.1:8899");
+        assert_eq!(config.endpoint.url(), "http://127.0.0.1:7700");
         assert_eq!(config.timeout, DEFAULT_TIMEOUT);
         assert_eq!(config.refresh_ms, DEFAULT_REFRESH_MS);
     }
@@ -440,23 +440,23 @@ mod tests {
         assert!(HELP.contains("y                      the treasury"));
         // The market's key, and that it is read-only and reads the board.
         assert!(HELP.contains("u                      the market"));
-        assert!(HELP.contains("GET /api/v0/agora"));
+        assert!(HELP.contains("GET /v1/agora"));
         // The floor's and the board's keys, and what the floor reads and
         // draws.
         assert!(HELP.contains("i                      the floor"));
         assert!(HELP.contains("j                      the board"));
         assert!(HELP.contains("k                      the talk"));
-        assert!(HELP.contains("GET /api/v0/conversations"));
+        assert!(HELP.contains("GET /v1/conversations"));
         assert!(HELP.contains("55° tilt, 20° yaw"));
         assert!(HELP.contains("Enter                  open the picked robot's inspector"));
         // The treasury pane is read-only and reads both halves at once.
-        assert!(HELP.contains("GET /api/v0/treasury/journal"));
+        assert!(HELP.contains("GET /v1/treasury/journal"));
         assert!(HELP.contains("read-only"));
         // The two local behaviours the help names, and the stream it follows.
         assert!(HELP.contains("quick boots fill the"));
         assert!(HELP.contains("exports a transcript"));
         assert!(HELP.contains("the session's CSV"));
-        assert!(HELP.contains("GET /api/v0/events"));
+        assert!(HELP.contains("GET /v1/events"));
         // And the hub half: what it reads, and what its absence means.
         assert!(HELP.contains("--hub-url"));
         assert!(HELP.contains("APZ_DESKTOP_HUB"));
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn a_non_loopback_url_is_refused_by_name() {
-        let error = parse(args(&["--url", "http://10.0.0.9:8899"]), &no_env)
+        let error = parse(args(&["--url", "http://10.0.0.9:7700"]), &no_env)
             .expect_err("must be refused");
         assert!(error.contains("10.0.0.9"), "{error}");
         assert!(error.contains("127.0.0.1"), "{error}");
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn an_unknown_argument_is_refused() {
-        let error = parse(args(&["--port", "8899"]), &no_env).expect_err("must be refused");
+        let error = parse(args(&["--port", "7700"]), &no_env).expect_err("must be refused");
         assert_eq!(error, "unknown argument \"--port\"");
     }
 
