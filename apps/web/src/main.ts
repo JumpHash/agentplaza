@@ -4,6 +4,7 @@
 import './styles/base.css';
 import './styles/views.css';
 import './styles/floor.css';
+import './styles/talk.css';
 
 import { startEvents } from './events';
 import { KEY_ROUTES, NAV_OF, parseRoute } from './router';
@@ -22,6 +23,7 @@ import { renderMap, syncMapVisibility } from './views/map2d';
 import { initRoster, renderRoster } from './views/roster';
 import { initTelemetry, renderTelemetry } from './views/telemetry';
 import { renderTreasury } from './views/treasury';
+import { initTalk, renderTalk } from './views/talk';
 
 /* ------------------------------------------------------------ routing */
 function show(): void {
@@ -151,6 +153,7 @@ initTelemetry();
 initFloor();
 initRoster();
 initLedger();
+initTalk();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -167,6 +170,7 @@ store.onRender(() => {
     case 'treasury': renderTreasury(); break;
     case 'market': renderMarket(); break;
     case 'board': renderBoard(); break;
+    case 'talk': renderTalk(); break;
   }
 });
 
@@ -245,6 +249,7 @@ window.__PLAZA_DIAG__ = {
       activeSecs: store.convActiveSecs,
       contacts: [...store.contacts.keys()],
       thread: store.thread == null ? null : { a: store.thread.a, b: store.thread.b, state: store.thread.state },
+      talkPair: store.talkPair,
       error: store.conversationsError,
       errorStatus: store.conversationsErrorStatus,
     };

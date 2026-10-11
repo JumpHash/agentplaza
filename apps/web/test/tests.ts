@@ -28,11 +28,15 @@ import { parseAgora, winningBid } from '../src/models/agora';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import {
   activePairs,
+  conversationPairs,
+  deliveryMark,
+  deliveryText,
   parseBoard,
   parseContacts,
   parseConversations,
   parseThread,
   readLine,
+  talkTally,
   upToDateLine,
   type Conversation,
 } from '../src/models/social';
@@ -406,6 +410,73 @@ eq(readLine(14, 0), 'read 14 of 14', 'an agent up to date has read all of it');
 eq(readLine(3, 9), 'read 0 of 3', 'a stale cursor never reads as a negative');
 eq(upToDateLine([]), 'no agent reads reported', 'no cursors reads honestly');
 eq(upToDateLine([{ agent_cid: 1, count: 0 }, { agent_cid: 2, count: 3 }]), '1 of 2 agents up to date', 'the board’s summary counts the up-to-date agents');
+
+/* ------------------------------------ the talk's own derivations -------- */
+/* The pair list the filter walks, the delivery mark the hub's answer yields,
+   and the tally over the console's copy. */
+{
+  const view = parseConversations(conversationsBody);
+  eq(
+    conversationPairs(view, 3000),
+    [{ a: 100, b: 101, active: true, count: 2, last_at: 3000 }],
+    'the pair list keeps the node’s own row',
+  );
+  eq(
+    conversationPairs({ conversations: view.conversations, active_secs: 120 }, 3000),
+    [{ a: 100, b: 101, active: true, count: 2, last_at: 3000 }],
+    'without pair rows the exchanges fold into a pair, active within the window',
+  );
+  eq(
+    conversationPairs({ conversations: view.conversations, active_secs: 120 }, 3000 + 121_000)[0]?.active,
+    false,
+    'the folded pair falls out of the window after active_secs',
+  );
+  eq(
+    conversationPairs(
+      { pairs: [{ a: 109, b: 103, active: false, count: 2, last_at: 9 }, { a: 100, b: 103, active: false, count: 1, last_at: 5 }] },
+      0,
+    ).map((p) => `${p.a}-${p.b}`),
+    ['100-103', '103-109'],
+    'pair rows are normalized (min, max) and sorted ascending',
+  );
+}
+{
+  const base: Conversation = {
+    id: 'c1', from_cid: 1, to_cid: 2, from_role: null, to_role: null,
+    text: 'x', created_at: 1, delivered: true, delivery: null,
+  };
+  eq(deliveryMark(base), { kind: 'delivered', text: 'delivered' }, 'a delivered exchange reads delivered');
+  eq(
+    deliveryMark({ ...base, delivered: false }),
+    { kind: 'refused', text: 'the peer’s session did not take it' },
+    'a failed delivery with no reason reads its own line',
+  );
+  eq(
+    deliveryMark({ ...base, delivered: false, delivery: 'the hub refused: no grant' }),
+    { kind: 'refused', text: 'the hub refused: no grant' },
+    'the hub’s reason is carried verbatim',
+  );
+  eq(deliveryMark({ ...base, delivered: null }), { kind: 'unknown', text: '' }, 'a node that said neither yields no mark');
+  eq(deliveryText({ ...base, delivered: false, delivery: 'the hub refused: no grant' }), 'the hub refused: no grant', 'the card’s line is the refusal’s reason');
+  eq(deliveryText(base), null, 'a delivered exchange has no refusal line');
+}
+{
+  const view = parseConversations(conversationsBody);
+  eq(talkTally(view, 3000), { exchanges: 2, pairs: 1, active: 1, refused: 0 }, 'the tally counts exchanges, pairs and the active window');
+  const withRefusal = talkTally(
+    {
+      conversations: [
+        convRow('c1', 1, 2, 'x', 2900),
+        { ...convRow('c2', 2, 1, 'y', 3000), delivered: false, delivery: 'nope' },
+      ],
+      active_secs: 120,
+    },
+    3000,
+  );
+  eq(withRefusal.refused, 1, 'a refused exchange is counted');
+  eq(withRefusal.pairs, 1, 'both directions of a pair fold to one');
+  eq(withRefusal.active, 1, 'the pair is active within the window');
+}
 
 /* -------------------------------- the floor’s pure derivations ---------- */
 /* The layout rule: roles ascending by code unit, station r at column r mod
@@ -1259,6 +1330,23 @@ eq(
   setTimeout(mineDone, 250);
   await mine;
   eq(u.thread?.state, 'error', 'a frame for the shown pair re-reads its thread (either direction)');
+}
+
+/* picking a pair narrows the talk sheet and asks the node for that pair's
+   thread at once; widening keeps the thread read — it is the node's answer
+   for its pair, not the sheet's filter */
+{
+  const s = new Store();
+  s.setTalkPair(101, 100);
+  eq(s.talkPair, { a: 100, b: 101 }, 'the picked pair is held ascending');
+  eq(s.thread?.state, 'loading', 'picking a pair asks for its thread at once');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(s.thread?.state, 'error', 'the thread read was asked for (no node here)');
+  s.clearTalkPair();
+  eq(s.talkPair, null, 'widening clears the filter');
+  eq(s.thread?.state, 'error', 'widening keeps the thread last read');
 }
 
 if (failures > 0) {

@@ -353,6 +353,53 @@ export function pairKey(a: number, b: number): string {
   return a <= b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
 }
 
+/** Every pair the plaza holds, ascending by pair (the two CIDs) — the node's
+    own rows when the endpoint sends them (its `active` flag and its
+    `active_secs` window are the authority), the exchanges folded against that
+    same window when it does not (an older node, or a static fixture). The
+    talk's filter list reads this whole set; the floor's walk reads the active
+    subset. Deterministic either way, so the ordering never depends on the
+    source. */
+export function conversationPairs(
+  view: {
+    pairs?: readonly ConversationPair[];
+    conversations?: readonly Conversation[];
+    active_secs?: number;
+  },
+  now: number,
+): ConversationPair[] {
+  const pairs = view.pairs ?? [];
+  if (pairs.length > 0) {
+    return pairs
+      .map((p) => ({
+        a: Math.min(p.a, p.b),
+        b: Math.max(p.a, p.b),
+        active: p.active,
+        count: p.count,
+        last_at: p.last_at,
+      }))
+      .sort((x, y) => x.a - y.a || x.b - y.b);
+  }
+  const byPair = new Map<string, ConversationPair>();
+  for (const c of view.conversations ?? []) {
+    const a = Math.min(c.from_cid, c.to_cid);
+    const b = Math.max(c.from_cid, c.to_cid);
+    const key = pairKey(a, b);
+    const held = byPair.get(key);
+    if (held) {
+      held.count++;
+      if (c.created_at > held.last_at) held.last_at = c.created_at;
+    } else {
+      byPair.set(key, { a, b, active: false, count: 1, last_at: c.created_at });
+    }
+  }
+  const secs = view.active_secs ?? ACTIVE_SECS;
+  const cutoff = now - secs * 1000;
+  const folded = [...byPair.values()].sort((x, y) => x.a - y.a || x.b - y.b);
+  for (const p of folded) p.active = p.last_at >= cutoff;
+  return folded;
+}
+
 /** The pairs talking right now. The node's own `pairs` rows answer it when
     the endpoint sent them — its `active` flag and its `active_secs` window are
     the authority — and the exchanges are read against the same window when
@@ -366,31 +413,9 @@ export function activePairs(
   },
   now: number,
 ): ActivePair[] {
-  const pairs = view.pairs ?? [];
-  if (pairs.length > 0) {
-    return pairs
-      .filter((p) => p.active)
-      .map((p) => ({ a: Math.min(p.a, p.b), b: Math.max(p.a, p.b), last_at: p.last_at, exchanges: p.count }))
-      .sort((x, y) => x.a - y.a || x.b - y.b);
-  }
-  const byPair = new Map<string, ActivePair>();
-  for (const c of view.conversations ?? []) {
-    const a = Math.min(c.from_cid, c.to_cid);
-    const b = Math.max(c.from_cid, c.to_cid);
-    const key = pairKey(a, b);
-    const held = byPair.get(key);
-    if (held) {
-      held.exchanges++;
-      if (c.created_at > held.last_at) held.last_at = c.created_at;
-    } else {
-      byPair.set(key, { a, b, last_at: c.created_at, exchanges: 1 });
-    }
-  }
-  const secs = view.active_secs ?? ACTIVE_SECS;
-  const cutoff = now - secs * 1000;
-  return [...byPair.values()]
-    .filter((p) => p.last_at >= cutoff)
-    .sort((x, y) => x.a - y.a || x.b - y.b);
+  return conversationPairs(view, now)
+    .filter((p) => p.active)
+    .map((p) => ({ a: p.a, b: p.b, last_at: p.last_at, exchanges: p.count }));
 }
 
 /** The agent's own reading of one post-list line: `read 12 of 14`, the read
@@ -410,9 +435,60 @@ export function upToDateLine(unread: readonly UnreadCount[]): string {
   return `${up} of ${unread.length} ${unread.length === 1 ? 'agent' : 'agents'} up to date`;
 }
 
-/** How an exchange's delivery reads: the hub's own answer, honestly. */
+/** How an exchange's delivery reads, in the hub's own terms. `delivered` when
+    the node says the peer's session took it; `refused` when it says otherwise
+    (or when the node recorded a reason in `delivery`), the reason carried
+    verbatim, never paraphrased; `unknown` when the node said neither — the
+    console then shows nothing rather than inventing a mark. */
+export interface DeliveryMark {
+  kind: 'delivered' | 'refused' | 'unknown';
+  /** The hub's own words when refused, else empty. Never reworded. */
+  text: string;
+}
+
+/** Read one exchange's delivery from the node's own columns. A `delivery`
+    reason outranks the boolean: whoever wrote it named the failure. */
+export function deliveryMark(c: Conversation): DeliveryMark {
+  if (c.delivery != null && c.delivery !== '') return { kind: 'refused', text: c.delivery };
+  if (c.delivered === false) return { kind: 'refused', text: 'the peer’s session did not take it' };
+  if (c.delivered === true) return { kind: 'delivered', text: 'delivered' };
+  return { kind: 'unknown', text: '' };
+}
+
+/** How an exchange's delivery reads: the hub's own answer, honestly. The
+    refusal's reason, or null when the exchange was not refused. */
 export function deliveryText(c: Conversation): string | null {
-  if (c.delivery != null && c.delivery !== '') return c.delivery;
-  if (c.delivered === false) return 'the peer’s session did not take it';
-  return null;
+  const mark = deliveryMark(c);
+  return mark.kind === 'refused' ? mark.text : null;
+}
+
+/** The talk sheet's own tally over the console's copy: how many exchanges it
+    holds, over how many pairs (the node's own rows when it sends them), how
+    many of those pairs are active now, and how many exchanges the hub refused.
+    A bounded copy counts only what it holds — `truncated` says so. */
+export interface TalkTally {
+  exchanges: number;
+  pairs: number;
+  active: number;
+  refused: number;
+}
+
+/** Count the console's copy of the conversations. The active count rides the
+    same window `activePairs` uses, so the tally and the floor can never
+    disagree about who is talking. */
+export function talkTally(
+  view: {
+    pairs?: readonly ConversationPair[];
+    conversations?: readonly Conversation[];
+    active_secs?: number;
+  },
+  now: number,
+): TalkTally {
+  const conversations = view.conversations ?? [];
+  let refused = 0;
+  for (const c of conversations) if (deliveryMark(c).kind === 'refused') refused++;
+  const pairs = conversationPairs(view, now);
+  let active = 0;
+  for (const p of pairs) if (p.active) active++;
+  return { exchanges: conversations.length, pairs: pairs.length, active, refused };
 }

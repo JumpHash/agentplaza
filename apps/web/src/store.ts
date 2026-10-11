@@ -26,7 +26,7 @@ import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'floor' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market' | 'board';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'floor' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market' | 'board' | 'talk';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 /** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
@@ -123,6 +123,7 @@ declare global {
         readonly activeSecs: number;
         readonly contacts: readonly number[];
         readonly thread: { readonly a: number; readonly b: number; readonly state: string } | null;
+        readonly talkPair: { readonly a: number; readonly b: number } | null;
         readonly error: string | null;
         readonly errorStatus: number | null;
       };
@@ -301,6 +302,9 @@ export class Store {
   readonly contacts = new Map<number, ContactsRead>();
   /** The one pair's thread the card is reading, or null. */
   thread: ThreadRead | null = null;
+  /** The pair the talk sheet is narrowed to, or null for the whole log. A view
+      preference: the sheet reads the thread it asks for from `thread`. */
+  talkPair: { a: number; b: number } | null = null;
   /** The task the ledger sheet is pinned to (`#ledger/{id}`), or null. */
   taskDetailId: string | null = null;
   /** The artifact the ledger's sheet last asked for — the one read in flight,
@@ -738,6 +742,21 @@ export class Store {
       };
       this.noteErr();
     }
+    this.scheduleRender();
+  }
+
+  /** Narrow the talk sheet to one pair: remember the pair (ascending) and ask
+      the node for its own thread, rather than sifting the bounded copy. The
+      sheet reads the answer from `thread`. */
+  setTalkPair(a: number, b: number): void {
+    this.talkPair = { a: Math.min(a, b), b: Math.max(a, b) };
+    void this.loadThread(a, b);
+  }
+
+  /** Widen the talk sheet back to the whole log. The thread last read is kept
+      — it is the node's answer for its pair, not the sheet's filter. */
+  clearTalkPair(): void {
+    this.talkPair = null;
     this.scheduleRender();
   }
 

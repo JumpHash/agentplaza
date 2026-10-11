@@ -1,8 +1,10 @@
 /* Hash routing: #register (default) / #run/{id} / #machine / #map / #floor /
    #compare/{a}/{avm}/{b}/{bvm} / #telemetry / #roster / #ledger/{id} /
-   #treasury / #market / #board. Keys 0–10 walk the eleven index destinations;
-   the compare and ledger addresses carry their subject so they can be
-   bookmarked. */
+   #treasury / #market / #board / #talk. Keys 0–9 walk the ten index
+   destinations; the board and the talk take the letters `b` and `c` (a
+   two-digit key cannot be a keystroke). The compare and ledger addresses
+   carry their subject so they can be bookmarked; the talk sheet's own pair
+   filter is view state, not an address. */
 
 import type { CompareTarget, Route, ViewName } from './store';
 
@@ -19,6 +21,7 @@ const NAMES: Readonly<Record<string, ViewName>> = {
   treasury: 'treasury',
   market: 'market',
   board: 'board',
+  talk: 'talk',
 };
 
 export function parseRoute(hash: string): Route {
@@ -54,6 +57,7 @@ export const NAV_OF: Record<ViewName, ViewName> = {
   treasury: 'treasury',
   market: 'market',
   board: 'board',
+  talk: 'talk',
 };
 
 /** Key destinations. The ten index digits walk the index; the public board
@@ -72,4 +76,5 @@ export const KEY_ROUTES: Readonly<Record<string, ViewName>> = {
   '8': 'treasury',
   '9': 'market',
   b: 'board',
+  c: 'talk',
 };

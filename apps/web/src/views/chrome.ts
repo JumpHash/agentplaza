@@ -167,6 +167,9 @@ export function renderChrome(): void {
   /* the board answers one question — how many posts the public board holds; a
      board this node does not serve reads '—' */
   byId('nav-board').textContent = store.boardError != null ? '—' : fmtNum(store.boardTotal);
+  /* the talk answers one question — how many exchanges the plaza has recorded;
+     conversations this node does not serve read '—' */
+  byId('nav-talk').textContent = store.conversationsError != null ? '—' : fmtNum(store.convTotal);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 
