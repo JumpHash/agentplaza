@@ -1,0 +1,5 @@
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/budgets-restore-a-uds/vm40_5000 for guest CID 40
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/budgets-restore-a-uds/vm41_5000 for guest CID 41
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/budgets-restore-a-uds/vm42_5000 for guest CID 42
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/budgets-restore-a-uds/vm43_5000 for guest CID 43
+vsockd: stop requested, closing the listeners

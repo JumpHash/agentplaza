@@ -2,15 +2,15 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "PASS",
   "machine_class": "server",
-  "generated_at": "2026-10-11T11:41:13+0200",
-  "wall_seconds": 5.525,
+  "generated_at": "2026-10-11T12:31:04+0200",
+  "wall_seconds": 5.462,
   "manifest": {
     "suite": "council",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "2b73440e5ec163ab309900bf9fa3e9413d98bd3f",
+      "head": "8ad86ac2f8f6b82b43ea0724589ebdd5f5720319",
       "dirty": true,
-      "harness_tree_sha256": "2d93b18c0799c3b4771883bd0767814a42433745598ce4890d573b5d41b962e8"
+      "harness_tree_sha256": "7c5e3f16aeb8481145aeb55b8e14efafa28e8af8ece2bec08114e2b8d5a46b60"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
@@ -35,102 +35,102 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-server-wqzvb6no",
-    "started_at": "2026-10-11T11:41:13+0200",
+    "artifacts_dir": "/tmp/apz-acceptance-server-y5__coas",
+    "started_at": "2026-10-11T12:31:04+0200",
     "binaries": {
       "noded": {
-        "path": "/tmp/apz-pin/noded",
-        "sha256": "d270c880bd1b02366d9221e4f17aa10a7d317dc2de5c4d00d4e23c3e71829738"
+        "path": "/tmp/apz-pin2/noded",
+        "sha256": "f99202fb89db92337da8a7bd45a6892f504b35f3e2da253aeb4c9f5c9e12d63c"
       },
       "vsockd": {
-        "path": "/tmp/apz-pin/vsockd",
+        "path": "/tmp/apz-pin2/vsockd",
         "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-manifest-fleet/roles.json",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-manifest-fleet/roles.json",
         "bytes": 2098,
         "sha256": "b0fa3933f27686c305335d8aff2ae6a6957167a3f0b5f7555c5c6fd8bd0a9b92",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/b0fa3933-roles.json",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/b0fa3933-roles.json",
         "excerpt_bytes": 2098
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-fleet-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-fleet-logs/noded.log",
         "bytes": 49075,
-        "sha256": "862f52871435cf6afc505967f78746ec28e46d4655f489e97ffaf1a3ffcbe251",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/862f5287-noded.log",
+        "sha256": "9bddc667182745f41e7ccf169afcf7cac4bb856a3a8a64bc0abfa4bb63a52958",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/9bddc667-noded.log",
         "excerpt_bytes": 49075
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-fleet-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-fleet-logs/vsockd.log",
         "bytes": 3589,
-        "sha256": "738bf6272418fc12ccabdff25c01efaf99f7b0e5417447deadc3992236ea5413",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/738bf627-vsockd.log",
+        "sha256": "4cbd3678021b4ce5f2da36207cadf40980a86f39658f1ff630125a60a8406bb6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/4cbd3678-vsockd.log",
         "excerpt_bytes": 3589
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-evidence-fleet/motions.json",
-        "bytes": 15223,
-        "sha256": "822a80e552944abd3d5371e83bc3f1ea059949eb20ff4ac1e4826b56b61aae79",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/822a80e5-motions.json",
-        "excerpt_bytes": 15223
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-evidence-fleet/motions.json",
+        "bytes": 18872,
+        "sha256": "155cb9176c6cf0073f392f5a3b7cb4950548c8d37cc40b339ea82e0abf0298a6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/155cb917-motions.json",
+        "excerpt_bytes": 18872
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-evidence-fleet/sse-frames.txt",
-        "bytes": 4200,
-        "sha256": "89d9eda2685a9c2c3ea884f8dc5b07da3af3060b8d1f6e6ece00334d8ac9ab64",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/89d9eda2-sse-frames.txt",
-        "excerpt_bytes": 4200
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-evidence-fleet/sse-frames.txt",
+        "bytes": 5421,
+        "sha256": "7a6cbd1f86a7394fa2c3f051f539d5ff194c35e5f000b1dda5ce7ec4595d4549",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/7a6cbd1f-sse-frames.txt",
+        "excerpt_bytes": 5421
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-manifest-pass/roles.json",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-manifest-pass/roles.json",
         "bytes": 1722,
         "sha256": "4dc6247f2c0e1a41564ff1e4f45f88aa3afad3a9eb517b106425d9063b334087",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/4dc6247f-roles.json",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/4dc6247f-roles.json",
         "excerpt_bytes": 1722
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-pass-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-pass-logs/noded.log",
         "bytes": 40981,
-        "sha256": "635dd777a27b550090c0958063b852885c6e28c7015463ceedbf798dfe2198f1",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/635dd777-noded.log",
+        "sha256": "cf72a1c1248d1ab5c3571136b2fa81ce23cd893a7bdca2ecb42db86d513dde62",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/cf72a1c1-noded.log",
         "excerpt_bytes": 40981
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-pass-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-pass-logs/vsockd.log",
         "bytes": 3284,
-        "sha256": "06d8949d4e87582385ddd14ee2008f3b73aed550fdf69f0c694032254dcc61b4",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/06d8949d-vsockd.log",
+        "sha256": "d886a0784fc0e48542704c208ee8606cec3db3d5831861aec9cd5b97e4670868",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/d886a078-vsockd.log",
         "excerpt_bytes": 3284
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-evidence-pass/dispatchd.log",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-evidence-pass/dispatchd.log",
         "bytes": 3088,
         "sha256": "315b8d7fceb4109b0a66cf5f16956a7714fe7803d5c0951c6b1a2e16eb83df6f",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/315b8d7f-dispatchd.log",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/315b8d7f-dispatchd.log",
         "excerpt_bytes": 3078
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-evidence-pass/motion.json",
-        "bytes": 1268,
-        "sha256": "d2259c8028d5046a7576a5fa5a3c7c8ad6e0f5268073fc6ea0baac87cae96d51",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/d2259c80-motion.json",
-        "excerpt_bytes": 1268
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-evidence-pass/motion.json",
+        "bytes": 1285,
+        "sha256": "eb4f522a82e3d0d0d6fd2193ce28d9918561f4f10b2d49f93f952605718391b3",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/eb4f522a-motion.json",
+        "excerpt_bytes": 1285
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/council-evidence-pass/tasks.json",
+        "source": "/tmp/apz-acceptance-server-y5__coas/council-evidence-pass/tasks.json",
         "bytes": 404,
-        "sha256": "000ebe0d824f382c740fe96fa4078281e37913cbe46106c9b40d3e4da016e483",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/000ebe0d-tasks.json",
+        "sha256": "f16ed133d3d36d1be917967f4fd80beba921ccfed2fb2f64a5e7af00463f4062",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/f16ed133-tasks.json",
         "excerpt_bytes": 404
       },
       {
-        "source": "/tmp/apz-acceptance-server-wqzvb6no/kernel-seccomp-audit.log",
+        "source": "/tmp/apz-acceptance-server-y5__coas/kernel-seccomp-audit.log",
         "bytes": 1,
         "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T114107/01ba4719-kernel-seccomp-audit.log",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T123059/01ba4719-kernel-seccomp-audit.log",
         "excerpt_bytes": 1
       }
     ]
@@ -141,33 +141,33 @@
   "kernel_seccomp_audit": {
     "available": true,
     "reason": null,
-    "since_epoch": 1791711667,
+    "since_epoch": 1791714659,
     "records": 0,
     "attributed": [],
     "kills": [],
-    "artifact": "/tmp/apz-acceptance-server-wqzvb6no/kernel-seccomp-audit.log"
+    "artifact": "/tmp/apz-acceptance-server-y5__coas/kernel-seccomp-audit.log"
   },
   "sut_binary": {
-    "bin_dir": "/tmp/apz-pin",
+    "bin_dir": "/tmp/apz-pin2",
     "digests": {
-      "noded": "d270c880bd1b02366d9221e4f17aa10a7d317dc2de5c4d00d4e23c3e71829738",
+      "noded": "f99202fb89db92337da8a7bd45a6892f504b35f3e2da253aeb4c9f5c9e12d63c",
       "vsockd": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
     },
     "changed_mid_run": {},
     "sut_git_at_start": {
-      "head": "2b73440e5ec163ab309900bf9fa3e9413d98bd3f",
+      "head": "8ad86ac2f8f6b82b43ea0724589ebdd5f5720319",
       "dirty": true,
-      "harness_tree_sha256": "2d93b18c0799c3b4771883bd0767814a42433745598ce4890d573b5d41b962e8"
+      "harness_tree_sha256": "7c5e3f16aeb8481145aeb55b8e14efafa28e8af8ece2bec08114e2b8d5a46b60"
     }
   },
   "suites": [
     {
       "suite": "council",
-      "pass_bar": "every case passes: only the four seats propose and vote, the gate is derived and refused when disagreed with, the vote rules and the count follow the doctrine, the dispatcher's council pass drives the seats, and every SSE motion frame is exactly {id,kind,state}",
+      "pass_bar": "every case passes: only the four seats propose and vote, the gate is derived and refused when disagreed with, the vote rules and the count follow the doctrine, the owner decides only a gated motion once, the dispatcher's council pass drives the seats, and every SSE motion frame is exactly {id,kind,state}",
       "status": "PASS",
       "blocked_reason": null,
-      "cases_passed": 7,
-      "cases_total": 7,
+      "cases_passed": 8,
+      "cases_total": 8,
       "cases": [
         {
           "name": "(a) THE SEATS: over a six-role fleet of real guests, the four seated roles propose and vote; an unseated connected agent and a court role are refused 403 with the role named verbatim",
@@ -193,7 +193,7 @@
             {
               "name": "every role guest connected to the hub",
               "ok": true,
-              "detail": "connected=['vsockd: agent 190 role builder connected', 'vsockd: agent 191 role finance connected', 'vsockd: agent 192 role incident connected', 'vsockd: agent 193 role legal-agents-counsel connected', 'vsockd: agent 194 role legal-gov-judge connected', 'vsockd: agent 195 role mayor-office connected']"
+              "detail": "connected=['vsockd: agent 190 role builder connected', 'vsockd: agent 192 role incident connected', 'vsockd: agent 191 role finance connected', 'vsockd: agent 194 role legal-gov-judge connected', 'vsockd: agent 193 role legal-agents-counsel connected', 'vsockd: agent 195 role mayor-office connected']"
             },
             {
               "name": "the finance seat may propose: 201 with proposer_role finance",
@@ -279,7 +279,7 @@
             {
               "name": "a 1000-credit task is created (201) and its budget mints into escrow",
               "ok": true,
-              "detail": "201 {\"id\":\"t1\",\"goal\":\"fund the pool\",\"acceptance\":null,\"budget\":1000,\"role\":null,\"state\":\"open\",\"outcome\":null,\"assignee_id\":null,\"verifier_id\":null,\"agent_cid\":null,\"note\":null,\"created_at\":179171167027"
+              "detail": "201 {\"id\":\"t1\",\"goal\":\"fund the pool\",\"acceptance\":null,\"budget\":1000,\"role\":null,\"state\":\"open\",\"outcome\":null,\"assignee_id\":null,\"verifier_id\":null,\"agent_cid\":null,\"note\":null,\"created_at\":179171466199"
             },
             {
               "name": "the treasury's minted total \u2014 the journal's own mint credits \u2014 is 1000",
@@ -324,7 +324,7 @@
             {
               "name": "a law_proposal carried 4-0 is awaiting_owner with needs_owner still true (the owner ratifies)",
               "ok": true,
-              "detail": "{'id': 'm9', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'law_proposal', 'text': 'a law_proposal for the plaza', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670275}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670276}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670276}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670277}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670275, 'updated_at': 1791711670277}"
+              "detail": "{'id': 'm9', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'law_proposal', 'text': 'a law_proposal for the plaza', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662001}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662001}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662002}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662002}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662000, 'updated_at': 1791714662002}"
             },
             {
               "name": "a town_proposal carries needs_owner true (derived, never the caller's word)",
@@ -334,7 +334,7 @@
             {
               "name": "a town_proposal carried 4-0 is awaiting_owner with needs_owner still true (the owner ratifies)",
               "ok": true,
-              "detail": "{'id': 'm10', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'town_proposal', 'text': 'a town_proposal for the plaza', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670278}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670278}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670278}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670279}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670277, 'updated_at': 1791711670279}"
+              "detail": "{'id': 'm10', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'town_proposal', 'text': 'a town_proposal for the plaza', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662003}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662004}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662004}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662004}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662003, 'updated_at': 1791714662004}"
             },
             {
               "name": "a mayor_replacement carries needs_owner true (derived, never the caller's word)",
@@ -344,7 +344,7 @@
             {
               "name": "a mayor_replacement carried 4-0 is awaiting_owner with needs_owner still true (the owner ratifies)",
               "ok": true,
-              "detail": "{'id': 'm11', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'mayor_replacement', 'text': 'a mayor_replacement for the plaza', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670280}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670280}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670280}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670281}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670279, 'updated_at': 1791711670281}"
+              "detail": "{'id': 'm11', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'mayor_replacement', 'text': 'a mayor_replacement for the plaza', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662005}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662006}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662006}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662007}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662005, 'updated_at': 1791714662007}"
             }
           ],
           "notes": []
@@ -413,7 +413,7 @@
             {
               "name": "the motion is carried after four yes votes (a majority of yes over no)",
               "ok": true,
-              "detail": "{'id': 'm12', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion for the vote rules', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': 'on reflection the dashboard is urgent', 'at': 1791711670285}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670285}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670285}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670286}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670281, 'updated_at': 1791711670286}"
+              "detail": "{'id': 'm12', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion for the vote rules', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': 'on reflection the dashboard is urgent', 'at': 1791714662010}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662011}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662011}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662012}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662007, 'updated_at': 1791714662012}"
             },
             {
               "name": "a vote on a decided motion is a 409 naming the state",
@@ -437,7 +437,7 @@
             {
               "name": "driving all four seats to yes carries an ungated motion",
               "ok": true,
-              "detail": "{'id': 'm13', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'priority', 'text': 'a priority for the fleet \u2014 SSE-TEXT-SENTINEL-4f7c', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670287}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670287}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670288}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670288}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670287, 'updated_at': 1791711670288}"
+              "detail": "{'id': 'm13', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'priority', 'text': 'a priority for the fleet \u2014 SSE-TEXT-SENTINEL-4f7c', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662013}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662013}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662014}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662014}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662013, 'updated_at': 1791714662014}"
             },
             {
               "name": "the carried motion's tally is 4 yes, 0 no, 0 abstain, voted 4 of 4 seats",
@@ -447,22 +447,22 @@
             {
               "name": "an even split (2-2) is tie_to_owner: the owner decides, never re-voted until it passes",
               "ok": true,
-              "detail": "{'id': 'm14', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion the towns disagree on', 'needs_owner': False, 'state': 'tie_to_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670289}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670290}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'no', 'reason': \"the incident seat's reason\", 'at': 1791711670290}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'no', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670290}], 'tally': {'yes': 2, 'no': 2, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670289, 'updated_at': 1791711670290}"
+              "detail": "{'id': 'm14', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion the towns disagree on', 'needs_owner': False, 'state': 'tie_to_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662015}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662016}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'no', 'reason': \"the incident seat's reason\", 'at': 1791714662016}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'no', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662017}], 'tally': {'yes': 2, 'no': 2, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662015, 'updated_at': 1791714662017}"
             },
             {
               "name": "3 yes to 1 no is carried (a majority of yes over no)",
               "ok": true,
-              "detail": "{'id': 'm15', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion with one dissent', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670291}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670292}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670292}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'no', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670292}], 'tally': {'yes': 3, 'no': 1, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670291, 'updated_at': 1791711670292}"
+              "detail": "{'id': 'm15', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion with one dissent', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662017}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662018}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662018}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'no', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662019}], 'tally': {'yes': 3, 'no': 1, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662017, 'updated_at': 1791714662019}"
             },
             {
               "name": "3 yes and 1 abstain is carried: the abstain counts toward voted (4) and never toward the majority",
               "ok": true,
-              "detail": "{'id': 'm16', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion with one abstention', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670293}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670294}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670294}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'abstain', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670294}], 'tally': {'yes': 3, 'no': 0, 'abstain': 1, 'voted': 4, 'seats': 4}, 'created_at': 1791711670293, 'updated_at': 1791711670294}"
+              "detail": "{'id': 'm16', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion with one abstention', 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662020}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662020}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662020}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'abstain', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662021}], 'tally': {'yes': 3, 'no': 0, 'abstain': 1, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662019, 'updated_at': 1791714662021}"
             },
             {
               "name": "a gated motion carried 4-0 is awaiting_owner with needs_owner still true",
               "ok": true,
-              "detail": "{'id': 'm17', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'law_proposal', 'text': 'a law the owner must ratify', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791711670295}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791711670296}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791711670296}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791711670296}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711670295, 'updated_at': 1791711670296}"
+              "detail": "{'id': 'm17', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'law_proposal', 'text': 'a law the owner must ratify', 'needs_owner': True, 'state': 'awaiting_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662022}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662022}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'yes', 'reason': \"the incident seat's reason\", 'at': 1791714662022}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'yes', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662023}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662021, 'updated_at': 1791714662023}"
             }
           ],
           "notes": []
@@ -507,6 +507,135 @@
           "notes": []
         },
         {
+          "name": "(h) THE OWNER'S DECISION: the operator (not an agent) ratifies or vetoes only a motion the count gated to them, once, with `owner` keyed on every view",
+          "detail": "",
+          "vector": "POST /api/v0/motions/{id}/decide over the fleet lab: the endpoint probe (m0 -> 404 `no motion with id m0`); `owner` keyed-null on every fresh view; 400 approve missing/non-boolean, note empty/blank/over 1000; 404 unknown id; 405 GET; 409 naming the state for an `open`, a `carried` (ungated \u2014 a majority is never routed around) and a `rejected` motion; FOUR decisions (tie -> ratified with a note, a second tie -> vetoed with none, two awaiting_owner carries -> ratified and vetoed) with the note byte-exact in the decide response, the single-motion GET and the collection view, and `null` in both when absent; the body's authority is the operator's (an `agent_cid`, here the unseated builder's, is ignored \u2014 no agent lookup); the tally and the four votes survive the decision; a decided motion takes no further vote (409 naming ratified and vetoed) and is decided once (409); and the SSE frame stays exactly {id,kind,state} carrying ratified AND vetoed with no text",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "`owner` is keyed on every motion view (Column-style) and null until the owner acts",
+              "ok": true,
+              "detail": "[('m17', None), ('m16', None), ('m15', None), ('m14', None)]"
+            },
+            {
+              "name": "400: `approve` missing (the deserializer names the field)",
+              "ok": true,
+              "detail": "400 {\"error\":\"invalid decide request: missing field `approve` at line 1 column 13\"}"
+            },
+            {
+              "name": "400: `approve` is typed \u2014 a non-boolean never deserializes",
+              "ok": true,
+              "detail": "400 {\"error\":\"invalid decide request: invalid type: string \\\"yes\\\", expected a boolean at line 1 column 17\"}"
+            },
+            {
+              "name": "400: an empty note is refused in the contract's own words, verbatim",
+              "ok": true,
+              "detail": "400 {\"error\":\"note must not be empty\"}"
+            },
+            {
+              "name": "400: a blank note is refused in the contract's own words, verbatim",
+              "ok": true,
+              "detail": "400 {\"error\":\"note must not be empty\"}"
+            },
+            {
+              "name": "400: a note over 1000 bytes is refused with the literal cap (the cap pinned literally, not via a constant)",
+              "ok": true,
+              "detail": "400 {\"error\":\"note must be at most 1000 bytes\"}"
+            },
+            {
+              "name": "404: an unknown motion id is the motion rule's own words",
+              "ok": true,
+              "detail": "404 {\"error\":\"no motion with id m9999\"}"
+            },
+            {
+              "name": "405: the owner's decision is a POST (a GET on /decide is refused)",
+              "ok": true,
+              "detail": "405 {\"error\":\"this endpoint accepts POST\"}"
+            },
+            {
+              "name": "409: an `open` motion is not the owner's to decide (the council has not decided)",
+              "ok": true,
+              "detail": "409 {\"error\":\"motion m18 is open: the owner decides only a tie_to_owner or awaiting_owner motion \u2014 the council's own decision stands\"}"
+            },
+            {
+              "name": "409: an ungated `carried` motion can never be owner-decided (a majority is not routed around)",
+              "ok": true,
+              "detail": "409 {\"error\":\"motion m13 is carried: the owner decides only a tie_to_owner or awaiting_owner motion \u2014 the council's own decision stands\"}"
+            },
+            {
+              "name": "a motion driven 4-0 against is `rejected`",
+              "ok": true,
+              "detail": "{'id': 'm19', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a motion the council rejects', 'needs_owner': False, 'state': 'rejected', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'no', 'reason': \"the finance seat's reason\", 'at': 1791714662032}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'no', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662032}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'no', 'reason': \"the incident seat's reason\", 'at': 1791714662033}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'no', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662033}], 'tally': {'yes': 0, 'no': 4, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662032, 'updated_at': 1791714662033}"
+            },
+            {
+              "name": "409: a `rejected` motion is not the owner's to decide either",
+              "ok": true,
+              "detail": "409 {\"error\":\"motion m19 is rejected: the owner decides only a tie_to_owner or awaiting_owner motion \u2014 the council's own decision stands\"}"
+            },
+            {
+              "name": "a second 2-2 tie is `tie_to_owner` (a second decision is available to the owner)",
+              "ok": true,
+              "detail": "{'id': 'm20', 'proposer_cid': 191, 'proposer_role': 'finance', 'kind': 'other', 'text': 'a second motion the towns split on', 'needs_owner': False, 'state': 'tie_to_owner', 'votes': [{'seat': 'finance', 'agent_cid': 191, 'vote': 'yes', 'reason': \"the finance seat's reason\", 'at': 1791714662034}, {'seat': 'legal-agents-counsel', 'agent_cid': 193, 'vote': 'yes', 'reason': \"the legal-agents-counsel seat's reason\", 'at': 1791714662035}, {'seat': 'incident', 'agent_cid': 192, 'vote': 'no', 'reason': \"the incident seat's reason\", 'at': 1791714662035}, {'seat': 'mayor-office', 'agent_cid': 195, 'vote': 'no', 'reason': \"the mayor-office seat's reason\", 'at': 1791714662036}], 'tally': {'yes': 2, 'no': 2, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714662034, 'updated_at': 1791714662036}"
+            },
+            {
+              "name": "200: the owner ratifies a `tie_to_owner` motion \u2014 state `ratified`, `owner` recorded",
+              "ok": true,
+              "detail": "200 {\"id\":\"m14\",\"proposer_cid\":191,\"proposer_role\":\"finance\",\"kind\":\"other\",\"text\":\"a motion the towns disagree on\",\"needs_owner\":false,\"state\":\"ratified\",\"votes\":[{\"seat\":\"finance\",\"agent_cid\":191,\"vote\":\"yes\",\"reason\":\"the finance seat's reason\",\"at\":17917146620"
+            },
+            {
+              "name": "the recorded note is byte-exact in the decide response, the single-motion GET AND the collection view",
+              "ok": true,
+              "detail": "note=\"the tie is the owner's to break \u2014 DECIDE-NOTE-SENTINEL-9a2e\" single=\"the tie is the owner's to break \u2014 DECIDE-NOTE-SENTINEL-9a2e\""
+            },
+            {
+              "name": "the owner's decision is not a vote: the tally and the four votes are untouched",
+              "ok": true,
+              "detail": "before={'yes': 2, 'no': 2, 'abstain': 0, 'voted': 4, 'seats': 4} after={'yes': 2, 'no': 2, 'abstain': 0, 'voted': 4, 'seats': 4}"
+            },
+            {
+              "name": "200: the owner vetoes the second tie \u2014 state `vetoed`, `approve` false",
+              "ok": true,
+              "detail": "200 {\"id\":\"m20\",\"proposer_cid\":191,\"proposer_role\":\"finance\",\"kind\":\"other\",\"text\":\"a second motion the towns split on\",\"needs_owner\":false,\"state\":\"vetoed\",\"votes\":[{\"seat\":\"finance\",\"agent_cid\":191,\"vote\":\"yes\",\"reason\":\"the finance seat's reason\",\"at\":179171466"
+            },
+            {
+              "name": "an absent note reads back as null in both the single-motion GET and the collection view",
+              "ok": true,
+              "detail": "{'approve': False, 'note': None, 'at': 1791714662039}"
+            },
+            {
+              "name": "the decide body's authority is the operator's: an `agent_cid` (the unseated builder's) is IGNORED \u2014 no agent lookup, the decision is taken (no `deny_unknown_fields`)",
+              "ok": true,
+              "detail": "200 {\"id\":\"m17\",\"proposer_cid\":191,\"proposer_role\":\"finance\",\"kind\":\"law_proposal\",\"text\":\"a law the owner must ratify\",\"needs_owner\":true,\"state\":\"ratified\",\"votes\":[{\"seat\":\"finance\",\"agent_cid\":191,\"vote\":\"yes\",\"reason\":\"the finance seat's reason\",\"at\":17917146"
+            },
+            {
+              "name": "the second waiting motion is decided the other way: `approve` false on a gated carry vetoes it",
+              "ok": true,
+              "detail": "{\"id\":\"m9\",\"proposer_cid\":191,\"proposer_role\":\"finance\",\"kind\":\"law_proposal\",\"text\":\"a law_proposal for the plaza\",\"needs_owner\":true,\"state\":\"vetoed\",\"votes\":[{\"seat\":\"finance\",\"agent_cid\":191,\"vote\":\"yes\",\"reason\":\"the finance seat's rea"
+            },
+            {
+              "name": "a ratified motion takes no further vote (409 naming the new state)",
+              "ok": true,
+              "detail": "409 {\"error\":\"motion m14 is ratified, not open: a decided motion takes no further vote\"}"
+            },
+            {
+              "name": "a vetoed motion takes no further vote either (409 naming `vetoed`)",
+              "ok": true,
+              "detail": "409 {\"error\":\"motion m20 is vetoed, not open: a decided motion takes no further vote\"}"
+            },
+            {
+              "name": "409: the owner decides a motion once \u2014 a second decide names the decided state",
+              "ok": true,
+              "detail": "409 {\"error\":\"motion m14 is already decided (ratified): the owner decides a motion once\"}"
+            }
+          ],
+          "notes": []
+        },
+        {
           "name": "(f) THE SSE: every motion frame is exactly {id, kind, state} \u2014 no text",
           "detail": "",
           "vector": "GET /api/v0/events drained across the session: every `event: motion` frame's data has exactly the keys id/kind/state; the carried motion's frames run open (on propose) then carried (on the fourth vote) \u2014 5 frames for 1 propose + 4 votes; no frame carries the motion's own text",
@@ -520,7 +649,7 @@
             {
               "name": "the stream carried motion frames at all (the reader saw the session's events)",
               "ok": true,
-              "detail": "58 motion frames"
+              "detail": "73 motion frames"
             },
             {
               "name": "every motion frame is exactly {id, kind, state} \u2014 no text, no tally, no reasons",
@@ -533,7 +662,17 @@
               "detail": "states=['open', 'open', 'open', 'open', 'carried']"
             },
             {
-              "name": "no motion frame carries the motion's own text (the motions endpoint is the only source)",
+              "name": "the owner's decision publishes one frame carrying the new state `ratified`",
+              "ok": true,
+              "detail": "states=['open', 'open', 'open', 'open', 'tie_to_owner', 'ratified']"
+            },
+            {
+              "name": "the owner's decision publishes one frame carrying the new state `vetoed`",
+              "ok": true,
+              "detail": "states=['open', 'open', 'open', 'open', 'tie_to_owner', 'vetoed']"
+            },
+            {
+              "name": "no motion frame carries the motion's own text or the owner's note (the record is the only source)",
               "ok": true,
               "detail": "sentinel present: []"
             }
@@ -554,7 +693,7 @@
             {
               "name": "noded booted the seat fleet at startup",
               "ok": true,
-              "detail": ", and chroot/pivot_root would change the root of every thread); the VMM runs with its seccomp jail only\nnoded: initial role fleet r1: 5 agents running (roles finance, incident, legal-agents-counsel, legal-gov-judge, mayor-office, CIDs 200..=204)\nnoded: listening on http://127.0.0.1:44021 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)\n"
+              "detail": ", and chroot/pivot_root would change the root of every thread); the VMM runs with its seccomp jail only\nnoded: initial role fleet r1: 5 agents running (roles finance, incident, legal-agents-counsel, legal-gov-judge, mayor-office, CIDs 200..=204)\nnoded: listening on http://127.0.0.1:35271 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)\n"
             },
             {
               "name": "the five-role fleet (four seats + the court) boots at the CIDs the base gives them",
@@ -564,7 +703,7 @@
             {
               "name": "every role guest connected to the hub",
               "ok": true,
-              "detail": "connected=['vsockd: agent 200 role finance connected', 'vsockd: agent 201 role incident connected', 'vsockd: agent 202 role legal-agents-counsel connected', 'vsockd: agent 204 role mayor-office connected', 'vsockd: agent 203 role legal-gov-judge connected']"
+              "detail": "connected=['vsockd: agent 201 role incident connected', 'vsockd: agent 202 role legal-agents-counsel connected', 'vsockd: agent 200 role finance connected', 'vsockd: agent 203 role legal-gov-judge connected', 'vsockd: agent 204 role mayor-office connected']"
             },
             {
               "name": "an open task of the court role exists (the driver cannot claim it by design)",
@@ -643,7 +782,7 @@
             {
               "name": "the motion carried 4-0: every seat voted yes and priority is not owner-gated",
               "ok": true,
-              "detail": "{'id': 'm1', 'proposer_cid': 200, 'proposer_role': 'finance', 'kind': 'priority', 'text': \"priority: t1 \u2014 rule on the plaza's petition\", 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 200, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791711672937}, {'seat': 'legal-agents-counsel', 'agent_cid': 202, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791711672939}, {'seat': 'incident', 'agent_cid': 201, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791711672941}, {'seat': 'mayor-office', 'agent_cid': 204, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791711672943}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'created_at': 1791711672934, 'updated_at': 1791711672943}"
+              "detail": "{'id': 'm1', 'proposer_cid': 200, 'proposer_role': 'finance', 'kind': 'priority', 'text': \"priority: t1 \u2014 rule on the plaza's petition\", 'needs_owner': False, 'state': 'carried', 'votes': [{'seat': 'finance', 'agent_cid': 200, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791714664682}, {'seat': 'legal-agents-counsel', 'agent_cid': 202, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791714664684}, {'seat': 'incident', 'agent_cid': 201, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791714664687}, {'seat': 'mayor-office', 'agent_cid': 204, 'vote': 'yes', 'reason': \"the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1\", 'at': 1791714664689}], 'tally': {'yes': 4, 'no': 0, 'abstain': 0, 'voted': 4, 'seats': 4}, 'owner': None, 'created_at': 1791714664680, 'updated_at': 1791714664689}"
             },
             {
               "name": "the votes' seats are exactly the four seats (one vote each, the newest reason standing)",
@@ -667,7 +806,7 @@
             "legal-gov-judge": 194,
             "mayor-office": 195
           },
-          "motions": 17
+          "motions": 20
         }
       },
       "notes": [
@@ -678,8 +817,8 @@
         "dispatchd --noded/--once: present"
       ],
       "findings": [],
-      "started_at": "2026-10-11T11:41:07+0200",
-      "duration_s": 5.441
+      "started_at": "2026-10-11T12:30:59+0200",
+      "duration_s": 5.405
     }
   ],
   "findings": []

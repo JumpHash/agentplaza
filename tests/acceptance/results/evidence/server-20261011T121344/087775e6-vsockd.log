@@ -1,0 +1,29 @@
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/redteam-nic-uds/vm10_5000 for guest CID 10
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/redteam-nic-uds/vm11_5000 for guest CID 11
+vsockd: accepted a connection from cid 10
+[guest 10 vm? ->] {"type":"hello","vm":0,"guest_cid":10}
+vsockd: guest 10 vm 0 says hello (accepted on the socket for cid 10)
+[<-] guest 10 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 10 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-10-hello"}}
+[<-] guest 10 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-10-hello"}
+vsockd: answered call 1 (echo) for guest 10 vm 0
+[guest 10 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 10 vm0 {"type":"tool_result","call":2,"ok":true,"output":"322882.74 6850934.04"}
+vsockd: answered call 2 (uptime) for guest 10 vm 0
+[guest 10 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 10 vm 0 said bye after 2 tool calls
+vsockd: session with guest 10 vm 0 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 11
+[guest 11 vm? ->] {"type":"hello","vm":1,"guest_cid":11}
+vsockd: guest 11 vm 1 says hello (accepted on the socket for cid 11)
+[<-] guest 11 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 11 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-11-hello"}}
+[<-] guest 11 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-11-hello"}
+vsockd: answered call 1 (echo) for guest 11 vm 1
+[guest 11 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 11 vm1 {"type":"tool_result","call":2,"ok":true,"output":"322882.74 6850934.16"}
+vsockd: answered call 2 (uptime) for guest 11 vm 1
+[guest 11 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 11 vm 1 said bye after 2 tool calls
+vsockd: session with guest 11 vm 1 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

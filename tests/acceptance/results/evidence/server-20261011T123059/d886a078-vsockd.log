@@ -1,0 +1,39 @@
+vsockd: role tool grants enforced from /tmp/apz-acceptance-server-y5__coas/council-manifest-pass/roles.json (5 roles)
+vsockd: status on http://127.0.0.1:44343 (GET /status, GET /healthz, read-only)
+vsockd: admin on http://127.0.0.1:37135 (POST /tell, POST /stop, GET /healthz)
+vsockd: listening on /tmp/apz-acceptance-server-y5__coas/council-pass-uds/vm200_5000 for guest CID 200
+vsockd: listening on /tmp/apz-acceptance-server-y5__coas/council-pass-uds/vm201_5000 for guest CID 201
+vsockd: listening on /tmp/apz-acceptance-server-y5__coas/council-pass-uds/vm202_5000 for guest CID 202
+vsockd: listening on /tmp/apz-acceptance-server-y5__coas/council-pass-uds/vm203_5000 for guest CID 203
+vsockd: listening on /tmp/apz-acceptance-server-y5__coas/council-pass-uds/vm204_5000 for guest CID 204
+vsockd: accepted a connection from cid 201
+[guest 201 vm? ->] {"type":"hello","vm":1,"guest_cid":201,"role":"incident","keepalive":true}
+vsockd: guest 201 vm 1 says hello (accepted on the socket for cid 201)
+vsockd: agent 201 role incident connected
+[<-] guest 201 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"incident","keepalive":true}
+vsockd: accepted a connection from cid 202
+[guest 202 vm? ->] {"type":"hello","vm":2,"guest_cid":202,"role":"legal-agents-counsel","keepalive":true}
+vsockd: guest 202 vm 2 says hello (accepted on the socket for cid 202)
+vsockd: agent 202 role legal-agents-counsel connected
+[<-] guest 202 vm2 {"type":"welcome","echo":"plaza-orchestrator","role":"legal-agents-counsel","keepalive":true}
+vsockd: accepted a connection from cid 200
+[guest 200 vm? ->] {"type":"hello","vm":0,"guest_cid":200,"role":"finance","keepalive":true}
+vsockd: guest 200 vm 0 says hello (accepted on the socket for cid 200)
+vsockd: agent 200 role finance connected
+[<-] guest 200 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"finance","keepalive":true}
+vsockd: accepted a connection from cid 203
+[guest 203 vm? ->] {"type":"hello","vm":3,"guest_cid":203,"role":"legal-gov-judge","keepalive":true}
+vsockd: guest 203 vm 3 says hello (accepted on the socket for cid 203)
+vsockd: agent 203 role legal-gov-judge connected
+[<-] guest 203 vm3 {"type":"welcome","echo":"plaza-orchestrator","role":"legal-gov-judge","keepalive":true}
+vsockd: accepted a connection from cid 204
+[guest 204 vm? ->] {"type":"hello","vm":4,"guest_cid":204,"role":"mayor-office","keepalive":true}
+vsockd: guest 204 vm 4 says hello (accepted on the socket for cid 204)
+vsockd: agent 204 role mayor-office connected
+[<-] guest 204 vm4 {"type":"welcome","echo":"plaza-orchestrator","role":"mayor-office","keepalive":true}
+vsockd: session with cid 200 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 204 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 201 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 203 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 202 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

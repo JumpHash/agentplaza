@@ -1,0 +1,3 @@
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/jail-armed-uds/vm60_5000 for guest CID 60
+vsockd: listening on /tmp/apz-acceptance-server-rc0bww2i/jail-armed-uds/vm61_5000 for guest CID 61
+vsockd: stop requested, closing the listeners

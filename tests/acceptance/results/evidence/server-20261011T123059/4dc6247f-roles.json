@@ -1,0 +1,81 @@
+{
+  "source": "tests/acceptance/suite_council.py",
+  "roles": {
+    "finance": {
+      "role": "finance",
+      "title": "The finance",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "bash",
+        "read_file",
+        "search",
+        "read_audit",
+        "read_usage",
+        "file_detection",
+        "submit_finance_report"
+      ]
+    },
+    "incident": {
+      "role": "incident",
+      "title": "The incident",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "read_audit",
+        "read_usage",
+        "search",
+        "request_grant",
+        "quarantine_agent",
+        "file_detection",
+        "submit_incident_report"
+      ]
+    },
+    "legal-agents-counsel": {
+      "role": "legal-agents-counsel",
+      "title": "The legal-agents-counsel",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "read_audit",
+        "read_case_record",
+        "search_precedent",
+        "read_codex",
+        "file_petition"
+      ]
+    },
+    "legal-gov-judge": {
+      "role": "legal-gov-judge",
+      "title": "The legal-gov-judge",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "read_case_record",
+        "search_precedent",
+        "issue_ruling"
+      ]
+    },
+    "mayor-office": {
+      "role": "mayor-office",
+      "title": "The mayor-office",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null,
+      "tools": [
+        "read_audit",
+        "search",
+        "send_message",
+        "submit_town_report"
+      ]
+    }
+  }
+}

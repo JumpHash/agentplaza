@@ -2,15 +2,15 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "BLOCKED",
   "machine_class": "apple",
-  "generated_at": "2026-10-11T11:41:07+0200",
-  "wall_seconds": 0.054,
+  "generated_at": "2026-10-11T12:30:59+0200",
+  "wall_seconds": 0.057,
   "manifest": {
     "suite": "council",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "2b73440e5ec163ab309900bf9fa3e9413d98bd3f",
+      "head": "8ad86ac2f8f6b82b43ea0724589ebdd5f5720319",
       "dirty": true,
-      "harness_tree_sha256": "2d93b18c0799c3b4771883bd0767814a42433745598ce4890d573b5d41b962e8"
+      "harness_tree_sha256": "7c5e3f16aeb8481145aeb55b8e14efafa28e8af8ece2bec08114e2b8d5a46b60"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
@@ -35,12 +35,12 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-apple-84z6ak3d",
-    "started_at": "2026-10-11T11:41:07+0200",
+    "artifacts_dir": "/tmp/apz-acceptance-apple-jmakyguo",
+    "started_at": "2026-10-11T12:30:59+0200",
     "binaries": {
       "noded": {
         "path": "/mnt/fast/AgentPlaza/target/debug/noded",
-        "sha256": "d270c880bd1b02366d9221e4f17aa10a7d317dc2de5c4d00d4e23c3e71829738"
+        "sha256": "f99202fb89db92337da8a7bd45a6892f504b35f3e2da253aeb4c9f5c9e12d63c"
       },
       "vsockd": {
         "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
@@ -50,10 +50,10 @@
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-apple-84z6ak3d/kernel-seccomp-audit.log",
+        "source": "/tmp/apz-acceptance-apple-jmakyguo/kernel-seccomp-audit.log",
         "bytes": 1,
         "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-        "excerpt": "tests/acceptance/results/evidence/apple-20261011T114107/01ba4719-kernel-seccomp-audit.log",
+        "excerpt": "tests/acceptance/results/evidence/apple-20261011T123059/01ba4719-kernel-seccomp-audit.log",
         "excerpt_bytes": 1
       }
     ]
@@ -64,29 +64,29 @@
   "kernel_seccomp_audit": {
     "available": true,
     "reason": null,
-    "since_epoch": 1791711667,
+    "since_epoch": 1791714659,
     "records": 0,
     "attributed": [],
     "kills": [],
-    "artifact": "/tmp/apz-acceptance-apple-84z6ak3d/kernel-seccomp-audit.log"
+    "artifact": "/tmp/apz-acceptance-apple-jmakyguo/kernel-seccomp-audit.log"
   },
   "sut_binary": {
     "bin_dir": "/mnt/fast/AgentPlaza/target/debug",
     "digests": {
-      "noded": "d270c880bd1b02366d9221e4f17aa10a7d317dc2de5c4d00d4e23c3e71829738",
+      "noded": "f99202fb89db92337da8a7bd45a6892f504b35f3e2da253aeb4c9f5c9e12d63c",
       "vsockd": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
     },
     "changed_mid_run": {},
     "sut_git_at_start": {
-      "head": "2b73440e5ec163ab309900bf9fa3e9413d98bd3f",
+      "head": "8ad86ac2f8f6b82b43ea0724589ebdd5f5720319",
       "dirty": true,
-      "harness_tree_sha256": "2d93b18c0799c3b4771883bd0767814a42433745598ce4890d573b5d41b962e8"
+      "harness_tree_sha256": "7c5e3f16aeb8481145aeb55b8e14efafa28e8af8ece2bec08114e2b8d5a46b60"
     }
   },
   "suites": [
     {
       "suite": "council",
-      "pass_bar": "every case passes: only the four seats propose and vote, the gate is derived and refused when disagreed with, the vote rules and the count follow the doctrine, the dispatcher's council pass drives the seats, and every SSE motion frame is exactly {id,kind,state}",
+      "pass_bar": "every case passes: only the four seats propose and vote, the gate is derived and refused when disagreed with, the vote rules and the count follow the doctrine, the owner decides only a gated motion once, the dispatcher's council pass drives the seats, and every SSE motion frame is exactly {id,kind,state}",
       "status": "BLOCKED",
       "blocked_reason": "machine class 'apple' needs a macos/aarch64 host; this host is linux/x86_64",
       "cases_passed": 0,
@@ -95,7 +95,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T11:41:07+0200",
+      "started_at": "2026-10-11T12:30:59+0200",
       "duration_s": 0.0
     }
   ],

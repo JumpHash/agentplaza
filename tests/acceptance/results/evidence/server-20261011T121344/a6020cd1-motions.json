@@ -1,0 +1,773 @@
+{
+  "motions": [
+    {
+      "id": "m20",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a second motion the towns split on",
+      "needs_owner": false,
+      "state": "vetoed",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649146
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649146
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "no",
+          "reason": "the incident seat's reason",
+          "at": 1791714649147
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "no",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649147
+        }
+      ],
+      "tally": {
+        "yes": 2,
+        "no": 2,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": {
+        "approve": false,
+        "note": null,
+        "at": 1791714649150
+      },
+      "created_at": 1791714649146,
+      "updated_at": 1791714649150
+    },
+    {
+      "id": "m19",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion the council rejects",
+      "needs_owner": false,
+      "state": "rejected",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "no",
+          "reason": "the finance seat's reason",
+          "at": 1791714649143
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "no",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649144
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "no",
+          "reason": "the incident seat's reason",
+          "at": 1791714649144
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "no",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649144
+        }
+      ],
+      "tally": {
+        "yes": 0,
+        "no": 4,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649143,
+      "updated_at": 1791714649144
+    },
+    {
+      "id": "m18",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion the council has not decided",
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649141,
+      "updated_at": 1791714649141
+    },
+    {
+      "id": "m17",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "law_proposal",
+      "text": "a law the owner must ratify",
+      "needs_owner": true,
+      "state": "ratified",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649130
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649131
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649131
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649132
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": {
+        "approve": true,
+        "note": "the operator's hand, not the builder's",
+        "at": 1791714649153
+      },
+      "created_at": 1791714649130,
+      "updated_at": 1791714649153
+    },
+    {
+      "id": "m16",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion with one abstention",
+      "needs_owner": false,
+      "state": "carried",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649128
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649128
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649129
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "abstain",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649129
+        }
+      ],
+      "tally": {
+        "yes": 3,
+        "no": 0,
+        "abstain": 1,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649127,
+      "updated_at": 1791714649129
+    },
+    {
+      "id": "m15",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion with one dissent",
+      "needs_owner": false,
+      "state": "carried",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649125
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649126
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649126
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "no",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649127
+        }
+      ],
+      "tally": {
+        "yes": 3,
+        "no": 1,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649125,
+      "updated_at": 1791714649127
+    },
+    {
+      "id": "m14",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion the towns disagree on",
+      "needs_owner": false,
+      "state": "ratified",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649123
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649124
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "no",
+          "reason": "the incident seat's reason",
+          "at": 1791714649124
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "no",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649125
+        }
+      ],
+      "tally": {
+        "yes": 2,
+        "no": 2,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": {
+        "approve": true,
+        "note": "the tie is the owner's to break \u2014 DECIDE-NOTE-SENTINEL-9a2e",
+        "at": 1791714649148
+      },
+      "created_at": 1791714649123,
+      "updated_at": 1791714649148
+    },
+    {
+      "id": "m13",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "priority",
+      "text": "a priority for the fleet \u2014 SSE-TEXT-SENTINEL-4f7c",
+      "needs_owner": false,
+      "state": "carried",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649121
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649121
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649122
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649122
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649120,
+      "updated_at": 1791714649122
+    },
+    {
+      "id": "m12",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion for the vote rules",
+      "needs_owner": false,
+      "state": "carried",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "on reflection the dashboard is urgent",
+          "at": 1791714649118
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649118
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649119
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649119
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649114,
+      "updated_at": 1791714649119
+    },
+    {
+      "id": "m11",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "mayor_replacement",
+      "text": "a mayor_replacement for the plaza",
+      "needs_owner": true,
+      "state": "awaiting_owner",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649112
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649113
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649113
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649114
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649111,
+      "updated_at": 1791714649114
+    },
+    {
+      "id": "m10",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "town_proposal",
+      "text": "a town_proposal for the plaza",
+      "needs_owner": true,
+      "state": "awaiting_owner",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649110
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649110
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649111
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649111
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649109,
+      "updated_at": 1791714649111
+    },
+    {
+      "id": "m9",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "law_proposal",
+      "text": "a law_proposal for the plaza",
+      "needs_owner": true,
+      "state": "vetoed",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649108
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649108
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649108
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649109
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": {
+        "approve": false,
+        "note": null,
+        "at": 1791714649153
+      },
+      "created_at": 1791714649107,
+      "updated_at": 1791714649153
+    },
+    {
+      "id": "m8",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "budget_move",
+      "text": "move 101 of the pool",
+      "amount": 101,
+      "needs_owner": true,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649105,
+      "updated_at": 1791714649105
+    },
+    {
+      "id": "m7",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "budget_move",
+      "text": "move 100 of the pool",
+      "amount": 100,
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649105,
+      "updated_at": 1791714649105
+    },
+    {
+      "id": "m6",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion left open for the refusals",
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649102,
+      "updated_at": 1791714649102
+    },
+    {
+      "id": "m5",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "other",
+      "text": "a motion for the four seats to vote on",
+      "needs_owner": false,
+      "state": "carried",
+      "votes": [
+        {
+          "seat": "finance",
+          "agent_cid": 191,
+          "vote": "yes",
+          "reason": "the finance seat's reason",
+          "at": 1791714649100
+        },
+        {
+          "seat": "legal-agents-counsel",
+          "agent_cid": 193,
+          "vote": "yes",
+          "reason": "the legal-agents-counsel seat's reason",
+          "at": 1791714649101
+        },
+        {
+          "seat": "incident",
+          "agent_cid": 192,
+          "vote": "yes",
+          "reason": "the incident seat's reason",
+          "at": 1791714649101
+        },
+        {
+          "seat": "mayor-office",
+          "agent_cid": 195,
+          "vote": "yes",
+          "reason": "the mayor-office seat's reason",
+          "at": 1791714649102
+        }
+      ],
+      "tally": {
+        "yes": 4,
+        "no": 0,
+        "abstain": 0,
+        "voted": 4,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649100,
+      "updated_at": 1791714649102
+    },
+    {
+      "id": "m4",
+      "proposer_cid": 195,
+      "proposer_role": "mayor-office",
+      "kind": "priority",
+      "text": "the mayor-office seat's own agenda",
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649100,
+      "updated_at": 1791714649100
+    },
+    {
+      "id": "m3",
+      "proposer_cid": 192,
+      "proposer_role": "incident",
+      "kind": "priority",
+      "text": "the incident seat's own agenda",
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649099,
+      "updated_at": 1791714649099
+    },
+    {
+      "id": "m2",
+      "proposer_cid": 193,
+      "proposer_role": "legal-agents-counsel",
+      "kind": "priority",
+      "text": "the legal-agents-counsel seat's own agenda",
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649099,
+      "updated_at": 1791714649099
+    },
+    {
+      "id": "m1",
+      "proposer_cid": 191,
+      "proposer_role": "finance",
+      "kind": "priority",
+      "text": "the finance seat's own agenda",
+      "needs_owner": false,
+      "state": "open",
+      "votes": [],
+      "tally": {
+        "yes": 0,
+        "no": 0,
+        "abstain": 0,
+        "voted": 0,
+        "seats": 4
+      },
+      "owner": null,
+      "created_at": 1791714649098,
+      "updated_at": 1791714649098
+    }
+  ],
+  "total": 20,
+  "limit": 256,
+  "truncated": false
+}

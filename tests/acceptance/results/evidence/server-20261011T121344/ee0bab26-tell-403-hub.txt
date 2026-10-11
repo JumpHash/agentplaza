@@ -1,0 +1,1 @@
+403 {"ok":false,"output":"role librarian does not grant write_file"}

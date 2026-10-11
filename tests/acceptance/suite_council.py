@@ -51,6 +51,28 @@ a motion's words, exactly as the exchange record is for a conversation's.
 ``truncated``, ``limit`` the endpoint's own 256); one motion reads back; an
 unknown id is a ``404``; a wrong method is a ``405``.
 
+**(h) the owner's decision.** ``POST /api/v0/motions/{id}/decide`` is the
+**operator's** hand — the body names no agent CID, so the seat checks that gate
+proposing and voting do not apply, and an ``agent_cid`` sent anyway is ignored
+(no agent lookup). The owner decides **only a motion the count gated to them**
+(``tie_to_owner``, ``awaiting_owner``): ``open``, ``carried``/``rejected`` are
+``409`` naming the state (a majority is never routed around), and a second
+decide is ``409`` too (decided once). Both gated states are decided **each way**
+— a tie ratified and a second tie vetoed, two gated carries ratified and vetoed
+— ``approve`` true is ``ratified``, false is ``vetoed``, and the optional
+``note`` is non-blank and ≤ 1000 bytes, read back byte-exact from both the
+single-motion GET and the collection view (``null`` when absent, in both). The
+``owner`` field is **keyed on every view** (``null`` until the owner acts), the
+decision is not a vote (the tally and the four votes are untouched), a decided
+motion takes no further vote, and the SSE frame stays exactly
+``{id,kind,state}`` carrying ``ratified``/``vetoed`` and no text.
+
+The case is gated on the endpoint itself, probed live (``m0`` → ``404 no motion
+with id m0`` means the route is present): a build without ``/decide`` reports
+the case BLOCKED with that reason rather than reading as green — verified
+against the pre-``/decide`` binary, where the case reports BLOCKED and the suite
+does not pass.
+
 The fleet is the suite's own (``tests/acceptance``'s pattern): fresh daemons on
 ephemeral ports, a fresh work directory, and CIDs disjoint from every other
 suite's (190..195 for the fleet lab and 200..204 for the driver lab; the demo
@@ -158,6 +180,13 @@ SSE_SECONDS = 900.0
 #: It is planted in a motion's text so the "a frame carries no text" assertion is
 #: about a string only the record knows.
 SENTINEL = "SSE-TEXT-SENTINEL-4f7c"
+
+#: The same idea for the owner's decision: a marker only the decision's `note`
+#: knows, planted in a note so the `decide` frame's no-text claim is about a
+#: string the record really holds (crates/noded/src/council.rs
+#: `MAX_DECISION_NOTE` = 1000, the cap the "over-long note" case asserts).
+DECISION_SENTINEL = "DECIDE-NOTE-SENTINEL-9a2e"
+MAX_DECISION_NOTE = 1000
 
 
 # ------------------------------------------------------------- small helpers
@@ -288,6 +317,24 @@ def _vote(lab: Lab, motion_id: str, cid: int, word: str, reason: str):
     )
 
 
+def _decide(lab: Lab, motion_id: str, approve: bool, note: str | None = None):
+    """``POST /api/v0/motions/{id}/decide`` — the owner's hand (the operator, no
+    agent CID): ``note`` only when the caller names one, so "absent" stays null."""
+    body: dict = {"approve": approve}
+    if note is not None:
+        body["note"] = note
+    return lab.api_post(f"/api/v0/motions/{motion_id}/decide", body)
+
+
+def _not_owner_gated(motion_id: str, state: str) -> str:
+    """The 409 a motion the count did not gate to the owner gets
+    (``Council::decide``), word for word."""
+    return (
+        f"motion {motion_id} is {state}: the owner decides only a tie_to_owner or awaiting_owner "
+        f"motion — the council's own decision stands"
+    )
+
+
 def _seat(role: str, cid: int) -> str:
     """The refusal the council writes for a role that holds no seat
     (``CouncilError::Unseated``'s ``Display``), word for word."""
@@ -381,6 +428,21 @@ CASE_VIEWS = (
     "GET /api/v0/motions/{id} reads one back with the contract's fields; an unknown id is 404 `no "
     "motion with id m9999`; PUT on the collection and on one motion is 405, and GET on /vote is 405",
 )
+CASE_DECIDE = (
+    "(h) THE OWNER'S DECISION: the operator (not an agent) ratifies or vetoes only a motion the "
+    "count gated to them, once, with `owner` keyed on every view",
+    "POST /api/v0/motions/{id}/decide over the fleet lab: the endpoint probe (m0 -> 404 `no motion "
+    "with id m0`); `owner` keyed-null on every fresh view; 400 approve missing/non-boolean, note "
+    "empty/blank/over 1000; 404 unknown id; 405 GET; 409 naming the state for an `open`, a `carried` "
+    "(ungated — a majority is never routed around) and a `rejected` motion; FOUR decisions (tie -> "
+    "ratified with a note, a second tie -> vetoed with none, two awaiting_owner carries -> ratified "
+    "and vetoed) with the note byte-exact in the decide response, the single-motion GET and the "
+    "collection view, and `null` in both when absent; the body's authority is the operator's (an "
+    "`agent_cid`, here the unseated builder's, is ignored — no agent lookup); the tally and the four "
+    "votes survive the decision; a decided motion takes no further vote (409 naming ratified and "
+    "vetoed) and is decided once (409); and the SSE frame stays exactly {id,kind,state} carrying "
+    "ratified AND vetoed with no text",
+)
 CASE_PASS = (
     "(e) THE DISPATCHER'S COUNCIL PASS: an open court task no seat can claim is proposed and the "
     "seats vote across passes",
@@ -473,7 +535,7 @@ def _body_seats(case, lab: Lab, roles: dict[str, int], booted: bool, connected: 
     _guarded(case, body)
 
 
-def _body_gate(case, lab: Lab, roles: dict[str, int]) -> None:
+def _body_gate(case, lab: Lab, roles: dict[str, int], observed: dict) -> None:
     def body() -> None:
         if "finance" not in roles:
             return
@@ -572,6 +634,8 @@ def _body_gate(case, lab: Lab, roles: dict[str, int]) -> None:
                 and _tally_ok(final),
                 f"{final}",
             )
+            # The owner's decision (case (h)) takes two of these carries.
+            observed.setdefault("gated_ids", []).append(reply.json["id"])
 
     _guarded(case, body)
 
@@ -745,6 +809,11 @@ def _body_count(case, lab: Lab, roles: dict[str, int], observed: dict) -> None:
             and gated["tally"]["yes"] == 4 and _tally_ok(gated),
             f"{gated}",
         )
+        # The owner's decision (case (h)) takes the tie and the gated carry.
+        if tied is not None:
+            observed["tie_id"] = tied["id"]
+        if gated is not None:
+            observed["waiting_id"] = gated["id"]
 
     _guarded(case, body)
 
@@ -856,12 +925,263 @@ def _body_sse(case, frames: list[str], observed: dict) -> None:
                 and all(f["kind"] == carried_kind for f in mine),
                 f"states={states}",
             )
-        sentinel_lines = [line for line in lines if line.startswith("data:") and SENTINEL in line]
+        for state, key, kind_key in (("ratified", "ratified_id", "ratified_kind"),
+                                     ("vetoed", "vetoed_id", "vetoed_kind")):
+            decided_id = observed.get(key)
+            if not decided_id:
+                continue
+            # The owner's decision publishes the same frame a vote does: the
+            # motion's id, its kind and the state it is now in — the new state
+            # word, and still no text.
+            mine = [f for f in motion_frames if f.get("id") == decided_id]
+            case.invariant(
+                f"the owner's decision publishes one frame carrying the new state `{state}`",
+                bool(mine) and mine[-1]["state"] == state
+                and mine[-1]["kind"] == observed.get(kind_key, mine[-1]["kind"]),
+                f"states={[f['state'] for f in mine]}",
+            )
+        sentinel_lines = [
+            line for line in lines
+            if line.startswith("data:") and (SENTINEL in line or DECISION_SENTINEL in line)
+        ]
         case.invariant(
-            "no motion frame carries the motion's own text (the motions endpoint is the only source)",
+            "no motion frame carries the motion's own text or the owner's note (the record is the only source)",
             not sentinel_lines,
             f"sentinel present: {sentinel_lines[:2]}",
         )
+
+    _guarded(case, body)
+
+
+def _body_decide(case, lab: Lab, roles: dict[str, int], observed: dict) -> None:
+    def body() -> None:
+        if not all(role in roles for role in SEATS):
+            return
+        fin = roles["finance"]
+
+        # The endpoint's own probe: a live /decide answers 404 for a motion the
+        # council does not hold, with the motion rule's own words. A build
+        # without the route answers `no such endpoint` instead, and the case is
+        # BLOCKED with the reason rather than reading as green.
+        probe = lab.api_post("/api/v0/motions/m0/decide", {"approve": True})
+        if probe.status != 404 or probe.json.get("error") != "no motion with id m0":
+            case.blocked(
+                "the owner's decision (POST /api/v0/motions/{id}/decide) is not in this build: the "
+                f"probe POST /api/v0/motions/m0/decide answered {probe.status} "
+                f"{probe.body[:120]!r}, not 404 `no motion with id m0`"
+            )
+            return
+
+        listing = lab.api_get("/api/v0/motions").json
+        case.invariant(
+            "`owner` is keyed on every motion view (Column-style) and null until the owner acts",
+            bool(listing["motions"])
+            and all("owner" in motion and motion["owner"] is None for motion in listing["motions"]),
+            f"{[(m['id'], m.get('owner', 'ABSENT')) for m in listing['motions'][:4]]}",
+        )
+
+        # The body's own contract: approve is required and typed; the note is
+        # optional but not blank and not over its cap.
+        missing = lab.api_post("/api/v0/motions/m0/decide", {"note": "x"})
+        case.invariant(
+            "400: `approve` missing (the deserializer names the field)",
+            missing.status == 400
+            and str(missing.json.get("error", "")).startswith("invalid decide request: missing field `approve`"),
+            f"{missing.status} {missing.body[:200]}",
+        )
+        nonbool = lab.api_post("/api/v0/motions/m0/decide", {"approve": "yes"})
+        case.invariant(
+            "400: `approve` is typed — a non-boolean never deserializes",
+            nonbool.status == 400
+            and 'invalid type: string "yes", expected a boolean' in nonbool.json.get("error", ""),
+            f"{nonbool.status} {nonbool.body[:220]}",
+        )
+        for label, note in (("an empty", ""), ("a blank", "   ")):
+            reply = _decide(lab, "m0", True, note=note)
+            case.invariant(
+                f"400: {label} note is refused in the contract's own words, verbatim",
+                reply.status == 400 and reply.json.get("error") == "note must not be empty",
+                f"{reply.status} {reply.body[:200]}",
+            )
+        long_note = _decide(lab, "m0", True, note="x" * (MAX_DECISION_NOTE + 1))
+        case.invariant(
+            f"400: a note over {MAX_DECISION_NOTE} bytes is refused with the literal cap (the cap "
+            f"pinned literally, not via a constant)",
+            long_note.status == 400
+            and long_note.json.get("error") == f"note must be at most {MAX_DECISION_NOTE} bytes",
+            f"{long_note.status} {long_note.body[:200]}",
+        )
+        unknown = _decide(lab, "m9999", True)
+        case.invariant(
+            "404: an unknown motion id is the motion rule's own words",
+            unknown.status == 404 and unknown.json.get("error") == "no motion with id m9999",
+            f"{unknown.status} {unknown.body[:200]}",
+        )
+        get_one = lab.api_get("/api/v0/motions/m1/decide")
+        case.invariant(
+            "405: the owner's decision is a POST (a GET on /decide is refused)",
+            get_one.status == 405,
+            f"{get_one.status} {get_one.body[:200]}",
+        )
+
+        # The states the owner may NOT decide: open, carried (ungated) and
+        # rejected. Each is a 409 naming the state, and the council's own
+        # decision stands.
+        still_open = _propose(lab, fin, "other", "a motion the council has not decided")
+        open_id = still_open.json.get("id")
+        reply = _decide(lab, open_id, True)
+        case.invariant(
+            "409: an `open` motion is not the owner's to decide (the council has not decided)",
+            reply.status == 409 and reply.json.get("error") == _not_owner_gated(open_id, "open"),
+            f"{reply.status} {reply.body[:260]}",
+        )
+        carried_id = observed.get("carried_id")
+        reply = _decide(lab, carried_id, True)
+        case.invariant(
+            "409: an ungated `carried` motion can never be owner-decided (a majority is not routed around)",
+            reply.status == 409 and reply.json.get("error") == _not_owner_gated(carried_id, "carried"),
+            f"{reply.status} {reply.body[:260]}",
+        )
+        rejected = _propose(lab, fin, "other", "a motion the council rejects")
+        rejected_id = rejected.json.get("id")
+        driven = _drive_to(rejected_id, lab, roles, dict.fromkeys(SEATS, "no"))
+        case.invariant(
+            "a motion driven 4-0 against is `rejected`",
+            driven is not None and driven["state"] == "rejected" and _tally_ok(driven),
+            f"{driven}",
+        )
+        reply = _decide(lab, rejected_id, False)
+        case.invariant(
+            "409: a `rejected` motion is not the owner's to decide either",
+            reply.status == 409 and reply.json.get("error") == _not_owner_gated(rejected_id, "rejected"),
+            f"{reply.status} {reply.body[:260]}",
+        )
+
+        # --- the four decisions: each gated state, each way -------------------
+        tie_id = observed.get("tie_id")
+        second_tie = _propose(lab, fin, "other", "a second motion the towns split on")
+        second_tie_id = second_tie.json.get("id")
+        second_tie_final = _drive_to(
+            second_tie_id,
+            lab,
+            roles,
+            {"finance": "yes", "legal-agents-counsel": "yes", "incident": "no", "mayor-office": "no"},
+        )
+        case.invariant(
+            "a second 2-2 tie is `tie_to_owner` (a second decision is available to the owner)",
+            second_tie_final is not None and second_tie_final["state"] == "tie_to_owner",
+            f"{second_tie_final}",
+        )
+        waiting_id = observed.get("waiting_id")
+        gated_ids = observed.get("gated_ids") or []
+        second_waiting_id = gated_ids[0] if gated_ids else None
+
+        note = f"the tie is the owner's to break — {DECISION_SENTINEL}"
+        ratified = _decide(lab, tie_id, True, note=note)
+        case.invariant(
+            "200: the owner ratifies a `tie_to_owner` motion — state `ratified`, `owner` recorded",
+            ratified.status == 200
+            and ratified.json["state"] == "ratified"
+            and ratified.json["owner"]["approve"] is True
+            and isinstance(ratified.json["owner"]["at"], int)
+            and ratified.json["owner"]["at"] > 0,
+            f"{ratified.status} {ratified.body[:260]}",
+        )
+        case.invariant(
+            "the recorded note is byte-exact in the decide response, the single-motion GET AND the collection view",
+            ratified.status == 200
+            and lab.api_get(f"/api/v0/motions/{tie_id}").json["owner"]["note"] == note
+            and next(
+                (motion for motion in lab.api_get("/api/v0/motions").json["motions"] if motion["id"] == tie_id),
+                {},
+            ).get("owner", {}).get("note")
+            == note
+            and ratified.json["owner"]["note"] == note,
+            f"note={note!r} single={lab.api_get(f'/api/v0/motions/{tie_id}').json['owner']['note']!r}",
+        )
+        tie_before = lab.api_get(f"/api/v0/motions/{tie_id}").json
+        case.invariant(
+            "the owner's decision is not a vote: the tally and the four votes are untouched",
+            ratified.status == 200
+            and ratified.json["tally"] == tie_before["tally"]
+            and ratified.json["votes"] == tie_before["votes"]
+            and _tally_ok(ratified.json),
+            f"before={tie_before['tally']} after={ratified.json.get('tally')}",
+        )
+
+        vetoed = _decide(lab, second_tie_id, False)
+        case.invariant(
+            "200: the owner vetoes the second tie — state `vetoed`, `approve` false",
+            vetoed.status == 200
+            and vetoed.json["state"] == "vetoed"
+            and vetoed.json["owner"]["approve"] is False,
+            f"{vetoed.status} {vetoed.body[:260]}",
+        )
+        case.invariant(
+            "an absent note reads back as null in both the single-motion GET and the collection view",
+            vetoed.status == 200
+            and vetoed.json["owner"]["note"] is None
+            and lab.api_get(f"/api/v0/motions/{second_tie_id}").json["owner"]["note"] is None
+            and next(
+                (motion for motion in lab.api_get("/api/v0/motions").json["motions"] if motion["id"] == second_tie_id),
+                {},
+            ).get("owner", {}).get("note")
+            is None,
+            f"{lab.api_get(f'/api/v0/motions/{second_tie_id}').json['owner']}",
+        )
+
+        # **The body's authority is the operator, not an agent**: an `agent_cid`
+        # in the decide body — here the UNSEATED builder's — grants nothing and
+        # withholds nothing. The struct has no `deny_unknown_fields`, so serde
+        # ignores it and the decision is the operator's, taken as it always is.
+        authority = lab.api_post(
+            f"/api/v0/motions/{waiting_id}/decide",
+            {"approve": True, "agent_cid": roles[UNSEATED], "note": "the operator's hand, not the builder's"},
+        )
+        case.invariant(
+            "the decide body's authority is the operator's: an `agent_cid` (the unseated builder's) is "
+            "IGNORED — no agent lookup, the decision is taken (no `deny_unknown_fields`)",
+            authority.status == 200 and authority.json["state"] == "ratified",
+            f"{authority.status} {authority.body[:260]}",
+        )
+        case.invariant(
+            "the second waiting motion is decided the other way: `approve` false on a gated carry vetoes it",
+            second_waiting_id is not None
+            and _decide(lab, second_waiting_id, False).status == 200
+            and lab.api_get(f"/api/v0/motions/{second_waiting_id}").json["state"] == "vetoed",
+            f"{lab.api_get(f'/api/v0/motions/{second_waiting_id}').body[:240] if second_waiting_id else None}",
+        )
+
+        # Once decided, no further vote and no second decision.
+        late = _vote(lab, tie_id, fin, "yes", "again")
+        case.invariant(
+            "a ratified motion takes no further vote (409 naming the new state)",
+            late.status == 409
+            and late.json.get("error") == f"motion {tie_id} is ratified, not open: a decided motion takes no further vote",
+            f"{late.status} {late.body[:240]}",
+        )
+        late_veto = _vote(lab, second_tie_id, fin, "no", "again")
+        case.invariant(
+            "a vetoed motion takes no further vote either (409 naming `vetoed`)",
+            late_veto.status == 409
+            and late_veto.json.get("error")
+            == f"motion {second_tie_id} is vetoed, not open: a decided motion takes no further vote",
+            f"{late_veto.status} {late_veto.body[:240]}",
+        )
+        second = _decide(lab, tie_id, False)
+        case.invariant(
+            "409: the owner decides a motion once — a second decide names the decided state",
+            second.status == 409
+            and second.json.get("error")
+            == f"motion {tie_id} is already decided (ratified): the owner decides a motion once",
+            f"{second.status} {second.body[:260]}",
+        )
+
+        observed["ratified_id"] = tie_id
+        observed["vetoed_id"] = second_tie_id
+        if ratified.status == 200:
+            observed["ratified_kind"] = ratified.json["kind"]
+            observed["vetoed_kind"] = vetoed.json.get("kind") or ratified.json["kind"]
 
     _guarded(case, body)
 
@@ -1039,8 +1359,9 @@ def run(ctx) -> Suite:
     suite = Suite(
         "council",
         "every case passes: only the four seats propose and vote, the gate is derived and refused when "
-        "disagreed with, the vote rules and the count follow the doctrine, the dispatcher's council pass "
-        "drives the seats, and every SSE motion frame is exactly {id,kind,state}",
+        "disagreed with, the vote rules and the count follow the doctrine, the owner decides only a "
+        "gated motion once, the dispatcher's council pass drives the seats, and every SSE motion frame "
+        "is exactly {id,kind,state}",
         ctx,
     )
     reason = ctx.can_run("council")
@@ -1069,6 +1390,7 @@ def run(ctx) -> Suite:
     case_votes = suite.case(CASE_VOTES[0], vector=CASE_VOTES[1])
     case_count = suite.case(CASE_COUNT[0], vector=CASE_COUNT[1])
     case_views = suite.case(CASE_VIEWS[0], vector=CASE_VIEWS[1])
+    case_decide = suite.case(CASE_DECIDE[0], vector=CASE_DECIDE[1])
     case_sse = suite.case(CASE_SSE[0], vector=CASE_SSE[1])
 
     if not fleet_ok:
@@ -1076,7 +1398,7 @@ def run(ctx) -> Suite:
             "the council cases need a real role fleet and `noded --agents` is not in this build's CLI "
             "(probe: noded --help), so no real agent can be a seat"
         )
-        for case in (case_seats, case_gate, case_votes, case_count, case_views, case_sse):
+        for case in (case_seats, case_gate, case_votes, case_count, case_views, case_decide, case_sse):
             case.blocked(fleet_reason)
     else:
         manifest = _manifest(ctx, "fleet", FLEET_TOOLS)
@@ -1106,10 +1428,11 @@ def run(ctx) -> Suite:
                 target=lambda: lab.stream_events(SSE_SECONDS, frames), daemon=True
             ).start()
             _body_seats(case_seats, lab, roles, booted, connected, expected_roles)
-            _body_gate(case_gate, lab, roles)
+            _body_gate(case_gate, lab, roles, observed)
             _body_votes(case_votes, lab, roles)
             _body_count(case_count, lab, roles, observed)
             _body_views(case_views, lab, observed)
+            _body_decide(case_decide, lab, roles, observed)
             _body_sse(case_sse, frames, observed)
             _save(ctx, "fleet", "motions.json", json.dumps(lab.api_get("/api/v0/motions").json, indent=2) + "\n")
             _save(ctx, "fleet", "sse-frames.txt", "".join(line + "\n" for line in frames))
