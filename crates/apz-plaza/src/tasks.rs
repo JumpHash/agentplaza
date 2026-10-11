@@ -666,7 +666,7 @@ impl Task {
     /// budget, or one whose escrow is already empty, posts nothing.
     fn release_escrow(&self) -> Result<(), EndError> {
         self.treasury
-            .refund_task_escrow(&self.id)
+            .refund_task_to_budget(&self.id)
             .map(|_| ())
             .map_err(EndError::Treasury)
     }
@@ -716,8 +716,9 @@ impl TaskLedger {
     ///
     /// The request is checked and the cap applied before an id is handed out,
     /// so a refused create leaves the ledger exactly as it was. A positive
-    /// budget is minted into the task's escrow before the task is registered:
-    /// a mint the treasury refuses (a full journal) fails the create and
+    /// budget is funded from the plaza's budget into the task's escrow before the task
+    /// is registered:
+    /// a funding the treasury refuses (a short plaza budget) fails the create and
     /// creates no task, so a task never exists without its escrow.
     pub fn create(&self, request: &CreateTask) -> Result<Arc<Task>, CreateError> {
         let checked = request.checked().map_err(CreateError::Invalid)?;
@@ -736,7 +737,7 @@ impl TaskLedger {
             let amount = i64::try_from(checked.budget).unwrap_or(i64::MAX);
             entry = Some(
                 self.treasury
-                    .mint_task_budget(&id, amount)
+                    .fund_task(&id, amount)
                     .map_err(CreateError::Treasury)?,
             );
         }
@@ -829,15 +830,6 @@ mod tests {
             .expect("a budgeted task inside the contract")
     }
 
-    /// An account's balance, by kind and owner.
-    fn balance(treasury: &Treasury, kind: &str, owner: &str) -> i128 {
-        treasury
-            .accounts()
-            .iter()
-            .find(|account| account.kind == kind && account.owner_ref == owner)
-            .unwrap_or_else(|| panic!("{kind} {owner} exists"))
-            .balance
-    }
 
     /// `core.task_transitions`, restricted to the states noded v0 implements.
     const ALLOWED: [(TaskState, TaskState); 5] = [
@@ -1099,6 +1091,7 @@ mod tests {
         }
         assert!(ledger.list().is_empty(), "no refused request created one");
 
+        ledger.treasury().mint_plaza_budget(i64::MAX).expect("the plaza covers the largest budget");
         // The edges are inside the contract.
         let edges = [
             request("g", None, None, None),
@@ -1184,6 +1177,7 @@ mod tests {
         assert_eq!(
             frames,
             vec![
+                "event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":100000,\"task\":null}\n\n",
                 "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null}\n\n",
                 "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\"}\n\n",
                 "event: task\ndata: {\"id\":\"t1\",\"state\":\"done\",\"assignee\":\"builder\"}\n\n",
@@ -1214,26 +1208,30 @@ mod tests {
         let ledger = TaskLedger::new(EventBus::new());
         let task = budgeted(&ledger, "paid work", 500);
 
-        // Creating it minted the budget into its escrow, and only that.
+        // Creating it funded the budget from the plaza into its escrow, and only that.
         assert_eq!(ledger.treasury().escrow_balance("t1"), 500);
-        assert_eq!(ledger.treasury().view().totals.entries, 1);
+        assert_eq!(
+            ledger.treasury().plaza_budget_balance(),
+            i128::from(crate::treasury::PLAZA_BUDGET) - 500
+        );
+        assert_eq!(ledger.treasury().view().totals.entries, 2);
         assert_eq!(ledger.treasury().view().spent, 0);
-        assert_eq!(balance(ledger.treasury(), "mint", "mint"), -500);
 
         task.claim(&agent(100, "builder")).expect("claim");
         task.finish(FinishOutcome::Done, Some("done".to_string()))
             .expect("finish");
 
-        // v0 meters no real spend, so finishing refunded the whole escrow and
-        // the mint is home.
+        // v0 meters no real spend, so finishing refunded the whole escrow to the plaza.
         assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
-        assert_eq!(ledger.treasury().view().totals.entries, 2);
-        assert_eq!(balance(ledger.treasury(), "mint", "mint"), 0);
+        assert_eq!(ledger.treasury().view().totals.entries, 3);
+        assert_eq!(
+            ledger.treasury().plaza_budget_balance(),
+            i128::from(crate::treasury::PLAZA_BUDGET)
+        );
         // The journal balances as a whole.
         assert_eq!(ledger.treasury().view().totals.balance, 0);
         assert!(ledger.treasury().verify_journal().is_ok());
     }
-
     #[test]
     fn every_terminal_state_refunds_the_whole_escrow() {
         let ledger = TaskLedger::new(EventBus::new());
@@ -1255,9 +1253,12 @@ mod tests {
         claimed.withdraw().expect("claimed -> withdrawn");
         assert_eq!(ledger.treasury().escrow_balance("t3"), 0);
 
-        // Three mints and three refunds, and nothing left in any escrow.
-        assert_eq!(ledger.treasury().view().totals.entries, 6);
-        assert_eq!(balance(ledger.treasury(), "mint", "mint"), 0);
+        // The plaza's mint, three fundings and three refunds, and nothing left in any escrow.
+        assert_eq!(ledger.treasury().view().totals.entries, 7);
+        assert_eq!(
+            ledger.treasury().plaza_budget_balance(),
+            i128::from(crate::treasury::PLAZA_BUDGET)
+        );
         for task in ledger.list() {
             assert_eq!(ledger.treasury().escrow_balance(task.id()), 0);
         }
@@ -1267,16 +1268,16 @@ mod tests {
     fn an_unbudgeted_task_posts_nothing() {
         let ledger = TaskLedger::new(EventBus::new());
         let task = create(&ledger, "free work");
-        // No budget, no escrow: the treasury holds only its mint.
-        assert_eq!(ledger.treasury().view().totals.entries, 0);
-        assert_eq!(ledger.treasury().accounts().len(), 1);
+        // No budget, no escrow: the treasury holds only the plaza's mint.
+        assert_eq!(ledger.treasury().view().totals.entries, 1);
+        assert_eq!(ledger.treasury().accounts().len(), 2);
         assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
 
         task.claim(&agent(100, "builder")).expect("claim");
         task.finish(FinishOutcome::Done, None).expect("finish");
         // Ending it refunds nothing, because there is nothing to refund.
-        assert_eq!(ledger.treasury().view().totals.entries, 0);
-        assert_eq!(ledger.treasury().accounts().len(), 1);
+        assert_eq!(ledger.treasury().view().totals.entries, 1);
+        assert_eq!(ledger.treasury().accounts().len(), 2);
     }
 
     #[test]
@@ -1291,24 +1292,24 @@ mod tests {
         assert_eq!(refused.status(), 409);
         // The refused transition left the escrow exactly where it was.
         assert_eq!(ledger.treasury().escrow_balance("t1"), 50);
-        assert_eq!(ledger.treasury().view().totals.entries, 1);
+        assert_eq!(ledger.treasury().view().totals.entries, 2);
 
         // A second withdraw is refused, and refunds nothing a second time.
         task.withdraw().expect("open -> withdrawn");
-        assert_eq!(ledger.treasury().view().totals.entries, 2);
+        assert_eq!(ledger.treasury().view().totals.entries, 3);
         let refused = task.withdraw().expect_err("withdrawn is final");
         assert_eq!(
             refused.to_string(),
             "a task may not go from withdrawn to withdrawn"
         );
-        assert_eq!(ledger.treasury().view().totals.entries, 2);
+        assert_eq!(ledger.treasury().view().totals.entries, 3);
     }
 
     #[test]
     fn a_task_the_treasury_cannot_fund_is_not_created() {
         let ledger = TaskLedger::new(EventBus::new());
         // Fill the accounts: any fresh escrow needs one more than the cap.
-        for index in 0..crate::treasury::MAX_ACCOUNTS - 1 {
+        for index in 0..crate::treasury::MAX_ACCOUNTS - 2 {
             ledger
                 .treasury()
                 .open_account(crate::treasury::AccountKind::TownBudget, &format!("town{index}"), 0)
@@ -1333,7 +1334,7 @@ mod tests {
         // No task was created, no entry posted, and the id was not consumed:
         // an unbudgeted task (which needs no escrow) still gets `t1`.
         assert!(ledger.list().is_empty());
-        assert_eq!(ledger.treasury().view().totals.entries, 0);
+        assert_eq!(ledger.treasury().view().totals.entries, 1);
         assert_eq!(create(&ledger, "free").id(), "t1");
     }
 }

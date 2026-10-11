@@ -893,7 +893,7 @@ mod tests {
         assert_eq!(award.contractor, "builder");
         assert_eq!(award.agent_cid, 100);
         assert_eq!(award.price, 300);
-        assert_eq!(award.escrow_entry, Some(1), "the task's mint funded its escrow");
+        assert_eq!(award.escrow_entry, Some(2), "the plaza mint is entry 1, the funding entry 2");
         assert_eq!(ledger.treasury().escrow_balance("t1"), 500);
 
         // A second award is refused by the call's key, in the award's own
