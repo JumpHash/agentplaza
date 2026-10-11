@@ -160,13 +160,14 @@ fn pump<R: Link, W: Link>(mut from: R, mut to: W) {
 /// text, prefixed with `Fetched <url>:`.
 ///
 /// Arguments: `url` (required, http or https). The body is read up to
-/// [`FETCH_CAP`]; HTML (by content type) has its tags stripped, crudely. The
-/// reply is capped to the tool-output limit, and a cut is said so, never hidden.
+/// [`FETCH_CAP`]. HTML (by content type) becomes readable text through
+/// [`html_to_text`]; JSON and other text pass through unchanged. The reply is
+/// capped to the tool-output limit, and a cut is said so, never hidden.
 pub fn fetch_url(_workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
     let url = http_url_arg(args)?;
     let fetched = fetch(&url, FETCH_CAP)?;
     let raw = String::from_utf8_lossy(&fetched.body);
-    let text = if fetched.html { strip_tags(&raw) } else { raw.into_owned() };
+    let text = if fetched.html { html_to_text(&raw) } else { raw.into_owned() };
     let mut reply = format!("Fetched {url}:\n{text}");
     if fetched.truncated {
         reply.push_str(&format!("\n[truncated: the body is over the {FETCH_CAP}-byte read cap]"));
@@ -234,26 +235,213 @@ fn agent() -> Result<ureq::Agent, ToolError> {
     Ok(ureq::Agent::new_with_config(config))
 }
 
-/// Crude HTML-to-text: every tag becomes a space, and blank lines are dropped.
-fn strip_tags(html: &str) -> String {
-    let mut text = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => {
-                in_tag = true;
-                text.push(' ');
+/// Readable text from an HTML page, led by a `Title:` line when the page has a
+/// title.
+///
+/// Scripts, styles, `noscript`, inline SVG, comments and the title's own markup
+/// are dropped. Headings become `#` lines, list items `- ` lines, and `p`,
+/// `div`, `tr` and `br` line breaks. A link with an `href` reads `text (url)`.
+/// Entities are decoded, whitespace inside lines is collapsed, and blank runs
+/// shrink to one blank line.
+pub fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut anchor: Option<(usize, String)> = None;
+    let mut rest = html;
+    while let Some(lt) = rest.find('<') {
+        push_text(&mut out, &rest[..lt]);
+        rest = &rest[lt..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.find("-->").map_or("", |end| &after[end + 3..]);
+            continue;
+        }
+        let opens_tag = matches!(
+            rest.as_bytes().get(1).copied(),
+            Some(b'/' | b'!' | b'a'..=b'z' | b'A'..=b'Z')
+        );
+        if !opens_tag {
+            out.push('<');
+            rest = &rest[1..];
+            continue;
+        }
+        let Some(gt) = rest.find('>') else {
+            rest = "";
+            break;
+        };
+        let tag = &rest[1..gt];
+        rest = &rest[gt + 1..];
+        let (closing, name) = tag_name(tag);
+        if !closing && matches!(name.as_str(), "script" | "style" | "noscript" | "svg" | "title") {
+            rest = after_close_tag(rest, &name);
+        } else if name == "a" {
+            if closing {
+                if let Some((start, href)) = anchor.take() {
+                    if out[start..].trim().is_empty() {
+                        out.push_str(&href);
+                    } else {
+                        out.push_str(&format!(" ({href})"));
+                    }
+                }
+            } else {
+                anchor = href_of(tag).map(|href| (out.len(), href));
             }
-            '>' if in_tag => in_tag = false,
-            _ if in_tag => {}
-            _ => text.push(ch),
+        } else if name == "li" && !closing {
+            out.push_str("\n- ");
+        } else if name == "br" || matches!(name.as_str(), "p" | "div" | "tr") {
+            out.push('\n');
+        } else if let Some(level) = heading_level(&name) {
+            if closing {
+                out.push_str("\n\n");
+            } else {
+                out.push_str(&format!("\n\n{} ", "#".repeat(level)));
+            }
         }
     }
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    push_text(&mut out, rest);
+    let body = tidy(&out);
+    match title_of(html) {
+        Some(title) => format!("Title: {title}\n\n{body}"),
+        None => body,
+    }
+}
+
+/// The name of a tag, lower-cased, and whether it is a closing tag. `tag` is
+/// the text between `<` and `>`.
+fn tag_name(tag: &str) -> (bool, String) {
+    let closing = tag.starts_with('/');
+    let name = tag
+        .trim_start_matches('/')
+        .chars()
+        .take_while(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (closing, name)
+}
+
+/// The rest of the page after the closing tag of `name`, or nothing when the
+/// page never closes it.
+fn after_close_tag<'a>(rest: &'a str, name: &str) -> &'a str {
+    let lower = rest.to_ascii_lowercase();
+    let Some(at) = lower.find(&format!("</{name}")) else {
+        return "";
+    };
+    let after = &rest[at..];
+    after.find('>').map_or("", |gt| &after[gt + 1..])
+}
+
+/// The decoded `href` of an `<a>` tag, when it has a non-empty one.
+fn href_of(tag: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let at = lower.find("href")? + "href".len();
+    let value = tag[at..].trim_start().strip_prefix('=')?.trim_start();
+    let value = match value.chars().next()? {
+        quote @ ('"' | '\'') => {
+            let inner = &value[1..];
+            &inner[..inner.find(quote)?]
+        }
+        _ => value.split_whitespace().next().unwrap_or(""),
+    };
+    let href = decode_entities(value);
+    (!href.is_empty()).then_some(href)
+}
+
+/// The level of a heading tag name (`h1` to `h6`).
+fn heading_level(name: &str) -> Option<usize> {
+    name.strip_prefix('h')?
+        .parse::<usize>()
+        .ok()
+        .filter(|level| (1..=6).contains(level))
+}
+
+/// The page's title: its entities decoded and its whitespace collapsed.
+fn title_of(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")?;
+    let body_start = start + lower[start..].find('>')? + 1;
+    let body_end = body_start + lower[body_start..].find("</title")?;
+    let title = decode_entities(&html[body_start..body_end]);
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty()).then_some(title)
+}
+
+/// Appends `text` with each run of ASCII whitespace as one space, and with its
+/// entities decoded.
+fn push_text(out: &mut String, text: &str) {
+    let mut squeezed = String::with_capacity(text.len());
+    let mut in_space = false;
+    for ch in text.chars() {
+        if ch.is_ascii_whitespace() {
+            if !in_space {
+                squeezed.push(' ');
+            }
+            in_space = true;
+        } else {
+            squeezed.push(ch);
+            in_space = false;
+        }
+    }
+    out.push_str(&decode_entities(&squeezed));
+}
+
+/// Trims each line and collapses the spaces inside it. Keeps at most one blank
+/// line in a row, and none at either end.
+fn tidy(text: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.split('\n') {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() && lines.last().is_none_or(String::is_empty) {
+            continue;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// Decodes the common named entities and numeric character references. An
+/// unknown or unterminated `&` is kept as it is.
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        match decode_entity(tail) {
+            Some((ch, used)) => {
+                out.push(ch);
+                rest = &tail[used..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character a leading `&...;` names, and how many bytes that spans.
+fn decode_entity(tail: &str) -> Option<(char, usize)> {
+    let window_end = tail.char_indices().nth(12).map_or(tail.len(), |(index, _)| index);
+    let semi = tail[..window_end].find(';')?;
+    let ch = match &tail[1..semi] {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{a0}',
+        name => {
+            let code = match name.strip_prefix("#x").or_else(|| name.strip_prefix("#X")) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => name.strip_prefix('#')?.parse::<u32>().ok()?,
+            };
+            char::from_u32(code)?
+        }
+    };
+    Some((ch, semi + 1))
 }
 
 fn invalid(reason: &str) -> ToolError {
@@ -298,5 +486,53 @@ mod tests {
         let mut echoed = vec![0u8; message.len()];
         client.read_exact(&mut echoed).expect("the echo comes back");
         assert_eq!(echoed, message);
+    }
+
+    #[test]
+    fn headings_become_hash_lines() {
+        assert_eq!(html_to_text("<h1>Top</h1><p>Body</p>"), "# Top\n\nBody");
+        assert!(html_to_text("<h3>Deep</h3>").contains("### Deep"));
+    }
+
+    #[test]
+    fn links_keep_their_address() {
+        let text = html_to_text(r#"<p>See <a href="https://x.test/a?b=1&amp;c=2">the docs</a>.</p>"#);
+        assert_eq!(text, "See the docs (https://x.test/a?b=1&c=2).");
+    }
+
+    #[test]
+    fn list_items_become_dash_lines() {
+        assert_eq!(html_to_text("<ul><li>one</li><li>two</li></ul>"), "- one\n- two");
+    }
+
+    #[test]
+    fn scripts_styles_svg_and_comments_are_dropped() {
+        let page = "<p>keep</p><script>var s = \"<p>gone</p>\";</script>\
+            <style>p { color: red }</style><noscript>no js</noscript>\
+            <svg><text>drawn</text></svg><!-- hidden note --><p>also</p>";
+        let text = html_to_text(page);
+        assert_eq!(text, "keep\n\nalso");
+        for dropped in ["gone", "color", "no js", "drawn", "hidden"] {
+            assert!(!text.contains(dropped), "{dropped} should be dropped: {text}");
+        }
+    }
+
+    #[test]
+    fn common_entities_are_decoded() {
+        let text = html_to_text("<p>&amp; &lt;b&gt; &quot;q&quot; &#39;s&#39; a&nbsp;b &#x41;&#66;</p>");
+        assert_eq!(text, "& <b> \"q\" 's' a b AB");
+    }
+
+    #[test]
+    fn the_title_leads_and_a_bare_less_than_is_text() {
+        let text = html_to_text(
+            "<html><head><title>Hi &amp; bye</title></head><body><p>if a < b then</p></body></html>",
+        );
+        assert_eq!(text, "Title: Hi & bye\n\nif a < b then");
+    }
+
+    #[test]
+    fn blank_runs_collapse_to_one_blank_line() {
+        assert_eq!(html_to_text("<p>a</p><p></p><p></p><p>b</p>"), "a\n\nb");
     }
 }
