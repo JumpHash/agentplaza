@@ -18,12 +18,14 @@
 //! * `POST   /api/v0/runs/{id}/input`  - write to one VM's serial console
 //! * `DELETE /api/v0/runs/{id}`        - kill a run's VMs
 //! * `GET    /api/v0/tasks`            - every task, oldest first
-//! * `POST   /api/v0/tasks`            - create a task, `open`
+//! * `POST   /api/v0/tasks`            - create a task, `open` (its budget minted into escrow)
 //! * `GET    /api/v0/tasks/{id}`       - one task
 //! * `POST   /api/v0/tasks/{id}/claim` - claim an open task as a live agent
-//! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`)
+//! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`), refunding its escrow
 //! * `POST   /api/v0/tasks/{id}/artifact` - read a file the task's agent wrote
-//! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends
+//! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends (refunding its escrow)
+//! * `GET    /api/v0/treasury`         - the accounts and their derived balances, and totals
+//! * `GET    /api/v0/treasury/journal` - the double-entry journal, oldest first (bounded)
 //! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
 //! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
@@ -33,7 +35,9 @@
 //! `docs/orchestrator-draft/schema.sql`), restricted to the states noded v0
 //! implements: see [`registry`]. The task ledger is `core.tasks` restricted
 //! the same way, and only ever accepts a claim from an agent the register
-//! shows connected right now: see [`tasks`].
+//! shows connected right now: see [`tasks`]. A task's budget is real money in
+//! the treasury's journal, minted into the task's escrow on create and
+//! refunded when the task ends: see [`treasury`].
 
 pub mod events;
 pub mod fleet;
@@ -42,6 +46,7 @@ pub mod hub;
 pub mod registry;
 pub mod static_files;
 pub mod tasks;
+pub mod treasury;
 
 use std::borrow::Cow;
 use std::io::BufReader;
@@ -59,6 +64,7 @@ use crate::http::Response;
 use crate::hub::{HubAdmin, HubStatus, TellOutcome};
 use crate::registry::{CreateRun, Detail, Registry, VmImages};
 use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
+use crate::treasury::Treasury;
 
 /// The port the daemon listens on unless `--port` says otherwise.
 pub const DEFAULT_PORT: u16 = 8899;
@@ -156,12 +162,13 @@ impl Default for Config {
     }
 }
 
-/// The daemon's state: its runs, its task ledger, the console directory it
-/// serves, the hub's status surface it proxies, and when it started (the
-/// machine view's uptime).
+/// The daemon's state: its runs, its task ledger, the treasury its tasks'
+/// budgets are escrowed in, the console directory it serves, the hub's status
+/// surface it proxies, and when it started (the machine view's uptime).
 pub struct Node {
     registry: Registry,
     tasks: TaskLedger,
+    treasury: Arc<Treasury>,
     console_dir: PathBuf,
     hub_status: Option<HubStatus>,
     hub_admin: Option<HubAdmin>,
@@ -198,6 +205,8 @@ impl Node {
     /// transition, serial delta and task transition to its event bus.
     pub fn new(config: Config) -> Self {
         let events = events::EventBus::new();
+        let tasks = TaskLedger::new(Arc::clone(&events));
+        let treasury = Arc::clone(tasks.treasury());
         Self {
             registry: Registry::new(
                 VmImages {
@@ -206,9 +215,10 @@ impl Node {
                     workspace: config.workspace,
                 },
                 config.uds_dir,
-                Arc::clone(&events),
+                events,
             ),
-            tasks: TaskLedger::new(events),
+            tasks,
+            treasury,
             console_dir: config.console_dir,
             hub_status: config.hub_status,
             hub_admin: config.hub_admin,
@@ -239,6 +249,12 @@ impl Node {
     /// The node's task ledger.
     pub fn tasks(&self) -> &TaskLedger {
         &self.tasks
+    }
+
+    /// The node's treasury: the accounts and the journal its tasks' budgets
+    /// are escrowed in.
+    pub fn treasury(&self) -> &Treasury {
+        &self.treasury
     }
 
     /// The node's event bus (`GET /api/v0/events` streams it).
@@ -516,6 +532,10 @@ fn route(request: &http::Request, node: &Node) -> Response {
             "POST" => create_task(node, request.body()),
             _ => method_not_allowed("GET, POST"),
         },
+        "/api/v0/treasury" => match request.method() {
+            "GET" => treasury_view(node),
+            _ => method_not_allowed("GET"),
+        },
         "/" => match request.method() {
             "GET" => static_files::serve(node.console_dir(), static_files::INDEX),
             _ => method_not_allowed("GET"),
@@ -526,16 +546,30 @@ fn route(request: &http::Request, node: &Node) -> Response {
                 Some(rest) => task_endpoint(rest, request, node),
                 None => match path.strip_prefix("/api/v0/agents/") {
                     Some(rest) => agent_endpoint(rest, request, node),
-                    None => match request.method() {
-                        "GET" => static_files::serve(
-                            node.console_dir(),
-                            path.strip_prefix('/').unwrap_or(path),
-                        ),
-                        _ => method_not_allowed("GET"),
+                    None => match path.strip_prefix("/api/v0/treasury/") {
+                        Some(rest) => treasury_endpoint(rest, request, node),
+                        None => match request.method() {
+                            "GET" => static_files::serve(
+                                node.console_dir(),
+                                path.strip_prefix('/').unwrap_or(path),
+                            ),
+                            _ => method_not_allowed("GET"),
+                        },
                     },
                 },
             },
         },
+    }
+}
+
+/// Routes a request under `/api/v0/treasury/`.
+fn treasury_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
+    match rest {
+        "journal" => match request.method() {
+            "GET" => treasury_journal(node),
+            _ => method_not_allowed("GET"),
+        },
+        _ => no_such_endpoint(),
     }
 }
 
@@ -709,6 +743,22 @@ fn list_tasks(node: &Node) -> Response {
     json_response(200, &view)
 }
 
+/// `GET /api/v0/treasury`: the accounts with their balances, a totals line,
+/// and v0's honest note on real spend.
+///
+/// Balances are derived from the journal's postings, never stored (see
+/// [`treasury`]), and the view says in its own words that v0 meters no real
+/// spend (`spent: 0`, `note`).
+fn treasury_view(node: &Node) -> Response {
+    json_response(200, &node.treasury().view())
+}
+
+/// `GET /api/v0/treasury/journal`: the double-entry journal, oldest first and
+/// newest last, bounded to the newest [`treasury::JOURNAL_LIMIT`] entries.
+fn treasury_journal(node: &Node) -> Response {
+    json_response(200, &node.treasury().journal(treasury::JOURNAL_LIMIT))
+}
+
 /// `POST /api/v0/tasks`: creates a task in `open`.
 ///
 /// The ledger checks the request and its cap before an id is handed out, so a
@@ -764,7 +814,7 @@ fn claim_task(node: &Node, id: &str, body: &[u8]) -> Response {
 }
 
 /// `POST /api/v0/tasks/{id}/finish`: ends a claimed task as `done` or
-/// `failed`.
+/// `failed`, refunding the escrow it still holds.
 fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
     let Some(task) = node.tasks().find(id) else {
         return Response::error(404, &format!("no task with id {id}"));
@@ -778,7 +828,7 @@ fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
     }
     match task.finish(request.outcome, request.note) {
         Ok(()) => json_response(200, &task.view()),
-        Err(refused) => Response::error(409, &refused.to_string()),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
@@ -1079,12 +1129,13 @@ fn checked_guest_cid(segment: &str) -> Result<u64, String> {
     Ok(cid)
 }
 
-/// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended.
+/// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended, refunding
+/// the escrow it still holds.
 fn withdraw_task(node: &Node, id: &str) -> Response {
     match node.tasks().find(id) {
         Some(task) => match task.withdraw() {
             Ok(()) => json_response(200, &task.view()),
-            Err(refused) => Response::error(409, &refused.to_string()),
+            Err(refused) => Response::error(refused.status(), &refused.to_string()),
         },
         None => Response::error(404, &format!("no task with id {id}")),
     }

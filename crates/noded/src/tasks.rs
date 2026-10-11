@@ -44,6 +44,26 @@
 //!   its `updated_at` trigger and its append-only `task_events` are a later
 //!   slice. Every transition does publish to the event bus, so the console
 //!   sees the ledger live, and [`MAX_TASKS`] bounds what the process holds.
+//!
+//! # The task's escrow
+//!
+//! A task's budget is real money in the treasury's journal (see
+//! [`crate::treasury`]): a task created with a budget mints it into the task's
+//! escrow (a `mint` entry, the mint debited and the escrow credited), and a
+//! task that reaches a terminal state (`done`, `failed` or `withdrawn`)
+//! refunds what its escrow still holds (a `refund` entry). v0 meters no real
+//! spend, so a task that ends refunds its *whole* budget — the treasury view
+//! carries that fact in its own words (`spent: 0`, and the note).
+//!
+//! The two effects are ordered so the ledger is never left inconsistent:
+//! `create` mints **before** the task exists (a mint the treasury refuses
+//! means no task is created and no id handed out), and `finish`/`withdraw`
+//! refund **before** the state is committed (a refund the treasury refuses
+//! leaves the task exactly as it was, in the state it had). This adds an
+//! effect to four existing transitions but changes no state machine: the
+//! states and the allowed pairs are exactly as they were, and the refund a
+//! terminal task performs is `docs/formal/Economy.tla`'s `Close` and
+//! `TaskLifecycle.tla`'s release, not a transition either model lacks.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -51,6 +71,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::registry::{ConnectedAgent, now_ms};
+use crate::treasury::{PostError, Treasury};
 
 /// The most tasks the ledger holds. v0 never removes a task (a task ends
 /// `done`, `failed` or `withdrawn` and stays readable), so the cap is
@@ -207,16 +228,21 @@ pub enum CreateError {
         /// How many tasks the ledger holds.
         max: usize,
     },
+    /// The task's budget could not be minted into its escrow, so no task was
+    /// created. The journal is full or the accounts cap is reached — the only
+    /// ways a well-formed mint is refused.
+    Treasury(PostError),
 }
 
 impl CreateError {
     /// The HTTP status this error is reported as: a request the ledger cannot
     /// read is a bad request, a ledger at its cap is a conflict with its
-    /// state.
+    /// state, and a treasury that cannot hold the escrow is one too.
     pub fn status(&self) -> u16 {
         match self {
             CreateError::Invalid(_) => 400,
             CreateError::Full { .. } => 409,
+            CreateError::Treasury(error) => error.status(),
         }
     }
 }
@@ -226,11 +252,44 @@ impl std::fmt::Display for CreateError {
         match self {
             CreateError::Invalid(reason) => write!(formatter, "{reason}"),
             CreateError::Full { max } => write!(formatter, "the task ledger is full ({max} tasks)"),
+            CreateError::Treasury(error) => write!(formatter, "{error}"),
         }
     }
 }
 
 impl std::error::Error for CreateError {}
+
+/// Why a task could not be ended or withdrawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndError {
+    /// The state machine refused the transition.
+    Refused(RefusedTransition),
+    /// The escrow could not be refunded, so the transition was not made: a
+    /// terminal task's escrow is always released, or the task does not end.
+    Treasury(PostError),
+}
+
+impl EndError {
+    /// The HTTP status this error is reported as: a refused transition is a
+    /// conflict with the task's state, and a treasury refusal is its own.
+    pub fn status(&self) -> u16 {
+        match self {
+            EndError::Refused(_) => 409,
+            EndError::Treasury(error) => error.status(),
+        }
+    }
+}
+
+impl std::fmt::Display for EndError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndError::Refused(refused) => write!(formatter, "{refused}"),
+            EndError::Treasury(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for EndError {}
 
 /// The `POST /api/v0/tasks` body.
 #[derive(Debug, Clone, Deserialize)]
@@ -380,6 +439,9 @@ pub struct Task {
     created_at: u64,
     /// Where this task's transitions are published.
     events: Arc<EventBus>,
+    /// The treasury this task's escrow lives in: its budget was minted there,
+    /// and its terminal state refunds what is left.
+    treasury: Arc<Treasury>,
     inner: Mutex<TaskInner>,
 }
 
@@ -487,17 +549,23 @@ impl Task {
     /// recorded at claim time; nothing in a finish request identifies the
     /// caller, so v0 records who claimed the task rather than proving who
     /// finished it (see the module note on the identity slice).
+    ///
+    /// Ending a task releases its escrow: what the task's escrow still holds
+    /// goes back to the mint (a `refund` entry). The refund is posted **before**
+    /// the state is committed, so a treasury that refuses it leaves the task in
+    /// the state it had — a terminal task is never left holding its budget.
     pub fn finish(
         &self,
         outcome: FinishOutcome,
         note: Option<String>,
-    ) -> Result<(), RefusedTransition> {
+    ) -> Result<(), EndError> {
         let to = outcome.state();
         let mut inner = self.lock();
         let from = inner.state;
         if !from.can_transition_to(to) {
-            return Err(RefusedTransition { from, to });
+            return Err(EndError::Refused(RefusedTransition { from, to }));
         }
+        self.release_escrow()?;
         inner.state = to;
         inner.outcome = to.outcome();
         inner.note = note;
@@ -514,13 +582,16 @@ impl Task {
     /// Ends the task as `withdrawn`, from `open` or `claimed`.
     ///
     /// A task that has already ended is final, so withdrawing one is refused.
-    pub fn withdraw(&self) -> Result<(), RefusedTransition> {
+    /// Like a finish, a withdrawal releases the escrow (a `refund` entry) and
+    /// only commits the state if the treasury accepts it.
+    pub fn withdraw(&self) -> Result<(), EndError> {
         let to = TaskState::Withdrawn;
         let mut inner = self.lock();
         let from = inner.state;
         if !from.can_transition_to(to) {
-            return Err(RefusedTransition { from, to });
+            return Err(EndError::Refused(RefusedTransition { from, to }));
         }
+        self.release_escrow()?;
         inner.state = to;
         inner.outcome = to.outcome();
         inner.updated_at = now_ms();
@@ -533,6 +604,15 @@ impl Task {
         Ok(())
     }
 
+    /// Refunds whatever this task's escrow holds, if anything. A task with no
+    /// budget, or one whose escrow is already empty, posts nothing.
+    fn release_escrow(&self) -> Result<(), EndError> {
+        self.treasury
+            .refund_task_escrow(&self.id)
+            .map(|_| ())
+            .map_err(EndError::Treasury)
+    }
+
     fn lock(&self) -> MutexGuard<'_, TaskInner> {
         self.inner
             .lock()
@@ -540,10 +620,11 @@ impl Task {
     }
 }
 
-/// The node's tasks, in creation order, and the bus their transitions are
-/// published to.
+/// The node's tasks, in creation order, the bus their transitions are
+/// published to, and the treasury their budgets are escrowed in.
 pub struct TaskLedger {
     events: Arc<EventBus>,
+    treasury: Arc<Treasury>,
     inner: Mutex<LedgerInner>,
 }
 
@@ -553,9 +634,12 @@ struct LedgerInner {
 }
 
 impl TaskLedger {
-    /// A ledger with no tasks that publishes every transition to `events`.
+    /// A ledger with no tasks that publishes every transition to `events`, and
+    /// whose tasks' budgets are escrowed in a treasury that publishes to the
+    /// same bus.
     pub fn new(events: Arc<EventBus>) -> Self {
         Self {
+            treasury: Arc::new(Treasury::new(Arc::clone(&events))),
             events,
             inner: Mutex::new(LedgerInner {
                 next_seq: 0,
@@ -564,26 +648,46 @@ impl TaskLedger {
         }
     }
 
+    /// The treasury the ledger's tasks are escrowed in (the daemon's treasury
+    /// view and journal read it).
+    pub fn treasury(&self) -> &Arc<Treasury> {
+        &self.treasury
+    }
+
     /// Creates the next task in `open`, where a v0 task begins.
     ///
     /// The request is checked and the cap applied before an id is handed out,
-    /// so a refused create leaves the ledger exactly as it was.
+    /// so a refused create leaves the ledger exactly as it was. A positive
+    /// budget is minted into the task's escrow before the task is registered:
+    /// a mint the treasury refuses (a full journal) fails the create and
+    /// creates no task, so a task never exists without its escrow.
     pub fn create(&self, request: &CreateTask) -> Result<Arc<Task>, CreateError> {
         let checked = request.checked().map_err(CreateError::Invalid)?;
         let mut inner = self.lock();
         if inner.tasks.len() >= MAX_TASKS {
             return Err(CreateError::Full { max: MAX_TASKS });
         }
+        // The id is reserved here but `next_seq` only advances once the budget
+        // is minted, so a refused mint hands out no id.
+        let id = format!("t{}", inner.next_seq + 1);
+        if checked.budget > 0 {
+            // `checked` bounds the budget to `i64::MAX`.
+            let amount = i64::try_from(checked.budget).unwrap_or(i64::MAX);
+            self.treasury
+                .mint_task_budget(&id, amount)
+                .map_err(CreateError::Treasury)?;
+        }
         inner.next_seq += 1;
         let now = now_ms();
         let task = Arc::new(Task {
-            id: format!("t{}", inner.next_seq),
+            id,
             goal: checked.goal,
             acceptance: checked.acceptance,
             budget: checked.budget,
             role: checked.role,
             created_at: now,
             events: Arc::clone(&self.events),
+            treasury: Arc::clone(&self.treasury),
             inner: Mutex::new(TaskInner {
                 state: TaskState::Open,
                 outcome: None,
@@ -647,6 +751,28 @@ mod tests {
                 role: None,
             })
             .expect("a task inside the contract")
+    }
+
+    /// A task created with a budget, which the ledger mints into its escrow.
+    fn budgeted(ledger: &TaskLedger, goal: &str, budget: u64) -> Arc<Task> {
+        ledger
+            .create(&CreateTask {
+                goal: goal.to_string(),
+                acceptance: None,
+                budget: Some(budget),
+                role: None,
+            })
+            .expect("a budgeted task inside the contract")
+    }
+
+    /// An account's balance, by kind and owner.
+    fn balance(treasury: &Treasury, kind: &str, owner: &str) -> i128 {
+        treasury
+            .accounts()
+            .iter()
+            .find(|account| account.kind == kind && account.owner_ref == owner)
+            .unwrap_or_else(|| panic!("{kind} {owner} exists"))
+            .balance
     }
 
     /// `core.task_transitions`, restricted to the states noded v0 implements.
@@ -1017,5 +1143,133 @@ mod tests {
                 .frame(),
             "event: task\ndata: {\"id\":\"t2\",\"state\":\"withdrawn\",\"assignee\":null}\n\n"
         );
+    }
+
+    #[test]
+    fn a_budgeted_task_mints_its_escrow_and_a_finish_refunds_it() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = budgeted(&ledger, "paid work", 500);
+
+        // Creating it minted the budget into its escrow, and only that.
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 500);
+        assert_eq!(ledger.treasury().view().totals.entries, 1);
+        assert_eq!(ledger.treasury().view().spent, 0);
+        assert_eq!(balance(ledger.treasury(), "mint", "mint"), -500);
+
+        task.claim(&agent(100, "builder")).expect("claim");
+        task.finish(FinishOutcome::Done, Some("done".to_string()))
+            .expect("finish");
+
+        // v0 meters no real spend, so finishing refunded the whole escrow and
+        // the mint is home.
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+        assert_eq!(ledger.treasury().view().totals.entries, 2);
+        assert_eq!(balance(ledger.treasury(), "mint", "mint"), 0);
+        // The journal balances as a whole.
+        assert_eq!(ledger.treasury().view().totals.balance, 0);
+        assert!(ledger.treasury().verify_journal().is_ok());
+    }
+
+    #[test]
+    fn every_terminal_state_refunds_the_whole_escrow() {
+        let ledger = TaskLedger::new(EventBus::new());
+
+        let failed = budgeted(&ledger, "failed", 7);
+        failed.claim(&agent(100, "builder")).expect("claim");
+        failed
+            .finish(FinishOutcome::Failed, None)
+            .expect("claimed -> failed");
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+
+        let withdrawn = budgeted(&ledger, "withdrawn", 9);
+        assert_eq!(ledger.treasury().escrow_balance("t2"), 9);
+        withdrawn.withdraw().expect("open -> withdrawn");
+        assert_eq!(ledger.treasury().escrow_balance("t2"), 0);
+
+        let claimed = budgeted(&ledger, "withdrawn mid-flight", 3);
+        claimed.claim(&agent(100, "builder")).expect("claim");
+        claimed.withdraw().expect("claimed -> withdrawn");
+        assert_eq!(ledger.treasury().escrow_balance("t3"), 0);
+
+        // Three mints and three refunds, and nothing left in any escrow.
+        assert_eq!(ledger.treasury().view().totals.entries, 6);
+        assert_eq!(balance(ledger.treasury(), "mint", "mint"), 0);
+        for task in ledger.list() {
+            assert_eq!(ledger.treasury().escrow_balance(task.id()), 0);
+        }
+    }
+
+    #[test]
+    fn an_unbudgeted_task_posts_nothing() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = create(&ledger, "free work");
+        // No budget, no escrow: the treasury holds only its mint.
+        assert_eq!(ledger.treasury().view().totals.entries, 0);
+        assert_eq!(ledger.treasury().accounts().len(), 1);
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+
+        task.claim(&agent(100, "builder")).expect("claim");
+        task.finish(FinishOutcome::Done, None).expect("finish");
+        // Ending it refunds nothing, because there is nothing to refund.
+        assert_eq!(ledger.treasury().view().totals.entries, 0);
+        assert_eq!(ledger.treasury().accounts().len(), 1);
+    }
+
+    #[test]
+    fn a_refused_transition_refunds_nothing() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = budgeted(&ledger, "not started", 50);
+
+        let refused = task
+            .finish(FinishOutcome::Done, None)
+            .expect_err("open -> done is refused");
+        assert_eq!(refused.to_string(), "a task may not go from open to done");
+        assert_eq!(refused.status(), 409);
+        // The refused transition left the escrow exactly where it was.
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 50);
+        assert_eq!(ledger.treasury().view().totals.entries, 1);
+
+        // A second withdraw is refused, and refunds nothing a second time.
+        task.withdraw().expect("open -> withdrawn");
+        assert_eq!(ledger.treasury().view().totals.entries, 2);
+        let refused = task.withdraw().expect_err("withdrawn is final");
+        assert_eq!(
+            refused.to_string(),
+            "a task may not go from withdrawn to withdrawn"
+        );
+        assert_eq!(ledger.treasury().view().totals.entries, 2);
+    }
+
+    #[test]
+    fn a_task_the_treasury_cannot_fund_is_not_created() {
+        let ledger = TaskLedger::new(EventBus::new());
+        // Fill the accounts: any fresh escrow needs one more than the cap.
+        for index in 0..crate::treasury::MAX_ACCOUNTS - 1 {
+            ledger
+                .treasury()
+                .open_account(crate::treasury::AccountKind::TownBudget, &format!("town{index}"), 0)
+                .expect("an account under the cap");
+        }
+        let refused = ledger
+            .create(&CreateTask {
+                goal: "cannot be funded".to_string(),
+                acceptance: None,
+                budget: Some(5),
+                role: None,
+            })
+            .expect_err("the treasury cannot open the escrow");
+        assert!(
+            matches!(
+                refused,
+                CreateError::Treasury(PostError::AccountsFull { .. })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(refused.status(), 409);
+        // No task was created, no entry posted, and the id was not consumed:
+        // an unbudgeted task (which needs no escrow) still gets `t1`.
+        assert!(ledger.list().is_empty());
+        assert_eq!(ledger.treasury().view().totals.entries, 0);
+        assert_eq!(create(&ledger, "free").id(), "t1");
     }
 }

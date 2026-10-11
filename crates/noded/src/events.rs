@@ -25,6 +25,9 @@
 //! event: task
 //! data: {"id":"t1","state":"claimed","assignee":"builder"}
 //!
+//! event: treasury
+//! data: {"entry":1,"kind":"mint","amount":500,"task":"t1"}
+//!
 //! : heartbeat
 //!
 //! ```
@@ -67,6 +70,17 @@ pub enum Event {
         state: &'static str,
         assignee: Option<String>,
     },
+    /// A treasury entry was posted: the double-entry journal grew. `entry` is
+    /// the entry's id, `kind` the schema's entry kind, `amount` the entry's
+    /// size (its credited total, which equals its debited total), and `task`
+    /// the task the entry belongs to, or `null` when it belongs to none (a
+    /// `fine` or a `fee`).
+    Treasury {
+        entry: u64,
+        kind: &'static str,
+        amount: i128,
+        task: Option<String>,
+    },
 }
 
 impl Event {
@@ -104,12 +118,28 @@ impl Event {
                     None => "null".to_string(),
                 }
             ),
+            Event::Treasury {
+                entry,
+                kind,
+                amount,
+                task,
+            } => format!(
+                "{{\"entry\":{},\"kind\":{},\"amount\":{},\"task\":{}}}",
+                entry,
+                quote(kind),
+                amount,
+                match task {
+                    Some(task) => quote(task),
+                    None => "null".to_string(),
+                }
+            ),
         };
         let name = match self {
             Event::Run { .. } => "run",
             Event::Vm { .. } => "vm",
             Event::Serial { .. } => "serial",
             Event::Task { .. } => "task",
+            Event::Treasury { .. } => "treasury",
         };
         format!("event: {name}\ndata: {data}\n\n")
     }
@@ -259,6 +289,26 @@ mod tests {
             }
             .frame(),
             "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\"}\n\n"
+        );
+        assert_eq!(
+            Event::Treasury {
+                entry: 1,
+                kind: "mint",
+                amount: 500,
+                task: Some("t1".to_string()),
+            }
+            .frame(),
+            "event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":500,\"task\":\"t1\"}\n\n"
+        );
+        assert_eq!(
+            Event::Treasury {
+                entry: 7,
+                kind: "fine",
+                amount: 5,
+                task: None,
+            }
+            .frame(),
+            "event: treasury\ndata: {\"entry\":7,\"kind\":\"fine\",\"amount\":5,\"task\":null}\n\n"
         );
     }
 
