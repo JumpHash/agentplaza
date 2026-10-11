@@ -4,7 +4,7 @@
 
 import '../styles/models.css';
 import '../styles/tools.css';
-import { api, type Connector, type ConnectorAction, type ConnectorTest } from '../api';
+import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorTest } from '../api';
 import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
@@ -21,11 +21,29 @@ const STATUS: Record<Section, [string, Tone]> = {
 
 const RISK: Record<ConnectorAction['risk'], Tone> = { read: 'ok', write: 'info', irreversible: 'danger' };
 
-/** A connector with no actions yet is coming soon; otherwise it is by whether a key is stored and it is on. */
+/** A required field with no value anywhere: neither in the vault nor in the environment. */
+function missingRequired(c: Connector): boolean {
+  return c.fields.some((f) => f.required && !f.set);
+}
+
+/** Every required field is read from the environment, so the vault holds none of the key. */
+function fromEnvOnly(c: Connector): boolean {
+  const required = c.fields.filter((f) => f.required);
+  return required.length > 0 && required.every((f) => f.source === 'env');
+}
+
+/** A connector with no actions yet is coming soon; otherwise it needs a key while a required field is missing, else by whether it is on. */
 function sectionOf(c: Connector): Section {
   if (!c.actions.length) return 'Coming soon';
-  if (!c.configured) return 'Needs a key';
+  if (!c.configured || missingRequired(c)) return 'Needs a key';
   return c.enabled ? 'Enabled' : 'Configured';
+}
+
+/** The status line under one credential field's input. */
+function sourceLine(f: ConnectorField): string {
+  if (f.source === 'vault') return 'Set in the vault';
+  if (f.source === 'env') return `Read from $${f.env}`;
+  return `Not set — or set $${f.env} in apid's keys file`;
 }
 
 function splitList(text: string): string[] {
@@ -82,6 +100,7 @@ export function mount(root: HTMLElement): Cleanup {
     const section = sectionOf(c);
     const [text, tone] = STATUS[section];
     const needsKey = section === 'Needs a key';
+    const keyFromEnv = section !== 'Coming soon' && fromEnvOnly(c);
 
     const footer =
       section === 'Coming soon'
@@ -132,16 +151,49 @@ export function mount(root: HTMLElement): Cleanup {
         null,
         badge(c.kind === 'cli' ? 'CLI' : 'API', c.kind === 'cli' ? 'accent' : 'muted'),
         badge(text, tone, true),
+        keyFromEnv ? badge('Key from env', 'info') : null,
       ),
       chips,
       footer,
     );
   };
 
-  /** Configure: the write-only key, the roles, and enabled. Save writes the key (if typed) and the settings. */
+  /** Configure: one input per credential field, the roles, and enabled. Save writes each field typed into, then the settings. */
   const openConfigure = (c: Connector): void => {
     let close = () => {};
-    const keyInput = input({ type: 'password', autocomplete: 'new-password', placeholder: c.key_hint || 'API key' });
+    const inputs = new Map<string, HTMLInputElement>();
+
+    const fieldBlocks = c.fields.map((f) => {
+      const control = f.secret
+        ? input({ type: 'password', autocomplete: 'new-password', placeholder: f.hint || f.label })
+        : input({ autocomplete: 'off', placeholder: f.hint || f.label });
+      inputs.set(f.name, control);
+
+      const remove =
+        f.source === 'vault'
+          ? button(
+              'Remove',
+              async () => {
+                const cleared = await attempt(async () => {
+                  await api.clearConnectorSecret(c.id, f.name);
+                  return true;
+                }, `${f.label} removed`);
+                if (!cleared) return;
+                close();
+                await refresh();
+              },
+              { size: 'sm', kind: 'ghost' },
+            )
+          : null;
+
+      return h(
+        'div.stack',
+        null,
+        field(`${f.label} · ${f.required ? 'required' : 'optional'}`, control, sourceLine(f)),
+        remove ? h('div.prov-row', null, h('span.prov-spacer'), remove) : null,
+      );
+    });
+
     const rolesInput = input({ value: c.roles.join(', '), placeholder: 'all roles', autocomplete: 'off' });
     const enabledBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
     enabledBox.checked = c.enabled;
@@ -149,10 +201,12 @@ export function mount(root: HTMLElement): Cleanup {
     const save = button(
       'Save',
       async () => {
-        const value = keyInput.value.trim();
         save.disabled = true;
         const saved = await attempt(async () => {
-          if (value) await api.setConnectorSecret(c.id, value);
+          for (const f of c.fields) {
+            const value = inputs.get(f.name)?.value.trim() ?? '';
+            if (value) await api.setConnectorSecret(c.id, value, f.name);
+          }
           await api.updateConnector(c.id, { enabled: enabledBox.checked, roles: splitList(rolesInput.value) });
           return true;
         }, 'Saved');
@@ -163,25 +217,11 @@ export function mount(root: HTMLElement): Cleanup {
       },
       { kind: 'primary' },
     );
-    keyInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') save.click();
-    });
-
-    const remove = c.configured
-      ? button(
-          'Remove key',
-          async () => {
-            const cleared = await attempt(async () => {
-              await api.clearConnectorSecret(c.id);
-              return true;
-            }, 'Key removed');
-            if (!cleared) return;
-            close();
-            await refresh();
-          },
-          { kind: 'danger' },
-        )
-      : null;
+    for (const control of inputs.values()) {
+      control.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') save.click();
+      });
+    }
 
     close = modal(
       `Configure ${c.label}`,
@@ -189,11 +229,12 @@ export function mount(root: HTMLElement): Cleanup {
         'div.stack',
         null,
         c.cli ? h('p.faint', null, `Installs ${c.cli.binary} in the agent's VM, pointed at the plaza's gateway — no key inside the VM.`) : null,
-        field('API key', keyInput, c.configured ? 'Leave empty to keep the stored key' : 'Write-only: never shown again after saving.'),
+        h('p.faint', null, 'Write-only: a stored value is never shown again. Empty fields keep what is stored.'),
+        fieldBlocks,
         field('Roles', rolesInput, 'Comma-separated; empty = all roles'),
         h('label.tool-toggle', null, enabledBox, h('span', null, 'Enabled')),
         c.docs_url ? h('a', { href: c.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs') : null,
-        h('div.prov-row', null, remove, h('span.prov-spacer'), save),
+        h('div.prov-row', null, h('span.prov-spacer'), save),
       ),
     );
   };
