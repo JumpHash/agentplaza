@@ -2,10 +2,10 @@
 
 import '../styles/floor.css';
 
-import { api, type Agent, type Conversation, type Entry } from '../api';
+import { type Agent, type Conversation, type Entry } from '../api';
 import { go } from '../router';
 import { agents, on } from '../store';
-import { attempt, button, clip, input } from '../ui/components';
+import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
 import type { Cleanup } from './index';
 
@@ -39,6 +39,7 @@ interface Bot {
   moving: boolean;
   nextWander: number;
   bubble: { text: string; until: number; tone: 'info' | 'ok' | 'danger' } | null;
+  activity: string; // what the agent is doing right now, shown on its card
 }
 
 interface Packet { from: number; to: number; start: number; tone: 'accent' | 'ok' }
@@ -185,6 +186,7 @@ export function mount(root: HTMLElement): Cleanup {
               moving: false,
               nextWander: performance.now() + Math.random() * 3000,
               bubble: null,
+              activity: 'idle',
             },
       );
     }
@@ -580,6 +582,39 @@ export function mount(root: HTMLElement): Cleanup {
     renderCard();
   }
 
+  /** What the card shows: offline overrides whatever the transcript last said. */
+  const shown = (b: Bot): string => (b.agent.status === 'offline' ? 'offline' : b.activity);
+
+  const nameOf = (cid: unknown): string => {
+    const b = typeof cid === 'number' ? byCid.get(cid) : undefined;
+    return b ? b.agent.name : String(cid ?? '?');
+  };
+
+  function setActivity(bot: Bot, text: string): void {
+    bot.activity = text;
+    if (bot === selected) renderCard();
+  }
+
+  /** The cid a tool call hands a message or a task to, if any. */
+  function recipientOf(tool: string, inp: Record<string, unknown>): number | null {
+    const to = inp.to_cid ?? inp.assignee;
+    const sends = tool === 'plaza_send_message';
+    const assigns = tool === 'plaza_assign' || tool === 'plaza_post_task';
+    return (sends || assigns) && typeof to === 'number' ? to : null;
+  }
+
+  /** The one line that says what a tool call is doing. */
+  function toolActivity(tool: string, inp: Record<string, unknown>): string {
+    if (tool === 'bash') return `$ ${clip(str(inp.command).split('\n')[0] ?? '', 120)}`;
+    if (tool === 'plaza_send_message') return `✉ to ${nameOf(inp.to_cid)}: ${clip(str(inp.text), 100)}`;
+    if (tool === 'plaza_assign' || (tool === 'plaza_post_task' && inp.assignee != null)) {
+      return `→ task for ${nameOf(inp.assignee ?? inp.to_cid)}: ${str(inp.title)}`;
+    }
+    if (tool === 'share_file') return `⇪ shared ${str(inp.path)}`;
+    const target = str(inp.path) || str(inp.url);
+    return target ? `→ ${tool} ${clip(target, 80)}` : `→ ${tool}`;
+  }
+
   function renderCard(): void {
     if (!selected) {
       card.hidden = true;
@@ -588,38 +623,11 @@ export function mount(root: HTMLElement): Cleanup {
     }
     const a = selected.agent;
     card.hidden = false;
-    const sig = [a.status, a.model, a.work?.id ?? '', a.name, a.role].join('|');
+    const line = shown(selected);
+    const sig = [a.name, line].join('|');
     if (sig === cardSig) return;
     cardSig = sig;
-    const cid = a.cid;
-    const chat = input({ placeholder: `Message ${a.name}`, 'aria-label': `Message ${a.name}` });
-    const send = (): void => {
-      const text = chat.value.trim();
-      if (!text) return;
-      chat.value = '';
-      void attempt(() => api.chat(cid, text), 'Sent');
-    };
-    chat.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') send();
-    });
-    const work = a.work ? clip(a.work.prompt, 90) : 'Nothing right now';
-    card.replaceChildren(
-      h(
-        'header.floor-card-head',
-        null,
-        h('div', null, h('strong', null, a.name), h('div.floor-card-sub', null, `${a.role} · ${a.status}`)),
-        button('', () => select(null), { kind: 'ghost', icon: 'x', title: 'Close' }),
-      ),
-      h('dl.floor-card-facts', null, h('dt', null, 'Model'), h('dd', null, a.model), h('dt', null, 'Work'), h('dd', null, work)),
-      h('div.floor-card-chat', null, chat, button('Send', send, { kind: 'primary', icon: 'send' })),
-      h(
-        'div.floor-card-actions',
-        null,
-        button('Open', () => go('agents', cid)),
-        a.status === 'working' ? button('Cancel work', () => void attempt(() => api.cancel(cid), 'Cancelled'), { icon: 'ban' }) : null,
-        button('Stop', () => void attempt(() => api.stop(cid), 'Stopped'), { kind: 'danger', icon: 'stop' }),
-      ),
-    );
+    card.replaceChildren(h('header.floor-card-head', null, h('strong', null, a.name)), h('div.floor-card-activity', null, line));
   }
 
   function positionCard(): void {
@@ -710,12 +718,26 @@ export function mount(root: HTMLElement): Cleanup {
     const e = data as Entry;
     const bot = byCid.get(e.cid);
     switch (e.kind) {
-      case 'tool_request':
-        if (bot) say(bot, `→ ${str(e.data.tool) || str(e.data.name) || 'tool'}`, 'info');
+      case 'tool_request': {
+        const tool = str(e.data.tool) || str(e.data.name) || 'tool';
+        const inp = (e.data.input ?? {}) as Record<string, unknown>;
+        if (bot) {
+          say(bot, `→ ${tool}`, 'info');
+          setActivity(bot, toolActivity(tool, inp));
+        }
+        const to = recipientOf(tool, inp);
+        if (to !== null) sendPacket(e.cid, to, 'accent');
+        break;
+      }
+      case 'model_request':
+        if (bot) setActivity(bot, 'thinking…');
         break;
       case 'work_end': {
         const status = str(e.data.status) || 'done';
-        if (bot) say(bot, status, /err|fail/i.test(status) ? 'danger' : 'ok');
+        if (bot) {
+          say(bot, status, /err|fail/i.test(status) ? 'danger' : 'ok');
+          setActivity(bot, 'idle');
+        }
         break;
       }
       case 'work_start': {
@@ -730,6 +752,15 @@ export function mount(root: HTMLElement): Cleanup {
       default:
         break;
     }
+  });
+  const offDelta = on('delta', (data) => {
+    const bot = byCid.get((data as { cid: number }).cid);
+    if (bot) setActivity(bot, 'thinking…');
+  });
+  canvas.addEventListener('dblclick', (ev) => {
+    const [mx, my] = local(ev);
+    const bot = findBot(mx, my);
+    if (bot) go('agents', bot.agent.cid);
   });
   const offConversation = on('conversation', (data) => {
     const c = data as Conversation;
@@ -753,6 +784,7 @@ export function mount(root: HTMLElement): Cleanup {
     ro.disconnect();
     offAgents();
     offTranscript();
+    offDelta();
     offConversation();
     root.classList.remove('floor-view');
     root.replaceChildren();
