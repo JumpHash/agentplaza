@@ -39,6 +39,10 @@
 //! * `POST   /api/v0/agents/{cid}/say` - speak to a peer: the exchange is recorded and delivered
 //! * `GET    /api/v0/conversations`    - the exchanges, newest first (bounded), with the pair summaries
 //! * `GET    /api/v0/conversations/{a}/{b}` - one pair's thread, oldest first
+//! * `GET    /api/v0/motions`          - the council's motions, newest first (bounded)
+//! * `POST   /api/v0/motions`          - propose a motion as a seated connected agent
+//! * `GET    /api/v0/motions/{id}`     - one motion
+//! * `POST   /api/v0/motions/{id}/vote`- a seated connected agent votes on an open motion
 //! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
 //! * `POST   /api/v0/agents/{cid}/stop`- end one connected agent's session (the hub's own stop view, verbatim)
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
@@ -51,9 +55,12 @@
 //! the same way, and only ever accepts a claim from an agent the register
 //! shows connected right now: see [`tasks`]. A task's budget is real money in
 //! the treasury's journal, minted into the task's escrow on create and
-//! refunded when the task ends: see [`treasury`].
+//! refunded when the task ends: see [`treasury`]. The council's motions, their
+//! votes and the count that decides them are [`council`], over the four seats
+//! `docs/agents/council.md` pins.
 
 pub mod agora;
+pub mod council;
 pub mod events;
 pub mod fleet;
 pub mod http;
@@ -77,6 +84,7 @@ use serde::{Deserialize, Serialize};
 use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
 
 use crate::agora::Agora;
+use crate::council::{CheckedProposal, CheckedVote, Council, ProposeRequest, VoteRequest};
 use crate::http::Response;
 use crate::hub::{HubAdmin, HubStatus, StopOutcome, TellOutcome};
 use crate::registry::{ConnectedAgent, CreateRun, Detail, Registry, VmImages};
@@ -187,14 +195,16 @@ impl Default for Config {
 /// The daemon's state: its runs, its task ledger, the treasury its tasks'
 /// budgets are escrowed in, the agora its calls' bids and awards live in, the
 /// plaza's social layer (the board, the contact lists and the conversations
-/// between its agents), the console directory it serves, the hub's status
-/// surface it proxies, and when it started (the machine view's uptime).
+/// between its agents), the council's motions and votes, the console directory
+/// it serves, the hub's status surface it proxies, and when it started (the
+/// machine view's uptime).
 pub struct Node {
     registry: Registry,
     tasks: TaskLedger,
     treasury: Arc<Treasury>,
     agora: Arc<Agora>,
     social: Arc<Social>,
+    council: Arc<Council>,
     console_dir: PathBuf,
     hub_status: Option<HubStatus>,
     hub_admin: Option<HubAdmin>,
@@ -239,6 +249,8 @@ impl Node {
         // The social layer publishes its board and conversation events to that
         // same bus, for the same reason.
         let social = Arc::new(Social::new(Arc::clone(&events)));
+        // And so does the council, whose motion frames close the loop.
+        let council = Arc::new(Council::new(Arc::clone(&events)));
         Self {
             registry: Registry::new(
                 VmImages {
@@ -253,6 +265,7 @@ impl Node {
             treasury,
             agora,
             social,
+            council,
             console_dir: config.console_dir,
             hub_status: config.hub_status,
             hub_admin: config.hub_admin,
@@ -301,6 +314,12 @@ impl Node {
     /// cursors, their contact lists, and the conversations between them.
     pub fn social(&self) -> &Social {
         &self.social
+    }
+
+    /// The node's council: the four seats' motions, their votes, and the count
+    /// that decides them.
+    pub fn council(&self) -> &Council {
+        &self.council
     }
 
     /// The node's event bus (`GET /api/v0/events` streams it).
@@ -599,6 +618,11 @@ fn route(request: &http::Request, node: &Node) -> Response {
             "GET" => conversations_view(node),
             _ => method_not_allowed("GET"),
         },
+        "/api/v0/motions" => match request.method() {
+            "GET" => motions_view(node),
+            "POST" => motion_propose(node, request.body()),
+            _ => method_not_allowed("GET, POST"),
+        },
         "/" => match request.method() {
             "GET" => static_files::serve(node.console_dir(), static_files::INDEX),
             _ => method_not_allowed("GET"),
@@ -611,14 +635,17 @@ fn route(request: &http::Request, node: &Node) -> Response {
                     Some(rest) => agent_endpoint(rest, request, node),
                     None => match path.strip_prefix("/api/v0/conversations/") {
                         Some(rest) => conversation_endpoint(rest, request, node),
-                        None => match path.strip_prefix("/api/v0/treasury/") {
-                            Some(rest) => treasury_endpoint(rest, request, node),
-                            None => match request.method() {
-                                "GET" => static_files::serve(
-                                    node.console_dir(),
-                                    path.strip_prefix('/').unwrap_or(path),
-                                ),
-                                _ => method_not_allowed("GET"),
+                        None => match path.strip_prefix("/api/v0/motions/") {
+                            Some(rest) => motion_endpoint(rest, request, node),
+                            None => match path.strip_prefix("/api/v0/treasury/") {
+                                Some(rest) => treasury_endpoint(rest, request, node),
+                                None => match request.method() {
+                                    "GET" => static_files::serve(
+                                        node.console_dir(),
+                                        path.strip_prefix('/').unwrap_or(path),
+                                    ),
+                                    _ => method_not_allowed("GET"),
+                                },
                             },
                         },
                     },
@@ -1260,6 +1287,142 @@ fn conversation_endpoint(rest: &str, request: &http::Request, node: &Node) -> Re
         200,
         &node.social().thread(a, b, social::CONVERSATIONS_LIMIT),
     )
+}
+
+/// `GET /api/v0/motions`: the council's motions, newest first and bounded.
+///
+/// The response is bounded exactly as the journal's and the board's are: at
+/// most [`council::MOTIONS_LIMIT`] motions, newest first, with `total`, `limit`
+/// and `truncated` saying what the window left out. Polling this endpoint is
+/// the source of truth for the council; the `motion` frames on
+/// `GET /api/v0/events` are the deltas.
+fn motions_view(node: &Node) -> Response {
+    json_response(200, &node.council().motions(council::MOTIONS_LIMIT))
+}
+
+/// `GET /api/v0/motions/{id}`: one motion.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the motion, as `GET /api/v0/motions` reports one |
+/// | 404 | no motion with that id |
+/// | 405 | any method but `GET` |
+fn motion_get(node: &Node, id: &str) -> Response {
+    match node.council().motion(id) {
+        Some(motion) => json_response(200, &motion),
+        None => Response::error(404, &format!("no motion with id {id}")),
+    }
+}
+
+/// `POST /api/v0/motions`: a seat proposes a motion.
+///
+/// Proposing is a **seat action** (S-008a): the proposer must be a connected
+/// agent (the register's answer, the same check and the same words the claim
+/// uses, [`connected_agent`]) whose role holds one of the council's four seats
+/// (the council's own rule, [`Council::propose`]). `needs_owner` is **derived**
+/// from the kind — and, for a `budget_move`, from the motion's amount against
+/// the treasury's minted budget total, read afresh here, never cached — and any
+/// caller-supplied flag that disagrees with that derivation is refused with the
+/// rule named. The rules, each at its own enforcement point:
+///
+/// * the request is well-formed (the body parses, the kind is the schema's
+///   enum, `text` is non-empty and within its cap, a `budget_move` names its
+///   amount, and any `needs_owner` agrees with the derived gate) — this
+///   endpoint's, a 400;
+/// * the proposer is connected right now — the register's, a 409;
+/// * the proposer's role holds a seat — the council's, a 403 naming the role;
+/// * the council has room — the council's, a 409.
+///
+/// | status | when |
+/// |---|---|
+/// | 201 | the motion is recorded: `{id: m<seq>, …, state: "open"}`, as `GET /api/v0/motions` reports one |
+/// | 400 | the body, or its `needs_owner`, is outside this endpoint's contract |
+/// | 403 | the proposer's role holds no council seat (the role is named) |
+/// | 405 | any method but `GET` or `POST` |
+/// | 409 | the proposer is not a connected agent, or the council holds its cap of motions |
+fn motion_propose(node: &Node, body: &[u8]) -> Response {
+    let request: ProposeRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid motion request: {err}")),
+    };
+    // The minted budget total the 0067 gate is measured against: read from the
+    // treasury's own journal here, at propose time, so nothing caches it.
+    let minted_total = node.treasury().minted_total();
+    let proposal: CheckedProposal = match request.checked(minted_total) {
+        Ok(proposal) => proposal,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let proposer = match connected_agent(node, request.proposer_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    match node.council().propose(&proposer, proposal) {
+        Ok(motion) => json_response(201, &motion),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+    }
+}
+
+/// `POST /api/v0/motions/{id}/vote`: a seat votes on an open motion.
+///
+/// Voting is a **seat action** too: the voter must be a connected agent whose
+/// role holds a seat, and a role that holds none is refused with the role named
+/// (a 403). `reason` is required and non-empty (the playbook's "always with a
+/// reason", never a bare vote). **One vote per seat**: a later vote from the
+/// same seat replaces the earlier one, so the newest reason stands and a seat
+/// is never double-counted. Voting on a motion that is no longer `open` is
+/// refused with the state named.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the vote is recorded: the motion, with its tally and its new state |
+/// | 400 | the body is outside this endpoint's contract (a bad vote word, an empty or over-long reason) |
+/// | 403 | the voter's role holds no council seat (the role is named) |
+/// | 404 | no motion with that id |
+/// | 405 | any method but `POST` |
+/// | 409 | the voter is not a connected agent, or the motion is no longer open (the state is named) |
+fn motion_vote(node: &Node, id: &str, body: &[u8]) -> Response {
+    let request: VoteRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid vote request: {err}")),
+    };
+    let cast: CheckedVote = match request.checked() {
+        Ok(cast) => cast,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let voter = match connected_agent(node, request.agent_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    match node.council().vote(id, &voter, cast) {
+        Ok(motion) => json_response(200, &motion),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+    }
+}
+
+/// Routes a request under `/api/v0/motions/`.
+///
+/// Two surfaces, each named by the segment after the motion's id: the vote
+/// (`/vote`), and the motion itself.
+fn motion_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
+    if let Some(id) = rest.strip_suffix("/vote") {
+        if id.is_empty() || id.contains('/') {
+            return no_such_endpoint();
+        }
+        // A vote is a POST for the same reason the claim and the read are: it
+        // changes the record, so a request a prefetch or a retry could replay
+        // must not be advertised as safe to repeat.
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return motion_vote(node, id, request.body());
+    }
+    if rest.is_empty() || rest.contains('/') {
+        return no_such_endpoint();
+    }
+    match request.method() {
+        "GET" => motion_get(node, rest),
+        _ => method_not_allowed("GET"),
+    }
 }
 
 /// The `POST /api/v0/tasks/{id}/artifact` body.

@@ -33,8 +33,14 @@ const AGENT_CID: u64 = 300;
 /// The repository root. The daemon's default image paths are relative to the
 /// working directory, and a test binary's working directory is the package
 /// directory rather than the repository root, so they are resolved here.
+///
+/// It is canonicalized, so the guest-image paths handed to a run carry no `..`
+/// component: the jailer refuses a bind source that names a parent directory
+/// (`vmm::jail`), and `crates/noded/../..` is one — a run handed one fails to
+/// boot with the jailer's own words rather than with the guest's.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .expect("the repository root")
 }
 
 #[test]

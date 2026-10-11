@@ -37,6 +37,9 @@
 //! event: conversation
 //! data: {"id":"c1","from_cid":100,"to_cid":101,"delivered":true}
 //!
+//! event: motion
+//! data: {"id":"m1","kind":"priority","state":"open"}
+//!
 //! : heartbeat
 //!
 //! ```
@@ -131,6 +134,19 @@ pub enum Event {
         from_cid: u64,
         to_cid: u64,
         delivered: bool,
+    },
+    /// A council motion moved: it was proposed, or a seat voted on it. The
+    /// frame carries the motion's id, its kind and the state it is now in —
+    /// **no text**: the motion's text and its votes' reasons are read from the
+    /// motions endpoint, which is the only source for them, exactly as the
+    /// exchange record is for a conversation's words (`docs/agents/council.md`).
+    Motion {
+        /// The motion's id (`m<seq>`).
+        id: String,
+        /// The kind, as the wire spells it.
+        kind: &'static str,
+        /// The state the motion is now in.
+        state: &'static str,
     },
 }
 
@@ -228,6 +244,12 @@ impl Event {
                 to_cid,
                 delivered
             ),
+            Event::Motion { id, kind, state } => format!(
+                "{{\"id\":{},\"kind\":{},\"state\":{}}}",
+                quote(id),
+                quote(kind),
+                quote(state)
+            ),
         };
         let name = match self {
             Event::Run { .. } => "run",
@@ -238,6 +260,7 @@ impl Event {
             Event::Agora { .. } => "agora",
             Event::Board { .. } => "board",
             Event::Conversation { .. } => "conversation",
+            Event::Motion { .. } => "motion",
         };
         format!("event: {name}\ndata: {data}\n\n")
     }
@@ -462,6 +485,26 @@ mod tests {
             }
             .frame(),
             "event: conversation\ndata: {\"id\":\"c1\",\"from_cid\":100,\"to_cid\":101,\"delivered\":false}\n\n"
+        );
+        // A motion frame carries the motion's id, its kind and its state, and
+        // no text at all.
+        assert_eq!(
+            Event::Motion {
+                id: "m1".to_string(),
+                kind: "budget_move",
+                state: "open",
+            }
+            .frame(),
+            "event: motion\ndata: {\"id\":\"m1\",\"kind\":\"budget_move\",\"state\":\"open\"}\n\n"
+        );
+        assert_eq!(
+            Event::Motion {
+                id: "m2".to_string(),
+                kind: "law_proposal",
+                state: "awaiting_owner",
+            }
+            .frame(),
+            "event: motion\ndata: {\"id\":\"m2\",\"kind\":\"law_proposal\",\"state\":\"awaiting_owner\"}\n\n"
         );
     }
 

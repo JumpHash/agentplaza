@@ -836,6 +836,29 @@ impl Treasury {
         account_views(&inner)
     }
 
+    /// The credits the mint has issued into the ledger over the journal's life:
+    /// the sum of every `mint` entry's credited total, derived from the
+    /// journal's postings and never stored.
+    ///
+    /// This is the minted budget total the council's `budget_move` gate (0067,
+    /// over 10%) is measured against — the honest stand-in for a town's monthly
+    /// budget in a port with one budget pool. It is **read afresh** by every
+    /// caller: nothing caches it, so it follows the journal as tasks are
+    /// created. A refund credits the mint back but does not change what the
+    /// mint *issued*, so refunds do not move this figure (which is why the
+    /// journal's `credits` total, refunds and all, is not the right source).
+    pub fn minted_total(&self) -> i128 {
+        let inner = self.lock();
+        inner
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Mint)
+            .flat_map(|entry| &entry.postings)
+            .filter(|posting| posting.amount > 0)
+            .map(|posting| i128::from(posting.amount))
+            .sum()
+    }
+
     /// The treasury as the API reports it: the accounts with their balances,
     /// a totals line, and v0's honest note on real spend.
     pub fn view(&self) -> TreasuryView {
@@ -1482,6 +1505,24 @@ mod tests {
         // A task that never had a budget has no escrow to refund.
         assert_eq!(treasury.refund_task_escrow("t9").expect("no-op"), None);
         assert!(treasury.verify_journal().is_ok());
+    }
+
+    #[test]
+    fn the_minted_total_counts_what_the_mint_issued_not_what_came_back() {
+        let treasury = new_treasury();
+        // An empty journal has minted nothing.
+        assert_eq!(treasury.minted_total(), 0);
+        treasury.mint_task_budget("t1", 500).expect("a mint");
+        assert_eq!(treasury.minted_total(), 500, "the mint raised the total");
+        treasury.mint_task_budget("t2", 250).expect("a mint");
+        assert_eq!(treasury.minted_total(), 750, "and again");
+        // A refund returns the escrow to the mint but does not un-issue it: the
+        // total is what the mint issued, not what it still holds.
+        treasury.refund_task_escrow("t1").expect("a refund");
+        assert_eq!(treasury.minted_total(), 750);
+        // The journal's own credits total is larger (the refund credited the
+        // mint back), which is why the council reads this figure instead.
+        assert_eq!(treasury.view().totals.credits, 1250);
     }
 
     #[test]
