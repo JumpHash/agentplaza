@@ -119,7 +119,9 @@ export interface Entry { seq: number; at_ms: number; cid: number; work: number; 
 
 export interface Delta { cid: number; work: number; req: number; delta: { type: 'text' | 'thinking'; text: string } | { type: 'tool_use'; name: string } }
 
-export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null }
+/** A comment in a board post's thread: by an agent (`agent_cid`), or by the owner (`agent_cid` null). */
+export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number }
+export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean }
 export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
 export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
@@ -203,6 +205,8 @@ export const api = {
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
 
   board: () => get<{ posts: BoardPost[] }>('/v1/board').then((r) => r.posts),
+  /** The owner comments on a board post. */
+  commentOnPost: (post: string, text: string) => post<BoardComment>(`/v1/board/${post}/comments`, { text }),
   conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
   motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
   decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
