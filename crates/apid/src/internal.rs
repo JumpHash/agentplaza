@@ -141,6 +141,11 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
             let shared = pending().lock().unwrap_or_else(PoisonError::into_inner).remove(&(cid, call.clone()));
+            if crate::library::take_package_call(cid, &call) && ok {
+                if let Err(err) = crate::library::accept(app, cid, &output) {
+                    app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": format!("tool_package: {err}") }));
+                }
+            }
             if let (Some((_, path)), true) = (shared, ok) {
                 app.artifacts.add(&app.bus, cid, work, &path, output.clone());
             }
@@ -297,11 +302,23 @@ fn tool_request(
     // or ungranted call never waits in the approvals queue.
     let runnable = refused.is_none() && decide(&granted, name, runs(name)).is_ok();
     let gate = if runnable { crate::approvals::gate(app, cid, name, input) } else { None };
+    let mut program = None;
     let (decision, output, is_error) = match decide(&granted, name, runs(name)) {
         _ if refused.is_some() => (Decision::Deny, refused.unwrap_or_default(), true),
         _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),
         Err(reason) => (Decision::Deny, reason.to_string(), true),
+        // An agent-made tool from the library: allowed with its program, which the guest runs.
+        Ok(Runs::Guest) if name.starts_with(crate::library::PREFIX) => match crate::library::program(app, cid, name) {
+            Some(found) => {
+                program = Some(found);
+                (Decision::Allow, String::new(), false)
+            }
+            None => (Decision::Deny, "no such library tool".to_string(), true),
+        },
         Ok(Runs::Guest) => {
+            if name == "tool_package" {
+                crate::library::remember_package_call(cid, &call);
+            }
             if name == "share_file" {
                 let path = input.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
                 pending().lock().unwrap_or_else(PoisonError::into_inner).insert((cid, call.clone()), (name.to_string(), path));
@@ -324,7 +341,7 @@ fn tool_request(
             "output": cap_output(&output, DECISION_OUTPUT_BYTES),
         }),
     );
-    HostMessage::ToolDecision { call, decision, output, is_error, program: None }
+    HostMessage::ToolDecision { call, decision, output, is_error, program }
 }
 
 /// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not.

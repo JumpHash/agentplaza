@@ -95,6 +95,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
+        name if name.starts_with(crate::library::PREFIX) => Some(Runs::Guest),
         _ => None,
     }
 }
@@ -105,6 +106,13 @@ pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
     let granted = app.roles.tools.get(role).cloned().unwrap_or_default();
     let mut specs: Vec<ToolSpec> = offered(role, &granted).iter().filter_map(|name| spec(name)).collect();
     specs.extend(crate::connectors::specs_for(app, role));
+    specs
+}
+
+/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
+pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    let mut specs = specs_for(app, &agent.role);
+    specs.extend(crate::library::specs_for(app, agent.cid));
     specs
 }
 

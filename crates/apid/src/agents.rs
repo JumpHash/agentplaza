@@ -268,7 +268,7 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         role: agent.role.clone(),
         model: model_of(app, agent),
         system: system_prompt(agent, role_prompt),
-        tools: crate::tools::specs_for(app, &agent.role),
+        tools: crate::tools::specs_for_agent(app, agent),
         max_turns: app.settings.get().max_turns,
     }
 }

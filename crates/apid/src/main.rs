@@ -19,6 +19,7 @@ mod events;
 mod internal;
 mod llm_proxy;
 mod laws;
+mod library;
 mod memory;
 mod plaza;
 mod providers;

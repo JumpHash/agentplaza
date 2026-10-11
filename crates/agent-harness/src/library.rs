@@ -678,3 +678,20 @@ fn give_to_agent(dir: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// What the model hears after `tool_package`: the tool's name, file count, size and hash.
+pub fn summary(bundle: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(bundle) else {
+        return "packaged".to_string();
+    };
+    let p = &value["package"];
+    let files = p["files"].as_array().map_or(0, Vec::len);
+    let bytes: usize = p["files"].as_array().map_or(0, |f| f.iter().filter_map(|x| x["content_b64"].as_str()).map(|s| s.len() * 3 / 4).sum());
+    format!(
+        "packaged x_{} ({files} files, ~{} KiB, hash {}) for the plaza's library{}",
+        p["name"].as_str().unwrap_or("?"),
+        bytes.div_ceil(1024),
+        p["hash"].as_str().map_or("?", |h| &h[..h.len().min(12)]),
+        if p["publish"].as_bool() == Some(true) { "; publishing to every agent awaits review" } else { "; it is yours to use now as a tool" },
+    )
+}

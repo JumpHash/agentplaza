@@ -482,6 +482,12 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
                     Ok(output) => (true, output),
                     Err(err) => (false, err),
                 };
+                // A packaged tool travels to the host whole (the library files it from the report);
+                // the model only needs to hear what was packaged.
+                if name == "tool_package" && ok {
+                    self.say(&GuestMessage::ToolReport { work, call: id.to_string(), ok, output: output.clone() })?;
+                    return Ok((library::summary(&output), false));
+                }
                 let output = cap_output(&output, MAX_TOOL_OUTPUT);
                 self.say(&GuestMessage::ToolReport { work, call: id.to_string(), ok, output: output.clone() })?;
                 Ok((output, !ok))

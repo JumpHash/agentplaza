@@ -93,7 +93,7 @@ impl Laws {
             Value::set(flags.iter().map(|flag| Value::str(flag))),
         )]));
         let mut requests = vec![("tool.call", tool_entity)];
-        if GUEST_EXEC.contains(&tool) {
+        if GUEST_EXEC.contains(&tool) || tool.starts_with(crate::library::PREFIX) {
             requests.push(("tool.exec", sandbox));
         }
         if tool == "plaza_send_message" {
