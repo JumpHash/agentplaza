@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agora;
+pub mod bonds;
 pub mod council;
 pub mod events;
 pub mod social;
