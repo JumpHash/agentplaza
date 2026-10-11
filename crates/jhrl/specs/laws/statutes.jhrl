@@ -1,0 +1,535 @@
+law "S-000a" "Every agent may work in its own sandbox" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may run commands and read its files in its own microVM, and only its own. Which tools it sees is set by its role (AP-055)."
+  permit tool.exec
+  principal is Agent
+  resource is Sandbox
+  when resource.agent == principal
+}
+
+law "S-000b" "Every agent may ask for approval" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may send a request up its approval chain (AP-038). C-004 still forbids pressuring or misleading approvers."
+  permit approval.request
+  principal is Agent
+  resource is Approval
+}
+
+law "S-000c" "Agents may read their town's artifacts" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may read artifacts of its own town, unless the artifact is hidden from its role (S-010d)."
+  permit artifact.read
+  principal is Agent
+  resource is Artifact
+  when resource.town == principal.town
+}
+
+law "S-000d" "Every agent may choose its own name" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may set its own name in the registry (AP-035). C-003a still refuses reserved and confusable names."
+  permit registry.set_name
+  principal is Agent
+  resource is Registry
+}
+
+law "S-000e" "Ordinary sandbox events are not offenses" {
+  tier statute
+  enforcement detective
+  severity info
+  statement "Lifecycle events from an agent's own sandbox (started, snapshot, resumed) are recorded and are not violations. C-001b singles out tamper signals."
+  permit sandbox.event
+  principal is Agent
+  resource is Sandbox
+  when resource.agent == principal
+}
+
+law "S-001a" "Builders may work in their own sandbox" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A builder may run commands in its own microVM, and only its own."
+  permit tool.exec
+  principal is Agent
+  resource is Sandbox
+  when principal.role == "builder" and resource.agent == principal
+}
+
+law "S-001b" "Builders may reach package registries and the hub's git" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A builder may connect to hosts in the package-registries and hub-git allowlists."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "builder" and (resource.group == "package-registries" or resource.group == "hub-git")
+}
+
+law "S-001c" "Builders may publish artifacts in their town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A builder may publish artifacts that belong to its own town."
+  permit artifact.publish
+  principal is Agent
+  resource is Artifact
+  when principal.role == "builder" and resource.town == principal.town
+}
+
+law "S-001d" "Builders may message agents in their town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A builder may send messages to agents of its own town."
+  permit message.send
+  principal is Agent
+  resource is Agent
+  when principal.role == "builder" and resource.town == principal.town
+}
+
+law "S-001e" "Builders may claim their town's tasks as done" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A builder may submit a completion claim for a task of its own town. The claim is verified, not trusted."
+  permit claim.submit
+  principal is Agent
+  resource is Task
+  when principal.role == "builder" and resource.town == principal.town
+}
+
+law "S-002a" "Reviewers may work in their own sandbox and fetch code" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A reviewer may run commands in its own microVM and reach the hub's git and package registries."
+  permit tool.exec
+  principal is Agent
+  resource is Sandbox
+  when principal.role == "reviewer" and resource.agent == principal
+}
+
+law "S-002b" "Reviewers may connect to registries and the hub's git" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A reviewer may connect to the package-registries and hub-git allowlists."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "reviewer" and (resource.group == "package-registries" or resource.group == "hub-git")
+}
+
+law "S-002c" "Reviewers may submit verdicts on their town's tasks" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A reviewer may submit a review verdict on tasks of its own town."
+  permit review.submit
+  principal is Agent
+  resource is Task
+  when principal.role == "reviewer" and resource.town == principal.town
+}
+
+law "S-003a" "Planners may work in their own sandbox and read the hub's git" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A planner may run commands in its own microVM and reach the hub's git (specs and repos)."
+  permit tool.exec
+  principal is Agent
+  resource is Sandbox
+  when principal.role == "planner" and resource.agent == principal
+}
+
+law "S-003b" "Planners may read the hub's git" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A planner may connect to the hub-git allowlist."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "planner" and resource.group == "hub-git"
+}
+
+law "S-003c" "Planners may create tasks in their town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A planner may create tasks in its own town. Tasks still need plan approval before work starts."
+  permit task.create
+  principal is Agent
+  resource is Town
+  when principal.role == "planner" and resource == principal.town
+}
+
+law "S-003d" "Planners may submit plans for their town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A planner may submit a plan for its own town; it runs only after the plan gate (Mayor or owner)."
+  permit plan.submit
+  principal is Agent
+  resource is Town
+  when principal.role == "planner" and resource == principal.town
+}
+
+law "S-004a" "Mayors assign work within their town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A Mayor may assign its town's tasks to agents of its own town."
+  permit task.assign
+  principal is Agent
+  resource is Task
+  when principal.role == "mayor" and resource.town == principal.town and context.assignee.town == principal.town
+}
+
+law "S-004b" "Mayors manage their town's population" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A Mayor may spawn and hibernate agents in its own town, within the town's quota (quota enforced by the scheduler)."
+  permit agent.spawn, agent.hibernate
+  principal is Agent
+  resource is Town
+  when principal.role == "mayor" and resource == principal.town
+}
+
+law "S-004c" "Mayors approve plans and merges below threshold" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A Mayor may approve plans and merges for its town's tasks when the budget is within the town's threshold and nothing is ambiguous; everything else goes to the owner (AP-060, AP-049)."
+  permit plan.approve, merge.approve
+  principal is Agent
+  resource is Task
+  when principal.role == "mayor" and resource.town == principal.town and context.budget <= context.threshold and not context.ambiguous
+}
+
+law "S-004d" "Mayors may message their town's agents" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A Mayor may message agents of its own town."
+  permit message.send
+  principal is Agent
+  resource is Agent
+  when principal.role == "mayor" and resource.town == principal.town
+}
+
+law "S-004e" "Mayors may message the Mayor Office" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A Mayor may send messages to Mayor Office staff, who support all Mayors and carry town issues to the owner."
+  permit message.send
+  principal is Agent
+  resource is Agent
+  when principal.role == "mayor" and resource.role == "mayor-office"
+}
+
+law "S-005a" "Departments may read audit logs" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Finance, Incident response and Mayor Office may read audit logs."
+  permit audit.read
+  principal is Agent
+  resource is AuditLog
+  when principal.role == "finance" or principal.role == "incident" or principal.role == "mayor-office"
+}
+
+law "S-005b" "Finance and Incident response may read usage" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Finance and Incident response may read the usage ledger (tokens, tool calls, VM time, spend)."
+  permit usage.read
+  principal is Agent
+  resource is UsageLedger
+  when principal.role == "finance" or principal.role == "incident"
+}
+
+law "S-005c" "Departments submit their own kind of report" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Finance submits finance reports and detections of economic gaming, Incident response incident reports and detections, Mayor Office town reports."
+  permit report.submit
+  principal is Agent
+  resource is Report
+  when (principal.role == "finance" and (context.kind == "finance" or context.kind == "detection")) or (principal.role == "incident" and (context.kind == "incident" or context.kind == "detection")) or (principal.role == "mayor-office" and context.kind == "town")
+}
+
+law "S-005d" "Incident response may request per-case grants" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Incident response may ask the owner for a time-limited grant, such as quarantine rights for one incident (AP-048)."
+  permit grant.request
+  principal is Agent
+  resource is Grant
+  when principal.role == "incident"
+}
+
+law "S-005e" "Mayor Office may message Mayors" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Mayor Office staff may send messages to any town's Mayor."
+  permit message.send
+  principal is Agent
+  resource is Agent
+  when principal.role == "mayor-office" and resource.role == "mayor"
+}
+
+law "S-009a" "Architects may read repos" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An architect may reach the hub git and submit design notes for its own town."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "architect" and resource.group == "hub-git"
+}
+
+law "S-009b" "Architects submit designs for their town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An architect may submit design notes for its own town."
+  permit design.submit
+  principal is Agent
+  resource is Town
+  when principal.role == "architect" and resource == principal.town
+}
+
+law "S-010a" "QA may reach package registries and hub git" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A QA agent may install test dependencies and read repos."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "qa" and (resource.group == "package-registries" or resource.group == "hub-git")
+}
+
+law "S-010b" "QA submits test suites for its town" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A QA agent may submit test suites, hidden or not, for its own town."
+  permit testsuite.submit
+  principal is Agent
+  resource is Town
+  when principal.role == "qa" and resource == principal.town
+}
+
+law "S-010d" "Hidden test suites stay hidden" {
+  tier statute
+  enforcement preventive
+  severity high
+  statement "An artifact hidden from a role can never be read by an agent of that role. Builders never see hidden acceptance tests, or passing them would mean nothing."
+  forbid artifact.read
+  principal is Agent
+  resource is Artifact
+  when principal.role in resource.hidden_from
+}
+
+law "S-011a" "Security reviewers may reach registries, advisories and hub git" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A security reviewer may fetch dependencies, advisory databases and repos."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "security-reviewer" and (resource.group == "package-registries" or resource.group == "advisories" or resource.group == "hub-git")
+}
+
+law "S-011b" "Security reviewers submit verdicts on their town's tasks" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A security reviewer may submit a security review for tasks of its own town."
+  permit security_review.submit
+  principal is Agent
+  resource is Task
+  when principal.role == "security-reviewer" and resource.town == principal.town
+}
+
+law "S-012a" "Release agents may use deploy tools" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A release agent may call tools in the deploy group. Irreversible ones (production) still need a recorded owner approval (C-004)."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when principal.role == "release" and resource.group == "deploy"
+}
+
+law "S-012b" "Release agents submit release plans" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A release agent may submit release plans and records for its town's tasks."
+  permit release.submit
+  principal is Agent
+  resource is Task
+  when principal.role == "release" and resource.town == principal.town
+}
+
+law "S-013a" "Researchers may read the open web" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A researcher may connect to any host except blocked ones. Its output is always tainted."
+  permit egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "researcher" and resource.group != "blocked"
+}
+
+law "S-013b" "Researchers may use web search" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A researcher may call web-search tools (e.g. Firecrawl)."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when principal.role == "researcher" and resource.group == "web-search"
+}
+
+law "S-013c" "Researchers submit research briefs" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A researcher may submit research briefs to its own town."
+  permit research.submit
+  principal is Agent
+  resource is Town
+  when principal.role == "researcher" and resource == principal.town
+}
+
+law "S-013d" "Researchers never write to repositories" {
+  tier statute
+  enforcement preventive
+  severity high
+  statement "A researcher may not connect to the hub git: untrusted content must reach code only through a builder who treats it as data."
+  forbid egress.connect
+  principal is Agent
+  resource is Host
+  when principal.role == "researcher" and resource.group == "hub-git"
+}
+
+law "S-014a" "Librarians read memory at every scope" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A librarian may read private, group and org memory to curate it."
+  permit memory.read
+  principal is Agent
+  resource is MemoryStore
+  when principal.role == "librarian"
+}
+
+law "S-014b" "Librarians change memory only on verified evidence" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A librarian may promote, merge or expire memories only when the originating tasks passed verification; tainted memories never reach org scope without owner review."
+  permit memory.change
+  principal is Agent
+  resource is MemoryStore
+  when principal.role == "librarian" and context.verified and (context.to_scope != "org" or not context.tainted or context.owner_reviewed)
+}
+
+law "S-015a" "Auditors read audit and usage" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An auditor may read the audit log and the usage ledger."
+  permit audit.read, usage.read
+  principal is Agent
+  when principal.role == "auditor"
+}
+
+law "S-015b" "Auditors receive random samples" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An auditor may fetch the sample the orchestrator assigned to it; it can't choose its own."
+  permit audit_sample.get
+  principal is Agent
+  resource is AuditSample
+  when principal.role == "auditor"
+}
+
+law "S-015c" "Auditors submit audit reports" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An auditor may submit audit reports."
+  permit report.submit
+  principal is Agent
+  resource is Report
+  when principal.role == "auditor" and context.kind == "audit"
+}
+
+law "S-016a" "Edge operators read devices on their node" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An edge operator may read devices attached to the node it runs on."
+  permit device.read
+  principal is Agent
+  resource is Device
+  when principal.role == "edge-operator" and resource.node == context.on_node
+}
+
+law "S-016b" "Edge operators actuate inside the safe envelope" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An edge operator may actuate a device on its own node when the action is inside the device safe envelope, or with a recorded owner approval."
+  permit device.actuate
+  principal is Agent
+  resource is Device
+  when principal.role == "edge-operator" and resource.node == context.on_node and (context.within_envelope or has(context.owner_approval))
+}
+
+law "S-016c" "Only edge operators touch devices" {
+  tier statute
+  enforcement preventive
+  severity critical
+  statement "No other role may actuate a physical device, whatever else it is allowed."
+  forbid device.actuate
+  principal is Agent
+  resource is Device
+  when principal.role != "edge-operator"
+}
+
+law "S-016d" "Edge operators submit device reports" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "An edge operator may submit device reports."
+  permit report.submit
+  principal is Agent
+  resource is Report
+  when principal.role == "edge-operator" and context.kind == "device"
+}

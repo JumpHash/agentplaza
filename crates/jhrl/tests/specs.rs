@@ -238,3 +238,11 @@ fn doc_examples_parse() {
         }
     }
 }
+
+#[test]
+fn every_authz_case_passes() {
+    let results = jhrl::authz::run_authz(&load_specs());
+    assert!(!results.is_empty(), "no authz cases found");
+    let failed: Vec<String> = results.iter().filter(|r| !r.1).map(|r| format!("{}: {}", r.0, r.2)).collect();
+    assert!(failed.is_empty(), "{} of {} cases failed:\n{}", failed.len(), results.len(), failed.join("\n"));
+}

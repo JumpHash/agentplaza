@@ -1,0 +1,105 @@
+fixture "town" "One town with agents of several roles, tools of each risk class, hosts in each group" {
+  Town("t1")
+  Town("t2")
+  Agent("builder") { role: "builder", town: Town("t1") }
+  Agent("other") { role: "builder", town: Town("t2") }
+  Agent("reviewer") { role: "reviewer", town: Town("t1") }
+  Agent("mayor") { role: "mayor", town: Town("t1") }
+  Agent("researcher") { role: "researcher", town: Town("t1") }
+  Agent("finance") { role: "finance", town: Town("t1") }
+  Agent("librarian") { role: "librarian", town: Town("t1") }
+  Agent("auditor") { role: "auditor", town: Town("t1") }
+  Agent("edge") { role: "edge-operator", town: Town("t1") }
+  Agent("release") { role: "release", town: Town("t1") }
+  Sandbox("sb-builder") { agent: Agent("builder") }
+  Sandbox("sb-reviewer") { agent: Agent("reviewer") }
+  Tool("read-file") { risk_class: "read", group: "files" }
+  Tool("edit-code") { risk_class: "write", group: "files" }
+  Tool("deploy-prod") { risk_class: "irreversible", group: "deploy" }
+  Tool("web-search") { risk_class: "read", group: "web-search" }
+  Host("pypi") { group: "package-registries" }
+  Host("git") { group: "hub-git" }
+  Host("advisories") { group: "advisories" }
+  Host("news") { group: "open-web" }
+  Host("evil") { group: "blocked" }
+  Artifact("spec") { town: Town("t1"), hidden_from: {} }
+  Artifact("accept-tests") { town: Town("t1"), hidden_from: {"builder"} }
+  Approval("ap-owner")
+  Registry("registry")
+  AuditLog("log")
+  Gateway("gateway")
+  PolicySet("policy")
+  Vault("vault")
+  UsageLedger("ledger")
+  Task("task1") { town: Town("t1") }
+  Report("rep1")
+  MemoryStore("org")
+  Device("arm") { node: "node-1" }
+}
+
+authz "constitution" using "town" {
+  deny "builder edits the audit log" Agent("builder") audit.modify AuditLog("log") {} by "C-001a"
+  deny "reviewer reconfigures the gateway" Agent("reviewer") gateway.configure Gateway("gateway") {} by "C-001a"
+  deny "builder rewrites the policy set" Agent("builder") policy.modify PolicySet("policy") {} by "C-001a"
+  allow "auditor reads the audit log" Agent("auditor") audit.read AuditLog("log") {}
+  allow "builder runs a plain command in its sandbox" Agent("builder") tool.exec Sandbox("sb-builder") {flags: {}}
+
+  deny "builder's sandbox reports a tamper signal" Agent("builder") sandbox.event Sandbox("sb-builder") {kind: "tamper_signal"} by "C-001b"
+  deny "reviewer's sandbox reports a tamper signal" Agent("reviewer") sandbox.event Sandbox("sb-reviewer") {kind: "tamper_signal"} by "C-001b"
+  allow "builder's sandbox reports a snapshot" Agent("builder") sandbox.event Sandbox("sb-builder") {kind: "snapshot"}
+  allow "reviewer's sandbox reports it started" Agent("reviewer") sandbox.event Sandbox("sb-reviewer") {kind: "started"}
+
+  deny "builder obfuscates a command" Agent("builder") tool.exec Sandbox("sb-builder") {flags: {"obfuscation"}} by "C-001c"
+  deny "reviewer obfuscates a command" Agent("reviewer") tool.exec Sandbox("sb-reviewer") {flags: {"obfuscation"}} by "C-001c"
+  allow "builder runs an ordinary command" Agent("builder") tool.exec Sandbox("sb-builder") {flags: {}}
+  allow "reviewer runs an ordinary command" Agent("reviewer") tool.exec Sandbox("sb-reviewer") {flags: {}}
+
+  deny "builder reads the vault" Agent("builder") vault.read Vault("vault") {} by "C-002a"
+  deny "mayor lists the vault" Agent("mayor") vault.list Vault("vault") {} by "C-002a"
+  allow "auditor reads the usage ledger" Agent("auditor") usage.read UsageLedger("ledger") {}
+  allow "finance reads the audit log" Agent("finance") audit.read AuditLog("log") {}
+
+  deny "builder asks a peer for a token" Agent("builder") message.send Agent("reviewer") {flags: {"credential_seeking"}} by "C-002b"
+  deny "researcher fetches a credential over the network" Agent("researcher") egress.connect Host("news") {flags: {"credential_seeking"}} by "C-002b"
+  allow "builder messages a peer in its town" Agent("builder") message.send Agent("reviewer") {flags: {}}
+  allow "researcher reads the open web" Agent("researcher") egress.connect Host("news") {flags: {}}
+
+  deny "agent takes a reserved name" Agent("builder") registry.set_name Registry("registry") {name_reserved: true, name_confusable: false} by "C-003a"
+  deny "agent takes a confusable name" Agent("reviewer") registry.set_name Registry("registry") {name_reserved: false, name_confusable: true} by "C-003a"
+  allow "builder picks a plain name" Agent("builder") registry.set_name Registry("registry") {name_reserved: false, name_confusable: false}
+  allow "reviewer picks a plain name" Agent("reviewer") registry.set_name Registry("registry") {name_reserved: false, name_confusable: false}
+
+  deny "builder poses as the mayor" Agent("builder") message.send Agent("mayor") {flags: {"impersonation"}} by "C-003b"
+  deny "reviewer publishes as the owner" Agent("reviewer") artifact.publish Artifact("spec") {flags: {"impersonation"}} by "C-003b"
+  allow "builder publishes a spec in its town" Agent("builder") artifact.publish Artifact("spec") {flags: {}}
+  allow "mayor messages a builder" Agent("mayor") message.send Agent("builder") {flags: {}}
+
+  deny "release deploys without owner approval" Agent("release") tool.call Tool("deploy-prod") {flags: {}} by "C-004a"
+  deny "mayor calls the irreversible deploy tool" Agent("mayor") tool.call Tool("deploy-prod") {flags: {}} by "C-004a"
+  allow "release deploys with owner approval" Agent("release") tool.call Tool("deploy-prod") {flags: {}, owner_approval: Approval("ap-owner")}
+  allow "researcher runs a web search" Agent("researcher") tool.call Tool("web-search") {flags: {}}
+
+  deny "builder pressures the owner for approval" Agent("builder") approval.request Approval("ap-owner") {flags: {"pressure_or_misleading"}} by "C-004b"
+  deny "reviewer misleads the approver" Agent("reviewer") approval.request Approval("ap-owner") {flags: {"pressure_or_misleading"}} by "C-004b"
+  allow "builder asks for approval plainly" Agent("builder") approval.request Approval("ap-owner") {flags: {}}
+  allow "mayor asks for approval plainly" Agent("mayor") approval.request Approval("ap-owner") {flags: {}}
+}
+
+authz "statutes" using "town" {
+  deny "builder reaches a blocked host" Agent("builder") egress.connect Host("evil") {flags: {}}
+  deny "builder messages an agent in another town" Agent("other") message.send Agent("builder") {flags: {}}
+  deny "builder calls a write tool" Agent("builder") tool.call Tool("edit-code") {flags: {}}
+  allow "mayor approves a merge under threshold" Agent("mayor") merge.approve Task("task1") {budget: 5, threshold: 10, ambiguous: false}
+  deny "mayor approves a merge over threshold" Agent("mayor") merge.approve Task("task1") {budget: 50, threshold: 10, ambiguous: false}
+  deny "mayor approves an ambiguous plan" Agent("mayor") plan.approve Task("task1") {budget: 5, threshold: 10, ambiguous: true}
+  deny "builder reads hidden acceptance tests" Agent("builder") artifact.read Artifact("accept-tests") {} by "S-010d"
+  allow "reviewer reads the same artifact" Agent("reviewer") artifact.read Artifact("accept-tests") {}
+  deny "researcher connects to the hub git" Agent("researcher") egress.connect Host("git") {flags: {}} by "S-013d"
+  deny "builder actuates a device" Agent("builder") device.actuate Device("arm") {within_envelope: true, on_node: "node-1"} by "S-016c"
+  allow "edge operator actuates inside its envelope" Agent("edge") device.actuate Device("arm") {within_envelope: true, on_node: "node-1"}
+  deny "edge operator actuates outside its envelope" Agent("edge") device.actuate Device("arm") {within_envelope: false, on_node: "node-1"}
+  allow "finance submits a finance report" Agent("finance") report.submit Report("rep1") {kind: "finance", flags: {}}
+  deny "finance submits an incident report" Agent("finance") report.submit Report("rep1") {kind: "incident", flags: {}}
+  allow "librarian promotes an owner-reviewed memory" Agent("librarian") memory.change MemoryStore("org") {to_scope: "org", verified: true, tainted: true, owner_reviewed: true}
+  deny "librarian promotes tainted memory without review" Agent("librarian") memory.change MemoryStore("org") {to_scope: "org", verified: true, tainted: true, owner_reviewed: false}
+}
