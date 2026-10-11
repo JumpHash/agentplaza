@@ -1,3 +1,6 @@
 .omp/
 target/
 .claude/
+
+# Python bytecode from the acceptance runner
+__pycache__/
