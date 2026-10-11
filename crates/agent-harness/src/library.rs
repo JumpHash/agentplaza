@@ -15,16 +15,19 @@
 //! Stdout is the tool's output; a failure is its output as `Err`.
 
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use apz_proto::wire::Program;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::bash::{Privilege, execute, install_packages};
+use crate::bash::{PROXY_ADDR, Privilege, execute, install_packages};
 use crate::files::{PLAZA_DIR, Workspace};
 
 /// The most files a packaged tool holds.
@@ -54,10 +57,245 @@ struct Collected {
     executable: bool,
 }
 
+/// The most bytes a deliverable holds: 500 MiB.
+const MAX_DELIVERABLE_BYTES: u64 = 500 * 1024 * 1024;
+/// The size of the chunks a deliverable is streamed in.
+const UPLOAD_CHUNK: usize = 64 * 1024;
+/// The most bytes of the proxy's reply that are read; the status and the id are all that is needed.
+const MAX_REPLY_BYTES: u64 = 1024 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IO_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// `deliver_file`: uploads a workspace file to the plaza's Library (through the egress
 /// proxy to plaza.gateway, which the hub relays to apid) and returns its id and URL.
-pub fn deliver(_workspace: &Workspace, _input: &Value) -> Result<String, String> {
-    Err("deliver_file is not available yet".to_string())
+///
+/// Input: `path` (a file inside the workspace, relative, not `.plaza`, at most 500 MiB),
+/// `title`, and optionally `description` and `task`.
+pub fn deliver(workspace: &Workspace, input: &Value) -> Result<String, String> {
+    deliver_via(workspace, input, PROXY_ADDR)
+}
+
+/// [`deliver`] through the egress proxy at `proxy`, so a test can stand in for it.
+fn deliver_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<String, String> {
+    let rel = str_field(input, "path")?;
+    let title = str_field(input, "title")?;
+    if title.trim().is_empty() {
+        return Err(invalid("\"title\" must not be empty"));
+    }
+    let description = optional_str(input, "description")?;
+    let task = optional_str(input, "task")?;
+    let file = workspace_file(workspace, rel)?;
+    let size = fs::metadata(&file)
+        .map_err(|err| format!("cannot read {rel:?}: {err}"))?
+        .len();
+    if size > MAX_DELIVERABLE_BYTES {
+        return Err(invalid(format!(
+            "{rel:?} is {size} bytes; a deliverable is at most {} MiB",
+            MAX_DELIVERABLE_BYTES / (1024 * 1024)
+        )));
+    }
+    let basename = Path::new(rel)
+        .file_name()
+        .ok_or_else(|| invalid(format!("{rel:?} has no file name")))?
+        .to_string_lossy()
+        .into_owned();
+    let mut query = format!(
+        "/files?name={}&title={}",
+        encode_query(&basename),
+        encode_query(title)
+    );
+    if let Some(text) = description {
+        query.push_str(&format!("&description={}", encode_query(text)));
+    }
+    if let Some(text) = task {
+        query.push_str(&format!("&task={}", encode_query(text)));
+    }
+
+    let mut stream = connect(proxy)?;
+    let head = format!(
+        "PUT http://plaza.gateway{query} HTTP/1.1\r\nHost: plaza.gateway\r\nContent-Type: {}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n",
+        content_type_of(&basename)
+    );
+    stream
+        .write_all(head.as_bytes())
+        .map_err(|err| format!("cannot send to the egress proxy: {err}"))?;
+    send_file(&mut stream, &file, size)?;
+
+    let reply = read_reply(stream)?;
+    let (status, body) = parse_reply(&reply)?;
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "the Library refused {rel:?}: HTTP {status}: {}",
+            excerpt(body)
+        ));
+    }
+    let value: Value = serde_json::from_slice(body).map_err(|err| {
+        format!("the Library's reply is not JSON ({err}): {}", excerpt(body))
+    })?;
+    let id = value["id"]
+        .as_str()
+        .ok_or_else(|| format!("the Library's reply has no id: {}", excerpt(body)))?;
+    let url = value["url"]
+        .as_str()
+        .ok_or_else(|| format!("the Library's reply has no url: {}", excerpt(body)))?;
+    Ok(format!("delivered \"{title}\" to the Library: id {id}, {url}"))
+}
+
+/// The workspace file `deliver` uploads: relative, inside the workspace, not the harness's
+/// own state, and a regular file once symlinks are followed.
+fn workspace_file(workspace: &Workspace, rel: &str) -> Result<PathBuf, String> {
+    if rel.is_empty() {
+        return Err(invalid("\"path\" must name a file inside the workspace"));
+    }
+    for component in Path::new(rel).components() {
+        match component {
+            Component::Normal(part) if part == PLAZA_DIR => {
+                return Err(invalid(format!(
+                    "{rel:?} is the harness's own state, which cannot be delivered"
+                )));
+            }
+            Component::Normal(_) | Component::CurDir => {}
+            _ => return Err(invalid(format!("{rel:?} must be a path inside the workspace"))),
+        }
+    }
+    let root = fs::canonicalize(workspace.dir())
+        .map_err(|err| format!("the workspace is not available: {err}"))?;
+    let file = match fs::canonicalize(root.join(rel)) {
+        Ok(file) if file.is_file() => file,
+        _ => return Err(invalid(format!("{rel:?} is not a file in the workspace"))),
+    };
+    if !file.starts_with(&root) || file.starts_with(root.join(PLAZA_DIR)) {
+        return Err(invalid(format!(
+            "{rel:?} resolves outside the workspace or into its own state"
+        )));
+    }
+    Ok(file)
+}
+
+/// Connects to the egress proxy, with a 10 s connect timeout and 300 s read and write timeouts.
+fn connect(proxy: &str) -> Result<TcpStream, String> {
+    let addrs = proxy
+        .to_socket_addrs()
+        .map_err(|err| format!("cannot resolve the egress proxy {proxy}: {err}"))?;
+    let mut last = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                stream
+                    .set_write_timeout(Some(IO_TIMEOUT))
+                    .and_then(|()| stream.set_read_timeout(Some(IO_TIMEOUT)))
+                    .map_err(|err| format!("cannot time the egress proxy connection: {err}"))?;
+                return Ok(stream);
+            }
+            Err(err) => last = Some(err),
+        }
+    }
+    Err(match last {
+        Some(err) => format!("cannot reach the egress proxy at {proxy}: {err}"),
+        None => format!("the egress proxy {proxy} has no address"),
+    })
+}
+
+/// Streams the first `size` bytes of `file` to the proxy in 64 KiB chunks.
+fn send_file(stream: &mut TcpStream, file: &Path, size: u64) -> Result<(), String> {
+    let mut source = fs::File::open(file).map_err(|err| format!("cannot open the file: {err}"))?;
+    let mut buf = vec![0u8; UPLOAD_CHUNK];
+    let mut left = size;
+    while left > 0 {
+        let want = left.min(UPLOAD_CHUNK as u64) as usize;
+        let read = source
+            .read(&mut buf[..want])
+            .map_err(|err| format!("cannot read the file: {err}"))?;
+        if read == 0 {
+            return Err("the file got shorter while it was being sent".to_string());
+        }
+        stream
+            .write_all(&buf[..read])
+            .map_err(|err| format!("cannot send to the egress proxy: {err}"))?;
+        left -= read as u64;
+    }
+    Ok(())
+}
+
+/// Reads the proxy's reply until it closes the connection.
+fn read_reply(stream: TcpStream) -> Result<Vec<u8>, String> {
+    let mut reply = Vec::new();
+    stream
+        .take(MAX_REPLY_BYTES)
+        .read_to_end(&mut reply)
+        .map_err(|err| format!("cannot read the Library's reply: {err}"))?;
+    Ok(reply)
+}
+
+/// Splits an HTTP/1.1 reply into its status code and its body.
+fn parse_reply(reply: &[u8]) -> Result<(u16, &[u8]), String> {
+    let split = reply
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| format!("the egress proxy's reply is not HTTP: {}", excerpt(reply)))?;
+    let head = String::from_utf8_lossy(&reply[..split]);
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| format!("the egress proxy's reply is not HTTP: {}", excerpt(reply)))?;
+    Ok((status, &reply[split + 4..]))
+}
+
+/// The first 500 bytes of `bytes`, as text.
+fn excerpt(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(500)]).into_owned()
+}
+
+/// The Content-Type a deliverable is uploaded as, guessed from its extension.
+fn content_type_of(name: &str) -> &'static str {
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Percent-encodes a query value: letters, digits and `-._~` stay, every other byte becomes `%XX`.
+fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// An optional string field: absent or null is `None`; anything but a string is refused.
+fn optional_str<'a>(input: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.as_str())),
+        Some(_) => Err(invalid(format!("{key:?} must be a string"))),
+    }
 }
 
 /// `tool_package`: reads the tool's directory and returns its bundle as JSON (apid files it
@@ -663,6 +901,142 @@ mod tests {
         }
         assert!(base64_decode("Zm9").is_err());
         assert!(base64_decode("Z!9v").is_err());
+    }
+
+    #[test]
+    fn query_values_are_percent_encoded() {
+        assert_eq!(encode_query("plain-name_1.mp4~"), "plain-name_1.mp4~");
+        assert_eq!(encode_query("a b&c=d/e?f#g%"), "a%20b%26c%3Dd%2Fe%3Ff%23g%25");
+        assert_eq!(encode_query("é"), "%C3%A9");
+    }
+
+    #[test]
+    fn content_types_are_guessed_from_the_extension() {
+        for (name, kind) in [
+            ("clip.MP4", "video/mp4"),
+            ("a.webm", "video/webm"),
+            ("a.mov", "video/quicktime"),
+            ("a.png", "image/png"),
+            ("a.jpg", "image/jpeg"),
+            ("a.jpeg", "image/jpeg"),
+            ("a.gif", "image/gif"),
+            ("a.webp", "image/webp"),
+            ("a.svg", "image/svg+xml"),
+            ("a.mp3", "audio/mpeg"),
+            ("a.wav", "audio/wav"),
+            ("a.pdf", "application/pdf"),
+            ("a.txt", "text/plain"),
+            ("a.md", "text/markdown"),
+            ("a.json", "application/json"),
+            ("a.csv", "text/csv"),
+            ("a.html", "text/html"),
+            ("a.zip", "application/zip"),
+            ("a.bin", "application/octet-stream"),
+            ("README", "application/octet-stream"),
+        ] {
+            assert_eq!(content_type_of(name), kind, "{name}");
+        }
+    }
+
+    #[test]
+    fn deliverable_paths_are_refused_outside_the_workspace() {
+        let ws = scratch("deliver-paths");
+        write(&ws.dir().join("out/report.txt"), b"x");
+        write(&ws.dir().join(".plaza/secret.txt"), b"x");
+        let input = |path: &str| json!({"path": path, "title": "t"});
+        assert!(deliver(&ws, &input("../report.txt")).expect_err("escape").contains("inside the workspace"));
+        assert!(deliver(&ws, &input(".plaza/secret.txt")).expect_err("state").contains("harness"));
+        assert!(deliver(&ws, &input("out/missing.txt")).expect_err("missing").contains("not a file"));
+        assert!(deliver(&ws, &input("out")).expect_err("a folder").contains("not a file"));
+    }
+
+    fn reply(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Reads one HTTP request from `conn`: its head, then the body its Content-Length gives.
+    fn read_request(conn: &mut TcpStream) -> Vec<u8> {
+        let mut received = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = conn.read(&mut chunk).expect("a request");
+            assert!(read > 0, "the client closed before the request ended");
+            received.extend_from_slice(&chunk[..read]);
+            if let Some(end) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&received[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map_or(0, |value| value.trim().parse::<usize>().expect("a length"));
+                if received.len() >= end + 4 + length {
+                    return received;
+                }
+            }
+        }
+    }
+
+    /// A local listener standing in for the proxy: it takes one request, answers `reply`
+    /// and yields the request bytes.
+    fn serve_once(reply: String) -> (String, std::thread::JoinHandle<Vec<u8>>) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a local listener");
+        let addr = listener.local_addr().expect("its address").to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("a client");
+            let request = read_request(&mut conn);
+            conn.write_all(reply.as_bytes()).expect("a reply");
+            request
+        });
+        (addr, handle)
+    }
+
+    #[test]
+    fn a_deliverable_is_put_to_the_proxy_and_its_id_is_returned() {
+        let ws = scratch("deliver-round-trip");
+        write(&ws.dir().join("out/hello.txt"), b"hello");
+        let body = r#"{"id":"f1","url":"http://plaza.gateway/files/f1","size":5}"#;
+        let (proxy, server) = serve_once(reply("201 Created", body));
+
+        let input = json!({
+            "path": "out/hello.txt",
+            "title": "Hello there",
+            "description": "a note & more",
+            "task": "t-1",
+        });
+        let out = deliver_via(&ws, &input, &proxy).expect("delivered");
+        assert_eq!(out, "delivered \"Hello there\" to the Library: id f1, http://plaza.gateway/files/f1");
+
+        let request = server.join().expect("the server");
+        let split = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a head");
+        assert_eq!(&request[split + 4..], b"hello");
+        let head = String::from_utf8(request[..split].to_vec()).expect("an ASCII head");
+        let mut lines = head.split("\r\n");
+        assert_eq!(
+            lines.next(),
+            Some("PUT http://plaza.gateway/files?name=hello.txt&title=Hello%20there&description=a%20note%20%26%20more&task=t-1 HTTP/1.1")
+        );
+        let headers: Vec<&str> = lines.collect();
+        assert!(headers.contains(&"Host: plaza.gateway"), "{headers:?}");
+        assert!(headers.contains(&"Content-Type: text/plain"), "{headers:?}");
+        assert!(headers.contains(&"Content-Length: 5"), "{headers:?}");
+        assert!(headers.contains(&"Connection: close"), "{headers:?}");
+    }
+
+    #[test]
+    fn a_refused_deliverable_reports_the_status_and_the_body() {
+        let ws = scratch("deliver-refused");
+        write(&ws.dir().join("out/hello.txt"), b"hello");
+        let (proxy, server) = serve_once(reply("413 Payload Too Large", "too big"));
+        let err = deliver_via(&ws, &json!({"path": "out/hello.txt", "title": "t"}), &proxy)
+            .expect_err("refused");
+        assert!(err.contains("413") && err.contains("too big"), "{err}");
+        server.join().expect("the server");
     }
 }
 
