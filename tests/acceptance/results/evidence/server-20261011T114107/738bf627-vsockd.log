@@ -1,0 +1,43 @@
+vsockd: listening on /tmp/apz-acceptance-server-wqzvb6no/council-fleet-uds/vm190_5000 for guest CID 190
+vsockd: listening on /tmp/apz-acceptance-server-wqzvb6no/council-fleet-uds/vm191_5000 for guest CID 191
+vsockd: listening on /tmp/apz-acceptance-server-wqzvb6no/council-fleet-uds/vm192_5000 for guest CID 192
+vsockd: listening on /tmp/apz-acceptance-server-wqzvb6no/council-fleet-uds/vm193_5000 for guest CID 193
+vsockd: listening on /tmp/apz-acceptance-server-wqzvb6no/council-fleet-uds/vm194_5000 for guest CID 194
+vsockd: listening on /tmp/apz-acceptance-server-wqzvb6no/council-fleet-uds/vm195_5000 for guest CID 195
+vsockd: accepted a connection from cid 190
+[guest 190 vm? ->] {"type":"hello","vm":0,"guest_cid":190,"role":"builder","keepalive":true}
+vsockd: guest 190 vm 0 says hello (accepted on the socket for cid 190)
+vsockd: agent 190 role builder connected
+[<-] guest 190 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: accepted a connection from cid 191
+[guest 191 vm? ->] {"type":"hello","vm":1,"guest_cid":191,"role":"finance","keepalive":true}
+vsockd: guest 191 vm 1 says hello (accepted on the socket for cid 191)
+vsockd: agent 191 role finance connected
+[<-] guest 191 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"finance","keepalive":true}
+vsockd: accepted a connection from cid 192
+[guest 192 vm? ->] {"type":"hello","vm":2,"guest_cid":192,"role":"incident","keepalive":true}
+vsockd: guest 192 vm 2 says hello (accepted on the socket for cid 192)
+vsockd: agent 192 role incident connected
+[<-] guest 192 vm2 {"type":"welcome","echo":"plaza-orchestrator","role":"incident","keepalive":true}
+vsockd: accepted a connection from cid 193
+vsockd: accepted a connection from cid 194
+[guest 193 vm? ->] {"type":"hello","vm":3,"guest_cid":193,"role":"legal-agents-counsel","keepalive":true}
+vsockd: guest 193 vm 3 says hello (accepted on the socket for cid 193)
+vsockd: agent 193 role legal-agents-counsel connected
+[<-] guest 193 vm3 {"type":"welcome","echo":"plaza-orchestrator","role":"legal-agents-counsel","keepalive":true}
+[guest 194 vm? ->] {"type":"hello","vm":4,"guest_cid":194,"role":"legal-gov-judge","keepalive":true}
+vsockd: guest 194 vm 4 says hello (accepted on the socket for cid 194)
+vsockd: agent 194 role legal-gov-judge connected
+[<-] guest 194 vm4 {"type":"welcome","echo":"plaza-orchestrator","role":"legal-gov-judge","keepalive":true}
+vsockd: accepted a connection from cid 195
+[guest 195 vm? ->] {"type":"hello","vm":5,"guest_cid":195,"role":"mayor-office","keepalive":true}
+vsockd: guest 195 vm 5 says hello (accepted on the socket for cid 195)
+vsockd: agent 195 role mayor-office connected
+[<-] guest 195 vm5 {"type":"welcome","echo":"plaza-orchestrator","role":"mayor-office","keepalive":true}
+vsockd: session with cid 195 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 191 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 192 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 194 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 193 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 190 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

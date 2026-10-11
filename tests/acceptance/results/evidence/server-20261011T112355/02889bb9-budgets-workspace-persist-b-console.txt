@@ -1,0 +1,1 @@
+plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0swspaceapz-workspace-0045f3e6f00d

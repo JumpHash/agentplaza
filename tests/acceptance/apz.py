@@ -861,8 +861,14 @@ class Lab:
             return self._request("GET", "/api/v0/machine").status == 200
         except (OSError, ValueError):
             return False
-    def stream_events(self, seconds: float) -> list[str]:
-        """Consume ``GET /api/v0/events`` for ``seconds`` and return its lines."""
+    def stream_events(self, seconds: float, sink: list[str] | None = None) -> list[str]:
+        """Consume ``GET /api/v0/events`` for ``seconds`` and return its lines.
+
+        ``sink``, when given, receives every line **as it arrives**: the return
+        value is only complete once the read ends, so a caller that must inspect
+        the stream while it is still open — a session-long frame capture — polls
+        the sink instead.
+        """
         connection = socket.create_connection(("127.0.0.1", self.port), timeout=5)
         connection.sendall(
             b"GET /api/v0/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n"
@@ -883,7 +889,10 @@ class Lab:
             buffer += chunk
             while b"\n" in buffer:
                 raw, buffer = buffer.split(b"\n", 1)
-                lines.append(raw.decode(errors="replace"))
+                line = raw.decode(errors="replace")
+                lines.append(line)
+                if sink is not None:
+                    sink.append(line)
         connection.close()
         return lines
     def list_runs(self) -> list[dict]:

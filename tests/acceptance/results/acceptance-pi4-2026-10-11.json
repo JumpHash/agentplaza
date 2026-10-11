@@ -1,0 +1,238 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "BLOCKED",
+  "machine_class": "pi4",
+  "generated_at": "2026-10-11T11:41:05+0200",
+  "wall_seconds": 0.057,
+  "manifest": {
+    "suite": "all",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "2b73440e5ec163ab309900bf9fa3e9413d98bd3f",
+      "dirty": true,
+      "harness_tree_sha256": "2d93b18c0799c3b4771883bd0767814a42433745598ce4890d573b5d41b962e8"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "bc4dd19fd0d5eef3fd98b8a36453573881dbfd2f19304c694a32f89306a491b2",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "pi4",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-pi4-wtn5j9n3",
+    "started_at": "2026-10-11T11:41:05+0200",
+    "binaries": {
+      "noded": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "d270c880bd1b02366d9221e4f17aa10a7d317dc2de5c4d00d4e23c3e71829738"
+      },
+      "vsockd": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-acceptance-pi4-wtn5j9n3/kernel-seccomp-audit.log",
+        "bytes": 1,
+        "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "excerpt": "tests/acceptance/results/evidence/pi4-20261011T114105/01ba4719-kernel-seccomp-audit.log",
+        "excerpt_bytes": 1
+      }
+    ]
+  },
+  "suites_run": [
+    "demo",
+    "redteam",
+    "killresume",
+    "jail",
+    "budgets",
+    "fleet",
+    "treasury",
+    "social",
+    "agora",
+    "council"
+  ],
+  "kernel_seccomp_audit": {
+    "available": true,
+    "reason": null,
+    "since_epoch": 1791711665,
+    "records": 0,
+    "attributed": [],
+    "kills": [],
+    "artifact": "/tmp/apz-acceptance-pi4-wtn5j9n3/kernel-seccomp-audit.log"
+  },
+  "sut_binary": {
+    "bin_dir": "/mnt/fast/AgentPlaza/target/debug",
+    "digests": {
+      "noded": "d270c880bd1b02366d9221e4f17aa10a7d317dc2de5c4d00d4e23c3e71829738",
+      "vsockd": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
+    },
+    "changed_mid_run": {},
+    "sut_git_at_start": {
+      "head": "2b73440e5ec163ab309900bf9fa3e9413d98bd3f",
+      "dirty": true,
+      "harness_tree_sha256": "2d93b18c0799c3b4771883bd0767814a42433745598ce4890d573b5d41b962e8"
+    }
+  },
+  "suites": [
+    {
+      "suite": "demo-task-matrix",
+      "pass_bar": "at least 4 of 5 protocol tasks pass per cell, plus every run invariant",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "credential-redteam",
+      "pass_bar": "zero leaks on every run (canaries and credential-shaped strings), confinement proven live",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "kill-and-resume",
+      "pass_bar": "5 of 5 cases",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "jail-in-the-boot-path",
+      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, and a 50-VM soak with no daemon death and no kernel refusal",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "boot-restore-footprint-budgets",
+      "pass_bar": "footprint within the configured 8 GiB / 5% bars, restore reconciles, boot + lifecycle measured; with --workspace the same bars are enforced against the block device and the copy-retention + guest-persistence contracts are asserted",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "fleet",
+      "pass_bar": "every case passes; a case whose required flag/binary is absent is BLOCKED with the reason (never a pass)",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "treasury",
+      "pass_bar": "every case passes; a case whose required flag/binary is absent is BLOCKED with the reason (never a pass)",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "social",
+      "pass_bar": "every case passes; a case whose required binary/flag/image is absent is BLOCKED with the reason (never a pass)",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "agora",
+      "pass_bar": "every case passes; a case whose required flag is absent is BLOCKED with the reason (never a pass)",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    },
+    {
+      "suite": "council",
+      "pass_bar": "every case passes: only the four seats propose and vote, the gate is derived and refused when disagreed with, the vote rules and the count follow the doctrine, the dispatcher's council pass drives the seats, and every SSE motion frame is exactly {id,kind,state}",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T11:41:05+0200",
+      "duration_s": 0.0
+    }
+  ],
+  "findings": []
+}

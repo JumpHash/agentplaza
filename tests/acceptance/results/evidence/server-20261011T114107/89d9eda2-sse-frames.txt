@@ -1,0 +1,185 @@
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-store
+Connection: close
+
+event: motion
+data: {"id":"m1","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m2","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m3","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m4","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m5","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m5","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m5","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m5","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m5","kind":"other","state":"carried"}
+
+event: motion
+data: {"id":"m6","kind":"other","state":"open"}
+
+event: treasury
+data: {"entry":1,"kind":"mint","amount":1000,"task":"t1"}
+
+event: task
+data: {"id":"t1","state":"open","assignee":null}
+
+event: motion
+data: {"id":"m7","kind":"budget_move","state":"open"}
+
+event: motion
+data: {"id":"m8","kind":"budget_move","state":"open"}
+
+event: motion
+data: {"id":"m9","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m9","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m9","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m9","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m9","kind":"law_proposal","state":"awaiting_owner"}
+
+event: motion
+data: {"id":"m10","kind":"town_proposal","state":"open"}
+
+event: motion
+data: {"id":"m10","kind":"town_proposal","state":"open"}
+
+event: motion
+data: {"id":"m10","kind":"town_proposal","state":"open"}
+
+event: motion
+data: {"id":"m10","kind":"town_proposal","state":"open"}
+
+event: motion
+data: {"id":"m10","kind":"town_proposal","state":"awaiting_owner"}
+
+event: motion
+data: {"id":"m11","kind":"mayor_replacement","state":"open"}
+
+event: motion
+data: {"id":"m11","kind":"mayor_replacement","state":"open"}
+
+event: motion
+data: {"id":"m11","kind":"mayor_replacement","state":"open"}
+
+event: motion
+data: {"id":"m11","kind":"mayor_replacement","state":"open"}
+
+event: motion
+data: {"id":"m11","kind":"mayor_replacement","state":"awaiting_owner"}
+
+event: motion
+data: {"id":"m12","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m12","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m12","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m12","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m12","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m12","kind":"other","state":"carried"}
+
+event: motion
+data: {"id":"m13","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m13","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m13","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m13","kind":"priority","state":"open"}
+
+event: motion
+data: {"id":"m13","kind":"priority","state":"carried"}
+
+event: motion
+data: {"id":"m14","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m14","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m14","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m14","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m14","kind":"other","state":"tie_to_owner"}
+
+event: motion
+data: {"id":"m15","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m15","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m15","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m15","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m15","kind":"other","state":"carried"}
+
+event: motion
+data: {"id":"m16","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m16","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m16","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m16","kind":"other","state":"open"}
+
+event: motion
+data: {"id":"m16","kind":"other","state":"carried"}
+
+event: motion
+data: {"id":"m17","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m17","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m17","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m17","kind":"law_proposal","state":"open"}
+
+event: motion
+data: {"id":"m17","kind":"law_proposal","state":"awaiting_owner"}
+

@@ -1,0 +1,53 @@
+{
+  "accounts": [
+    {
+      "id": 1,
+      "kind": "mint",
+      "owner_ref": "mint",
+      "credit_limit": 0,
+      "balance": 0,
+      "created_at": 1791711622738
+    },
+    {
+      "id": 2,
+      "kind": "task_escrow",
+      "owner_ref": "t1",
+      "credit_limit": 0,
+      "balance": 0,
+      "created_at": 1791711625096
+    },
+    {
+      "id": 3,
+      "kind": "task_escrow",
+      "owner_ref": "t2",
+      "credit_limit": 0,
+      "balance": 0,
+      "created_at": 1791711625108
+    },
+    {
+      "id": 4,
+      "kind": "task_escrow",
+      "owner_ref": "t3",
+      "credit_limit": 0,
+      "balance": 0,
+      "created_at": 1791711625115
+    },
+    {
+      "id": 5,
+      "kind": "task_escrow",
+      "owner_ref": "t4",
+      "credit_limit": 0,
+      "balance": 0,
+      "created_at": 1791711625119
+    }
+  ],
+  "totals": {
+    "accounts": 5,
+    "entries": 8,
+    "credits": 2740,
+    "debits": 2740,
+    "balance": 0
+  },
+  "spent": 0,
+  "note": "v0 meters no real spend; a done task refunds its whole escrow"
+}

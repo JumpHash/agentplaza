@@ -1,0 +1,21 @@
+{
+  "source": "tests/acceptance/suite_fleet.py",
+  "roles": {
+    "builder": {
+      "role": "builder",
+      "title": "The builder",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null
+    },
+    "reviewer": {
+      "role": "reviewer",
+      "title": "The reviewer",
+      "permits": [],
+      "toolsets": [],
+      "budget": 1,
+      "variant": null
+    }
+  }
+}
