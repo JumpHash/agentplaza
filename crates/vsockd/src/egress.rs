@@ -4,6 +4,10 @@
 //! connection, and a [`Policy`] that refuses every non-public destination.
 //! Each connection ends in one audit line and, when apid is configured, one
 //! record POSTed to apid.
+//!
+//! One destination is not on the internet at all: `plaza.gateway`, which the
+//! agent's model calls go to. Its plain-HTTP requests are relayed to apid's
+//! gateway for the agent's CID ([`gateway`]); nothing is resolved for it.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
@@ -15,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use crate::apid::Apid;
+use crate::apid::{Apid, TOKEN_HEADER};
 use crate::sys;
 
 /// The vsock port the guest's proxy traffic arrives on.
@@ -29,6 +33,25 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 const COPY_BUF: usize = 16 * 1024;
+/// The destination whose plain-HTTP requests are relayed to apid's gateway.
+const GATEWAY_HOST: &str = "plaza.gateway";
+/// The only port the gateway answers on.
+const GATEWAY_PORT: u16 = 80;
+/// Guest headers that never reach apid: hop-by-hop ones, the guest's own
+/// credentials, and any internal token the guest forged.
+const GATEWAY_DROPPED: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "upgrade",
+    "authorization",
+    "x-api-key",
+    TOKEN_HEADER,
+];
 
 /// The two sockets of a tunnel, cloned so either pump can hang both up.
 type Hangup = (UnixStream, TcpStream);
@@ -194,7 +217,7 @@ fn serve_conn(mut guest: UnixStream, cid: u32, policy: &Policy, apid: &Apid) -> 
     let started = Instant::now();
     let mut audit = Audit::default();
     let _ = guest.set_read_timeout(Some(HEAD_TIMEOUT));
-    if let Err(stop) = proxy(&mut guest, policy, &mut audit) {
+    if let Err(stop) = proxy(&mut guest, cid, policy, apid, &mut audit) {
         let _ = guest.write_all(stop.answer());
     }
     audit.report(cid, started.elapsed(), apid);
@@ -203,7 +226,7 @@ fn serve_conn(mut guest: UnixStream, cid: u32, policy: &Policy, apid: &Apid) -> 
 
 /// Reads the request, checks it, connects out, and tunnels or forwards.
 /// Every `Err` happens before anything is written to the guest.
-fn proxy(guest: &mut UnixStream, policy: &Policy, audit: &mut Audit) -> Result<(), Stop> {
+fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: &mut Audit) -> Result<(), Stop> {
     let (head, rest) = read_head(guest)?;
     let parsed = parse_head(&head)?;
     let (host, port) = match &parsed {
@@ -211,6 +234,15 @@ fn proxy(guest: &mut UnixStream, policy: &Policy, audit: &mut Audit) -> Result<(
     };
     audit.host = host.clone();
     audit.port = port;
+    if host.eq_ignore_ascii_case(GATEWAY_HOST) {
+        // Plain HTTP only; CONNECT to the gateway is refused.
+        return match parsed {
+            Head::Absolute { method, path, port: GATEWAY_PORT, .. } => {
+                gateway(guest, cid, apid, (method.as_str(), path.as_str()), &head, rest, audit)
+            }
+            _ => Err(Stop::Forbidden),
+        };
+    }
     if !policy.port_allowed(port) {
         return Err(Stop::Forbidden);
     }
@@ -260,6 +292,74 @@ fn proxy(guest: &mut UnixStream, policy: &Policy, audit: &mut Audit) -> Result<(
     audit.down = down;
     audit.up = sent + up.join().unwrap_or(0);
     Ok(())
+}
+
+/// Relays one plain-HTTP request from the agent at `cid` to apid's gateway and
+/// streams apid's answer back unchanged. `request` is the method and the path
+/// (origin form); `head` and `rest` are the guest's head and the bytes after
+/// it. Nothing is written to the guest before apid is reached.
+fn gateway(
+    guest: &mut UnixStream,
+    cid: u32,
+    apid: &Apid,
+    request: (&str, &str),
+    head: &str,
+    rest: Vec<u8>,
+    audit: &mut Audit,
+) -> Result<(), Stop> {
+    let (method, path) = request;
+    let token = apid.token().map_err(|_| Stop::Unreachable)?;
+    let upstream = apid.connect(CONNECT_TIMEOUT).map_err(|_| Stop::Unreachable)?;
+    guest.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
+    upstream.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
+
+    let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
+    let guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
+    let mut upstream_write = upstream.try_clone().map_err(|_| Stop::Unreachable)?;
+    let hangup = Arc::new((
+        guest.try_clone().map_err(|_| Stop::Unreachable)?,
+        upstream.try_clone().map_err(|_| Stop::Unreachable)?,
+    ));
+
+    let out = gateway_head(method, cid, path, head, &token);
+    upstream_write.write_all(out.as_bytes()).map_err(|_| Stop::Unreachable)?;
+    let mut sent = out.len() as u64;
+    if upstream_write.write_all(&rest).is_ok() {
+        sent += rest.len() as u64;
+    }
+    audit.allowed = true;
+
+    let up_hangup = Arc::clone(&hangup);
+    let up = thread::spawn(move || pump(guest_read, upstream_write, &up_hangup));
+    audit.down = pump(upstream, guest_write, &hangup);
+    audit.up = sent + up.join().unwrap_or(0);
+    Ok(())
+}
+
+/// The head apid receives: the guest's head with its request line moved under
+/// apid's gateway for `cid`, the headers in [`GATEWAY_DROPPED`] and any header
+/// the guest listed in `Connection` dropped, the internal token added, and
+/// `Connection: close` so apid ends its answer when it is done. Framing headers
+/// (`Content-Length`, `Transfer-Encoding`) stay, because the body is relayed as bytes.
+fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str) -> String {
+    let lines: Vec<&str> = head.split("\r\n").skip(1).take_while(|line| !line.is_empty()).collect();
+    let listed: Vec<String> = lines
+        .iter()
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("connection"))
+        .flat_map(|(_, value)| value.split(',').map(|item| item.trim().to_ascii_lowercase()))
+        .collect();
+    let mut out = format!("{method} /internal/v1/agents/{cid}/gateway{path} HTTP/1.1\r\n");
+    for line in lines {
+        let name = line.split_once(':').map_or(String::new(), |(name, _)| name.trim().to_ascii_lowercase());
+        if GATEWAY_DROPPED.contains(&name.as_str()) || listed.contains(&name) {
+            continue;
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str(&format!("{TOKEN_HEADER}: {token}\r\nConnection: close\r\n\r\n"));
+    out
 }
 
 /// Copies `from` to `to` until either side closes, then shuts down both
@@ -443,6 +543,84 @@ mod tests {
             origin_head("GET", "/a", "GET http://x/a HTTP/1.1\r\nHost: x\r\nProxy-Connection: keep-alive\r\n\r\n"),
             "GET /a HTTP/1.1\r\nHost: x\r\n\r\n"
         );
+    }
+
+    #[test]
+    fn the_gateway_head_is_rewritten_for_apid() {
+        let head = "POST http://plaza.gateway/v1/messages?stream=1 HTTP/1.1\r\nHost: plaza.gateway\r\n\
+                    Authorization: Bearer guest\r\nx-api-key: guest\r\nX-Apz-Internal: forged\r\n\
+                    Proxy-Connection: keep-alive\r\nConnection: keep-alive, X-Hop\r\nX-Hop: 1\r\n\
+                    Keep-Alive: 5\r\nContent-Type: application/json\r\nContent-Length: 4\r\n\r\n";
+        assert_eq!(
+            gateway_head("POST", 7, "/v1/messages?stream=1", head, "s3cret"),
+            "POST /internal/v1/agents/7/gateway/v1/messages?stream=1 HTTP/1.1\r\nHost: plaza.gateway\r\n\
+             Content-Type: application/json\r\nContent-Length: 4\r\nx-apz-internal: s3cret\r\n\
+             Connection: close\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn connect_to_the_gateway_is_refused_and_so_is_any_other_gateway_port() {
+        for request in [
+            "CONNECT plaza.gateway:443 HTTP/1.1\r\n\r\n",
+            "CONNECT Plaza.Gateway:80 HTTP/1.1\r\n\r\n",
+            "GET http://plaza.gateway:8080/v1/x HTTP/1.1\r\n\r\n",
+        ] {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let policy = Policy::new(vec![]);
+            let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &Apid::off()));
+            client.write_all(request.as_bytes()).unwrap();
+            let mut answer = String::new();
+            client.read_to_string(&mut answer).unwrap();
+            assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{request:?}: {answer:?}");
+            let audit = proxy.join().unwrap();
+            assert!(!audit.allowed && audit.host.eq_ignore_ascii_case(GATEWAY_HOST), "{audit:?}");
+        }
+    }
+
+    #[test]
+    fn a_gateway_request_is_relayed_to_apid_and_its_answer_comes_back_intact() {
+        const ANSWER: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 11\r\n\r\nhello world";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token_file = std::env::temp_dir().join(format!("vsockd-gateway-test-{}", std::process::id()));
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token_file.clone())).unwrap();
+
+        // The stand-in for apid: checks the rewritten head and the body, then answers.
+        let stand_in = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let (head, mut body) = read_head(&mut conn).unwrap();
+            assert!(head.starts_with("POST /internal/v1/agents/7/gateway/v1/messages HTTP/1.1\r\n"), "{head}");
+            assert!(head.contains("\r\nx-apz-internal: test-token\r\n"), "{head}");
+            assert!(!head.to_ascii_lowercase().contains("authorization"), "{head}");
+            while body.len() < 4 {
+                let mut chunk = [0u8; 64];
+                let n = conn.read(&mut chunk).unwrap();
+                assert!(n > 0, "the guest's body ended early");
+                body.extend_from_slice(&chunk[..n]);
+            }
+            assert_eq!(body, b"ping");
+            conn.write_all(ANSWER).unwrap();
+        });
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let policy = Policy::new(vec![]);
+        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &apid));
+        client
+            .write_all(
+                b"POST http://plaza.gateway/v1/messages HTTP/1.1\r\nHost: plaza.gateway\r\n\
+                  Authorization: Bearer guest\r\nContent-Length: 4\r\n\r\nping",
+            )
+            .unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        assert_eq!(answer, ANSWER);
+
+        stand_in.join().unwrap();
+        let audit = proxy.join().unwrap();
+        let _ = std::fs::remove_file(&token_file);
+        assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
     }
 
     #[test]
