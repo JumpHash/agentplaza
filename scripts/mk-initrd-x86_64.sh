@@ -301,6 +301,38 @@ chmod 1777 "$root/tmp"
 echo "agent shell: $bb -> /bin/busybox, $(ls "$root/bin" | wc -l) entries in /bin"
 
 # ---------------------------------------------------------------------------
+# The agent's userland: an Alpine Linux minirootfs (pinned, checksum-verified),
+# carried in the initramfs as /alpine.tar.gz. On the first boot of a VM with a
+# workspace volume, init unpacks it onto the volume (/workspace/.plaza/sys) and
+# runs the harness chrooted there, so the agent has apk and can install
+# toolchains (python3, go, nodejs, git, build-base...) that persist with its
+# volume. Packages come in through the hub's egress proxy like any other
+# traffic. APZ_ALPINE_TARBALL=/path uses a local copy; APZ_NO_ALPINE=1 leaves
+# the guest on the busybox root alone.
+# ---------------------------------------------------------------------------
+alpine_version="3.24.2"
+alpine_sha256="c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677"
+alpine_file="alpine-minirootfs-$alpine_version-x86_64.tar.gz"
+if [ "${APZ_NO_ALPINE:-0}" != "1" ]; then
+    alpine_tar="${APZ_ALPINE_TARBALL:-$out_dir/$alpine_file}"
+    if [ ! -f "$alpine_tar" ]; then
+        echo "mk-initrd: fetching $alpine_file"
+        curl -fsSL --max-time 120 -o "$alpine_tar.part" \
+            "https://dl-cdn.alpinelinux.org/alpine/v${alpine_version%.*}/releases/x86_64/$alpine_file"
+        mv "$alpine_tar.part" "$alpine_tar"
+    fi
+    if [ -z "${APZ_ALPINE_TARBALL:-}" ]; then
+        echo "$alpine_sha256  $alpine_tar" | sha256sum -c --quiet - || {
+            echo "mk-initrd: $alpine_tar does not match the pinned checksum" >&2
+            rm -f "$alpine_tar"
+            exit 1
+        }
+    fi
+    cp "$alpine_tar" "$root/alpine.tar.gz"
+    echo "agent userland: Alpine $alpine_version -> /alpine.tar.gz"
+fi
+
+# ---------------------------------------------------------------------------
 # PID 1
 # ---------------------------------------------------------------------------
 cat > "$out_dir/init.c" <<'EOF'
@@ -715,6 +747,111 @@ static void mount_workspace(void)
 // The agent's shell runs as uid 1000 in /workspace, so that directory must
 // belong to uid 1000. Called after mount_workspace(): with a volume mounted the
 // chown lands on its root directory, without one on the empty mount point.
+static void own_workspace(void);
+
+// The agent's userland: Alpine Linux on the workspace volume (see the build
+// script). Unpacked once from /alpine.tar.gz, then reused on every boot, so the
+// packages an agent installs persist with its volume.
+#define SYSROOT "/workspace/.plaza/sys"
+
+static int workspace_ready(void);
+
+// Runs argv[0] with argv and waits; 1 when it exited 0.
+static int run_wait(char *const argv[])
+{
+    pid_t pid = fork();
+    if (pid < 0)
+        return 0;
+    if (pid == 0) {
+        execv(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+// Writes (or appends) `text` to `path`; 1 on success.
+static int put_file(const char *path, const char *text, int append)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0644);
+    if (fd < 0)
+        return 0;
+    size_t len = strlen(text);
+    int ok = write(fd, text, len) == (ssize_t)len;
+    close(fd);
+    return ok;
+}
+
+// Copies `from` to `to` with `mode`; 1 on success.
+static int copy_file(const char *from, const char *to, mode_t mode)
+{
+    int in = open(from, O_RDONLY);
+    if (in < 0)
+        return 0;
+    int out = open(to, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (out < 0) {
+        close(in);
+        return 0;
+    }
+    char buf[65536];
+    ssize_t n;
+    int ok = 1;
+    while ((n = read(in, buf, sizeof buf)) > 0)
+        if (write(out, buf, (size_t)n) != n) {
+            ok = 0;
+            break;
+        }
+    close(in);
+    close(out);
+    chmod(to, mode);
+    return ok && n == 0;
+}
+
+// Prepares the Alpine root on the workspace volume; 1 when the harness should
+// run chrooted there, 0 to run it from the initramfs as before.
+static int prepare_sysroot(void)
+{
+    if (!workspace_ready() || access("/alpine.tar.gz", R_OK) != 0)
+        return 0;
+    mkdir("/workspace/.plaza", 0755);
+    mkdir(SYSROOT, 0755);
+    if (access(SYSROOT "/etc/alpine-release", F_OK) != 0) {
+        put("plaza guest: unpacking the agent's Alpine userland onto its volume\n");
+        char *tar[] = { "/bin/busybox", "tar", "-xzf", "/alpine.tar.gz", "-C", SYSROOT, NULL };
+        if (!run_wait(tar)) {
+            put("plaza guest: cannot unpack Alpine; staying on the initramfs root\n");
+            return 0;
+        }
+        put_file(SYSROOT "/etc/apk/repositories",
+                 "https://dl-cdn.alpinelinux.org/alpine/v3.24/main\n"
+                 "https://dl-cdn.alpinelinux.org/alpine/v3.24/community\n", 0);
+        put_file(SYSROOT "/etc/passwd", "agent:x:1000:1000:agent:/workspace:/bin/sh\n", 1);
+        put_file(SYSROOT "/etc/group", "agent:x:1000:\n", 1);
+    }
+    mkdir(SYSROOT "/usr/local/bin", 0755);
+    if (!copy_file("/agent-harness", SYSROOT "/usr/local/bin/agent-harness", 0755)) {
+        put("plaza guest: cannot install the harness in the Alpine root\n");
+        return 0;
+    }
+    const char *dirs[] = { SYSROOT "/dev", SYSROOT "/proc", SYSROOT "/sys", SYSROOT "/workspace", SYSROOT "/tmp" };
+    for (size_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++)
+        mkdir(dirs[i], 0755);
+    chmod(SYSROOT "/tmp", 01777);
+    if (mount("/dev", SYSROOT "/dev", NULL, MS_BIND | MS_REC, NULL) < 0
+        || mount("proc", SYSROOT "/proc", "proc", 0, "") < 0
+        || mount("sysfs", SYSROOT "/sys", "sysfs", 0, "") < 0
+        || mount("/workspace", SYSROOT "/workspace", NULL, MS_BIND, NULL) < 0) {
+        put("plaza guest: cannot bind the Alpine root's mounts: ");
+        put(strerror(errno));
+        put("\n");
+        return 0;
+    }
+    put("plaza guest: agent userland: Alpine on the workspace volume\n");
+    return 1;
+}
+
 static void own_workspace(void)
 {
     if (mkdir("/workspace", 0755) < 0 && errno != EEXIST) {
@@ -782,8 +919,9 @@ static void workspace_append(const char *text)
     workspace_show();
 }
 
-// Starts the agent harness; it inherits this console as its stdout.
-static pid_t start_harness(void)
+// Starts the agent harness; it inherits this console as its stdout. With
+// `sysroot`, it runs chrooted in the Alpine root on the workspace volume.
+static pid_t start_harness(int sysroot)
 {
     pid_t pid = fork();
     if (pid < 0) {
@@ -791,6 +929,8 @@ static pid_t start_harness(void)
         return -1;
     }
     if (pid == 0) {
+        if (sysroot && chroot(SYSROOT) == 0 && chdir("/") == 0)
+            execl("/usr/local/bin/agent-harness", "agent-harness", (char *)NULL);
         execl("/agent-harness", "agent-harness", (char *)NULL);
         put("plaza guest: cannot exec /agent-harness: ");
         put(strerror(errno));
@@ -904,7 +1044,7 @@ int main(void)
     mount_workspace();
     own_workspace();
     if (harness)
-        harness_pid = start_harness();
+        harness_pid = start_harness(prepare_sysroot());
 
     for (unsigned long beat = 1;; beat++) {
         reap_harness(&harness_pid, (int)keepalive);
