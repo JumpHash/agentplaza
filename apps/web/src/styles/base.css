@@ -119,7 +119,7 @@ dl { margin: 0; }
 .lead dt { font: 400 11px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
 .lead i { border-bottom: 1px dotted var(--ink-3); transform: translateY(-4px); }
 .lead dd { margin: 0; text-align: right; min-width: 0; overflow-wrap: anywhere; }
-.example { font: italic 13.5px var(--serif); color: var(--ink-3); margin: 0; }
+.example { font: italic 13.5px var(--serif); color: var(--ink-3); margin: 0; max-width: 68ch; }
 .err { font: italic 13.5px var(--serif); color: var(--crit); }
 
 /* tallies: the register's big mono figures */

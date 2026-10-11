@@ -265,7 +265,7 @@ function updateStatus(): void {
   if (cells.length === 0) {
     status.textContent = store.runsError != null
       ? `The node daemon is not answering (${store.runsError}).`
-      : 'The register is blank — no runs to draw. Enter one on the register page.';
+      : 'The register is blank — no runs to draw.';
     return;
   }
   if (!target) {

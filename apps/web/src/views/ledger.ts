@@ -84,10 +84,10 @@ const ARTIFACT_MARK: Readonly<Record<ArtifactReadState, { cls: string; label: st
 function artifactLede(task: Task, paths: readonly string[]): string {
   if (paths.length > 0) {
     const what = paths.length === 1 ? 'one artifact' : `${fmtNum(paths.length)} artifacts`;
-    return `The note names ${what} in the agent's workspace. Reading one posts to the node, which asks that agent to read the file — a tool call of its own, never a prefetch.`;
+    return `The note names ${what} in the agent's workspace. Reading one posts to the node, which asks that agent to read the file.`;
   }
   if (task.note == null) return 'The task carries no note yet, so it names no work product.';
-  return 'The note names no artifacts — a read-only run reports its own summary line instead, and a note written by hand names none.';
+  return 'The note names no artifacts.';
 }
 
 /** The read's own line: its size and the agent that read it, or the refusal
@@ -207,9 +207,7 @@ function renderTable(tasks: readonly Task[]): void {
       ? 'last known'
       : fmtNum(tasks.length) + (tasks.length === 1 ? ' task' : ' tasks');
   if (!has) {
-    byId('ledger-empty-text').textContent =
-      'The ledger holds no tasks. Enter one above — a goal, and how its completion will be judged — ' +
-      'and a live agent of this node may claim it by its guest CID.';
+    byId('ledger-empty-text').textContent = 'The ledger holds no tasks — enter one above.';
     ledgerSig = null;
     rowRefs.clear();
     byId('ledger-body').textContent = '';

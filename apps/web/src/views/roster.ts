@@ -205,10 +205,7 @@ export function renderRoster(): void {
   empty.hidden = has || store.runsError != null;
   table.hidden = !has;
   if (!has) {
-    empty.textContent =
-      'The register names no roles and the hub serves no agents yet. A node boots its role fleet at ' +
-      'startup (`noded --agents docs/agents/initial-roles.json` — one long-running agent per role); ' +
-      'each agent appears here as soon as the register carries its role or the hub reports its connection.';
+    empty.textContent = 'The register names no roles and the hub serves no agents yet.';
     rosterSig = null;
     agentRows = new Map();
     byId('roster-body').textContent = '';
@@ -632,8 +629,8 @@ function renderStop(row: HubJoinRow<RoleAgent>, cid: number): void {
     /* the confirm line states what will happen; the button names the session
        it stops, never a bare "OK" */
     byId('rc-stop-line').textContent =
-      `Ending the session on cid ${cid}: the agent says bye and the hub closes the session. ` +
-      `The guest VM itself stays up — that is the hub's own contract, not a guest teardown.`;
+      `Ending the session on cid ${cid}: the agent says bye and the hub closes the session; ` +
+      `the guest VM itself stays up.`;
     go.textContent = `Stop the session on cid ${cid}`;
     go.setAttribute(
       'aria-label',

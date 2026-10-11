@@ -125,7 +125,7 @@ function renderScope(): void {
   if (store.telemetryRun == null) {
     note.textContent = store.runs.length === 0
       ? 'The register is blank — figures land here as runs are entered.'
-      : 'The whole fleet — pick a run to split the RAM and VM figures into per-run bands and lay its chatter over the fleet’s.';
+      : 'The whole fleet — pick a run to split the figures into per-run bands.';
     return;
   }
   const slice = store.history.latest?.runs[store.telemetryRun];

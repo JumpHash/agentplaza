@@ -359,8 +359,8 @@ function councilStandRow(motion: Motion): HTMLElement {
   td.colSpan = COLUMNS;
   const why =
     motion.state === 'carried'
-      ? 'carried by the council — the council’s own decision stands: the owner decides only a 2–2 tie or a motion above the council’s authority.'
-      : 'rejected by the council — the council’s own decision stands: the owner decides only a 2–2 tie or a motion above the council’s authority.';
+      ? 'carried by the council — the owner decides only a 2–2 tie or a motion above the council’s authority.'
+      : 'rejected by the council — the owner decides only a 2–2 tie or a motion above the council’s authority.';
   td.appendChild(el('span', 'whynot', why));
   tr.appendChild(td);
   return tr;
@@ -401,12 +401,12 @@ function renderMotions(): void {
     if (!unreadable) {
       byId('council-empty-text').textContent =
         all.length === 0
-          ? 'The council has proposed no motion. A motion is a seat’s own act — finance, legal (agents), incident or the mayor office proposes, and the four seats vote; nothing has been put to them yet.'
+          ? 'The council has proposed no motion.'
           : filter === 'open'
             ? 'No motion is still open — every motion the council holds has been decided.'
             : filter === 'awaiting_owner'
-              ? 'No motion is carried and waiting on the owner. A carrying that is owner-gated waits here until the owner ratifies it.'
-              : 'No 2–2 tie stands to escalate. An even split — two seats for, two against — is carried here to the owner.';
+              ? 'No motion is carried and waiting on the owner.'
+              : 'No 2–2 tie stands to escalate.';
     }
     councilSig = null;
     byId('council-body').textContent = '';
@@ -467,7 +467,7 @@ export function renderCouncil(): void {
       store.motionsErrorStatus === 404 ? 'no council on this node' : 'council unreachable';
     byId('council-notice-text').textContent =
       store.motionsErrorStatus === 404
-        ? 'This node does not serve the plaza’s council yet (the read answers 404). The register, the ledger and the treasury read from the node itself; the council arrives with the motions endpoint.'
+        ? 'This node does not serve the plaza’s council yet (the read answers 404).'
         : `The council is not answering at ${location.origin} (${store.motionsError}). Retrying; the sheet catches up on its own.`;
   } else {
     notice.hidden = true;
@@ -483,12 +483,12 @@ export function renderCouncil(): void {
   const filter = store.motionFilter;
   byId('council-filter').textContent =
     filter == null
-      ? 'Every motion the council holds, newest first — the strip narrows them by state.'
+      ? 'Every motion the council holds, newest first.'
       : filter === 'open'
-        ? 'Narrowed to the motions still open — the seats may yet vote.'
+        ? 'Narrowed to the motions still open.'
         : filter === 'awaiting_owner'
-          ? 'Narrowed to the motions carried but owner-gated — waiting on the owner’s ratification.'
-          : 'Narrowed to the 2–2 ties — an even split the owner decides.';
+          ? 'Narrowed to the motions carried but waiting on the owner.'
+          : 'Narrowed to the 2–2 ties.';
   byId('council-clear').hidden = filter == null;
   /* the strip is the filter: the figure that is narrowing reads as pressed,
      and every figure's accessible name says what pressing it does — the

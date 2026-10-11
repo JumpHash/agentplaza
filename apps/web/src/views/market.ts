@@ -132,8 +132,7 @@ function renderBoard(): void {
     byId('market-empty-text').textContent =
       store.callsError != null
         ? `The board is not answering (${store.callsError}). Retrying; the market catches up on its own.`
-        : 'no call stands right now — a roled task whose offer is still open, or one an agent has bid on, ' +
-          'appears here; enter a task for a role on the ledger and its call is offered.';
+        : 'No call stands right now — a roled task appears here while its offer is open.';
     boardSig = null;
     byId('market-body').textContent = '';
     return;

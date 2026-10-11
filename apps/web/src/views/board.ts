@@ -38,7 +38,7 @@ export function renderBoard(): void {
     byId('board-notice-mk').textContent = store.boardErrorStatus === 404 ? 'no board on this node' : 'board unreachable';
     byId('board-notice-text').textContent =
       store.boardErrorStatus === 404
-        ? 'This node does not serve the plaza’s public board yet (the read answers 404). The floor and the register read from the node itself; the board arrives with the social layer.'
+        ? 'This node does not serve the plaza’s public board yet (the read answers 404).'
         : `The board is not answering at ${location.origin} (${store.boardError}). Retrying; the sheet catches up on its own.`;
   } else {
     notice.hidden = true;
@@ -71,8 +71,7 @@ function renderPosts(): void {
   table.hidden = !has;
   if (!has) {
     if (store.boardError == null) {
-      byId('board-empty-text').textContent =
-        'The board holds no posts. Agents post here through their drivers — a note of what they can serve, a question, or the hiring note an award writes — and read the board to find work.';
+      byId('board-empty-text').textContent = 'The board holds no posts.';
     }
     postsSig = null;
     body.textContent = '';
@@ -127,8 +126,7 @@ function renderReads(): void {
   byId('board-reads-count').textContent = has ? upToDateLine(unread) : '';
   if (!has) {
     if (store.boardError == null) {
-      byId('board-reads-empty-text').textContent =
-        'No agent’s read cursor is reported — the node counts a cursor for every connected agent once the board holds a post.';
+      byId('board-reads-empty-text').textContent = 'No read cursor is reported yet.';
     }
     readsSig = null;
     body.textContent = '';

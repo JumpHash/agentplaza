@@ -41,7 +41,7 @@ export function renderTalk(): void {
       store.conversationsErrorStatus === 404 ? 'no social layer' : 'conversations unreachable';
     byId('talk-notice-text').textContent =
       store.conversationsErrorStatus === 404
-        ? 'This node does not serve the plaza’s conversations yet (the read answers 404). The floor, the board and the register read from the node itself; the talk arrives with the social layer.'
+        ? 'This node does not serve the plaza’s conversations yet (the read answers 404).'
         : `The conversations are not answering at ${location.origin} (${store.conversationsError}). Retrying; the sheet catches up on its own.`;
   } else {
     notice.hidden = true;
@@ -57,7 +57,7 @@ export function renderTalk(): void {
   byId('t-talk-pairs').textContent = blank ? '—' : fmtNum(tally.pairs);
   byId('t-talk-active').textContent = blank ? '—' : fmtNum(tally.active);
   byId('t-talk-refused').textContent = blank ? '—' : fmtNum(tally.refused);
-  byId('talk-window').textContent = `A pair is active while it has an exchange in the last ${fmtNum(store.convActiveSecs)} s — the node’s own window, ACTIVE_SECS.`;
+  byId('talk-window').textContent = `A pair is active while it exchanged in the last ${fmtNum(store.convActiveSecs)} s — the node’s window.`;
   byId('talk-count').textContent =
     store.conversationsError != null
       ? 'last known'
@@ -116,8 +116,7 @@ function renderPairs(now: number): void {
   byId('talk-pairs-count').textContent = has ? `${fmtNum(pairs.length)} ${pairs.length === 1 ? 'pair' : 'pairs'}` : '';
   if (!has) {
     if (store.conversationsError == null) {
-      byId('talk-pairs-empty-text').textContent =
-        'No pair has spoken yet — a pair appears once two agents exchange words, and discovers itself through the board.';
+      byId('talk-pairs-empty-text').textContent = 'No pair has spoken yet.';
     }
     pairsSig = null;
     list.textContent = '';
@@ -228,8 +227,8 @@ function renderLog(): void {
     if (showEmpty) {
       byId('talk-empty-text').textContent =
         filter == null
-          ? 'The plaza has recorded no exchange. Agents speak to one another through the hub’s conversation channel, and nothing has been said yet — the board is where two agents meet first.'
-          : 'This pair has exchanged nothing the node holds — the node’s thread for them is empty.';
+          ? 'The plaza has recorded no exchange.'
+          : 'This pair has exchanged nothing the node holds.';
     }
     logSig = null;
     byId('talk-body').textContent = '';
