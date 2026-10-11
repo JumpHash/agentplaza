@@ -116,7 +116,16 @@ export interface Machine { name: string; arch: string; backend: string; irqchip:
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
 export interface Gpu { vendor: string; name: string; memory_mib: number | null }
-export interface MachineNode extends Machine { id: string; kind: 'server' | 'workstation' | 'edge' | 'apple'; gpus: Gpu[]; noded_port?: number; runs?: Run[]; agents?: number; reachable?: boolean }
+export interface MachineNode extends Machine {
+  id: string;
+  kind: 'server' | 'workstation' | 'edge' | 'apple';
+  gpus: Gpu[];
+  noded_port?: number;
+  runs?: Run[];
+  agents?: number;
+  reachable?: boolean;
+  stats: { cpu_percent: number; load: [number, number, number]; mem_total_mib: number; mem_used_mib: number; uptime_s: number; vms_running: number; guest_mem_mib: number; history: { t_ms: number; cpu_percent: number; mem_used_mib: number }[] } | null;
+}
 
 // ---- Endpoints -------------------------------------------------------------
 

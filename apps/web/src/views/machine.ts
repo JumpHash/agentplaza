@@ -1,17 +1,20 @@
-// The machines: the control plane and the machines it runs on, drawn as a graph;
-// the selected machine's specs, GPUs and runs (kill, serial).
+// The machines, as a register: the control plane wired to each machine, then one
+// section per machine with its device, its live usage as tallies, its runs (kill,
+// serial) and its technical details, folded away.
 
 import '../styles/ops.css';
 import { api, type MachineNode, type Overview, type Run, type Vm } from '../api';
 import { on } from '../store';
-import { ago, attempt, badge, button, card, empty, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, empty, type Tone } from '../ui/components';
 import { deviceSvg } from '../ui/devices';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
+type Stats = NonNullable<MachineNode['stats']>;
 type VmDetail = Vm & { serial?: string };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const POLL_MS = 2000;
 
 const KIND_LABEL: Record<MachineNode['kind'], string> = {
   server: 'Server',
@@ -22,12 +25,11 @@ const KIND_LABEL: Record<MachineNode['kind'], string> = {
 
 // Column label, and whether the column is numeric.
 const RUN_COLUMNS: [string, boolean][] = [
-  ['ID', false],
+  ['Run', false],
   ['Role', false],
   ['State', false],
   ['VMs', true],
-  ['vCPU / memory', true],
-  ['Created', true],
+  ['Started', true],
   ['', false],
 ];
 
@@ -39,6 +41,9 @@ function stateTone(state: string): Tone {
 }
 
 const isLive = (runs: Run[]): boolean => runs.some((r) => r.vms.some((vm) => stateTone(vm.state) === 'ok'));
+const machineVms = (m: MachineNode): number => (m.runs ?? []).reduce((n, r) => n + r.vms.length, 0);
+const gib = (mib: number): string => (mib / 1024).toFixed(1);
+const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 function svgEl(tag: string, attrs: Record<string, string>): SVGElement {
   const el = document.createElementNS(SVG_NS, tag);
@@ -46,71 +51,179 @@ function svgEl(tag: string, attrs: Record<string, string>): SVGElement {
   return el;
 }
 
-function controlPlane(o: Overview | null): HTMLElement {
+function uptime(s: number): string {
+  if (s < 60) return `${Math.floor(s)}s`;
+  const mins = Math.floor(s / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ${mins % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function sentence(m: MachineNode): string {
+  const head = `${KIND_LABEL[m.kind]} · ${m.cpus}-core ${m.arch} on ${m.backend.toUpperCase()} · ${Math.round(m.memory_mib / 1024)} GiB memory`;
+  return m.gpus.length ? `${head} · ${m.gpus.map((g) => g.name).join(', ')}` : head;
+}
+
+// The last 60 CPU samples on a small canvas: a ruled baseline and one ink line.
+function sparkline(history: Stats['history']): HTMLCanvasElement {
+  const W = 240;
+  const H = 72;
+  const canvas = document.createElement('canvas');
+  canvas.className = 'mach-spark';
+  canvas.width = W;
+  canvas.height = H;
+  canvas.setAttribute('aria-hidden', 'true');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+  const css = getComputedStyle(document.documentElement);
+  ctx.strokeStyle = css.getPropertyValue('--rule').trim() || '#999';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, H - 0.5);
+  ctx.lineTo(W, H - 0.5);
+  ctx.stroke();
+  const pts = history.slice(-60);
+  if (pts.length < 2) return canvas;
+  ctx.strokeStyle = css.getPropertyValue('--ink').trim() || '#111';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = H - 4 - (clamp(p.cpu_percent, 0, 100) / 100) * (H - 8);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  return canvas;
+}
+
+function memBar(s: Stats): HTMLElement {
+  const fill = h('div.mach-bar-fill', null);
+  fill.style.width = `${clamp((s.mem_used_mib / Math.max(s.mem_total_mib, 1)) * 100, 0, 100)}%`;
+  return h('div.mach-bar', null, fill);
+}
+
+function tally(label: string, figure: string, caption: string | null, extra?: Node): HTMLElement {
+  const fig = h('div.mach-figure', null, figure);
+  if (figure.length > 8) fig.classList.add('long');
   return h(
+    'div.mach-tally',
+    null,
+    h('div.mach-tally-label', null, label),
+    fig,
+    extra ?? null,
+    caption === null ? null : h('div.mach-caption', null, caption),
+  );
+}
+
+// The control plane, and the machines it runs on, joined by straight rules.
+// Each machine's block sits on its own row; its rule ends at the row's centre.
+function topology(o: Overview | null, machines: MachineNode[], selectedId: string | null, onPick: (id: string) => void): HTMLElement {
+  const wires = svgEl('svg', { class: 'mach-wires', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+  const wiresBox = h('div.mach-wires-box', null, wires);
+  const fleet = h('div.mach-fleet');
+  fleet.style.gridTemplateRows = `repeat(${Math.max(machines.length, 1)}, minmax(44px, 1fr))`;
+  if (!machines.length) fleet.append(empty('machine', 'No machines.'));
+
+  machines.forEach((m, i) => {
+    const live = isLive(m.runs ?? []);
+    const y = ((i + 0.5) / machines.length) * 100;
+    wires.append(
+      svgEl('line', {
+        x1: '0',
+        y1: '50',
+        x2: '100',
+        y2: String(y),
+        class: live ? 'mach-wire live' : 'mach-wire',
+        'vector-effect': 'non-scaling-stroke',
+      }),
+    );
+    const label = h('div.mach-wire-label', null, `${m.agents ?? 0} agents · ${machineVms(m)} VMs`);
+    label.style.top = `${(50 + y) / 2}%`;
+    wiresBox.append(label);
+
+    const mark = h('span.mach-mark', null);
+    if (live) mark.classList.add('live');
+    if (m.reachable === false) mark.classList.add('down');
+    const state = m.reachable === false ? 'unreachable' : live ? 'running' : 'idle';
+    const block = h(
+      'div.mach-block',
+      { role: 'button', tabindex: '0' },
+      h('div.mach-row', null, mark, h('span.mach-name', null, m.name)),
+      h('div.faint', null, `${KIND_LABEL[m.kind]} · ${state}`),
+    );
+    block.classList.toggle('selected', m.id === selectedId);
+    block.addEventListener('click', () => onPick(m.id));
+    block.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') onPick(m.id);
+    });
+    fleet.append(block);
+  });
+
+  const plane = h(
     'div.mach-plane',
     null,
-    h('div.mach-title', null, 'Control plane'),
+    h('div.mach-caps', null, 'Control plane'),
     h('div.faint', null, o ? `${o.agents.total} agents · ${o.agents.working} working` : 'Unreachable'),
     h('div.mach-chips', null, badge('apid', o ? 'ok' : 'danger', true), badge('hub', o?.hub ? 'ok' : 'muted', true)),
   );
-}
-
-function machineNode(m: MachineNode, live: boolean): HTMLElement {
-  const dev = deviceSvg(m.kind, { gpu: m.gpus.length > 0, active: live });
-  dev.classList.add('mach-dev');
-  return h(
-    'div.mach-node',
-    { role: 'button', tabindex: '0' },
-    h(
-      'div.mach-head',
-      null,
-      dev,
-      h('div', null, h('div.mach-name', null, m.name), h('div.faint', null, `${KIND_LABEL[m.kind]} · ${m.arch} · ${m.backend}`)),
-    ),
-    h('div.faint', null, `${m.cpus} CPUs · ${(m.memory_mib / 1024).toFixed(1)} GiB`),
-    m.gpus.length ? h('div.mach-chips', null, m.gpus.map((g) => h('span.mach-chip', null, g.name))) : null,
-    m.reachable === false ? badge('unreachable', 'danger', true) : null,
-  );
-}
-
-function vmList(vms: VmDetail[]): HTMLElement {
-  if (!vms.length) return h('p.faint', null, 'No VMs.');
-  return h(
-    'div.vms',
-    null,
-    vms.map((vm) =>
-      h(
-        'div.vm',
-        null,
-        h('div.row', null, h('strong', null, `VM ${vm.index}`), badge(vm.state, stateTone(vm.state), true), h('span.faint', null, `guest CID ${vm.guest_cid ?? '—'}`)),
-        vm.serial ? h('details', null, h('summary', null, 'Serial'), h('pre.pre', null, vm.serial)) : null,
-      ),
-    ),
-  );
+  return h('div.mach-topo', null, plane, wiresBox, fleet);
 }
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
-  const svg = svgEl('svg', { class: 'mach-edges' });
-  const nodesBox = h('div.mach-nodes');
-  const labelsBox = h('div.mach-labels');
-  const graphBox = h('div.mach-graph', null, svg, nodesBox, labelsBox);
-  const detailBox = h('div');
-  root.append(h('div.view-head', null, h('h1', null, 'Machines')), graphBox, detailBox);
+  const topoBox = h('div');
+  const sectionsBox = h('div');
+  root.append(h('div.view-head', null, h('h1', null, 'Machines')), topoBox, sectionsBox);
 
-  const expanded = new Set<string>();
+  const expanded = new Set<string>(); // runs with their VMs open
+  const serialOpen = new Set<string>(); // `${run}/${vm index}` with serial open
+  const techOpen = new Set<string>(); // machines with technical details open
+  const runCache = new Map<string, Run>(); // last VMs seen per run, so a refresh does not blank them
   let alive = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let machines: MachineNode[] = [];
+  let overview: Overview | null = null;
   let selectedId: string | null = null;
-  let laid: { m: MachineNode; el: HTMLElement; live: boolean }[] = [];
 
-  const detailRow = (id: string): HTMLTableRowElement => {
-    const cell = h('td', { colspan: RUN_COLUMNS.length }, h('p.faint', null, 'Loading…'));
+  const vmList = (runId: string, vms: VmDetail[]): HTMLElement => {
+    if (!vms.length) return h('p.faint', null, 'No VMs.');
+    return h(
+      'div.vms',
+      null,
+      vms.map((vm) => {
+        const key = `${runId}/${vm.index}`;
+        let serial: HTMLElement | null = null;
+        if (vm.serial) {
+          const d = h('details', null, h('summary', null, 'Serial'), h('pre.pre', null, vm.serial)) as HTMLDetailsElement;
+          d.open = serialOpen.has(key);
+          d.addEventListener('toggle', () => (d.open ? serialOpen.add(key) : serialOpen.delete(key)));
+          serial = d;
+        }
+        return h(
+          'div.vm',
+          null,
+          h(
+            'div.row',
+            null,
+            h('strong', null, `VM ${vm.index}`),
+            badge(vm.state, stateTone(vm.state), true),
+            h('span.faint', null, `guest CID ${vm.guest_cid ?? '—'}`),
+          ),
+          serial,
+        );
+      }),
+    );
+  };
+
+  const detailRow = (run: Run): HTMLTableRowElement => {
+    const cached = runCache.get(run.id);
+    const cell = h('td', { colspan: RUN_COLUMNS.length }, cached ? vmList(run.id, cached.vms) : h('p.faint', null, 'Loading…'));
     const tr = h('tr.detail', null, cell);
-    void api.run(id).then(
-      (run) => {
-        if (tr.isConnected) replace(cell, vmList(run.vms));
+    void api.run(run.id).then(
+      (fresh) => {
+        runCache.set(run.id, fresh);
+        if (tr.isConnected) replace(cell, vmList(run.id, fresh.vms));
       },
       (err: unknown) => {
         if (tr.isConnected) replace(cell, h('p.faint', null, err instanceof Error ? err.message : String(err)));
@@ -119,14 +232,14 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     return tr;
   };
 
-  const toggle = (id: string, tr: HTMLTableRowElement): void => {
+  const toggle = (run: Run, tr: HTMLTableRowElement): void => {
     const next = tr.nextElementSibling;
     if (next && next.classList.contains('detail')) {
       next.remove();
-      expanded.delete(id);
+      expanded.delete(run.id);
     } else {
-      expanded.add(id);
-      tr.after(detailRow(id));
+      expanded.add(run.id);
+      tr.after(detailRow(run));
     }
   };
 
@@ -135,7 +248,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (alive) void refresh();
   };
 
-  const runsTable = (runs: Run[]): HTMLTableElement => {
+  const runsTable = (runs: Run[]): HTMLElement => {
     const tbody = h('tbody');
     for (const run of runs) {
       const kill = button(
@@ -150,132 +263,97 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         'tr.clickable',
         null,
         h('td', null, run.id),
-        h('td', null, run.role ?? '—'),
+        h('td', null, run.role ?? 'fleet'),
         h('td', null, badge(run.state, stateTone(run.state), true)),
-        h('td', { class: 'num' }, String(run.vms.length)),
-        h('td', { class: 'num' }, `${run.vcpus} · ${run.memory_mib} MiB`),
-        h('td', { class: 'num' }, ago(run.created_at)),
+        h('td', { class: 'num' }, `${run.vms.length} VMs`),
+        h('td', { class: 'num' }, `started ${ago(run.created_at)}`),
         h('td', { class: 'num' }, kill),
       );
-      tr.addEventListener('click', () => toggle(run.id, tr));
+      tr.addEventListener('click', () => toggle(run, tr));
       tbody.append(tr);
-      if (expanded.has(run.id)) tbody.append(detailRow(run.id));
+      if (expanded.has(run.id)) tbody.append(detailRow(run));
     }
     return h(
-      'table.table',
+      'table.table.mach-runs',
       null,
       h('thead', null, h('tr', null, RUN_COLUMNS.map(([label, num]) => h('th', { class: num ? 'num' : '' }, label)))),
       tbody,
     );
   };
 
-  // Edges run from the control plane's right edge to each machine's left edge,
-  // measured from the laid-out cards; labels sit at each curve's midpoint.
-  const layoutEdges = (): void => {
-    const box = graphBox.getBoundingClientRect();
-    svg.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
-    svg.replaceChildren();
-    labelsBox.replaceChildren();
-    const plane = nodesBox.querySelector<HTMLElement>('.mach-plane');
-    if (!plane) return;
-    const pr = plane.getBoundingClientRect();
-    const x1 = pr.right - box.left;
-    const y1 = pr.top + pr.height / 2 - box.top;
-    for (const { m, el, live } of laid) {
-      const nr = el.getBoundingClientRect();
-      const x2 = nr.left - box.left;
-      const y2 = nr.top + nr.height / 2 - box.top;
-      const dx = (x2 - x1) / 2;
-      svg.append(svgEl('path', { d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`, class: live ? 'mach-edge live' : 'mach-edge' }));
-      const vms = (m.runs ?? []).reduce((n, r) => n + r.vms.length, 0);
-      const label = h('div.mach-label', null, `${m.agents ?? 0} agents · ${vms} VMs`);
-      label.style.left = `${(x1 + x2) / 2}px`;
-      label.style.top = `${(y1 + y2) / 2}px`;
-      labelsBox.append(label);
-    }
-  };
+  const section = (m: MachineNode): HTMLElement => {
+    const runs = m.runs ?? [];
+    const dev = deviceSvg(m.kind, { gpu: m.gpus.length > 0, active: isLive(runs) });
+    dev.classList.add('mach-dev');
+    const s = m.stats;
+    const live = s
+      ? h(
+          'div.mach-live',
+          null,
+          h(
+            'div.mach-tallies',
+            null,
+            tally('CPU', `${Math.round(s.cpu_percent)}%`, null, sparkline(s.history)),
+            tally('Memory', `${gib(s.mem_used_mib)} / ${gib(s.mem_total_mib)}`, 'GiB used of GiB', memBar(s)),
+            tally('Load', `${s.load[0].toFixed(1)} · ${s.load[1].toFixed(1)} · ${s.load[2].toFixed(1)}`, '1 / 5 / 15 min'),
+            tally("Agents' VMs", String(s.vms_running), `${gib(s.guest_mem_mib)} GiB reserved`),
+          ),
+          h('p.faint', null, `Up ${uptime(s.uptime_s)}`),
+        )
+      : h('p.mach-none', null, 'No live stats.');
 
-  const select = (id: string): void => {
-    selectedId = id;
-    for (const { m, el } of laid) el.classList.toggle('selected', m.id === id);
-    renderDetail();
-  };
-
-  const renderGraph = (o: Overview | null): void => {
-    laid = machines.map((m) => {
-      const live = isLive(m.runs ?? []);
-      const el = machineNode(m, live);
-      el.classList.toggle('selected', m.id === selectedId);
-      el.addEventListener('click', () => select(m.id));
-      return { m, el, live };
-    });
-    const col = h('div.mach-col');
-    if (laid.length) col.append(...laid.map((l) => l.el));
-    else col.append(empty('machine', 'No machines.'));
-    nodesBox.replaceChildren(controlPlane(o), col);
-    requestAnimationFrame(layoutEdges);
-  };
-
-  const renderDetail = (): void => {
-    const node = machines.find((m) => m.id === selectedId);
-    if (!node) {
-      detailBox.replaceChildren();
-      return;
-    }
     const dl = h('dl.kv');
     const rows: [string, string][] = [
-      ['Kind', KIND_LABEL[node.kind]],
-      ['Class', node.class],
-      ['Arch', node.arch],
-      ['Backend', node.backend],
-      ['Irqchip', node.irqchip],
-      ['CPUs', String(node.cpus)],
-      ['Memory', `${(node.memory_mib / 1024).toFixed(1)} GiB`],
-      ['vsock', node.vsock_mode],
-      ['Agents', String(node.agents ?? 0)],
-      ['noded port', node.noded_port === undefined ? '—' : String(node.noded_port)],
+      ['Class', m.class],
+      ['Arch', m.arch],
+      ['Backend', m.backend],
+      ['Irqchip', m.irqchip],
+      ['vsock', m.vsock_mode],
+      ['noded port', m.noded_port === undefined ? '—' : String(m.noded_port)],
     ];
     for (const [k, v] of rows) dl.append(h('dt', null, k), h('dd', null, v));
+    const tech = h('details.mach-tech', null, h('summary', null, 'Technical details'), dl) as HTMLDetailsElement;
+    tech.open = techOpen.has(m.id);
+    tech.addEventListener('toggle', () => (tech.open ? techOpen.add(m.id) : techOpen.delete(m.id)));
 
-    const gpus = h('div.mach-gpus');
-    if (node.gpus.length) {
-      for (const g of node.gpus) {
-        const detail = [g.vendor, g.memory_mib ? `${(g.memory_mib / 1024).toFixed(1)} GiB` : null].filter(Boolean).join(' · ');
-        gpus.append(h('div.row', null, h('strong', null, g.name), h('span.faint', null, detail)));
-      }
-    } else {
-      gpus.append(h('p.faint', null, 'No GPUs.'));
-    }
-
-    const runs = node.runs ?? [];
-    replace(
-      detailBox,
+    return h(
+      'section.mach-section',
+      { id: `mach-${m.id}` },
+      h('div.mach-figure-box', null, dev),
       h(
-        'div.mach-detail',
+        'div.mach-body',
         null,
-        card(node.name, dl),
-        card('GPUs', gpus),
-        card('Runs', runs.length ? runsTable(runs) : empty('machine', 'No runs.'), { flush: true }),
+        h('h2.mach-heading', null, m.name),
+        h('p.mach-sentence', null, sentence(m)),
+        live,
+        h('div.mach-caps', null, 'Runs'),
+        runs.length ? runsTable(runs) : h('p.faint', null, 'No runs.'),
+        tech,
       ),
     );
+  };
+
+  const pick = (id: string): void => {
+    selectedId = id;
+    topoBox.replaceChildren(topology(overview, machines, selectedId, pick));
+    document.getElementById(`mach-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   const refresh = async (): Promise<void> => {
     try {
       const [o, nodes] = await Promise.all([api.overview().catch(() => null), api.machines()]);
       if (!alive) return;
+      overview = o;
       machines = nodes;
       if (!nodes.some((m) => m.id === selectedId)) selectedId = nodes[0]?.id ?? null;
       const runIds = new Set(nodes.flatMap((m) => (m.runs ?? []).map((r) => r.id)));
       for (const id of Array.from(expanded)) if (!runIds.has(id)) expanded.delete(id);
-      renderGraph(o);
-      renderDetail();
+      topoBox.replaceChildren(topology(o, nodes, selectedId, pick));
+      sectionsBox.replaceChildren(...(nodes.length ? nodes.map(section) : [empty('machine', 'No machines.')]));
     } catch (err) {
       if (!alive) return;
-      laid = [];
-      svg.replaceChildren();
-      labelsBox.replaceChildren();
-      nodesBox.replaceChildren(empty('alert', 'Machines unreachable', err instanceof Error ? err.message : String(err)));
+      topoBox.replaceChildren();
+      sectionsBox.replaceChildren(empty('alert', 'Machines unreachable', err instanceof Error ? err.message : String(err)));
     }
   };
 
@@ -287,15 +365,12 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     }, 500);
   };
   const offs = [on('run', schedule), on('vm', schedule)];
-  const poll = setInterval(() => void refresh(), 10_000);
-  const ro = new ResizeObserver(() => layoutEdges());
-  ro.observe(graphBox);
+  const poll = setInterval(() => void refresh(), POLL_MS);
   void refresh();
   return () => {
     alive = false;
     offs.forEach((off) => off());
     clearInterval(poll);
-    ro.disconnect();
     if (timer !== undefined) clearTimeout(timer);
   };
 }

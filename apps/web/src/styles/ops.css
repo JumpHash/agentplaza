@@ -23,107 +23,140 @@
 .vm summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); }
 .vm .pre { margin-top: var(--s2); }
 
-/* ---- Machines: the control plane, its machines, the edges between them ---- */
+/* ---- Machines: a register. Square blocks, ruled lines, mono figures; no curves, no glows. ---- */
 
-.mach-graph {
-  position: relative;
-  min-height: 420px;
-  margin-bottom: 16px;
-}
-.mach-edges {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  pointer-events: none;
-  z-index: 0;
-}
-.mach-edge {
-  fill: none;
-  stroke: var(--line, #3a4252);
-  stroke-width: 2;
-}
-.mach-edge.live {
-  stroke: var(--accent, #6aa9ff);
-  stroke-dasharray: 6 6;
-  animation: mach-dash 0.8s linear infinite;
-}
-@keyframes mach-dash {
-  to { stroke-dashoffset: -12; }
-}
-.mach-nodes {
-  position: relative;
-  z-index: 1;
+.mach-topo {
   display: grid;
-  grid-template-columns: minmax(200px, 260px) 1fr;
-  gap: 48px;
-  align-items: center;
-  min-height: 420px;
-  padding: 24px;
-  box-sizing: border-box;
+  grid-template-columns: 220px minmax(140px, 1fr) minmax(200px, 300px);
+  min-height: 140px;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  margin-bottom: 40px;
 }
-.mach-col {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  justify-content: center;
-}
-.mach-plane,
-.mach-node {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.mach-plane {
+  align-self: center;
+  display: grid;
+  gap: 8px;
+  margin: 16px;
   padding: 14px;
-  border: 1px solid var(--line, #3a4252);
-  border-radius: 12px;
-  background: var(--panel, #161a22);
-  box-sizing: border-box;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  font: 400 12px/1.5 var(--mono);
 }
-.mach-node {
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: inherit;
+.mach-caps {
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
 }
-.mach-node:hover,
-.mach-node:focus-visible,
-.mach-node.selected {
-  border-color: var(--accent, #6aa9ff);
-}
-.mach-node.selected {
-  box-shadow: inset 0 0 0 1px var(--accent, #6aa9ff);
-}
-.mach-title { font-weight: 600; }
-.mach-head { display: flex; align-items: center; gap: 12px; }
-.mach-dev { width: 72px; height: 54px; flex: none; }
-.mach-name { font-weight: 600; }
+.mach-plane .mach-caps { color: var(--ink); }
 .mach-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.mach-chip {
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--line, #3a4252);
+.mach-wires-box { position: relative; min-height: 100px; }
+.mach-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.mach-wire { stroke: var(--ink-3); stroke-width: 1; fill: none; }
+.mach-wire.live { stroke: var(--ink-2); stroke-dasharray: 5 5; animation: mach-dash 1s linear infinite; }
+@keyframes mach-dash {
+  to { stroke-dashoffset: -10; }
 }
-.mach-labels {
+.mach-wire-label {
   position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 2;
-}
-.mach-label {
-  position: absolute;
+  left: 50%;
   transform: translate(-50%, -50%);
+  padding: 0 8px;
+  background: var(--sheet);
+  font: 400 11px var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
   white-space: nowrap;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--panel, #161a22);
-  border: 1px solid var(--line, #3a4252);
 }
-.mach-detail { display: flex; flex-direction: column; gap: 16px; }
-.mach-gpus .row { display: flex; gap: 12px; align-items: baseline; }
+.mach-fleet { display: grid; }
+.mach-block {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mach-block:hover { border-color: var(--ink-2); }
+.mach-block.selected { border-color: var(--signal); }
+.mach-row { display: flex; align-items: center; gap: 8px; }
+.mach-mark { width: 8px; height: 8px; flex: none; border: 1px solid var(--ink-3); }
+.mach-mark.live { background: var(--ok); border-color: var(--ok); }
+.mach-mark.down { background: var(--danger); border-color: var(--danger); }
+.mach-name {
+  font: 700 13px/1.2 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mach-section {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 32px;
+  padding: 28px 0;
+  border-top: 1px solid var(--rule);
+}
+.mach-dev { display: block; width: 160px; height: auto; }
+.mach-heading {
+  font: 700 30px/1 var(--mono);
+  font-stretch: 78%;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.mach-sentence { color: var(--ink-2); margin-bottom: 20px; }
+.mach-live { display: grid; gap: 8px; margin-bottom: 24px; }
+.mach-tallies { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
+.mach-tally {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--ink);
+}
+.mach-tally-label {
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.mach-figure {
+  font: 700 30px/1 var(--mono);
+  font-stretch: 78%;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.mach-figure.long { font-size: 19px; }
+.mach-caption { font: 400 11.5px/1.4 var(--mono); color: var(--ink-3); }
+.mach-spark { display: block; width: 100%; height: 36px; }
+.mach-bar { height: 6px; border: 1px solid var(--rule); }
+.mach-bar-fill { height: 100%; background: var(--ink); }
+.mach-live > .faint { font: 400 11.5px var(--mono); }
+.mach-none { font-style: italic; color: var(--ink-3); margin-bottom: 24px; }
+.mach-runs { margin-bottom: 20px; }
+.mach-section .mach-caps { margin: 0 0 8px; }
+.mach-tech { margin-top: 20px; font: 400 12px var(--mono); color: var(--ink-2); }
+.mach-tech summary {
+  cursor: pointer;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 @media (max-width: 720px) {
-  .mach-nodes { grid-template-columns: 130px 1fr; gap: 24px; padding: 12px 8px; }
-  .mach-dev { width: 56px; height: 42px; }
+  .mach-topo { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .mach-wires-box { display: none; }
+  .mach-plane { margin: 12px 12px 0; }
+  .mach-fleet { padding: 0 12px 12px; }
+  .mach-section { grid-template-columns: 1fr; gap: 16px; }
+  .mach-dev { width: 120px; }
+  .mach-tallies { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
