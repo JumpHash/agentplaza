@@ -10,8 +10,10 @@
 // a single-threaded process: the `off` switch and the multi-threaded refusal.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// The probe binary, built from this package (`src/bin/jailer_probe.rs`).
 const PROBE: &str = env!("CARGO_BIN_EXE_jailer_probe");
@@ -31,7 +33,7 @@ fn probe_dir(name: &str) -> PathBuf {
 /// probed, so what is tested is the wiring, not the parser (the crate's unit
 /// tests cover the parsing).
 fn probe(what: &str, root: &Path, file: &Path, dir: &Path, env: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(PROBE);
+    let mut command = common::command(Path::new(PROBE));
     command
         .arg(what)
         .arg(root)
@@ -68,7 +70,12 @@ fn the_jailer_leaves_the_outside_unreachable() {
     let output = probe("inside", &root, &file, &dir, &[]);
     let text = verdict(&output);
     if text.contains("unsupported") {
-        eprintln!("jailer: this host cannot create a user namespace; probe skipped: {text}");
+        // The probe's own verdict: this host cannot build the jail (a user
+        // namespace is refused). Written where a passing run shows it, so a
+        // reader can tell a skip from a pass.
+        common::note(format!(
+            "soft-skip: the jailer probe cannot build its jail here: {text}"
+        ));
         return;
     }
     assert!(output.status.success(), "the probe failed: {text}");

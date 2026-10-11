@@ -26,12 +26,14 @@
 // uses it honestly.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -723,7 +725,7 @@ fn the_per_vm_process_dies_with_its_parent() {
 
     // The parent: a copy of this binary, in its own process, holding a real
     // per-VM process's stdin pipe.
-    let mut helper = Command::new(std::env::current_exe().expect("the test binary's path"))
+    let mut helper = common::command(&std::env::current_exe().expect("the test binary's path"))
         .args([
             "--ignored",
             "--exact",
@@ -841,7 +843,7 @@ fn the_parent_of_a_per_vm_process() {
 fn the_child_arms_its_parent_death_signal_first() {
     let binary = child_binary();
 
-    let refused = Command::new(&binary)
+    let refused = common::command(&binary)
         .arg("--nonsense")
         .output()
         .expect("the per-VM process runs");
@@ -858,7 +860,7 @@ fn the_child_arms_its_parent_death_signal_first() {
         "the child's first line must be the arming, before it reads the command line: {stderr:?}"
     );
 
-    let help = Command::new(&binary)
+    let help = common::command(&binary)
         .arg("--help")
         .output()
         .expect("the per-VM process runs");

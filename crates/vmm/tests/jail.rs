@@ -36,17 +36,45 @@
 // environment of the child, so what is tested is the wiring and not the parser
 // (which the crate's unit tests cover).
 //
-// A platform that cannot install a filter at all (qemu-user answers
-// `PR_SET_SECCOMP` with `EINVAL`) makes the probes report nothing and pass,
-// the way the crate's other capability probes do — never a false "the jail
-// refused it".
+// Every probe that arms a filter is judged from what the child *reports* about
+// itself, never from the platform's name. After it arms, the child reads its
+// own `/proc/thread-self/status` and reports the `Seccomp:` mode the kernel
+// gives it, and the parent combines that with how the probe ended:
+//
+// | arm result                        | probe result        | verdict   |
+// |-----------------------------------|---------------------|-----------|
+// | refused (`EINVAL`), `Seccomp: 0`  | either              | SKIP      |
+// | accepted, but `Seccomp` is not 2  | either              | FAIL      |
+// | accepted, `Seccomp: 2`            | syscall killed      | PASS      |
+// | accepted, `Seccomp: 2`            | syscall admitted    | PASS/SKIP |
+//
+// The last two rows are the point of the report: a kernel that enforces the
+// filter kills the refused syscall (`PASS` when that is what the probe
+// expects, a failure otherwise), while a platform that installs the filter and
+// does not apply it — which is what a user-mode emulator does to a filter
+// built for the guest ABI — lets it through, and the probe is a documented
+// `SKIP` with the child's own evidence. A refused arm is `SKIP` too: qemu-user
+// answers `PR_SET_SECCOMP` with `EINVAL`, so there is no filter to enforce and
+// the jail is *unavailable*, not misconfigured. An arm the kernel *accepted*
+// but that left `Seccomp` at 0 is the one case that must never be skipped —
+// that is a real arming regression.
+//
+// A `SKIP` is written to the run's stderr directly (see `common::note`),
+// because `libtest` hides a passing test's captured output and a reader has to
+// be able to tell a skip from a pass in an ordinary `cargo test`. The probe
+// child itself is launched through cargo's cross-target runner
+// (`common::command`), without which a re-executed aarch64 child dies in the
+// dynamic loader under `qemu-user` before it can arm anything.
 #![cfg(target_os = "linux")]
+
+mod common;
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 
+use common::note;
 use vmm::jail::{Jail, JailError, Mode, OnMiss};
 
 /// The environment variable the child reads to learn which syscall to make.
@@ -58,8 +86,15 @@ const ARM_ENV: &str = "VMM_JAIL_PROBE_ARM";
 /// The (ignored) test the probes re-execute as a child.
 const PROBE_TEST: &str = "the_probe_child";
 
-/// The child's exit status when this kernel cannot install a filter at all.
+/// The child's exit status when this platform cannot install a filter at all:
+/// its arm was refused. The parent reports the child's evidence and skips, the
+/// way the crate's other capability probes do.
 const SKIP: i32 = 77;
+
+/// The child's exit status when the arm was *accepted* but the kernel is not
+/// enforcing it (`/proc/thread-self/status` does not say `Seccomp: 2`). This is
+/// a real arming regression, and the parent fails on it — it is never skipped.
+const NOT_IN_EFFECT: i32 = 70;
 
 /// The child's exit statuses for the modes it was told to be in, so the parent
 /// can assert that the child's *process* read the environment (and not only
@@ -144,9 +179,18 @@ fn pre_fix_allowlist() -> Vec<&'static str> {
         .collect()
 }
 
-/// Re-executes this test binary as a probe child and returns how it ended, or
-/// `None` when this platform cannot install a filter (the probe reports
-/// nothing rather than a false verdict).
+/// What a working jail does to a probe's syscall.
+#[derive(Clone, Copy)]
+enum Expect {
+    /// The allowlist does not name the syscall: the armed thread is killed.
+    Killed,
+    /// The allowlist names it, or the logged arm admits it: the thread runs.
+    Allowed,
+}
+
+/// Re-executes this test binary as a probe child — through cargo's cross-target
+/// runner, so a child under `qemu-user` runs as this test does — and returns how
+/// it ended together with the child's own report (its stderr).
 ///
 /// `arm` selects the child's filter (`"shipped"`, `"pre-fix"` or `"logged"`)
 /// and `env` adds variables to the child's environment — which is how the mode
@@ -155,9 +199,9 @@ fn pre_fix_allowlist() -> Vec<&'static str> {
 /// The wait is bounded: a probe child that blocks on the socket it is probing
 /// (which is what a read on a stream whose peer sends nothing does) fails the
 /// test with the timeout rather than wedging the suite.
-fn probe_with(what: &str, arm: &str, env: &[(&str, &str)]) -> Option<ExitStatus> {
+fn probe_child(what: &str, arm: &str, env: &[(&str, &str)]) -> (ExitStatus, String) {
     let exe = std::env::current_exe().expect("the test binary's path");
-    let mut command = Command::new(exe);
+    let mut command = common::command(&exe);
     command
         .args([
             "--ignored",
@@ -178,7 +222,7 @@ fn probe_with(what: &str, arm: &str, env: &[(&str, &str)]) -> Option<ExitStatus>
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawning the probe child");
     let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
@@ -196,73 +240,155 @@ fn probe_with(what: &str, arm: &str, env: &[(&str, &str)]) -> Option<ExitStatus>
             Err(err) => panic!("waiting for the {what:?} probe child: {err}"),
         }
     };
-    if status.code() == Some(SKIP) {
-        eprintln!("soft-skip: this kernel cannot install a seccomp filter");
+    // The child is dead, so its stderr is at EOF: read the one-line report it
+    // left (the `vmm-jail-probe:` notes the child wrote).
+    let mut report = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut report);
+    }
+    (status, report)
+}
+
+/// The child's report of a platform that cannot *enforce* the filter.
+///
+/// `Some(message)` — to print and treat as a skip — when the child's arm was
+/// refused and it left its evidence. Panics when the arm was *accepted* but is
+/// not in effect: a real arming regression must fail, never skip. `None` when
+/// the child reached a real verdict for the caller to judge.
+fn unenforced(what: &str, status: &ExitStatus, report: &str) -> Option<String> {
+    match status.code() {
+        Some(SKIP) => Some(format!(
+            "soft-skip: the {what:?} jail probe is not enforced here — this platform cannot install \
+             a seccomp filter; the child reports: {}",
+            report.trim()
+        )),
+        Some(NOT_IN_EFFECT) => panic!(
+            "the {what:?} jail probe: the arm was accepted but the filter is not in effect; the \
+             child reports: {}",
+            report.trim()
+        ),
+        _ => None,
+    }
+}
+
+/// Runs one probe and asserts the jail did what `expect` says.
+///
+/// Returns `Some(())` when the platform enforced the jail as expected. Returns
+/// `None` — after printing the child's own evidence to the run's stderr — when
+/// it could not: the arm was refused, or the arm was accepted with `Seccomp: 2`
+/// and the forbidden syscall lived anyway. The caller returns early, so a
+/// platform that cannot enforce the filter is a documented skip and never a
+/// false pass or a false failure.
+fn probe_expect(what: &str, arm: &str, env: &[(&str, &str)], expect: Expect) -> Option<()> {
+    let (status, report) = probe_child(what, arm, env);
+    if let Some(skip) = unenforced(what, &status, &report) {
+        note(skip);
+        return None;
+    }
+    match expect {
+        Expect::Killed if status.signal() == Some(libc::SIGSYS) => {
+            note(format!(
+                "vmm-jail probe: {what:?} killed by SIGSYS — the jail refused it"
+            ));
+            Some(())
+        }
+        Expect::Allowed if status.code() == Some(0) => Some(()),
+        // `Seccomp: 2` and the syscall lived. Ask the kernel whether it
+        // enforces *any* filter at all — an empty allowlist kills the child on
+        // its next syscall — so a platform that only installs a filter is told
+        // apart from a real regression in the filter under test.
+        Expect::Killed => {
+            if kernel_enforces() {
+                panic!(
+                    "the {what:?} jail probe must be killed by the jail, yet the syscall lived \
+                     while an empty allowlist does kill: the filter is in effect but does not \
+                     refuse it; the child reports: {}",
+                    report.trim()
+                );
+            }
+            note(format!(
+                "soft-skip: the {what:?} jail probe is not enforced here — this platform installs \
+                 the seccomp filter but does not apply it; the child reports: {}",
+                report.trim()
+            ));
+            None
+        }
+        Expect::Allowed => panic!(
+            "the {what:?} jail probe must be admitted by the jail, but ended {status:?}; the child \
+             reports: {}",
+            report.trim()
+        ),
+    }
+}
+
+/// [`probe_expect`] with the shipped allowlist and no extra environment.
+fn probe(what: &str, expect: Expect) -> Option<()> {
+    probe_expect(what, "shipped", &[], expect)
+}
+
+/// The child's exit status, for the probes that assert a *wiring* code (the mode
+/// switch, a refused allowlist) rather than a jail verdict. A platform that
+/// cannot install a filter is still reported and skipped rather than failed.
+fn probe_code(what: &str, arm: &str, env: &[(&str, &str)]) -> Option<ExitStatus> {
+    let (status, report) = probe_child(what, arm, env);
+    if let Some(skip) = unenforced(what, &status, &report) {
+        note(skip);
         return None;
     }
     Some(status)
 }
 
-/// [`probe_with`] with the shipped allowlist and no extra environment.
-fn probe(what: &str) -> Option<ExitStatus> {
-    probe_with(what, "shipped", &[])
+/// Whether this platform *applies* a seccomp filter at all, asked independently
+/// of the allowlist under test: an **empty** allowlist's terminal rule kills the
+/// child on its very next syscall, so the child dies by `SIGSYS` on any kernel
+/// that enforces a filter and survives on a platform that only installs one.
+///
+/// This is what tells a platform that cannot enforce (skip) from a real
+/// regression (fail) when an arm was accepted and reported `Seccomp: 2`, yet the
+/// probe's forbidden syscall lived.
+fn kernel_enforces() -> bool {
+    probe_child("canary", "canary", &[]).0.signal() == Some(libc::SIGSYS)
 }
 
 /// A syscall the allowlist does not name is refused: the child dies by
-/// `SIGSYS`. This is the red test: with the filter not installed (or with the
-/// deny swapped for an allow) the child exits 0 and this fails.
+/// `SIGSYS`. This is the red test. A platform that cannot install a filter —
+/// or cannot apply one it installed — skips instead (the enforcement canary and
+/// the child's own `Seccomp:` report tell a real regression from a platform
+/// that only pretends), and the filter is not a blanket deny either, which
+/// `an_allowlisted_syscall_runs` shows.
 #[test]
 fn a_syscall_outside_the_allowlist_is_killed() {
-    let Some(status) = probe("getcwd") else {
+    let Some(()) = probe("getcwd", Expect::Killed) else {
         return;
     };
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGSYS),
-        "getcwd(2) is not on the allowlist and must be killed"
-    );
 }
 
 /// `socket(2)` is allowlisted, but only for `AF_UNIX`: an `AF_INET` socket is
 /// refused by the argument filter, not the number filter.
 #[test]
 fn an_inet_socket_is_killed() {
-    let Some(status) = probe("inet") else {
+    let Some(()) = probe("inet", Expect::Killed) else {
         return;
     };
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGSYS),
-        "socket(AF_INET) must be killed even though socket(2) is allowlisted"
-    );
 }
 
 /// The filter is not a blanket deny: an allowlisted syscall runs and the child
 /// exits cleanly.
 #[test]
 fn an_allowlisted_syscall_runs() {
-    let Some(status) = probe("getpid") else {
+    let Some(()) = probe("getpid", Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        status.code(),
-        Some(0),
-        "getpid(2) is allowlisted: {status:?}"
-    );
 }
 
 /// The filter really is installed: after arming, the kernel reports the
-/// calling thread in filter mode (`Seccomp: 2`).
+/// calling thread in filter mode (`Seccomp: 2`), which every probe that arms
+/// reads back and reports before it does anything else.
 #[test]
 fn the_jail_installs_seccomp_filter_mode() {
-    let Some(status) = probe("witness") else {
+    let Some(()) = probe("witness", Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        status.code(),
-        Some(0),
-        "the child should observe Seccomp: 2 after arming: {status:?}"
-    );
 }
 
 /// **The death the live fleet died.** The muxer's `read_local_stream_port`
@@ -274,55 +400,35 @@ fn the_jail_installs_seccomp_filter_mode() {
 /// show the kill, and the next test shows the fix.
 #[test]
 fn the_pre_fix_allowlist_killed_the_muxers_read() {
-    let Some(status) = probe_with("recv", "pre-fix", &[]) else {
+    let Some(()) = probe_expect("recv", "pre-fix", &[], Expect::Killed) else {
         return;
     };
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGSYS),
-        "a UnixStream read (recvfrom) must be killed by the pre-fix allowlist: {status:?}"
-    );
 }
 
 /// The same read under the shipped allowlist: the syscall is named, so the
 /// thread runs. This is the green half of the pair above.
 #[test]
 fn the_muxers_read_runs_under_the_fixed_allowlist() {
-    let Some(status) = probe_with("recv", "shipped", &[]) else {
+    let Some(()) = probe("recv", Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        status.code(),
-        Some(0),
-        "the muxer's read must be admitted now: {status:?}"
-    );
 }
 
 /// The write half of the same stream: `send_bytes_raw`'s std `UnixStream`
 /// write is the C library's `send`, which is `sendto` on x86_64.
 #[test]
 fn the_pre_fix_allowlist_killed_the_muxers_write() {
-    let Some(status) = probe_with("send", "pre-fix", &[]) else {
+    let Some(()) = probe_expect("send", "pre-fix", &[], Expect::Killed) else {
         return;
     };
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGSYS),
-        "a UnixStream write (sendto) must be killed by the pre-fix allowlist: {status:?}"
-    );
 }
 
 /// The same write under the shipped allowlist.
 #[test]
 fn the_muxers_write_runs_under_the_fixed_allowlist() {
-    let Some(status) = probe_with("send", "shipped", &[]) else {
+    let Some(()) = probe("send", Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        status.code(),
-        Some(0),
-        "the muxer's write must be admitted now: {status:?}"
-    );
 }
 
 /// **The whole bootstrap of a thread created by an armed thread** — where the
@@ -332,14 +438,9 @@ fn the_muxers_write_runs_under_the_fixed_allowlist() {
 /// nor `prctl`, so the new thread's own startup kills the process.
 #[test]
 fn the_pre_fix_allowlist_killed_a_thread_spawned_after_arming() {
-    let Some(status) = probe_with("thread", "pre-fix", &[]) else {
+    let Some(()) = probe_expect("thread", "pre-fix", &[], Expect::Killed) else {
         return;
     };
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGSYS),
-        "a thread's bootstrap under the pre-fix allowlist must be killed: {status:?}"
-    );
 }
 
 /// The same thread under the shipped allowlist: `clone`, the libc bootstrap
@@ -347,14 +448,9 @@ fn the_pre_fix_allowlist_killed_a_thread_spawned_after_arming() {
 /// allocator's `mprotect`, Rust's `prctl(PR_SET_NAME)` and the join all run.
 #[test]
 fn a_thread_spawned_after_arming_survives_the_fixed_allowlist() {
-    let Some(status) = probe_with("thread", "shipped", &[]) else {
+    let Some(()) = probe("thread", Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        status.code(),
-        Some(0),
-        "a thread created by an armed thread must survive its bootstrap: {status:?}"
-    );
 }
 
 /// The logged arm: `SECCOMP_RET_LOG` audits a syscall the allowlist does not
@@ -364,19 +460,12 @@ fn a_thread_spawned_after_arming_survives_the_fixed_allowlist() {
 #[test]
 fn the_logged_arm_audits_an_unlisted_call_and_the_child_lives() {
     // What the kill arm does to the same call, for contrast.
-    let Some(killed) = probe_with("getcwd", "shipped", &[]) else {
+    let Some(()) = probe("getcwd", Expect::Killed) else {
         return;
     };
-    assert_eq!(killed.signal(), Some(libc::SIGSYS));
-
-    let Some(kept) = probe_with("getcwd", "logged", &[]) else {
+    let Some(()) = probe_expect("getcwd", "logged", &[], Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        kept.code(),
-        Some(0),
-        "the logged arm must let an unlisted syscall through: {kept:?}"
-    );
 }
 
 /// **The field-diagnosis arm, over the list that was killing the fleet.** A
@@ -386,18 +475,12 @@ fn the_logged_arm_audits_an_unlisted_call_and_the_child_lives() {
 /// the operator reads the entry out of the kernel log.
 #[test]
 fn the_logged_arm_keeps_a_daemon_alive_on_the_pre_fix_allowlist() {
-    let Some(killed) = probe_with("recv", "pre-fix", &[]) else {
+    let Some(()) = probe_expect("recv", "pre-fix", &[], Expect::Killed) else {
         return;
     };
-    assert_eq!(killed.signal(), Some(libc::SIGSYS));
-    let Some(kept) = probe_with("recv", "pre-fix-logged", &[]) else {
+    let Some(()) = probe_expect("recv", "pre-fix-logged", &[], Expect::Allowed) else {
         return;
     };
-    assert_eq!(
-        kept.code(),
-        Some(0),
-        "the logged arm must let the pre-fix list's missing recvfrom through: {kept:?}"
-    );
 }
 
 /// An allowlist the port cannot resolve is refused, not silently dropped from
@@ -405,7 +488,7 @@ fn the_logged_arm_keeps_a_daemon_alive_on_the_pre_fix_allowlist() {
 /// not know, the same way the environment refuses a mode it does not know.
 #[test]
 fn an_unknown_syscall_name_is_refused_rather_than_dropped() {
-    let Some(status) = probe_with("arm", "bad-name", &[]) else {
+    let Some(status) = probe_code("arm", "bad-name", &[]) else {
         return;
     };
     assert_eq!(
@@ -428,7 +511,7 @@ fn the_mode_switch_reaches_the_child_and_a_typo_is_refused() {
         ("loud", MODE_INVALID),
         ("", MODE_INVALID),
     ] {
-        let Some(status) = probe_with("mode", "shipped", &[("APZ_VMM_JAIL", value)]) else {
+        let Some(status) = probe_code("mode", "shipped", &[("APZ_VMM_JAIL", value)]) else {
             return;
         };
         assert_eq!(
@@ -439,11 +522,11 @@ fn the_mode_switch_reaches_the_child_and_a_typo_is_refused() {
     }
 
     // The old name still turns the jail off, and its false spellings do not.
-    let Some(status) = probe_with("mode", "shipped", &[("APZ_VMM_NO_JAIL", "1")]) else {
+    let Some(status) = probe_code("mode", "shipped", &[("APZ_VMM_NO_JAIL", "1")]) else {
         return;
     };
     assert_eq!(status.code(), Some(MODE_OFF));
-    let Some(status) = probe_with("mode", "shipped", &[("APZ_VMM_NO_JAIL", "0")]) else {
+    let Some(status) = probe_code("mode", "shipped", &[("APZ_VMM_NO_JAIL", "0")]) else {
         return;
     };
     assert_eq!(
@@ -454,7 +537,7 @@ fn the_mode_switch_reaches_the_child_and_a_typo_is_refused() {
 
     // An invalid APZ_VMM_JAIL is refused *and nothing is armed*: the child
     // reports REFUSED from `Jail::arm`, not a mode it guessed from the typo.
-    let Some(status) = probe_with("arm", "shipped", &[("APZ_VMM_JAIL", "loud")]) else {
+    let Some(status) = probe_code("arm", "shipped", &[("APZ_VMM_JAIL", "loud")]) else {
         return;
     };
     assert_eq!(
@@ -464,7 +547,31 @@ fn the_mode_switch_reaches_the_child_and_a_typo_is_refused() {
     );
 }
 
-/// The probe child: what [`probe_with`] re-executes this binary to run. It is
+/// This thread's seccomp mode, read back from the kernel — the observable the
+/// probes are judged by.
+///
+/// `/proc/thread-self/status` is *this* thread's status, which is what a
+/// per-thread filter changes. It is read with a plain `read(2)` on a fixed
+/// buffer: `read_to_string` would `fstat(2)` the file first, and `fstat` is not
+/// on the allowlist (the VMM never calls it after arming). `None` when the file
+/// cannot be read or carries no `Seccomp:` line, which the caller treats as
+/// "not installed".
+fn seccomp_mode() -> Option<u32> {
+    let mut buf = [0u8; 4096];
+    let n = std::fs::File::open("/proc/thread-self/status")
+        .and_then(|mut file| file.read(&mut buf))
+        .unwrap_or(0);
+    String::from_utf8_lossy(&buf[..n])
+        .lines()
+        .find_map(|line| line.strip_prefix("Seccomp:")?.trim().parse().ok())
+}
+
+/// [`seccomp_mode`] as the child prints it: `2`, `0`, or `absent`.
+fn seccomp_report() -> String {
+    seccomp_mode().map_or_else(|| "absent".to_string(), |mode| mode.to_string())
+}
+
+/// The probe child: what [`probe_child`] re-executes this binary to run. It is
 /// `#[ignore]`d so an ordinary `cargo test` never runs it — arming the filter
 /// here and then making a refused syscall would kill the test process.
 #[test]
@@ -512,19 +619,45 @@ fn the_probe_child() {
         // An allowlist the port cannot resolve: refused, never silently
         // dropped from the filter it is building.
         "bad-name" => Jail::arm_named(&["no_such_syscall"], OnMiss::Kill),
+        // The enforcement canary: an *empty* allowlist, whose terminal rule
+        // kills the very next syscall. It answers "does this kernel apply a
+        // filter at all?" without depending on the allowlist under test.
+        "canary" => Jail::arm_named(&[], OnMiss::Kill),
         _ => Jail::arm(),
     };
     match outcome {
         Ok(()) => {}
-        // No filter can exist on this kernel: tell the parent to report
-        // nothing rather than a false verdict.
-        Err(JailError::Unsupported(_)) => std::process::exit(SKIP),
+        // No filter can exist on this platform: print the state the kernel
+        // gives us and let the parent skip, rather than invent a verdict.
+        Err(JailError::Unsupported(err)) => {
+            note(format!(
+                "vmm-jail-probe: {what} arm=refused (PR_SET_SECCOMP: {err}); \
+                 /proc/thread-self/status says Seccomp: {} — nothing is enforced \
+                 (a user-mode emulator such as qemu-user answers EINVAL)",
+                seccomp_report()
+            ));
+            std::process::exit(SKIP);
+        }
         // A misconfigured jail is refused: nothing was armed, and the child
         // says so rather than running under a guessed mode.
         Err(err) => {
-            eprintln!("the probe child refused to arm: {err}");
+            note(format!(
+                "vmm-jail-probe: {what} arm=refused-bad-config: {err}"
+            ));
             std::process::exit(REFUSED);
         }
+    }
+
+    // The arm was accepted. Read back what the kernel did with it *before* the
+    // probe: a filter the kernel accepted but that left this thread unfiltered
+    // is a real arming regression, and the parent fails on it — never skips.
+    if seccomp_mode() != Some(2) {
+        note(format!(
+            "vmm-jail-probe: {what} arm=ok but /proc/thread-self/status says Seccomp: {} — \
+             the filter is not in effect",
+            seccomp_report()
+        ));
+        std::process::exit(NOT_IN_EFFECT);
     }
 
     match what.as_str() {
@@ -567,30 +700,19 @@ fn the_probe_child() {
             // getpid(2): allowlisted → this returns.
             let _ = std::process::id();
         }
-        "witness" => {
-            // Installed? `/proc/thread-self/status` is *this* thread's status,
-            // which is what a per-thread filter changes. Read it with a plain
-            // `read(2)` on a fixed buffer: `read_to_string` would stat the file
-            // first (`fstat(2)`), which the VMM never calls after arming and so
-            // is not on the allowlist.
-            let mut buf = [0u8; 4096];
-            let n = std::fs::File::open("/proc/thread-self/status")
-                .and_then(|mut file| file.read(&mut buf))
-                .unwrap_or(0);
-            let status = String::from_utf8_lossy(&buf[..n]);
-            std::process::exit(if status.contains("Seccomp:\t2") {
-                0
-            } else {
-                71
-            });
-        }
-        "arm" => {
-            // Armed (or refused) above and nothing else to do: reaching this
-            // means the arm succeeded.
+        "witness" | "canary" | "arm" => {
+            // Nothing else to probe: the read-back above already asserted the
+            // kernel reports this thread in filter mode (`Seccomp: 2`). For
+            // `canary` this arm is only reached where the *empty* allowlist did
+            // not kill the child — the platform does not apply a filter — which
+            // the parent reads from the absence of a signal.
         }
         _ => std::process::exit(72),
     }
-    // The syscall was not refused: leave a status the parent reports as
-    // "the jail did not refuse it".
+    // The probe syscall was admitted: report the state the parent prints when it
+    // explains a skip, and leave the status it reads as "not refused".
+    note(format!(
+        "vmm-jail-probe: {what} arm={arm} Seccomp: 2 — the probe syscall was admitted"
+    ));
     std::process::exit(0);
 }
