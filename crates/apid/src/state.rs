@@ -72,6 +72,10 @@ pub struct App {
     pub artifacts: crate::artifacts::Artifacts,
     /// Linked-note memory libraries, under <state-dir>/memory.
     pub memory: crate::memory::Memory,
+    /// Contacts and opinions between agents (AP-071/AP-072), at `<state-dir>/bonds.json`.
+    pub bonds: apz_plaza::bonds::Bonds,
+    /// Hire bonuses, posting counts and outreach times.
+    pub society: crate::society::Society,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -99,6 +103,8 @@ impl App {
             bus: events::Bus::default(),
             artifacts: crate::artifacts::Artifacts::default(),
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
+            bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
+            society: crate::society::Society::default(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,

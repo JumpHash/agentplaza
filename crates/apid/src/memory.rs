@@ -4,7 +4,6 @@
 //! `write`, `search`, `journal` and `index` are the agents' tool surface; the
 //! tools that call them are wired in a later change, so the binary does not
 //! reach them yet.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};

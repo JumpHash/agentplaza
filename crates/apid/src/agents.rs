@@ -290,6 +290,8 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              a concise summary to the operator. Never do the workers' tasks yourself.",
         );
     }
+    text.push_str("\n\n");
+    text.push_str(crate::society::PROMPT);
     let role_prompt = role_prompt.trim();
     if !role_prompt.is_empty() {
         text.push_str("\n\n");

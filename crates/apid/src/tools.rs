@@ -44,6 +44,14 @@ const ALWAYS: &[&str] = &[
     "download",
     "plaza_set_name",
     "plaza_pay",
+    "plaza_contacts",
+    "plaza_rate",
+    "plaza_note",
+    "plaza_hire",
+    "memory_write",
+    "memory_read",
+    "memory_search",
+    "memory_list",
 ];
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
@@ -69,6 +77,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
+        name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
         _ => None,
     }
 }
@@ -265,7 +274,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
             "Download a file from the internet into your workspace.",
             obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
         ),
-        _ => return None,
+        other => {
+            let (description, input_schema) = crate::society::spec(other)?;
+            return Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema });
+        }
     };
     Some(ToolSpec {
         name: name.to_string(),
@@ -332,6 +344,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 (true, None)
             };
             let view = app.plaza.social.say(&me, &to, text, &deliver).map_err(|e| e.to_string())?;
+            crate::society::interact(app, agent.cid, to_cid, apz_plaza::bonds::Interaction::Message);
             to_text(&view)
         }
         "plaza_bid" => {
@@ -385,9 +398,11 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 })
                 .map_err(|e| format!("{e:?}"))?;
             app.work.note_poster(task.id(), agent.cid);
+            crate::society::note_posted(app, agent.cid);
             match input.get("assignee").and_then(Value::as_u64) {
                 Some(cid) => {
                     assign(app, &task, cid)?;
+                    crate::society::interact(app, agent.cid, cid, apz_plaza::bonds::Interaction::Task);
                     Ok(task_json(&task).to_string())
                 }
                 None => Ok(task_json(&task).to_string()),
@@ -397,6 +412,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let task = task_arg(app, input)?;
             let cid = u64_arg(input, "agent")?;
             assign(app, &task, cid)?;
+            crate::society::interact(app, agent.cid, cid, apz_plaza::bonds::Interaction::Task);
             Ok(format!("assigned {} to {cid}", task.id()))
         }
         "plaza_cancel_task" => {
@@ -420,6 +436,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 .treasury
                 .transfer(agent.cid, to, amount, memo)
                 .map_err(|e| format!("{e:?}"))?;
+            crate::society::interact(app, agent.cid, to, apz_plaza::bonds::Interaction::Credit);
             Ok(format!("paid {amount} to {to} (entry {entry})"))
         }
         "plaza_verdict" => {
@@ -431,8 +448,23 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let notes = str_arg(input, "notes")?;
             app.work.verdict(app, task, work, pass, notes)
         }
+        other if crate::society::TOOLS.contains(&other) => crate::society::run(app, agent, work, other, input),
         other => Err(format!("{other} is not implemented")),
     }
+}
+
+/// Posts a task for `poster` and assigns it to `worker` at once (a hire); returns the task id.
+pub fn post_and_assign(app: &App, poster: u64, goal: &str, acceptance: Option<String>, budget: u64, worker: u64) -> Result<String, String> {
+    let task = app
+        .plaza
+        .tasks
+        .create(&CreateTask { goal: goal.to_string(), acceptance, budget: Some(budget), role: None })
+        .map_err(|e| format!("{e:?}"))?;
+    app.work.note_poster(task.id(), poster);
+    crate::society::note_posted(app, poster);
+    assign(app, &task, worker)?;
+    crate::society::interact(app, poster, worker, apz_plaza::bonds::Interaction::Task);
+    Ok(task.id().to_string())
 }
 
 /// Claims `task` for the agent `cid` and queues the work for it.
@@ -539,12 +571,13 @@ mod tests {
             "transcript_search", "submit_claim", "plaza_tasks", "plaza_bid", "plaza_board_read",
             "plaza_board_post", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
             "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_get_file",
-            "plaza_set_name", "plaza_pay", "plaza_verdict",
+            "plaza_set_name", "plaza_pay", "plaza_verdict", "plaza_contacts", "plaza_rate", "plaza_note",
+            "plaza_hire", "memory_write", "memory_read", "memory_search", "memory_list",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 18);
+        assert_eq!(host.len(), 26);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");

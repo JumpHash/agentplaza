@@ -20,6 +20,7 @@ mod providers;
 mod role;
 mod scheduler;
 mod settings;
+mod society;
 mod spawned;
 mod state;
 mod tools;

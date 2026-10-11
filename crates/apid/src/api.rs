@@ -31,6 +31,7 @@ pub fn router() -> Router<App> {
     let router = plaza::routes(router);
     let router = internal::routes(router);
     let router = artifacts::routes(router);
+    let router = crate::society::routes(router);
     let router = memory::routes(router);
     router
         .get("/", |app, _, _| static_file(&app.config.console, "index.html"))

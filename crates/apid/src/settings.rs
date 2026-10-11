@@ -79,6 +79,8 @@ pub struct Settings {
     pub max_tokens: u32,
     pub fetch_allow: Vec<String>,
     pub prices: BTreeMap<String, Price>,
+    /// Minutes between an idle agent's outreach rounds (finding people to work with); 0 = off.
+    pub outreach_minutes: u32,
 }
 
 impl Default for Settings {
@@ -93,6 +95,7 @@ impl Default for Settings {
             max_tokens: 0,
             fetch_allow: Vec::new(),
             prices: BTreeMap::new(),
+            outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
         }
     }
 }

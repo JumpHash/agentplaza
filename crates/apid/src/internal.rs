@@ -153,6 +153,18 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             None
         }
         GuestMessage::WorkDone { work, status, summary } => {
+            // The agent's journal: one line per finished piece of work (episodic memory, AP-062).
+            if let Some(item) = app.work.current(cid).filter(|item| item.id == work) {
+                let clip = |text: &str, n: usize| -> String {
+                    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if one.chars().count() > n { format!("{}…", one.chars().take(n).collect::<String>()) } else { one }
+                };
+                let line = format!(
+                    "- {:?} {:?}: {} → {}",
+                    item.kind, status, clip(&item.prompt, 100), clip(&summary, 160)
+                ).to_lowercase();
+                let _ = app.memory.journal(cid, &line, apz_plaza::now_ms());
+            }
             app.work.complete(app, cid, work, status, &summary);
             None
         }

@@ -229,6 +229,7 @@ impl Queues {
     fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
         let poster = self.posters.lock().unwrap_or_else(|p| p.into_inner()).remove(task);
         let Some(poster) = poster.filter(|&p| p != worker) else { return };
+        crate::society::task_ended(app, task, poster, worker, state == "done");
         let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
         let prompt = format!(
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
@@ -445,6 +446,7 @@ pub fn spawn(app: Arc<App>) {
         let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
         loop {
             ask_names(&app);
+            crate::society::outreach(&app);
             assign_tasks(&app);
             offer_motions(&app, &mut motions_seen);
             thread::sleep(Duration::from_secs(2));
