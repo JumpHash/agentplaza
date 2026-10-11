@@ -12,7 +12,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 /// A list body as `GET /api/v0/runs` sends it: one live run with two vsock
@@ -237,6 +237,135 @@ pub fn ledger_live(list: &str, detail: &str, events: &str, tasks: &str, task: &s
             ("GET", "/api/v0/tasks") => tasks.as_str(),
             (_, "/api/v0/tasks") => task.as_str(),
             (_, target) if target.starts_with("/api/v0/tasks/") => task.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A treasury body as `GET /api/v0/treasury` sends it, byte for byte the shape
+/// the live daemon answered with after one budgeted task's cycle: the mint
+/// account and the task's escrow, both derived to zero, and the totals.
+pub const TREASURY: &str = r#"{"accounts":[
+    {"id":1,"kind":"mint","owner_ref":"mint","credit_limit":0,"balance":0,
+     "created_at":1791680742762},
+    {"id":2,"kind":"task_escrow","owner_ref":"t1","credit_limit":0,"balance":0,
+     "created_at":1791680766728}],
+    "totals":{"accounts":2,"entries":2,"credits":1500,"debits":1500,"balance":0},
+    "spent":0,"note":"v0 meters no real spend; a done task refunds its whole escrow"}"#;
+
+/// A journal body as `GET /api/v0/treasury/journal` sends it: the one cycle's
+/// two entries, each with its postings, oldest first.
+pub const TREASURY_JOURNAL: &str = r#"{"entries":[
+    {"id":1,"kind":"mint","task_id":"t1","root_task":"t1","memo":"task budget",
+     "posted_by":"treasury-service","created_at":1791680766728,"amount":750,
+     "postings":[{"account":1,"kind":"mint","owner_ref":"mint","amount":-750},
+                 {"account":2,"kind":"task_escrow","owner_ref":"t1","amount":750}]},
+    {"id":2,"kind":"refund","task_id":"t1","root_task":"t1","memo":"task budget refunded",
+     "posted_by":"treasury-service","created_at":1791680768447,"amount":750,
+     "postings":[{"account":2,"kind":"task_escrow","owner_ref":"t1","amount":-750},
+                 {"account":1,"kind":"mint","owner_ref":"mint","amount":750}]}],
+    "total":2,"limit":256,"truncated":false}"#;
+
+/// A treasury whose journal is empty: the mint account alone, before anything
+/// has been posted. The daemon's own answer on a fresh instance.
+pub const TREASURY_BARE: &str = r#"{"accounts":[
+    {"id":1,"kind":"mint","owner_ref":"mint","credit_limit":0,"balance":0,
+     "created_at":1791680742762}],
+    "totals":{"accounts":1,"entries":0,"credits":0,"debits":0,"balance":0},
+    "spent":0,"note":"v0 meters no real spend; a done task refunds its whole escrow"}"#;
+
+/// The empty journal that goes with [`TREASURY_BARE`].
+pub const TREASURY_JOURNAL_EMPTY: &str =
+    r#"{"entries":[],"total":0,"limit":256,"truncated":false}"#;
+
+/// The journal of [`TREASURY_JOURNAL`] after one more entry was posted: a
+/// second task's budget minted into its own escrow. The entry a `treasury`
+/// frame carries cannot describe this — no memo, no postings, no clock — so a
+/// console that draws it drew it from a read.
+pub const TREASURY_JOURNAL_AFTER: &str = r#"{"entries":[
+    {"id":1,"kind":"mint","task_id":"t1","root_task":"t1","memo":"task budget",
+     "posted_by":"treasury-service","created_at":1791680766728,"amount":750,
+     "postings":[{"account":1,"kind":"mint","owner_ref":"mint","amount":-750},
+                 {"account":2,"kind":"task_escrow","owner_ref":"t1","amount":750}]},
+    {"id":2,"kind":"refund","task_id":"t1","root_task":"t1","memo":"task budget refunded",
+     "posted_by":"treasury-service","created_at":1791680768447,"amount":750,
+     "postings":[{"account":2,"kind":"task_escrow","owner_ref":"t1","amount":-750},
+                 {"account":1,"kind":"mint","owner_ref":"mint","amount":750}]},
+    {"id":3,"kind":"mint","task_id":"t2","root_task":"t2","memo":"task budget",
+     "posted_by":"treasury-service","created_at":1791680900000,"amount":500,
+     "postings":[{"account":1,"kind":"mint","owner_ref":"mint","amount":-500},
+                 {"account":3,"kind":"task_escrow","owner_ref":"t2","amount":500}]}],
+    "total":3,"limit":256,"truncated":false}"#;
+
+/// A whole stub daemon for the treasury pane: the register, the machine, an
+/// event stream, and the treasury's two paths — `GET /api/v0/treasury`
+/// answers `treasury`, `GET /api/v0/treasury/journal` answers `journal`, and
+/// every other read answers `detail`.
+pub fn treasury_live(
+    list: &str,
+    detail: &str,
+    events: &str,
+    treasury: &str,
+    journal: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let treasury = treasury.to_string();
+    let journal = journal.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            // The treasury's two halves: the accounts and the journal.
+            ("GET", "/api/v0/treasury") => treasury.as_str(),
+            ("GET", "/api/v0/treasury/journal") => journal.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon whose treasury journal grows between reads: the first
+/// read answers `journal`, and every later read answers `journal_after` — the
+/// daemon's own answer once one more entry has been posted.
+///
+/// It is how a test proves a `treasury` frame asks the pane's own surface for
+/// a read rather than assembling an entry from the frame: the entry the frame
+/// never carried is the daemon's words, and it arrives only through a read.
+pub fn treasury_growing(
+    list: &str,
+    detail: &str,
+    events: &str,
+    treasury: &str,
+    journal: &str,
+    journal_after: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let treasury = treasury.to_string();
+    let journal = journal.to_string();
+    let journal_after = journal_after.to_string();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&reads);
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/treasury") => treasury.as_str(),
+            ("GET", "/api/v0/treasury/journal") => {
+                // The journal the daemon holds now: the one the first read
+                // saw, and the longer one after the next entry was posted.
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    journal.as_str()
+                } else {
+                    journal_after.as_str()
+                }
+            }
             _ => detail.as_str(),
         };
         Some(response(200, body))

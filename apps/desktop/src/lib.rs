@@ -12,7 +12,9 @@
 //!   (`GET /status` on a second loopback port) is the same client and the
 //!   same policy: who is connected, as opposed to who the register reports.
 //!   The hub's *admin* surface (`POST /tell`, `POST /stop`) is the same client
-//!   too: the one surface the operator's controls drive an agent through.
+//!   too: the one surface the operator's controls drive an agent through. The
+//!   treasury (`GET /api/v0/treasury` and its journal, read together) is a
+//!   read of the daemon's own money, and there is no path here that writes.
 //! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
 //! * [`events`] — the daemon's event stream: the server-sent frames, the
 //!   parser, and the connection that follows the stream.

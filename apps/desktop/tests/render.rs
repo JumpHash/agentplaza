@@ -193,6 +193,15 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if effect.poll_treasury {
+        // The pane's own read, both halves at once: what the runtime does for
+        // the effect, done synchronously.
+        let result = client.treasury();
+        model.apply(Message::Treasury {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
     if let Some(id) = effect.fetch_task {
         let result = client.task(&id);
         model.apply(Message::Task {
@@ -3148,6 +3157,257 @@ fn the_whole_application_follows_a_task_event_between_polls() {
         model.tasks.len(),
         3,
         "a frame never grows the ledger by a row"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+}
+
+// ---- the treasury: the accounts and the journal ----
+
+/// A daemon stub with the register, the treasury and its journal.
+fn treasury_server(list: &'static str, detail: &'static str, events: &'static str) -> common::Stub {
+    common::treasury_live(list, detail, events, common::TREASURY, common::TREASURY_JOURNAL)
+}
+
+/// A model that has read the register and opened the treasury, the way the
+/// runtime does: the pane's own key, then the answer to its one read.
+fn treasury_from(port: u16) -> Model {
+    let mut model = model_from(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Treasury));
+    perform(effect, &mut model, &client);
+    model
+}
+
+#[test]
+fn the_treasury_pane_draws_the_accounts_the_totals_and_the_journal() {
+    let server = treasury_server(LIST, DETAIL, "");
+    let model = treasury_from(server.port);
+    assert_eq!(model.pane, Pane::Treasury);
+    let read = model.treasury.as_ref().expect("the pane read it");
+    assert_eq!(read.treasury.totals.entries, read.journal.entries.len());
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        // The running head and the lede that says what this sheet is.
+        "Treasury",
+        "the plaza's accounts and its journal",
+        "can write nothing here",
+        // The accounts sheet: every column the daemon reports, both figures
+        // in credits and the dollars they stand for.
+        "Accounts · 2 row(s)",
+        "kind",
+        "owner",
+        "credit limit",
+        "balance",
+        "mint",
+        "task_escrow",
+        "0 cr · $0.00",
+        // The totals line, and the daemon's own note on real spend, verbatim.
+        "2 account(s) · 2 entry(s) · credits 1500 cr · $1.50 · debits 1500 cr · $1.50 · balance 0 cr · $0.00",
+        "spent 0 cr · $0.00",
+        "v0 meters no real spend; a done task refunds its whole escrow",
+        // The journal: its tally, and the one cycle's two entries.
+        "Journal · 2 entry(s) carried of 2 in the journal",
+        "task budget",
+        "task budget refunded",
+        "posted",
+        // The ruled debit/credit pair.
+        "account",
+        "debit",
+        "credit",
+        "mint · mint",
+        "task_escrow · t1",
+        // A double-entry cycle's postings are the same size on both sides.
+        "750",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the treasury sheet should show {expected:?}"
+        );
+    }
+
+    // The times are the register's day tier: the fixture's entries were posted
+    // on another UTC day than this console's clock, so they read as their date
+    // rather than as a bare time of day.
+    assert!(
+        ui.find(says("2026-10-11")).is_ok(),
+        "a posting from another day is stamped with its day"
+    );
+}
+
+#[test]
+fn the_treasury_key_and_its_index_entry_reach_the_sheet() {
+    let server = treasury_server(LIST, DETAIL, "");
+    let mut model = model_from(server.port);
+
+    // The index entry is offered, and says it has not read the treasury rather
+    // than claiming an empty one.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Treasury")).is_ok());
+        assert!(ui.find(says("not read yet")).is_ok());
+        ui.click("Treasury").expect("the entry is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert!(
+        messages.contains(&Message::Show(Pane::Treasury)),
+        "the entry asks for the treasury, got {messages:?}"
+    );
+    for message in messages {
+        model.apply(message);
+    }
+    assert_eq!(model.pane, Pane::Treasury);
+
+    // The key sheet names it too, from the one table the index and the help
+    // sheet share.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("treasury: the accounts + the journal")).is_ok());
+    }
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Treasury));
+    assert_eq!(model.pane, Pane::Treasury, "the key reaches it too");
+}
+
+#[test]
+fn a_treasury_with_an_empty_journal_says_so_over_a_real_frame() {
+    // A fresh daemon: the mint account alone, and nothing posted yet. The
+    // empty state is not a blank sheet.
+    let server = common::treasury_live(
+        LIST,
+        DETAIL,
+        "",
+        common::TREASURY_BARE,
+        common::TREASURY_JOURNAL_EMPTY,
+    );
+    let model = treasury_from(server.port);
+    let read = model.treasury.as_ref().expect("the pane read it");
+    assert_eq!(read.journal.entries.len(), 0);
+    assert_eq!(read.journal.total, 0);
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Accounts · 1 row(s)")).is_ok());
+    assert!(
+        ui.find(says("the journal is empty: nothing has been posted yet")).is_ok(),
+        "an empty journal is drawn as an empty journal"
+    );
+    assert!(
+        ui.find(says("1 account(s) · 0 entry(s) · credits 0 cr · $0.00 · debits 0 cr · $0.00 · balance 0 cr · $0.00"))
+            .is_ok()
+    );
+    // And the pane's own tally says the same thing rather than implying rows.
+    assert!(ui.find(says("0 entry(s) carried of 0 in the journal")).is_ok());
+}
+
+#[test]
+fn a_treasury_that_cannot_be_read_says_so_and_keeps_the_last_read() {
+    // A daemon whose treasury endpoint is gone: the pane's own read fails, and
+    // the sheet says which failure it is rather than drawing an empty account
+    // book. The register's own health is untouched.
+    let server = treasury_server(LIST, DETAIL, "");
+    let mut model = treasury_from(server.port);
+    let held = model.treasury.clone();
+    assert!(held.is_some());
+
+    let at_ms = model.now_ms;
+    model.apply(Message::Treasury {
+        at_ms,
+        result: Err(agentplaza_desktop::api::ApiError::Status {
+            status: 404,
+            message: "no such endpoint".to_string(),
+        }),
+    });
+    assert_eq!(model.treasury, held, "the last read is kept, not blanked");
+    assert_eq!(
+        model.health(),
+        agentplaza_desktop::model::Health::Live,
+        "the treasury's failure is not the register's"
+    );
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("the treasury could not be read since")).is_ok(),
+        "the sheet names the failure beside the read it keeps"
+    );
+    assert!(ui.find(says("404: no such endpoint")).is_ok());
+}
+
+#[test]
+fn the_whole_application_follows_a_treasury_frame_between_polls() {
+    // The pane reads the treasury when it opens; a `treasury` frame then asks
+    // the pane's own surface to be read again, between the register's polls.
+    // The frame carries no memo, no postings and no clock, so the entry that
+    // arrives is the daemon's own read — never a row assembled from a frame.
+    let server = common::treasury_growing(
+        LIST,
+        DETAIL,
+        "",
+        common::TREASURY,
+        common::TREASURY_JOURNAL,
+        common::TREASURY_JOURNAL_AFTER,
+    );
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 800);
+
+    // Opening the sheet is the pane's own read: the daemon's two-entry
+    // journal. The next read is the one the frame asks for, and it answers
+    // with the journal as the daemon holds it now.
+    emulator.update(&program, Message::Show(Pane::Treasury));
+    pump(&mut emulator, 800);
+
+    // A `treasury` frame for an entry the pane does not hold: the pane's own
+    // surface is read again, and the entry that arrives is the daemon's.
+    emulator.update(
+        &program,
+        Message::Event {
+            at_ms: agentplaza_desktop::epoch_ms(),
+            event: agentplaza_desktop::events::Event::Treasury {
+                entry: 3,
+                kind: agentplaza_desktop::api::EntryKind::Mint,
+                amount: 500,
+                task: Some("t2".to_string()),
+            },
+        },
+    );
+    pump(&mut emulator, 800);
+
+    let (model, _) = emulator.into_state();
+    let journal = &model.treasury.as_ref().expect("the pane's read").journal;
+    assert_eq!(
+        journal.entries.len(),
+        3,
+        "the frame drove a read of the journal, and the read grew it"
+    );
+    let third = journal.entries.last().expect("the third entry");
+    assert_eq!(third.id, 3);
+    assert_eq!(
+        third.memo, "task budget",
+        "the entry the frame never carried is the daemon's own row"
+    );
+    assert_eq!(
+        third.postings.len(),
+        2,
+        "with the postings the frame could not have described"
+    );
+    assert_eq!(
+        model.polls, 1,
+        "only the boot tick polled the register: the treasury read is its own"
     );
     assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }

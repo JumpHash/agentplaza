@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::api::{self, Column, Endpoint, RunState, TaskState, VmState};
+use crate::api::{self, Column, Endpoint, EntryKind, RunState, TaskState, VmState};
 
 /// The path the stream lives at.
 pub const PATH: &str = "/api/v0/events";
@@ -108,6 +108,23 @@ pub enum Event {
         state: TaskState,
         /// The schema's `assignee_id` once an agent holds it.
         assignee: Option<String>,
+    },
+    /// A treasury entry was posted: the double-entry journal grew.
+    ///
+    /// The frame carries the entry's id, its kind, its size and the task it
+    /// belongs to, and **nothing else** — no memo, no postings and no clock.
+    /// It is the journal's delta, not an entry: a console that has not read
+    /// the journal reads it rather than assembling a row from a frame.
+    Treasury {
+        /// The entry's id.
+        entry: u64,
+        /// The schema's entry kind.
+        kind: EntryKind,
+        /// The entry's size: its credited total, which equals its debited
+        /// total.
+        amount: i128,
+        /// The task the entry belongs to, or `None` when it belongs to none.
+        task: Option<String>,
     },
 }
 
@@ -233,6 +250,14 @@ impl Framer {
                 state: data.state,
                 assignee: data.assignee.into_option(),
             }),
+            "treasury" => serde_json::from_str::<TreasuryData>(&payload).map(|data| {
+                Event::Treasury {
+                    entry: data.entry,
+                    kind: data.kind,
+                    amount: data.amount,
+                    task: data.task.into_option(),
+                }
+            }),
             other => {
                 out.push(Frame::Other(other.to_string()));
                 return;
@@ -280,6 +305,20 @@ struct TaskData {
     id: String,
     state: TaskState,
     assignee: Column<String>,
+}
+
+/// A `treasury` frame's `data`.
+///
+/// `noded` writes all four fields for every entry it publishes
+/// (`crates/noded/src/events.rs`, `Event::Treasury::frame`), so an absent
+/// `task` is not the shape the daemon sends and is refused by name — the same
+/// rule the journal's own rows are read by.
+#[derive(Debug, Deserialize)]
+struct TreasuryData {
+    entry: u64,
+    kind: EntryKind,
+    amount: i128,
+    task: Column<String>,
 }
 
 /// Why one connection to the stream did not deliver events.
@@ -777,6 +816,77 @@ mod tests {
                 state: RunState::Done,
             }),
             "one bad task frame never ends the stream"
+        );
+    }
+
+    #[test]
+    fn the_framer_reads_a_treasury_frame_the_daemon_writes() {
+        // `crates/noded/src/events.rs`'s own frames, byte for byte: a task's
+        // mint (the task is named) and a fine (it is null).
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":500,\"task\":\"t1\"}\n\n\
+              event: treasury\ndata: {\"entry\":7,\"kind\":\"fine\",\"amount\":5,\"task\":null}\n\n",
+        );
+        assert_eq!(
+            frames,
+            vec![
+                Frame::Event(Event::Treasury {
+                    entry: 1,
+                    kind: EntryKind::Mint,
+                    amount: 500,
+                    task: Some("t1".to_string()),
+                }),
+                Frame::Event(Event::Treasury {
+                    entry: 7,
+                    kind: EntryKind::Fine,
+                    amount: 5,
+                    task: None,
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_treasury_frame_with_a_kind_this_console_does_not_know_parses_as_unknown() {
+        let mut framer = Framer::new();
+        assert_eq!(
+            framer.feed(b"event: treasury\ndata: {\"entry\":3,\"kind\":\"tithe\",\"amount\":1,\"task\":null}\n\n"),
+            vec![Frame::Event(Event::Treasury {
+                entry: 3,
+                kind: EntryKind::Unknown,
+                amount: 1,
+                task: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_treasury_frame_missing_a_field_is_named_and_the_next_frame_still_reads() {
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":5}\n\n\
+              event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"task\":null}\n\n\
+              event: run\ndata: {\"id\":\"r1\",\"state\":\"done\"}\n\n",
+        );
+        assert_eq!(frames.len(), 3);
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("treasury") && why.contains("task")),
+            "a treasury frame with no task is named: {:?}",
+            frames[0]
+        );
+        assert!(
+            matches!(&frames[1], Frame::Malformed(why) if why.contains("treasury") && why.contains("amount")),
+            "a treasury frame with no amount is named: {:?}",
+            frames[1]
+        );
+        assert_eq!(
+            frames[2],
+            Frame::Event(Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            }),
+            "one bad treasury frame never ends the stream"
         );
     }
 

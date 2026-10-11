@@ -7,9 +7,9 @@
 //! nothing more.
 
 use crate::api::{
-    ApiError, Column, CreateRun, CreateTask, Endpoint, FinishOutcome, HubAgent, HubStatus, Machine,
-    Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState, TasksPage, TellAnswer,
-    VmState,
+    ApiError, Column, CreateRun, CreateTask, Endpoint, Entry, FinishOutcome, HubAgent, HubStatus,
+    Journal, Machine, Posting, Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState,
+    TasksPage, TellAnswer, Totals, TreasuryRead, VmState,
 };
 use crate::events::Event;
 use crate::export::{
@@ -70,6 +70,9 @@ pub enum Pane {
     /// The plaza's ledger: every task, and the moves the daemon accepts on
     /// them — create, claim, finish, withdraw.
     Ledger,
+    /// The plaza's treasury: the accounts, the totals and the double-entry
+    /// journal. Read-only — every entry is the daemon's own.
+    Treasury,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -106,6 +109,8 @@ pub enum KeyAction {
     Roster,
     /// `l`: the ledger — the plaza's tasks.
     Ledger,
+    /// `y`: the treasury — the accounts and the journal.
+    Treasury,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
@@ -722,6 +727,10 @@ pub struct Effect {
     pub poll_tasks: bool,
     /// Fetch `GET /api/v0/tasks/{id}`.
     pub fetch_task: Option<String>,
+    /// Read the treasury: `GET /api/v0/treasury` and
+    /// `GET /api/v0/treasury/journal` at once, on the treasury's own
+    /// schedule.
+    pub poll_treasury: bool,
     /// `POST /api/v0/tasks` with this body.
     pub create_task: Option<CreateTask>,
     /// `POST /api/v0/tasks/{id}/claim` as this agent.
@@ -820,6 +829,15 @@ impl Effect {
     pub fn ledger() -> Self {
         Self {
             poll_tasks: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read the treasury: the accounts and their totals, and the journal
+    /// beside them, in one read.
+    pub fn treasury() -> Self {
+        Self {
+            poll_treasury: true,
             ..Self::default()
         }
     }
@@ -1054,6 +1072,14 @@ pub enum Message {
         /// The answer.
         result: Result<TasksPage, ApiError>,
     },
+    /// The treasury answered: the accounts with their totals and the journal,
+    /// read together.
+    Treasury {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<TreasuryRead, ApiError>,
+    },
     /// `GET /api/v0/tasks/{id}` answered: one task, read again.
     Task {
         /// When the answer arrived.
@@ -1175,6 +1201,7 @@ impl Message {
             | Message::Exported { at_ms, .. }
             | Message::CsvExported { at_ms, .. }
             | Message::Tasks { at_ms, .. }
+            | Message::Treasury { at_ms, .. }
             | Message::Task { at_ms, .. }
             | Message::TaskCreated { at_ms, .. }
             | Message::TaskClaimed { at_ms, .. }
@@ -1313,6 +1340,27 @@ pub struct Model {
     /// has not landed: a burst of events naming a task the ledger does not
     /// hold is one read, not one per event.
     pub ledger_asked: bool,
+    /// The plaza's treasury: the accounts, the totals and the journal, as the
+    /// daemon's own read reported them. `None` until the pane's first read
+    /// answers — a treasury nobody has read is not an empty treasury.
+    ///
+    /// The last read is kept when a later read fails: the journal is
+    /// append-only, so a read that is a few seconds old is incomplete rather
+    /// than wrong, and the pane says which it is.
+    pub treasury: Option<TreasuryRead>,
+    /// Why the treasury's last read failed, if it did.
+    pub treasury_error: Option<String>,
+    /// When the treasury last answered, in milliseconds since the Unix epoch.
+    pub treasury_last_ok_ms: Option<u64>,
+    /// When the treasury should be read next.
+    pub treasury_next_at_ms: u64,
+    /// How many treasury reads have failed in a row: the treasury's own
+    /// backoff, so a daemon that serves the register but not the treasury
+    /// never marks the register down.
+    pub treasury_failures: u32,
+    /// Whether a treasury frame has already asked for the read and the answer
+    /// has not landed: a burst of entries is one read, not one per entry.
+    pub treasury_asked: bool,
     /// How often a healthy daemon is polled, in milliseconds.
     pub refresh_ms: u64,
     /// The spawn form's raw input.
@@ -1383,6 +1431,12 @@ impl Default for Model {
             armed_task: None,
             artifact: None,
             ledger_asked: false,
+            treasury: None,
+            treasury_error: None,
+            treasury_last_ok_ms: None,
+            treasury_next_at_ms: 0,
+            treasury_failures: 0,
+            treasury_asked: false,
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
             errors: Vec::new(),
@@ -2008,6 +2062,7 @@ impl Model {
             Message::TaskWithdrawn { at_ms, id, result } => {
                 self.task_withdrawn(at_ms, &id, result)
             }
+            Message::Treasury { at_ms, result } => self.treasury_answer(at_ms, result),
             Message::TaskArtifactRead(path) => self.task_artifact_read(path),
             Message::TaskArtifact {
                 at_ms,
@@ -2029,6 +2084,9 @@ impl Model {
     fn poll_tick(&mut self, at_ms: u64) -> Effect {
         self.now_ms = at_ms;
         let mut effect = self.hub_tick(at_ms);
+        // The treasury's own schedule, like the hub's: it ticks here, but
+        // independently of the register's cadence and failures.
+        effect.poll_treasury = self.treasury_tick(at_ms);
         if at_ms < self.next_poll_at_ms {
             return effect;
         }
@@ -2253,6 +2311,84 @@ impl Model {
         Effect::none()
     }
 
+    /// The treasury's own schedule, like the hub's.
+    ///
+    /// The pane's read is the treasury and its journal at once, on a cadence
+    /// of its own: it is not the register's poll, and — because the endpoint
+    /// is one an older daemon may not serve — a treasury that cannot be read
+    /// never marks the register down or slows its polls. The pane only reads
+    /// while it is showing; the treasury is not read for a sheet nobody has
+    /// opened.
+    fn treasury_tick(&mut self, at_ms: u64) -> bool {
+        if self.pane != Pane::Treasury || at_ms < self.treasury_next_at_ms {
+            return false;
+        }
+        self.treasury_next_at_ms = at_ms
+            .saturating_add(poll_interval_ms(self.refresh_ms, self.treasury_failures));
+        true
+    }
+
+    /// The treasury answered — or could not be read.
+    ///
+    /// The read is kept when a later one fails: the journal is append-only, so
+    /// what the console holds stays true, and the failure is recorded beside
+    /// it rather than pretending the treasury is empty. Its health is its own:
+    /// a second surface, like the hub's, that never moves the register's.
+    fn treasury_answer(&mut self, at_ms: u64, result: Result<TreasuryRead, ApiError>) -> Effect {
+        self.treasury_asked = false;
+        match result {
+            Ok(read) => {
+                self.treasury = Some(read);
+                self.treasury_error = None;
+                self.treasury_last_ok_ms = Some(at_ms);
+                self.treasury_failures = 0;
+                self.treasury_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+            }
+            Err(error) => {
+                self.treasury_error = Some(error.to_string());
+                self.treasury_failures = self.treasury_failures.saturating_add(1);
+                self.treasury_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.treasury_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// Applies one treasury event: the journal's own delta between its reads.
+    ///
+    /// A frame announces that the journal grew and names the entry — its kind
+    /// and size and nothing else. It carries no memo, no postings and no
+    /// clock, so the console never assembles an entry from one: a frame for an
+    /// entry the console already holds is one it has read (a duplicate, or an
+    /// older entry replayed) and is a no-op, while a frame past the newest
+    /// entry it holds means the journal moved past what it saw, and it reads
+    /// the journal again — once, however many entries arrive at once.
+    fn treasury_event(&mut self, entry: u64) -> Effect {
+        // Only a pane that is showing is refreshed: nothing else draws the
+        // treasury, and the sheet reads it when it opens.
+        if self.pane != Pane::Treasury {
+            return Effect::none();
+        }
+        let newest = self
+            .treasury
+            .as_ref()
+            .and_then(|read| read.journal.entries.last())
+            .map(|held| held.id);
+        match newest {
+            Some(newest) if entry <= newest => Effect::none(),
+            _ => self.ask_for_the_treasury(),
+        }
+    }
+
+    /// Asks for the treasury, at most once per outstanding answer.
+    fn ask_for_the_treasury(&mut self) -> Effect {
+        if self.treasury_asked {
+            return Effect::none();
+        }
+        self.treasury_asked = true;
+        Effect::treasury()
+    }
+
     /// Every run in the register, by id: what the map's pulse is fed from.
     fn run_ids(&self) -> Vec<String> {
         self.runs.iter().map(|run| run.id.clone()).collect()
@@ -2321,6 +2457,7 @@ impl Model {
                 state,
                 assignee,
             } => self.task_event(&id, state, assignee),
+            Event::Treasury { entry, .. } => self.treasury_event(entry),
         }
     }
 
@@ -2940,6 +3077,17 @@ impl Model {
                 // in between.
                 Effect::ledger()
             }
+            Pane::Treasury => {
+                self.pane = Pane::Treasury;
+                self.detail = None;
+                // The treasury is one read too: the accounts with their totals
+                // and the journal at once. Opening the sheet is a reason to
+                // want them now, and the schedule then runs from this read so
+                // the next tick does not read again on top of it.
+                self.treasury_next_at_ms =
+                    self.now_ms.saturating_add(self.refresh_ms);
+                Effect::treasury()
+            }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
                 self.detail = None;
@@ -2951,7 +3099,6 @@ impl Model {
             }
         }
     }
-
     /// Presses a map cell: its run opens with its VM selected, and its serial
     /// is fetched so the pane has something to show at once.
     fn select(&mut self, run: String, vm: u32) -> Effect {
@@ -3090,6 +3237,7 @@ impl Model {
             KeyAction::Map => self.show(Pane::Map),
             KeyAction::Roster => self.show(Pane::Roster),
             KeyAction::Ledger => self.show(Pane::Ledger),
+            KeyAction::Treasury => self.show(Pane::Treasury),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
@@ -3647,6 +3795,7 @@ pub fn title(model: &Model) -> String {
         Pane::Map => "AgentPlaza register — fleet map".to_string(),
         Pane::Roster => "AgentPlaza register — roster".to_string(),
         Pane::Ledger => "AgentPlaza register — ledger".to_string(),
+        Pane::Treasury => "AgentPlaza register — treasury".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -3734,6 +3883,80 @@ pub fn task_state_line(task: &Task) -> String {
         Some(outcome) => format!("{} · {}", task.state.label(), outcome.label()),
         None => task.state.label().to_string(),
     }
+}
+
+/// An amount of credits as the register's money: the ledger's own unit and the
+/// dollars it stands for.
+///
+/// Amounts are whole credits and 1 credit = $0.001 of real spend
+/// (`docs/treasury-draft/schema.sql`, statute 0109), so a figure is always
+/// shown both ways and no rate is invented — the same idiom the web console's
+/// money helper uses. A negative amount (a debit, or an account below zero) is
+/// written with the sign in front of the dollars too.
+pub fn money_label(credits: i128) -> String {
+    let dollars = credits as f64 / 1_000.0;
+    if credits < 0 {
+        format!("{credits} cr · -${:.2}", -dollars)
+    } else {
+        format!("{credits} cr · ${dollars:.2}")
+    }
+}
+
+/// The treasury as the index column writes it: the counts once the pane has
+/// read it, and the honest nothing before that.
+///
+/// A treasury nobody has read is not an empty treasury: the entry the operator
+/// reads first says which of the two it is rather than claiming a count nobody
+/// took — the ledger's own rule.
+pub fn treasury_line(model: &Model) -> String {
+    match &model.treasury {
+        Some(read) => format!(
+            "{} account(s) · {} entry(s)",
+            read.treasury.totals.accounts, read.treasury.totals.entries
+        ),
+        None => "not read yet".to_string(),
+    }
+}
+
+/// The treasury's totals as the sheet writes them: the accounts, the entries,
+/// what the journal has credited and debited, and the sum of every balance —
+/// zero while the journal balances.
+pub fn totals_line(totals: &Totals) -> String {
+    format!(
+        "{} account(s) · {} entry(s) · credits {} · debits {} · balance {}",
+        totals.accounts,
+        totals.entries,
+        money_label(totals.credits),
+        money_label(totals.debits),
+        money_label(totals.balance),
+    )
+}
+
+/// One posting as the journal's ruled pair writes it: the account, by its kind
+/// and its owner.
+pub fn posting_account(posting: &Posting) -> String {
+    format!("{} · {}", posting.kind.label(), posting.owner_ref)
+}
+
+/// An entry's task as its row writes it: the task the entry belongs to, or the
+/// honest dash for an entry that belongs to none (a `fine` or a `fee`).
+pub fn entry_task(entry: &Entry) -> &str {
+    entry.task_id.as_deref().unwrap_or("—")
+}
+
+/// How the journal stands, as the sheet's tally writes it: the entries the
+/// response carries, the journal's own total, and whether the read was cut to
+/// the daemon's limit.
+pub fn journal_tally(journal: &Journal) -> String {
+    let mut line = format!(
+        "{} entry(s) carried of {} in the journal",
+        journal.entries.len(),
+        journal.total
+    );
+    if journal.truncated {
+        line.push_str(&format!(" · cut to the newest {}", journal.limit));
+    }
+    line
 }
 
 /// Guest memory as the register writes it: MiB below a gibibyte (where a
@@ -3887,7 +4110,7 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::Vm;
+    use crate::api::{EntryKind, Vm};
 
     fn vm(id: u32, state: VmState, cid: Option<u64>, serial: Option<&str>) -> Vm {
         Vm {
@@ -7823,5 +8046,319 @@ mod tests {
         });
         assert!(model.task_selected.is_none());
         assert!(model.artifact.is_none());
+    }
+
+    // ---- the treasury: the accounts and the journal ----
+
+    /// The accounts of a one-cycle treasury: the mint, and the escrow a task's
+    /// budget filled and its refund emptied.
+    fn cycle_accounts() -> serde_json::Value {
+        serde_json::json!([
+            {"id":1,"kind":"mint","owner_ref":"mint","credit_limit":0,"balance":0,
+             "created_at":1_000},
+            {"id":2,"kind":"task_escrow","owner_ref":"t1","credit_limit":0,"balance":0,
+             "created_at":1_000},
+        ])
+    }
+
+    /// The journal's entries for that cycle: the mint, then the refund.
+    fn cycle_entries() -> serde_json::Value {
+        serde_json::json!([
+            {"id":1,"kind":"mint","task_id":"t1","root_task":"t1","memo":"task budget",
+             "posted_by":"treasury-service","created_at":1_000,"amount":750,
+             "postings":[
+                {"account":1,"kind":"mint","owner_ref":"mint","amount":-750},
+                {"account":2,"kind":"task_escrow","owner_ref":"t1","amount":750}]},
+            {"id":2,"kind":"refund","task_id":"t1","root_task":"t1",
+             "memo":"task budget refunded","posted_by":"treasury-service",
+             "created_at":2_000,"amount":750,
+             "postings":[
+                {"account":2,"kind":"task_escrow","owner_ref":"t1","amount":-750},
+                {"account":1,"kind":"mint","owner_ref":"mint","amount":750}]},
+        ])
+    }
+
+    /// A treasury read as the daemon answers one: the accounts with their
+    /// totals, and the journal beside them.
+    fn treasury_read(accounts: serde_json::Value, entries: serde_json::Value) -> TreasuryRead {
+        let accounts_count = accounts.as_array().map_or(0, Vec::len);
+        let entries_count = entries.as_array().map_or(0, Vec::len);
+        let credits: i128 = entries
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("amount").and_then(serde_json::Value::as_i64))
+            .map(i128::from)
+            .sum();
+        let treasury: crate::api::Treasury = serde_json::from_value(serde_json::json!({
+            "accounts": accounts,
+            "totals": {
+                "accounts": accounts_count,
+                "entries": entries_count,
+                "credits": credits,
+                "debits": credits,
+                "balance": 0,
+            },
+            "spent": 0,
+            "note": "v0 meters no real spend; a done task refunds its whole escrow",
+        }))
+        .expect("the fixture is the shape the daemon writes");
+        let journal: Journal = serde_json::from_value(serde_json::json!({
+            "entries": entries,
+            "total": entries_count,
+            "limit": 256,
+            "truncated": false,
+        }))
+        .expect("the fixture is the shape the daemon writes");
+        TreasuryRead { treasury, journal }
+    }
+
+    /// A model showing the treasury, with one read already answered.
+    fn with_treasury(read: TreasuryRead) -> Model {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Treasury));
+        model.apply(Message::Treasury {
+            at_ms: 10_000,
+            result: Ok(read),
+        });
+        model
+    }
+
+    #[test]
+    fn showing_the_treasury_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::Key(KeyAction::Treasury));
+        assert_eq!(model.pane, Pane::Treasury);
+        assert_eq!(
+            effect,
+            Effect::treasury(),
+            "the sheet asks for the accounts and the journal at once"
+        );
+
+        model.apply(Message::Treasury {
+            at_ms: 10_000,
+            result: Ok(treasury_read(cycle_accounts(), cycle_entries())),
+        });
+        assert!(model.treasury.is_some());
+        assert_eq!(model.treasury_error, None);
+        assert_eq!(model.treasury_last_ok_ms, Some(10_000));
+        assert_eq!(
+            model.treasury_next_at_ms, 12_000,
+            "the treasury's cadence measures from its own answer"
+        );
+
+        // Not before the treasury's own schedule says so...
+        assert!(!model.apply(Message::Tick { at_ms: 11_000 }).poll_treasury);
+        // ...and the register is polled either way.
+        let effect = model.apply(Message::Tick { at_ms: 13_000 });
+        assert!(effect.poll_treasury, "the treasury is read on the tick");
+        assert!(effect.poll_list, "and so is the register");
+
+        // Off the sheet, the treasury is not read at all.
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 20_000 }).poll_treasury);
+    }
+
+    #[test]
+    fn the_treasury_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        let mut model = Model::new();
+        // A console that never opened the sheet never reads the treasury.
+        assert!(!model.apply(Message::Tick { at_ms: 1_000 }).poll_treasury);
+
+        model.apply(Message::Show(Pane::Treasury));
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.health(), Health::Live);
+        assert_eq!(model.failures, 0);
+
+        // A treasury read fails: the failure is the treasury's own, so the
+        // register stays live and un-backoff'd — an older daemon that serves
+        // the register but not the treasury does not read down.
+        model.apply(Message::Treasury {
+            at_ms: 3_300,
+            result: Err(ApiError::Connect("127.0.0.1:8899: refused".to_string())),
+        });
+        assert_eq!(model.treasury_failures, 1);
+        assert!(model.treasury_error.is_some());
+        assert_eq!(model.treasury, None, "nothing was read, so nothing is claimed");
+        assert_eq!(model.failures, 0, "the register's failures are not the treasury's");
+        assert_eq!(model.last_error, None);
+        assert_eq!(model.health(), Health::Live);
+        assert_eq!(
+            model.treasury_next_at_ms,
+            3_300 + poll_interval_ms(DEFAULT_REFRESH_MS, 1),
+            "the treasury backs off on its own failures"
+        );
+
+        // It comes back: the error clears and the read is drawn.
+        let effect = model.apply(Message::Tick { at_ms: 7_300 });
+        assert!(effect.poll_treasury);
+        model.apply(Message::Treasury {
+            at_ms: 7_400,
+            result: Ok(treasury_read(cycle_accounts(), cycle_entries())),
+        });
+        assert_eq!(model.treasury_error, None);
+        assert_eq!(model.treasury_failures, 0);
+        assert!(model.treasury.is_some());
+        assert_eq!(model.treasury_next_at_ms, 9_400, "the cadence measures from the answer");
+    }
+
+    #[test]
+    fn the_treasury_keeps_its_last_read_when_a_later_read_fails() {
+        let mut model = with_treasury(treasury_read(cycle_accounts(), cycle_entries()));
+        let held = model.treasury.clone();
+        assert!(held.is_some());
+
+        model.apply(Message::Treasury {
+            at_ms: 12_000,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        assert_eq!(
+            model.treasury, held,
+            "the journal is append-only: what was read stays true, only incomplete"
+        );
+        assert_eq!(model.treasury_last_ok_ms, Some(10_000), "the read's own age is kept");
+        assert!(model.treasury_error.is_some(), "and the pane says it has not moved");
+    }
+
+    #[test]
+    fn a_treasury_event_reads_the_journal_once_and_never_invents_an_entry() {
+        let mut model = with_treasury(treasury_read(cycle_accounts(), cycle_entries()));
+        let held: Vec<u64> = model
+            .treasury
+            .as_ref()
+            .expect("a read")
+            .journal
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(held, vec![1, 2]);
+        let before = model.treasury.clone();
+
+        // A frame for an entry the pane already holds is one it has read:
+        // a duplicate, and a no-op.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_000,
+                event: Event::Treasury {
+                    entry: 2,
+                    kind: EntryKind::Refund,
+                    amount: 750,
+                    task: Some("t1".to_string()),
+                },
+            }),
+            Effect::none()
+        );
+        assert_eq!(model.treasury, before, "no entry was invented from a frame");
+
+        // An entry past the newest the pane holds means the journal moved on:
+        // it is read again — and a burst is one read, not one per entry.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_100,
+                event: Event::Treasury {
+                    entry: 3,
+                    kind: EntryKind::Mint,
+                    amount: 5,
+                    task: Some("t2".to_string()),
+                },
+            }),
+            Effect::treasury()
+        );
+        assert!(model.treasury_asked);
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_200,
+                event: Event::Treasury {
+                    entry: 4,
+                    kind: EntryKind::Mint,
+                    amount: 5,
+                    task: None,
+                },
+            }),
+            Effect::none(),
+            "a burst of entries is one read"
+        );
+
+        // The answer lands and the ask is over.
+        model.apply(Message::Treasury {
+            at_ms: 13_300,
+            result: Ok(treasury_read(cycle_accounts(), cycle_entries())),
+        });
+        assert!(!model.treasury_asked);
+
+        // Off the sheet there is nothing to refresh, so a frame asks for
+        // nothing: the sheet reads the journal when it opens.
+        model.apply(Message::Show(Pane::Fleet));
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 14_000,
+                event: Event::Treasury {
+                    entry: 9,
+                    kind: EntryKind::Spend,
+                    amount: 1,
+                    task: None,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn money_is_the_ledgers_unit_and_the_dollars_it_stands_for() {
+        assert_eq!(money_label(1_500), "1500 cr · $1.50");
+        assert_eq!(money_label(0), "0 cr · $0.00");
+        assert_eq!(money_label(750), "750 cr · $0.75");
+        // A debit, or an account below its limit, keeps its sign on both.
+        assert_eq!(money_label(-750), "-750 cr · -$0.75");
+        assert_eq!(money_label(-1), "-1 cr · -$0.00");
+    }
+
+    #[test]
+    fn the_treasury_lines_name_what_the_sheet_draws() {
+        let mut model = Model::new();
+        assert_eq!(
+            treasury_line(&model),
+            "not read yet",
+            "a treasury nobody read is not an empty treasury"
+        );
+        let read = treasury_read(cycle_accounts(), cycle_entries());
+        model.apply(Message::Treasury {
+            at_ms: 10_000,
+            result: Ok(read.clone()),
+        });
+        assert_eq!(treasury_line(&model), "2 account(s) · 2 entry(s)");
+        assert_eq!(
+            totals_line(&read.treasury.totals),
+            "2 account(s) · 2 entry(s) · credits 1500 cr · $1.50 · debits 1500 cr · $1.50 · \
+             balance 0 cr · $0.00"
+        );
+        assert_eq!(
+            journal_tally(&read.journal),
+            "2 entry(s) carried of 2 in the journal"
+        );
+        // A journal cut to the daemon's limit says so rather than reading as
+        // the whole thing.
+        let mut cut = read.journal.clone();
+        cut.total = 900;
+        cut.truncated = true;
+        assert_eq!(
+            journal_tally(&cut),
+            "2 entry(s) carried of 900 in the journal · cut to the newest 256"
+        );
+
+        // An entry's task, and its postings' accounts, as the rows write them.
+        let mint = &read.journal.entries[0];
+        assert_eq!(entry_task(mint), "t1");
+        assert_eq!(posting_account(&mint.postings[0]), "mint · mint");
+        assert_eq!(posting_account(&mint.postings[1]), "task_escrow · t1");
+        // The daemon's own note, verbatim.
+        assert_eq!(
+            read.treasury.note,
+            "v0 meters no real spend; a done task refunds its whole escrow"
+        );
     }
 }

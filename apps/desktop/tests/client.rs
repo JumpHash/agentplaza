@@ -15,8 +15,8 @@ use std::time::Duration;
 use common::{DETAIL, LIST, MACHINE, always, raw, replies, streams};
 
 use agentplaza_desktop::api::{
-    ApiError, Client, CreateRun, CreateTask, Endpoint, FinishOutcome, RunState, StopOutcome,
-    TaskOutcome, TaskState, VmState,
+    AccountKind, ApiError, Client, CreateRun, CreateTask, Endpoint, EntryKind, FinishOutcome,
+    RunState, StopOutcome, TaskOutcome, TaskState, VmState,
 };
 use agentplaza_desktop::events;
 use agentplaza_desktop::exit::{ExitKind, exit_kind};
@@ -934,6 +934,85 @@ fn a_refused_artifact_carries_the_hub_or_the_agents_own_words() {
     assert_eq!(error.to_string(), "503: hub admin is not configured");
 }
 
+// ---- the treasury: the accounts and the journal ----
+
+#[test]
+fn reading_the_treasury_reads_both_paths_at_once() {
+    let server = common::treasury_live(
+        LIST,
+        DETAIL,
+        "",
+        common::TREASURY,
+        common::TREASURY_JOURNAL,
+    );
+    let read = client(server.port).treasury().expect("the treasury should parse");
+
+    assert_eq!(read.treasury.accounts.len(), 2);
+    assert_eq!(read.treasury.accounts[0].kind, AccountKind::Mint);
+    assert_eq!(read.treasury.accounts[1].kind, AccountKind::TaskEscrow);
+    assert_eq!(read.treasury.totals.credits, 1_500);
+    assert_eq!(read.treasury.totals.balance, 0);
+    assert_eq!(read.treasury.spent, 0);
+    assert_eq!(
+        read.treasury.note,
+        "v0 meters no real spend; a done task refunds its whole escrow"
+    );
+
+    assert_eq!(read.journal.entries.len(), 2);
+    assert_eq!(read.journal.total, 2);
+    assert!(!read.journal.truncated);
+    let mint = &read.journal.entries[0];
+    assert_eq!(mint.kind, EntryKind::Mint);
+    assert_eq!(mint.task_id.as_deref(), Some("t1"));
+    assert_eq!(mint.amount, 750);
+    assert_eq!(mint.postings.len(), 2);
+    // The sign is the side: a mint leaves the mint (a debit) and fills the
+    // escrow (a credit).
+    assert!(mint.postings[0].is_debit());
+    assert_eq!(mint.postings[0].magnitude(), 750);
+    assert!(!mint.postings[1].is_debit());
+    assert_eq!(read.journal.entries[1].kind, EntryKind::Refund);
+
+    // Exactly the two documented reads, in that order, both GETs with no body.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "the read is both halves or neither");
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/treasury");
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(requests[1].target, "/api/v0/treasury/journal");
+    assert_eq!(requests[0].body, "");
+    assert_eq!(requests[1].body, "");
+}
+
+#[test]
+fn a_treasury_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
+    // An older daemon with no treasury endpoint: the pane's read is a refusal
+    // in the daemon's words, never a panic and never a silent empty book.
+    let server = always(404, r#"{"error":"no such endpoint"}"#);
+    let error = client(server.port)
+        .treasury()
+        .expect_err("a 404 is a refusal");
+    assert_eq!(error.status(), Some(404));
+    assert_eq!(error.to_string(), "404: no such endpoint");
+}
+
+#[test]
+fn a_journal_half_that_cannot_be_read_fails_the_whole_read() {
+    // The read is one unit: an accounts half that answers and a journal half
+    // that does not is a read that did not happen, so the pane never draws a
+    // treasury with a journal it cannot vouch for.
+    // `replies` answers in order: the accounts, then the journal's failure.
+    let server = replies(vec![
+        (200, common::TREASURY.to_string()),
+        (500, r#"{"error":"the journal could not be read"}"#.to_string()),
+    ]);
+    let error = client(server.port)
+        .treasury()
+        .expect_err("the journal's failure is the read's");
+    assert_eq!(error.status(), Some(500));
+    assert_eq!(error.to_string(), "500: the journal could not be read");
+}
+
 /// Reads the live hub's status surface when `APZ_DESKTOP_LIVE_HUB` names one
 /// (`host:port`), and does nothing otherwise: the suite stays runnable on a
 /// host with no hub.
@@ -1068,5 +1147,75 @@ fn a_live_daemon_reads_when_one_is_named() {
                 Err(error) => println!("  artifact {} {path} refused: {error}", task.id),
             }
         }
+    }
+
+    // The treasury, read the same way and mutating nothing — the pane's own
+    // read, both halves at once. Every balance is the daemon's derivation from
+    // the postings, and the journal's entries are checked to balance.
+    let read = client
+        .treasury()
+        .expect("the live daemon should answer its treasury");
+    println!(
+        "live {}: treasury {} account(s) · {} entry(s) · spent {} · note {:?}",
+        endpoint.url(),
+        read.treasury.accounts.len(),
+        read.treasury.totals.entries,
+        read.treasury.spent,
+        read.treasury.note
+    );
+    for account in &read.treasury.accounts {
+        println!(
+            "  account {} {} · owner {:?} · limit {} · balance {}",
+            account.id,
+            account.kind.label(),
+            account.owner_ref,
+            account.credit_limit,
+            account.balance
+        );
+    }
+    println!(
+        "  totals: {} account(s) · {} entry(s) · credits {} · debits {} · balance {} \
+         (the journal's own sum)",
+        read.treasury.totals.accounts,
+        read.treasury.totals.entries,
+        read.treasury.totals.credits,
+        read.treasury.totals.debits,
+        read.treasury.totals.balance
+    );
+    let journal = &read.journal;
+    println!(
+        "  journal {} entry(s) carried of {} · truncated {}",
+        journal.entries.len(),
+        journal.total,
+        journal.truncated
+    );
+    assert_eq!(
+        journal.entries.len(),
+        journal.total.min(journal.limit),
+        "the response carries what the journal holds, cut to its own limit"
+    );
+    for entry in &journal.entries {
+        println!(
+            "  entry {} {} · task {:?} · memo {:?} · amount {} · posted by {}",
+            entry.id,
+            entry.kind.label(),
+            entry.task_id.as_deref(),
+            entry.memo,
+            entry.amount,
+            entry.posted_by
+        );
+        let mut net: i64 = 0;
+        for posting in &entry.postings {
+            println!(
+                "    {} {} · owner {:?} · {} {}",
+                posting.kind.label(),
+                posting.account,
+                posting.owner_ref,
+                if posting.is_debit() { "debit" } else { "credit" },
+                posting.magnitude()
+            );
+            net += posting.amount;
+        }
+        assert_eq!(net, 0, "every entry balances to zero");
     }
 }

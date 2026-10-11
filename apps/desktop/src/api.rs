@@ -7,9 +7,10 @@
 //! uses to test the daemon.
 //!
 //! The types here mirror `noded`'s views (`registry::RunView`, `VmView`,
-//! `RunsView`) and its create request (`registry::CreateRun`); the states are
-//! enums so an unknown state from a newer daemon cannot fail the parse, it
-//! renders as [`RunState::Unknown`].
+//! `RunsView`), its ledger (`tasks::TaskView`) and its treasury
+//! (`treasury::TreasuryView`, `treasury::JournalView`), and the requests it
+//! accepts; the states and kinds are enums so an unknown one from a newer
+//! daemon cannot fail the parse, it renders as `Unknown`.
 
 use std::fmt;
 use std::io::{Read, Write};
@@ -686,6 +687,245 @@ struct ArtifactRequest {
     path: String,
 }
 
+/// An account's kind, the schema's `treasury.account_kind`
+/// (`noded::treasury::AccountKind`).
+///
+/// The type is complete — every kind the schema lists — but a daemon may open
+/// only some of them: v0's lifecycle posts `mint` and `task_escrow` and leaves
+/// the rest for the entries that need them. A kind this console does not know
+/// parses as [`AccountKind::Unknown`] rather than failing the row, exactly as
+/// an unknown run or task state does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountKind {
+    /// The source of all credits; every mint and refund names it.
+    Mint,
+    /// The plaza's own balance.
+    Treasury,
+    /// A town's budget.
+    TownBudget,
+    /// A task's escrow: a budget minted into it, refunded when the task ends.
+    TaskEscrow,
+    /// An agent's earnings.
+    AgentEarnings,
+    /// Metered real cost.
+    ExternalSpend,
+    /// A kind this dashboard does not know; rendered as-is, never a parse
+    /// error.
+    #[serde(other)]
+    Unknown,
+}
+
+impl AccountKind {
+    /// The name the API uses, the schema's own spelling.
+    pub fn label(self) -> &'static str {
+        match self {
+            AccountKind::Mint => "mint",
+            AccountKind::Treasury => "treasury",
+            AccountKind::TownBudget => "town_budget",
+            AccountKind::TaskEscrow => "task_escrow",
+            AccountKind::AgentEarnings => "agent_earnings",
+            AccountKind::ExternalSpend => "external_spend",
+            AccountKind::Unknown => "unknown",
+        }
+    }
+}
+
+/// An entry's kind, the schema's `treasury.entry_kind`
+/// (`noded::treasury::EntryKind`).
+///
+/// The schema lists nine; v0's task lifecycle posts only `mint` and `refund`,
+/// and the rules for the rest are enforced all the same. A kind this console
+/// does not know parses as [`EntryKind::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    /// Owner or council funds a task budget.
+    Mint,
+    /// Metered real cost: escrow → external_spend.
+    Spend,
+    /// A parent escrow locks a price in a child task's escrow.
+    Subcontract,
+    /// Verified work: child escrow → contractor earnings.
+    Payment,
+    /// Unused escrow back to the parent escrow or the mint.
+    Refund,
+    /// Warranty claim: contractor earnings → escrow or treasury.
+    Clawback,
+    /// Sanction: earnings → treasury.
+    Fine,
+    /// Appeal filing fee.
+    Fee,
+    /// Owner or council moves budget between towns.
+    BudgetMove,
+    /// A kind this dashboard does not know; rendered as-is, never a parse
+    /// error.
+    #[serde(other)]
+    Unknown,
+}
+
+impl EntryKind {
+    /// The name the API uses, the schema's own spelling.
+    pub fn label(self) -> &'static str {
+        match self {
+            EntryKind::Mint => "mint",
+            EntryKind::Spend => "spend",
+            EntryKind::Subcontract => "subcontract",
+            EntryKind::Payment => "payment",
+            EntryKind::Refund => "refund",
+            EntryKind::Clawback => "clawback",
+            EntryKind::Fine => "fine",
+            EntryKind::Fee => "fee",
+            EntryKind::BudgetMove => "budget_move",
+            EntryKind::Unknown => "unknown",
+        }
+    }
+}
+
+/// One account, as `GET /api/v0/treasury` reports it
+/// (`noded::treasury::AccountView`).
+///
+/// Every column the daemon writes is required — none of these is nullable — so
+/// a body that omits one is an error that names it, while a column this client
+/// does not know is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Account {
+    /// The account's id.
+    pub id: u64,
+    /// The account's kind.
+    pub kind: AccountKind,
+    /// The account's owner (`owner_ref`): a task id, an agent id, or a fixed
+    /// name.
+    pub owner_ref: String,
+    /// The account's credit limit (0 at v0: no reputation slice sets one).
+    pub credit_limit: i64,
+    /// The balance: the sum of the account's postings, derived by the daemon
+    /// and never stored.
+    pub balance: i128,
+    /// When the account was opened, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+}
+
+/// The treasury view's totals line (`noded::treasury::TotalsView`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Totals {
+    /// How many accounts the treasury holds.
+    pub accounts: usize,
+    /// How many entries the journal holds.
+    pub entries: usize,
+    /// The total credited across the journal.
+    pub credits: i128,
+    /// The total debited across the journal.
+    pub debits: i128,
+    /// The sum of every account's balance: zero while the journal balances.
+    pub balance: i128,
+}
+
+/// One posting of an entry (`noded::treasury::PostingView`).
+///
+/// The amount's sign *is* the side: negative is a debit, positive a credit,
+/// exactly as the schema reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Posting {
+    /// The account's id.
+    pub account: u64,
+    /// The account's kind.
+    pub kind: AccountKind,
+    /// The account's owner.
+    pub owner_ref: String,
+    /// The amount: negative for a debit, positive for a credit.
+    pub amount: i64,
+}
+
+impl Posting {
+    /// Whether this posting is on the debit side (`amount < 0`).
+    pub fn is_debit(&self) -> bool {
+        self.amount < 0
+    }
+
+    /// The posting's size, whichever side it is on.
+    pub fn magnitude(&self) -> i64 {
+        self.amount.unsigned_abs() as i64
+    }
+}
+
+/// One journal entry (`noded::treasury::EntryView`): the schema's
+/// `treasury.entries` row together with its postings.
+///
+/// `task_id` and `root_task` are the two nullable columns — `null` for an
+/// entry that belongs to no task (a `fine` or a `fee`) — so they are
+/// [`Column`]s, while every other column is required.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Entry {
+    /// The entry's id, assigned once in order.
+    pub id: u64,
+    /// The entry's kind.
+    pub kind: EntryKind,
+    /// The task the entry belongs to, or `null`.
+    pub task_id: Column<String>,
+    /// The entry's chain root, or `null` when it belongs to no chain.
+    pub root_task: Column<String>,
+    /// The entry's memo.
+    pub memo: String,
+    /// Who posted it (always `treasury-service`).
+    pub posted_by: String,
+    /// When it was posted, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+    /// The entry's size: the total of its credit-side postings, which equals
+    /// the total of its debits, since every entry balances to zero.
+    pub amount: i128,
+    /// The entry's postings, which sum to zero.
+    pub postings: Vec<Posting>,
+}
+
+/// `GET /api/v0/treasury`: the accounts and the totals
+/// (`noded::treasury::TreasuryView`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Treasury {
+    /// The accounts, in creation order, each with its derived balance.
+    pub accounts: Vec<Account>,
+    /// The totals line.
+    pub totals: Totals,
+    /// Real money spent (0 at v0: nothing meters spend yet).
+    pub spent: i128,
+    /// The daemon's own note on why `spent` is what it is.
+    pub note: String,
+}
+
+/// `GET /api/v0/treasury/journal`: the journal
+/// (`noded::treasury::JournalView`).
+///
+/// The endpoint returns the newest `limit` entries (oldest of those first), so
+/// `truncated` is how a caller tells a journal read whole from one that was
+/// cut to its bound.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Journal {
+    /// The entries the response carries, in chronological order (newest last).
+    pub entries: Vec<Entry>,
+    /// How many entries the journal holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the journal holds more entries than the response carries.
+    pub truncated: bool,
+}
+
+/// The whole treasury as the console reads it: the accounts and their totals,
+/// and the journal beside them.
+///
+/// Both are served by the same daemon and are two halves of one fact, so the
+/// console reads them together: a read is the treasury view and the journal
+/// view, and a failure of either is a read that did not happen. That is what
+/// lets the pane have one schedule and one failure count of its own, exactly
+/// as the hub's status surface does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreasuryRead {
+    /// The accounts and their totals.
+    pub treasury: Treasury,
+    /// The journal, newest last and bounded by the daemon's own limit.
+    pub journal: Journal,
+}
+
 /// `POST /api/v0/tasks`: the body sends exactly the fields `noded` accepts
 /// (`noded::tasks::CreateTask`); a field it does not name is absent rather
 /// than null, and the daemon fills its own default.
@@ -1191,6 +1431,21 @@ impl Client {
             &format!("/api/v0/tasks/{}/artifact", checked_id(id)?),
             Some(&body),
         )
+    }
+
+    /// The treasury: `GET /api/v0/treasury` and `GET /api/v0/treasury/journal`,
+    /// read together as one read.
+    ///
+    /// The two endpoints are two halves of one fact — the accounts with their
+    /// derived balances, and the append-only entries that moved them — so a
+    /// read is both or neither: a failure of either half is a read that did
+    /// not happen, which is what gives the pane one schedule and one failure
+    /// count. Nothing here writes: every entry is posted by the daemon's own
+    /// treasury service, and this client has no path that would post one.
+    pub fn treasury(&self) -> Result<TreasuryRead, ApiError> {
+        let treasury: Treasury = self.json("GET", "/api/v0/treasury", None)?;
+        let journal: Journal = self.json("GET", "/api/v0/treasury/journal", None)?;
+        Ok(TreasuryRead { treasury, journal })
     }
 
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
@@ -2254,5 +2509,309 @@ mod tests {
         assert!(client.claim_task("t1/claim", 4).is_err());
         assert!(client.finish_task("t1/../t2", FinishOutcome::Done, None).is_err());
         assert!(client.withdraw_task("t1/../t2").is_err());
+    }
+
+    /// A treasury body as `GET /api/v0/treasury` sends it, byte for byte the
+    /// shape the live daemon answered with after one budgeted task's cycle:
+    /// the mint account and the task's escrow, balanced to zero.
+    const TREASURY: &str = r#"{"accounts":[
+        {"id":1,"kind":"mint","owner_ref":"mint","credit_limit":0,"balance":0,
+         "created_at":1791680742762},
+        {"id":2,"kind":"task_escrow","owner_ref":"t1","credit_limit":0,"balance":0,
+         "created_at":1791680766728}],
+        "totals":{"accounts":2,"entries":2,"credits":1500,"debits":1500,"balance":0},
+        "spent":0,"note":"v0 meters no real spend; a done task refunds its whole escrow"}"#;
+
+    /// A journal body as `GET /api/v0/treasury/journal` sends it: the one
+    /// cycle's two entries, each with its postings.
+    const JOURNAL: &str = r#"{"entries":[
+        {"id":1,"kind":"mint","task_id":"t1","root_task":"t1","memo":"task budget",
+         "posted_by":"treasury-service","created_at":1791680766728,"amount":750,
+         "postings":[{"account":1,"kind":"mint","owner_ref":"mint","amount":-750},
+                     {"account":2,"kind":"task_escrow","owner_ref":"t1","amount":750}]},
+        {"id":2,"kind":"refund","task_id":"t1","root_task":"t1","memo":"task budget refunded",
+         "posted_by":"treasury-service","created_at":1791680768447,"amount":750,
+         "postings":[{"account":2,"kind":"task_escrow","owner_ref":"t1","amount":-750},
+                     {"account":1,"kind":"mint","owner_ref":"mint","amount":750}]}],
+        "total":2,"limit":256,"truncated":false}"#;
+
+    #[test]
+    fn a_treasury_body_parses_every_column_the_daemon_writes() {
+        let treasury: Treasury = from_body(TREASURY);
+        assert_eq!(treasury.accounts.len(), 2);
+
+        let mint = &treasury.accounts[0];
+        assert_eq!(mint.id, 1);
+        assert_eq!(mint.kind, AccountKind::Mint);
+        assert_eq!(mint.owner_ref, "mint");
+        assert_eq!(mint.credit_limit, 0);
+        assert_eq!(mint.balance, 0);
+        assert_eq!(mint.created_at, 1_791_680_742_762);
+
+        let escrow = &treasury.accounts[1];
+        assert_eq!(escrow.kind, AccountKind::TaskEscrow);
+        assert_eq!(escrow.kind.label(), "task_escrow");
+        assert_eq!(escrow.owner_ref, "t1");
+
+        assert_eq!(treasury.totals.accounts, 2);
+        assert_eq!(treasury.totals.entries, 2);
+        assert_eq!(treasury.totals.credits, 1_500);
+        assert_eq!(treasury.totals.debits, 1_500);
+        assert_eq!(treasury.totals.balance, 0, "the journal balances");
+
+        assert_eq!(treasury.spent, 0, "v0 meters no real spend");
+        assert_eq!(
+            treasury.note,
+            "v0 meters no real spend; a done task refunds its whole escrow",
+            "the daemon's own note, verbatim"
+        );
+    }
+
+    /// The whole treasury body as JSON, with the named paths removed: what a
+    /// body that is not the daemon's shape looks like. A path with no `/` is a
+    /// top-level column; `accounts/<field>` and `totals/<field>` are the
+    /// nested ones.
+    fn treasury_without(remove: &[&str]) -> String {
+        let mut body: serde_json::Value = from_body(TREASURY);
+        for path in remove {
+            match path.split_once('/') {
+                Some(("accounts", field)) => {
+                    body["accounts"][0]
+                        .as_object_mut()
+                        .expect("an accounts row is an object")
+                        .remove(field);
+                }
+                Some(("totals", field)) => {
+                    body["totals"]
+                        .as_object_mut()
+                        .expect("the totals are an object")
+                        .remove(field);
+                }
+                Some(other) => panic!("the fixture has no path {other:?}"),
+                None => {
+                    body.as_object_mut()
+                        .expect("the body is an object")
+                        .remove(*path);
+                }
+            }
+        }
+        body.to_string()
+    }
+
+    #[test]
+    fn a_treasury_missing_a_column_is_an_error_that_names_it() {
+        // Every column the daemon writes is required, at every level — none of
+        // the treasury's own is nullable. The whole body is walked so no
+        // column is quietly optional.
+        for path in [
+            "accounts",
+            "totals",
+            "spent",
+            "note",
+            "accounts/id",
+            "accounts/kind",
+            "accounts/owner_ref",
+            "accounts/credit_limit",
+            "accounts/balance",
+            "accounts/created_at",
+            "totals/accounts",
+            "totals/entries",
+            "totals/credits",
+            "totals/debits",
+            "totals/balance",
+        ] {
+            let body = treasury_without(&[path]);
+            let error = serde_json::from_str::<Treasury>(&body)
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+        // The whole shape, and none of it missing, parses.
+        let treasury: Treasury = from_body(&treasury_without(&[]));
+        assert_eq!(treasury.accounts.len(), 2);
+    }
+
+    #[test]
+    fn a_treasury_kind_the_client_does_not_know_parses_as_unknown() {
+        let mut body: serde_json::Value = from_body(TREASURY);
+        body["accounts"][0]["kind"] = serde_json::json!("escrow_of_the_moon");
+        let treasury: Treasury = from_body(&body.to_string());
+        assert_eq!(treasury.accounts[0].kind, AccountKind::Unknown);
+        assert_eq!(treasury.accounts[0].kind.label(), "unknown");
+    }
+
+    #[test]
+    fn a_treasury_column_the_client_does_not_know_is_ignored() {
+        // A newer daemon may add a column without breaking the console.
+        let mut body: serde_json::Value = from_body(TREASURY);
+        body["accounts"][0]["frozen"] = serde_json::json!(false);
+        body["unsealed_total"] = serde_json::json!(0);
+        let treasury: Treasury = from_body(&body.to_string());
+        assert_eq!(treasury.accounts[0].id, 1);
+        assert_eq!(treasury.spent, 0);
+    }
+
+    #[test]
+    fn a_journal_body_parses_every_column_the_daemon_writes() {
+        let journal: Journal = from_body(JOURNAL);
+        assert_eq!(journal.entries.len(), 2);
+        assert_eq!(journal.total, 2);
+        assert_eq!(journal.limit, 256);
+        assert!(!journal.truncated);
+
+        let mint = &journal.entries[0];
+        assert_eq!(mint.id, 1);
+        assert_eq!(mint.kind, EntryKind::Mint);
+        assert_eq!(mint.kind.label(), "mint");
+        assert_eq!(mint.task_id.as_deref(), Some("t1"));
+        assert_eq!(mint.root_task.as_deref(), Some("t1"));
+        assert_eq!(mint.memo, "task budget");
+        assert_eq!(mint.posted_by, "treasury-service");
+        assert_eq!(mint.created_at, 1_791_680_766_728);
+        assert_eq!(mint.amount, 750);
+        assert_eq!(mint.postings.len(), 2);
+
+        // The postings: the mint's debit leaves the mint, its credit fills the
+        // escrow — the sign *is* the side.
+        let debit = &mint.postings[0];
+        assert_eq!(debit.account, 1);
+        assert_eq!(debit.kind, AccountKind::Mint);
+        assert_eq!(debit.owner_ref, "mint");
+        assert_eq!(debit.amount, -750);
+        assert!(debit.is_debit());
+        assert_eq!(debit.magnitude(), 750);
+
+        let credit = &mint.postings[1];
+        assert_eq!(credit.kind, AccountKind::TaskEscrow);
+        assert_eq!(credit.owner_ref, "t1");
+        assert_eq!(credit.amount, 750);
+        assert!(!credit.is_debit());
+        assert_eq!(credit.magnitude(), 750);
+
+        // Every entry balances: its credits equal its debits.
+        for entry in &journal.entries {
+            let credits: i64 = entry.postings.iter().filter(|p| !p.is_debit()).map(Posting::magnitude).sum();
+            let debits: i64 = entry.postings.iter().filter(|p| p.is_debit()).map(Posting::magnitude).sum();
+            assert_eq!(credits, debits, "entry {} balances", entry.id);
+            assert_eq!(i128::from(credits), entry.amount, "entry {}'s size is its credited total", entry.id);
+        }
+    }
+
+    /// The journal body with one column of its first entry removed.
+    fn journal_without_entry_field(field: &str) -> String {
+        let mut body: serde_json::Value = from_body(JOURNAL);
+        body["entries"][0]
+            .as_object_mut()
+            .expect("an entry is an object")
+            .remove(field);
+        body.to_string()
+    }
+
+    #[test]
+    fn a_journal_missing_a_column_is_an_error_that_names_it() {
+        for path in ["entries", "total", "limit", "truncated"] {
+            let mut body: serde_json::Value = from_body(JOURNAL);
+            body.as_object_mut()
+                .expect("the body is an object")
+                .remove(path);
+            let error = serde_json::from_str::<Journal>(&body.to_string())
+                .expect_err("a body missing a column must be refused");
+            assert!(
+                error.to_string().contains(path),
+                "the error should name {path:?}: {error}"
+            );
+        }
+        for field in [
+            "id",
+            "kind",
+            "task_id",
+            "root_task",
+            "memo",
+            "posted_by",
+            "created_at",
+            "amount",
+            "postings",
+        ] {
+            let error = serde_json::from_str::<Journal>(&journal_without_entry_field(field))
+                .expect_err("an entry missing a column must be refused");
+            assert!(
+                error.to_string().contains(field),
+                "the error should name {field:?}: {error}"
+            );
+        }
+        // A posting's own columns are required too.
+        for field in ["account", "kind", "owner_ref", "amount"] {
+            let mut body: serde_json::Value = from_body(JOURNAL);
+            body["entries"][0]["postings"][0]
+                .as_object_mut()
+                .expect("a posting is an object")
+                .remove(field);
+            let error = serde_json::from_str::<Journal>(&body.to_string())
+                .expect_err("a posting missing a column must be refused");
+            assert!(
+                error.to_string().contains(field),
+                "the error should name {field:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_journal_task_column_is_nullable_but_never_absent() {
+        // An entry that belongs to no task (a `fine` or a `fee`) writes
+        // `null`, which reads as none rather than as an error.
+        let journal: Journal = from_body(
+            r#"{"entries":[{"id":7,"kind":"fine","task_id":null,"root_task":null,
+                 "memo":"a sanction","posted_by":"treasury-service","created_at":1,
+                 "amount":5,"postings":[{"account":3,"kind":"agent_earnings",
+                 "owner_ref":"cid:100","amount":-5},{"account":4,"kind":"treasury",
+                 "owner_ref":"treasury","amount":5}]}],
+                "total":1,"limit":256,"truncated":false}"#,
+        );
+        assert_eq!(journal.entries[0].task_id.get(), None);
+        assert_eq!(journal.entries[0].root_task.get(), None);
+
+        // Absent is a different fact from null, and it is named.
+        let mut body: serde_json::Value = from_body(JOURNAL);
+        body["entries"][0]
+            .as_object_mut()
+            .expect("an object")
+            .remove("task_id");
+        let error = serde_json::from_str::<Journal>(&body.to_string())
+            .expect_err("an absent column is not a null one");
+        assert!(error.to_string().contains("task_id"), "{error}");
+    }
+
+    #[test]
+    fn a_journal_entry_kind_the_client_does_not_know_parses_as_unknown() {
+        let mut body: serde_json::Value = from_body(JOURNAL);
+        body["entries"][0]["kind"] = serde_json::json!("tithe");
+        let journal: Journal = from_body(&body.to_string());
+        assert_eq!(journal.entries[0].kind, EntryKind::Unknown);
+        assert_eq!(journal.entries[0].kind.label(), "unknown");
+    }
+
+    #[test]
+    fn a_journal_that_was_cut_to_its_limit_says_so() {
+        let mut body: serde_json::Value = from_body(JOURNAL);
+        body["total"] = serde_json::json!(900);
+        body["truncated"] = serde_json::json!(true);
+        let journal: Journal = from_body(&body.to_string());
+        assert_eq!(journal.entries.len(), 2, "the response carries what it carries");
+        assert_eq!(journal.total, 900);
+        assert!(journal.truncated);
+    }
+
+    #[test]
+    fn the_treasury_read_is_both_halves_or_neither() {
+        // The read is the pane's own unit: a treasury view and a journal.
+        let read = TreasuryRead {
+            treasury: from_body(TREASURY),
+            journal: from_body(JOURNAL),
+        };
+        assert_eq!(read.treasury.totals.entries, read.journal.total);
+        assert_eq!(read.treasury.spent, 0);
     }
 }

@@ -135,6 +135,8 @@ KEYS:
                            too: drive one tool, or stop a session
     l                      the ledger: the plaza's tasks, with the claim,
                            finish and withdrawal the daemon accepts on them
+    y                      the treasury: the accounts, their totals and the
+                           double-entry journal — read-only
     t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
     Escape                 back to the register
@@ -153,6 +155,13 @@ POST /api/v0/tasks (file), POST /api/v0/tasks/{id}/claim (as a live agent's
 guest CID), POST /api/v0/tasks/{id}/finish (done or failed, with a note) and
 DELETE /api/v0/tasks/{id} (withdraw); a task event for a task the ledger has
 not read asks for the ledger rather than inventing a row.
+The treasury pane (read-only) reads GET /api/v0/treasury and
+GET /api/v0/treasury/journal together while it is up, on its own schedule: the
+accounts with their derived balances, the totals line, the daemon's own note on
+real spend, and every journal entry with its postings ruled as the debit and
+credit sides. It writes nothing — every entry is the daemon's own. A treasury
+event for an entry past the newest the pane holds reads the journal again
+rather than assembling an entry from a frame.
 When --hub-url names a status surface, GET /status is read at the same
 cadence and the roster joins it to the register by guest CID: an agent the
 register reports and the hub does not is drawn 'registered, not connected',
@@ -373,6 +382,12 @@ mod tests {
         }
         // The roster's own key, named with what it answers.
         assert!(HELP.contains("w                      the roster: who is running by role"));
+        // The ledger's and the treasury's own keys.
+        assert!(HELP.contains("l                      the ledger"));
+        assert!(HELP.contains("y                      the treasury"));
+        // The treasury pane is read-only and reads both halves at once.
+        assert!(HELP.contains("GET /api/v0/treasury/journal"));
+        assert!(HELP.contains("read-only"));
         // The two local behaviours the help names, and the stream it follows.
         assert!(HELP.contains("quick boots fill the"));
         assert!(HELP.contains("exports a transcript"));

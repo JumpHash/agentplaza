@@ -21,9 +21,9 @@ use crate::mapview::{self, FleetMap};
 use crate::model::{
     ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DriveState, Health, HistoryStep, Message,
     Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES, StopState,
-    duration_label, hub_facts, hub_line, instant_label, memory_label, preset_footprint,
-    roster_line, roster_tally, serial_tail, tally_line, task_line, task_state_line, task_tally,
-    transcript_span,
+    duration_label, entry_task, hub_facts, hub_line, instant_label, journal_tally, memory_label,
+    money_label, posting_account, preset_footprint, roster_line, roster_tally, serial_tail,
+    tally_line, task_line, task_state_line, task_tally, totals_line, transcript_span, treasury_line,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
@@ -106,6 +106,13 @@ fn index(model: &Model) -> Container<'_, Message> {
                 model.fleet_lps()
             ),
             Pane::Telemetry,
+        ),
+        index_entry(
+            model,
+            "6",
+            "Treasury",
+            treasury_line(model),
+            Pane::Treasury,
         ),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
@@ -219,10 +226,11 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 9] = [
+const KEYS: [(&str, &str); 10] = [
     ("r", "register"),
     ("w", "roster: running + connected, by role"),
     ("l", "ledger: the plaza's tasks"),
+    ("y", "treasury: the accounts + the journal"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
@@ -332,6 +340,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Map => body.push(map_pane(model)),
         Pane::Roster => body.push(roster_pane(model)),
         Pane::Ledger => body.push(ledger_pane(model)),
+        Pane::Treasury => body.push(treasury_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -376,6 +385,10 @@ fn running_head(model: &Model) -> Element<'_, Message> {
             "the plaza's tasks · every claim, finish and withdrawal the daemon \
              holds"
                 .to_string(),
+        ),
+        Pane::Treasury => (
+            "Treasury".to_string(),
+            "the plaza's accounts and its journal · GET /api/v0/treasury".to_string(),
         ),
         Pane::Telemetry => (
             "Telemetry".to_string(),
@@ -1882,6 +1895,298 @@ fn tone_for_task(state: TaskState) -> Tone {
     }
 }
 
+/// The treasury pane: the plaza's accounts, their totals, the daemon's own
+/// note on real spend, and the double-entry journal that moved every balance.
+///
+/// It is **read-only**: every entry is posted by the daemon's treasury
+/// service, and the console has no path that would post one — what is drawn
+/// here is what the daemon already did. The accounts' balances are derived by
+/// the daemon from the postings (never stored), and the journal is
+/// append-only, so what the pane shows only ever grows.
+fn treasury_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "The plaza's accounts and the double-entry journal that moves them, read straight \
+             from the daemon's treasury. Every entry is posted by the daemon's own treasury \
+             service — this console reads the money and can write nothing here. Balances are \
+             derived from the postings, and the journal is append-only.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    ];
+
+    match &model.treasury {
+        Some(read) => {
+            body.push(accounts_sheet(&read.treasury));
+            body.push(journal_sheet(model, &read.journal));
+        }
+        None => {
+            // A treasury nobody has read is not an empty treasury, and one
+            // that could not be read says so rather than drawing nothing.
+            let message = match &model.treasury_error {
+                Some(error) => format!("the treasury could not be read: {error}"),
+                None => "waiting for the treasury's first read…".to_string(),
+            };
+            body.push(
+                container(serif(message, 12.5, INK_2))
+                    .style(theme::boxed)
+                    .width(Length::Fill)
+                    .padding(edge(16.0, 14.0, 16.0, 14.0))
+                    .into(),
+            );
+        }
+    }
+
+    // A read that failed after a good one keeps the last read on the sheet —
+    // the journal is append-only, so it is incomplete, not wrong — and says
+    // how old it is and why it has not moved.
+    if model.treasury.is_some() {
+        if let Some(error) = &model.treasury_error {
+            let age = model
+                .treasury_last_ok_ms
+                .map(|at| {
+                    format!(
+                        " (last read {} ago)",
+                        duration_label(model.now_ms.saturating_sub(at))
+                    )
+                })
+                .unwrap_or_default();
+            body.push(
+                container(serif(
+                    format!("the treasury could not be read since{age}: {error}"),
+                    11.5,
+                    theme::WARN,
+                ))
+                .style(theme::boxed)
+                .width(Length::Fill)
+                .padding(edge(12.0, 10.0, 12.0, 10.0))
+                .into(),
+            );
+        }
+    }
+
+    // The accounts and the journal are as long as the daemon's own caps allow,
+    // so the sheet scrolls rather than silently hiding the tail.
+    scrollable(Column::with_children(body).spacing(8.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// The accounts sheet's column widths: one place for the heads and the cells.
+const ACCOUNT_COL_KIND: f32 = 120.0;
+const ACCOUNT_COL_OWNER: f32 = 170.0;
+const ACCOUNT_COL_LIMIT: f32 = 170.0;
+const ACCOUNT_COL_BALANCE: f32 = 170.0;
+
+/// The journal's column widths, matched to the cells below them.
+const JOURNAL_COL_ID: f32 = 40.0;
+const JOURNAL_COL_KIND: f32 = 100.0;
+const JOURNAL_COL_TASK: f32 = 56.0;
+const JOURNAL_COL_AMOUNT: f32 = 76.0;
+const JOURNAL_COL_MEMO: f32 = 250.0;
+const JOURNAL_COL_POSTED: f32 = 96.0;
+
+/// The postings block's column widths: the ruled debit/credit pair.
+const POSTING_COL_ACCOUNT: f32 = 230.0;
+const POSTING_COL_SIDE: f32 = 90.0;
+
+/// How far the postings block is indented: under the journal's id column, so
+/// an entry and the postings that moved it read as one block.
+const POSTING_INDENT: f32 = 6.0;
+
+/// The accounts the treasury holds, and the totals line under them.
+fn accounts_sheet(treasury: &crate::api::Treasury) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        mono(
+            format!("Accounts · {} row(s)", treasury.accounts.len()),
+            11.5,
+            INK,
+        )
+        .into(),
+        Row::with_children(vec![
+            mono("kind", 10.0, INK_3).width(Length::Fixed(ACCOUNT_COL_KIND)).into(),
+            mono("owner", 10.0, INK_3).width(Length::Fixed(ACCOUNT_COL_OWNER)).into(),
+            mono("credit limit", 10.0, INK_3)
+                .width(Length::Fixed(ACCOUNT_COL_LIMIT))
+                .into(),
+            mono("balance", 10.0, INK_3)
+                .width(Length::Fixed(ACCOUNT_COL_BALANCE))
+                .into(),
+        ])
+        .spacing(COL_SPACING)
+        .into(),
+        rule_heading(),
+    ];
+    for account in &treasury.accounts {
+        body.push(
+            Row::with_children(vec![
+                mono(account.kind.label(), 11.0, INK)
+                    .width(Length::Fixed(ACCOUNT_COL_KIND))
+                    .into(),
+                mono(account.owner_ref.as_str(), 11.0, INK)
+                    .width(Length::Fixed(ACCOUNT_COL_OWNER))
+                    .wrapping(Wrapping::None)
+                    .into(),
+                // Both figures are whole credits with the dollars they stand
+                // for: the register's own money idiom, no invented rate.
+                mono(money_label(i128::from(account.credit_limit)), 10.5, INK_2)
+                    .width(Length::Fixed(ACCOUNT_COL_LIMIT))
+                    .into(),
+                mono(money_label(account.balance), 10.5, INK)
+                    .width(Length::Fixed(ACCOUNT_COL_BALANCE))
+                    .into(),
+            ])
+            .spacing(COL_SPACING)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+
+    body.push(vertical(6.0));
+    body.push(mono(totals_line(&treasury.totals), 11.5, INK).into());
+    // The daemon's own note on real spend, verbatim: at v0 nothing meters
+    // spend, so a task that ends refunds its whole escrow.
+    body.push(
+        row![
+            mono(format!("spent {}", money_label(treasury.spent)), 11.5, INK_2),
+            serif(treasury.note.as_str(), 12.0, INK_2),
+        ]
+        .spacing(10.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    Column::with_children(body).spacing(4.0).into()
+}
+
+/// The journal: every entry, oldest first, each with its postings ruled as the
+/// debit and credit sides they are.
+fn journal_sheet<'a>(model: &'a Model, journal: &'a crate::api::Journal) -> Element<'a, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        mono(format!("Journal · {}", journal_tally(journal)), 11.5, INK).into(),
+    ];
+
+    if journal.entries.is_empty() {
+        body.push(
+            container(serif(
+                "the journal is empty: nothing has been posted yet",
+                12.0,
+                INK_3,
+            ))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .padding(edge(12.0, 12.0, 12.0, 12.0))
+            .into(),
+        );
+        return Column::with_children(body).spacing(4.0).into();
+    }
+
+    body.push(
+        Row::with_children(vec![
+            mono("id", 10.0, INK_3).width(Length::Fixed(JOURNAL_COL_ID)).into(),
+            mono("kind", 10.0, INK_3).width(Length::Fixed(JOURNAL_COL_KIND)).into(),
+            mono("task", 10.0, INK_3).width(Length::Fixed(JOURNAL_COL_TASK)).into(),
+            mono("amount", 10.0, INK_3)
+                .width(Length::Fixed(JOURNAL_COL_AMOUNT))
+                .into(),
+            mono("memo", 10.0, INK_3).width(Length::Fixed(JOURNAL_COL_MEMO)).into(),
+            mono("posted", 10.0, INK_3)
+                .width(Length::Fixed(JOURNAL_COL_POSTED))
+                .into(),
+        ])
+        .spacing(COL_SPACING)
+        .into(),
+    );
+    body.push(rule_heading());
+
+    for entry in &journal.entries {
+        body.push(
+            Row::with_children(vec![
+                mono(entry.id.to_string(), 11.0, INK)
+                    .width(Length::Fixed(JOURNAL_COL_ID))
+                    .into(),
+                mono(entry.kind.label(), 10.5, INK)
+                    .width(Length::Fixed(JOURNAL_COL_KIND))
+                    .into(),
+                mono(entry_task(entry), 10.5, INK_2)
+                    .width(Length::Fixed(JOURNAL_COL_TASK))
+                    .wrapping(Wrapping::None)
+                    .into(),
+                mono(entry.amount.to_string(), 10.5, INK)
+                    .width(Length::Fixed(JOURNAL_COL_AMOUNT))
+                    .into(),
+                mono(entry.memo.as_str(), 10.5, INK_2)
+                    .width(Length::Fixed(JOURNAL_COL_MEMO))
+                    .wrapping(Wrapping::None)
+                    .into(),
+                // A task filed days ago reads as its day rather than as a time
+                // of day that would read as today's, the register's own rule.
+                mono(instant_label(entry.created_at, model.now_ms), 10.5, INK_2)
+                    .width(Length::Fixed(JOURNAL_COL_POSTED))
+                    .into(),
+            ])
+            .spacing(COL_SPACING)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+        body.push(entry_postings(entry));
+        body.push(vertical(6.0));
+    }
+
+    Column::with_children(body).spacing(2.0).into()
+}
+
+/// One entry's postings, ruled as the debit and credit sides they are: a side
+/// is the sign of the amount (negative is a debit), exactly as the schema
+/// reads it.
+fn entry_postings(entry: &crate::api::Entry) -> Element<'_, Message> {
+    let mut rows: Vec<Element<'_, Message>> = vec![
+        Row::with_children(vec![
+            mono("account", 9.5, INK_3)
+                .width(Length::Fixed(POSTING_COL_ACCOUNT))
+                .into(),
+            mono("debit", 9.5, INK_3)
+                .width(Length::Fixed(POSTING_COL_SIDE))
+                .into(),
+            mono("credit", 9.5, INK_3)
+                .width(Length::Fixed(POSTING_COL_SIDE))
+                .into(),
+        ])
+        .spacing(COL_SPACING)
+        .into(),
+        rule::horizontal(1.0).style(theme::rule).into(),
+    ];
+    for posting in &entry.postings {
+        // One side holds the size; the other is left blank, so the rule reads
+        // as a pair of columns rather than one number with a sign.
+        let (debit, credit) = if posting.is_debit() {
+            (posting.magnitude().to_string(), String::new())
+        } else {
+            (String::new(), posting.magnitude().to_string())
+        };
+        rows.push(
+            Row::with_children(vec![
+                mono(posting_account(posting), 10.5, INK_2)
+                    .width(Length::Fixed(POSTING_COL_ACCOUNT))
+                    .wrapping(Wrapping::None)
+                    .into(),
+                mono(debit, 10.5, INK)
+                    .width(Length::Fixed(POSTING_COL_SIDE))
+                    .into(),
+                mono(credit, 10.5, INK)
+                    .width(Length::Fixed(POSTING_COL_SIDE))
+                    .into(),
+            ])
+            .spacing(COL_SPACING)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    container(Column::with_children(rows).spacing(2.0))
+        .padding(edge(2.0, 0.0, 2.0, POSTING_INDENT))
+        .into()
+}
+
 /// The session's figures: what the register observed, one observation per
 /// poll, as three charts and the tally of the window.
 fn telemetry_pane(model: &Model) -> Element<'_, Message> {
@@ -2851,6 +3156,7 @@ mod tests {
             Pane::Map,
             Pane::Roster,
             Pane::Ledger,
+            Pane::Treasury,
             Pane::Telemetry,
         ] {
             model.pane = pane;
@@ -3006,7 +3312,7 @@ mod tests {
     #[test]
     fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
         let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
-        for bound in ["r", "w", "l", "m", "f", "t", "?", "esc", "↑ ↓"] {
+        for bound in ["r", "w", "l", "y", "m", "f", "t", "?", "esc", "↑ ↓"] {
             assert!(keys.contains(&bound), "the register binds {bound:?}");
         }
         for (_, what) in KEYS {

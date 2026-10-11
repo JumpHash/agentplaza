@@ -192,8 +192,8 @@ fn keys() -> Subscription<Message> {
     })
 }
 
-/// The action a key names, if the register binds it: `r`, `m`, `f`, `w`, `l`
-/// and `t` in either case, `?`, Escape, and the console's arrows.
+/// The action a key names, if the register binds it: `r`, `m`, `f`, `w`, `l`,
+/// `y` and `t` in either case, `?`, Escape, and the console's arrows.
 pub fn shortcut(key: &Key) -> Option<KeyAction> {
     match key.as_ref() {
         Key::Character(character) => match character.to_ascii_lowercase().as_str() {
@@ -202,6 +202,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "f" => Some(KeyAction::Map),
             "w" => Some(KeyAction::Roster),
             "l" => Some(KeyAction::Ledger),
+            "y" => Some(KeyAction::Treasury),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -376,6 +377,20 @@ fn dispatch(
                 (epoch_ms(), result)
             },
             |(at_ms, result)| Message::Tasks { at_ms, result },
+        ));
+    }
+    if effect.poll_treasury {
+        // The pane's own read, both halves at once: the accounts with their
+        // totals, and the journal. Its own message and its own schedule, so a
+        // daemon that serves the register but not the treasury never marks the
+        // register down.
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.treasury();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Treasury { at_ms, result },
         ));
     }
     if let Some(id) = effect.fetch_task {
@@ -629,6 +644,7 @@ mod tests {
             (Key::Character("f".into()), KeyAction::Map),
             (Key::Character("w".into()), KeyAction::Roster),
             (Key::Character("l".into()), KeyAction::Ledger),
+            (Key::Character("y".into()), KeyAction::Treasury),
             (Key::Character("t".into()), KeyAction::Telemetry),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
@@ -636,6 +652,7 @@ mod tests {
             (Key::Character("F".into()), KeyAction::Map),
             (Key::Character("W".into()), KeyAction::Roster),
             (Key::Character("L".into()), KeyAction::Ledger),
+            (Key::Character("Y".into()), KeyAction::Treasury),
             (Key::Character("T".into()), KeyAction::Telemetry),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
             (Key::Character("?".into()), KeyAction::Help),

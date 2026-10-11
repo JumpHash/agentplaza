@@ -4,7 +4,9 @@ An iced + wgpu (WebGPU) desktop dashboard for the node daemon's fleet API: the
 fleet as a register — an index of runs on the left, a ruled sheet on the right,
 stamps for every state the daemon reports — and, beside it, the plaza's own
 **ledger**: the tasks the daemon holds, and the claims, finishes and
-withdrawals it accepts on them. With `--hub-url` it also reads the
+withdrawals it accepts on them, and its **treasury**: the accounts, their
+totals and the double-entry journal that moved them, read only. With
+`--hub-url` it also reads the
 hub's read-only status surface, so the **roster** (`w`) can show not only who
 the register says is running but who is actually **connected to the
 orchestrator** right now — the two halves joined by guest CID, never merged.
@@ -48,6 +50,7 @@ agentplaza-desktop [--url <url>] [--hub-url <host:port>]
 | `f` | the fleet map |
 | `w` | the roster: who is running right now, and — with `--hub-url` — who is connected |
 | `l` | the ledger: the plaza's tasks, with the claim, finish and withdrawal the daemon accepts on them |
+| `y` | the treasury: the accounts, their totals and the journal, read only |
 | `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
 | `Escape` | back to the register |
@@ -279,6 +282,36 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   A read the agent declines is the daemon answering, so it neither marks the
   register down nor backs the poll off; only an unreachable daemon is a failed
   call;
+* the **treasury** (`y`): the plaza's money, read straight from the daemon's
+  own treasury service and **read-only from this console** — every entry is
+  posted by the daemon, and nothing here can post one. One read covers both
+  halves (`GET /api/v0/treasury` and `GET /api/v0/treasury/journal` at once),
+  on **its own schedule** with **its own failure count**, exactly as the hub's
+  status surface has: a daemon that serves the register but not the treasury —
+  an older daemon — never marks the register down. The sheet draws the
+  **accounts** (kind, owner, credit limit and balance, every amount in credits
+  *and* the dollars it stands for — whole credits at 1 credit = $0.001 of real
+  spend, the register's own money idiom, no invented rate), the **totals line**
+  (accounts, entries, credits, debits and the sum of every balance, zero while
+  the journal balances), the daemon's own note on real spend **verbatim**
+  (`spent 0 cr · $0.00` — `v0 meters no real spend; a done task refunds its
+  whole escrow`), and the **journal**: one row per entry (its id, kind, task,
+  memo, size and the day it was posted, the register's day-tier stamp), each
+  with its **postings ruled as the debit and credit sides they are** — a side
+  is the sign of the amount, and the two sides of an entry are the same size,
+  because every entry balances to zero. The accounts and the journal are
+  bounded and **scrollable**, and the index's entry carries the daemon's own
+  counts (`2 account(s) · 2 entry(s)`) once the pane has read it, saying `not
+  read yet` before that: a treasury nobody read is not an empty treasury. A
+  `treasury` event arrives on the event stream when an entry is posted
+  (`event: treasury` carries an entry id, a kind, a size and a task): an entry
+  the pane already holds is a duplicate and changes nothing, while an entry
+  past the newest it holds means the journal moved on, and the pane reads the
+  journal again — **once** for a burst of entries, and never growing the
+  journal from a frame that carries no memo, no postings and no clock. A read
+  that fails keeps the last one on the sheet (the journal is append-only, so
+  it is incomplete rather than wrong) and says how old it is and why it has
+  not moved;
 * every failure is a notice line and an error in the index — no request path
   panics, and nothing is swallowed.
 
@@ -330,7 +363,7 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
 ## Tests
 
 ```
-cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
+cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
@@ -358,7 +391,7 @@ cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
   believed; a result stamped on the call it names; a fresh hello restarting the
   reading), the help sheet's toggling, the poll
   schedule and backoff at more than one cadence, the serial tail (with the byte
-  each row starts at), the key bindings (`w` and `l` among them), the CLI.
+  each row starts at), the key bindings (`w`, `l` and `y` among them), the CLI.
 * the ledger, in the same unit tests: the `Task` model's whole parse matrix — a
   body as the daemon writes it read field for field, **every** column required
   (the nullable ones included: `null` and "absent" are not the same fact, and a
@@ -383,15 +416,37 @@ cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
   answer landing as the file the agent read or as the daemon's refusal in its
   own words, a `503` drawn as the read-through being *off* rather than refused,
   an unreachable daemon as the one failed call, an answer for a task that is no
-  longer open dropped, and a selection change or a task leaving the ledger
+  no longer open dropped, and a selection change or a task leaving the ledger
   taking its read with it.
+* the treasury, in the same unit tests: the `Treasury`, `Journal` and `Posting`
+  parse matrices — a body as the live daemon wrote it read field for field
+  (every account, both totals, and the one cycle's mint and refund with their
+  postings), **every** column required at every level with the error naming it
+  (`null` and "absent" are not the same fact for the two nullable entry
+  columns, and a posting's own four are all required), an unknown account or
+  entry kind and an unknown column tolerated, a journal cut to its limit
+  parsed as exactly that, and a posting knowing its own side; the pane's own
+  schedule — the sheet's key reading the treasury once, a tick while the sheet
+  is up reading it on **its** cadence and never before it, the register polled
+  either way, and nothing read at all off the sheet; its failures being its own
+  (a treasury read that fails leaves the register's failures, error and health
+  untouched, backs off on its own count, and clears when it comes back) and its
+  answer keeping the last read beside the failure; and the `treasury` frame's
+  reducer paths — an entry the pane already holds as a no-op that invents no
+  row, an entry past the newest it holds asking for the journal **once** for a
+  whole burst, a frame off the sheet asking for nothing, and the money idiom
+  (whole credits and the dollars they stand for, a debit's sign kept on both),
+  the totals line, the journal's tally and its truncation, and the postings'
+  account labels.
 * the stream: the frame parser's whole matrix (the daemon's frames, a frame
   split mid-line across reads, a heartbeat, CRLF frames, a leading blank line,
   an unknown event kind, a data line with no kind, a malformed frame followed
   by a good one, a state this console does not know, a serial frame's escaped
   bytes, and a `task` frame from the daemon's own bytes — with a state this
   console does not know, and with a field missing, which is named while the next
-  frame still reads), the head that confirms the subscription (a real socket, and three
+  frame still reads; and a `treasury` frame from the daemon's own bytes — the
+  task named and null, a kind this console does not know, and a missing field
+  named while the next frame still reads), the head that confirms the subscription (a real socket, and three
   heads that are not a stream), the reconnect ladder's bounds (`250 ms` doubling
   to `30 s`, reset by any event), the offset merge's whole matrix (append,
   clip, replay, gap, a clip that would split a character, per-VM independence,
@@ -428,7 +483,13 @@ cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
   named, a daemon without a status surface as a recognizable 404, and the
   loopback policy's negatives — subdomains, a suffix (`127.0.0.1.evil.tld`),
   a trailing dot, case variants, `::1`, `0.0.0.0`, a path, a query, port 0 and
-  a missing port — every one refused before a socket is opened.
+  a missing port — every one refused before a socket is opened. The treasury is
+  read the same way, off its own stub: both paths in one read
+  (`GET /api/v0/treasury` then `GET /api/v0/treasury/journal`, both GETs with no
+  body), the mint and the escrow parsed with their derived balances and the
+  journal's postings with the sign that is their side, a treasury the daemon
+  does not serve carried as its own `404`, and a journal half that cannot be
+  read failing the whole read rather than half of it.
 * `tests/render.rs` — headless rendering with iced's own harness: the register
   drawn with the stub's runs, a click on a run fetching it and rendering the
   guest's serial, a click on `New run` opening the form, the presets row and a
@@ -495,7 +556,19 @@ cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
   it), a `403` refusal drawn in the register's red in the hub's own words, and a
   `503` drawn as the read-through being *off*; and the **whole application
   following a task event** between polls — the state and assignee off the
-  stream, the ledger still holding exactly the daemon's rows), and a full
+  stream, the ledger still holding exactly the daemon's rows), the **treasury**
+  (the sheet over the stub's real treasury: the accounts with every column and
+  both figures — `1500 cr · $1.50` — the totals line, the daemon's note on real
+  spend verbatim, the journal's two entries with their memos, sizes and
+  debit/credit postings, and a posting from another day stamped with its day;
+  the index entry and the `y` key reaching the sheet, the entry saying `not
+  read yet` before the pane has read it; a fresh daemon's **empty journal**
+  drawn as an empty journal rather than a blank sheet; a read that fails after
+  a good one keeping the last read and naming the failure beside it with the
+  register still `LIVE`; and the **whole application following a `treasury`
+  frame** between polls — the frame driving one read of the pane's own surface,
+  the entry that arrives the daemon's own row with the postings a frame could
+  not describe, and no register poll), and a full
   application frame
   written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
@@ -504,8 +577,9 @@ cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
 
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
 read a running daemon (read-only: it reads the machine, lists runs, reads
-each one with its serial and exit kind, and reads the ledger — every task, and
-each task by its own id — mutating nothing; it also reads each task's artifact
+each one with its serial and exit kind, reads the ledger — every task, and
+each task by its own id — and reads the treasury, both halves at once, checking
+every entry balances; it mutates nothing; it also reads each task's artifact
 back through that task's agent, the one POST of the walk, which drives the
 agent's `read_file` and touches nothing but the file it reports). Set
 `APZ_DESKTOP_LIVE_HUB=host:port`
