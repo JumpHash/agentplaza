@@ -465,7 +465,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             input: input.clone(),
         })?;
         let (decision, output, is_error) = self.await_message("tool_decision", |message| match message {
-            HostMessage::ToolDecision { call, decision, output, is_error } if call == id => {
+            HostMessage::ToolDecision { call, decision, output, is_error, .. } if call == id => {
                 Ok((decision, output, is_error))
             }
             other => Err(other),

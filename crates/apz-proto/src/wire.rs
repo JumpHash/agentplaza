@@ -68,6 +68,32 @@ pub enum GuestMessage {
     WorkDone { work: u64, status: WorkStatus, summary: String },
 }
 
+/// An agent-made tool from the plaza's library, as the guest runs it: its files are
+/// unpacked under `/workspace/.plaza/tools/<name>@<version>/`, its `requires` apk
+/// packages installed, and `command` run there with the call's input JSON on stdin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Program {
+    pub name: String,
+    pub version: u32,
+    /// SHA-256 over the files, so an unpacked copy can be reused.
+    pub hash: String,
+    pub files: Vec<ProgramFile>,
+    /// argv, run in the unpacked directory (e.g. `["python3", "main.py"]`).
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    pub timeout_s: u64,
+}
+
+/// One file of a [`Program`], its bytes base64-encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramFile {
+    pub path: String,
+    pub content_b64: String,
+    #[serde(default)]
+    pub executable: bool,
+}
+
 /// A line the host sends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -110,6 +136,11 @@ pub enum HostMessage {
         output: String,
         #[serde(default)]
         is_error: bool,
+        /// A plaza library tool to run for this call (an agent-made tool): the guest
+        /// unpacks it in its own VM and runs it with the call's input. `None` for
+        /// built-in tools.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<Program>,
     },
     /// v3: abort work item `work` after the current step.
     Cancel { work: u64, reason: String },
@@ -268,6 +299,7 @@ mod tests {
             decision: Decision::Allow,
             output: String::new(),
             is_error: false,
+            program: None,
         };
         assert_eq!(HostMessage::from_line(&decision.to_line().unwrap()).unwrap(), decision);
     }

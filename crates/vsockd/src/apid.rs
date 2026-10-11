@@ -131,6 +131,7 @@ pub fn refusal(message: &GuestMessage, reason: &str) -> Option<HostMessage> {
             decision: Decision::Deny,
             output: reason.to_string(),
             is_error: true,
+            program: None,
         }),
         _ => None,
     }

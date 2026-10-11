@@ -125,6 +125,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 decision: Decision::Deny,
                 output: "unknown agent".to_string(),
                 is_error: true,
+                program: None,
             }),
             _ => None,
         };
@@ -323,7 +324,7 @@ fn tool_request(
             "output": cap_output(&output, DECISION_OUTPUT_BYTES),
         }),
     );
-    HostMessage::ToolDecision { call, decision, output, is_error }
+    HostMessage::ToolDecision { call, decision, output, is_error, program: None }
 }
 
 /// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not.
