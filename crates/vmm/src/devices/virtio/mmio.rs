@@ -31,6 +31,7 @@
 //! the guest without waking this process at all).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Barrier;
 
 use vmm_sys_util::eventfd::EventFd;
@@ -149,6 +150,12 @@ pub trait VirtioDevice: Send {
     /// host's vhost drops as misaddressed.
     fn read_config(&mut self, offset: u64, data: &mut [u8]);
 
+    /// The driver wrote `data` to the device configuration space at `offset`.
+    /// The transport forwards every write in the configuration window here; a
+    /// device whose fields are not the driver's to write ignores the bytes.
+    /// The default ignores them, for a device with no writable configuration.
+    fn write_config(&mut self, _offset: u64, _data: &[u8]) {}
+
     /// The driver notified the device that queue `index` has new buffers.
     fn notify_queue(&mut self, index: u32) -> Result<(), VirtioError>;
 
@@ -172,6 +179,12 @@ pub struct VirtioMmioTransport {
     device_status: u32,
     /// Monotonic configuration generation (`ConfigGeneration`).
     config_generation: u32,
+    /// The interrupt status (`InterruptStatus`). The transport always reports
+    /// `VIRTIO_MMIO_INT_VRING`; a device ORs `VIRTIO_MMIO_INT_CONFIG` into this
+    /// value on a configuration change (through
+    /// [`VirtioMmioTransport::interrupt_status_handle`]), and the guest's
+    /// interrupt-ack write clears the bits it acknowledges.
+    interrupt_status: Arc<AtomicU32>,
     /// Guest memory, handed to the device on activation so it can translate
     /// the rings the driver programmed.
     mem: GuestMemoryMmap,
@@ -195,6 +208,7 @@ impl VirtioMmioTransport {
             queue_select: 0,
             device_status: device_status::INIT,
             config_generation: 0,
+            interrupt_status: Arc::new(AtomicU32::new(0)),
             mem,
             irq,
         }
@@ -322,10 +336,16 @@ impl VirtioMmioTransport {
     /// the guest's `virtio_mmio` driver, which would then never service the used
     /// ring — and 0x01 makes that driver look at every queue, which is exactly
     /// what a backend that cannot report a per-queue status needs. (Firecracker
-    /// does the same for its vhost-user devices; `VIRTIO_MMIO_INT_CONFIG` is
-    /// never set, since no device here has a configuration space to change.)
+    /// does the same for its vhost-user devices.) On top of that, the bits a
+    /// device set in the shared status (`VIRTIO_MMIO_INT_CONFIG` after a
+    /// configuration change) are reported until the driver acknowledges them.
     fn interrupt_status(&self) -> u32 {
-        VIRTIO_MMIO_INT_VRING
+        VIRTIO_MMIO_INT_VRING | self.interrupt_status.load(Ordering::SeqCst)
+    }
+
+    /// The shared interrupt status a device ORs its interrupt bits into.
+    pub fn interrupt_status_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.interrupt_status)
     }
 
     /// Clears the transport's registers and resets the device, as a driver
@@ -483,10 +503,10 @@ impl BusDevice for VirtioMmioTransport {
                         }
                     }
                     0x64 => {
-                        // Interrupt acknowledgement. The status reported to the
-                        // driver is not sticky (see `interrupt_status`), so
-                        // there is nothing to clear; the write is accepted
-                        // either way, as the specification requires.
+                        // Interrupt acknowledgement: the driver clears the bits
+                        // it has handled. VRING is not stored, so only the
+                        // device-set bits (CONFIG) are affected.
+                        self.interrupt_status.fetch_and(!value, Ordering::SeqCst);
                     }
                     0x70 => self.set_device_status(value),
                     0x80 => self
@@ -507,10 +527,8 @@ impl BusDevice for VirtioMmioTransport {
                     }
                 }
             }
-            // The device configuration space: no device here has one, so a
-            // write is dropped (a driver only writes it when the device
-            // advertised one).
-            0x100..=0xfff => {}
+            // The device configuration space, forwarded to the device.
+            0x100..=0xfff => self.device.write_config(offset - 0x100, data),
             _ => {
                 eprintln!(
                     "warning: invalid virtio mmio write: {base:#x}:{offset:#x}:{}",
@@ -536,6 +554,7 @@ mod tests {
         activated: usize,
         notified: Vec<u32>,
         resets: usize,
+        config_written: Vec<(u64, Vec<u8>)>,
     }
 
     /// A device that records what the transport asks of it, so the register
@@ -589,6 +608,14 @@ mod tests {
             for (index, byte) in data.iter_mut().enumerate() {
                 *byte = u8::try_from(offset).unwrap_or(0).wrapping_add(index as u8);
             }
+        }
+
+        fn write_config(&mut self, offset: u64, data: &[u8]) {
+            self.state
+                .lock()
+                .expect("mock state")
+                .config_written
+                .push((offset, data.to_vec()));
         }
 
         fn activate(&mut self, _mem: &GuestMemoryMmap, _irq: &EventFd) -> Result<(), VirtioError> {
@@ -645,6 +672,34 @@ mod tests {
     /// Writes one 32-bit register.
     fn write_u32(transport: &mut VirtioMmioTransport, offset: u64, value: u32) {
         transport.write(0, offset, &value.to_le_bytes());
+    }
+
+    #[test]
+    fn config_writes_reach_the_device_and_config_interrupt_is_raised_and_acked() {
+        let (mut transport, state) = mock_transport(0, 1);
+
+        // A driver write into the configuration window (offset 0x100 + 4).
+        transport.write(0, 0x104, &[1, 2, 3, 4]);
+        assert_eq!(
+            state.lock().expect("mock state").config_written,
+            vec![(4, vec![1, 2, 3, 4])]
+        );
+
+        // Nothing pending: only the VRING bit is reported.
+        assert_eq!(read_u32(&mut transport, 0x60), VIRTIO_MMIO_INT_VRING);
+
+        // A device signals a configuration change through the shared status.
+        transport
+            .interrupt_status_handle()
+            .fetch_or(VIRTIO_MMIO_INT_CONFIG, Ordering::SeqCst);
+        assert_eq!(
+            read_u32(&mut transport, 0x60),
+            VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG
+        );
+
+        // The driver acknowledges CONFIG; the bit clears and VRING remains.
+        write_u32(&mut transport, 0x64, VIRTIO_MMIO_INT_CONFIG);
+        assert_eq!(read_u32(&mut transport, 0x60), VIRTIO_MMIO_INT_VRING);
     }
 
     /// Drives the status state machine to `DRIVER`, the point at which the
