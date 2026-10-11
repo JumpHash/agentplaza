@@ -111,7 +111,10 @@ export interface BoardPost { id: string; agent_cid: number; role: string; subjec
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean }
 export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
 export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
-export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; note: string }
+export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
+export interface Posting { account: string; amount: number }
+export interface JournalEntry { id: number; kind: string; at: number; postings: Posting[]; memo: string; task: string | null }
+export interface Wallet { cid: number; name: string; balance: number }
 export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
@@ -166,6 +169,10 @@ export const api = {
   motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
   decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
   treasury: () => get<Treasury>('/v1/treasury'),
+  treasuryJournal: () => get<{ entries: JournalEntry[] } | JournalEntry[]>('/v1/treasury/journal').then((r) => (Array.isArray(r) ? r : r.entries)),
+  treasuryWallets: () => get<Wallet[]>('/v1/treasury/wallets'),
+  mintBudget: (amount: number) => post<unknown>('/v1/treasury/mint', { amount }),
+  fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
   agora: () => get<{ calls: unknown[] }>('/v1/agora').then((r) => r.calls),
 
   machine: () => get<Machine>('/v1/machine'),
