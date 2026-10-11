@@ -1,9 +1,288 @@
-// TODO: built by its own slice.
+// The model policy: which models each tier may run, the defaults, the limits
+// and the prices. One document (apid's /v1/settings), saved whole.
 
-import { empty } from '../ui/components';
+import '../styles/models-policy.css';
+import { api, type ModelsView, type Settings } from '../api';
+import { agents } from '../store';
+import { attempt, badge, button, card, dot, empty, field, input, select, table, textarea, toast } from '../ui/components';
+import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
+type Tier = 'orchestrator' | 'worker';
+type Choice = { value: string; label: string };
+type Price = { input: number; output: number };
+
+const EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+const LIST_ID = 'models-policy-known';
+
 export function mountModelPolicy(root: HTMLElement): Cleanup {
-  root.appendChild(empty('sparkles', 'Coming soon'));
-  return () => {};
+  let alive = true;
+  replace(root, h('p.faint', null, 'Loading…'));
+  void attempt(() => Promise.all([api.settings(), api.models()])).then((data) => {
+    if (!alive) return;
+    if (!data) {
+      replace(root, empty('alert', 'Models unavailable', 'apid did not answer. Reload to try again.'));
+      return;
+    }
+    build(root, data[0], data[1]);
+  });
+  return () => {
+    alive = false;
+  };
+}
+
+function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): void {
+  let saved: Settings = settings;
+  let copy: Settings = clone(settings);
+  const devModels = settings.dev_models === true;
+  const known = new Set(modelsView.models.map((m) => `${m.provider}/${m.id}`));
+  const errors = new Set<string>();
+  let pricesOpen = false;
+
+  const saveBtn = button('Save', () => void save(), { kind: 'primary', icon: 'check' });
+  const datalist = h(
+    'datalist',
+    { id: LIST_ID },
+    ...modelsView.models.map((m) => h('option', { value: `${m.provider}/${m.id}` }, m.name ?? `${m.provider}/${m.id}`)),
+  );
+  const body = h('div.stack.models-policy');
+  replace(root, h('div.policy-bar', null, saveBtn), datalist, body);
+
+  function sync(): void {
+    saveBtn.disabled = errors.size > 0 || JSON.stringify(copy) === JSON.stringify(saved);
+  }
+
+  function render(): void {
+    errors.clear();
+    replace(body, policyCard(), defaultsCard(), limitsCard(), pricesCard());
+    sync();
+  }
+
+  async function save(): Promise<void> {
+    saveBtn.disabled = true;
+    const next = await attempt(() => api.saveSettings(copy), 'Policy saved');
+    if (next) {
+      saved = clone(next);
+      copy = clone(next);
+      render();
+    } else {
+      sync();
+    }
+  }
+
+  function toggleError(el: HTMLElement, key: string, bad: boolean): void {
+    if (bad) errors.add(key);
+    else errors.delete(key);
+    el.classList.toggle('invalid', bad);
+    sync();
+  }
+
+  function policyCard(): HTMLElement {
+    return card(
+      'Model policy',
+      h(
+        'div.stack',
+        null,
+        h('p.policy-lead', null, "Agents may only run the models on their tier's list."),
+        h('div.policy-cols', null, tierColumn('orchestrator', 'Orchestrator'), tierColumn('worker', 'Workers')),
+      ),
+      { actions: devModels ? [badge('Development models enabled — policy relaxed', 'warn')] : [] },
+    );
+  }
+
+  function tierColumn(tier: Tier, title: string): HTMLElement {
+    const list = copy.model_policy[tier];
+    const rows = list.map((entry, index) => policyRow(tier, entry, index));
+    const addInput = input({ placeholder: 'provider/model', list: LIST_ID, autocomplete: 'off', 'aria-label': `${title}: model to add` });
+    const add = (): void => {
+      const value = addInput.value.trim();
+      if (value === '') return;
+      if (!/^[^/\s]+\/\S+$/.test(parseEntry(value).base)) {
+        toast('Use provider/model, with an optional @effort', 'error');
+        return;
+      }
+      if (!copy.model_policy[tier].includes(value)) copy.model_policy[tier] = [...copy.model_policy[tier], value];
+      render();
+    };
+    addInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        add();
+      }
+    });
+    return h(
+      'section.policy-col',
+      null,
+      h('h3', null, title),
+      h('ul.policy-list', null, ...(rows.length ? rows : [h('li.faint', null, 'No models')])),
+      h('div.policy-add', null, addInput, button('Add model', add, { size: 'sm' })),
+    );
+  }
+
+  function policyRow(tier: Tier, entry: string, index: number): HTMLElement {
+    const { base, effort } = parseEntry(entry);
+    const listed = known.has(base);
+    const availability = dot(listed ? 'ok' : 'muted');
+    availability.title = listed ? 'Listed by its provider' : 'Not listed by its provider';
+    const pinned = effort === null ? null : badge('effort pinned', 'accent');
+    if (pinned) pinned.title = `@${effort}`;
+    const remove = button(
+      '',
+      () => {
+        copy.model_policy[tier] = copy.model_policy[tier].filter((_, i) => i !== index);
+        render();
+      },
+      { kind: 'ghost', size: 'sm', icon: 'x', title: `Remove ${entry}` },
+    );
+    return h('li.policy-row', null, availability, h('span.mono', { title: entry }, base), pinned, remove);
+  }
+
+  function defaultsCard(): HTMLElement {
+    const orch = select(choices(copy.model_policy.orchestrator, copy.orchestrator_model), copy.orchestrator_model);
+    orch.addEventListener('change', () => {
+      copy.orchestrator_model = orch.value;
+      sync();
+    });
+    const worker = select(choices(copy.model_policy.worker, copy.default_model), copy.default_model);
+    worker.addEventListener('change', () => {
+      copy.default_model = worker.value;
+      sync();
+    });
+    const roles = Array.from(
+      new Set([
+        ...agents
+          .get()
+          .filter((a) => a.tier !== 'orchestrator' && a.role !== 'orchestrator')
+          .map((a) => a.role),
+        ...Object.keys(copy.role_models),
+      ]),
+    ).sort();
+    const roleRows = roles.length
+      ? table<string>(
+          [
+            { label: 'Role', cell: (role) => h('span.mono', null, role) },
+            { label: 'Model', cell: (role) => roleSelect(role) },
+          ],
+          roles,
+        )
+      : empty('agents', 'No roles connected');
+    return card(
+      'Defaults',
+      h('div.stack', null, field('Orchestrator model', orch), field('Worker default', worker), h('h3', null, 'Per role'), roleRows),
+    );
+  }
+
+  function roleSelect(role: string): HTMLSelectElement {
+    const current = copy.role_models[role] ?? '';
+    const s = select(choices(copy.model_policy.worker, current === '' ? null : current, { value: '', label: 'Worker default' }), current);
+    s.addEventListener('change', () => {
+      if (s.value === '') delete copy.role_models[role];
+      else copy.role_models[role] = s.value;
+      sync();
+    });
+    return s;
+  }
+
+  function limitsCard(): HTMLElement {
+    const turns = numeric('max_turns', 1, 200, copy.max_turns, (n) => {
+      copy.max_turns = n;
+    });
+    const tokens = numeric('max_tokens', 0, 1_000_000_000, copy.max_tokens, (n) => {
+      copy.max_tokens = n;
+    });
+    const effort = select(
+      EFFORTS.map((v) => ({ value: v, label: v })),
+      copy.effort ?? 'default',
+    );
+    effort.addEventListener('change', () => {
+      copy.effort = effort.value === 'default' ? null : effort.value;
+      sync();
+    });
+    const allow = textarea({ rows: 5, spellcheck: 'false', placeholder: 'api.example.com' });
+    allow.value = copy.fetch_allow.join('\n');
+    allow.addEventListener('input', () => {
+      copy.fetch_allow = allow.value
+        .split('\n')
+        .map((s) => s.trim())
+        .filter((s) => s !== '');
+      sync();
+    });
+    return card(
+      'Limits',
+      h(
+        'div.stack',
+        null,
+        field('Max turns', turns),
+        field('Max tokens (0 = provider default)', tokens),
+        field('Effort', effort),
+        field('Fetch allowlist', allow),
+      ),
+    );
+  }
+
+  function numeric(key: string, min: number, max: number, value: number, set: (n: number) => void): HTMLInputElement {
+    const el = input({ type: 'number', min, max, step: 1, value });
+    el.addEventListener('input', () => {
+      const n = Number(el.value);
+      const ok = el.value.trim() !== '' && Number.isInteger(n) && n >= min && n <= max;
+      if (ok) set(n);
+      toggleError(el, key, !ok);
+    });
+    return el;
+  }
+
+  function pricesCard(): HTMLElement {
+    const bases = copy.model_policy.orchestrator.concat(copy.model_policy.worker).map((e) => parseEntry(e).base);
+    const keys = Array.from(new Set([...bases, ...Object.keys(copy.prices)])).sort();
+    const priceInput = (key: string, side: keyof Price): HTMLInputElement => {
+      const current = copy.prices[key] as Price | undefined;
+      const el = input({ type: 'number', min: 0, step: 'any', value: current ? current[side] : 0 });
+      el.addEventListener('input', () => {
+        const n = Number(el.value);
+        const ok = el.value.trim() !== '' && Number.isFinite(n) && n >= 0;
+        if (ok) {
+          const price: Price = copy.prices[key] ?? { input: 0, output: 0 };
+          price[side] = n;
+          copy.prices[key] = price;
+        }
+        toggleError(el, `price:${key}:${side}`, !ok);
+      });
+      return el;
+    };
+    const priceTable = keys.length
+      ? table<string>(
+          [
+            { label: 'Model', cell: (k) => h('span.mono', null, k) },
+            { label: 'Input (credits / 1M)', num: true, cell: (k) => priceInput(k, 'input') },
+            { label: 'Output (credits / 1M)', num: true, cell: (k) => priceInput(k, 'output') },
+          ],
+          keys,
+        )
+      : empty('models', 'No models listed');
+    const details = h('details.prices', null, h('summary', null, 'Models'), priceTable) as HTMLDetailsElement;
+    details.open = pricesOpen;
+    details.addEventListener('toggle', () => {
+      pricesOpen = details.open;
+    });
+    return card('Prices', details);
+  }
+
+  render();
+}
+
+/** Splits `provider/model[@effort]` into its base id and its pinned effort. */
+function parseEntry(entry: string): { base: string; effort: string | null } {
+  const at = entry.lastIndexOf('@');
+  return at > 0 ? { base: entry.slice(0, at), effort: entry.slice(at + 1) } : { base: entry, effort: null };
+}
+
+/** The choices for a select: the tier's list, plus the current value if the list lacks it. */
+function choices(list: string[], current: string | null, first?: Choice): Choice[] {
+  const values = current !== null && current !== '' && !list.includes(current) ? [...list, current] : list;
+  const options = values.map((v) => ({ value: v, label: list.includes(v) ? v : `${v} (not on the list)` }));
+  return first ? [first, ...options] : options;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
