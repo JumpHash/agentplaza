@@ -1,24 +1,31 @@
 // Setup > Tools: the connectors the plaza lends to agents. A key is written once
-// here, kept in the plaza's vault, and never reaches an agent's VM.
+// here, kept in the plaza's vault, and never reaches an agent's VM. Laid out like
+// Models > Providers: grouped provider cards, and a Configure modal.
 
+import '../styles/models.css';
 import '../styles/tools.css';
-import { api, type Connector, type ConnectorAction, type ConnectorCategory, type ConnectorTest } from '../api';
-import { attempt, badge, brandLogo, button, empty, field, input, type Tone } from '../ui/components';
+import { api, type Connector, type ConnectorAction, type ConnectorTest } from '../api';
+import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
-const CATEGORIES: [ConnectorCategory, string][] = [
-  ['research', 'Research'],
-  ['media', 'Media'],
-  ['infra', 'Infra'],
-  ['messaging', 'Messaging'],
-  ['dev', 'Dev'],
-];
+type Section = 'Enabled' | 'Configured' | 'Needs a key' | 'Coming soon';
+const SECTIONS: Section[] = ['Enabled', 'Configured', 'Needs a key', 'Coming soon'];
+
+const STATUS: Record<Section, [string, Tone]> = {
+  Enabled: ['Enabled', 'ok'],
+  Configured: ['Key set', 'info'],
+  'Needs a key': ['Needs a key', 'warn'],
+  'Coming soon': ['Coming soon', 'muted'],
+};
 
 const RISK: Record<ConnectorAction['risk'], Tone> = { read: 'ok', write: 'info', irreversible: 'danger' };
 
-function categoryLabel(c: ConnectorCategory): string {
-  return CATEGORIES.find(([key]) => key === c)?.[1] ?? c;
+/** A connector with no actions yet is coming soon; otherwise it is by whether a key is stored and it is on. */
+function sectionOf(c: Connector): Section {
+  if (!c.actions.length) return 'Coming soon';
+  if (!c.configured) return 'Needs a key';
+  return c.enabled ? 'Enabled' : 'Configured';
 }
 
 function splitList(text: string): string[] {
@@ -32,129 +39,82 @@ function logo(c: Connector): HTMLElement {
   return h('span.logo.lg', { title: c.label }, h('span.mono-mark', null, letters));
 }
 
-function status(c: Connector): [string, Tone] {
-  if (c.configured && c.enabled) return ['Enabled', 'ok'];
-  if (c.configured) return ['Configured', 'info'];
-  return ['Not configured', 'warn'];
-}
-
 export function mount(root: HTMLElement): Cleanup {
   let connectors: Connector[] = [];
-  let filter: 'all' | ConnectorCategory = 'all';
-  /** Last test result per connector; kept across re-renders until the next test. */
-  const tests = new Map<string, ConnectorTest>();
-
-  const filters = h('div.tool-filters');
-  const grid = h('div.prov-grid');
+  const body = h('div.prov-body', null, h('p.faint', null, 'Loading tools…'));
   root.append(
     h('div.view-head', null, h('h1', null, 'Tools')),
-    h('p.faint.tool-note', null, "Keys stay in the plaza's vault and never reach an agent's VM. Agents reach a tool only through the plaza."),
-    filters,
-    grid,
+    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body),
   );
 
   const refresh = async (): Promise<void> => {
     const list = await attempt(() => api.connectors());
     if (list) connectors = list;
-    drawGrid();
+    render();
   };
 
-  /** Runs a change, reports it, then reloads so each card shows what the server now holds. */
-  const act = async (run: () => Promise<unknown>, success: string): Promise<void> => {
-    await attempt(run, success);
+  const render = (): void => {
+    if (!connectors.length) {
+      replace(body, empty('models', 'No tools yet'));
+      return;
+    }
+    const groups: Record<Section, Connector[]> = { Enabled: [], Configured: [], 'Needs a key': [], 'Coming soon': [] };
+    for (const c of connectors) groups[sectionOf(c)].push(c);
+    const sections = SECTIONS.filter((s) => groups[s].length > 0).map((s) =>
+      h('section.prov-group', null, h('h2.prov-group-title', null, s), h('div.prov-grid', null, groups[s].map(card))),
+    );
+    replace(body, ...sections);
+  };
+
+  const setEnabled = async (c: Connector, on: boolean): Promise<void> => {
+    await attempt(() => api.updateConnector(c.id, { enabled: on }), `${c.label} ${on ? 'enabled' : 'disabled'}`);
     await refresh();
   };
 
   const runTest = async (c: Connector): Promise<void> => {
-    const report = await attempt(() => api.testConnector(c.id));
+    const report = await attempt<ConnectorTest>(() => api.testConnector(c.id));
     if (!report) return;
-    tests.set(c.id, report);
-    drawGrid();
-  };
-
-  const drawFilters = (): void => {
-    const chip = (key: 'all' | ConnectorCategory, text: string): HTMLElement => {
-      const b = h('button.tool-filter', { type: 'button', 'aria-pressed': filter === key ? 'true' : 'false' }, text);
-      b.addEventListener('click', () => {
-        filter = key;
-        drawFilters();
-        drawGrid();
-      });
-      return b;
-    };
-    replace(filters, chip('all', 'All'), ...CATEGORIES.map(([key, text]) => chip(key, text)));
-  };
-
-  const drawGrid = (): void => {
-    const shown = connectors.filter((c) => filter === 'all' || c.category === filter);
-    replace(
-      grid,
-      ...(shown.length ? shown.map(card) : [empty('models', connectors.length ? 'Nothing in this category' : 'No tools yet')]),
-    );
+    if (report.ok) toast(`OK · ${report.latency_ms} ms · ${report.detail}`);
+    else toast(report.detail || 'Test failed', 'error');
   };
 
   const card = (c: Connector): HTMLElement => {
-    const [text, tone] = status(c);
-    const result = tests.get(c.id);
+    const section = sectionOf(c);
+    const [text, tone] = STATUS[section];
+    const needsKey = section === 'Needs a key';
 
-    const toggle = h('input', { type: 'checkbox' }) as HTMLInputElement;
-    toggle.checked = c.enabled;
-    toggle.addEventListener('change', () => {
-      const on = toggle.checked;
-      void act(() => api.updateConnector(c.id, { enabled: on }), `${c.label} ${on ? 'enabled' : 'disabled'}`);
-    });
+    const footer =
+      section === 'Coming soon'
+        ? null
+        : h(
+            'div.prov-actions',
+            null,
+            button('Configure', () => openConfigure(c), needsKey ? { size: 'sm', kind: 'primary' } : { size: 'sm' }),
+            c.configured ? button('Test', () => void runTest(c), { size: 'sm' }) : null,
+            c.configured ? button(c.enabled ? 'Disable' : 'Enable', () => void setEnabled(c, !c.enabled), { size: 'sm', kind: 'ghost' }) : null,
+          );
 
-    // Write-only: the key is typed here once and never read back.
-    const keyInput = input({ type: 'password', autocomplete: 'new-password', placeholder: c.key_hint || 'API key' });
-    const saveKey = button(
-      'Save key',
-      async () => {
-        const value = keyInput.value.trim();
-        if (!value) return;
-        saveKey.disabled = true;
-        await act(() => api.setConnectorSecret(c.id, value), 'Key saved');
-      },
-      { kind: 'primary', size: 'sm' },
-    );
-    keyInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') saveKey.click();
-    });
-    const clearKey = c.configured
-      ? button('Clear key', () => void act(() => api.clearConnectorSecret(c.id), 'Key cleared'), { kind: 'ghost', size: 'sm' })
-      : null;
-
-    const rolesInput = input({ value: c.roles.join(', '), placeholder: 'all roles', autocomplete: 'off' });
-    const saveRoles = button(
-      'Save roles',
-      () => void act(() => api.updateConnector(c.id, { roles: splitList(rolesInput.value) }), 'Roles saved'),
-      { size: 'sm' },
-    );
-
-    const testBtn = button('Test', () => void runTest(c), { size: 'sm' });
-    const resultBadge = result
-      ? h(
-          'span.tool-result',
-          { title: result.detail },
-          badge(result.ok ? `OK · ${result.latency_ms} ms · ${result.detail}` : `Failed · ${result.detail}`, result.ok ? 'ok' : 'danger', true),
-        )
-      : null;
-
-    const docs = c.docs_url ? h('a.tool-docs', { href: c.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs') : null;
-
-    const actions = c.actions.length
+    const chips = c.actions.length
       ? h(
           'ul.tool-actions',
           null,
-          c.actions.map((a) => {
-            const chip = badge(a.name, RISK[a.risk]);
-            chip.title = a.risk === 'irreversible' ? `${a.description} · needs your approval` : a.description;
-            return h('li', null, chip);
-          }),
+          c.actions.map((a) =>
+            h(
+              'li',
+              null,
+              h(
+                'span.tool-chip',
+                { title: a.risk === 'irreversible' ? `${a.description} · needs your approval` : a.description },
+                dot(RISK[a.risk]),
+                a.name,
+              ),
+            ),
+          ),
         )
       : null;
 
     return h(
-      'article.prov-card.tool-card',
+      'article.prov-card',
       null,
       h(
         'header.prov-head',
@@ -164,7 +124,7 @@ export function mount(root: HTMLElement): Cleanup {
           'div.prov-title',
           null,
           h('h3.truncate', null, c.label),
-          h('span.faint.mono.truncate', { title: c.id }, `${c.id} · ${categoryLabel(c.category)}`),
+          h('span.faint.truncate', { title: c.description }, c.description),
         ),
       ),
       h(
@@ -173,21 +133,71 @@ export function mount(root: HTMLElement): Cleanup {
         badge(c.kind === 'cli' ? 'CLI' : 'API', c.kind === 'cli' ? 'accent' : 'muted'),
         badge(text, tone, true),
       ),
-      h('p.tool-desc', null, c.description),
-      actions,
-      c.kind === 'cli' && c.cli
-        ? h('p.faint.tool-cli', null, `Installs ${c.cli.binary} in the agent's VM, pointed at the plaza's gateway — no key inside the VM.`)
-        : null,
-      h('label.tool-toggle', null, toggle, h('span', null, 'Enabled')),
-      field('API key', keyInput, c.configured ? 'Saved in the vault. Enter a new key to replace it.' : 'Write-only: never shown again after saving.'),
-      h('div.prov-actions', null, saveKey, clearKey),
-      field('Roles', rolesInput, 'Comma-separated; empty = all roles'),
-      h('div.prov-actions', null, saveRoles),
-      h('div.prov-actions', null, testBtn, resultBadge, h('span.prov-spacer'), docs),
+      chips,
+      footer,
     );
   };
 
-  drawFilters();
+  /** Configure: the write-only key, the roles, and enabled. Save writes the key (if typed) and the settings. */
+  const openConfigure = (c: Connector): void => {
+    let close = () => {};
+    const keyInput = input({ type: 'password', autocomplete: 'new-password', placeholder: c.key_hint || 'API key' });
+    const rolesInput = input({ value: c.roles.join(', '), placeholder: 'all roles', autocomplete: 'off' });
+    const enabledBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    enabledBox.checked = c.enabled;
+
+    const save = button(
+      'Save',
+      async () => {
+        const value = keyInput.value.trim();
+        save.disabled = true;
+        const saved = await attempt(async () => {
+          if (value) await api.setConnectorSecret(c.id, value);
+          await api.updateConnector(c.id, { enabled: enabledBox.checked, roles: splitList(rolesInput.value) });
+          return true;
+        }, 'Saved');
+        save.disabled = false;
+        if (!saved) return;
+        close();
+        await refresh();
+      },
+      { kind: 'primary' },
+    );
+    keyInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') save.click();
+    });
+
+    const remove = c.configured
+      ? button(
+          'Remove key',
+          async () => {
+            const cleared = await attempt(async () => {
+              await api.clearConnectorSecret(c.id);
+              return true;
+            }, 'Key removed');
+            if (!cleared) return;
+            close();
+            await refresh();
+          },
+          { kind: 'danger' },
+        )
+      : null;
+
+    close = modal(
+      `Configure ${c.label}`,
+      h(
+        'div.stack',
+        null,
+        c.cli ? h('p.faint', null, `Installs ${c.cli.binary} in the agent's VM, pointed at the plaza's gateway — no key inside the VM.`) : null,
+        field('API key', keyInput, c.configured ? 'Leave empty to keep the stored key' : 'Write-only: never shown again after saving.'),
+        field('Roles', rolesInput, 'Comma-separated; empty = all roles'),
+        h('label.tool-toggle', null, enabledBox, h('span', null, 'Enabled')),
+        c.docs_url ? h('a', { href: c.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs') : null,
+        h('div.prov-row', null, remove, h('span.prov-spacer'), save),
+      ),
+    );
+  };
+
   void refresh();
   return () => undefined;
 }
