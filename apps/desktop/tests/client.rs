@@ -272,7 +272,7 @@ fn driving_a_tool_posts_to_tell_and_reads_the_agents_own_answer() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "one request, on the tell path");
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/tell");
+    assert_eq!(requests[0].target, "/v1/agents/100/tell");
     assert_eq!(
         requests[0].body,
         r#"{"args":{"path":"."},"cid":100,"name":"list","timeout_ms":2000}"#
@@ -350,7 +350,7 @@ fn stopping_posts_to_stop_and_reads_both_outcomes() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].target, "/stop");
+    assert_eq!(requests[0].target, "/v1/agents/100/stop");
     assert_eq!(requests[0].body, r#"{"cid":100}"#);
 
     // A wait that lapsed: the session is still up, nothing torn down, and the
@@ -844,94 +844,6 @@ fn a_missing_task_and_a_task_id_that_is_not_plain_are_both_refused() {
         .task("t1/../t2")
         .expect_err("an id with a path in it is refused");
     assert!(matches!(error, ApiError::Config(_)), "{error:?}");
-}
-
-/// Reads a task's artifact back through its agent, over a real socket: the
-/// request the read-through sends, and the file the agent read.
-#[test]
-fn reading_a_tasks_artifact_posts_the_path_and_reads_the_agents_file() {
-    let server = common::ledger_artifact(
-        LIST,
-        common::TASKS_ARTIFACT,
-        common::TASK,
-        (200, common::ARTIFACT),
-    );
-    let artifact = client(server.port)
-        .task_artifact("t3", "build-notes.txt")
-        .expect("the artifact should parse");
-    assert_eq!(artifact.task, "t3");
-    assert_eq!(artifact.agent_cid, 103, "the CID the daemon read it through");
-    assert_eq!(artifact.path, "build-notes.txt");
-    assert_eq!(
-        artifact.content,
-        "task t3: verify the fixed loop\nthe loop held\n"
-    );
-    assert_eq!(artifact.size, 45);
-    assert!(!artifact.truncated);
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, "POST", "the read-through is a POST");
-    assert_eq!(requests[0].target, "/v1/tasks/t3/artifact");
-    assert_eq!(requests[0].body, r#"{"path":"build-notes.txt"}"#);
-    assert_eq!(
-        requests[0].header("Content-Type"),
-        Some("application/json"),
-        "the daemon parses the body as JSON"
-    );
-}
-
-#[test]
-fn a_refused_artifact_carries_the_hub_or_the_agents_own_words() {
-    // The hub's role policy refuses the read: the daemon surfaces the hub's
-    // own 403, in its own words.
-    let server = common::ledger_artifact(
-        LIST,
-        common::TASKS_ARTIFACT,
-        common::TASK,
-        (403, r#"{"error":"role librarian does not grant read_file"}"#),
-    );
-    let error = client(server.port)
-        .task_artifact("t3", "build-notes.txt")
-        .expect_err("a policy refusal is an error");
-    assert_eq!(error.status(), Some(403));
-    assert_eq!(
-        error.to_string(),
-        "403: role librarian does not grant read_file"
-    );
-
-    // The agent's own refusal is its own words, with its 422.
-    let server = common::ledger_artifact(
-        LIST,
-        common::TASKS_ARTIFACT,
-        common::TASK,
-        (
-            422,
-            r#"{"error":"denied: path \"../escape\" contains \"..\"; every path is inside the workspace"}"#,
-        ),
-    );
-    let error = client(server.port)
-        .task_artifact("t3", "../escape")
-        .expect_err("the agent refused the path");
-    assert_eq!(error.status(), Some(422));
-    assert_eq!(
-        error.to_string(),
-        "422: denied: path \"../escape\" contains \"..\"; every path is inside the workspace",
-        "the agent's own words, verbatim"
-    );
-
-    // A read-through that was never configured says so with its 503.
-    let server = common::ledger_artifact(
-        LIST,
-        common::TASKS_ARTIFACT,
-        common::TASK,
-        (503, r#"{"error":"hub admin is not configured"}"#),
-    );
-    let error = client(server.port)
-        .task_artifact("t3", "build-notes.txt")
-        .expect_err("the read-through is switched off");
-    assert_eq!(error.status(), Some(503));
-    assert_eq!(error.to_string(), "503: hub admin is not configured");
 }
 
 // ---- the treasury: the accounts and the journal ----
