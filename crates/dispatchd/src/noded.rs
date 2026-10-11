@@ -13,9 +13,12 @@
 
 use serde::Deserialize;
 
-use crate::dispatch::{Ledger, Social};
+use crate::dispatch::{Council, Ledger, Social};
 use crate::http::{self, Answer, TIMEOUT, Target};
-use crate::views::{Agent, Board, Contact, ContactsView, NewPost, Outcome, Post, ReadAck, Task};
+use crate::views::{
+    Agent, Board, CastVote, Contact, ContactsView, Motion, Motions, NewMotion, NewPost, Outcome,
+    Post, ReadAck, Task,
+};
 
 /// The node daemon: the ledger and the register behind one client.
 #[derive(Debug, Clone)]
@@ -141,6 +144,59 @@ impl Social for Noded {
     }
 }
 
+/// The node's council surface, as `docs/agents/council.md` spells it: the
+/// motions the council holds, the proposal a seat makes, and the vote it
+/// casts.
+///
+/// The one reading rule is the same as everywhere else here: a request the node
+/// refuses is a refusal carrying the node's own words — never a silently empty
+/// motions board, a motion that was not recorded, or a vote that did not land.
+/// A decided motion's `409` and a role-less voter's `403` are read back the way
+/// the daemon said them, so the pass can log exactly what the council refused.
+impl Council for Noded {
+    fn motions(&self) -> Result<Motions, String> {
+        let answer = http::get(&self.target, "/api/v0/motions", TIMEOUT)?;
+        if answer.status() != 200 {
+            return Err(refused("the motions", &answer));
+        }
+        serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the motions could not be read: {err}"))
+    }
+
+    fn propose(&self, motion: &NewMotion) -> Result<Motion, String> {
+        // `needs_owner` is deliberately absent: the daemon derives it from the
+        // kind, and a caller's claim about it is refused.
+        let body = serde_json::json!({
+            "proposer_cid": motion.proposer_cid,
+            "kind": motion.kind,
+            "text": motion.text,
+        })
+        .to_string();
+        let answer = http::post(&self.target, "/api/v0/motions", body.as_bytes(), TIMEOUT)?;
+        if answer.status() != 201 {
+            return Err(refused("the proposal", &answer));
+        }
+        serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the motion the council recorded could not be read: {err}"))
+    }
+
+    fn vote(&self, id: &str, cast: &CastVote) -> Result<Motion, String> {
+        let path = format!("/api/v0/motions/{}/vote", motion_path(id)?);
+        let body = serde_json::json!({
+            "agent_cid": cast.agent_cid,
+            "vote": cast.vote,
+            "reason": cast.reason,
+        })
+        .to_string();
+        let answer = http::post(&self.target, &path, body.as_bytes(), TIMEOUT)?;
+        if answer.status() != 200 {
+            return Err(refused("the vote", &answer));
+        }
+        serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the motion the vote answered with could not be read: {err}"))
+    }
+}
+
 /// The list endpoint's body: `{"tasks": [...]}`.
 #[derive(Debug, Deserialize)]
 struct TasksView {
@@ -163,8 +219,23 @@ struct RegistryView {
 /// the daemon's own answer, but a request is built from it, so it is checked
 /// before it is used.
 fn task_path(id: &str) -> Result<&str, String> {
+    id_path(id, "task")
+}
+
+/// A motion id as it may appear in a request path.
+///
+/// The node's ids are `m<seq>`, checked the same way a task's is: a malformed
+/// id from a malformed answer cannot reshape the vote's request.
+fn motion_path(id: &str) -> Result<&str, String> {
+    id_path(id, "motion")
+}
+
+/// An id as it may appear in a request path: the node's ids are alphanumeric
+/// (`t<seq>`, `m<seq>`), so anything outside that is refused before a request
+/// is built from it.
+fn id_path<'a>(id: &'a str, what: &str) -> Result<&'a str, String> {
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
-        return Err(format!("{id:?} is not a task id"));
+        return Err(format!("{id:?} is not a {what} id"));
     }
     Ok(id)
 }
@@ -531,6 +602,188 @@ mod tests {
             ("POST", "/api/v0/agents/300/contacts") | ("POST", "/api/v0/agents/300/say") => {
                 ("200 OK", "{}".to_string())
             }
+            (_, other) => (
+                "404 Not Found",
+                format!(r#"{{"error":"no endpoint {other}"}}"#),
+            ),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+            answer.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("the answer is written");
+    }
+
+    /// A motion id is an id before it is a path, exactly as a task's is.
+    #[test]
+    fn a_motion_id_is_an_id_before_it_is_a_path() {
+        for good in ["m1", "m300", "abc123"] {
+            assert_eq!(motion_path(good), Ok(good));
+        }
+        for bad in ["", "../x", "m1/vote", "m 1", "m1?x=1", "m1#x", "m1\n"] {
+            assert!(
+                motion_path(bad).is_err(),
+                "should have been refused: {bad:?}"
+            );
+        }
+    }
+
+    /// The council client speaks the node's own contract: the motions board,
+    /// the proposal, and the vote — each at its own path, each with the body
+    /// the endpoint takes, each read back from the node's own shape.
+    #[test]
+    fn the_council_client_speaks_the_nodes_contract() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the test binds a port");
+        let addr = listener.local_addr().expect("a bound address");
+        let (requests, received) = channel();
+        let served = thread::spawn(move || {
+            for _ in 0..3 {
+                let (stream, _peer) = listener.accept().expect("the client connects");
+                serve_council(stream, &requests);
+            }
+        });
+        let noded =
+            Noded::new(&format!("http://127.0.0.1:{}", addr.port())).expect("a loopback URL");
+
+        let motions = noded.motions().expect("the motions answer");
+        assert_eq!(motions.motions.len(), 1);
+        assert_eq!(motions.motions[0].id, "m1");
+        assert_eq!(motions.motions[0].kind, "priority");
+        assert_eq!(motions.motions[0].state, "open");
+        assert!(motions.motions[0].is_open());
+        assert_eq!(motions.total, 1);
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "GET /api/v0/motions HTTP/1.1");
+        assert!(body.is_empty());
+
+        let motion = NewMotion {
+            proposer_cid: 105,
+            kind: "priority".to_string(),
+            text: "priority: t1 — do t1".to_string(),
+        };
+        let recorded = noded.propose(&motion).expect("the motion is recorded");
+        assert_eq!(recorded.id, "m2");
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "POST /api/v0/motions HTTP/1.1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("the propose body is JSON"),
+            serde_json::json!({
+                "proposer_cid": 105,
+                "kind": "priority",
+                "text": "priority: t1 — do t1",
+            })
+        );
+
+        let cast = CastVote {
+            agent_cid: 105,
+            vote: "yes".to_string(),
+            reason: "the record: priority 'priority: t1 — do t1' names open task t1".to_string(),
+        };
+        let after = noded.vote("m1", &cast).expect("the vote is taken");
+        assert_eq!(after.id, "m1");
+        assert_eq!((after.tally.yes, after.tally.voted), (1, 1));
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "POST /api/v0/motions/m1/vote HTTP/1.1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("the vote body is JSON"),
+            serde_json::json!({
+                "agent_cid": 105,
+                "vote": "yes",
+                "reason": "the record: priority 'priority: t1 — do t1' names open task t1",
+            })
+        );
+
+        served.join().expect("the stub node finishes");
+    }
+
+    /// Every council call reports a refusal in the node's own words, never as an
+    /// empty board, a motion that was not recorded, or a vote that did not land.
+    #[test]
+    fn a_council_refusal_carries_the_nodes_words() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the test binds a port");
+        let addr = listener.local_addr().expect("a bound address");
+        let served = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _peer) = listener.accept().expect("the client connects");
+                let _ = crate::testing::read_http_request(&mut stream);
+                let answer = r#"{"error":"motion m1 is carried, not open: a decided motion takes no further vote"}"#;
+                let response = format!(
+                    "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("the answer is written");
+            }
+        });
+        let noded =
+            Noded::new(&format!("http://127.0.0.1:{}", addr.port())).expect("a loopback URL");
+        let motion = NewMotion {
+            proposer_cid: 105,
+            kind: "priority".to_string(),
+            text: "priority: t1".to_string(),
+        };
+        let cast = CastVote {
+            agent_cid: 105,
+            vote: "yes".to_string(),
+            reason: "r".to_string(),
+        };
+
+        assert_eq!(
+            noded.motions().expect_err("refused"),
+            "the motions answered 409: motion m1 is carried, not open: a decided motion takes no further vote"
+        );
+        assert_eq!(
+            noded.propose(&motion).expect_err("refused"),
+            "the proposal answered 409: motion m1 is carried, not open: a decided motion takes no further vote"
+        );
+        assert_eq!(
+            noded.vote("m1", &cast).expect_err("refused"),
+            "the vote answered 409: motion m1 is carried, not open: a decided motion takes no further vote"
+        );
+
+        served.join().expect("the stub finishes");
+    }
+
+    /// Serves one request against the council stub node's fixed answers.
+    fn serve_council(mut stream: std::net::TcpStream, requests: &Sender<(String, String)>) {
+        let request = crate::testing::read_http_request(&mut stream);
+        let line = request.lines().next().unwrap_or_default().to_string();
+        let mut parts = line.split(' ');
+        let method = parts.next().unwrap_or_default().to_string();
+        let path = parts.next().unwrap_or_default().to_string();
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default();
+        requests.send((line, body)).expect("the test is listening");
+
+        let (status, answer) = match (method.as_str(), path.as_str()) {
+            ("GET", "/api/v0/motions") => (
+                "200 OK",
+                r#"{"motions":[{"id":"m1","proposer_cid":105,"proposer_role":"finance",
+                     "kind":"priority","text":"priority: t1 — do t1","needs_owner":false,
+                     "state":"open","votes":[],"tally":{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4},
+                     "created_at":1,"updated_at":1}],"total":1,"limit":256,"truncated":false}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v0/motions") => (
+                "201 Created",
+                r#"{"id":"m2","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+                    "text":"priority: t1 — do t1","needs_owner":false,"state":"open","votes":[],
+                    "tally":{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4},"created_at":2,"updated_at":2}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v0/motions/m1/vote") => (
+                "200 OK",
+                r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+                    "text":"priority: t1 — do t1","needs_owner":false,"state":"open",
+                    "votes":[{"seat":"finance","agent_cid":105,"vote":"yes","reason":"r","at":3}],
+                    "tally":{"yes":1,"no":0,"abstain":0,"voted":1,"seats":4},"created_at":1,"updated_at":3}"#
+                    .to_string(),
+            ),
             (_, other) => (
                 "404 Not Found",
                 format!(r#"{{"error":"no endpoint {other}"}}"#),

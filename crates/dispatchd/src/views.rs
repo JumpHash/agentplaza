@@ -279,6 +279,179 @@ pub struct ReadAck {
     pub unread: usize,
 }
 
+/// One seat's vote on a motion, as the council API reports one
+/// (`GET /api/v0/motions`'s `votes[]`; `docs/agents/council.md`).
+///
+/// A vote is the record of what a seat said, so the seat that cast it and the
+/// word it cast are what the driver reads; the rest is the record beside them,
+/// read defensively like every other view here.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct MotionVote {
+    /// The seat that voted (its role in the roles manifest).
+    #[serde(default)]
+    pub seat: String,
+    /// The guest CID of the agent that cast the seat's vote.
+    #[serde(default)]
+    pub agent_cid: u64,
+    /// `yes`, `no` or `abstain`.
+    #[serde(default)]
+    pub vote: String,
+    /// Why, in the voter's own words.
+    #[serde(default)]
+    pub reason: String,
+    /// When the vote was cast, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// A motion's tally, as the council API reports it: the votes cast, against the
+/// seats there are.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+pub struct Tally {
+    /// How many seats voted yes.
+    #[serde(default)]
+    pub yes: usize,
+    /// How many voted no.
+    #[serde(default)]
+    pub no: usize,
+    /// How many abstained.
+    #[serde(default)]
+    pub abstain: usize,
+    /// How many seats have voted, however they voted.
+    #[serde(default)]
+    pub voted: usize,
+    /// How many seats there are.
+    #[serde(default)]
+    pub seats: usize,
+}
+
+/// One motion, as `GET /api/v0/motions` reports one (`docs/agents/council.md`'s
+/// schema, as `noded` stores it).
+///
+/// A motion's `id` and `state` are what the driver must have — it votes on the
+/// `open` ones and never on a decided one — so they are required; every other
+/// field has a default, so a daemon that grows or omits one does not make the
+/// motion unreadable.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Motion {
+    /// The motion's id (`m<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent that proposed it.
+    #[serde(default)]
+    pub proposer_cid: u64,
+    /// The proposing seat (its role).
+    #[serde(default)]
+    pub proposer_role: String,
+    /// The kind, as the wire spells it (`priority`, `budget_move`, …).
+    #[serde(default)]
+    pub kind: String,
+    /// The motion itself.
+    #[serde(default)]
+    pub text: String,
+    /// The amount a `budget_move` names, when it names one.
+    #[serde(default)]
+    pub amount: Option<u64>,
+    /// Whether the decision is owner-gated — derived by the daemon from the
+    /// kind, never a caller's word for it.
+    #[serde(default)]
+    pub needs_owner: bool,
+    /// The state (`open`, `carried`, `rejected`, `tie_to_owner`,
+    /// `awaiting_owner`).
+    pub state: String,
+    /// The seats' votes, in seat order.
+    #[serde(default)]
+    pub votes: Vec<MotionVote>,
+    /// The tally.
+    #[serde(default)]
+    pub tally: Tally,
+    /// When the motion was proposed, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub created_at: u64,
+    /// When the motion last changed (its proposal, or its latest vote), in
+    /// milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+impl Motion {
+    /// Whether the motion may still take a vote: only an `open` motion does (a
+    /// decided one is refused, 409 — the state is named).
+    pub fn is_open(&self) -> bool {
+        self.state == "open"
+    }
+
+    /// Whether the seat `role` has already voted on this motion.
+    ///
+    /// This is the dedup the driver reads: **one vote per seat**, and a later
+    /// vote **replaces** the earlier one — so a driver that voted again would
+    /// flip a seat's word rather than add one. A seat the motion already names
+    /// in `votes[]` is never voted again.
+    pub fn voted(&self, role: &str) -> bool {
+        self.votes.iter().any(|vote| vote.seat == role)
+    }
+}
+
+/// The motions endpoint's body: the motions, newest first, with the bounding
+/// line the journal's and the board's carry.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Motions {
+    /// Up to the endpoint's limit of motions, newest first.
+    #[serde(default)]
+    pub motions: Vec<Motion>,
+    /// How many motions the council holds.
+    #[serde(default)]
+    pub total: usize,
+    /// The limit the response was cut to.
+    #[serde(default)]
+    pub limit: usize,
+    /// Whether the council holds more motions than the response carries.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl Motions {
+    /// The newest motion, when the council holds one. The response is newest
+    /// first, so this is its head.
+    pub fn newest(&self) -> Option<&Motion> {
+        self.motions.first()
+    }
+
+    /// The motions oldest-first: the order the driver votes in, so the motion
+    /// that has waited longest is decided first.
+    pub fn oldest_first(&self) -> impl Iterator<Item = &Motion> {
+        self.motions.iter().rev()
+    }
+}
+
+/// A motion the driver asks the council to record for a connected seat — the
+/// `POST /api/v0/motions` body. The seat proposes; the caller is the driver.
+///
+/// `needs_owner` is deliberately absent: the daemon derives the gate from the
+/// kind, and any caller-supplied flag that disagrees with that derivation is a
+/// `400`, so the driver never sends one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMotion {
+    /// The guest CID of the seated agent proposing.
+    pub proposer_cid: u64,
+    /// The kind (`priority` for the driver's own proposals).
+    pub kind: String,
+    /// The motion itself.
+    pub text: String,
+}
+
+/// A vote the driver casts for a connected seat — the
+/// `POST /api/v0/motions/{id}/vote` body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CastVote {
+    /// The guest CID of the seated agent voting.
+    pub agent_cid: u64,
+    /// `yes`, `no` or `abstain`.
+    pub vote: String,
+    /// Why — required and non-empty (the playbook's "never a bare vote"), cut
+    /// to the contract's own cap before it is sent.
+    pub reason: String,
+}
+
 /// One entry of an agent's contact list, as `GET
 /// /api/v0/agents/{cid}/contacts` reports it.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

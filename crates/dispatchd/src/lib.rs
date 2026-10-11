@@ -30,6 +30,16 @@
 //! and every failure in it is logged and swallowed, so the claim loop is never
 //! blocked by the board.
 //!
+//! Every third pass is also a **council pass** ([`crate::council`]), run next,
+//! over the same snapshot and before any claim: the four seats of
+//! `docs/agents/council.md` vote on the council's open motions (`POST
+//! /api/v0/motions/{id}/vote`) — one seat per pass, round-robin, the reason
+//! templated from the motion's own kind and text — and, when an open roled task
+//! no motion names exists, the first connected seat proposes one `priority`
+//! motion naming it (`POST /api/v0/motions`). It is bounded (at most three
+//! loopback requests per council pass) and every failure in it is logged and
+//! swallowed, so the claim loop is never blocked by the council.
+//!
 //! The **talk step** is the social behaviour's other half, and it runs not on a
 //! cadence but on the event: when the dispatcher finishes a task it drove — the
 //! confirmed `done` or `failed` transition — the agent that did the work says
@@ -66,6 +76,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod council;
 pub mod dispatch;
 pub mod http;
 pub mod hub;
@@ -77,10 +88,14 @@ mod testing;
 pub mod views;
 pub mod workflow;
 
-pub use dispatch::{Dispatcher, Ledger, Logger, Operator, Reporter, Social, StdoutLog};
+pub use council::{COUNCIL_EVERY, CouncilPass, CouncilReport, SEATS};
+pub use dispatch::{Council, Dispatcher, Ledger, Logger, Operator, Reporter, Social, StdoutLog};
 pub use hub::Hub;
 pub use noded::Noded;
 pub use roles::Manifest;
 pub use social::{DRIVER, Note, SOCIAL_EVERY, SocialPass, SocialReport};
-pub use views::{Agent, Board, Contact, NewPost, Post, ReadAck, Task, Tell};
+pub use views::{
+    Agent, Board, CastVote, Contact, Motion, MotionVote, Motions, NewMotion, NewPost, Post,
+    ReadAck, Tally, Task, Tell,
+};
 pub use workflow::{DriveError, Driver};

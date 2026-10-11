@@ -24,8 +24,11 @@ use std::sync::Mutex;
 
 use serde_json::json;
 
-use crate::dispatch::{Ledger, Logger, Operator, Social};
-use crate::views::{Agent, Board, Contact, NewPost, Outcome, Post, ReadAck, Task, Tell, Unread};
+use crate::dispatch::{Council, Ledger, Logger, Operator, Social};
+use crate::views::{
+    Agent, Board, CastVote, Contact, Motion, MotionVote, Motions, NewMotion, NewPost, Outcome,
+    Post, ReadAck, Tally, Task, Tell, Unread,
+};
 use crate::workflow::{DriveError, Driver};
 
 /// A whole agent, faked: a workspace in a map that answers the harness's tools
@@ -756,6 +759,364 @@ impl Social for FakeSocial {
         }
         inner.said.push((cid, to_cid, text.to_string()));
         Ok(())
+    }
+}
+
+/// The node's council, faked: motions in memory, the node's own rules (the four
+/// seats, the derived gate, one vote per seat, a decided motion taking no
+/// further vote), and the ways a real node fails.
+///
+/// It is the *daemon* faked, not an internal seam: a proposal is checked the way
+/// `noded` checks it (a connected agent whose role holds a seat, the kind's
+/// membership, the text caps, the derived gate), a vote replaces its seat's
+/// word exactly once, a decided motion refuses a vote with the state named, and
+/// every refusal is the node's own `{error}`-shaped message — so a council pass
+/// that passes these tests is a pass the real node would answer the same way.
+#[derive(Default)]
+pub struct FakeCouncil {
+    inner: Mutex<FakeCouncilInner>,
+}
+
+#[derive(Default)]
+struct FakeCouncilInner {
+    /// The motions the council holds, oldest first.
+    motions: Vec<FakeMotion>,
+    /// The number of the newest motion.
+    seq: u64,
+    /// How many times the pass read the motions board.
+    reads: usize,
+    /// Every proposal the pass asked for, in order.
+    proposals: Vec<NewMotion>,
+    /// Every `(motion, vote)` the pass asked for, in order.
+    cast: Vec<(String, CastVote)>,
+    /// The connected agents the fake's seat check reads (the register).
+    seats: Vec<Agent>,
+    /// When set, reading the motions fails with this.
+    read_failure: Option<String>,
+    /// When set, every proposal is refused with this.
+    propose_failure: Option<String>,
+    /// When set, every vote is refused with this.
+    vote_failure: Option<String>,
+}
+
+/// One motion as the fake's store holds it: the raw facts, with the state and
+/// the tally derived on demand — never stored apart from the votes, exactly as
+/// the node derives them.
+#[derive(Clone)]
+struct FakeMotion {
+    id: String,
+    proposer_cid: u64,
+    proposer_role: &'static str,
+    kind: String,
+    text: String,
+    amount: Option<u64>,
+    needs_owner: bool,
+    votes: Vec<MotionVote>,
+    created_at: u64,
+    updated_at: u64,
+}
+
+/// The kinds the schema's enum allows, in `crates/noded/src/council.rs`'s order.
+const KINDS: [&str; 6] = [
+    "priority",
+    "budget_move",
+    "town_proposal",
+    "mayor_replacement",
+    "law_proposal",
+    "other",
+];
+
+impl FakeMotion {
+    /// The motion's tally, derived from its votes.
+    fn tally(&self) -> Tally {
+        let mut tally = Tally {
+            seats: crate::council::SEATS.len(),
+            ..Tally::default()
+        };
+        for vote in &self.votes {
+            match vote.vote.as_str() {
+                "yes" => tally.yes += 1,
+                "no" => tally.no += 1,
+                "abstain" => tally.abstain += 1,
+                _ => {}
+            }
+        }
+        tally.voted = tally.yes + tally.no + tally.abstain;
+        tally
+    }
+
+    /// The motion's state (0034's count, `crates/noded/src/council.rs`'s
+    /// `state_of`).
+    fn state(&self) -> &'static str {
+        let tally = self.tally();
+        if tally.voted < crate::council::SEATS.len() {
+            return "open";
+        }
+        if tally.yes > tally.no {
+            return if self.needs_owner {
+                "awaiting_owner"
+            } else {
+                "carried"
+            };
+        }
+        if tally.no > tally.yes {
+            return "rejected";
+        }
+        "tie_to_owner"
+    }
+
+    /// The motion as the API reports it.
+    fn view(&self) -> Motion {
+        Motion {
+            id: self.id.clone(),
+            proposer_cid: self.proposer_cid,
+            proposer_role: self.proposer_role.to_string(),
+            kind: self.kind.clone(),
+            text: self.text.clone(),
+            amount: self.amount,
+            needs_owner: self.needs_owner,
+            state: self.state().to_string(),
+            votes: self.votes.clone(),
+            tally: self.tally(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+impl FakeCouncil {
+    /// An empty council that knows no connected agent.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Connects a seat's agent: the fake's register, which its seat check reads.
+    pub fn with_seat(self, cid: u64, role: &str) -> Self {
+        self.lock().seats.push(agent(cid, role));
+        self
+    }
+
+    /// Seeds a motion the council already holds, with the votes a test wants on
+    /// it (a seat's role, the caster's CID, the word and the reason).
+    pub fn with_motion(
+        self,
+        id: &str,
+        kind: &str,
+        text: &str,
+        needs_owner: bool,
+        votes: &[(&str, u64, &str, &str)],
+    ) -> Self {
+        let mut inner = self.lock();
+        let at = inner.motions.len() as u64 + 1;
+        let votes = votes
+            .iter()
+            .map(|(seat, cid, word, reason)| MotionVote {
+                seat: (*seat).to_string(),
+                agent_cid: *cid,
+                vote: (*word).to_string(),
+                reason: (*reason).to_string(),
+                at,
+            })
+            .collect();
+        inner.motions.push(FakeMotion {
+            id: id.to_string(),
+            proposer_cid: 0,
+            proposer_role: "finance",
+            kind: kind.to_string(),
+            text: text.to_string(),
+            amount: None,
+            needs_owner,
+            votes,
+            created_at: at,
+            updated_at: at,
+        });
+        inner.seq = inner.motions.len() as u64;
+        drop(inner);
+        self
+    }
+
+    /// A board that will not read: a node that is down, or a 500.
+    pub fn read_failing(self, reason: &str) -> Self {
+        self.lock().read_failure = Some(reason.to_string());
+        self
+    }
+
+    /// A node whose proposal is refused (a 403 a role that holds no seat, a 409
+    /// a disconnected proposer or a full council).
+    pub fn propose_failing(self, reason: &str) -> Self {
+        self.lock().propose_failure = Some(reason.to_string());
+        self
+    }
+
+    /// A node whose vote is refused (a 403, a 409 a decided motion, a 500).
+    pub fn vote_failing(self, reason: &str) -> Self {
+        self.lock().vote_failure = Some(reason.to_string());
+        self
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FakeCouncilInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many times the pass read the motions board: the cadence, made
+    /// observable.
+    pub fn reads(&self) -> usize {
+        self.lock().reads
+    }
+
+    /// Every proposal the pass asked for.
+    pub fn proposed(&self) -> Vec<NewMotion> {
+        self.lock().proposals.clone()
+    }
+
+    /// Every vote the pass asked for: `(motion, vote)`.
+    pub fn cast(&self) -> Vec<(String, CastVote)> {
+        self.lock().cast.clone()
+    }
+
+    /// The motion `id` as it now stands, if the council holds one.
+    pub fn motion(&self, id: &str) -> Option<Motion> {
+        self.lock()
+            .motions
+            .iter()
+            .find(|motion| motion.id == id)
+            .map(FakeMotion::view)
+    }
+}
+
+/// The seat a connected agent holds, or the node's own refusal: a CID the
+/// register does not serve, or a role that holds no seat.
+fn seated(seats: &[Agent], cid: u64) -> Result<&'static str, String> {
+    let Some(agent) = seats.iter().find(|agent| agent.cid == cid) else {
+        return Err(format!("no live agent has guest CID {cid}"));
+    };
+    crate::council::SEATS
+        .iter()
+        .find(|role| **role == agent.role)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "the agent on guest CID {cid} is role {}, which holds no council seat",
+                agent.role
+            )
+        })
+}
+
+/// The gate the node derives from a kind (0067), against an empty minted total
+/// (the fakes never mint): the always-gated kinds, and a budget move over any
+/// positive amount.
+fn derived_needs_owner(kind: &str, amount: Option<u64>) -> bool {
+    match kind {
+        "law_proposal" | "town_proposal" | "mayor_replacement" => true,
+        "budget_move" => amount.unwrap_or(0) > 0,
+        _ => false,
+    }
+}
+
+impl Council for FakeCouncil {
+    fn motions(&self) -> Result<Motions, String> {
+        let mut inner = self.lock();
+        inner.reads += 1;
+        if let Some(reason) = &inner.read_failure {
+            return Err(reason.clone());
+        }
+        let total = inner.motions.len();
+        let motions: Vec<Motion> = inner.motions.iter().rev().map(FakeMotion::view).collect();
+        Ok(Motions {
+            motions,
+            total,
+            limit: 256,
+            truncated: false,
+        })
+    }
+
+    fn propose(&self, motion: &NewMotion) -> Result<Motion, String> {
+        let mut inner = self.lock();
+        if let Some(reason) = &inner.propose_failure {
+            return Err(reason.clone());
+        }
+        if !KINDS.contains(&motion.kind.as_str()) {
+            return Err(format!(
+                "invalid motion request: unknown kind {}",
+                motion.kind
+            ));
+        }
+        if motion.text.trim().is_empty() {
+            return Err("invalid motion request: text must not be empty".to_string());
+        }
+        if motion.text.len() > crate::council::MAX_MOTION_TEXT {
+            return Err(format!(
+                "invalid motion request: text must be at most {} bytes",
+                crate::council::MAX_MOTION_TEXT
+            ));
+        }
+        let seat = seated(&inner.seats, motion.proposer_cid)?;
+        if inner.motions.len() >= 256 {
+            return Err("the council holds its cap of 256 motions".to_string());
+        }
+        inner.seq += 1;
+        let at = inner.seq;
+        let recorded = FakeMotion {
+            id: format!("m{}", inner.seq),
+            proposer_cid: motion.proposer_cid,
+            proposer_role: seat,
+            kind: motion.kind.clone(),
+            text: motion.text.clone(),
+            amount: None,
+            needs_owner: derived_needs_owner(&motion.kind, None),
+            votes: Vec::new(),
+            created_at: at,
+            updated_at: at,
+        };
+        let view = recorded.view();
+        inner.motions.push(recorded);
+        inner.proposals.push(motion.clone());
+        Ok(view)
+    }
+
+    fn vote(&self, id: &str, cast: &CastVote) -> Result<Motion, String> {
+        let mut inner = self.lock();
+        if let Some(reason) = &inner.vote_failure {
+            return Err(reason.clone());
+        }
+        if !["yes", "no", "abstain"].contains(&cast.vote.as_str()) {
+            return Err(format!("invalid vote request: unknown vote {}", cast.vote));
+        }
+        if cast.reason.trim().is_empty() {
+            return Err("invalid vote request: reason must not be empty".to_string());
+        }
+        if cast.reason.len() > crate::council::MAX_REASON {
+            return Err(format!(
+                "invalid vote request: reason must be at most {} bytes",
+                crate::council::MAX_REASON
+            ));
+        }
+        let seat = seated(&inner.seats, cast.agent_cid)?;
+        let Some(index) = inner.motions.iter().position(|motion| motion.id == id) else {
+            return Err(format!("no motion with id {id}"));
+        };
+        if inner.motions[index].state() != "open" {
+            return Err(format!(
+                "motion {id} is {}, not open: a decided motion takes no further vote",
+                inner.motions[index].state()
+            ));
+        }
+        let at = inner.motions[index].updated_at + 1;
+        let motion = &mut inner.motions[index];
+        motion.votes.retain(|vote| vote.seat != seat);
+        motion.votes.push(MotionVote {
+            seat: seat.to_string(),
+            agent_cid: cast.agent_cid,
+            vote: cast.vote.clone(),
+            reason: cast.reason.clone(),
+            at,
+        });
+        motion.updated_at = at;
+        let view = motion.view();
+        inner.cast.push((id.to_string(), cast.clone()));
+        Ok(view)
     }
 }
 

@@ -51,9 +51,13 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use crate::council::CouncilPass;
 use crate::roles::Manifest;
 use crate::social::SocialPass;
-use crate::views::{Agent, Board, Contact, NewPost, Outcome, Post, ReadAck, Task, Tell};
+use crate::views::{
+    Agent, Board, CastVote, Contact, Motion, Motions, NewMotion, NewPost, Outcome, Post, ReadAck,
+    Task, Tell,
+};
 use crate::workflow::{self, DriveError, Driver, Plan};
 
 /// How many passes a task whose agent could not be reached is retried for
@@ -130,6 +134,26 @@ pub trait Social {
     fn say(&self, cid: u64, to_cid: u64, text: &str) -> Result<(), String>;
 }
 
+/// The plaza's council surface: the node's motions and the seats' votes
+/// (`docs/agents/council.md`).
+///
+/// It is one trait because it is one daemon's answer to one question — what is
+/// the council deciding — and because the council pass reads and writes it
+/// through this seam alone. The state and the count are the node's
+/// (`crates/noded/src/council.rs`); the driver proposes and votes, and the
+/// four seats are `crate::council`'s table. A vote that the node refuses — a
+/// role that holds no seat (403), a motion that is no longer open (409) — is a
+/// refusal carrying the node's own words, never a silently swallowed one.
+pub trait Council {
+    /// The council's motions, newest first and bounded by the endpoint's own
+    /// window.
+    fn motions(&self) -> Result<Motions, String>;
+    /// Records one seat's motion and answers the motion the council now holds.
+    fn propose(&self, motion: &NewMotion) -> Result<Motion, String>;
+    /// Casts one seat's vote on motion `id` and answers the motion's new view.
+    fn vote(&self, id: &str, cast: &CastVote) -> Result<Motion, String>;
+}
+
 /// Where the dispatcher's own voice goes.
 pub trait Logger {
     /// Writes one line.
@@ -201,6 +225,10 @@ pub struct Dispatcher<L: Ledger, O: Operator> {
     /// node's social surface. `None` is a dispatcher that only claims and
     /// drives: a test, or a run for which the board is off.
     social: Option<SocialPass>,
+    /// The council pass ([`crate::council`]), when the dispatcher was given the
+    /// node's council surface. `None` is a dispatcher that does not speak for
+    /// the seats.
+    council: Option<CouncilPass>,
     passes: u64,
 }
 
@@ -225,6 +253,7 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
             roles,
             retries: HashMap::new(),
             social: None,
+            council: None,
             passes: 0,
         }
     }
@@ -240,6 +269,20 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
     pub fn with_social(mut self, node: Arc<dyn Social + Send + Sync>) -> Self {
         let log = Arc::clone(&self.log);
         self.social = Some(SocialPass::new(node, log));
+        self
+    }
+
+    /// Gives the dispatcher the plaza's council surface, so its pass also runs
+    /// the council pass ([`crate::council`]).
+    ///
+    /// The council pass is the dispatcher's council behaviour: the seats vote
+    /// on the council's open motions, and the plaza proposes a priority motion
+    /// for an open, unnamed task. It is wired here rather than required by
+    /// [`Dispatcher::new`] so a dispatcher built for driving alone keeps
+    /// exactly what it was.
+    pub fn with_council(mut self, node: Arc<dyn Council + Send + Sync>) -> Self {
+        let log = Arc::clone(&self.log);
+        self.council = Some(CouncilPass::new(node, log));
         self
     }
 
@@ -278,6 +321,17 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
         {
             let busy = busy_agents(&self.retries, &tasks);
             social.run(&tasks, &agents, &busy, self.roles.as_ref());
+        }
+
+        // The council pass runs next, also over the same snapshot and before
+        // any claim, on its own slower cadence ([`crate::council::COUNCIL_EVERY`]):
+        // the seats vote on the council's open motions and the plaza proposes a
+        // priority motion for an open, unnamed task. Every council failure is
+        // logged inside and swallowed here: the claim walk is untouched by it.
+        if let Some(council) = &mut self.council
+            && self.passes % crate::council::COUNCIL_EVERY == 1
+        {
+            council.run(&tasks, &agents);
         }
 
         for task in &tasks {
