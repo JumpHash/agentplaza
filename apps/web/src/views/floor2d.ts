@@ -17,8 +17,9 @@ const SPEED = 1.6; // grid units per second
 const PLATFORM_Z = 10; // platform top height, screen px before zoom
 const BODY_Z = 24; // hover and packet anchor height above the floor
 const MAX_PACKETS = 60;
-const DRONE_SPEED = 2.2; // grid units per second
-const DRONE_Z = 64; // drone height above the platform top, screen px
+const GAP = 2; // clear ground between districts, grid units
+const CLEARANCE = 0.9; // robots keep a 0.45 radius each, so centres stay this far apart
+const AVOID_DEG = [0, 30, -30, 60, -60]; // headings tried when a step would clash
 
 interface District {
   role: string;
@@ -57,13 +58,9 @@ interface Prop {
   d?: District; // the district it furnishes; none for the central square
 }
 
-interface Drone {
-  x: number; // grid units
-  y: number;
-  tx: number;
-  ty: number;
-  pause: number; // seconds left before flying on
-  phase: number; // bob phase
+/** Half-size of a district for these members: a square of console slots plus a margin. */
+function half(members: Agent[]): number {
+  return 2 * (Math.max(1, Math.ceil(Math.sqrt(members.length))) + 1);
 }
 
 interface Palette {
@@ -103,21 +100,26 @@ export function layoutDistricts(list: Agent[]): { districts: District[]; homes: 
     districts.push(d);
     const side = Math.max(1, Math.ceil(Math.sqrt(members.length)));
     members.sort((a, b) => a.cid - b.cid).forEach((a, i) => {
-      const gx = d.cx - (side - 1) + (i % side) * 2;
-      const gy = d.cy - (side - 1) + Math.floor(i / side) * 2;
+      const gx = d.cx - (side - 1) * 2 + (i % side) * 4;
+      const gy = d.cy - (side - 1) * 2 + Math.floor(i / side) * 4;
       homes.set(a.cid, [d, gx, gy]);
     });
   };
   const centre = groups.get('');
-  if (centre) place({ role: 'orchestrator', cx: 0, cy: 0, r: 2, hue: 25 }, centre);
+  if (centre) place({ role: 'orchestrator', cx: 0, cy: 0, r: half(centre), hue: 25 }, centre);
   const roles = [...groups.keys()].filter((k) => k).sort();
-  const ringR = 6 + Math.floor(roles.length / 6) * 2;
+  // Ring radius: neighbouring footprints keep a gap, and the ring clears the dais.
+  const maxHalf = Math.max(0, ...roles.map((role) => half(groups.get(role)!)));
+  const bossHalf = centre ? half(centre) : 0;
+  const ringR = Math.max(
+    roles.length > 1 ? (2 * maxHalf * Math.SQRT2 + GAP) / (2 * Math.sin(Math.PI / roles.length)) : 0,
+    (bossHalf + maxHalf) * Math.SQRT2 + GAP,
+  );
   roles.forEach((role, i) => {
     const members = groups.get(role)!;
-    const side = Math.max(1, Math.ceil(Math.sqrt(members.length)));
     const angle = (i / roles.length) * Math.PI * 2 - Math.PI / 2;
     place(
-      { role, cx: Math.round(Math.cos(angle) * ringR), cy: Math.round(Math.sin(angle) * ringR), r: side + 1, hue: roleHue(role) },
+      { role, cx: Math.round(Math.cos(angle) * ringR), cy: Math.round(Math.sin(angle) * ringR), r: half(members), hue: roleHue(role) },
       members,
     );
   });
@@ -189,41 +191,16 @@ function buildProps(ds: District[]): Prop[] {
   return out;
 }
 
-function randomSpot(ds: District[]): [number, number] {
-  if (!ds.length) return [(Math.random() * 2 - 1) * 8, (Math.random() * 2 - 1) * 8];
-  const d = ds[Math.floor(Math.random() * ds.length)] ?? ds[0]!;
-  return [d.cx + (Math.random() * 2 - 1) * (d.r - 0.5), d.cy + (Math.random() * 2 - 1) * (d.r - 0.5)];
+/** True if a robot standing at (x, y) would sit within clearance of another robot. */
+function clashes(b: Bot, x: number, y: number, all: Bot[]): boolean {
+  return all.some((o) => o !== b && Math.hypot(o.x - x, o.y - y) < CLEARANCE);
 }
 
-function newDrone(i: number, ds: District[]): Drone {
-  const [x, y] = randomSpot(ds);
-  return { x, y, tx: x, ty: y, pause: i * 0.8, phase: i * 2.1 };
-}
-
-/** Glide towards the target, hover a moment, then pick the next district. */
-function stepDrone(dr: Drone, dt: number, ds: District[]): void {
-  if (dr.pause > 0) {
-    dr.pause -= dt;
-    return;
-  }
-  const dx = dr.tx - dr.x;
-  const dy = dr.ty - dr.y;
-  const dist = Math.hypot(dx, dy);
-  const step = DRONE_SPEED * dt;
-  if (dist > step) {
-    dr.x += (dx / dist) * step;
-    dr.y += (dy / dist) * step;
-    return;
-  }
-  dr.x = dr.tx;
-  dr.y = dr.ty;
-  dr.pause = 1 + Math.random() * 2;
-  [dr.tx, dr.ty] = randomSpot(ds);
-}
-
-/** A nearby idle robot to walk over and chat with, if any. */
+/** A nearby idle robot in the same district to walk over and chat with, if any. */
 function neighbourOf(b: Bot, all: Bot[]): Bot | null {
-  const near = all.filter((o) => o !== b && o.agent.status === 'idle' && Math.hypot(o.x - b.x, o.y - b.y) < 8);
+  const near = all.filter(
+    (o) => o !== b && o.district === b.district && o.agent.status === 'idle' && Math.hypot(o.x - b.x, o.y - b.y) < 8,
+  );
   return near[Math.floor(Math.random() * near.length)] ?? null;
 }
 
@@ -245,7 +222,6 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
   let districts: District[] = [];
   let bots: Bot[] = [];
   let props: Prop[] = [];
-  let drones: Drone[] = [];
   const byCid = new Map<number, Bot>();
   const packets: Packet[] = [];
   let pan = { x: 0, y: 0 };
@@ -347,19 +323,14 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
       const idle = b.agent.status === 'idle';
       if (!idle) b.talk = null;
       if (idle && now >= b.nextWander) {
-        const roll = Math.random();
-        const friend = roll < 0.3 ? neighbourOf(b, bots) : null;
+        const friend = Math.random() < 0.3 ? neighbourOf(b, bots) : null;
         if (friend) {
           // Walk over to a neighbour; the chat bubble shows on arrival.
           b.talk = friend.agent.cid;
           b.talkUntil = now + 9000;
           b.nextWander = now + 9000;
-        } else if (roll < 0.5) {
-          // Stroll to the central square; the next wander walks back.
-          b.tx = (Math.random() * 2 - 1) * 2.5;
-          b.ty = (Math.random() * 2 - 1) * 2.5;
-          b.nextWander = now + 5000 + Math.random() * 3000;
         } else {
+          // Wander within the district only.
           const span = Math.max(0.5, b.district.r - 0.7);
           b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
           b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
@@ -375,15 +346,21 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
       const dx = gx - b.x;
       const dy = gy - b.y;
       const dist = Math.hypot(dx, dy);
-      const step = SPEED * dt;
-      b.moving = dist > 0.02;
-      if (dist > step) {
-        b.x += (dx / dist) * step;
-        b.y += (dy / dist) * step;
-      } else {
-        b.x = gx;
-        b.y = gy;
+      const reach = Math.min(SPEED * dt, dist);
+      const heading = Math.atan2(dy, dx);
+      // Take the heading if it is clear, else swerve left or right; if every swerve clashes, wait a frame.
+      const way = AVOID_DEG.map((deg) => heading + (deg * Math.PI) / 180).find(
+        (a) => !clashes(b, b.x + Math.cos(a) * reach, b.y + Math.sin(a) * reach, bots),
+      );
+      b.moving = dist > 0.02 && way !== undefined;
+      if (way !== undefined) {
+        b.x += Math.cos(way) * reach;
+        b.y += Math.sin(way) * reach;
       }
+      // Never leave the district.
+      const { cx, cy, r } = b.district;
+      b.x = clamp(b.x, cx - r + 0.5, cx + r - 0.5);
+      b.y = clamp(b.y, cy - r + 0.5, cy + r - 0.5);
       if (b.moving) {
         b.walk += dt * 9;
         const screenDx = dx - dy;
@@ -397,8 +374,6 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
         b.nextWander = now + 2500 + Math.random() * 2000;
       }
     }
-    if (!drones.length) drones = [0, 1, 2].map((i) => newDrone(i, districts));
-    for (const dr of drones) stepDrone(dr, dt, districts);
   }
 
   function fillPoly(pts: [number, number][], fill: string): void {
@@ -730,50 +705,6 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
     }
   }
 
-  function drawDroneShadow(dr: Drone): void {
-    const [sx, sy] = project(dr.x, dr.y, 0);
-    ctx.save();
-    ctx.globalAlpha = 0.16;
-    ctx.fillStyle = palette.ink;
-    ctx.beginPath();
-    ctx.ellipse(sx, sy, 7 * zoom, 3.5 * zoom, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function drawDrone(dr: Drone, now: number): void {
-    const bob = Math.sin(now / 420 + dr.phase) * 3;
-    const [fx, fy] = project(dr.x, dr.y, PLATFORM_Z + DRONE_Z + bob);
-    ctx.save();
-    ctx.translate(fx, fy);
-    ctx.scale(zoom, zoom);
-    // Spinning rotors.
-    const spin = now / 90 + dr.phase;
-    const rotors: [number, number][] = [
-      [-7, -2],
-      [7, -2],
-    ];
-    ctx.strokeStyle = palette.ink3;
-    ctx.lineWidth = 0.8;
-    for (const [ox, oy] of rotors) {
-      ctx.beginPath();
-      ctx.ellipse(ox, oy - 3, 5, 1.1, spin, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 5, 3, 0, 0, Math.PI * 2);
-    ctx.fillStyle = palette.sheet;
-    ctx.fill();
-    ctx.strokeStyle = palette.ink2;
-    ctx.lineWidth = 0.9;
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, 1, 1.1, 0, Math.PI * 2);
-    ctx.fillStyle = Math.floor(now / 500 + dr.phase) % 2 === 1 ? palette.signal : palette.ink3;
-    ctx.fill();
-    ctx.restore();
-  }
-
   /** Slowly turning ring above the orchestrator's dais. */
   function drawHolo(now: number): void {
     const boss = districts.find((d) => d.role === 'orchestrator');
@@ -1000,9 +931,8 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
     drawGround();
     for (const d of districts) drawPlatform(d);
     for (const p of props) if (p.kind === 'lamp') drawLampPool(p.x, p.y);
-    for (const dr of drones) drawDroneShadow(dr);
 
-    // Props, consoles, robots and drones, back to front.
+    // Props, consoles and robots, back to front.
     const items: { depth: number; paint: () => void }[] = [];
     for (const p of props) items.push({ depth: p.x + p.y, paint: () => paintProp(p, now) });
     for (const b of bots) {
@@ -1011,7 +941,6 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
       items.push({ depth: hx + hy - 0.01, paint: () => drawConsole(hx, hy, working) });
       items.push({ depth: b.x + b.y, paint: () => drawBot(b, now) });
     }
-    for (const dr of drones) items.push({ depth: dr.x + dr.y + 1, paint: () => drawDrone(dr, now) });
     items.sort((p, q) => p.depth - q.depth);
     for (const item of items) item.paint();
 
