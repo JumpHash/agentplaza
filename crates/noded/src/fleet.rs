@@ -398,10 +398,10 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_manifest_is_a_fleet_of_twenty_one_roles() {
+    fn the_shipped_manifest_is_a_fleet_of_twenty_two_roles() {
         let fleet = Fleet::load(&shipped_manifest(), 100, 128, 1).expect("the shipped manifest");
         let roles = fleet.roles();
-        assert_eq!(roles.len(), 21, "{roles:?}");
+        assert_eq!(roles.len(), 22, "{roles:?}");
         // Alphabetical, and the manifest's own first and last keys.
         assert_eq!(roles.first().map(String::as_str), Some("architect"));
         assert_eq!(roles.last().map(String::as_str), Some("security-reviewer"));
