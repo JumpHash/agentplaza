@@ -293,6 +293,10 @@ impl Parser {
                 Item::Witness(WitnessDecl { name, machine, model, expr, span: lo.to(self.prev_span()) })
             }
             "scenario" => self.scenario()?,
+            "operation" => self.operation()?,
+            "law" => self.law()?,
+            "fixture" => self.fixture()?,
+            "authz" => self.authz()?,
             _ => return Err(self.err_here(format!("unknown declaration `{kw}`"))),
         };
         Ok(item)
@@ -1071,6 +1075,215 @@ impl Parser {
     }
 
     // ------------------------------------------------------------------ generators
+    // ------------------------------------------------------------------ authorization (spec 9.13-9.14)
+    fn operation(&mut self) -> PResult<Item> {
+        let lo = self.bump().span;
+        let name = self.dotted()?;
+        self.expect_sym("(")?;
+        self.expect_kw("principal")?;
+        self.expect_sym(":")?;
+        let mut principal = vec![self.ident()?];
+        while self.eat_sym("|") {
+            principal.push(self.ident()?);
+        }
+        self.expect_sym(",")?;
+        self.expect_kw("resource")?;
+        self.expect_sym(":")?;
+        let resource = self.ident()?;
+        self.expect_sym(",")?;
+        self.expect_kw("context")?;
+        self.expect_sym(":")?;
+        self.expect_sym("{")?;
+        let mut context = Vec::new();
+        while !self.is_sym("}") {
+            let f = self.ident()?;
+            self.expect_sym(":")?;
+            let ty = self.ty()?;
+            let optional = self.eat_kw("optional");
+            context.push((f, ty, optional));
+            self.eat_sym(",");
+        }
+        self.expect_sym("}")?;
+        self.expect_sym(")")?;
+        Ok(Item::Operation(Operation { name, principal, resource, context, span: lo.to(self.prev_span()) }))
+    }
+
+    fn law(&mut self) -> PResult<Item> {
+        let lo = self.bump().span;
+        let id = self.string()?;
+        let title = self.string()?;
+        self.expect_sym("{")?;
+        let mut l = Law {
+            id,
+            title,
+            tier: None,
+            enforcement: None,
+            severity: None,
+            statement: None,
+            rationale: None,
+            effect: Effect::Permit,
+            ops: Vec::new(),
+            principal: None,
+            resource: None,
+            when: Vec::new(),
+            unless: Vec::new(),
+            town: None,
+            expires: None,
+            implements: Vec::new(),
+            span: lo,
+        };
+        let mut effect = None;
+        while !self.is_sym("}") {
+            let kw = match self.peek().clone() {
+                Tok::Ident(s) => s,
+                _ => return Err(self.expected("a law clause")),
+            };
+            match kw.as_str() {
+                "tier" => {
+                    self.bump();
+                    l.tier = Some(self.ident()?);
+                }
+                "enforcement" => {
+                    self.bump();
+                    l.enforcement = Some(self.ident()?);
+                }
+                "severity" => {
+                    self.bump();
+                    l.severity = Some(self.ident()?);
+                }
+                "statement" => {
+                    self.bump();
+                    l.statement = Some(self.string()?);
+                }
+                "rationale" => {
+                    self.bump();
+                    l.rationale = Some(self.string()?);
+                }
+                "permit" | "forbid" => {
+                    self.bump();
+                    effect = Some(if kw == "permit" { Effect::Permit } else { Effect::Forbid });
+                    if self.eat_kw("any") {
+                        l.ops.push("any".to_string());
+                    } else {
+                        l.ops.push(self.dotted()?);
+                        while self.eat_sym(",") {
+                            l.ops.push(self.dotted()?);
+                        }
+                    }
+                }
+                "principal" | "resource" => {
+                    self.bump();
+                    let sc = if self.eat_kw("is") {
+                        Scope::Is(self.ty_atom()?)
+                    } else if self.eat_sym("==") {
+                        Scope::Eq(self.expr()?)
+                    } else if self.eat_kw("in") {
+                        Scope::In(self.expr()?)
+                    } else {
+                        return Err(self.expected("`is`, `==` or `in`"));
+                    };
+                    if kw == "principal" {
+                        l.principal = Some(sc);
+                    } else {
+                        l.resource = Some(sc);
+                    }
+                }
+                "when" => {
+                    self.bump();
+                    l.when.push(self.expr()?);
+                }
+                "unless" => {
+                    self.bump();
+                    l.unless.push(self.expr()?);
+                }
+                "town" => {
+                    self.bump();
+                    l.town = Some(self.string()?);
+                }
+                "expires" => {
+                    self.bump();
+                    l.expires = Some(self.expr()?);
+                }
+                "implements" => {
+                    self.bump();
+                    l.implements = self.reqids()?;
+                }
+                _ => return Err(self.err_here(format!("unknown law clause `{kw}`"))),
+            }
+        }
+        self.expect_sym("}")?;
+        let span = lo.to(self.prev_span());
+        match effect {
+            Some(e) if !l.ops.is_empty() => {
+                l.effect = e;
+            }
+            _ => return Err(Diag::error(span, "a law needs `permit` or `forbid` with its operations")),
+        }
+        l.span = span;
+        Ok(Item::Law(l))
+    }
+
+    /// `Type("id")`, with a `{ field: expr, … }` block only where `fields_ok` (fixtures).
+    fn entity_lit(&mut self, fields_ok: bool) -> PResult<EntityLit> {
+        let lo = self.span();
+        let ty = self.ident()?;
+        self.expect_sym("(")?;
+        let id = self.string()?;
+        self.expect_sym(")")?;
+        let mut fields = Vec::new();
+        if fields_ok && self.eat_sym("{") {
+            while !self.is_sym("}") {
+                let f = self.ident()?;
+                self.expect_sym(":")?;
+                fields.push((f, self.expr()?));
+                self.eat_sym(",");
+            }
+            self.expect_sym("}")?;
+        }
+        Ok(EntityLit { ty, id, fields, span: lo.to(self.prev_span()) })
+    }
+
+    fn fixture(&mut self) -> PResult<Item> {
+        let lo = self.bump().span;
+        let name = self.string()?;
+        let title = self.string()?;
+        self.expect_sym("{")?;
+        let mut entities = Vec::new();
+        while !self.is_sym("}") {
+            entities.push(self.entity_lit(true)?);
+        }
+        self.expect_sym("}")?;
+        Ok(Item::Fixture(Fixture { name, title, entities, span: lo.to(self.prev_span()) }))
+    }
+
+    fn authz(&mut self) -> PResult<Item> {
+        let lo = self.bump().span;
+        let name = self.string()?;
+        self.expect_kw("using")?;
+        let fixture = self.string()?;
+        self.expect_sym("{")?;
+        let mut cases = Vec::new();
+        while !self.is_sym("}") {
+            let clo = self.span();
+            let allow = if self.eat_kw("allow") {
+                true
+            } else if self.eat_kw("deny") {
+                false
+            } else {
+                return Err(self.expected("`allow` or `deny`"));
+            };
+            let label = self.string()?;
+            let subject = self.entity_lit(false)?;
+            let op = self.dotted()?;
+            let object = self.entity_lit(false)?;
+            let record = self.expr()?;
+            let law = if self.eat_kw("by") { Some(self.string()?) } else { None };
+            cases.push(AuthzCase { allow, label, subject, op, object, record, law, span: clo.to(self.prev_span()) });
+        }
+        self.expect_sym("}")?;
+        Ok(Item::Authz(Authz { name, fixture, cases, span: lo.to(self.prev_span()) }))
+    }
+
     fn gens(&mut self) -> PResult<Vec<Gen>> {
         let mut v = vec![self.gen()?];
         while self.is_sym(",") && self.gen_follows(1) {
