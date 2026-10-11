@@ -316,6 +316,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             _ => messages.push(Message::user_text(prompt)),
         }
 
+        let _ = crate::checkpoints::snapshot(self.workspace, &format!("work-{}", job.work));
         self.current = Some(job.work);
         self.cancelled = None;
         let result = self.drive(job.work, &profile, &mut messages);
