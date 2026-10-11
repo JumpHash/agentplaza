@@ -1,7 +1,7 @@
 //! The pass: pick, claim, drive, finish.
 //!
 //! One pass reads the ledger and the fleet register once, then walks the
-//! ledger oldest-first. For each task it decides one of four things, and the
+//! ledger oldest-first. For each task it decides one of five things, and the
 //! log says which in the dispatcher's own voice:
 //!
 //! * **skip** — the task names no role, or the role it names has no CONNECTED
@@ -12,6 +12,14 @@
 //!   call the hub would refuse.
 //! * **claim** — the task is `open`, a connected agent of its role exists, and
 //!   its role can be driven: bind it (`POST /tasks/{id}/claim`) and drive it.
+//! * **adopt** — the task is `claimed` and this dispatcher holds no retry
+//!   state for it, which is what a task it claimed *before a restart* looks
+//!   like (the retry map is in memory). When the ledger's own `agent_cid` names
+//!   a CONNECTED agent of exactly the task's role, the claim is this fleet's own
+//!   stranded work: re-decide the plan and drive it with a fresh attempt budget.
+//!   A claim whose agent is not connected, or is connected as some other role,
+//!   is not ours to finish and is left exactly as it is. See
+//!   [`Dispatcher::adopt`].
 //! * **drive** — run the planned workflow ([`crate::workflow`]) through
 //!   the hub's `POST /tell`, one tool call at a time, and finish the task
 //!   `done` with its artifacts (or, for a read-only run, with the line the
@@ -48,8 +56,8 @@ use crate::workflow::{self, DriveError, Driver, Plan};
 /// before it is finished `failed` with the evidence. Attempts are counted per
 /// pass, so a dispatcher running every 5 s gives up after about 10 s of the
 /// agent being unreachable — and a dispatcher that is stopped and started
-/// again remembers nothing, which is honest: the task stays claimed, and its
-/// record says so.
+/// again remembers nothing: a claim its ledger record still backs is adopted
+/// with a fresh budget ([`Dispatcher::adopt`]), and the bound starts over.
 pub const MAX_ATTEMPTS: u32 = 3;
 
 /// How long the dispatcher is willing to wait for one tool call. It is the
@@ -234,7 +242,9 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                         // means a claim made under an earlier manifest; it is
                         // reported, never driven into a refusal.)
                         match workflow::plan_for(role, self.roles.as_ref()) {
-                            Plan::Drive(family) => self.drive(task, role, family, cid, &mut report),
+                            Plan::Drive(family) => {
+                                self.drive(task, role, family, cid, &agents, &mut report)
+                            }
                             Plan::Skipped(reason) => {
                                 report.skipped += 1;
                                 log.line(&format!(
@@ -245,14 +255,11 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                         }
                     }
                     None => {
-                        // Claimed by nobody this dispatcher knows: another
-                        // dispatcher's, or one claimed before a restart.
-                        // Finishing someone else's claim is not ours to do.
-                        report.skipped += 1;
-                        log.line(&format!(
-                            "dispatchd: task {} (role {role}) is claimed by another; skipped",
-                            task.id
-                        ));
+                        // No retry state: either a task this dispatcher claimed
+                        // before it was stopped and started again (the map is in
+                        // memory), or a claim that was never ours. The ledger's
+                        // own `agent_cid` tells them apart — see `adopt`.
+                        self.adopt(task, role, &agents, &mut report);
                     }
                 }
             } else {
@@ -314,7 +321,7 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                 ));
                 self.retries
                     .insert(task.id.clone(), Attempt { cid, attempts: 0 });
-                self.drive(task, role, family, cid, report);
+                self.drive(task, role, family, cid, agents, report);
             }
             Err(reason) => {
                 report.skipped += 1;
@@ -326,24 +333,81 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
         }
     }
 
+    /// Adopts a `claimed` task this dispatcher holds no retry state for.
+    ///
+    /// The retry map is in memory, so a dispatcher that is stopped and started
+    /// again remembers nothing — and a task it had claimed then looks like a
+    /// stranger's. It is not: the ledger's own `agent_cid` names the holder, and
+    /// when the register this pass read still lists that CID connected as
+    /// *exactly* the task's role, the claim is this fleet's own stranded work.
+    /// Adoption re-decides the plan from the manifest in hand and drives the task
+    /// with a fresh attempt budget ([`MAX_ATTEMPTS`]); the ledger's row is left
+    /// untouched until that drive finishes it, so a re-read is always consistent
+    /// with itself.
+    ///
+    /// A claim whose agent is not connected, or is connected as some other role,
+    /// is not ours to finish: it is left exactly as it is, and the log says why.
+    fn adopt(&mut self, task: &Task, role: &str, agents: &[Agent], report: &mut Reporter) {
+        let log = Arc::clone(&self.log);
+        let stranded = task
+            .agent_cid
+            .filter(|cid| agent_of_role(agents, *cid, role).is_some());
+        let Some(cid) = stranded else {
+            report.skipped += 1;
+            log.line(&format!(
+                "dispatchd: task {} (role {role}) is claimed by another; skipped",
+                task.id
+            ));
+            return;
+        };
+        let family = match workflow::plan_for(role, self.roles.as_ref()) {
+            Plan::Drive(family) => family,
+            Plan::Skipped(reason) => {
+                report.skipped += 1;
+                log.line(&format!(
+                    "dispatchd: task {} (role {role}) is claimed but {reason}; skipped",
+                    task.id
+                ));
+                return;
+            }
+        };
+        log.line(&format!(
+            "dispatchd: adopting stranded claim {} (agent cid {cid})",
+            task.id
+        ));
+        self.drive(task, role, family, cid, agents, report);
+    }
+
     /// Drives one claimed task through its planned family's script and finishes
     /// it, whichever way it goes.
+    ///
+    /// The agent is re-verified against the register first, every time: a guest
+    /// CID is not a stable identity — a VM that died can be replaced by a new run
+    /// that takes the same CID — so the CID a claim was made for is not on its own
+    /// proof that the agent answering it is still the one of the task's role.
+    /// `agents` is the register this pass read; a CID that is gone, or that is now
+    /// connected as some other role, does not get driven: the failure is retryable
+    /// and names the divergence, and the bounded retry path below either sees the
+    /// register agree again or ends the task with that evidence.
     fn drive(
         &mut self,
         task: &Task,
         role: &str,
         family: &'static workflow::Family,
         cid: u64,
+        agents: &[Agent],
         tally: &mut Reporter,
     ) {
         let log = Arc::clone(&self.log);
         let attempts = self.note_attempt(&task.id, cid);
-        // The driver borrows the hub for the length of the run; the ledger and
-        // the retry map are separate fields, so finishing the task afterwards
-        // needs no lock and no re-borrow.
-        let outcome = {
+        let outcome = if agent_of_role(agents, cid, role).is_some() {
+            // The driver borrows the hub for the length of the run; the ledger
+            // and the retry map are separate fields, so finishing the task
+            // afterwards needs no lock and no re-borrow.
             let mut driver = AgentDriver::new(&self.operator, cid, TELL_TIMEOUT_MS);
             (family.workflow)(task, &mut driver).map(|report| (report, driver.calls()))
+        } else {
+            Err(divergent_agent(family, cid, role))
         };
         match outcome {
             Ok((report, calls)) => {
@@ -432,6 +496,40 @@ pub fn pick_agent<'a>(agents: &'a [Agent], role: &str) -> Option<&'a Agent> {
         .min_by_key(|agent| agent.cid)
 }
 
+/// The agent at `cid` connected as *exactly* `role`, when the register lists
+/// one.
+///
+/// This is the one check that answers "is this CID still the agent a claim was
+/// made for?" A guest CID is not a stable identity — a VM that died can be
+/// replaced by a new run that takes the same CID — so the register read at the
+/// top of the pass is the only thing that says so. Both the retry path (before
+/// it drives) and the adoption path (before it adopts) ask this same question.
+fn agent_of_role<'a>(agents: &'a [Agent], cid: u64, role: &str) -> Option<&'a Agent> {
+    agents
+        .iter()
+        .find(|agent| agent.cid == cid && agent.role == role)
+}
+
+/// The retryable failure a claimed task hits when the register no longer lists
+/// its agent at that CID with that role: a replaced VM, a reused guest CID, a
+/// vanished session. The reason names the divergence, and it is the bounded
+/// retry path — not an immediate finish — that decides what to do about it,
+/// because the register may yet agree again.
+fn divergent_agent(family: &workflow::Family, cid: u64, role: &str) -> DriveError {
+    DriveError::Unreachable {
+        // The first call the plan would have driven: the tool the run stopped
+        // short of. Every table family lists at least one, so this never falls
+        // to the family's own name.
+        name: family
+            .tools
+            .first()
+            .copied()
+            .unwrap_or(family.name)
+            .to_string(),
+        reason: format!("the agent of cid {cid} is no longer {role}"),
+    }
+}
+
 /// The [`Driver`] a production pass uses: every call goes to the hub as one
 /// `POST /tell`, and the agent's own answer is what comes back.
 ///
@@ -499,6 +597,8 @@ impl<O: Operator> Driver for AgentDriver<'_, O> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::rc::Rc;
 
     use crate::testing::{FakeAgent, FakeLedger, FakeOperator, Recording, agent, task};
     use crate::views::Tell;
@@ -1088,12 +1188,15 @@ mod tests {
         }
     }
 
-    /// A claimed task this dispatcher does not own is left alone: another
-    /// dispatcher's claim (or one made before a restart) is not ours to finish.
+    /// A claimed task whose claimant is not a connected agent of the task's role
+    /// is left alone — untouched, still claimed. A builder *is* connected here,
+    /// but the claim names a CID nothing serves, so it is not this fleet's to
+    /// finish (only a claim the register still backs is adopted; see
+    /// `a_claimed_task_is_adopted_after_a_restart`).
     #[test]
     fn a_claim_the_dispatcher_does_not_own_is_left_alone() {
         let mut claimed = task("t1", "claimed", Some("builder"));
-        claimed.agent_cid = Some(300);
+        claimed.agent_cid = Some(999);
         let ledger = FakeLedger::with_task(claimed).with_agent(300, "builder");
         let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
         let (mut dispatcher, log) = dispatcher(ledger, operator);
@@ -1107,6 +1210,263 @@ mod tests {
             log.text().contains("is claimed by another; skipped"),
             "log: {}",
             log.text()
+        );
+    }
+
+    /// A dispatcher that is stopped and started again adopts the claim it left
+    /// behind. The ledger and the hub are the same daemons; only the dispatcher
+    /// — and its in-memory retry map — is new. A claimed task whose agent is
+    /// still connected as the task's role is this fleet's own stranded work: it is
+    /// driven to done (with the adoption logged) instead of being parked forever
+    /// as "claimed by another".
+    #[test]
+    fn a_claimed_task_is_adopted_after_a_restart() {
+        let ledger = Rc::new(
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder"),
+        );
+        let operator = Rc::new(
+            FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused")
+                .with_agent(300, FakeAgent::default()),
+        );
+        let log = Arc::new(Recording::default());
+
+        // The first dispatcher claims t1 and, with the hub down, defers it — the
+        // claim the ledger records.
+        let mut first = Dispatcher::new(
+            Rc::clone(&ledger),
+            Rc::clone(&operator),
+            Arc::clone(&log) as Arc<dyn Logger + Send + Sync>,
+        );
+        let report = first.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.deferred), (1, 1));
+        assert_eq!(ledger.task("t1").state, "claimed");
+        assert_eq!(ledger.task("t1").agent_cid, Some(300));
+        drop(first); // the dispatcher is gone; a restart leaves the ledger as it is.
+
+        // The hub comes back, and a *fresh* dispatcher — its retry map empty —
+        // runs over the same daemons.
+        operator.recover();
+        let mut second = Dispatcher::new(
+            Rc::clone(&ledger),
+            Rc::clone(&operator),
+            Arc::clone(&log) as Arc<dyn Logger + Send + Sync>,
+        );
+        let report = second.pass().expect("the pass runs");
+
+        // It adopted the stranded claim: not claimed again, driven to done.
+        assert_eq!((report.claimed, report.done, report.skipped), (0, 1, 0));
+        // The full sequence: the first dispatcher's one attempt (refused at the
+        // transport), then the adopted run's write and read-back.
+        assert_eq!(
+            operator.sequence(),
+            vec![
+                (300, "write_file".to_string()),
+                (300, "write_file".to_string()),
+                (300, "read_file".to_string()),
+            ]
+        );
+        assert_eq!(ledger.task("t1").state, "done");
+        assert_eq!(
+            operator.agent_file(300, "build-notes.txt").as_deref(),
+            Some("task t1: do t1")
+        );
+        // The claim was made once, by the first dispatcher: adoption never
+        // re-claims.
+        assert_eq!(
+            ledger.claims.borrow().as_slice(),
+            &[("t1".to_string(), 300)]
+        );
+
+        let text = log.text();
+        assert!(
+            text.contains("dispatchd: adopting stranded claim t1 (agent cid 300)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("dispatchd: task t1 (role builder) -> agent cid 300 finished done"),
+            "{text}"
+        );
+    }
+
+    /// A stranded claim the register does not back is left exactly as it is: the
+    /// fleet cannot tell it is its own, so it does not touch it. Two shapes, both
+    /// untouched — the agent gone, and the CID now connected as another role (a
+    /// replaced VM that took the guest CID).
+    #[test]
+    fn a_stranded_claim_the_register_does_not_back_is_left_alone() {
+        for (name, agents, cid) in [
+            ("agent gone", vec![agent(400, "builder")], 300u64),
+            ("role changed", vec![agent(300, "librarian")], 300u64),
+            ("no agent recorded", vec![agent(300, "builder")], 0u64),
+        ] {
+            let mut claimed = task("t1", "claimed", Some("builder"));
+            // `cid == 0` models a ledger that recorded no claiming agent at all:
+            // the field is absent, which no connected agent can match.
+            claimed.agent_cid = (cid != 0).then_some(cid);
+            let mut ledger = FakeLedger::with_task(claimed);
+            ledger.agents = agents;
+            let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+            let (mut dispatcher, log) = dispatcher(ledger, operator);
+
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!(report.skipped, 1, "{name}");
+            assert!(dispatcher.operator.calls.borrow().is_empty(), "{name}");
+            assert!(dispatcher.ledger.claims.borrow().is_empty(), "{name}");
+            assert!(dispatcher.ledger.finishes.borrow().is_empty(), "{name}");
+            assert_eq!(dispatcher.ledger.task("t1").state, "claimed", "{name}");
+            assert!(
+                log.text().contains("is claimed by another; skipped"),
+                "{name}: {}",
+                log.text()
+            );
+        }
+    }
+
+    /// A retry never drives a stale CID: when a task's agent VM dies and a new run
+    /// takes the same guest CID, the register now lists that CID as a different
+    /// role — and the next pass must not drive whatever took the CID (with no
+    /// manifest the hub would admit it, and the task would be marked done on the
+    /// impostor). The divergence is retryable and bounded: the task ends failed
+    /// naming it, and the impostor's hub is never asked to do anything.
+    #[test]
+    fn a_retry_never_drives_a_stale_cid() {
+        // The task is claimed, with retry state for cid 300 (the hub was down).
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator =
+            FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused")
+                .with_agent(300, FakeAgent::default());
+        let (mut dispatcher, log) = dispatcher(ledger, operator);
+        let first = dispatcher.pass().expect("the pass runs");
+        assert_eq!((first.claimed, first.deferred), (1, 1));
+        let calls_before = dispatcher.operator.calls.borrow().len();
+
+        // The VM is replaced: cid 300 is now the impostor's, connected as another
+        // role. The hub itself is up and would happily run the call.
+        dispatcher.ledger.agents = vec![agent(300, "intruder")];
+        dispatcher.operator.recover();
+
+        // One more deferred pass, then the bound is spent and the task ends
+        // failed — with the divergence named.
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.failed, report.deferred), (0, 1));
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.failed, report.deferred), (1, 0));
+
+        let finishes = dispatcher.ledger.finishes.borrow();
+        assert_eq!(finishes.len(), 1);
+        assert_eq!(finishes[0].1, Outcome::Failed);
+        assert_eq!(
+            finishes[0].2,
+            "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
+        );
+        drop(finishes);
+        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+        // The impostor's hub was never driven: the only call it ever saw was the
+        // first pass's, before the VM was replaced.
+        assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
+        assert!(
+            log.text()
+                .contains("tool write_file unavailable: the agent of cid 300 is no longer builder"),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// The other shape of a stale CID: the agent's session vanished entirely (its
+    /// VM died and nothing took the CID). The retry re-verifies the register,
+    /// finds no agent at that CID, and ends the task failed naming the divergence
+    /// — it never drives a CID the register no longer holds.
+    #[test]
+    fn a_retry_never_drives_a_cid_whose_agent_vanished() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator =
+            FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused");
+        let (mut dispatcher, log) = dispatcher(ledger, operator);
+        let first = dispatcher.pass().expect("the pass runs");
+        assert_eq!((first.claimed, first.deferred), (1, 1));
+        let calls_before = dispatcher.operator.calls.borrow().len();
+
+        // The agent is gone from the register: nothing is connected at cid 300.
+        dispatcher.ledger.agents.clear();
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.failed, report.deferred), (0, 1));
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.failed, report.deferred), (1, 0));
+
+        let finishes = dispatcher.ledger.finishes.borrow();
+        assert_eq!(
+            finishes[0].2,
+            "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
+        );
+        drop(finishes);
+        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+        assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
+        assert!(
+            log.text().contains("is no longer builder"),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// Adoption re-arms the retry bound but does not remove it: a task adopted
+    /// after a restart is still given up on after [`MAX_ATTEMPTS`] passes, so a
+    /// flapping fleet cannot keep a task claimed forever. Being adopted *twice*
+    /// (two restarts) is no different — the second adoption spends its own budget
+    /// and ends the task.
+    #[test]
+    fn the_adoption_cannot_retry_forever() {
+        fn over(
+            ledger: &Rc<FakeLedger>,
+            operator: &Rc<FakeOperator>,
+            log: &Arc<Recording>,
+        ) -> Dispatcher<Rc<FakeLedger>, Rc<FakeOperator>> {
+            Dispatcher::new(
+                Rc::clone(ledger),
+                Rc::clone(operator),
+                Arc::clone(log) as Arc<dyn Logger + Send + Sync>,
+            )
+        }
+
+        let ledger = Rc::new(
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder"),
+        );
+        let operator = Rc::new(FakeOperator::unreachable(
+            "cannot connect to http://127.0.0.1:19080: refused",
+        ));
+        let log = Arc::new(Recording::default());
+
+        // First dispatcher claims the task, then is killed with the hub still down.
+        let mut first = over(&ledger, &operator, &log);
+        assert_eq!(first.pass().expect("the pass runs").deferred, 1);
+        drop(first);
+
+        // A second dispatcher adopts it and, before it can finish, is killed too:
+        // the claim survives for a third.
+        let mut second = over(&ledger, &operator, &log);
+        for _ in 0..2 {
+            assert_eq!(second.pass().expect("the pass runs").deferred, 1);
+        }
+        drop(second);
+
+        // The third adopts it again and spends the whole budget: the task ends
+        // failed. Adopted twice, but not retried forever.
+        let mut third = over(&ledger, &operator, &log);
+        for pass in 1..=MAX_ATTEMPTS {
+            let report = third.pass().expect("the pass runs");
+            let expected = if pass < MAX_ATTEMPTS { (0, 1) } else { (1, 0) };
+            assert_eq!((report.failed, report.deferred), expected, "pass {pass}");
+        }
+        assert_eq!(ledger.task("t1").state, "failed");
+
+        let text = log.text();
+        assert_eq!(
+            text.matches("dispatchd: adopting stranded claim t1 (agent cid 300)")
+                .count(),
+            2,
+            "adopted exactly twice:\n{text}"
         );
     }
 

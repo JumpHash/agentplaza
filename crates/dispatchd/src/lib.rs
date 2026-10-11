@@ -24,14 +24,18 @@
 //!
 //! What it deliberately does *not* do: invent work for a role whose agent is
 //! not connected (such a task stays `open` and is logged as skipped), guess at
-//! a tool's answer (an agent that does not answer is reported as such), or
-//! drive two tool calls at once (a pass is strictly sequential — one call in
-//! flight, anywhere).
+//! a tool's answer (an agent that does not answer is reported as such), drive
+//! an agent whose CID is no longer connected as the task's role (a guest CID is
+//! reused when a VM is replaced, so every drive re-verifies the agent against
+//! the register), or drive two tool calls at once (a pass is strictly
+//! sequential — one call in flight, anywhere).
 //!
 //! It holds no state that matters: the retry counter is in memory and only
-//! bounds how many passes a failing task is retried for. Everything durable —
-//! the task's state, its assignee, its note — lives in the ledger, which is
-//! the record of what happened.
+//! bounds how many passes a failing task is retried for, and a claim left
+//! behind by a restart is adopted on a later pass whenever the ledger's own
+//! `agent_cid` still names a connected agent of the task's role ([`dispatch`]).
+//! Everything durable — the task's state, its assignee, its note — lives in the
+//! ledger, which is the record of what happened.
 //!
 //! This crate is safe Rust only (`forbid(unsafe_code)`), uses no threads and
 //! no unsafe, and depends on nothing beyond `serde`/`serde_json`: the HTTP it

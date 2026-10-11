@@ -19,6 +19,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use serde_json::json;
@@ -253,6 +254,15 @@ impl FakeOperator {
         }
     }
 
+    /// The hub comes back after an outage: a transport failure (and any fixed
+    /// answer) is cleared, so the next `tell` reaches the agents again. A test
+    /// that restarts the dispatcher uses it to model a hub that was down for one
+    /// dispatcher's pass and up for the next.
+    pub fn recover(&self) {
+        *self.transport.borrow_mut() = None;
+        *self.answer.borrow_mut() = None;
+    }
+
     /// Puts a whole agent (with a workspace) behind `cid`.
     pub fn with_agent(self, cid: u64, agent: FakeAgent) -> Self {
         self.agents.borrow_mut().insert(cid, agent);
@@ -301,6 +311,41 @@ impl Operator for FakeOperator {
             Err(DriveError::Refused { output, .. }) => Ok(Tell::Answered { ok: false, output }),
             Err(other) => Err(other.note()),
         }
+    }
+}
+
+/// Sharing: the ledger and the hub *outlive* any one dispatcher, so a test that
+/// restarts the dispatcher shares the same fakes through an `Rc` — that is the
+/// whole point of a restart: the daemons' state stays, the dispatcher's memory
+/// does not. The blanket impls let the fakes be used the same way in tests that
+/// do not share.
+impl<L: Ledger> Ledger for Rc<L> {
+    fn tasks(&self) -> Result<Vec<Task>, String> {
+        (**self).tasks()
+    }
+
+    fn agents(&self) -> Result<Vec<Agent>, String> {
+        (**self).agents()
+    }
+
+    fn claim(&self, id: &str, cid: u64) -> Result<(), String> {
+        (**self).claim(id, cid)
+    }
+
+    fn finish(&self, id: &str, outcome: Outcome, note: &str) -> Result<(), String> {
+        (**self).finish(id, outcome, note)
+    }
+}
+
+impl<O: Operator> Operator for Rc<O> {
+    fn tell(
+        &self,
+        cid: u64,
+        name: &str,
+        args: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<Tell, String> {
+        (**self).tell(cid, name, args, timeout_ms)
     }
 }
 
