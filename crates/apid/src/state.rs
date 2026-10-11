@@ -123,6 +123,13 @@ impl App {
         agents::spawn_reconcile(Arc::clone(&app));
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
+        // Every note an agent writes is a live `memory` event for the console.
+        let weak = Arc::downgrade(&app);
+        app.memory.set_listener(move |cid, meta| {
+            if let Some(app) = weak.upgrade() {
+                app.bus.publish("memory", &serde_json::json!({ "cid": cid, "slug": meta.slug, "title": meta.title, "kind": meta.kind }));
+            }
+        });
         let server = apz_http::Server::bind(app.config.port)?;
         let router = api::router();
         server.spawn(move |request| router.handle(&app, request))

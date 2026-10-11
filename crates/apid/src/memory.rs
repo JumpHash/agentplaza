@@ -73,11 +73,18 @@ struct Stored {
 /// The memory libraries of all agents, one directory per agent.
 pub struct Memory {
     root: PathBuf,
+    /// Told about every note written (apid publishes it as a `memory` event).
+    listener: std::sync::OnceLock<Box<dyn Fn(u64, &NoteMeta) + Send + Sync>>,
 }
 
 impl Memory {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, listener: std::sync::OnceLock::new() }
+    }
+
+    /// Sets the function told about every note written (once).
+    pub fn set_listener(&self, listener: impl Fn(u64, &NoteMeta) + Send + Sync + 'static) {
+        let _ = self.listener.set(Box::new(listener));
     }
 
     /// The notes of `cid`, newest first.
@@ -175,9 +182,28 @@ impl Memory {
             .collect()
     }
 
-    /// Writes a note file; the caller holds `LOCK`.
+    /// Writes a note file and tells the listener; the caller holds `LOCK`.
     #[allow(clippy::too_many_arguments)]
     fn store(
+        &self,
+        cid: u64,
+        title: &str,
+        body: &str,
+        kind: &str,
+        tags: &[String],
+        task: Option<String>,
+        work: Option<u64>,
+        now_ms: u64,
+    ) -> Result<NoteMeta, String> {
+        let meta = self.store_file(cid, title, body, kind, tags, task, work, now_ms)?;
+        if let Some(listener) = self.listener.get() {
+            listener(cid, &meta);
+        }
+        Ok(meta)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn store_file(
         &self,
         cid: u64,
         title: &str,
