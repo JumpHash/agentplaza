@@ -1,3 +1,4 @@
+import { roleLabel } from '../roles';
 // The council: motions the plaza's roles vote on, and the owner's decisions on them.
 
 import '../styles/ops.css';
@@ -57,7 +58,7 @@ function motionCard(m: Motion, changed: () => void): HTMLElement {
     ? h(
         'ul.votes',
         null,
-        m.votes.map((v) => h('li', null, h('span.muted', null, v.role), badge(v.vote, VOTE_TONE[v.vote] ?? 'muted'), h('span', null, v.reason))),
+        m.votes.map((v) => h('li', null, h('span.muted', null, roleLabel(v.role)), badge(v.vote, VOTE_TONE[v.vote] ?? 'muted'), h('span', null, v.reason))),
       )
     : null;
   const actions = needsOwner(m)

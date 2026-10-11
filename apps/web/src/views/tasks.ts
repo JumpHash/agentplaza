@@ -1,3 +1,4 @@
+import { agentName } from '../roles';
 // Tasks: the board of every task, and one task in full. A task is open, in
 // progress, done, or failed or withdrawn; the page shows only that.
 
@@ -35,12 +36,15 @@ function stateTone(state: string): Tone {
 
 const titleOf = (goal: string): string => goal.split('\n').find((l) => l.trim())?.trim() ?? 'Untitled task';
 const labelOf = (state: string): string => state.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
-const agentName = (cid: number): string => agents.get().find((a) => a.cid === cid)?.name ?? `agent ${cid}`;
+const cidName = (cid: number): string => {
+  const a = agents.get().find((x) => x.cid === cid);
+  return a ? agentName(a) : `agent ${cid}`;
+};
 const idleWorkers = (): Agent[] => agents.get().filter((a) => a.status === 'idle' && a.tier === 'worker');
 
 function assigneeLink(cid: number | null): HTMLElement {
   if (cid === null) return h('span.faint', null, 'Unassigned');
-  const link = h('a', { href: href('agents', cid) }, agentName(cid));
+  const link = h('a', { href: href('agents', cid) }, cidName(cid));
   // Inside a clickable card, the name should open the agent, not the task.
   link.addEventListener('click', (e) => e.stopPropagation());
   return link;
@@ -128,7 +132,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const budget = input({ type: 'number', min: 0, step: 1, value: 100 });
     const assignee = select([
       { value: '', label: 'Let the scheduler choose' },
-      ...idleWorkers().map((a) => ({ value: String(a.cid), label: a.name })),
+      ...idleWorkers().map((a) => ({ value: String(a.cid), label: agentName(a) })),
     ]);
     const submit = h('button.btn.primary', { type: 'submit' }, icon('plus'), 'Create task');
     const form = h(
@@ -190,7 +194,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
     const isOpen = t.state === 'open';
     const assignSel = select(
-      [{ value: '', label: 'Assign to…' }, ...idleWorkers().map((a) => ({ value: String(a.cid), label: a.name }))],
+      [{ value: '', label: 'Assign to…' }, ...idleWorkers().map((a) => ({ value: String(a.cid), label: agentName(a) }))],
       '',
     );
     assignSel.addEventListener('change', async () => {

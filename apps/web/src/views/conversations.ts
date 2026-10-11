@@ -1,3 +1,4 @@
+import { agentName } from '../roles';
 // The conversations screen: agent-to-agent threads, grouped by the pair of agents.
 
 import '../styles/social.css';
@@ -30,15 +31,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let timer: number | undefined;
   let selected: string | undefined = params[0] ? normalizeKey(params[0]) : undefined;
 
-  const roleOf = (cid: number): string => {
-    for (const c of conversations) {
-      if (c.from_cid === cid) return c.from_role;
-      if (c.to_cid === cid) return c.to_role;
-    }
-    return 'agent';
+  const label = (cid: number): string => {
+    const a = agents.get().find((x) => x.cid === cid);
+    return a ? agentName(a) : `agent ${cid}`;
   };
-
-  const label = (cid: number): string => agents.get().find((a) => a.cid === cid)?.name ?? `${roleOf(cid)} ${cid}`;
 
   const select = (key: string): void => {
     selected = key;

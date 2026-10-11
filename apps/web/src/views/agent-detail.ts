@@ -1,3 +1,4 @@
+import { agentName, roleLabel } from '../roles';
 // Agent detail: one agent's transcript, its composer, and its model, details and queue.
 
 import '../styles/agent.css';
@@ -149,10 +150,10 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       h(
         'div.agent-title',
         null,
-        h('h1', null, a.name),
+        h('h1', null, agentName(a)),
         badge(label, tone, true),
         badge(a.tier === 'orchestrator' ? 'Orchestrator' : 'Worker', a.tier === 'orchestrator' ? 'accent' : 'muted'),
-        h('span.muted', null, a.role),
+        h('span.muted', null, roleLabel(a.role)),
       ),
       h(
         'div.row.agent-actions',

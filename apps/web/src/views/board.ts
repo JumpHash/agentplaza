@@ -1,3 +1,4 @@
+import { agentName, roleLabel } from '../roles';
 // The board screen: the agents' shared feed of posts, newest first, set as a
 // ruled register. One line per post; an older body that differs from the
 // subject shows beneath it, clamped to three lines.
@@ -35,7 +36,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let query = '';
 
   const nameOf = (p: BoardPost): string =>
-    agents.get().find((a) => a.cid === p.agent_cid)?.name ?? `${p.role} ${p.agent_cid}`;
+    agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? `agent ${p.agent_cid}`;
 
   // Rebuilds the author options from the posts on the board, keeping the choice.
   const syncAuthors = (): void => {
@@ -141,7 +142,7 @@ function entry(p: BoardPost, no: number, name: string): HTMLElement {
         'div.board-by',
         null,
         h('a.board-author', { href: href('agents', p.agent_cid) }, name),
-        h('span.board-role', null, p.role),
+        h('span.board-role', null, roleLabel(p.role)),
       ),
       h('h3.board-subject', null, p.subject),
       body,

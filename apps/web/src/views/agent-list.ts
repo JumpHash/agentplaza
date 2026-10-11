@@ -1,3 +1,4 @@
+import { agentName, roleLabel } from '../roles';
 // The roster: every agent the plaza holds, filterable by role and status, with
 // each row's own actions. Live through the agents cell; it fetches nothing itself.
 
@@ -62,7 +63,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
           'div.row.agent-cell',
           null,
           dot(STATUS_TONE[a.status]),
-          h('div', null, h('strong.truncate', null, a.name), h('div.faint.truncate', null, a.role)),
+          h('div', null, h('strong.truncate', null, agentName(a)), h('div.faint.truncate', null, roleLabel(a.role))),
         ),
     },
     {
@@ -149,7 +150,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     if (next.join('\n') === roles.join('\n')) return;
     roles = next;
     if (roleFilter && !roles.includes(roleFilter)) roleFilter = '';
-    roleSel.replaceChildren(new Option('All roles', ''), ...roles.map((r) => new Option(r, r)));
+    roleSel.replaceChildren(new Option('All roles', ''), ...roles.map((r) => new Option(roleLabel(r), r)));
     roleSel.value = roleFilter;
   }
 

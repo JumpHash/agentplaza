@@ -1,3 +1,4 @@
+import { agentName, roleLabel } from '../roles';
 // Overview: the plaza at a glance — the orchestrator front and centre, the
 // fleet's state, and a live activity feed.
 
@@ -67,7 +68,7 @@ function renderOrchestrator(root: HTMLElement, orch: Agent | undefined): void {
   replace(
     root,
     card(
-      h('div.row', null, icon('orchestrator'), h('h2', null, orch.name), status),
+      h('div.row', null, icon('orchestrator'), h('h2', null, agentName(orch)), h('span.faint', null, roleLabel(orch.role)), status),
       h(
         'div.stack',
         null,
@@ -90,9 +91,9 @@ function renderFleet(root: HTMLElement, list: Agent[]): void {
         const tone = a.status === 'working' ? 'info' : a.status === 'idle' ? 'ok' : 'muted';
         const tile = h(
           'button.fleet-tile',
-          { type: 'button', title: `${a.name} · ${a.model}` },
-          h('span.row', null, h('span.dot', { class: tone }), h('strong.truncate', null, a.name)),
-          h('span.faint.truncate', null, a.work ? clip(a.work.prompt, 60) : a.status === 'offline' ? 'offline' : a.role),
+          { type: 'button', title: `${agentName(a)} · ${roleLabel(a.role)} · ${a.model}` },
+          h('span.row', null, h('span.dot', { class: tone }), h('strong.truncate', null, agentName(a))),
+          h('span.faint.truncate', null, a.work ? clip(a.work.prompt, 60) : a.status === 'offline' ? 'offline' : roleLabel(a.role)),
         );
         tile.addEventListener('click', () => go('agents', a.cid));
         return tile;
@@ -105,7 +106,8 @@ function pushFeed(feed: HTMLElement, e: Entry): void {
   const line = describe(e);
   if (!line) return;
   feed.querySelector('.feed-empty')?.remove();
-  const name = agents.get().find((a) => a.cid === e.cid)?.name ?? `agent ${e.cid}`;
+  const found = agents.get().find((a) => a.cid === e.cid);
+  const name = found ? agentName(found) : `agent ${e.cid}`;
   const item = h('li', null, h('span.feed-time.faint', null, ago(e.at_ms)), h('a', { href: href('agents', e.cid) }, name), h('span.muted', null, line));
   feed.prepend(item);
   while (feed.children.length > FEED_MAX) feed.lastElementChild?.remove();
