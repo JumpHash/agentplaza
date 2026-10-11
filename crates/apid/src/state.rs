@@ -111,7 +111,7 @@ impl App {
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
             laws: crate::laws::Laws::load(&config.state_dir),
-            connectors: crate::connectors::Store::load(&config.state_dir)?,
+            connectors: crate::connectors::Store::load(&config.state_dir, env.clone())?,
             approvals: crate::approvals::Store::load(&config.state_dir),
             society: crate::society::Society::default(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,

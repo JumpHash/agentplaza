@@ -1,12 +1,12 @@
 //! External-tool connectors. Every call to an outside service is made here, at
-//! the orchestrator: a connector's key lives in `connector-secrets.json` (0600,
-//! write-only through the API) and never enters a VM. Each action carries a risk
-//! class (`read`, `write` or `irreversible`) for the policy that gates it.
+//! the orchestrator: a connector's credentials live in `connector-secrets.json`
+//! (0600, write-only through the API) or in apid's environment, and never enter
+//! a VM. Each action carries a risk class (`read`, `write` or `irreversible`) for
+//! the policy that gates it.
 //!
-//! `CATALOG` is data. `Store` holds what the operator enabled and the keys.
-//! `call` is the one path an agent tool takes; that wiring is separate, so the
-//! module allows dead code until it lands.
-
+//! `CATALOG` is data. `Store` holds what the operator enabled and the credential
+//! fields. `call` is the one path an agent tool takes; that wiring is separate, so
+//! the module allows dead code until it lands.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -26,8 +26,10 @@ use crate::state::App;
 const BODY_CAP: usize = 256 * 1024;
 /// The timeout of one upstream request.
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// The vault file: `{connector: {field: value}}`.
+const VAULT: &str = "connector-secrets.json";
 
-/// A failed mutation: the HTTP status and a message that never names a key.
+/// A failed mutation: the HTTP status and a message that never names a value.
 type Failure = (u16, String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,37 @@ impl Kind {
     }
 }
 
+/// Where a field's value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Vault,
+    Env,
+}
+
+impl Source {
+    fn as_str(self) -> &'static str {
+        match self {
+            Source::Vault => "vault",
+            Source::Env => "env",
+        }
+    }
+}
+
+/// One named credential of a connector. The vault holds it under `name`; when the
+/// vault has none, the environment variable `env` is read.
+pub struct Field {
+    pub name: &'static str,
+    pub label: &'static str,
+    /// The environment variable that can supply the value.
+    pub env: &'static str,
+    /// What the operator is asked for, in the console.
+    pub hint: &'static str,
+    /// Whether the value is a secret (never shown, never in an error).
+    pub secret: bool,
+    /// Whether the connector cannot work without it.
+    pub required: bool,
+}
+
 /// How the key is attached to a request.
 #[derive(Debug, Clone, Copy)]
 pub enum Auth {
@@ -90,7 +123,7 @@ pub struct Action {
     pub risk: Risk,
     pub method: &'static str,
     /// A full URL template. `{name}` takes the input field `name`, percent-encoded;
-    /// `{secret}` takes the key itself.
+    /// `{secret}` takes the main key and `{field:<name>}` any credential field, raw.
     pub path: &'static str,
     /// JSON text: the input's schema.
     pub input_schema: &'static str,
@@ -109,7 +142,8 @@ pub struct Connector {
     pub category: &'static str,
     pub description: &'static str,
     pub docs_url: &'static str,
-    pub key_hint: &'static str,
+    /// The credential fields. The first required one is the main key `Auth` uses.
+    pub fields: &'static [Field],
     pub auth: Auth,
     pub actions: &'static [Action],
     pub cli: Option<Cli>,
@@ -124,7 +158,7 @@ pub const CATALOG: &[Connector] = &[
         category: "research",
         description: "Scrape pages to markdown and search the web.",
         docs_url: "https://docs.firecrawl.dev",
-        key_hint: "API key (fc-...)",
+        fields: &[Field { name: "api_key", label: "API key", env: "FIRECRAWL_API_KEY", hint: "API key (fc-...)", secret: true, required: true }],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -158,7 +192,7 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Voices and text-to-speech.",
         docs_url: "https://elevenlabs.io/docs",
-        key_hint: "API key (xi-api-key)",
+        fields: &[Field { name: "api_key", label: "API key", env: "ELEVENLABS_API_KEY", hint: "API key (xi-api-key)", secret: true, required: true }],
         auth: Auth::Header { name: "xi-api-key", prefix: "" },
         actions: &[
             Action {
@@ -192,7 +226,11 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Search free stock photos.",
         docs_url: "https://unsplash.com/documentation",
-        key_hint: "Access key (Client-ID)",
+        fields: &[
+            Field { name: "access_key", label: "Access key", env: "UNSPLASH_ACCESS_KEY", hint: "Access key (Client-ID)", secret: true, required: true },
+            Field { name: "secret_key", label: "Secret key", env: "UNSPLASH_SECRET_KEY", hint: "Secret key (not used for search)", secret: true, required: false },
+            Field { name: "app_id", label: "Application ID", env: "UNSPLASH_APP_ID", hint: "Application ID (optional)", secret: false, required: false },
+        ],
         auth: Auth::Header { name: "Authorization", prefix: "Client-ID " },
         actions: &[Action {
             name: "search",
@@ -214,7 +252,7 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Search free stock photos and videos.",
         docs_url: "https://www.pexels.com/api/documentation/",
-        key_hint: "API key",
+        fields: &[Field { name: "api_key", label: "API key", env: "PEXELS_API_KEY", hint: "API key", secret: true, required: true }],
         auth: Auth::Header { name: "Authorization", prefix: "" },
         actions: &[Action {
             name: "search",
@@ -236,7 +274,7 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Search free images.",
         docs_url: "https://pixabay.com/api/docs/",
-        key_hint: "API key (sent in the query)",
+        fields: &[Field { name: "api_key", label: "API key", env: "PIXABAY_API_KEY", hint: "API key (sent in the query)", secret: true, required: true }],
         auth: Auth::Query("key"),
         actions: &[Action {
             name: "search",
@@ -258,7 +296,7 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Run hosted models.",
         docs_url: "https://replicate.com/docs",
-        key_hint: "API token (r8_...)",
+        fields: &[Field { name: "api_token", label: "API token", env: "REPLICATE_API_TOKEN", hint: "API token (r8_...)", secret: true, required: true }],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -292,15 +330,18 @@ pub const CATALOG: &[Connector] = &[
         category: "messaging",
         description: "Send messages through a Telegram bot.",
         docs_url: "https://core.telegram.org/bots/api",
-        key_hint: "Bot token from @BotFather",
+        fields: &[
+            Field { name: "bot_token", label: "Bot token", env: "TELEGRAM_BOT_TOKEN", hint: "Bot token from @BotFather", secret: true, required: true },
+            Field { name: "chat_id", label: "Default chat ID", env: "TELEGRAM_CHAT_ID", hint: "Chat ID used when a message names none (optional)", secret: false, required: false },
+        ],
         auth: Auth::Path,
         actions: &[Action {
             name: "send",
-            description: "Send a text message to a chat.",
+            description: "Send a text message to a chat (the default chat if none is named).",
             risk: Risk::Write,
             method: "POST",
             path: "https://api.telegram.org/bot{secret}/sendMessage",
-            input_schema: r#"{"type":"object","properties":{"chat_id":{"type":"string"},"text":{"type":"string"}},"required":["chat_id","text"]}"#,
+            input_schema: r#"{"type":"object","properties":{"chat_id":{"type":"string"},"text":{"type":"string"}},"required":["text"]}"#,
             defaults: "{}",
             probe: "{}",
         }],
@@ -314,7 +355,10 @@ pub const CATALOG: &[Connector] = &[
         category: "infra",
         description: "Zones and DNS records.",
         docs_url: "https://developers.cloudflare.com/api/",
-        key_hint: "API token",
+        fields: &[
+            Field { name: "api_token", label: "API token", env: "CLOUDFLARE_API_TOKEN", hint: "API token", secret: true, required: true },
+            Field { name: "account_id", label: "Account ID", env: "CLOUDFLARE_ACCOUNT_ID", hint: "Account ID (optional)", secret: false, required: false },
+        ],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -348,7 +392,7 @@ pub const CATALOG: &[Connector] = &[
         category: "infra",
         description: "Droplets.",
         docs_url: "https://docs.digitalocean.com/reference/api/",
-        key_hint: "Personal access token",
+        fields: &[Field { name: "api_token", label: "Personal access token", env: "DIGITALOCEAN_TOKEN", hint: "Personal access token", secret: true, required: true }],
         auth: Auth::Bearer,
         actions: &[
             Action {
@@ -382,7 +426,7 @@ pub const CATALOG: &[Connector] = &[
         category: "dev",
         description: "Repositories through the gh CLI or the REST API.",
         docs_url: "https://docs.github.com/en/rest",
-        key_hint: "Personal access token",
+        fields: &[Field { name: "token", label: "Personal access token", env: "GITHUB_TOKEN", hint: "Personal access token", secret: true, required: true }],
         auth: Auth::Bearer,
         actions: &[Action {
             name: "repos",
@@ -404,7 +448,12 @@ pub const CATALOG: &[Connector] = &[
         category: "infra",
         description: "Domains. Coming soon.",
         docs_url: "https://www.namecheap.com/support/api/intro/",
-        key_hint: "API key and API user (the client IP must be whitelisted)",
+        fields: &[
+            Field { name: "api_key", label: "API key", env: "NAMECHEAP_API_KEY", hint: "API key", secret: true, required: true },
+            Field { name: "api_user", label: "API user", env: "NAMECHEAP_API_USER", hint: "API user", secret: false, required: true },
+            Field { name: "username", label: "Username", env: "NAMECHEAP_USERNAME", hint: "Account username", secret: false, required: true },
+            Field { name: "client_ip", label: "Client IP", env: "NAMECHEAP_CLIENT_IP", hint: "Whitelisted client IP", secret: false, required: true },
+        ],
         auth: Auth::Pending,
         actions: &[],
         cli: None,
@@ -417,7 +466,10 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Video generation. Coming soon.",
         docs_url: "https://higgsfield.ai",
-        key_hint: "API key and secret",
+        fields: &[
+            Field { name: "api_key", label: "API key", env: "HIGGSFIELD_API_KEY", hint: "API key", secret: true, required: true },
+            Field { name: "api_secret", label: "API secret", env: "HIGGSFIELD_API_SECRET", hint: "API secret", secret: true, required: true },
+        ],
         auth: Auth::Pending,
         actions: &[],
         cli: None,
@@ -430,7 +482,7 @@ pub const CATALOG: &[Connector] = &[
         category: "media",
         description: "Image upscaling and enhancement. Coming soon.",
         docs_url: "https://magnific.ai",
-        key_hint: "API key",
+        fields: &[Field { name: "api_key", label: "API key", env: "MAGNIFIC_API_KEY", hint: "API key", secret: true, required: true }],
         auth: Auth::Pending,
         actions: &[],
         cli: None,
@@ -439,6 +491,23 @@ pub const CATALOG: &[Connector] = &[
 
 fn find(id: &str) -> Option<&'static Connector> {
     CATALOG.iter().find(|c| c.id == id)
+}
+
+/// The connector's main key: the first required field, else the first field.
+fn main_field(c: &Connector) -> Option<&'static Field> {
+    c.fields.iter().find(|f| f.required).or_else(|| c.fields.first())
+}
+
+/// The field a call names, or the main key when it names none.
+fn pick_field(c: &'static Connector, name: Option<&str>) -> Result<&'static Field, Failure> {
+    match name {
+        None => main_field(c).ok_or_else(|| (400, format!("`{}` has no key field", c.id))),
+        Some(name) => c
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .ok_or_else(|| (400, format!("`{}` has no field `{name}`", c.id))),
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -463,20 +532,26 @@ struct Patch {
 pub struct Store {
     dir: PathBuf,
     settings: Mutex<BTreeMap<String, Setting>>,
-    secrets: Mutex<BTreeMap<String, String>>,
+    /// Connector id → field name → value, as the vault holds them.
+    vault: Mutex<BTreeMap<String, BTreeMap<String, String>>>,
+    /// apid's environment, read once at start: the env file over the process's own.
+    env: BTreeMap<String, String>,
     /// Serializes every write to the two files.
     write: Mutex<()>,
 }
 
 impl Store {
-    /// Loads `<state-dir>/connectors.json` and `<state-dir>/connector-secrets.json`.
-    /// A connector without a setting is disabled.
-    pub fn load(state_dir: &Path) -> io::Result<Self> {
+    /// Loads `<state-dir>/connectors.json` and the vault. A connector without a
+    /// setting is disabled. The vault may hold the old shape, `{connector: "key"}`,
+    /// which is read as the connector's main key; entries for connectors or fields
+    /// the catalog does not know are dropped.
+    pub fn load(state_dir: &Path, env: BTreeMap<String, String>) -> io::Result<Self> {
         std::fs::create_dir_all(state_dir)?;
         Ok(Self {
             dir: state_dir.to_path_buf(),
             settings: Mutex::new(read_map(&state_dir.join("connectors.json"))?),
-            secrets: Mutex::new(read_map(&state_dir.join("connector-secrets.json"))?),
+            vault: Mutex::new(read_vault(&state_dir.join(VAULT))?),
+            env,
             write: Mutex::new(()),
         })
     }
@@ -485,20 +560,81 @@ impl Store {
         lock(&self.settings).get(id).cloned().unwrap_or_default()
     }
 
-    fn secret(&self, id: &str) -> Option<String> {
-        lock(&self.secrets).get(id).cloned()
+    /// A field's value and where it came from: the vault, else the environment.
+    fn resolve(&self, id: &str, field: &Field) -> Option<(String, Source)> {
+        let vaulted = lock(&self.vault)
+            .get(id)
+            .and_then(|fields| fields.get(field.name))
+            .filter(|v| !v.is_empty())
+            .cloned();
+        if let Some(value) = vaulted {
+            return Some((value, Source::Vault));
+        }
+        self.env
+            .get(field.env)
+            .cloned()
+            .or_else(|| std::env::var(field.env).ok())
+            .filter(|v| !v.is_empty())
+            .map(|v| (v, Source::Env))
     }
 
-    fn configured(&self, id: &str) -> bool {
-        lock(&self.secrets).contains_key(id)
-    }
-
-    /// The whole catalog with each connector's settings. Never carries a key.
-    fn views(&self) -> Vec<Value> {
-        CATALOG
+    /// Every field that has a value, by field name.
+    fn values(&self, c: &Connector) -> BTreeMap<String, String> {
+        c.fields
             .iter()
-            .map(|c| view(c, &self.setting(c.id), self.configured(c.id)))
+            .filter_map(|f| self.resolve(c.id, f).map(|(value, _)| (f.name.to_string(), value)))
             .collect()
+    }
+
+    /// True when every required field has a value.
+    fn configured(&self, c: &Connector) -> bool {
+        c.fields.iter().filter(|f| f.required).all(|f| self.resolve(c.id, f).is_some())
+    }
+
+    /// The whole catalog with each connector's settings. Never carries a value.
+    fn views(&self) -> Vec<Value> {
+        CATALOG.iter().map(|c| self.view(c)).collect()
+    }
+
+    /// One connector as the API shows it: each field's name, whether it is set and
+    /// where it came from. A value never appears here.
+    fn view(&self, c: &Connector) -> Value {
+        let setting = self.setting(c.id);
+        let fields: Vec<Value> = c
+            .fields
+            .iter()
+            .map(|f| {
+                let found = self.resolve(c.id, f);
+                let set = found.is_some();
+                let source = found.map(|(_, source)| source.as_str());
+                json!({
+                    "name": f.name,
+                    "label": f.label,
+                    "env": f.env,
+                    "hint": f.hint,
+                    "secret": f.secret,
+                    "required": f.required,
+                    "set": set,
+                    "source": source,
+                })
+            })
+            .collect();
+        json!({
+            "id": c.id,
+            "label": c.label,
+            "brand": c.brand,
+            "kind": c.kind.as_str(),
+            "category": c.category,
+            "description": c.description,
+            "docs_url": c.docs_url,
+            "key_hint": main_field(c).map_or("", |f| f.hint),
+            "fields": fields,
+            "actions": c.actions.iter().map(action_view).collect::<Vec<_>>(),
+            "cli": c.cli.as_ref().map(|cli| json!({ "package": cli.package, "binary": cli.binary, "env": cli.env })),
+            "configured": self.configured(c),
+            "enabled": setting.enabled,
+            "roles": setting.roles,
+        })
     }
 
     fn update(&self, id: &str, patch: Patch) -> Result<Value, Failure> {
@@ -516,42 +652,60 @@ impl Store {
                 .filter(|r| !r.is_empty())
                 .collect();
         }
-        let setting = next.get(id).cloned().unwrap_or_default();
         save(&self.dir.join("connectors.json"), &next).map_err(io_failure)?;
         *lock(&self.settings) = next;
-        Ok(view(c, &setting, self.configured(id)))
+        Ok(self.view(c))
     }
 
-    /// Stores the key write-only: it is never read back through the API.
-    fn set_secret(&self, id: &str, value: &str) -> Result<Value, Failure> {
+    /// Stores one field write-only, in the vault. No field names the main key.
+    fn set_secret(&self, id: &str, field: Option<&str>, value: &str) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
+        let field = pick_field(c, field)?;
         let _guard = lock(&self.write);
-        let mut next = lock(&self.secrets).clone();
-        next.insert(id.to_string(), value.to_string());
-        save(&self.dir.join("connector-secrets.json"), &next).map_err(io_failure)?;
-        *lock(&self.secrets) = next;
-        Ok(view(c, &self.setting(id), true))
+        let mut next = lock(&self.vault).clone();
+        next.entry(id.to_string())
+            .or_default()
+            .insert(field.name.to_string(), value.to_string());
+        save(&self.dir.join(VAULT), &next).map_err(io_failure)?;
+        *lock(&self.vault) = next;
+        Ok(self.view(c))
     }
 
-    fn remove_secret(&self, id: &str) -> Result<Value, Failure> {
+    /// Removes one field from the vault, or every vaulted field when none is named.
+    fn remove_secret(&self, id: &str, field: Option<&str>) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
+        let names: Vec<&str> = match field {
+            Some(_) => vec![pick_field(c, field)?.name],
+            None => c.fields.iter().map(|f| f.name).collect(),
+        };
         let _guard = lock(&self.write);
-        let mut next = lock(&self.secrets).clone();
-        if next.remove(id).is_none() {
-            return Err((404, format!("connector `{id}` has no key")));
+        let mut next = lock(&self.vault).clone();
+        let Some(stored) = next.get_mut(id) else {
+            return Err((404, format!("connector `{id}` has no key stored")));
+        };
+        let mut removed = false;
+        for name in names {
+            removed |= stored.remove(name).is_some();
         }
-        save(&self.dir.join("connector-secrets.json"), &next).map_err(io_failure)?;
-        *lock(&self.secrets) = next;
-        Ok(view(c, &self.setting(id), false))
+        if !removed {
+            return Err((404, format!("connector `{id}` has no key stored")));
+        }
+        if stored.is_empty() {
+            next.remove(id);
+        }
+        save(&self.dir.join(VAULT), &next).map_err(io_failure)?;
+        *lock(&self.vault) = next;
+        Ok(self.view(c))
     }
 
-    /// Runs the first read action that needs no input from the caller. The key
-    /// must be stored; enabling and roles do not apply to a test.
+    /// Runs the first read action that needs no input from the caller. The
+    /// required keys must be set; enabling and roles do not apply to a test.
     fn test(&self, id: &str) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
-        let Some(secret) = self.secret(c.id) else {
+        if !self.configured(c) {
             return Ok(json!({ "ok": false, "latency_ms": 0, "detail": "no key stored" }));
-        };
+        }
+        let values = self.values(c);
         let probe = c
             .actions
             .iter()
@@ -561,7 +715,7 @@ impl Store {
         };
         let input: Value = serde_json::from_str(action.probe).unwrap_or(Value::Null);
         let started = Instant::now();
-        let outcome = execute(c, action, &secret, &input);
+        let outcome = execute(c, action, &values, &input);
         let latency_ms = started.elapsed().as_millis() as u64;
         let (ok, detail) = match outcome {
             Ok(body) => (true, snippet(&body)),
@@ -571,7 +725,7 @@ impl Store {
     }
 }
 
-/// `/v1/connectors…`: the catalog with its settings; keys are write-only.
+/// `/v1/connectors…`: the catalog with its settings; credentials are write-only.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/connectors", list_route)
@@ -602,18 +756,20 @@ fn update_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 
 #[derive(Deserialize)]
 struct SecretBody {
+    /// The field to set; none sets the main key.
+    field: Option<String>,
     value: String,
 }
 
 fn secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let body: SecretBody = match req.json() {
         Ok(body) => body,
-        Err(_) => return failure((400, "body must be {\"value\": \"...\"}".into())),
+        Err(_) => return failure((400, "body must be {\"field\": \"...\", \"value\": \"...\"}".into())),
     };
     if body.value.is_empty() {
         return failure((400, "value is empty".into()));
     }
-    match app.connectors.set_secret(p.get("id"), &body.value) {
+    match app.connectors.set_secret(p.get("id"), body.field.as_deref(), &body.value) {
         Ok(view) => {
             // Agents see the change at once: their tool lists are pushed again.
             crate::agents::push_profiles(app);
@@ -623,8 +779,8 @@ fn secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-fn delete_secret_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
-    match app.connectors.remove_secret(p.get("id")) {
+fn delete_secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    match app.connectors.remove_secret(p.get("id"), req.query_param("field")) {
         Ok(view) => {
             // Agents see the change at once: their tool lists are pushed again.
             crate::agents::push_profiles(app);
@@ -646,17 +802,17 @@ fn failure((status, message): Failure) -> Response {
 }
 
 /// The one path an agent tool takes to reach an external service. Refuses an
-/// unknown, disabled, keyless or role-forbidden connector before anything is sent.
+/// unknown, disabled, unconfigured or role-forbidden connector before anything is sent.
 pub fn call(app: &App, role: &str, connector: &str, action: &str, input: &Value) -> Result<String, String> {
     let plan = gate(&app.connectors, role, connector, action)?;
-    execute(plan.connector, plan.action, &plan.secret, input)
+    execute(plan.connector, plan.action, &plan.values, input)
 }
 
 /// What a call needs once the gates have passed.
 struct Plan {
     connector: &'static Connector,
     action: &'static Action,
-    secret: String,
+    values: BTreeMap<String, String>,
 }
 
 fn gate(store: &Store, role: &str, connector: &str, action: &str) -> Result<Plan, String> {
@@ -673,17 +829,27 @@ fn gate(store: &Store, role: &str, connector: &str, action: &str) -> Result<Plan
     if !setting.roles.is_empty() && !setting.roles.iter().any(|r| r == role) {
         return Err(format!("role `{role}` may not use `{}`", c.id));
     }
-    let secret = store
-        .secret(c.id)
-        .ok_or_else(|| format!("connector `{}` has no key stored", c.id))?;
-    Ok(Plan { connector: c, action: a, secret })
+    if !store.configured(c) {
+        return Err(format!("connector `{}` has no key stored", c.id));
+    }
+    Ok(Plan { connector: c, action: a, values: store.values(c) })
 }
 
-/// Sends one action upstream. The key is attached here and redacted from every
-/// error; the body comes back as text, or as base64 with a note when binary.
-fn execute(c: &Connector, a: &Action, secret: &str, input: &Value) -> Result<String, String> {
+/// Sends one action upstream. The credentials are attached here and redacted from
+/// every error; the body comes back as text, or as base64 with a note when binary.
+fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: &Value) -> Result<String, String> {
+    let main = main_field(c);
+    let secret = main.and_then(|f| values.get(f.name)).map_or("", String::as_str);
+    // Every value that must never reach an error: the main key and each secret field.
+    let secrets: Vec<&str> = c
+        .fields
+        .iter()
+        .filter(|f| f.secret || main.is_some_and(|m| m.name == f.name))
+        .filter_map(|f| values.get(f.name).map(String::as_str))
+        .collect();
     let mut body = with_defaults(a.defaults, input)?;
-    let (mut url, used) = fill(a.path, &body, secret)?;
+    field_defaults(c, a, values, &mut body);
+    let (mut url, used) = fill(a.path, &body, secret, values)?;
     for name in &used {
         body.remove(name);
     }
@@ -718,7 +884,7 @@ fn execute(c: &Connector, a: &Action, secret: &str, input: &Value) -> Result<Str
     }
     let request = builder
         .body(payload)
-        .map_err(|e| redact(&format!("bad request: {e}"), secret))?;
+        .map_err(|e| redact_all(&format!("bad request: {e}"), &secrets))?;
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
         .http_status_as_error(false)
@@ -726,7 +892,7 @@ fn execute(c: &Connector, a: &Action, secret: &str, input: &Value) -> Result<Str
     let agent = ureq::Agent::new_with_config(config);
     let response = agent
         .run(request)
-        .map_err(|e| redact(&format!("{}.{}: {e}", c.id, a.name), secret))?;
+        .map_err(|e| redact_all(&format!("{}.{}: {e}", c.id, a.name), &secrets))?;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -754,7 +920,7 @@ fn execute(c: &Connector, a: &Action, secret: &str, input: &Value) -> Result<Str
     if (200..300).contains(&status) {
         Ok(text)
     } else {
-        Err(redact(&format!("{}.{} returned HTTP {status}: {}", c.id, a.name, snippet(&text)), secret))
+        Err(redact_all(&format!("{}.{} returned HTTP {status}: {}", c.id, a.name, snippet(&text)), &secrets))
     }
 }
 
@@ -772,9 +938,32 @@ fn with_defaults(defaults: &str, input: &Value) -> Result<Map<String, Value>, St
     Ok(merged)
 }
 
-/// Fills `{name}` in `template` from `input` (percent-encoded) and `{secret}` with
-/// the key (raw). Returns the URL and the input names it consumed.
-fn fill(template: &str, input: &Map<String, Value>, secret: &str) -> Result<(String, Vec<String>), String> {
+/// A non-secret field fills an input the action declares and the caller left out:
+/// Telegram's `chat_id`, for one.
+fn field_defaults(c: &Connector, a: &Action, values: &BTreeMap<String, String>, body: &mut Map<String, Value>) {
+    let Ok(schema) = serde_json::from_str::<Value>(a.input_schema) else { return };
+    let Some(props) = schema.get("properties").and_then(Value::as_object) else { return };
+    let missing: Vec<&Field> = c
+        .fields
+        .iter()
+        .filter(|f| !f.secret && props.contains_key(f.name) && !body.contains_key(f.name))
+        .collect();
+    for f in missing {
+        if let Some(value) = values.get(f.name) {
+            body.insert(f.name.to_string(), Value::String(value.clone()));
+        }
+    }
+}
+
+/// Fills `{name}` in `template` from `input` (percent-encoded), `{secret}` with the
+/// main key and `{field:<name>}` with that field (both raw). Returns the URL and the
+/// input names it consumed.
+fn fill(
+    template: &str,
+    input: &Map<String, Value>,
+    secret: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<(String, Vec<String>), String> {
     let mut out = String::new();
     let mut used = Vec::new();
     let mut rest = template;
@@ -787,6 +976,11 @@ fn fill(template: &str, input: &Map<String, Value>, secret: &str) -> Result<(Str
         let name = &rest[open + 1..close];
         if name == "secret" {
             out.push_str(secret);
+        } else if let Some(field) = name.strip_prefix("field:") {
+            let value = values
+                .get(field)
+                .ok_or_else(|| format!("no value for field `{field}`"))?;
+            out.push_str(value);
         } else {
             let value = input.get(name).ok_or_else(|| format!("missing input `{name}`"))?;
             out.push_str(&encode(&scalar(value)?));
@@ -820,12 +1014,11 @@ fn encode(text: &str) -> String {
     out
 }
 
-fn redact(text: &str, secret: &str) -> String {
-    if secret.is_empty() {
-        text.to_string()
-    } else {
-        text.replace(secret, "•••")
-    }
+fn redact_all(text: &str, secrets: &[&str]) -> String {
+    secrets
+        .iter()
+        .filter(|s| !s.is_empty())
+        .fold(text.to_string(), |t, s| t.replace(s, "•••"))
 }
 
 fn snippet(text: &str) -> String {
@@ -857,24 +1050,6 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-fn view(c: &Connector, setting: &Setting, configured: bool) -> Value {
-    json!({
-        "id": c.id,
-        "label": c.label,
-        "brand": c.brand,
-        "kind": c.kind.as_str(),
-        "category": c.category,
-        "description": c.description,
-        "docs_url": c.docs_url,
-        "key_hint": c.key_hint,
-        "actions": c.actions.iter().map(action_view).collect::<Vec<_>>(),
-        "cli": c.cli.as_ref().map(|cli| json!({ "package": cli.package, "binary": cli.binary, "env": cli.env })),
-        "configured": configured,
-        "enabled": setting.enabled,
-        "roles": setting.roles,
-    })
-}
-
 fn action_view(a: &Action) -> Value {
     json!({
         "name": a.name,
@@ -892,6 +1067,36 @@ fn read_map<T: DeserializeOwned>(path: &Path) -> io::Result<BTreeMap<String, T>>
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(e) => Err(e),
     }
+}
+
+/// Reads the vault in either shape: `{connector: "key"}` (the main key) or
+/// `{connector: {field: value}}`. Unknown connectors and fields are dropped.
+fn read_vault(path: &Path) -> io::Result<BTreeMap<String, BTreeMap<String, String>>> {
+    let raw: BTreeMap<String, Value> = read_map(path)?;
+    let mut vault = BTreeMap::new();
+    for (id, entry) in raw {
+        let Some(c) = find(&id) else { continue };
+        let mut fields = BTreeMap::new();
+        match entry {
+            Value::String(key) => {
+                if let Some(main) = main_field(c) {
+                    fields.insert(main.name.to_string(), key);
+                }
+            }
+            Value::Object(map) => {
+                for (name, value) in map {
+                    if let (Some(f), Value::String(s)) = (c.fields.iter().find(|f| f.name == name.as_str()), value) {
+                        fields.insert(f.name.to_string(), s);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !fields.is_empty() {
+            vault.insert(id, fields);
+        }
+    }
+    Ok(vault)
 }
 
 /// Saves a map atomically at mode 0600.
@@ -922,6 +1127,14 @@ mod tests {
         }
     }
 
+    fn only(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn connector(id: &str) -> &'static Connector {
+        find(id).unwrap()
+    }
+
     #[test]
     fn catalog_ids_are_unique_and_its_json_parses() {
         let mut ids: Vec<&str> = CATALOG.iter().map(|c| c.id).collect();
@@ -929,6 +1142,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), CATALOG.len());
         for c in CATALOG {
+            assert!(main_field(c).is_some(), "{} has no key field", c.id);
             for a in c.actions {
                 for text in [a.input_schema, a.defaults, a.probe] {
                     serde_json::from_str::<Value>(text).unwrap_or_else(|e| panic!("{}.{}: {e}", c.id, a.name));
@@ -940,15 +1154,82 @@ mod tests {
     #[test]
     fn secret_is_stored_0600_and_never_listed() {
         let dir = scratch("secret");
-        let store = Store::load(&dir).unwrap();
-        store.set_secret("unsplash", "KEY-SECRET-987").unwrap();
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        store.set_secret("unsplash", None, "KEY-SECRET-987").unwrap();
         let listed = serde_json::to_string(&store.views()).unwrap();
         assert!(!listed.contains("KEY-SECRET-987"));
         assert!(listed.contains("\"configured\":true"));
-        let mode = std::fs::metadata(dir.join("connector-secrets.json")).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(dir.join(VAULT)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        let reloaded = Store::load(&dir).unwrap();
-        assert_eq!(reloaded.secret("unsplash").as_deref(), Some("KEY-SECRET-987"));
+        let reloaded = Store::load(&dir, BTreeMap::new()).unwrap();
+        assert_eq!(
+            reloaded.values(connector("unsplash")).get("access_key").map(String::as_str),
+            Some("KEY-SECRET-987")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn both_vault_shapes_load() {
+        let dir = scratch("shapes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(VAULT), r#"{"unsplash":"OLD-KEY","pexels":"PX-KEY","nosuch":"x"}"#).unwrap();
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        assert_eq!(store.values(connector("unsplash")).get("access_key").map(String::as_str), Some("OLD-KEY"));
+        assert!(store.configured(connector("unsplash")));
+        assert!(store.configured(connector("pexels")));
+        drop(store);
+
+        std::fs::write(dir.join(VAULT), r#"{"telegram":{"bot_token":"123:ABC","chat_id":"-100"}}"#).unwrap();
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let values = store.values(connector("telegram"));
+        assert_eq!(values.get("bot_token").map(String::as_str), Some("123:ABC"));
+        assert_eq!(values.get("chat_id").map(String::as_str), Some("-100"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn environment_fills_a_missing_field_and_the_vault_wins() {
+        let dir = scratch("env");
+        let store = Store::load(&dir, only(&[("FIRECRAWL_API_KEY", "fc-ENV-111")])).unwrap();
+        let fc = connector("firecrawl");
+        assert!(store.configured(fc));
+        let view = store.view(fc);
+        assert_eq!(view["fields"][0]["source"], "env");
+        assert_eq!(view["fields"][0]["set"], true);
+        assert!(!serde_json::to_string(&view).unwrap().contains("fc-ENV-111"));
+        store.set_secret("firecrawl", None, "fc-VAULT-222").unwrap();
+        assert_eq!(store.view(fc)["fields"][0]["source"], "vault");
+        assert_eq!(store.values(fc).get("api_key").map(String::as_str), Some("fc-VAULT-222"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsplash_needs_only_its_access_key() {
+        let dir = scratch("unsplash");
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let ua = connector("unsplash");
+        assert!(!store.configured(ua));
+        store.set_secret("unsplash", Some("app_id"), "APP-1").unwrap();
+        assert!(!store.configured(ua));
+        store.set_secret("unsplash", Some("access_key"), "AK-333").unwrap();
+        assert!(store.configured(ua));
+        let view = store.view(ua);
+        let fields = view["fields"].as_array().unwrap();
+        let by = |name: &str| fields.iter().find(|f| f["name"] == name).unwrap().clone();
+        assert_eq!(by("access_key")["required"], true);
+        assert_eq!(by("secret_key")["set"], false);
+        assert_eq!(by("app_id")["set"], true);
+        assert!(!serde_json::to_string(&view).unwrap().contains("AK-333"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unknown_fields_are_refused() {
+        let dir = scratch("unknown");
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        assert_eq!(store.set_secret("unsplash", Some("nope"), "x").unwrap_err().0, 400);
+        assert_eq!(store.remove_secret("unsplash", Some("nope")).unwrap_err().0, 400);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -956,18 +1237,36 @@ mod tests {
     fn placeholders_fill_from_input_and_encode() {
         let input = json!({ "voice_id": "a/b c", "text": "hi" });
         let map = input.as_object().unwrap().clone();
-        let (url, used) = fill("https://x.test/v1/voices/{voice_id}/run", &map, "k").unwrap();
+        let none = BTreeMap::new();
+        let (url, used) = fill("https://x.test/v1/voices/{voice_id}/run", &map, "k", &none).unwrap();
         assert_eq!(url, "https://x.test/v1/voices/a%2Fb%20c/run");
         assert_eq!(used, vec!["voice_id".to_string()]);
-        assert!(fill("https://x.test/{missing}", &map, "k").is_err());
-        let (bot, _) = fill("https://api.telegram.org/bot{secret}/sendMessage", &map, "123:ABC").unwrap();
+        assert!(fill("https://x.test/{missing}", &map, "k", &none).is_err());
+        let (bot, _) = fill("https://api.telegram.org/bot{secret}/sendMessage", &map, "123:ABC", &none).unwrap();
         assert_eq!(bot, "https://api.telegram.org/bot123:ABC/sendMessage");
+        let named = only(&[("bot_token", "123:ABC")]);
+        let (by_field, _) = fill("https://api.telegram.org/bot{field:bot_token}/sendMessage", &map, "", &named).unwrap();
+        assert_eq!(by_field, bot);
+        assert!(fill("https://x.test/{field:nope}", &map, "k", &named).is_err());
+    }
+
+    #[test]
+    fn telegram_chat_id_defaults_from_its_field() {
+        let c = connector("telegram");
+        let a = &c.actions[0];
+        let mut body = Map::new();
+        field_defaults(c, a, &only(&[("chat_id", "-100")]), &mut body);
+        assert_eq!(body.get("chat_id"), Some(&Value::String("-100".into())));
+        let mut named = Map::new();
+        named.insert("chat_id".into(), Value::String("-200".into()));
+        field_defaults(c, a, &only(&[("chat_id", "-100")]), &mut named);
+        assert_eq!(named.get("chat_id"), Some(&Value::String("-200".into())));
     }
 
     #[test]
     fn gate_refuses_unknown_disabled_keyless_and_foreign_roles() {
         let dir = scratch("gate");
-        let store = Store::load(&dir).unwrap();
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
         assert!(refusal(gate(&store, "any", "nope", "x")).contains("no connector"));
         assert!(refusal(gate(&store, "any", "unsplash", "nope")).contains("no action"));
         assert!(refusal(gate(&store, "any", "unsplash", "search")).contains("disabled"));
@@ -975,7 +1274,7 @@ mod tests {
             .update("unsplash", Patch { enabled: Some(true), roles: None })
             .unwrap();
         assert!(refusal(gate(&store, "any", "unsplash", "search")).contains("no key"));
-        store.set_secret("unsplash", "k").unwrap();
+        store.set_secret("unsplash", None, "k").unwrap();
         assert!(gate(&store, "any", "unsplash", "search").is_ok());
         store
             .update("unsplash", Patch { enabled: None, roles: Some(vec!["researcher".into()]) })
@@ -1013,14 +1312,14 @@ pub fn risk_of(name: &str) -> Option<&'static str> {
     by_tool(name).map(|(_, a)| a.risk.as_str())
 }
 
-/// The connector tools `role` is offered now: enabled, keyed, and open to the role.
+/// The connector tools `role` is offered now: enabled, configured, and open to the role.
 pub fn specs_for(app: &App, role: &str) -> Vec<apz_proto::chat::ToolSpec> {
     let store = &app.connectors;
     CATALOG
         .iter()
         .filter(|c| {
             let setting = store.setting(c.id);
-            setting.enabled && store.secret(c.id).is_some() && (setting.roles.is_empty() || setting.roles.iter().any(|r| r == role))
+            setting.enabled && store.configured(c) && (setting.roles.is_empty() || setting.roles.iter().any(|r| r == role))
         })
         .flat_map(|c| c.actions.iter().map(move |a| (c, a)))
         .map(|(c, a)| apz_proto::chat::ToolSpec {
