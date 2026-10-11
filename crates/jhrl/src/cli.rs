@@ -48,9 +48,6 @@ pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
         let _ = writeln!(out, "{USAGE}");
         return 2;
     };
-    if cmd.as_str() == "test" {
-        return crate::authz::cli_test(&args[1..], out);
-    }
     let mut files = Vec::new();
     let mut verbose = false;
     let mut tiers = Vec::new();
@@ -98,6 +95,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
         check_models(&mut c, &prog);
     } else {
         run_scenarios(&mut c, &prog);
+        run_authz_cases(&mut c, &prog);
     }
     let summary = if c.failures == 0 { "all ok".to_string() } else { format!("{} FAILURE(S)", c.failures) };
     let skips = if c.skips > 0 { format!(", {} skipped", c.skips) } else { String::new() };
@@ -225,6 +223,17 @@ fn check_models(c: &mut Ctx, prog: &Program) {
                 }
             }
             None => c.fail(&format!("{head} is unreachable (its invariants may pass vacuously)")),
+        }
+    }
+}
+
+fn run_authz_cases(c: &mut Ctx, prog: &Program) {
+    for (label, pass, detail) in crate::authz::run_authz(prog) {
+        if pass {
+            c.ok(&label);
+        } else {
+            c.fail(&label);
+            c.detail(&detail);
         }
     }
 }

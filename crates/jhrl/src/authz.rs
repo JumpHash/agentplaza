@@ -12,7 +12,6 @@ use crate::program::Program;
 use crate::span::{Diag, Span};
 use crate::value::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
 
 /// A reference to an entity by declared type and id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -443,47 +442,4 @@ pub fn run_authz(program: &Program) -> Vec<(String, bool, String)> {
         }
     }
     out
-}
-
-/// `jhrl test <files...>`: loads the files, reports load and check diagnostics, runs every authz
-/// case and prints the failures. Returns non-zero on any error or failed case.
-pub fn cli_test(files: &[String], out: &mut dyn Write) -> i32 {
-    let mut sources = Vec::new();
-    for f in files {
-        match std::fs::read_to_string(f) {
-            Ok(text) => sources.push((f.clone(), text)),
-            Err(e) => {
-                let _ = writeln!(out, "{f}: {e}");
-                return 2;
-            }
-        }
-    }
-    let (prog, load_diags) = Program::load(sources);
-    let mut diags = load_diags;
-    diags.extend(crate::check::check_program(&prog));
-    let mut errors = 0;
-    for d in &diags {
-        let kind = if d.warning { "warning" } else { "error" };
-        if !d.warning {
-            errors += 1;
-        }
-        let _ = match d.span {
-            Some(s) => writeln!(out, "{}: {kind}: {}", prog.locate(s), d.msg),
-            None => writeln!(out, "{kind}: {}", d.msg),
-        };
-    }
-    let results = run_authz(&prog);
-    let mut failed = 0;
-    for (label, pass, detail) in &results {
-        if !*pass {
-            failed += 1;
-            let _ = writeln!(out, "FAIL {label}: {detail}");
-        }
-    }
-    let _ = writeln!(out, "authz: {} cases, {failed} failed", results.len());
-    if errors > 0 || failed > 0 {
-        1
-    } else {
-        0
-    }
 }
