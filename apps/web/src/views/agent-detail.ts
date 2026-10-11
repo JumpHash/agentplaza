@@ -259,6 +259,56 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     });
   });
 
+  // The agent's permission mode: loaded on mount, saved on click.
+  type PermissionMode = 'autonomous' | 'ask' | 'read_only';
+  const permissionOptions: { mode: PermissionMode; label: string; hint: string }[] = [
+    { mode: 'autonomous', label: 'Autonomous', hint: 'acts on its own' },
+    { mode: 'ask', label: 'Ask first', hint: 'write and irreversible actions wait for your approval in Approvals' },
+    { mode: 'read_only', label: 'Read-only', hint: 'can look, not change' },
+  ];
+  const permissionHost = h('div.stack');
+  let permission: PermissionMode | null = null;
+  let permissionFailed = false;
+  const renderPermission = (): void => {
+    const current = permissionOptions.find((o) => o.mode === permission);
+    const note = permissionFailed ? 'Could not load this setting' : current ? current.hint : 'Loading…';
+    replace(
+      permissionHost,
+      h(
+        'div.row',
+        null,
+        ...permissionOptions.map((o) =>
+          button(o.label, () => choosePermission(o.mode), {
+            title: o.hint,
+            ...(o.mode === permission ? { kind: 'primary' as const } : {}),
+          }),
+        ),
+      ),
+      h('span.faint', null, note),
+    );
+  };
+  const choosePermission = (next: PermissionMode): void => {
+    if (permission === null || next === permission) return;
+    void attempt(() => api.setPermissions(cid, next), 'Permissions updated').then((ok) => {
+      if (!alive) return;
+      if (ok) permission = next;
+      renderPermission();
+    });
+  };
+  renderPermission();
+  void api
+    .permissions(cid)
+    .then((view) => {
+      if (!alive) return;
+      permission = view.mode;
+      renderPermission();
+    })
+    .catch(() => {
+      if (!alive) return;
+      permissionFailed = true;
+      renderPermission();
+    });
+
   const offs = [
     agents.watch((list) => {
       const found = list.find((a) => a.cid === cid);
@@ -300,6 +350,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
           'aside.agent-side',
           null,
           card('Model', h('div.stack', null, modelLine, field('Change model', modelSelect))),
+          card('Permissions', permissionHost),
           card('Details', details),
           card('Queue', queue),
         ),
