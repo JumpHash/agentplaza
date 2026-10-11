@@ -18,7 +18,7 @@ use noded::{Config, Server};
 
 const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
-             [--workspace IMAGE] [--agents MANIFEST]
+             [--workspace IMAGE] [--persist-dir DIR] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
 
   --port PORT      port to listen on, on 127.0.0.1 (default 8899)
@@ -27,6 +27,8 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
   --uds-dir DIR    directory for the per-VM vsock Unix sockets and, with
                    --workspace, for the runs' image copies
                    (default /tmp/plaza-vsock; VM i's muxer binds DIR/vm{cid})
+  --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
+                     (cid-<guest_cid>.ext4): copied once, reused across restarts
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
                    each run copies it once per VM into DIR/run-{id}/
                    (default: no block device in the guests)
@@ -160,6 +162,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--initrd" => config.initrd = PathBuf::from(value("--initrd")?),
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
+            "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
             "--agents" => config.agents = Some(PathBuf::from(value("--agents")?)),
             "--agents-cid-base" => {
                 config.agents_cid_base = value("--agents-cid-base")?

@@ -61,6 +61,9 @@ pub struct Config {
     pub uds_dir: PathBuf,
     /// The writable workspace image each VM gets a copy of.
     pub workspace: Option<PathBuf>,
+    /// Where keepalive agents' workspace images persist across restarts
+    /// (`DIR/workspaces/cid-<guest_cid>.ext4`); `None` keeps per-run copies.
+    pub persist_dir: Option<PathBuf>,
     /// The roles manifest whose fleet boots at start.
     pub agents: Option<PathBuf>,
     pub agents_cid_base: u64,
@@ -76,6 +79,7 @@ impl Default for Config {
             initrd: PathBuf::from(DEFAULT_INITRD),
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
             workspace: None,
+            persist_dir: None,
             agents: None,
             agents_cid_base: DEFAULT_AGENTS_CID_BASE,
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
@@ -111,7 +115,8 @@ impl Node {
     pub fn new(config: Config) -> Self {
         let images = VmImages { kernel: config.kernel, initrd: config.initrd, workspace: config.workspace };
         Self {
-            registry: Registry::new(images, config.uds_dir, events::EventBus::new()),
+            registry: Registry::new(images, config.uds_dir, events::EventBus::new())
+                .with_persist_dir(config.persist_dir),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
         }
