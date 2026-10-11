@@ -1,0 +1,83 @@
+// Approval escalation (AP-038): a request moves up its chain on deadlines and expires to deny after
+// the last step. C-004 requests (irreversible, external, money-moving) have the chain ["owner"] only
+// (AP-052). Decisions can arrive late, from any authority, at any time.
+// Port of drafts/formal/Approval.tla; both run in CI until parity (AP-074.R8).
+
+pack agentplaza.machines.approval version "0.1.0"
+
+enum ApprovalStatus "Where an approval request is" {
+  "pending"  "Waiting for the authority at the current step"
+  "approved" "Approved by that authority"
+  "denied"   "Denied by that authority"
+  "expired"  "The last step's deadline passed; expiry means denied"
+}
+
+machine Approval "One approval request moving up its chain" {
+  const Authorities: Set<String>
+  const Chains: Set<List<String>> = {["mayor", "owner"], ["owner"]}   // a town request; a C-004 request
+
+  var chain: List<String> in Chains
+  var pos: Int = 0
+  var status: ApprovalStatus = "pending"
+  var decided_by: String = "none"
+  var decided_at: Int = 0
+
+  // An authority answers. The orchestrator accepts it only from the authority at the current step;
+  // an out-of-turn or late answer is rejected and changes nothing.
+  action Decide(a in Authorities, approve in Bool) {
+    when status == "pending"
+    when a == chain[pos]
+    status' = if approve then "approved" else "denied"
+    decided_by' = a
+    decided_at' = pos
+  }
+
+  // The current step's deadline passes.
+  action Deadline {
+    when status == "pending"
+    either {
+      when pos < len(chain) - 1
+      pos' = pos + 1
+    } or {
+      when pos == len(chain) - 1
+      status' = "expired"
+    }
+  }
+
+  invariant "Decided by the chain"
+    status in {"approved", "denied"} => decided_by == chain[decided_at]
+    implements AP-038.R1
+  invariant "C-004 is approved only by the owner"
+    (chain == ["owner"] and status == "approved") => decided_by == "owner"
+    implements AP-038.R4
+  invariant "Expiry is not approval"
+    status == "expired" => decided_by == "none"
+    implements AP-038.R3
+  invariant "Position stays in the chain"
+    pos >= 0 and pos < len(chain)
+  transition "A decision is final"
+    status in {"approved", "denied", "expired"} => status' == status
+}
+
+model "two chains, three authorities" of Approval {
+  const Authorities = {"mayor", "owner", "builder"}
+  deadlock allowed
+}
+
+mutant "Accept any authority" of Approval {
+  replace "a == chain[pos]" in Decide with "a in {\"mayor\", \"owner\"}"
+  expect violation "Decided by the chain"
+}
+
+mutant "Silence means yes" of Approval {
+  replace "status' = \"expired\"" in Deadline with "status' = \"approved\""
+  expect violation "Decided by the chain"
+}
+
+witness "A town request escalates to the owner" of Approval in "two chains, three authorities" {
+  reachable chain == ["mayor", "owner"] and pos == 1 and status == "pending"
+}
+
+witness "An escalated request is approved by the owner" of Approval in "two chains, three authorities" {
+  reachable chain == ["mayor", "owner"] and status == "approved" and decided_by == "owner"
+}

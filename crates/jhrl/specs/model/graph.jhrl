@@ -1,0 +1,124 @@
+// The graph schema (AP-070): node and edge types, the store's type registry. A first subset:
+// the agents, money and social parts used by the example rules. The full schema moves here from
+// drafts/orchestrator/schema.sql and drafts/treasury/schema.sql in MVP phase 0.
+
+pack agentplaza.model version "0.1.0" locked
+
+enum AgentStatus "Lifecycle of an agent" {
+  "active"     "Running or ready"
+  "hibernated" "Snapshot stored, no VM"
+  "paused"     "Stopped by the owner or a tripwire"
+  "retired"    "Closed; the card is kept"
+}
+
+enum TransferKind "Agent-to-agent transfer kinds (AP-073)" {
+  "pay" "Payment for work outside a hire"
+  "offload" "Part of a task handed to another agent"
+  "line_draw" "A draw on a credit line"
+  "line_repay" "A repayment on a credit line"
+  "line_writeoff" "A borrower's unpaid draw written off against the lender"
+}
+
+entity Owner "The one human principal (AP-001)" {
+  field id: Id<Owner>
+  store "core.owner"
+}
+
+entity Agent "An agent with a Sigil (AP-035)" {
+  field id: Id<Agent>
+  field name: String
+  field status: AgentStatus
+  field role: String
+  field town: Town optional
+  field predecessor: Agent optional
+  field balance: Credits computed "Earnings balance from the ledger"
+  field credit_limit: Credits computed "From reputation (AP-073.R2)"
+  field reputation: Number computed "T, 0 to 1 (AP-072)"
+  store "core.agents"
+}
+
+entity Town "A logical unit of agents (AP-047)" {
+  field id: Id<Town>
+  field name: String
+  field template: String
+  store "core.towns"
+}
+
+entity Task "A unit of work with a budget (AP-029)" {
+  field id: Id<Task>
+  field parent: Task optional
+  field state: String
+  field escrow: Credits computed
+  store "core.tasks"
+}
+
+// Minimal declarations of the types specs/kinds.jhrl ranges over; their fields move here with the
+// rest of the schema in MVP phase 0.
+
+entity Run "One run of an agent on a machine (AP-010, AP-024)" {
+  field id: Id<Run>
+  field agent: Agent
+  field task: Task optional
+  field state: String
+  store "core.runs"
+}
+
+entity Approval "An approval request moving up its chain (AP-038); its lifecycle is the Approval machine" {
+  field id: Id<Approval>
+  field run: Run
+  field kind: String
+  field c004: Bool "Irreversible, external or money-moving (AP-052)"
+  store "core.approvals"
+}
+
+entity WorkGroup "A work group with its claims board (AP-045)" {
+  field id: Id<WorkGroup>
+}
+
+entity ChatGroup "A chat group made by an agent (AP-046)" {
+  field id: Id<ChatGroup>
+}
+
+edge CONTACT (from: Agent, to: Agent) "Someone an agent knows (AP-071)" {
+  field kind: String "explicit or auto"
+  field strength: Number computed
+  field blocked: Bool = false
+  field note: String optional
+  temporal
+  store "social.contacts"
+}
+
+edge OPINION (from: Agent, to: Agent) "Decayed evidence one agent holds about another (AP-072)" {
+  field r: Number "Positive evidence, decayed"
+  field s: Number "Negative evidence, decayed"
+  field updated: Instant
+  temporal
+  store "social.opinions"
+}
+
+edge CREDIT_LINE (from: Agent, to: Agent) "Credit a lender extends to a borrower (AP-073)" {
+  field limit: Credits
+  field used: Credits
+  temporal
+  store "treasury.credit_lines"
+}
+
+edge TRANSFER (from: Agent, to: Agent) "Credits that moved between two agents; a view over the ledger (AP-073)" {
+  field amount: Credits
+  field kind: TransferKind
+  field at: Instant
+  field task: Task optional
+  view "treasury.agent_transfers"
+}
+
+edge SUCCESSOR_OF (from: Agent, to: Agent) "A reconfigured agent and its predecessor (AP-035)" {
+  field reason: String
+  store "core.agent_lineage"
+}
+
+measure eigentrust(opinions: Graph, seeds: Map<Agent, Number>, alpha: Number = 15 %) -> Map<Agent, Number>
+  "EigenTrust with pre-trusted seeds: t ← (1−α)·Cᵀt + α·p until the L1 change < 1e-6 or 100 iterations (AP-072.R3)"
+measure pagerank(g: Graph, from: Agent, restart: Number = 15 %) -> Map<Agent, Number>
+  "Personalised PageRank from one agent over strength-weighted edges (AP-071.R6)"
+measure cycles(g: Graph, from: Agent, within: Duration, returning: Number) -> List<Cycle>
+  "Transfer cycles leaving `from` and returning at least `returning` of the amount within the window (AP-073.R6)"

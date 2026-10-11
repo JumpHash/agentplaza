@@ -1,0 +1,218 @@
+// The task lifecycle (AP-029, docs/design/task-lifecycle.md) with dependencies, rework, re-plans
+// and cancellation. A re-plan is a change set (AP-061): it supersedes one task that isn't accepted,
+// killing its run, adds a replacement with the same dependencies, and points the superseded task's
+// dependents at the replacement. A failed task can be replaced the same way. A task whose dependency
+// failed or was cancelled can be cancelled (cascade). Bidding (ready → bidding → assigned) is folded
+// into Assign.
+
+pack agentplaza.machines.task_lifecycle version "0.1.0"
+
+enum TaskStatus "Where a task is (AP-029)" {
+  "unused"     "A free id for a replacement"
+  "draft"      "Planned; waits for its dependencies"
+  "ready"      "Dependencies accepted; open for bids"
+  "assigned"   "A worker holds it"
+  "running"    "Its run is alive"
+  "blocked"    "Waiting; the run is alive"
+  "verifying"  "Claimed; someone else verifies in a fresh VM"
+  "rework"     "Rejected; another attempt follows"
+  "accepted"   "Verified"
+  "failed"     "Gave up or out of attempts"
+  "cancelled"  "A dependency is dead"
+  "superseded" "Replaced by a change set"
+  "closed"     "Settled; the outcome says how"
+}
+
+machine TaskLifecycle "Three planned tasks 1 ← 2 ← 3 and one free id for a replacement" {
+  const Agents: Set<String>
+  const MaxAttempts: Int
+  const MaxChangeSets: Int
+  const Ids: Set<Int> = 1 .. 4                     // 1..3 are the planned tasks; 4 is free for a replacement
+  // A task in one of these can still be superseded or cancelled.
+  const Live: Set<TaskStatus> = {"draft", "ready", "assigned", "running", "blocked", "rework"}
+
+  var st: Map<Int, TaskStatus> = {for t in Ids yield t: if t <= 3 then "draft" else "unused"}
+  var outcome: Map<Int, String> = {for t in Ids yield t: "none"}
+  var deps: Map<Int, Set<Int>> = {for t in Ids yield t: if t == 2 then {1} else if t == 3 then {2} else {}}
+  var worker: Map<Int, String> = {for t in Ids yield t: "none"}
+  var verifier: Map<Int, String> = {for t in Ids yield t: "none"}
+  var attempts: Map<Int, Int> = {for t in Ids yield t: 0}
+  var live: Map<Int, Bool> = {for t in Ids yield t: false}
+  var paid: Map<Int, Int> = {for t in Ids yield t: 0}
+  var released: Map<Int, Int> = {for t in Ids yield t: 0}
+  var cs: Int = 0
+
+  let out(t) = if st[t] == "closed" then outcome[t] else st[t]
+
+  action Ready(t in Ids) {
+    when st[t] == "draft" and (all d in deps[t]: out(d) == "accepted")
+    st' = st with [t] = "ready"
+  }
+
+  action Assign(t in Ids, w in Agents) {
+    when st[t] == "ready"
+    st' = st with [t] = "assigned"
+    worker' = worker with [t] = w
+  }
+
+  action Start(t in Ids) {
+    when st[t] in {"assigned", "rework"} and attempts[t] < MaxAttempts
+    st' = st with [t] = "running"
+    live' = live with [t] = true
+    attempts' = attempts with [t] = attempts[t] + 1
+  }
+
+  action Block(t in Ids) {
+    when st[t] == "running"
+    st' = st with [t] = "blocked"
+  }
+
+  action Unblock(t in Ids) {
+    when st[t] == "blocked"
+    st' = st with [t] = "running"
+  }
+
+  action Claim(t in Ids, v in Agents) "The worker submits a claim; its run ends; someone else verifies in a fresh VM (AP-060)" {
+    when st[t] == "running" and v != worker[t]
+    st' = st with [t] = "verifying"
+    verifier' = verifier with [t] = v
+    live' = live with [t] = false
+  }
+
+  action Pass(t in Ids) {
+    when st[t] == "verifying"
+    st' = st with [t] = "accepted"
+  }
+
+  action Reject(t in Ids) {
+    when st[t] == "verifying"
+    st' = st with [t] = if attempts[t] < MaxAttempts then "rework" else "failed"
+  }
+
+  action GiveUp(t in Ids) "Stop conditions (AP-018): budget, repeated failure, or the agent gives up" {
+    when st[t] in {"running", "blocked"}
+    st' = st with [t] = "failed"
+    live' = live with [t] = false
+  }
+
+  action Pay(t in Ids) {
+    when st[t] == "accepted" and paid[t] == 0
+    paid' = paid with [t] = 1
+  }
+
+  action Close(t in Ids) "Escrow is released (refunded) exactly once, and only with no run alive" {
+    when (st[t] == "accepted" and paid[t] == 1) or st[t] in {"failed", "cancelled", "superseded"}
+    when not live[t]
+    st' = st with [t] = "closed"
+    outcome' = outcome with [t] = st[t]
+    released' = released with [t] = released[t] + 1
+  }
+
+  action Replan(t in Ids, n in Ids) "A change set replaces task t with a fresh task n (AP-061)" {
+    when cs < MaxChangeSets and st[n] == "unused"
+    when st[t] in Live or out(t) == "failed"
+    st' = st with [n] = "draft" with [t] = if st[t] in Live then "superseded" else st[t]
+    live' = live with [t] = false
+    deps' = {for u in Ids yield u: if u == n then deps[t] else if t in deps[u] then (deps[u] - {t}) + {n} else deps[u]}
+    cs' = cs + 1
+  }
+
+  action Cancel(t in Ids) "Cascade: a task whose dependency is dead can be cancelled" {
+    when st[t] in Live and (any d in deps[t]: out(d) in {"failed", "cancelled"})
+    st' = st with [t] = "cancelled"
+    live' = live with [t] = false
+  }
+
+  // The only allowed end.
+  terminal all t in Ids: st[t] in {"closed", "unused"}
+
+  invariant "Dependencies are accepted before work"
+    all t in Ids: st[t] in {"assigned", "running", "blocked", "verifying", "rework", "accepted"} => (all d in deps[t]: out(d) == "accepted")
+    implements AP-029.R4
+  invariant "The verifier is not the worker"       all t in Ids: verifier[t] != "none" => verifier[t] != worker[t]   implements AP-060.R6
+  invariant "No run on a dead task"                all t in Ids: live[t] => st[t] in {"running", "blocked"}
+  invariant "Paid only if accepted"                all t in Ids: paid[t] > 0 => out(t) == "accepted"
+  invariant "Paid at most once"                    all t in Ids: paid[t] <= 1
+  invariant "Escrow is released exactly once"      all t in Ids: released[t] == (if st[t] == "closed" then 1 else 0)
+  invariant "Accepted work is paid at close"       all t in Ids: (st[t] == "closed" and outcome[t] == "accepted") => paid[t] == 1
+  invariant "Attempts are bounded"                 all t in Ids: attempts[t] <= MaxAttempts
+  // Nobody waits on a task a change set replaced.
+  invariant "Nobody waits on superseded work"      all u in Ids: st[u] in Live => (all d in deps[u]: out(d) != "superseded")   implements AP-029.R5
+  invariant "No task depends on itself"            all t in Ids: not (t in deps[t])
+  // Accepted work is never undone by a re-plan or anything else.
+  transition "Accepted work stays accepted"
+    all t in Ids: out(t) == "accepted" => (if st'[t] == "closed" then outcome'[t] else st'[t]) == "accepted"
+}
+
+model "three tasks, two agents" of TaskLifecycle {
+  const Agents = {"w1", "w2"}
+  const MaxAttempts = 2
+  const MaxChangeSets = 1
+}
+
+mutant "Ready without checking dependencies" of TaskLifecycle {
+  replace "when st[t] == \"draft\" and (all d in deps[t]: out(d) == \"accepted\")" in Ready with "when st[t] == \"draft\""
+  expect violation "Dependencies are accepted before work"
+}
+
+mutant "The worker verifies its own work" of TaskLifecycle {
+  replace "when st[t] == \"running\" and v != worker[t]" in Claim with "when st[t] == \"running\""
+  expect violation "The verifier is not the worker"
+}
+
+mutant "Superseding leaves the run alive" of TaskLifecycle {
+  replace "live' = live with [t] = false" in Replan with "live' = live"
+  expect violation "No run on a dead task"
+}
+
+mutant "Dependents keep waiting on the superseded task" of TaskLifecycle {
+  replace "else if t in deps[u] then (deps[u] - {t}) + {n} else deps[u]" in Replan with "else deps[u]"
+  expect violation "Nobody waits on superseded work"
+}
+
+mutant "No once-only payment guard" of TaskLifecycle {
+  replace "paid[t] == 0" in Pay with "paid[t] < 2"
+  replace "paid' = paid with [t] = 1" in Pay with "paid' = paid with [t] = paid[t] + 1"
+  expect violation "Paid at most once"
+}
+
+mutant "A re-plan supersedes accepted work" of TaskLifecycle {
+  replace "when st[t] in Live or" in Replan with "when st[t] in Live + {\"accepted\"} or"
+  expect violation "Dependencies are accepted before work"
+}
+
+mutant "Giving up leaves the run alive" of TaskLifecycle {
+  replace "live' = live with [t] = false" in GiveUp with "live' = live"
+  expect violation "No run on a dead task"
+}
+
+mutant "No attempt limit" of TaskLifecycle {
+  replace " and attempts[t] < MaxAttempts" in Start with ""
+  replace "if attempts[t] < MaxAttempts then \"rework\" else \"failed\"" in Reject with "\"rework\""
+  expect violation "Attempts are bounded"
+}
+
+mutant "Dependents of dead work are never cancelled" of TaskLifecycle {
+  replace "when st[t] in Live and (any d in deps[t]: out(d) in {\"failed\", \"cancelled\"})" in Cancel with "when false"
+  expect deadlock
+}
+
+witness "The whole plan is accepted" of TaskLifecycle in "three tasks, two agents" {
+  reachable all t in 1 .. 3: st[t] == "closed" and outcome[t] == "accepted"
+}
+
+witness "A replacement and its dependent are accepted" of TaskLifecycle in "three tasks, two agents" {
+  reachable out(4) == "accepted" and out(3) == "accepted"
+}
+
+witness "Rework, then accepted on the second attempt" of TaskLifecycle in "three tasks, two agents" {
+  reachable attempts[1] == 2 and out(1) == "accepted"
+}
+
+witness "A change set supersedes a task that had started" of TaskLifecycle in "three tasks, two agents" {
+  reachable st[2] == "superseded" and attempts[2] > 0
+}
+
+witness "A dependent of dead work is cancelled" of TaskLifecycle in "three tasks, two agents" {
+  reachable out(3) == "cancelled"
+}

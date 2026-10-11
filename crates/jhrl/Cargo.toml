@@ -1,0 +1,14 @@
+[package]
+name = "jhrl"
+description = "The JHRL engine: lexer, parser, dimension checker, evaluator, model checker, scenarios and constraint resolver (AP-074). Std only."
+version.workspace = true
+edition = "2021"
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "jhrl"
+path = "src/main.rs"

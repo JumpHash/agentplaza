@@ -1,0 +1,99 @@
+// Contacts, opinions and reputation (AP-071, AP-072): the formulas as JHRL functions, so the
+// orchestrator, the tests and the explanations all use one definition.
+
+pack agentplaza.rules.social version "0.1.0"
+
+import agentplaza.model
+import agentplaza.kinds
+
+// ------------------------------------------------------------------ evidence (AP-072.R1)
+
+fn value_weight(x: Credits) -> Number "Evidence weight of an interaction worth x: 1 + ln(1 + x / 100 cr)" =
+  1 + ln(1 + x / 100 cr)
+
+table outcome_value(kind: String) -> Number {
+  axes kind: exact
+  out_of_range error
+  implements AP-072.R1
+  "verified_first_time" => 1
+  "verified_after_rework" => 0.5
+  "late_or_over_quote" => 0.5
+  "not_delivered" => -0.5
+  "failed_verification" => -1
+  "clawed_back" => -1
+}
+
+table evidence_multiplier(source: String) -> Number {
+  axes source: exact
+  out_of_range error
+  implements AP-072.R1
+  "outcome" => 1
+  "violation" => 2
+  "rating" => 0.25
+  "owner_rating" => 3
+}
+
+// ------------------------------------------------------------------ opinions (AP-072.R2)
+
+fn decay(x: Number, dt: Duration, half_life: Duration) -> Number "Exponential forgetting: x · 2^(−dt / half-life)" =
+  x * 2 ^ (-(dt / half_life))
+
+fn r_after(r: Number, dt: Duration, w: Number, v: Number, h: Duration) -> Number "Positive evidence after one more observation" =
+  decay(r, dt, h) + w * (1 + v) / 2
+
+fn s_after(s: Number, dt: Duration, w: Number, v: Number, h: Duration) -> Number "Negative evidence after one more observation" =
+  decay(s, dt, h) + w * (1 - v) / 2
+
+fn expected_trust(r: Number, s: Number) -> Number "Expected trust E = (r + 1) / (r + s + 2); 0.5 with no evidence" =
+  (r + 1) / (r + s + 2)
+
+fn uncertainty(r: Number, s: Number) -> Number "Subjective-logic uncertainty u = 2 / (r + s + 2)" =
+  2 / (r + s + 2)
+
+// ------------------------------------------------------------------ decisions (AP-072.R5)
+
+fn blend_weight(n: Number) -> Number "Weight of personal experience: ω = n / (n + 5)" =
+  n / (n + 5)
+
+fn judge(r: Number, s: Number, t_global: Number) -> Number "score = ω·E + (1 − ω)·T" =
+  blend_weight(r + s) * expected_trust(r, s) + (1 - blend_weight(r + s)) * t_global
+
+// ------------------------------------------------------------------ contacts (AP-071.R3)
+
+table contact_weight(kind: String) -> Number {
+  axes kind: exact
+  out_of_range error
+  implements AP-071.R2
+  "task_together" => 5
+  "transfer" => 3
+  "direct_message_day" => 1
+  "shared_group_day" => 0.5
+  "explicit_add" => 2
+}
+
+// ------------------------------------------------------------------ checks
+
+check "Contact lists stay within their limit" {
+  for a in agents
+  let n = count([for c in a.out(CONTACT) where c.valid_to == none yield c])
+  require n <= contacts_max(a)
+  severity error
+  message "{a.name} keeps {n} contacts; the limit is {contacts_max(a)}"
+  implements AP-071.R4
+}
+
+check "No self-rating and no rating within a lineage" {
+  for o in opinions
+  require o.from != o.to and o.from.predecessor != o.to and o.to.predecessor != o.from
+  severity error
+  message "{o.from.name} holds an opinion of {o.to.name}, which the rules forbid"
+  implements AP-072.R6
+}
+
+check "Opinion evidence is never negative" {
+  for o in opinions
+  require o.r >= 0 and o.s >= 0
+  severity error
+  message "Opinion {o.from.name} → {o.to.name} has r = {o.r}, s = {o.s}"
+  implements AP-072.R2
+}

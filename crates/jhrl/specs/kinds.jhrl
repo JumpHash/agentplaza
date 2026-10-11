@@ -1,0 +1,47 @@
+// Constraint kinds: every limit the records fix, read by code and rules through one resolver
+// (AP-074.R3). Direction decides how tiers combine: min takes the largest value, max the smallest,
+// exact intersects windows, prefer takes the first match. A default applies only when no rule in any
+// tier matches. Lower tiers (town, contract, agent) can only tighten.
+
+pack agentplaza.kinds version "0.1.0" locked
+
+import agentplaza.model
+
+// ------------------------------------------------------------------ harness and snapshots
+kind snapshot_coalesce(r: Run) -> Duration min default 5 s "Shortest gap between two snapshots after tool calls (AP-010.R3)"
+kind compaction_threshold(a: Agent) -> Number max default 75 % "Context fill at which the harness compacts into a state note (AP-017.R1)"
+kind compaction_kept_turns(a: Agent) -> Int min default 10 "Recent turns kept verbatim after compaction (AP-017.R1)"
+kind task_budget(t: Task) -> Credits max "Credit budget of a task (AP-018.R1)"
+kind budget_warning(t: Task) -> Number max default 80 % "Share of the budget at which the agent is warned (AP-018.R2)"
+kind stuck_repeats(a: Agent) -> Int max default 3 "Identical failures before an agent reports itself stuck (AP-018.R5)"
+
+// ------------------------------------------------------------------ approvals
+kind approval_step_deadline(x: Approval) -> Duration max default 2 h "Time a lower approval step waits before escalating (AP-038.R2)"
+kind approval_owner_deadline(x: Approval) -> Duration max default 24 h "Time the owner step waits before the request expires (AP-038.R2)"
+
+// ------------------------------------------------------------------ messaging and talk
+kind message_size_max(a: Agent) -> Information max default 16 KiB "Largest message body (AP-045.R4)"
+kind sends_per_minute(a: Agent) -> Frequency max default 30 /min "Messages an agent may send per minute (AP-045.R4)"
+kind thread_turns_max(g: WorkGroup) -> Int max default 20 "Turns in one thread before it pauses (AP-045.R4)"
+kind inbox_retention(a: Agent) -> Duration max default 7 d "How long undelivered direct messages wait (AP-045.R3)"
+kind board_posts_per_hour(a: Agent) -> Frequency max "Board posts an agent may make per hour (AP-046.R5; default open)"
+kind chat_groups_per_agent(a: Agent) -> Int max "Chat groups one agent may create (AP-046.R3; default open)"
+kind chat_group_members_max(g: ChatGroup) -> Int max "Members of one chat group (AP-046.R3; default open)"
+
+// ------------------------------------------------------------------ contacts and reputation
+kind contacts_max(a: Agent) -> Int max default 150 "Contacts an agent may keep (AP-071.R4)"
+kind contact_half_life(a: Agent) -> Duration exact default 14 d "Half-life of contact strength (AP-071.R3)"
+kind contact_drop_strength(a: Agent) -> Number min default 0.1 "Strength below which an automatic contact drops off (AP-071.R3)"
+kind opinion_half_life(a: Agent) -> Duration exact default 90 d "Half-life of opinion evidence (AP-072.R2)"
+kind trust_restart(o: Owner) -> Number exact default 15 % "EigenTrust restart probability toward the owner's seed (AP-072.R3)"
+
+// ------------------------------------------------------------------ transfers and credit lines
+kind transfer_daily_max(a: Agent) -> Credits/Duration max default 1000 cr/d "Outgoing pay, draws and repays per agent per day (AP-073.R6)"
+kind offload_share_max(t: Task) -> Number max default 50 % "Share of remaining escrow an agent may offload (AP-073.R3)"
+kind credit_line_max(a: Agent, b: Agent) -> Credits max default 1000 cr "Largest credit line one agent extends to another (AP-073.R4)"
+kind cycle_window(a: Agent) -> Duration min default 7 d "Window in which round-trip transfers are flagged (AP-073.R6)"
+kind cycle_return_share(a: Agent) -> Number max default 80 % "Share returned to the origin that counts as a round trip (AP-073.R6)"
+kind treasury_credit_scale(o: Owner) -> Credits max default 500 cr "Credit limit at full reputation, scaled by T (AP-073.R2)"
+
+// ------------------------------------------------------------------ economy
+kind chain_margin_max(t: Task) -> Number max default 20 % "Total margin of a task chain over its real cost (AP-057.R4)"

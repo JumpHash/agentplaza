@@ -1,0 +1,218 @@
+// Task escrow, subcontracts, payments, refunds, clawbacks and fines in one task chain
+// (AP-056, AP-057, AP-058, AP-059; ledger in drafts/treasury/schema.sql).
+//
+// The owner mints a budget into the root task's escrow. A task's agent spends real cost from its
+// escrow, or subcontracts: the price moves from the parent's escrow into the child's. A verified
+// child is paid a margin from what is left in its escrow, capped so the chain's total margin stays
+// within Cap of the chain's real cost (AP-057); the rest is refunded to the parent. A failed child
+// is refunded and paid nothing. Inside the warranty a paid margin can be clawed back to the
+// Treasury, and fines come from earnings only; both stop at the agent's credit line. Every step is
+// one balanced ledger entry.
+
+pack agentplaza.machines.economy version "0.1.0"
+
+enum TaskState "Where a task of the chain is" {
+  "none"    "Not awarded yet"
+  "open"    "Funded or awarded; work in progress"
+  "passed"  "Verified"
+  "failed"  "Failed verification"
+  "settled" "Closed; what was left went back to the parent"
+}
+
+machine Economy "One task chain root → s1 → s2 with its escrows, earnings and the Treasury" {
+  const Agents: Set<String>
+  const Budget: Credits
+  const Step: Credits
+  const Prices: Set<Credits>
+  const Cap: Number
+  const CreditLimit: Credits
+  const Tasks: Set<String> = {"root", "s1", "s2"}
+  const Subs: Set<String> = {"s1", "s2"}
+
+  var mint: Credits = 0 cr                                  // goes negative as budgets are minted
+  var tre: Credits = 0 cr                                   // the Treasury
+  var ext: Credits = 0 cr                                   // external spend: real money out
+  var esc: Map<String, Credits> = {for t in Tasks yield t: 0 cr}
+  var earn: Map<String, Credits> = {for a in Agents yield a: 0 cr}
+  var st: Map<String, TaskState> = {for t in Tasks yield t: "none"}
+  var who: Map<String, String> = {for t in Tasks yield t: "owner"}   // contractor of each subtask
+  var cost: Map<String, Credits> = {for t in Tasks yield t: 0 cr}    // real cost each task has spent
+  var margin: Map<String, Credits> = {for t in Tasks yield t: 0 cr}  // margin paid, net of clawbacks
+  var pays: Map<String, Int> = {for t in Tasks yield t: 0}           // payment entries per task
+  var clawed: Map<String, Bool> = {for t in Tasks yield t: false}
+  var fines: Int = 0
+
+  let parent(t) = if t == "s1" then "root" else "s1"        // root -> s1 -> s2 (depth limit, AP-056)
+  let children(t) = {for c in Subs where parent(c) == t yield c}
+  let chain_cost = sum([for t in Tasks yield cost[t]])
+  let chain_margin = sum([for t in Tasks yield margin[t]])
+  // What the Treasury may still pay as margin in this chain (checked before every payment, AP-057).
+  let headroom = max(0 cr, floor(chain_cost * Cap) - chain_margin)
+  // The chain is finished once the root is closed; only then may nothing happen.
+  let done = st["root"] == "settled"
+
+  action Fund "Governance funds the root task (mint entry)" {
+    when st["root"] == "none"
+    mint' = mint - Budget
+    esc' = esc with ["root"] = Budget
+    st' = st with ["root"] = "open"
+  }
+
+  action Spend(t in Tasks) "Metered real cost: escrow to external spend" {
+    when st[t] == "open" and esc[t] >= Step
+    esc' = esc with [t] = esc[t] - Step
+    ext' = ext + Step
+    cost' = cost with [t] = cost[t] + Step
+  }
+
+  action Award(t in Subs, a in Agents, p in Prices) "The parent's escrow locks the price in the child's (subcontract entry)" {
+    when st[t] == "none" and st[parent(t)] == "open" and esc[parent(t)] >= p
+    esc' = esc with [parent(t)] = esc[parent(t)] - p with [t] = p
+    st' = st with [t] = "open"
+    who' = who with [t] = a
+  }
+
+  action Verify(t in Subs, ok in Bool) "Verification in a fresh VM (AP-060), once the task's own subcontracts are closed" {
+    when st[t] == "open"
+    when all c in children(t): st[c] in {"none", "settled"}
+    st' = st with [t] = if ok then "passed" else "failed"
+  }
+
+  action Pay(t in Tasks) "Payment on verified work: the margin, from what is left in the child's escrow" {
+    when st[t] == "passed" and pays[t] == 0
+    let m = min(esc[t], headroom)
+    when m > 0 cr
+    esc' = esc with [t] = esc[t] - m
+    earn' = earn with [who[t]] = earn[who[t]] + m
+    margin' = margin with [t] = margin[t] + m
+    pays' = pays with [t] = pays[t] + 1
+  }
+
+  action Close(t in Tasks) "Refund what's left to the parent (or to the mint for the root)" {
+    when (t in Subs and st[t] in {"passed", "failed"}) or (t == "root" and st[t] == "open")
+    when all c in children(t): st[c] in {"none", "settled"}
+    if t == "root" {
+      mint' = mint + esc[t]
+      esc' = esc with [t] = 0 cr
+    } else {
+      esc' = esc with [t] = 0 cr with [parent(t)] = esc[parent(t)] + esc[t]
+    }
+    st' = st with [t] = "settled"
+  }
+
+  action Clawback(t in Tasks) "Warranty claim: the margin goes back to the Treasury, as far as the credit line allows" {
+    when t in Subs and st[t] == "settled" and margin[t] > 0 cr and not clawed[t]
+    let amt = min(margin[t], earn[who[t]] + CreditLimit)
+    when amt > 0 cr
+    earn' = earn with [who[t]] = earn[who[t]] - amt
+    tre' = tre + amt
+    margin' = margin with [t] = margin[t] - amt
+    clawed' = clawed with [t] = true
+  }
+
+  action Fine(a in Agents) "A fine the owner issues after a violation: earnings to the Treasury, never escrow" {
+    when earn[a] - 1 cr >= -CreditLimit and fines < 2
+    earn' = earn with [a] = earn[a] - 1 cr
+    tre' = tre + 1 cr
+    fines' = fines + 1
+  }
+
+  terminal done
+
+  // Double entry: every step is balanced, so all accounts always sum to zero.
+  invariant "Credits are conserved"
+    mint + tre + ext + sum([for t in Tasks yield esc[t]]) + sum([for a in Agents yield earn[a]]) == 0 cr
+    implements AP-059.R1
+  invariant "Escrow never goes negative"           all t in Tasks: esc[t] >= 0 cr
+  invariant "Earnings stay above the credit line"  all a in Agents: earn[a] >= -CreditLimit   implements AP-059.R3
+  invariant "No task is paid twice"                all t in Tasks: pays[t] <= 1
+  invariant "Failed work is never paid"            all t in Subs: st[t] == "failed" => margin[t] == 0 cr
+  // AP-057, measured against money that really left (external spend), not internal transfers.
+  invariant "The chain's margin stays within the cap"  chain_margin <= ext * Cap   implements AP-057.R4, AP-059.R4
+  // Real money leaves only as metered spend from escrow.
+  invariant "External spend is metered cost"       ext == chain_cost
+  // Earnings come from paid margins only; fines and clawbacks take them away.
+  invariant "Earnings come from work only"
+    sum([for a in Agents yield earn[a]]) == chain_margin - fines * 1 cr
+  invariant "The Treasury holds the fines"         tre >= fines * 1 cr
+  invariant "A settled task's escrow is empty"     all t in Tasks: st[t] == "settled" => esc[t] == 0 cr
+  // When the chain is done, no credit is stranded in any escrow.
+  invariant "No escrow is stranded"                done => all t in Tasks: esc[t] == 0 cr
+  // Only governance mints: the mint has created exactly the root budget, less what came back.
+  invariant "Only governance mints"                st["root"] != "none" => -mint <= Budget
+}
+
+// A 30-credit budget, spends of 5, prices 10 or 20, a 20 % cap and a credit line of 1.
+model "one chain, two contractors" of Economy {
+  const Agents = {"alice", "bob"}
+  const Budget = 30 cr
+  const Step = 5 cr
+  const Prices = {10 cr, 20 cr}
+  const Cap = 20 %
+  const CreditLimit = 1 cr
+}
+
+mutant "Payment ignores the chain margin cap" of Economy {
+  replace "let m = min(esc[t], headroom)" in Pay with "let m = esc[t]"
+  expect violation "The chain's margin stays within the cap"
+}
+
+mutant "A subcontract price counts as real cost" of Economy {
+  replace "who' = who with [t] = a" in Award with "who' = who with [t] = a; cost' = cost with [parent(t)] = cost[parent(t)] + p"
+  expect violation "External spend is metered cost"
+}
+
+mutant "No once-only guard on payment" of Economy {
+  replace "when st[t] == \"passed\" and pays[t] == 0" in Pay with "when st[t] == \"passed\""
+  expect violation "No task is paid twice"
+}
+
+mutant "Failed work is paid" of Economy {
+  replace "when st[t] == \"passed\" and pays[t] == 0" in Pay with "when st[t] in {\"passed\", \"failed\"} and pays[t] == 0"
+  expect violation "Failed work is never paid"
+}
+
+mutant "Fines are taken from escrow" of Economy {
+  replace "when earn[a] - 1 cr >= -CreditLimit and fines < 2" in Fine with "when esc[\"root\"] >= 1 cr and fines < 2"
+  replace "earn' = earn with [a] = earn[a] - 1 cr" in Fine with "esc' = esc with [\"root\"] = esc[\"root\"] - 1 cr"
+  expect violation "Earnings come from work only"
+}
+
+mutant "A task closes while its subcontracts are open" of Economy {
+  drop when 2 in Close
+  expect violation "No escrow is stranded"
+}
+
+mutant "Clawback ignores the credit line" of Economy {
+  replace "let amt = min(margin[t], earn[who[t]] + CreditLimit)" in Clawback with "let amt = margin[t]"
+  expect violation "Earnings stay above the credit line"
+}
+
+mutant "Spend leaves escrow but is never recorded" of Economy {
+  replace "ext' = ext + Step" in Spend with "ext' = ext"
+  expect violation "Credits are conserved"
+}
+
+witness "A margin is paid" of Economy in "one chain, two contractors" {
+  reachable chain_margin != 0 cr
+}
+
+witness "Margins are paid on both subcontract hops" of Economy in "one chain, two contractors" {
+  reachable margin["s1"] != 0 cr and margin["s2"] != 0 cr
+}
+
+witness "The cap limits a payment" of Economy in "one chain, two contractors" {
+  reachable any t in Subs: st[t] == "passed" and pays[t] == 1 and esc[t] != 0 cr
+}
+
+witness "A margin is clawed back" of Economy in "one chain, two contractors" {
+  reachable any t in Tasks: clawed[t]
+}
+
+witness "An agent is fined" of Economy in "one chain, two contractors" {
+  reachable fines != 0
+}
+
+witness "Earnings dip into the credit line" of Economy in "one chain, two contractors" {
+  reachable any a in Agents: earn[a] < 0 cr
+}
