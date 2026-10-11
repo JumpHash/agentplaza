@@ -211,6 +211,39 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if effect.poll_floor {
+        // The floor's own read: the conversations and the board at once.
+        let result = client.floor();
+        model.apply(Message::Floor {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
+    if effect.poll_board {
+        // The board pane's own read.
+        let result = client.board();
+        model.apply(Message::Board {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
+    if let Some(cid) = effect.fetch_contacts {
+        let result = client.contacts(cid);
+        model.apply(Message::Contacts {
+            at_ms: model.now_ms,
+            cid,
+            result,
+        });
+    }
+    if let Some((a, b)) = effect.fetch_thread {
+        let result = client.thread(a, b);
+        model.apply(Message::Thread {
+            at_ms: model.now_ms,
+            a,
+            b,
+            result,
+        });
+    }
     if let Some(id) = effect.fetch_task {
         let result = client.task(&id);
         model.apply(Message::Task {
@@ -1321,9 +1354,12 @@ fn the_help_key_lays_the_sheet_over_the_frame_the_register_was_drawing() {
         "the page is not dimmed under the sheet ({page_covered} of {page_plain} pixels)"
     );
     let (dim, dim_pixels) = dominant(&covered);
+    // The help sheet lists every binding, so it grew with the floor and board
+    // keys; the scrim around it is that much smaller. It still covers a large
+    // part of the window (the frame below is 1280×860).
     assert!(
-        dim_pixels > 300_000,
-        "a scrim should cover most of the window ({dim_pixels} pixels)"
+        dim_pixels > 250_000,
+        "a scrim should cover much of the window ({dim_pixels} pixels)"
     );
     // That blend is the window's own colour: it covers a hundred times more of
     // the frame under the sheet than the antialiased edges it happens to
@@ -3666,6 +3702,394 @@ fn the_whole_application_follows_an_agora_frame_between_polls() {
     assert_eq!(
         model.polls, 1,
         "only the boot tick polled the register: the market read is its own"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+}
+
+// ---- the floor: the robots, the conversations and the board ----
+
+/// The plaza's ground, as the floor canvas fills it.
+const GROUND: [u8; 4] = [0xdf, 0xe5, 0xda, 0xff];
+/// The ground gridline.
+const GRID: [u8; 4] = [0xc3, 0xcb, 0xbe, 0xff];
+/// The role ink the floor tints a builder's robot with (`floor::ROLE_INKS[0]`).
+const BUILDER_INK: [u8; 4] = [0x2f, 0x6f, 0x6a, 0xff];
+/// The ink a talking robot's status ring is drawn in: the register's signal.
+const TALKING_INK: [u8; 4] = [0xe8, 0x59, 0x0c, 0xff];
+
+/// A daemon stub with the register's role fleet, the floor's two social reads,
+/// and the contacts and threads the inspector reads.
+fn social_server(
+    list: &'static str,
+    detail: &'static str,
+    posts: &'static str,
+    conversations: &'static str,
+) -> common::Stub {
+    common::social_live(
+        list,
+        detail,
+        "",
+        posts,
+        conversations,
+        common::CONTACTS,
+        common::THREAD,
+    )
+}
+
+/// A model that has read the role register (through the real client).
+fn role_model(port: u16) -> Model {
+    let mut model = Model::at(Endpoint::loopback_at("127.0.0.1", port).expect("loopback"));
+    let page = Client::new(model.endpoint.clone())
+        .runs()
+        .expect("the stub answers the list");
+    model.apply(Message::Runs {
+        at_ms: 1_760_000_500_000,
+        result: Ok(page),
+    });
+    model
+}
+
+/// A model on the floor, with the pane's own read already answered.
+fn floor_from(port: u16) -> Model {
+    let mut model = role_model(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Floor));
+    perform(effect, &mut model, &client);
+    assert!(model.floor.is_some(), "the floor read answered");
+    model
+}
+
+/// A model on the board, with the pane's own read already answered.
+fn board_from(port: u16) -> Model {
+    let mut model = role_model(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Board));
+    perform(effect, &mut model, &client);
+    assert!(model.board.is_some(), "the board read answered");
+    model
+}
+
+#[test]
+fn the_floor_pane_draws_the_robots_the_rings_and_the_walk() {
+    let server = social_server(ROLE_LIST, ROLE_DETAIL, common::POSTS, common::CONVERSATIONS);
+    let mut model = floor_from(server.port);
+    assert_eq!(model.pane, Pane::Floor);
+    // The register's three role VMs are three robots on three role pads, and
+    // the pair the social API calls active is one link.
+    assert_eq!(model.floor().robots.len(), 3);
+    assert_eq!(model.floor().pads.len(), 3);
+    assert_eq!(model.floor().links.len(), 1);
+    // The session's first tick picks the first robot.
+    assert_eq!(model.floor_selected, Some(100));
+
+    {
+        let mut ui = simulator(view::view(&model));
+        for expected in [
+            "Floor",
+            "the plaza's agents as robots",
+            "The plaza floor: the register's agents as small robots",
+            "3 robot(s) · 3 pad(s) · 1 talking · 0 working · 0 unreachable",
+            "Conversations · 1 exchange(s) carried of 1 · 1 pair(s) active of 1 in the last 120s",
+            // The legend: every ring and the two honest notes.
+            "working",
+            "talking",
+            "idle",
+            "unreachable",
+            "station pads: (role index → col i%5, row i/5)",
+            "camera: 55° tilt · 20° yaw",
+            "unreachable = the hub does not report it connected, only when a hub is configured",
+            "The arrows pick a robot across the floor and Enter opens its inspector",
+        ] {
+            assert!(
+                ui.find(says(expected)).is_ok(),
+                "the floor sheet should show {expected:?}"
+            );
+        }
+    }
+
+    // Enter opens the inspector on the picked robot and reads its contacts.
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Inspect));
+    perform(effect, &mut model, &client);
+    assert_eq!(model.inspecting, Some(100));
+    assert!(model.contacts.is_some());
+
+    {
+        let mut ui = simulator(view::view(&model));
+        for expected in [
+            "cid 100",
+            "builder",
+            "TALKING",
+            "Contacts · 1 contact(s) carried of 1",
+            "reviewer · cid 101",
+            "met",
+            // The agent's last board post, from the floor's own read.
+            "last board post",
+            "hiring for t1 · p2 · posted by dispatcher",
+        ] {
+            assert!(
+                ui.find(says(expected)).is_ok(),
+                "the inspector should show {expected:?}"
+            );
+        }
+    }
+
+    // A contact row reads the thread the pair had.
+    let effect = model.apply(Message::ThreadPick(101));
+    perform(effect, &mut model, &client);
+    assert!(model.thread.is_some());
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "Thread · 1 message(s) carried of 1 · talking (within 120s)",
+        "can you review it?",
+        "delivered",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the thread should show {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn the_floor_plate_is_drawn_and_the_board_pane_does_not_draw_it() {
+    let server = social_server(ROLE_LIST, ROLE_DETAIL, common::POSTS, common::CONVERSATIONS);
+    let model = floor_from(server.port);
+    let floor_frame = frame_of(model.clone());
+
+    assert_eq!((floor_frame.size.width, floor_frame.size.height), (1280, 860));
+    // The plaza's ground is a filled, bounded plane: a whole plate's worth of
+    // pixels, not the odd antialiased seam.
+    let ground = count_near(&floor_frame, GROUND, 2);
+    assert!(
+        ground > 20_000,
+        "the plaza's ground is not on the floor frame ({ground} pixels)"
+    );
+    // The ground grid is ruled over it.
+    assert!(
+        holds(&floor_frame, GRID, 4),
+        "no ground gridline was drawn on the floor"
+    );
+    // A builder robot's roof is its role's own ink.
+    assert!(
+        holds(&floor_frame, BUILDER_INK, 6),
+        "a role-tinted robot body was not drawn"
+    );
+    // The talking pair's rings are the register's signal, and so is the picked
+    // robot's selection ring.
+    let signal = count_near(&floor_frame, TALKING_INK, 10);
+    assert!(
+        signal > 60,
+        "the talking robots' (and the selection's) signal rings were not drawn ({signal} pixels)"
+    );
+
+    // The board pane, drawn from the same register, draws no ground at all.
+    let mut board_model = model;
+    board_model.apply(Message::Show(Pane::Board));
+    let board_frame = frame_of(board_model);
+    let elsewhere = count_near(&board_frame, GROUND, 2);
+    assert!(
+        elsewhere < ground / 20,
+        "the board should not draw the floor's ground ({elsewhere} pixels)"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("floor-frame.rgba");
+    std::fs::write(&path, floor_frame.rgba.as_ref()).expect("the floor frame should be written");
+    println!(
+        "floor frame: {ground} ground pixels, {} distinct colors, raw RGBA at {}",
+        distinct_colors(floor_frame.rgba.as_ref()),
+        path.display()
+    );
+}
+
+#[test]
+fn the_floor_walks_the_pair_adjacent_over_real_frames() {
+    // The walk is on the floor's own clock: the two robots that talk start at
+    // their stations and end adjacent. Everything here is the model the frames
+    // are drawn from.
+    let server = social_server(ROLE_LIST, ROLE_DETAIL, common::POSTS, common::CONVERSATIONS);
+    let mut model = floor_from(server.port);
+    let start = model.floor();
+    let builder = start.robot(100).expect("cid 100").clone();
+    assert_eq!(builder.status, agentplaza_desktop::floor::Status::Talking);
+    assert!(builder.at_station);
+    assert_eq!(
+        start.robot(101).expect("cid 101").status,
+        agentplaza_desktop::floor::Status::Talking
+    );
+
+    // The animation clock advances the walk; the two robots end beside each
+    // other, half a step apart.
+    model.apply(Message::Anim {
+        at_ms: model.now_ms + agentplaza_desktop::model::WALK_MS,
+    });
+    let walked = model.floor();
+    let a = walked.robot(100).expect("cid 100");
+    let b = walked.robot(101).expect("cid 101");
+    assert!(!a.at_station, "a talking robot has left its station");
+    assert!((a.x - b.x).abs() < 1.0, "the pair stands adjacent");
+    // The register's third agent (a different role) never moved.
+    let held = walked.robot(102).expect("cid 102");
+    assert!(held.at_station);
+}
+
+#[test]
+fn the_board_pane_draws_the_posts_the_tasks_and_the_read_counts() {
+    let server = social_server(ROLE_LIST, ROLE_DETAIL, common::POSTS, common::CONVERSATIONS);
+    let model = board_from(server.port);
+    let board = model.board.as_ref().expect("the pane read it");
+    assert_eq!(board.posts.len(), board.total);
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "Board",
+        "the plaza's public posts, newest first",
+        "Board · 2 post(s) carried of 2 · read by 1 of 2 agent(s) · 1 behind",
+        // The newest post: its author, its task link and its read count.
+        "p2",
+        "builder · cid 100",
+        "hiring for t1 · task t1 · ",
+        "posted by dispatcher",
+        "read by 1 of 2",
+        // The older post: no task link, and every agent has read it.
+        "reviewer · cid 101",
+        "hello plaza",
+        "no task",
+        "read by 2 of 2",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the board sheet should show {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn the_floor_and_board_keys_and_their_index_entries_reach_the_sheets() {
+    let server = social_server(ROLE_LIST, ROLE_DETAIL, common::POSTS, common::CONVERSATIONS);
+    let mut model = role_model(server.port);
+
+    // The index offers both, and says neither has been read rather than
+    // claiming an empty plaza.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Floor")).is_ok());
+        assert!(ui.find(says("Board")).is_ok());
+        assert!(ui.find(says("not read yet")).is_ok());
+        ui.click("Floor").expect("the entry is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert!(
+        messages.contains(&Message::Show(Pane::Floor)),
+        "the entry asks for the floor, got {messages:?}"
+    );
+
+    // The key sheet names both, from the one table the index and the help
+    // sheet share.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("floor: the robots, their conversations + the plaza")).is_ok());
+        assert!(ui.find(says("board: the plaza's public posts")).is_ok());
+    }
+    model.apply(Message::Help(false));
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Floor));
+    assert_eq!(model.pane, Pane::Floor, "the key reaches the floor");
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Board));
+    assert_eq!(model.pane, Pane::Board, "and the board");
+}
+
+#[test]
+fn a_floor_that_cannot_be_read_says_so_and_keeps_the_last_read() {
+    let server = social_server(ROLE_LIST, ROLE_DETAIL, common::POSTS, common::CONVERSATIONS);
+    let mut model = floor_from(server.port);
+    let held = model.floor.clone();
+    assert!(held.is_some());
+
+    let at_ms = model.now_ms;
+    model.apply(Message::Floor {
+        at_ms,
+        result: Err(agentplaza_desktop::api::ApiError::Status {
+            status: 404,
+            message: "no such endpoint".to_string(),
+        }),
+    });
+    assert_eq!(model.floor, held, "the last read is kept, not blanked");
+    assert_eq!(
+        model.health(),
+        agentplaza_desktop::model::Health::Live,
+        "the floor's failure is not the register's"
+    );
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("the floor could not be read again: 404: no such endpoint")).is_ok(),
+        "the sheet names the failure beside the read it keeps"
+    );
+}
+
+#[test]
+fn the_whole_application_follows_a_board_frame_between_polls() {
+    // The board pane reads when it opens; a `board` frame then asks the pane's
+    // own surface to be read again, between the register's polls. The frame
+    // carries the post's own object, but the unread counts a read moves arrive
+    // only through a read — and the post that arrives with them is the
+    // daemon's.
+    let server = common::social_growing(ROLE_LIST, ROLE_DETAIL, "", common::POSTS, common::POSTS_AFTER);
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 800);
+
+    emulator.update(&program, Message::Show(Pane::Board));
+    pump(&mut emulator, 800);
+
+    // A `board` frame for a post the pane does not hold: the pane's own surface
+    // is read again, and the post that arrives is the daemon's.
+    let post: agentplaza_desktop::api::Post = serde_json::from_str(
+        r#"{"id":"p3","agent_cid":101,"role":"reviewer","subject":"available for t1","body":"I can review it.","task":"t1","posted_by":"dispatcher","created_at":1791673000000}"#,
+    )
+    .expect("a post");
+    emulator.update(
+        &program,
+        Message::Event {
+            at_ms: agentplaza_desktop::epoch_ms(),
+            event: agentplaza_desktop::events::Event::Board {
+                kind: agentplaza_desktop::events::BoardKind::Post,
+                post: Some(post),
+                agent_cid: 101,
+                role: "reviewer".to_string(),
+                read_up_to: None,
+            },
+        },
+    );
+    pump(&mut emulator, 800);
+
+    let (model, _) = emulator.into_state();
+    let board = model.board.as_ref().expect("the pane's read");
+    assert_eq!(board.posts.len(), 3, "the frame drove a read, and the read grew the board");
+    assert_eq!(board.posts[0].id, "p3");
+    assert_eq!(
+        board.unread[0].count, 1,
+        "the unread count a frame cannot carry arrived through the read"
+    );
+    assert_eq!(
+        model.polls, 1,
+        "only the boot tick polled the register: the board read is its own"
     );
     assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }

@@ -73,9 +73,10 @@ pub fn run(config: Config) -> iced::Result {
 }
 
 /// Everything the runtime listens for: the poll timer at the cadence the
-/// register was given, the keys it binds, and the daemon's event stream.
+/// register was given, the floor's own animation clock while a pair walks, the
+/// keys it binds, and the daemon's event stream.
 fn subscriptions(model: &Model) -> Subscription<Message> {
-    Subscription::batch([bell(model), keys(), live(&model.endpoint)])
+    Subscription::batch([bell(model), anim(model), keys(), live(&model.endpoint)])
 }
 
 /// The poll timer, carrying the wall clock: a tick every `refresh_ms`, which
@@ -84,6 +85,22 @@ fn subscriptions(model: &Model) -> Subscription<Message> {
 fn bell(model: &Model) -> Subscription<Message> {
     iced::time::every(std::time::Duration::from_millis(model.refresh_ms))
         .map(|_| Message::Tick { at_ms: epoch_ms() })
+}
+
+/// The floor's animation clock: a frame every [`crate::model::ANIM_MS`] while
+/// the floor shows a pair still walking, and nothing at all otherwise.
+///
+/// This is the one place a redraw is asked for faster than the poll, and it is
+/// bounded: it runs only while a walk is in progress — a window of at most
+/// [`crate::model::WALK_MS`] — and it never reads the daemon. iced has no
+/// reduced-motion signal, so the walk is short and always completes; there is
+/// no way to ask it to stop, and none is claimed.
+fn anim(model: &Model) -> Subscription<Message> {
+    if !model.floor_animating() {
+        return Subscription::none();
+    }
+    iced::time::every(std::time::Duration::from_millis(crate::model::ANIM_MS))
+        .map(|_| Message::Anim { at_ms: epoch_ms() })
 }
 
 /// `GET /api/v0/events`, as a subscription.
@@ -204,6 +221,8 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "l" => Some(KeyAction::Ledger),
             "y" => Some(KeyAction::Treasury),
             "u" => Some(KeyAction::Market),
+            "i" => Some(KeyAction::Floor),
+            "j" => Some(KeyAction::Board),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -212,6 +231,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             keyboard::key::Named::Escape => Some(KeyAction::Back),
             keyboard::key::Named::ArrowUp => Some(KeyAction::HistoryPrev),
             keyboard::key::Named::ArrowDown => Some(KeyAction::HistoryNext),
+            keyboard::key::Named::Enter => Some(KeyAction::Inspect),
             _ => None,
         },
         Key::Unidentified => None,
@@ -405,6 +425,49 @@ fn dispatch(
                 (epoch_ms(), result)
             },
             |(at_ms, result)| Message::Agora { at_ms, result },
+        ));
+    }
+    if effect.poll_floor {
+        // The floor's own read: the conversations and the board at once. Its
+        // own message and its own schedule.
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.floor();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Floor { at_ms, result },
+        ));
+    }
+    if effect.poll_board {
+        // The board pane's own read: the public posts.
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.board();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Board { at_ms, result },
+        ));
+    }
+    if let Some(cid) = effect.fetch_contacts {
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.contacts(cid);
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::Contacts { at_ms, cid, result },
+        ));
+    }
+    if let Some((a, b)) = effect.fetch_thread {
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.thread(a, b);
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::Thread { at_ms, a, b, result },
         ));
     }
     if let Some(id) = effect.fetch_task {
@@ -660,6 +723,8 @@ mod tests {
             (Key::Character("l".into()), KeyAction::Ledger),
             (Key::Character("y".into()), KeyAction::Treasury),
             (Key::Character("t".into()), KeyAction::Telemetry),
+            (Key::Character("i".into()), KeyAction::Floor),
+            (Key::Character("j".into()), KeyAction::Board),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
             (Key::Character("M".into()), KeyAction::Machine),
@@ -668,7 +733,10 @@ mod tests {
             (Key::Character("L".into()), KeyAction::Ledger),
             (Key::Character("Y".into()), KeyAction::Treasury),
             (Key::Character("T".into()), KeyAction::Telemetry),
+            (Key::Character("I".into()), KeyAction::Floor),
+            (Key::Character("J".into()), KeyAction::Board),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
+            (Key::Named(keyboard::key::Named::Enter), KeyAction::Inspect),
             (Key::Character("?".into()), KeyAction::Help),
             (Key::Named(keyboard::key::Named::ArrowUp), KeyAction::HistoryPrev),
             (
@@ -685,7 +753,6 @@ mod tests {
         for key in [
             Key::Character("x".into()),
             Key::Character("".into()),
-            Key::Named(keyboard::key::Named::Enter),
             Key::Named(keyboard::key::Named::Tab),
             Key::Unidentified,
         ] {

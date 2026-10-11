@@ -21,6 +21,11 @@
 //! * [`exit`] — how a VM left the running state, read off its serial tail.
 //! * [`export`] — where a transcript goes, the bytes it holds, and the one
 //!   `std::fs` write that puts it there.
+//! * [`floor`] — the plaza floor's geometry: the fixed RTS camera and its
+//!   perspective projection, the role-station layout, the robot bodies and the
+//!   pair-walk arithmetic. Pure, no iced types.
+//! * [`floorview`] — the floor as an iced canvas, painting what [`floor`]
+//!   computes in painter's order.
 //! * [`form`] — the spawn form, its quick-boot presets, and the validation
 //!   that mirrors the daemon's.
 //! * [`history`] — the session's rolling telemetry history and its CSV.
@@ -54,6 +59,8 @@ pub mod cli;
 pub mod events;
 pub mod exit;
 pub mod export;
+pub mod floor;
+pub mod floorview;
 pub mod form;
 pub mod history;
 pub mod ledger;
@@ -62,6 +69,7 @@ pub mod mapview;
 pub mod model;
 pub mod serial;
 pub mod session;
+pub mod social;
 pub mod telemetryview;
 pub mod theme;
 pub mod view;

@@ -1067,6 +1067,138 @@ fn a_market_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
     assert_eq!(error.to_string(), "404: no such endpoint");
 }
 
+// ---- the social layer: the board, the contacts, the conversations ----
+
+#[test]
+fn reading_the_board_reads_the_plaza_posts_newest_first() {
+    let server = common::social_live(
+        LIST,
+        DETAIL,
+        "",
+        common::POSTS,
+        common::CONVERSATIONS,
+        common::CONTACTS,
+        common::THREAD,
+    );
+    let board = client(server.port)
+        .board()
+        .expect("the board should parse");
+
+    assert_eq!(board.posts.len(), 2);
+    assert_eq!(board.total, 2);
+    assert_eq!(board.limit, 1_024);
+    let hiring = &board.posts[0];
+    assert_eq!(hiring.id, "p2");
+    assert_eq!(hiring.agent_cid, 100);
+    assert_eq!(hiring.role, "builder");
+    assert_eq!(hiring.subject, "hiring for t1");
+    assert_eq!(hiring.task.as_deref(), Some("t1"));
+    assert_eq!(hiring.posted_by, "dispatcher");
+    // The plain post links no task, and the unread counts are the daemon's.
+    assert_eq!(board.posts[1].task.get(), None);
+    assert_eq!(board.unread.len(), 2);
+    assert_eq!(board.unread[1].count, 1);
+
+    // One read, a GET with no body.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/board");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn reading_the_floor_reads_the_conversations_and_the_board_at_once() {
+    let server = common::social_live(
+        LIST,
+        DETAIL,
+        "",
+        common::POSTS,
+        common::CONVERSATIONS,
+        common::CONTACTS,
+        common::THREAD,
+    );
+    let read = client(server.port).floor().expect("the floor should parse");
+
+    // The conversations half: the exchange and the pair the floor draws.
+    assert_eq!(read.conversations.conversations.len(), 1);
+    assert_eq!(read.conversations.active_secs, 120);
+    assert_eq!(read.conversations.pairs.len(), 1);
+    assert!(read.conversations.pairs[0].active);
+    assert_eq!((read.conversations.pairs[0].a, read.conversations.pairs[0].b), (100, 101));
+    // The board half: the posts, newest first.
+    assert_eq!(read.board.posts[0].id, "p2");
+    assert_eq!(read.board.total, 2);
+
+    // Exactly two reads, in the read's own order, with no bodies.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "the floor is two GETs, one read");
+    assert_eq!(requests[0].target, "/api/v0/conversations");
+    assert_eq!(requests[1].target, "/api/v0/board");
+    assert!(requests.iter().all(|request| request.method == "GET"));
+}
+
+#[test]
+fn reading_an_agents_contacts_follows_the_agents_path() {
+    let server = common::social_live(
+        LIST,
+        DETAIL,
+        "",
+        common::POSTS,
+        common::CONVERSATIONS,
+        common::CONTACTS,
+        common::THREAD,
+    );
+    let contacts = client(server.port)
+        .contacts(100)
+        .expect("the contacts should parse");
+    assert_eq!(contacts.agent_cid, 100);
+    assert_eq!(contacts.contacts.len(), 1);
+    assert_eq!(contacts.contacts[0].peer_cid, 101);
+    assert_eq!(contacts.contacts[0].role, "reviewer");
+    assert_eq!(contacts.contacts[0].kind, "met");
+    let requests = server.requests();
+    assert_eq!(requests[0].target, "/api/v0/agents/100/contacts");
+}
+
+#[test]
+fn reading_a_thread_follows_the_pairs_path() {
+    let server = common::social_live(
+        LIST,
+        DETAIL,
+        "",
+        common::POSTS,
+        common::CONVERSATIONS,
+        common::CONTACTS,
+        common::THREAD,
+    );
+    let thread = client(server.port)
+        .thread(100, 101)
+        .expect("the thread should parse");
+    assert_eq!((thread.a, thread.b), (100, 101));
+    assert!(thread.active);
+    assert_eq!(thread.messages.len(), 1);
+    assert_eq!(thread.messages[0].text, "can you review it?");
+    assert!(thread.messages[0].delivered);
+    let requests = server.requests();
+    assert_eq!(requests[0].target, "/api/v0/conversations/100/101");
+}
+
+#[test]
+fn a_social_surface_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
+    // An older daemon with no social layer: each read is a refusal in the
+    // daemon's words, never a panic and never a silent empty board.
+    let server = always(404, r#"{"error":"no such endpoint"}"#);
+    for error in [
+        client(server.port).board().expect_err("a 404 is a refusal"),
+        client(server.port).contacts(7).expect_err("a 404 is a refusal"),
+        client(server.port).thread(1, 2).expect_err("a 404 is a refusal"),
+    ] {
+        assert_eq!(error.status(), Some(404));
+        assert_eq!(error.to_string(), "404: no such endpoint");
+    }
+}
+
 /// Reads the live hub's status surface when `APZ_DESKTOP_LIVE_HUB` names one
 /// (`host:port`), and does nothing otherwise: the suite stays runnable on a
 /// host with no hub.
@@ -1322,4 +1454,51 @@ fn a_live_daemon_reads_when_one_is_named() {
             None => println!("    award: none (the offer stands)"),
         }
     }
+
+    // The plaza's social layer, read the same way and mutating nothing: the
+    // public board, and the conversations the floor derives proximity from.
+    // Every read is a GET; nothing here posts, reads a cursor or speaks.
+    let posts = client
+        .board()
+        .expect("the live daemon should answer its board");
+    println!(
+        "live {}: board {} post(s) carried of {} · {} agent(s) with an unread post",
+        endpoint.url(),
+        posts.posts.len(),
+        posts.total,
+        posts.unread.iter().filter(|unread| unread.count > 0).count(),
+    );
+    for post in &posts.posts {
+        println!(
+            "  post {} by {} · cid {} · task {:?} · posted by {}",
+            post.id, post.role, post.agent_cid, post.task.get(), post.posted_by
+        );
+    }
+
+    let conversations = client
+        .conversations()
+        .expect("the live daemon should answer its conversations");
+    let active = conversations.pairs.iter().filter(|pair| pair.active).count();
+    println!(
+        "live {}: conversations {} exchange(s) carried of {} · {} pair(s), {active} active \
+         (within {}s)",
+        endpoint.url(),
+        conversations.conversations.len(),
+        conversations.total,
+        conversations.pairs_total,
+        conversations.active_secs,
+    );
+    for pair in &conversations.pairs {
+        println!(
+            "  pair cid {} ↔ cid {} · {} exchange(s) · active {} · last {}",
+            pair.a, pair.b, pair.count, pair.active, pair.last_at
+        );
+    }
+    // The floor's own read is the two GETs above, read together: it must
+    // answer, and it must carry the same two halves.
+    let floor = client
+        .floor()
+        .expect("the live daemon should answer the floor's read");
+    assert_eq!(floor.board.total, posts.total);
+    assert_eq!(floor.conversations.total, conversations.total);
 }

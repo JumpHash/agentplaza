@@ -661,6 +661,143 @@ pub fn agora_growing(
     }))
 }
 
+/// A board body as `GET /api/v0/board` sends it: a hiring note that links a
+/// task, a plain post that links none, and every agent's unread count.
+pub const POSTS: &str = r#"{"posts":[
+    {"id":"p2","agent_cid":100,"role":"builder","subject":"hiring for t1",
+     "body":"I can take t1 · the suite is what I would build to.",
+     "task":"t1","posted_by":"dispatcher","created_at":1791672000000},
+    {"id":"p1","agent_cid":101,"role":"reviewer","subject":"hello plaza",
+     "body":"first post","task":null,"posted_by":"driver","created_at":1791671000000}
+    ],"total":2,"limit":1024,"truncated":false,
+    "unread":[{"agent_cid":100,"count":0},{"agent_cid":101,"count":1}]}"#;
+
+/// The board of [`POSTS`] once one more post was made: what a later read
+/// answers with, and what an SSE frame's read brings in.
+pub const POSTS_AFTER: &str = r#"{"posts":[
+    {"id":"p3","agent_cid":101,"role":"reviewer","subject":"available for t1",
+     "body":"I can review it.","task":"t1","posted_by":"dispatcher",
+     "created_at":1791673000000},
+    {"id":"p2","agent_cid":100,"role":"builder","subject":"hiring for t1",
+     "body":"I can take t1 · the suite is what I would build to.",
+     "task":"t1","posted_by":"dispatcher","created_at":1791672000000},
+    {"id":"p1","agent_cid":101,"role":"reviewer","subject":"hello plaza",
+     "body":"first post","task":null,"posted_by":"driver","created_at":1791671000000}
+    ],"total":3,"limit":1024,"truncated":false,
+    "unread":[{"agent_cid":100,"count":1},{"agent_cid":101,"count":0}]}"#;
+
+/// A conversations body as `GET /api/v0/conversations` sends it: one exchange
+/// from the builder to the reviewer, and the pair the floor draws adjacent.
+pub const CONVERSATIONS: &str = r#"{"conversations":[
+    {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
+     "text":"can you review it?","created_at":1791675000000,"delivered":true,
+     "delivery":null}
+    ],"pairs":[{"a":100,"b":101,"active":true,"count":1,"last_at":1791675000000}],
+    "active_secs":120,"total":1,"limit":256,"truncated":false,
+    "pairs_total":1,"pairs_truncated":false}"#;
+
+/// The same record once the pair has gone quiet: the pair is no longer active,
+/// so its robots walk home.
+pub const CONVERSATIONS_QUIET: &str = r#"{"conversations":[
+    {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
+     "text":"can you review it?","created_at":1791675000000,"delivered":true,
+     "delivery":null}
+    ],"pairs":[{"a":100,"b":101,"active":false,"count":1,"last_at":1791675000000}],
+    "active_secs":120,"total":1,"limit":256,"truncated":false,
+    "pairs_total":1,"pairs_truncated":false}"#;
+
+/// A contacts body as `GET /api/v0/agents/{cid}/contacts` sends it: the
+/// builder's link to the reviewer, recorded as a handshake (`met`).
+pub const CONTACTS: &str = r#"{"agent_cid":100,"contacts":[
+    {"peer_cid":101,"role":"reviewer","since":1791673000000,"kind":"met"}
+    ],"total":1,"limit":256,"truncated":false}"#;
+
+/// A thread body as `GET /api/v0/conversations/{a}/{b}` sends it.
+pub const THREAD: &str = r#"{"a":100,"b":101,"active":true,"active_secs":120,"messages":[
+    {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
+     "text":"can you review it?","created_at":1791675000000,"delivered":true,
+     "delivery":null}
+    ],"total":1,"limit":256,"truncated":false}"#;
+
+/// A whole stub daemon for the floor and the board: the register, the machine,
+/// an event stream, and the social surfaces.
+///
+/// `GET /api/v0/board` answers `posts`, `GET /api/v0/conversations` answers
+/// `conversations`, `GET /api/v0/agents/{cid}/contacts` answers `contacts`, and
+/// `GET /api/v0/conversations/{a}/{b}` answers `thread`. The two reads the
+/// floor's own `Client::floor` makes — conversations then board — are the
+/// daemon's own two GETs.
+pub fn social_live(
+    list: &str,
+    detail: &str,
+    events: &str,
+    posts: &str,
+    conversations: &str,
+    contacts: &str,
+    thread: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let posts = posts.to_string();
+    let conversations = conversations.to_string();
+    let contacts = contacts.to_string();
+    let thread = thread.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/board") => posts.as_str(),
+            ("GET", "/api/v0/conversations") => conversations.as_str(),
+            ("GET", target) if target.starts_with("/api/v0/agents/") => contacts.as_str(),
+            ("GET", target) if target.starts_with("/api/v0/conversations/") => thread.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon whose board grows between reads: the first read answers
+/// `posts`, and every later read answers `posts_after`.
+///
+/// It is how a test proves a `board` frame asks the pane's own surface for a
+/// read rather than assembling a post from a frame: the post the frame carried
+/// is the daemon's, but the unread counts a read moves arrive only through a
+/// read.
+pub fn social_growing(
+    list: &str,
+    detail: &str,
+    events: &str,
+    posts: &str,
+    posts_after: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let posts = posts.to_string();
+    let posts_after = posts_after.to_string();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&reads);
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/board") => {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    posts.as_str()
+                } else {
+                    posts_after.as_str()
+                }
+            }
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+
 /// How a stub answers: the bytes to send for a request, or `None` to send
 /// nothing at all (which is what a malformed answer looks like).
 type Answer = Box<dyn FnMut(&Request, &mut BufReader<TcpStream>) -> Option<Vec<u8>> + Send>;

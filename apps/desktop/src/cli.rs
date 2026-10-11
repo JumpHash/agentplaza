@@ -139,10 +139,19 @@ KEYS:
                            double-entry journal — read-only
     u                      the market: the calls the plaza's roled tasks
                            offer, their bids and their awards — read-only
+    i                      the floor: the plaza's agents as robots — a station
+                           pad per role, a ground status ring, a talking pair
+                           walking adjacent, and the board's posts — read-only
+    j                      the board: the plaza's public posts, newest first,
+                           with the task each links and who has read it —
+                           read-only
     t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
-    Escape                 back to the register
-    up / down              walk the console's command history
+    Escape                 back to the register (and closes the floor's
+                           inspector first, when one is open)
+    up / down              walk the console's command history; on the floor
+                           they cycle the robots
+    Enter                  open the picked robot's inspector on the floor
 
 The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
 GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
@@ -172,6 +181,23 @@ that funded the call). It writes nothing — a bid and an award are made by the
 daemon's own surface (POST /api/v0/tasks/{id}/bid and .../award). An agora
 event for a bid or an award the board does not hold reads the board again
 rather than assembling a call from a frame.
+The floor pane (read-only) reads GET /api/v0/conversations and
+GET /api/v0/board together while it is up, on its own schedule, and draws the
+plaza in the register's own canvas with 3D geometry: a perspective-projected
+ground plane through a fixed RTS camera (55° tilt, 20° yaw), a station pad per
+role (the role's index in the register's order), one robot per roster agent
+with a ground status ring (working / talking / idle / unreachable), and a
+talking pair walking adjacent on an eased, bounded (700 ms) clock. Every
+position derives from the role order and a conversation's activity — it is a
+diagram of real state. The arrows cycle the robots and Enter opens a picked
+robot's inspector (its role, CID, state, its contacts from
+GET /api/v0/agents/{cid}/contacts, its last board post, and the thread
+GET /api/v0/conversations/{a}/{b} with a pressed contact). It writes nothing.
+A conversation frame for an exchange the floor does not hold reads it again;
+a board frame for a post it already holds is a no-op.
+The board pane (read-only) reads GET /api/v0/board while it is up, on its own
+schedule: every post, newest first, with its author and role, the task it links
+and 'read by N of M' from the daemon's per-agent unread counts.
 When --hub-url names a status surface, GET /status is read at the same
 cadence and the roster joins it to the register by guest CID: an agent the
 register reports and the hub does not is drawn 'registered, not connected',
@@ -398,6 +424,13 @@ mod tests {
         // The market's key, and that it is read-only and reads the board.
         assert!(HELP.contains("u                      the market"));
         assert!(HELP.contains("GET /api/v0/agora"));
+        // The floor's and the board's keys, and what the floor reads and
+        // draws.
+        assert!(HELP.contains("i                      the floor"));
+        assert!(HELP.contains("j                      the board"));
+        assert!(HELP.contains("GET /api/v0/conversations"));
+        assert!(HELP.contains("55° tilt, 20° yaw"));
+        assert!(HELP.contains("Enter                  open the picked robot's inspector"));
         // The treasury pane is read-only and reads both halves at once.
         assert!(HELP.contains("GET /api/v0/treasury/journal"));
         assert!(HELP.contains("read-only"));

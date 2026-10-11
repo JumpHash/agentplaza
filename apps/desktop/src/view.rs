@@ -12,10 +12,13 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::api::{
-    CallState, FinishOutcome, Run, RunState, Task, TaskArtifact, TaskState, Vm, VmState,
+    CallState, Contact, FinishOutcome, Post, Posts, Run, RunState, Task, TaskArtifact, TaskState,
+    Thread, Vm, VmState,
 };
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
+use crate::floor::Status;
+use crate::floorview::{self, Floor as FloorCanvas};
 use crate::form::{Field, Preset};
 use crate::history;
 use crate::ledger::{TaskField, artifact_paths};
@@ -23,11 +26,12 @@ use crate::mapview::{self, FleetMap};
 use crate::model::{
     ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DriveState, Health, HistoryStep, Message,
     Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES, StopState,
-    award_line, board_tally, duration_label, entry_task, hub_facts, hub_line, instant_label,
-    journal_tally, market_line, memory_label, money_label, posting_account, preset_footprint,
-    roster_line, roster_tally, serial_tail, tally_line, task_line, task_state_line, task_tally,
-    totals_line, transcript_span, treasury_line,
+    award_line, board_line, board_tally, duration_label, entry_task, floor_line, floor_tally,
+    hub_facts, hub_line, instant_label, journal_tally, market_line, memory_label, money_label,
+    posting_account, preset_footprint, roster_line, roster_tally, serial_tail, tally_line,
+    task_line, task_state_line, task_tally, totals_line, transcript_span, treasury_line,
 };
+use crate::social;
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
 
@@ -124,6 +128,8 @@ fn index(model: &Model) -> Container<'_, Message> {
             market_line(model),
             Pane::Market,
         ),
+        index_entry(model, "8", "Floor", floor_line(model), Pane::Floor),
+        index_entry(model, "9", "Board", board_line(model), Pane::Board),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
         rule_heading(),
@@ -236,18 +242,21 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 11] = [
+const KEYS: [(&str, &str); 14] = [
     ("r", "register"),
     ("w", "roster: running + connected, by role"),
     ("l", "ledger: the plaza's tasks"),
     ("y", "treasury: the accounts + the journal"),
     ("u", "market: the calls, their bids + awards"),
+    ("i", "floor: the robots, their conversations + the plaza"),
+    ("j", "board: the plaza's public posts"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
     ("?", "this help"),
     ("esc", "back; closes this sheet"),
-    ("↑ ↓", "console history"),
+    ("↑ ↓", "console history; on the floor, cycle the robots"),
+    ("↵", "floor: open the picked robot's inspector"),
 ];
 
 /// The help sheet, centred over the register: every key the register binds,
@@ -353,6 +362,8 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Ledger => body.push(ledger_pane(model)),
         Pane::Treasury => body.push(treasury_pane(model)),
         Pane::Market => body.push(market_pane(model)),
+        Pane::Floor => body.push(floor_pane(model)),
+        Pane::Board => body.push(board_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -406,6 +417,18 @@ fn running_head(model: &Model) -> Element<'_, Message> {
             "Market".to_string(),
             "the plaza's calls, the bids on them and the award that closed each · \
              GET /api/v0/agora"
+                .to_string(),
+        ),
+        Pane::Floor => (
+            "Floor".to_string(),
+            "the plaza's agents as robots: a station pad per role, a ground status ring, and a \
+             talking pair walking adjacent · GET /api/v0/conversations + /api/v0/board"
+                .to_string(),
+        ),
+        Pane::Board => (
+            "Board".to_string(),
+            "the plaza's public posts, newest first, with the task a post links and who has \
+             read it · GET /api/v0/board"
                 .to_string(),
         ),
         Pane::Telemetry => (
@@ -3335,6 +3358,399 @@ fn tone_for_health(health: Health) -> Tone {
         Health::Stale => Tone::Warn,
         Health::Down => Tone::Crit,
     }
+}
+
+/// The floor (`i`): the plaza as a 3D RTS diagram — a perspective-projected
+/// ground plane in the register's own canvas, a station pad per role, one
+/// robot per roster agent with a ground status ring, and a talking pair
+/// walking adjacent.
+///
+/// It is **read-only**: every position derives from the register's role order
+/// and the social API's conversations, and this console writes nothing there.
+/// The plate is iced's own canvas (the `canvas` feature), which both the wgpu
+/// and the tiny-skia backends draw, so a frame is the same everywhere; the
+/// geometry is 3D — a fixed RTS camera (55° tilt, 20° yaw), a true perspective
+/// divide, and painter-ordered polygons.
+fn floor_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "The plaza floor: the register's agents as small robots, one per role station. Every \
+             position derives from the role order and a conversation's activity — it is a \
+             diagram of real state, read from the social API, and this sheet writes nothing. \
+             The floor is projected through a fixed RTS camera (55° tilt, 20° yaw) as 3D \
+             geometry; the walk onto a conversation is eased over 700 ms and always completes.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+        mono(floor_tally(model), 11.5, INK).into(),
+    ];
+
+    // The floor's own read, and its own honest failure.
+    match (&model.floor, &model.floor_error) {
+        (Some(read), _) => {
+            body.push(
+                mono(
+                    format!("Conversations · {}", social::conversations_tally(&read.conversations)),
+                    10.5,
+                    INK_2,
+                )
+                .into(),
+            );
+        }
+        (None, Some(error)) => {
+            body.push(
+                mono(
+                    format!("the floor could not be read: {error}"),
+                    11.0,
+                    theme::CRIT,
+                )
+                .into(),
+            );
+        }
+        (None, None) => {
+            body.push(mono("waiting for the floor's first answer…", 11.0, INK_3).into());
+        }
+    }
+    // A read that failed after a good one keeps the last floor: what the daemon
+    // recorded is a fact, so it is incomplete rather than wrong.
+    if model.floor.is_some() {
+        if let Some(error) = &model.floor_error {
+            let age = model
+                .floor_last_ok_ms
+                .map(|last| format!(", last read {} ago", duration_label(model.now_ms.saturating_sub(last))))
+                .unwrap_or_default();
+            body.push(
+                mono(
+                    format!("the floor could not be read again: {error}{age}"),
+                    10.5,
+                    WARN,
+                )
+                .into(),
+            );
+        }
+    }
+
+    // The plate itself: iced's canvas, painting `model.floor_layout`.
+    body.push(
+        container(floorview::widget(FloorCanvas::new(
+            &model.floor_layout,
+            model.floor_selected,
+        )))
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .height(Length::Fixed(420.0))
+        .into(),
+    );
+
+    body.push(floor_legend());
+
+    // The inspector: what the picked robot is, its contacts and its last post.
+    match model.inspecting {
+        Some(cid) => body.push(floor_inspector(model, cid)),
+        None => body.push(
+            serif(
+                "The arrows pick a robot across the floor and Enter opens its inspector; a press \
+                 on a robot picks it too. Nothing on this sheet is writable.",
+                12.0,
+                INK_3,
+            )
+            .into(),
+        ),
+    }
+
+    scrollable(Column::with_children(body).spacing(10.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// The floor's legend: what each ground ring means, the layout rule, and the
+/// camera's parameters — so the plate is read as a diagram, not mistaken for
+/// anything else.
+fn floor_legend() -> Element<'static, Message> {
+    let mut swatches: Vec<Element<'static, Message>> = Vec::new();
+    for status in [Status::Working, Status::Talking, Status::Idle, Status::Unreachable] {
+        swatches.push(
+            row![
+                legend_swatch(status),
+                mono(status.label(), 10.5, INK_2),
+            ]
+            .spacing(6.0)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    Column::with_children(vec![
+        Row::with_children(swatches).spacing(18.0).into(),
+        mono(
+            "station pads: (role index → col i%5, row i/5) · camera: 55° tilt · 20° yaw · \
+             distance 10 · focal 0.85·h · near 0.2 · grid 1.0",
+            9.5,
+            INK_3,
+        )
+        .into(),
+        mono(
+            "working = recent serial activity · talking = an active conversation (within 120s) · \
+             unreachable = the hub does not report it connected, only when a hub is configured",
+            9.5,
+            INK_3,
+        )
+        .into(),
+    ])
+    .spacing(4.0)
+    .into()
+}
+
+/// One status swatch: the ink the floor draws that ring in.
+fn legend_swatch(status: Status) -> Element<'static, Message> {
+    container(space::vertical().height(Length::Fixed(10.0)))
+        .width(Length::Fixed(12.0))
+        .height(Length::Fixed(12.0))
+        .style(theme::swatch(status_ink(status)))
+        .into()
+}
+
+/// The ink a status is drawn in, as an iced colour.
+fn status_ink(status: Status) -> iced::Color {
+    let [r, g, b] = status.ink();
+    iced::Color::from_rgb8(r, g, b)
+}
+
+/// The floor's inspector: the picked robot's role, CID and state, its contacts
+/// from the API, its last board post, and — when a contact is pressed — the
+/// thread the pair had. Read-only, like the floor.
+fn floor_inspector(model: &Model, cid: u64) -> Element<'_, Message> {
+    let robot = model.floor_layout.robot(cid);
+    let role = robot.map(|robot| robot.role.clone()).unwrap_or_else(|| "—".to_string());
+    let status = robot
+        .map(|robot| robot.status.label())
+        .unwrap_or("not on the floor");
+    let mut body: Vec<Element<'_, Message>> = vec![
+        row![
+            mono(format!("cid {cid}"), 14.0, INK),
+            mono(role, 11.0, INK_2),
+            stamp(status.to_uppercase(), Tone::Neutral),
+            space::horizontal(),
+            button(mono("close", 10.0, INK_2))
+                .on_press(Message::InspectClose)
+                .style(theme::register_row(false))
+                .padding(edge(4.0, 8.0, 4.0, 8.0)),
+        ]
+        .spacing(10.0)
+        .align_y(Alignment::Center)
+        .into(),
+        rule_heading(),
+    ];
+
+    // The last board post this agent wrote, from the floor's own read.
+    match model.floor.as_ref().and_then(|read| social::last_post(&read.board, cid)) {
+        Some(post) => {
+            body.push(mono("last board post", 10.0, INK_3).into());
+            body.push(
+                serif(
+                    format!("{} · {} · posted by {}", post.subject, post.id, post.posted_by),
+                    11.5,
+                    INK,
+                )
+                .into(),
+            );
+        }
+        None => body.push(mono("no board post from this agent", 10.5, INK_3).into()),
+    }
+
+    body.push(rule_heading());
+    // The agent's contacts.
+    match (&model.contacts, &model.contacts_error) {
+        (Some(contacts), _) => {
+            body.push(mono(format!("Contacts · {}", social::contacts_tally(contacts)), 10.5, INK_2).into());
+            if contacts.contacts.is_empty() {
+                body.push(mono("no contacts yet: no link recorded for this agent", 10.5, INK_3).into());
+            }
+            for contact in &contacts.contacts {
+                let selected = model.thread_peer == Some(contact.peer_cid);
+                body.push(contact_row(contact, selected));
+            }
+        }
+        (None, Some(error)) => body.push(mono(format!("the contacts could not be read: {error}"), 11.0, theme::CRIT).into()),
+        (None, None) => body.push(mono("reading the agent's contacts…", 10.5, INK_3).into()),
+    }
+
+    // The thread with the pressed contact.
+    if let Some(peer) = model.thread_peer {
+        body.push(rule_heading());
+        match (&model.thread, &model.thread_error) {
+            (Some(thread), _) => body.push(thread_sheet(model, thread)),
+            (None, Some(error)) => body.push(
+                mono(format!("the thread with cid {peer} could not be read: {error}"), 11.0, theme::CRIT).into(),
+            ),
+            (None, None) => body.push(mono(format!("reading the thread with cid {peer}…"), 10.5, INK_3).into()),
+        }
+    }
+
+    container(Column::with_children(body).spacing(6.0))
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .padding(edge(10.0, 12.0, 10.0, 12.0))
+        .into()
+}
+
+/// One contact row, which reads the thread with that peer when pressed.
+fn contact_row(contact: &Contact, selected: bool) -> Element<'_, Message> {
+    button(
+        row![
+            mono(social::contact_label(contact), 11.0, INK).width(Length::Fill),
+            stamp(contact.kind.clone(), if selected { Tone::Signal } else { Tone::Neutral }),
+            mono(instant_label(contact.since, contact.since), 10.0, INK_3),
+        ]
+        .spacing(10.0)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::ThreadPick(contact.peer_cid))
+    .style(theme::register_row(selected))
+    .padding(edge(4.0, 8.0, 4.0, 6.0))
+    .width(Length::Fill)
+    .into()
+}
+
+/// One pair's thread as the inspector draws it: the exchanges, oldest first.
+fn thread_sheet<'a>(model: &'a Model, thread: &'a Thread) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![mono(
+        format!("Thread · {}", social::thread_tally(thread)),
+        10.5,
+        INK_2,
+    )
+    .into()];
+    if thread.messages.is_empty() {
+        body.push(serif("the pair has never spoken", 11.5, INK_3).into());
+    }
+    for message in &thread.messages {
+        body.push(
+            container(
+                Column::with_children(vec![
+                    mono(
+                        format!(
+                            "{} · {}",
+                            social::conversation_line(message),
+                            instant_label(message.created_at, model.now_ms)
+                        ),
+                        11.0,
+                        INK,
+                    )
+                    .into(),
+                    mono(social::delivery_line(message), 9.5, INK_3).into(),
+                ])
+                .spacing(2.0),
+            )
+            .padding(edge(2.0, 6.0, 2.0, 6.0))
+            .width(Length::Fill)
+            .into(),
+        );
+    }
+    Column::with_children(body).spacing(4.0).into()
+}
+
+/// The board (`j`): the plaza's public posts, newest first — each with its
+/// author and role, the task it links, and its read count.
+///
+/// It is **read-only**: a post and a read cursor are the daemon's own surface,
+/// written by the agents' drivers, and this console draws what it read.
+fn board_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "The plaza's public board: every post, newest first, with the agent that wrote it, \
+             the task it links and how many agents have read it. A post is the daemon's own — \
+             the agents' drivers compose the content from real task data — and this sheet writes \
+             nothing here.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    ];
+    match (&model.board, &model.board_error) {
+        (Some(board), _) => body.push(posts_sheet(model, board)),
+        (None, Some(error)) => body.push(
+            mono(format!("the board could not be read: {error}"), 11.5, theme::CRIT).into(),
+        ),
+        (None, None) => body.push(
+            mono("waiting for the board's first answer…", 11.0, INK_3).into(),
+        ),
+    }
+    // A read that failed after a good one keeps the last board: what the daemon
+    // recorded is a fact, so it is incomplete rather than wrong.
+    if model.board.is_some() {
+        if let Some(error) = &model.board_error {
+            let age = model
+                .board_last_ok_ms
+                .map(|last| format!(", last read {} ago", duration_label(model.now_ms.saturating_sub(last))))
+                .unwrap_or_default();
+            body.push(mono(format!("the board could not be read again: {error}{age}"), 10.5, WARN).into());
+        }
+    }
+    scrollable(Column::with_children(body).spacing(8.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// The posts themselves: one ruled block per post, newest first.
+fn posts_sheet<'a>(model: &'a Model, board: &'a Posts) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![mono(
+        format!("Board · {}", social::posts_tally(board)),
+        11.5,
+        INK,
+    )
+    .into()];
+    if board.posts.is_empty() {
+        body.push(
+            serif(
+                "the board is empty: no agent has posted yet",
+                12.0,
+                INK_3,
+            )
+            .into(),
+        );
+    }
+    for post in &board.posts {
+        body.push(post_row(model, board, post));
+    }
+    Column::with_children(body).spacing(8.0).into()
+}
+
+/// One post: its author and role, subject, task link, read count and body.
+fn post_row<'a>(model: &'a Model, board: &'a Posts, post: &'a Post) -> Element<'a, Message> {
+    let task = if social::post_links_a_task(post) {
+        format!("task {}", social::post_task(post))
+    } else {
+        "no task".to_string()
+    };
+    let head: Vec<Element<'a, Message>> = vec![
+        stamp(post.id.clone(), Tone::Neutral).into(),
+        mono(social::post_author(post), 11.5, INK).into(),
+        space::horizontal().into(),
+        mono(social::read_by_line(board, post), 10.0, INK_3).into(),
+    ];
+    let cells: Vec<Element<'a, Message>> = vec![
+        Row::with_children(head)
+            .spacing(10.0)
+            .align_y(Alignment::Center)
+            .into(),
+        mono(
+            format!(
+                "{} · {task} · {} · posted by {}",
+                post.subject,
+                instant_label(post.created_at, model.now_ms),
+                post.posted_by
+            ),
+            11.0,
+            INK_2,
+        )
+        .into(),
+        serif(post.body.clone(), 12.0, INK).into(),
+    ];
+    container(Column::with_children(cells).spacing(3.0))
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .padding(edge(8.0, 10.0, 8.0, 10.0))
+        .into()
 }
 
 #[cfg(test)]

@@ -7,20 +7,23 @@
 //! nothing more.
 
 use crate::api::{
-    ApiError, Award, Board, Column, CreateRun, CreateTask, Endpoint, Entry, FinishOutcome,
-    HubAgent, HubStatus, Journal, Machine, Posting, Run, RunState, RunsPage, StopOutcome, Task,
-    TaskArtifact, TaskState, TasksPage, TellAnswer, Totals, TreasuryRead, VmState,
+    ApiError, Award, Board, Column, Contacts, CreateRun, CreateTask, Endpoint, Entry,
+    FinishOutcome, FloorRead, HubAgent, HubStatus, Journal, Machine, Post, Posting, Posts, Run,
+    RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState, TasksPage, TellAnswer, Thread,
+    Totals, TreasuryRead, VmState,
 };
 use crate::events::{AgoraKind, Event};
 use crate::export::{
     self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_report, run_transcript,
     vm_transcript,
 };
+use crate::floor::{self, FloorLayout, Status, Walk};
 use crate::form::{Field, Preset, SpawnForm};
 use crate::history::{self, SessionHistory};
 use crate::ledger::{TaskField, TaskForm};
 use crate::map::Activity;
 use crate::serial::{Feed, Merge};
+use crate::social;
 
 /// How often a healthy daemon is polled unless `--refresh-ms` says otherwise.
 pub const DEFAULT_REFRESH_MS: u64 = 2_000;
@@ -31,6 +34,14 @@ pub const MIN_REFRESH_MS: u64 = 250;
 /// The slowest the register may be asked to poll. It is also the ceiling the
 /// backoff climbs to, so a slow poll is never sped up by a failure.
 pub const MAX_REFRESH_MS: u64 = 30_000;
+
+/// The floor's animation clock: how often a frame advances while a pair walks
+/// (25 Hz). It runs only then, never as a second poll.
+pub const ANIM_MS: u64 = 40;
+
+/// How long a walk onto (or off) a conversation's spot takes, in milliseconds.
+/// Mirrored from [`crate::floor::WALK_MS`] so the register can say the bound.
+pub const WALK_MS: u64 = crate::floor::WALK_MS;
 
 /// The longest the poll backs off to while calls keep failing.
 pub const MAX_POLL_INTERVAL_MS: u64 = 30_000;
@@ -77,6 +88,13 @@ pub enum Pane {
     /// and the award that closed each. Read-only — a bid and an award are made
     /// by the daemon's own surface.
     Market,
+    /// The plaza floor: the register's agents as robots on a 3D floor, their
+    /// conversations walking a pair adjacent. Read-only — the positions are a
+    /// diagram of real state.
+    Floor,
+    /// The plaza's public board: every post, newest first, with its author,
+    /// task link and read count. Read-only — a post is the daemon's own.
+    Board,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -117,12 +135,18 @@ pub enum KeyAction {
     Treasury,
     /// `u`: the market — the calls, their bids and their awards.
     Market,
+    /// `i`: the floor — the plaza's robots and their conversations.
+    Floor,
+    /// `j`: the board — the plaza's public posts.
+    Board,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
     Back,
     /// `?`: the help sheet, or away from it.
     Help,
+    /// Enter: open the selected robot's inspector on the floor.
+    Inspect,
     /// Up: the older console line.
     HistoryPrev,
     /// Down: the newer console line.
@@ -739,6 +763,15 @@ pub struct Effect {
     pub poll_treasury: bool,
     /// Read the market: `GET /api/v0/agora`, on the market's own schedule.
     pub poll_agora: bool,
+    /// Read the floor: `GET /api/v0/conversations` and `GET /api/v0/board` at
+    /// once, on the floor's own schedule.
+    pub poll_floor: bool,
+    /// Read the board: `GET /api/v0/board`, on the board pane's own schedule.
+    pub poll_board: bool,
+    /// Read an agent's contacts: `GET /api/v0/agents/{cid}/contacts`.
+    pub fetch_contacts: Option<u64>,
+    /// Read a pair's thread: `GET /api/v0/conversations/{a}/{b}`.
+    pub fetch_thread: Option<(u64, u64)>,
     /// `POST /api/v0/tasks` with this body.
     pub create_task: Option<CreateTask>,
     /// `POST /api/v0/tasks/{id}/claim` as this agent.
@@ -859,6 +892,38 @@ impl Effect {
         }
     }
 
+    /// Read the floor: the conversations and the board, at once.
+    pub fn floor() -> Self {
+        Self {
+            poll_floor: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read the board: the plaza's public posts.
+    pub fn board() -> Self {
+        Self {
+            poll_board: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read one agent's contacts.
+    pub fn contacts(cid: u64) -> Self {
+        Self {
+            fetch_contacts: Some(cid),
+            ..Self::default()
+        }
+    }
+
+    /// Read one pair's thread.
+    pub fn thread(a: u64, b: u64) -> Self {
+        Self {
+            fetch_thread: Some((a, b)),
+            ..Self::default()
+        }
+    }
+
     /// Read one task.
     pub fn task(id: impl Into<String>) -> Self {
         Self {
@@ -907,6 +972,16 @@ pub enum Message {
     /// The poll timer fired, at `at_ms` milliseconds since the Unix epoch.
     Tick {
         /// The wall-clock time of the tick.
+        at_ms: u64,
+    },
+    /// The floor's own animation clock advanced, at `at_ms` milliseconds since
+    /// the Unix epoch.
+    ///
+    /// This is not a poll: it only moves the register's clock so a walk
+    /// progresses, and it runs (at [`crate::model::ANIM_MS`]) only while the
+    /// floor shows a pair still moving. Nothing is read on it.
+    Anim {
+        /// The wall-clock time of the frame.
         at_ms: u64,
     },
     /// `GET /api/v0/runs` answered.
@@ -1105,6 +1180,50 @@ pub enum Message {
         /// The answer, or why the read did not happen.
         result: Result<Board, ApiError>,
     },
+    /// The floor answered: the conversations and the board, read together.
+    Floor {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<FloorRead, ApiError>,
+    },
+    /// The board answered: the plaza's public posts.
+    Board {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<Posts, ApiError>,
+    },
+    /// An agent's contacts answered.
+    Contacts {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which agent's list was asked for.
+        cid: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<Contacts, ApiError>,
+    },
+    /// A pair's thread answered.
+    Thread {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The pair, as it was asked for.
+        a: u64,
+        /// The pair, as it was asked for.
+        b: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<Thread, ApiError>,
+    },
+    /// A robot on the floor was pressed: select it (and open its inspector).
+    PickRobot(u64),
+    /// The floor's selected robot's inspector was asked for: open it and read
+    /// the agent's contacts.
+    Inspect,
+    /// The floor's inspector was closed.
+    InspectClose,
+    /// A contact row was pressed: read the thread between the inspected agent
+    /// and that peer.
+    ThreadPick(u64),
     /// `GET /api/v0/tasks/{id}` answered: one task, read again.
     Task {
         /// When the answer arrived.
@@ -1214,6 +1333,7 @@ impl Message {
     pub fn at_ms(&self) -> Option<u64> {
         match self {
             Message::Tick { at_ms }
+            | Message::Anim { at_ms }
             | Message::Runs { at_ms, .. }
             | Message::Run { at_ms, .. }
             | Message::Machine { at_ms, .. }
@@ -1228,6 +1348,10 @@ impl Message {
             | Message::Tasks { at_ms, .. }
             | Message::Treasury { at_ms, .. }
             | Message::Agora { at_ms, .. }
+            | Message::Floor { at_ms, .. }
+            | Message::Board { at_ms, .. }
+            | Message::Contacts { at_ms, .. }
+            | Message::Thread { at_ms, .. }
             | Message::Task { at_ms, .. }
             | Message::TaskCreated { at_ms, .. }
             | Message::TaskClaimed { at_ms, .. }
@@ -1262,6 +1386,10 @@ impl Message {
             | Message::CsvExport
             | Message::SelectTask(_)
             | Message::TaskRefresh
+            | Message::PickRobot(_)
+            | Message::Inspect
+            | Message::InspectClose
+            | Message::ThreadPick(_)
             | Message::TaskEdit { .. }
             | Message::TaskCreate
             | Message::ClaimCidEdit(_)
@@ -1408,6 +1536,63 @@ pub struct Model {
     /// Whether an agora frame has already asked for the read and the answer
     /// has not landed: a burst of bids is one read, not one per bid.
     pub agora_asked: bool,
+    /// The floor's own read: the conversations (the adjacency) and the board
+    /// (every robot's last post), as the daemon reported them. `None` until
+    /// the pane's first read answers — a floor nobody has read is not an empty
+    /// plaza.
+    ///
+    /// The last read is kept when a later read fails: what the daemon recorded
+    /// is incomplete rather than wrong, and the pane says which it is.
+    pub floor: Option<FloorRead>,
+    /// Why the floor's last read failed, if it did.
+    pub floor_error: Option<String>,
+    /// When the floor last answered, in milliseconds since the Unix epoch.
+    pub floor_last_ok_ms: Option<u64>,
+    /// When the floor should be read next.
+    pub floor_next_at_ms: u64,
+    /// How many floor reads have failed in a row: the floor's own backoff.
+    pub floor_failures: u32,
+    /// Whether a floor frame has already asked for the read and the answer has
+    /// not landed.
+    pub floor_asked: bool,
+    /// The active pairs the floor is animating, with when each pair's
+    /// adjacency last changed: the walk's own clock, so a pair that joins or
+    /// leaves a conversation walks rather than jumps.
+    pub walks: Vec<Walk>,
+    /// The robot the floor's arrows last picked, by guest CID.
+    pub floor_selected: Option<u64>,
+    /// The agent whose floor inspector is open, by guest CID.
+    pub inspecting: Option<u64>,
+    /// The inspected agent's contact list, as the daemon reported it.
+    pub contacts: Option<Contacts>,
+    /// Why the contact read failed, if it did.
+    pub contacts_error: Option<String>,
+    /// The thread the inspector has read between the inspected agent and one
+    /// peer.
+    pub thread: Option<Thread>,
+    /// The peer the thread was read with.
+    pub thread_peer: Option<u64>,
+    /// Why the thread read failed, if it did.
+    pub thread_error: Option<String>,
+    /// The plaza's public board: the posts, newest first, as the board pane's
+    /// own read reported them. `None` until that pane's first read answers.
+    pub board: Option<Posts>,
+    /// Why the board's last read failed, if it did.
+    pub board_error: Option<String>,
+    /// When the board last answered, in milliseconds since the Unix epoch.
+    pub board_last_ok_ms: Option<u64>,
+    /// When the board should be read next.
+    pub board_next_at_ms: u64,
+    /// How many board reads have failed in a row: the board pane's own
+    /// backoff.
+    pub board_failures: u32,
+    /// Whether a board frame has already asked for the read and the answer has
+    /// not landed.
+    pub board_asked: bool,
+    /// The floor's derived layout, kept current while the floor shows so the
+    /// canvas can borrow the model's own copy (a view cannot own the local
+    /// [`Model::floor`] returns). Empty until the floor is first shown.
+    pub floor_layout: FloorLayout,
     /// How often a healthy daemon is polled, in milliseconds.
     pub refresh_ms: u64,
     /// The spawn form's raw input.
@@ -1490,6 +1675,27 @@ impl Default for Model {
             agora_next_at_ms: 0,
             agora_failures: 0,
             agora_asked: false,
+            floor: None,
+            floor_error: None,
+            floor_last_ok_ms: None,
+            floor_next_at_ms: 0,
+            floor_failures: 0,
+            floor_asked: false,
+            walks: Vec::new(),
+            floor_selected: None,
+            inspecting: None,
+            contacts: None,
+            contacts_error: None,
+            thread: None,
+            thread_peer: None,
+            thread_error: None,
+            board: None,
+            board_error: None,
+            board_last_ok_ms: None,
+            board_next_at_ms: 0,
+            board_failures: 0,
+            board_asked: false,
+            floor_layout: FloorLayout::default(),
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
             errors: Vec::new(),
@@ -1751,12 +1957,26 @@ impl Model {
     }
 
     /// The reducer: applies `message` and returns what to do next.
+    ///
+    /// After the message is reduced, the floor's derived layout is refreshed
+    /// while the floor shows: the canvas borrows the model's own copy (a view
+    /// cannot own the local a derivation returns), so it is kept current here.
     pub fn apply(&mut self, message: Message) -> Effect {
+        let effect = self.reduce(message);
+        if self.pane == Pane::Floor {
+            self.floor_layout = self.floor();
+        }
+        effect
+    }
+
+    /// Reduces one message, without the floor layout's refresh.
+    fn reduce(&mut self, message: Message) -> Effect {
         if let Some(at_ms) = message.at_ms() {
             self.now_ms = at_ms;
         }
         match message {
             Message::Tick { at_ms } => self.poll_tick(at_ms),
+            Message::Anim { at_ms } => self.anim_tick(at_ms),
             Message::Runs { at_ms, result } => {
                 match result {
                     Ok(page) => {
@@ -2117,6 +2337,22 @@ impl Model {
             }
             Message::Treasury { at_ms, result } => self.treasury_answer(at_ms, result),
             Message::Agora { at_ms, result } => self.agora_answer(at_ms, result),
+            Message::Floor { at_ms, result } => self.floor_answer(at_ms, result),
+            Message::Board { at_ms, result } => self.board_answer(at_ms, result),
+            Message::Contacts { at_ms, cid, result } => {
+                self.contacts_answer(at_ms, cid, result)
+            }
+            Message::Thread { at_ms, a, b, result } => self.thread_answer(at_ms, a, b, result),
+            Message::PickRobot(cid) => self.pick_robot(cid),
+            Message::Inspect => self.open_inspector(),
+            Message::InspectClose => {
+                self.inspecting = None;
+                self.thread = None;
+                self.thread_peer = None;
+                self.thread_error = None;
+                Effect::none()
+            }
+            Message::ThreadPick(peer) => self.read_thread(peer),
             Message::TaskArtifactRead(path) => self.task_artifact_read(path),
             Message::TaskArtifact {
                 at_ms,
@@ -2126,6 +2362,30 @@ impl Model {
             } => self.task_artifact_answer(at_ms, &id, &path, result),
             Message::Event { at_ms, event } => self.event(at_ms, event),
         }
+    }
+
+    /// The floor's animation clock: it moves the register's clock and prunes
+    /// the finished walks, and does nothing else.
+    ///
+    /// It never polls: the walk is the only thing that needs a faster clock
+    /// than the poll, and it runs only while the floor shows a pair still
+    /// moving (the subscription is gated on exactly that). A `now_ms` that
+    /// moves with no side effect is what makes the walk a *bounded* animation
+    /// rather than a second schedule.
+    fn anim_tick(&mut self, at_ms: u64) -> Effect {
+        self.now_ms = at_ms;
+        self.prune_walks(at_ms);
+        Effect::none()
+    }
+
+    /// Whether the floor has a pair still walking: the animation clock's own
+    /// gate.
+    pub fn floor_animating(&self) -> bool {
+        self.pane == Pane::Floor
+            && self
+                .walks
+                .iter()
+                .any(|walk| !walk.settled(self.now_ms))
     }
 
     /// The timer fired: poll if the schedule says so.
@@ -2143,6 +2403,14 @@ impl Model {
         effect.poll_treasury = self.treasury_tick(at_ms);
         // And the market's, the same way: its own read, its own failures.
         effect.poll_agora = self.agora_tick(at_ms);
+        // The floor's and the board's, the same way again: each pane's own
+        // read on its own schedule, so a daemon that serves neither never
+        // marks the register down.
+        effect.poll_floor = self.floor_tick(at_ms);
+        effect.poll_board = self.board_tick(at_ms);
+        // A finished walk (home, or fully adjacent) is dropped every tick, so
+        // the floor's walk list stays as small as the talking pairs are.
+        self.prune_walks(at_ms);
         if at_ms < self.next_poll_at_ms {
             return effect;
         }
@@ -2164,6 +2432,13 @@ impl Model {
             Pane::Ledger => effect.poll_tasks = true,
             Pane::Map => {
                 effect.poll_machine = true;
+                effect.fetch_map = self.run_ids();
+            }
+            // The floor's status rings are read off the console's own
+            // telemetry — each agent's serial rate — so the floor watches every
+            // run's serial the same way the map's pulse does. It draws no
+            // substrate, so the machine is not asked for.
+            Pane::Floor => {
                 effect.fetch_map = self.run_ids();
             }
             // The session's charts are per-run decompositions of serial
@@ -2534,6 +2809,439 @@ impl Model {
         Effect::agora()
     }
 
+    /// The floor's own schedule: read the conversations and the board only
+    /// while the floor is showing.
+    ///
+    /// Like the market's, this is independent of the register's cadence and
+    /// failures — it returns `false` off the sheet, and backs off on the
+    /// floor's own failures — so a daemon that serves the register but not the
+    /// social endpoints never reads the register down.
+    fn floor_tick(&mut self, at_ms: u64) -> bool {
+        if self.pane != Pane::Floor || at_ms < self.floor_next_at_ms {
+            return false;
+        }
+        self.floor_next_at_ms = at_ms
+            .saturating_add(poll_interval_ms(self.refresh_ms, self.floor_failures));
+        true
+    }
+
+    /// The floor answered — or could not be read.
+    ///
+    /// The read is kept when a later one fails: what the daemon recorded is
+    /// incomplete rather than wrong. Its health is its own: a third surface
+    /// that never moves the register's. The pairs' walks are resynced from the
+    /// answer, so a conversation that just joined or left walks rather than
+    /// jumps.
+    fn floor_answer(&mut self, at_ms: u64, result: Result<FloorRead, ApiError>) -> Effect {
+        self.floor_asked = false;
+        match result {
+            Ok(read) => {
+                self.floor = Some(read);
+                self.floor_error = None;
+                self.floor_last_ok_ms = Some(at_ms);
+                self.floor_failures = 0;
+                self.floor_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+                self.sync_walks(at_ms);
+            }
+            Err(error) => {
+                self.floor_error = Some(error.to_string());
+                self.floor_failures = self.floor_failures.saturating_add(1);
+                self.floor_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.floor_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// The board pane's own schedule: read the board only while it is showing.
+    fn board_tick(&mut self, at_ms: u64) -> bool {
+        if self.pane != Pane::Board || at_ms < self.board_next_at_ms {
+            return false;
+        }
+        self.board_next_at_ms = at_ms
+            .saturating_add(poll_interval_ms(self.refresh_ms, self.board_failures));
+        true
+    }
+
+    /// The board answered — or could not be read.
+    fn board_answer(&mut self, at_ms: u64, result: Result<Posts, ApiError>) -> Effect {
+        self.board_asked = false;
+        match result {
+            Ok(board) => {
+                self.board = Some(board);
+                self.board_error = None;
+                self.board_last_ok_ms = Some(at_ms);
+                self.board_failures = 0;
+                self.board_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+            }
+            Err(error) => {
+                self.board_error = Some(error.to_string());
+                self.board_failures = self.board_failures.saturating_add(1);
+                self.board_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.board_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// Applies one board frame: the public board moved.
+    ///
+    /// A `post` frame carries the post's own JSON object, exactly as
+    /// `GET /api/v0/board` writes it, so a post the console already holds is a
+    /// duplicate and a no-op. Anything else — a fresh post, or a `read` frame
+    /// that carries only a cursor — means the board (and every agent's unread
+    /// count) moved past what the pane saw, and the showing pane reads its own
+    /// surface again, once per burst.
+    fn board_event(&mut self, post: Option<&Post>) -> Effect {
+        let seen = post.is_some_and(|post| {
+            let held = match self.pane {
+                Pane::Floor => self.floor.as_ref().map(|read| &read.board),
+                _ => self.board.as_ref(),
+            };
+            held.is_some_and(|board| board.posts.iter().any(|row| row.id == post.id))
+        });
+        if seen {
+            return Effect::none();
+        }
+        match self.pane {
+            Pane::Floor => self.ask_for_the_floor(),
+            Pane::Board => self.ask_for_the_board(),
+            _ => Effect::none(),
+        }
+    }
+
+    /// Applies one conversation frame: two agents spoke, so the floor's
+    /// adjacency moved.
+    ///
+    /// A frame the floor already holds (an exchange it has read) is a
+    /// duplicate; anything else reads the floor again — once per burst — and
+    /// only while the floor is showing, because nothing else draws speech.
+    fn conversation_event(&mut self, id: &str) -> Effect {
+        if self.pane != Pane::Floor {
+            return Effect::none();
+        }
+        let seen = self
+            .floor
+            .as_ref()
+            .is_some_and(|read| read.conversations.conversations.iter().any(|row| row.id == id));
+        if seen {
+            return Effect::none();
+        }
+        self.ask_for_the_floor()
+    }
+
+    /// Asks for the floor, at most once per outstanding answer.
+    fn ask_for_the_floor(&mut self) -> Effect {
+        if self.floor_asked {
+            return Effect::none();
+        }
+        self.floor_asked = true;
+        Effect::floor()
+    }
+
+    /// Asks for the board, at most once per outstanding answer.
+    fn ask_for_the_board(&mut self) -> Effect {
+        if self.board_asked {
+            return Effect::none();
+        }
+        self.board_asked = true;
+        Effect::board()
+    }
+
+    /// The conversations' active pairs, most recently active first.
+    fn active_pairs(&self) -> Vec<(u64, u64)> {
+        self.floor
+            .as_ref()
+            .map(|read| social::active_pairs(&read.conversations))
+            .unwrap_or_default()
+    }
+
+    /// Rebuilds the pair walks from the daemon's active pairs, keeping each
+    /// pair's clock across answers: a pair that just joined a conversation
+    /// starts walking at `at_ms`, a pair that just left walks home from
+    /// `at_ms`, and a pair still talking keeps its clock.
+    ///
+    /// A robot walks to one conversation at a time — the most recently active
+    /// pair it appears in, which is the first the daemon lists it in. A pair
+    /// that re-joins a conversation inside the walk's short window restarts
+    /// its approach (a bounded jump, never a teleport across the plaza).
+    fn sync_walks(&mut self, at_ms: u64) {
+        let mut wanted: Vec<(u64, u64)> = Vec::new();
+        let mut claimed: Vec<u64> = Vec::new();
+        for (a, b) in self.active_pairs() {
+            if claimed.contains(&a) || claimed.contains(&b) {
+                continue;
+            }
+            claimed.push(a);
+            claimed.push(b);
+            wanted.push((a, b));
+        }
+        let mut walks: Vec<Walk> = Vec::with_capacity(wanted.len());
+        for (a, b) in &wanted {
+            let held = self.walks.iter().find(|walk| walk.a == *a && walk.b == *b);
+            walks.push(match held {
+                Some(walk) if walk.active => *walk,
+                Some(walk) => Walk {
+                    active: true,
+                    since_ms: at_ms,
+                    ..*walk
+                },
+                None => Walk {
+                    a: *a,
+                    b: *b,
+                    active: true,
+                    since_ms: at_ms,
+                },
+            });
+        }
+        // A pair that is no longer talking walks home from `at_ms`; one the
+        // floor was already walking home keeps walking until it arrives; one
+        // already home is dropped.
+        for walk in &self.walks {
+            if wanted.iter().any(|(a, b)| *a == walk.a && *b == walk.b) {
+                continue;
+            }
+            if walk.active {
+                walks.push(Walk {
+                    active: false,
+                    since_ms: at_ms,
+                    ..*walk
+                });
+            } else if !walk.settled(at_ms) {
+                walks.push(*walk);
+            }
+        }
+        self.walks = walks;
+    }
+
+    /// Drops the walks that have finished, so the floor's list stays as small
+    /// as the pairs still moving.
+    fn prune_walks(&mut self, at_ms: u64) {
+        self.walks.retain(|walk| walk.active || !walk.settled(at_ms));
+    }
+
+    /// A robot on the floor was pressed: select it, and — when the inspector is
+    /// open — retarget the inspector at it.
+    fn pick_robot(&mut self, cid: u64) -> Effect {
+        self.floor_selected = Some(cid);
+        if self.inspecting.is_some() {
+            self.open_inspector()
+        } else {
+            Effect::none()
+        }
+    }
+
+    /// Cycles the floor's selection by one robot, wrapping. With nothing
+    /// selected, a step forward picks the first robot and a step back the last.
+    fn cycle_robot(&mut self, step: HistoryStep) -> Effect {
+        let cids: Vec<u64> = self.floor().robots.iter().map(|robot| robot.cid).collect();
+        if cids.is_empty() {
+            self.floor_selected = None;
+            return Effect::none();
+        }
+        let next = match self
+            .floor_selected
+            .and_then(|cid| cids.iter().position(|held| *held == cid))
+        {
+            Some(index) => match step {
+                HistoryStep::Next => (index + 1) % cids.len(),
+                HistoryStep::Prev => (index + cids.len() - 1) % cids.len(),
+            },
+            None => match step {
+                HistoryStep::Next => 0,
+                HistoryStep::Prev => cids.len() - 1,
+            },
+        };
+        self.floor_selected = Some(cids[next]);
+        if self.inspecting.is_some() {
+            self.open_inspector()
+        } else {
+            Effect::none()
+        }
+    }
+
+    /// Opens the floor's inspector on the selected robot — or, with nothing
+    /// selected, on the first robot — and reads its contacts.
+    fn open_inspector(&mut self) -> Effect {
+        let cid = match self.floor_selected {
+            Some(cid) => cid,
+            None => match self.floor().robots.first() {
+                Some(robot) => robot.cid,
+                None => return self.refuse("the floor has no robot to inspect"),
+            },
+        };
+        self.floor_selected = Some(cid);
+        self.inspecting = Some(cid);
+        self.contacts = None;
+        self.contacts_error = None;
+        self.thread = None;
+        self.thread_peer = None;
+        self.thread_error = None;
+        Effect::contacts(cid)
+    }
+
+    /// Reads the thread between the inspected agent and `peer`.
+    fn read_thread(&mut self, peer: u64) -> Effect {
+        let Some(cid) = self.inspecting else {
+            return self.refuse("thread: no robot is open on the floor");
+        };
+        self.thread = None;
+        self.thread_error = None;
+        self.thread_peer = Some(peer);
+        Effect::thread(cid, peer)
+    }
+
+    /// An agent's contacts answered: filed when the inspector is still open on
+    /// that agent, and dropped otherwise (a stale read for a robot the operator
+    /// has moved past).
+    fn contacts_answer(
+        &mut self,
+        at_ms: u64,
+        cid: u64,
+        result: Result<Contacts, ApiError>,
+    ) -> Effect {
+        if self.inspecting != Some(cid) {
+            return Effect::none();
+        }
+        match result {
+            Ok(contacts) => {
+                self.succeeded(at_ms);
+                self.contacts = Some(contacts);
+                self.contacts_error = None;
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.contacts = None;
+                self.contacts_error = Some(error.to_string());
+            }
+        }
+        Effect::none()
+    }
+
+    /// A pair's thread answered: filed when the inspector still holds that
+    /// pair.
+    fn thread_answer(
+        &mut self,
+        at_ms: u64,
+        a: u64,
+        b: u64,
+        result: Result<Thread, ApiError>,
+    ) -> Effect {
+        if self.inspecting != Some(a) || self.thread_peer != Some(b) {
+            return Effect::none();
+        }
+        match result {
+            Ok(thread) => {
+                self.succeeded(at_ms);
+                self.thread = Some(thread);
+                self.thread_error = None;
+            }
+            Err(error) => {
+                self.failed(at_ms, &error);
+                self.thread = None;
+                self.thread_error = Some(error.to_string());
+            }
+        }
+        Effect::none()
+    }
+
+    /// The plaza floor as the floor pane draws it: the role pads, one robot
+    /// per roster agent, and the links between adjacent talking pairs.
+    ///
+    /// Every position derives from the role order and the conversations'
+    /// activity, and nothing else (see [`crate::floor`] for the rule and the
+    /// camera). A robot's status is, in order: `unreachable` when a hub is
+    /// configured and does not report it connected; `talking` when it is in a
+    /// pair the social API calls active; `working` when its serial rate is
+    /// above the floor's threshold — the console's own telemetry; `idle`
+    /// otherwise.
+    pub fn floor(&self) -> FloorLayout {
+        let groups = self.roster();
+        let roles: Vec<String> = groups.iter().map(|group| group.role.clone()).collect();
+        let pads = floor::pads(&roles);
+
+        // Pass one: every agent's station, its rate and its connectedness.
+        let mut stations: Vec<(u64, String, (f32, f32), f32, bool)> = Vec::new();
+        for (index, group) in groups.iter().enumerate() {
+            let count = group.agents.len();
+            for (k, agent) in group.agents.iter().enumerate() {
+                let Some(cid) = agent.cid() else {
+                    continue;
+                };
+                let spot = floor::station(&pads[index], k, count);
+                stations.push((cid, group.role.clone(), spot, agent.lps(), agent.is_connected()));
+            }
+        }
+
+        // Pass two: place each robot, walking it toward its conversation's spot
+        // while it is talking.
+        let mut robots: Vec<floor::Robot> = Vec::with_capacity(stations.len());
+        for (cid, role, station, lps, connected) in &stations {
+            let walk = self.walks.iter().find(|walk| walk.involves(*cid));
+            let (mut x, mut z) = *station;
+            let mut at_station = true;
+            if let Some(walk) = walk {
+                // The two spots are computed from the pair's *canonical* order
+                // (walk.a's station, then walk.b's), so each robot walks to the
+                // side nearest its own station whichever CID it is.
+                let a_station = stations
+                    .iter()
+                    .find(|(other, _, _, _, _)| *other == walk.a)
+                    .map(|(_, _, spot, _, _)| *spot);
+                let b_station = stations
+                    .iter()
+                    .find(|(other, _, _, _, _)| *other == walk.b)
+                    .map(|(_, _, spot, _, _)| *spot);
+                if let (Some(a_station), Some(b_station)) = (a_station, b_station) {
+                    let (from_spot, to_spot) = floor::pair_spots(a_station, b_station);
+                    let target = if *cid == walk.a { from_spot } else { to_spot };
+                    let progress = walk.progress(self.now_ms);
+                    let spot = floor::lerp(*station, target, progress);
+                    x = spot.0;
+                    z = spot.1;
+                    at_station = progress <= 0.0;
+                }
+            }
+            let status = if self.has_hub() && !*connected {
+                Status::Unreachable
+            } else if walk.is_some() {
+                Status::Talking
+            } else if *lps > floor::WORKING_LPS {
+                Status::Working
+            } else {
+                Status::Idle
+            };
+            robots.push(floor::Robot {
+                cid: *cid,
+                role: role.clone(),
+                x,
+                z,
+                status,
+                at_station,
+            });
+        }
+
+        // The links: a talking pair's two robots, while the pair is adjacent
+        // or walking to be.
+        let mut links: Vec<floor::Link> = Vec::new();
+        for walk in self.walks.iter().filter(|walk| walk.active) {
+            let a = robots.iter().find(|robot| robot.cid == walk.a);
+            let b = robots.iter().find(|robot| robot.cid == walk.b);
+            if let (Some(a), Some(b)) = (a, b) {
+                links.push(floor::Link {
+                    a: (a.x, a.z),
+                    b: (b.x, b.z),
+                });
+            }
+        }
+
+        FloorLayout {
+            pads,
+            robots,
+            links,
+        }
+    }
+
     /// Every run in the register, by id: what the map's pulse is fed from.
     fn run_ids(&self) -> Vec<String> {
         self.runs.iter().map(|run| run.id.clone()).collect()
@@ -2609,6 +3317,8 @@ impl Model {
                 agent_cid,
                 price,
             } => self.agora_event(&task, kind, agent_cid, price),
+            Event::Board { post, .. } => self.board_event(post.as_ref()),
+            Event::Conversation { id, .. } => self.conversation_event(&id),
         }
     }
 
@@ -3164,6 +3874,14 @@ impl Model {
             self.agent_console = None;
             self.armed_stop = None;
         }
+        // The floor's inspector is the floor's: leaving the floor closes it,
+        // and the thread it had read goes with it.
+        if pane != Pane::Floor {
+            self.inspecting = None;
+            self.thread = None;
+            self.thread_peer = None;
+            self.thread_error = None;
+        }
         match pane {
             Pane::Fleet => {
                 self.pane = Pane::Fleet;
@@ -3248,6 +3966,33 @@ impl Model {
                 // next tick does not read again on top of it.
                 self.agora_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
                 Effect::agora()
+            }
+            Pane::Floor => {
+                self.pane = Pane::Floor;
+                self.detail = None;
+                // The floor is one read: the conversations (the adjacency) and
+                // the board (every robot's last post), at once. Its robots'
+                // serial rates come from the register's own reads, so every
+                // run's serial is fetched too. The schedule then runs from this
+                // read so the next tick does not read again on top of it.
+                self.floor_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
+                // Keep the selection when it is still a robot on the floor, and
+                // pick the first otherwise.
+                let cids: Vec<u64> = self.floor().robots.iter().map(|robot| robot.cid).collect();
+                if !self.floor_selected.is_some_and(|cid| cids.contains(&cid)) {
+                    self.floor_selected = cids.first().copied();
+                }
+                let mut effect = Effect::floor();
+                effect.fetch_map = self.run_ids();
+                effect
+            }
+            Pane::Board => {
+                self.pane = Pane::Board;
+                self.detail = None;
+                // The board is one read: the plaza's public posts, newest
+                // first. The schedule then runs from this read.
+                self.board_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
+                Effect::board()
             }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
@@ -3400,9 +4145,24 @@ impl Model {
             KeyAction::Ledger => self.show(Pane::Ledger),
             KeyAction::Treasury => self.show(Pane::Treasury),
             KeyAction::Market => self.show(Pane::Market),
+            KeyAction::Floor => self.show(Pane::Floor),
+            KeyAction::Board => self.show(Pane::Board),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
+                Effect::none()
+            }
+            // Enter opens the floor's inspector for the selected robot; on
+            // any other pane it names nothing and does nothing.
+            KeyAction::Inspect => self.open_inspector(),
+            // Escape closes the floor's inspector first, when one is open:
+            // the inspector is over the floor, so one Escape leaves it and a
+            // second leaves the floor.
+            KeyAction::Back if self.inspecting.is_some() => {
+                self.inspecting = None;
+                self.thread = None;
+                self.thread_peer = None;
+                self.thread_error = None;
                 Effect::none()
             }
             // There is nothing behind the register, so Escape at the register
@@ -3415,7 +4175,13 @@ impl Model {
                 } else {
                     HistoryStep::Next
                 };
-                self.console_history(step)
+                // On the floor the arrows cycle the robots; elsewhere they walk
+                // the console's history (which only a run pane has).
+                if self.pane == Pane::Floor {
+                    self.cycle_robot(step)
+                } else {
+                    self.console_history(step)
+                }
             }
         }
     }
@@ -3959,6 +4725,8 @@ pub fn title(model: &Model) -> String {
         Pane::Ledger => "AgentPlaza register — ledger".to_string(),
         Pane::Treasury => "AgentPlaza register — treasury".to_string(),
         Pane::Market => "AgentPlaza register — market".to_string(),
+        Pane::Floor => "AgentPlaza register — floor".to_string(),
+        Pane::Board => "AgentPlaza register — board".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -4138,6 +4906,60 @@ pub fn market_line(model: &Model) -> String {
 /// How many bids the board's calls hold.
 fn bid_count(board: &Board) -> usize {
     board.calls.iter().map(|call| call.bids.len()).sum()
+}
+
+/// The floor as the index column writes it: the robots and the active
+/// conversations once the pane has read them, and the honest nothing before
+/// that.
+pub fn floor_line(model: &Model) -> String {
+    let layout = model.floor();
+    if layout.robots.is_empty() && model.floor.is_none() {
+        return "not read yet".to_string();
+    }
+    let active = layout
+        .links
+        .len();
+    format!(
+        "{} robot(s) · {} pad(s) · {active} talking",
+        layout.robots.len(),
+        layout.pads.len(),
+    )
+}
+
+/// How the floor's rules stand, as the sheet's tally writes it: the robots the
+/// plaza holds, the stations, how many are talking right now, and the live
+/// register's half.
+pub fn floor_tally(model: &Model) -> String {
+    let layout = model.floor();
+    let working = layout
+        .robots
+        .iter()
+        .filter(|robot| robot.status == Status::Working)
+        .count();
+    let unreachable = layout
+        .robots
+        .iter()
+        .filter(|robot| robot.status == Status::Unreachable)
+        .count();
+    format!(
+        "{} robot(s) · {} pad(s) · {} talking · {working} working · {unreachable} unreachable",
+        layout.robots.len(),
+        layout.pads.len(),
+        layout.links.len(),
+    )
+}
+
+/// The board as the index column writes it: the posts and the read counts once
+/// the pane has read it, and the honest nothing before that.
+pub fn board_line(model: &Model) -> String {
+    match &model.board {
+        Some(board) => format!(
+            "{} post(s) · {} agent(s) behind",
+            board.total,
+            board.unread.iter().filter(|unread| unread.count > 0).count()
+        ),
+        None => "not read yet".to_string(),
+    }
 }
 
 /// How the market stands, as the sheet's tally writes it: the calls the
@@ -4326,6 +5148,7 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
     use crate::api::{EntryKind, Vm};
+    use crate::events::BoardKind;
 
     fn vm(id: u32, state: VmState, cid: Option<u64>, serial: Option<&str>) -> Vm {
         Vm {
@@ -8617,6 +9440,671 @@ mod tests {
             result: Ok(board),
         });
         model
+    }
+
+    // ---- the floor and the board ----
+
+    /// A board read as the daemon answers one: the posts, newest first, and
+    /// every agent's unread count.
+    fn posts_of(rows: serde_json::Value, unread: serde_json::Value) -> Posts {
+        let count = rows.as_array().map_or(0, Vec::len);
+        serde_json::from_value(serde_json::json!({
+            "posts": rows,
+            "total": count,
+            "limit": 1024,
+            "truncated": false,
+            "unread": unread,
+        }))
+        .expect("the fixture is the shape the daemon writes")
+    }
+
+    /// A conversations read as the daemon answers one: the exchanges and the
+    /// pair summaries the floor derives proximity from.
+    fn conversations_of(
+        rows: serde_json::Value,
+        pairs: serde_json::Value,
+    ) -> crate::api::Conversations {
+        let count = rows.as_array().map_or(0, Vec::len);
+        let pair_count = pairs.as_array().map_or(0, Vec::len);
+        serde_json::from_value(serde_json::json!({
+            "conversations": rows,
+            "pairs": pairs,
+            "active_secs": 120,
+            "total": count,
+            "limit": 256,
+            "truncated": false,
+            "pairs_total": pair_count,
+            "pairs_truncated": false,
+        }))
+        .expect("the fixture is the shape the daemon writes")
+    }
+
+    /// One exchange row.
+    fn exchange(id: &str, from: u64, to: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "from_cid": from, "to_cid": to,
+            "from_role": "builder", "to_role": "reviewer",
+            "text": "hello", "created_at": 9_000,
+            "delivered": true, "delivery": null,
+        })
+    }
+
+    /// One pair summary.
+    fn pair(a: u64, b: u64, active: bool) -> serde_json::Value {
+        serde_json::json!({
+            "a": a, "b": b, "active": active, "count": 1, "last_at": 9_000,
+        })
+    }
+
+    /// A model showing the floor, with `fleet_with_roles`' register and one
+    /// read already answered.
+    fn with_floor(read: FloorRead) -> Model {
+        let mut model = fleet_with_roles();
+        model.apply(Message::Show(Pane::Floor));
+        model.apply(Message::Floor {
+            at_ms: 10_000,
+            result: Ok(read),
+        });
+        model
+    }
+
+    /// The floor with nobody talking.
+    fn floor_quiet() -> FloorRead {
+        FloorRead {
+            board: posts_of(serde_json::json!([]), serde_json::json!([])),
+            conversations: conversations_of(serde_json::json!([]), serde_json::json!([])),
+        }
+    }
+
+    #[test]
+    fn the_floor_layout_derives_fixed_positions_from_a_fixed_register() {
+        let model = with_floor(floor_quiet());
+        let layout = model.floor();
+
+        // The register's roles, in first-appearance order: builder (cid 100,
+        // 102), then reviewer (101). Pad 0 at (-3, -2.25), pad 1 at (-1.5,
+        // -2.25) — the rule is fixed.
+        assert_eq!(layout.pads.len(), 2);
+        assert_eq!(layout.pads[0].role, "builder");
+        assert_eq!(layout.pads[1].role, "reviewer");
+        close(layout.pads[0].x, -3.0);
+        close(layout.pads[0].z, -2.25);
+
+        // One robot per roster agent, on its role's pad: a two-agent role's
+        // agents spread by half a unit, a one-agent role's on the centre.
+        let table: [(u64, &str, f32, f32); 3] = [
+            (100, "builder", -3.25, -2.25),
+            (102, "builder", -2.75, -2.25),
+            (101, "reviewer", -1.5, -2.25),
+        ];
+        assert_eq!(layout.robots.len(), table.len());
+        for (robot, (cid, role, x, z)) in layout.robots.iter().zip(table) {
+            assert_eq!(robot.cid, cid);
+            assert_eq!(robot.role, role);
+            close(robot.x, x);
+            close(robot.z, z);
+            assert!(robot.at_station, "nobody is talking, so all are home");
+            assert_eq!(robot.status, Status::Idle);
+        }
+        assert!(layout.links.is_empty(), "no conversation, no link");
+
+        // The same register derives the same layout, every time.
+        assert_eq!(model.floor(), layout);
+    }
+
+    #[test]
+    fn a_talking_pair_walks_adjacent_and_the_rings_say_so() {
+        let read = FloorRead {
+            board: posts_of(serde_json::json!([]), serde_json::json!([])),
+            conversations: conversations_of(
+                serde_json::json!([exchange("c1", 100, 101)]),
+                serde_json::json!([pair(100, 101, true)]),
+            ),
+        };
+        let mut model = with_floor(read);
+
+        // The moment the answer landed the pair has not moved yet: the walk
+        // starts at the station.
+        let start = model.floor();
+        let a = start.robot(100).expect("cid 100 is on the floor");
+        close(a.x, -3.25);
+        close(a.z, -2.25);
+        assert_eq!(a.status, Status::Talking);
+        assert_eq!(start.robot(101).expect("cid 101").status, Status::Talking);
+        assert_eq!(start.robot(102).expect("cid 102").status, Status::Idle);
+        assert_eq!(start.links.len(), 1, "a talking pair is linked");
+
+        // Walked: the two stand adjacent on the midpoint of their stations.
+        model.apply(Message::Anim {
+            at_ms: 10_000 + WALK_MS,
+        });
+        let walked = model.floor();
+        let (left, right) = crate::floor::pair_spots((-3.25, -2.25), (-1.5, -2.25));
+        close(walked.robot(100).expect("cid 100").x, left.0);
+        close(walked.robot(100).expect("cid 100").x, -2.715);
+        close(walked.robot(101).expect("cid 101").x, right.0);
+        close(walked.robot(101).expect("cid 101").x, -2.035);
+        assert!(
+            !walked.robot(100).expect("cid 100").at_station,
+            "a talking robot has left its station"
+        );
+        // The uninvolved builder is still at home.
+        close(walked.robot(102).expect("cid 102").x, -2.75);
+    }
+
+    #[test]
+    fn a_quiet_pair_walks_home_and_the_walk_is_bounded() {
+        let talking = FloorRead {
+            board: posts_of(serde_json::json!([]), serde_json::json!([])),
+            conversations: conversations_of(
+                serde_json::json!([exchange("c1", 100, 101)]),
+                serde_json::json!([pair(100, 101, true)]),
+            ),
+        };
+        let mut model = with_floor(talking);
+        model.apply(Message::Anim {
+            at_ms: 10_000 + WALK_MS,
+        });
+        assert!(
+            !model.floor_animating(),
+            "a pair that has arrived is not walking"
+        );
+        assert_eq!(model.walks.len(), 1);
+
+        // The pair goes quiet: the walk home starts from the adjacent spot.
+        model.apply(Message::Floor {
+            at_ms: 30_000,
+            result: Ok(FloorRead {
+                board: posts_of(serde_json::json!([]), serde_json::json!([])),
+                conversations: conversations_of(
+                    serde_json::json!([exchange("c1", 100, 101)]),
+                    serde_json::json!([pair(100, 101, false)]),
+                ),
+            }),
+        });
+        assert_eq!(model.walks.len(), 1);
+        assert!(!model.walks[0].active);
+        assert!(model.floor_animating(), "it is still on its way home");
+        // Halfway home it is between the two.
+        model.apply(Message::Anim { at_ms: 30_000 + WALK_MS / 2 });
+        let mid = model.floor().robot(100).expect("cid 100").x;
+        assert!(mid > -3.25 && mid < -2.715, "walking home, mid-move: {mid}");
+
+        // Home: the walk is bounded and settles, and the finished walk is
+        // pruned so the floor's list is as small as the motion is.
+        model.apply(Message::Anim {
+            at_ms: 30_000 + WALK_MS,
+        });
+        close(model.floor().robot(100).expect("cid 100").x, -3.25);
+        assert!(model.floor().robot(100).expect("cid 100").at_station);
+        assert!(!model.floor_animating());
+        assert!(model.walks.is_empty(), "a settled walk is dropped");
+    }
+
+    #[test]
+    fn showing_the_floor_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = fleet_with_roles();
+        let effect = model.apply(Message::Key(KeyAction::Floor));
+        assert_eq!(model.pane, Pane::Floor);
+        assert!(effect.poll_floor, "the sheet reads the floor at once");
+        assert!(
+            !effect.fetch_map.is_empty(),
+            "and every run's serial for the robots' rates"
+        );
+        // The first robot is picked when the sheet opens.
+        assert_eq!(model.floor_selected, Some(100));
+
+        model.apply(Message::Floor {
+            at_ms: 10_000,
+            result: Ok(floor_quiet()),
+        });
+        assert!(model.floor.is_some());
+        assert_eq!(model.floor_error, None);
+        assert_eq!(model.floor_next_at_ms, 12_000);
+
+        assert!(!model.apply(Message::Tick { at_ms: 11_000 }).poll_floor);
+        let effect = model.apply(Message::Tick { at_ms: 13_000 });
+        assert!(effect.poll_floor, "the floor is read on the tick");
+        assert!(effect.poll_list, "and so is the register");
+        assert_eq!(
+            effect.fetch_map,
+            vec!["r1".to_string(), "r2".to_string()],
+            "the floor's robots read their serial every tick"
+        );
+
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 20_000 }).poll_floor);
+    }
+
+    #[test]
+    fn the_floor_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        let mut model = Model::new();
+        assert!(!model.apply(Message::Tick { at_ms: 1_000 }).poll_floor);
+
+        model.apply(Message::Show(Pane::Floor));
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.health(), Health::Live);
+
+        model.apply(Message::Floor {
+            at_ms: 3_300,
+            result: Err(ApiError::Status {
+                status: 404,
+                message: "no such endpoint".to_string(),
+            }),
+        });
+        assert_eq!(model.floor_failures, 1);
+        assert!(model.floor_error.is_some());
+        assert_eq!(model.floor, None);
+        assert_eq!(model.failures, 0, "the register's failures are not the floor's");
+        assert_eq!(model.health(), Health::Live);
+
+        let effect = model.apply(Message::Tick { at_ms: 7_300 });
+        assert!(effect.poll_floor);
+        model.apply(Message::Floor {
+            at_ms: 7_400,
+            result: Ok(floor_quiet()),
+        });
+        assert_eq!(model.floor_error, None);
+        assert_eq!(model.floor_failures, 0);
+        assert!(model.floor.is_some());
+    }
+
+    #[test]
+    fn the_floor_keeps_its_last_read_when_a_later_read_fails() {
+        let mut model = with_floor(floor_quiet());
+        let held = model.floor.clone();
+        assert!(held.is_some());
+        model.apply(Message::Floor {
+            at_ms: 12_000,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        assert_eq!(model.floor, held, "what the daemon recorded stays true");
+        assert!(model.floor_error.is_some());
+    }
+
+    #[test]
+    fn showing_the_board_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::Key(KeyAction::Board));
+        assert_eq!(model.pane, Pane::Board);
+        assert_eq!(effect, Effect::board());
+
+        model.apply(Message::Board {
+            at_ms: 10_000,
+            result: Ok(posts_of(serde_json::json!([]), serde_json::json!([]))),
+        });
+        assert!(model.board.is_some());
+        assert_eq!(model.board_next_at_ms, 12_000);
+        assert!(!model.apply(Message::Tick { at_ms: 11_000 }).poll_board);
+        assert!(model.apply(Message::Tick { at_ms: 13_000 }).poll_board);
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 20_000 }).poll_board);
+    }
+
+    #[test]
+    fn the_board_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Board));
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        model.apply(Message::Board {
+            at_ms: 3_300,
+            result: Err(ApiError::Status {
+                status: 404,
+                message: "no such endpoint".to_string(),
+            }),
+        });
+        assert_eq!(model.board_failures, 1);
+        assert!(model.board_error.is_some());
+        assert_eq!(model.failures, 0);
+        assert_eq!(model.health(), Health::Live);
+    }
+
+    #[test]
+    fn a_board_event_asks_for_its_surface_once_and_never_invents_a_post() {
+        let held = posts_of(
+            serde_json::json!([{
+                "id":"p1","agent_cid":100,"role":"builder","subject":"hi",
+                "body":"hello plaza","task":null,"posted_by":"driver",
+                "created_at":9_000,
+            }]),
+            serde_json::json!([{"agent_cid":100,"count":0}]),
+        );
+        let mut model = with_floor(FloorRead {
+            board: held.clone(),
+            conversations: conversations_of(serde_json::json!([]), serde_json::json!([])),
+        });
+
+        // A frame the floor already holds (the post p1) is a no-op.
+        let seen = |id: &str| serde_json::from_str::<Post>(&format!(
+            r#"{{"id":"{id}","agent_cid":100,"role":"builder","subject":"hi","body":"b","task":null,"posted_by":"driver","created_at":9000}}"#
+        )).expect("a post");
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_000,
+                event: Event::Board {
+                    kind: BoardKind::Post,
+                    post: Some(seen("p1")),
+                    agent_cid: 100,
+                    role: "builder".to_string(),
+                    read_up_to: None,
+                },
+            }),
+            Effect::none(),
+            "a post the floor holds is a duplicate"
+        );
+
+        // A post the floor does not hold: the floor is read again, once.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_100,
+                event: Event::Board {
+                    kind: BoardKind::Post,
+                    post: Some(seen("p2")),
+                    agent_cid: 100,
+                    role: "builder".to_string(),
+                    read_up_to: None,
+                },
+            }),
+            Effect::floor()
+        );
+        assert!(model.floor_asked);
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_200,
+                event: Event::Board {
+                    kind: BoardKind::Read,
+                    post: None,
+                    agent_cid: 101,
+                    role: "reviewer".to_string(),
+                    read_up_to: Some("p2".to_string()),
+                },
+            }),
+            Effect::none(),
+            "a burst of board frames is one read"
+        );
+        model.apply(Message::Floor {
+            at_ms: 11_300,
+            result: Ok(FloorRead {
+                board: held,
+                conversations: conversations_of(serde_json::json!([]), serde_json::json!([])),
+            }),
+        });
+        assert!(!model.floor_asked);
+
+        // On the board pane, a post the pane holds is a no-op and a new one
+        // reads the board.
+        let mut board_model = Model::new();
+        board_model.apply(Message::Show(Pane::Board));
+        board_model.apply(Message::Board {
+            at_ms: 10_000,
+            result: Ok(posts_of(
+                serde_json::json!([{
+                    "id":"p9","agent_cid":1,"role":"builder","subject":"s",
+                    "body":"b","task":null,"posted_by":"driver","created_at":1,
+                }]),
+                serde_json::json!([]),
+            )),
+        });
+        assert_eq!(
+            board_model.apply(Message::Event {
+                at_ms: 10_100,
+                event: Event::Board {
+                    kind: BoardKind::Read,
+                    post: None,
+                    agent_cid: 1,
+                    role: "builder".to_string(),
+                    read_up_to: Some("p9".to_string()),
+                },
+            }),
+            Effect::board(),
+            "a read frame moves the unread counts: the board is read again"
+        );
+
+        // Off the sheet there is nothing to refresh.
+        model.apply(Message::Show(Pane::Fleet));
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 20_000,
+                event: Event::Board {
+                    kind: BoardKind::Post,
+                    post: Some(seen("p7")),
+                    agent_cid: 100,
+                    role: "builder".to_string(),
+                    read_up_to: None,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn a_conversation_event_reads_the_floor_once_and_only_on_the_floor() {
+        let mut model = with_floor(FloorRead {
+            board: posts_of(serde_json::json!([]), serde_json::json!([])),
+            conversations: conversations_of(
+                serde_json::json!([exchange("c1", 100, 101)]),
+                serde_json::json!([pair(100, 101, true)]),
+            ),
+        });
+
+        // An exchange the floor holds is a duplicate.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_000,
+                event: Event::Conversation {
+                    id: "c1".to_string(),
+                    from_cid: 100,
+                    to_cid: 101,
+                    delivered: true,
+                },
+            }),
+            Effect::none()
+        );
+        // A new exchange: the floor is read again, once.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_100,
+                event: Event::Conversation {
+                    id: "c2".to_string(),
+                    from_cid: 100,
+                    to_cid: 101,
+                    delivered: false,
+                },
+            }),
+            Effect::floor()
+        );
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_200,
+                event: Event::Conversation {
+                    id: "c3".to_string(),
+                    from_cid: 1,
+                    to_cid: 2,
+                    delivered: true,
+                },
+            }),
+            Effect::none(),
+            "a burst of exchanges is one read"
+        );
+
+        // On the board pane a conversation frame draws nothing.
+        model.apply(Message::Show(Pane::Board));
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 12_000,
+                event: Event::Conversation {
+                    id: "c4".to_string(),
+                    from_cid: 1,
+                    to_cid: 2,
+                    delivered: true,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn the_arrows_cycle_the_robots_and_enter_opens_the_inspector() {
+        let mut model = with_floor(floor_quiet());
+        assert_eq!(model.floor_selected, Some(100), "the first robot is picked");
+
+        // The arrows cycle the floor's robots, wrapping.
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.floor_selected, Some(102));
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.floor_selected, Some(101));
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.floor_selected, Some(100), "it wraps");
+        model.apply(Message::Key(KeyAction::HistoryPrev));
+        assert_eq!(model.floor_selected, Some(101), "and back");
+
+        // Enter opens the inspector on the picked robot and reads its
+        // contacts.
+        let effect = model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.inspecting, Some(101));
+        assert_eq!(effect, Effect::contacts(101));
+
+        model.apply(Message::Contacts {
+            at_ms: 11_000,
+            cid: 101,
+            result: Ok(serde_json::from_value(serde_json::json!({
+                "agent_cid": 101,
+                "contacts": [{"peer_cid":100,"role":"builder","since":1,"kind":"met"}],
+                "total": 1, "limit": 256, "truncated": false,
+            }))
+            .expect("a contacts body")),
+        });
+        assert!(model.contacts.is_some());
+
+        // Pressing a contact reads the thread between the pair.
+        let effect = model.apply(Message::ThreadPick(100));
+        assert_eq!(model.thread_peer, Some(100));
+        assert_eq!(effect, Effect::thread(101, 100));
+        model.apply(Message::Thread {
+            at_ms: 11_100,
+            a: 101,
+            b: 100,
+            result: Ok(serde_json::from_value(serde_json::json!({
+                "a": 101, "b": 100, "active": true, "active_secs": 120,
+                "messages": [], "total": 0, "limit": 256, "truncated": false,
+            }))
+            .expect("a thread body")),
+        });
+        assert!(model.thread.is_some());
+
+        // A stale answer for a robot the operator moved past is dropped.
+        let stale = serde_json::from_value::<Contacts>(serde_json::json!({
+            "agent_cid": 1, "contacts": [], "total": 0, "limit": 256, "truncated": false,
+        }))
+        .expect("a contacts body");
+        model.apply(Message::Contacts {
+            at_ms: 11_200,
+            cid: 1,
+            result: Ok(stale),
+        });
+        assert_eq!(
+            model.contacts.as_ref().map(|contacts| contacts.agent_cid),
+            Some(101),
+            "a read for another robot is not filed"
+        );
+
+        // Escape closes the inspector first, then leaves the floor.
+        assert!(model.apply(Message::Key(KeyAction::Back)).is_idle());
+        assert_eq!(model.inspecting, None);
+        assert_eq!(model.pane, Pane::Floor);
+        model.apply(Message::Key(KeyAction::Back));
+        assert_eq!(model.pane, Pane::Fleet);
+    }
+
+    #[test]
+    fn picking_a_robot_retargets_an_open_inspector() {
+        let mut model = with_floor(floor_quiet());
+        model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.inspecting, Some(100));
+        // A press on another robot picks it and re-reads its contacts when the
+        // inspector is open.
+        let effect = model.apply(Message::PickRobot(102));
+        assert_eq!(model.floor_selected, Some(102));
+        assert_eq!(model.inspecting, Some(102));
+        assert_eq!(effect, Effect::contacts(102));
+        // With no inspector open, a press just picks.
+        model.apply(Message::InspectClose);
+        assert_eq!(model.apply(Message::PickRobot(101)), Effect::none());
+        assert_eq!(model.floor_selected, Some(101));
+        assert_eq!(model.inspecting, None);
+    }
+
+    #[test]
+    fn the_floor_lines_count_the_robots_the_links_and_the_pads() {
+        let read = FloorRead {
+            board: posts_of(serde_json::json!([]), serde_json::json!([])),
+            conversations: conversations_of(
+                serde_json::json!([exchange("c1", 100, 101)]),
+                serde_json::json!([pair(100, 101, true)]),
+            ),
+        };
+        let model = with_floor(read);
+        assert_eq!(floor_line(&model), "3 robot(s) · 2 pad(s) · 1 talking");
+        assert_eq!(
+            floor_tally(&model),
+            "3 robot(s) · 2 pad(s) · 1 talking · 0 working · 0 unreachable"
+        );
+    }
+
+    #[test]
+    fn the_board_lines_count_the_posts_and_the_agents_behind() {
+        let mut model = Model::new();
+        assert_eq!(board_line(&model), "not read yet");
+        model.apply(Message::Board {
+            at_ms: 10_000,
+            result: Ok(posts_of(
+                serde_json::json!([{
+                    "id":"p1","agent_cid":100,"role":"builder","subject":"s","body":"b",
+                    "task":null,"posted_by":"driver","created_at":1,
+                }]),
+                serde_json::json!([{"agent_cid":100,"count":0},{"agent_cid":101,"count":1}]),
+            )),
+        });
+        assert_eq!(board_line(&model), "1 post(s) · 1 agent(s) behind");
+    }
+
+    #[test]
+    fn a_hub_that_does_not_report_a_robot_connected_makes_it_unreachable() {
+        // Only a hub that has answered can say an agent is unreachable: with
+        // no hub, the floor claims nothing about connectedness.
+        let model = with_floor(floor_quiet());
+        assert!(model.floor().robots.iter().all(|r| r.status != Status::Unreachable));
+
+        let mut with_hub = fleet_with_hub(&[
+            (100, "builder", 1, 2, 0),
+            (101, "reviewer", 1, 2, 0),
+            // cid 102 (a builder) is not connected.
+        ]);
+        with_hub.apply(Message::Show(Pane::Floor));
+        with_hub.apply(Message::Floor {
+            at_ms: 10_000,
+            result: Ok(floor_quiet()),
+        });
+        let layout = with_hub.floor();
+        assert_eq!(layout.robot(100).expect("cid 100").status, Status::Idle);
+        assert_eq!(
+            layout.robot(102).expect("cid 102").status,
+            Status::Unreachable
+        );
+    }
+
+    /// A small float comparison for the floor's positions.
+    fn close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "expected {expected}, got {actual}"
+        );
     }
 
     #[test]

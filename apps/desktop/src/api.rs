@@ -1101,6 +1101,200 @@ pub struct Board {
     pub truncated: bool,
 }
 
+/// One post on the plaza's public board, as `GET /api/v0/board` reports it
+/// (`noded::social::PostView`).
+///
+/// Every column the daemon writes is required — a body missing one is an error
+/// that names it — while a column this client does not know is ignored, so a
+/// newer daemon may add to its view. `task` is the one nullable column (a post
+/// that links no task), so it is a [`Column`]; the rest are plain fields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Post {
+    /// The post's id (`p<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent the post is for — its author.
+    pub agent_cid: u64,
+    /// The author's identity in the ledger's own terms: its role, or
+    /// `cid:<n>`.
+    pub role: String,
+    /// What the post is about.
+    pub subject: String,
+    /// The post itself.
+    pub body: String,
+    /// The task the post is about, or `null`.
+    pub task: Column<String>,
+    /// The driver that acted for the agent.
+    pub posted_by: String,
+    /// When the post was recorded, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+}
+
+/// One agent's unread count: how many posts the board holds that the agent's
+/// read cursor has not reached (`noded::social::UnreadView`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Unread {
+    /// The agent's guest CID.
+    pub agent_cid: u64,
+    /// How many posts the agent has not read.
+    pub count: usize,
+}
+
+/// `GET /api/v0/board`: the plaza's public posts
+/// (`noded::social::BoardView`) — newest first and bounded, with every agent
+/// the daemon knows carrying its unread count.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Posts {
+    /// Up to the endpoint's limit of posts, newest first.
+    pub posts: Vec<Post>,
+    /// How many posts the board holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the board holds more posts than the response carries.
+    pub truncated: bool,
+    /// Every agent the daemon knows — the connected ones, and any that holds a
+    /// read cursor — with its unread count, in ascending CID order.
+    pub unread: Vec<Unread>,
+}
+
+/// One contact on an agent's list (`noded::social::ContactView`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Contact {
+    /// The peer's guest CID.
+    pub peer_cid: u64,
+    /// The peer's identity in the ledger's own terms, as it was recorded.
+    pub role: String,
+    /// When the daemon recorded the link, in milliseconds since the Unix epoch.
+    pub since: u64,
+    /// The link's kind: `met`, `hired` or `was-hired`. A kind this client does
+    /// not know is displayed as the daemon wrote it rather than failing the row.
+    pub kind: String,
+}
+
+/// `GET /api/v0/agents/{cid}/contacts`: one agent's list, with the bounding
+/// line (`noded::social::ContactsView`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Contacts {
+    /// The agent whose list this is.
+    pub agent_cid: u64,
+    /// The agent's contacts, in the order they were recorded.
+    pub contacts: Vec<Contact>,
+    /// How many contacts the agent holds.
+    pub total: usize,
+    /// The limit the response was cut to — the store's own per-agent cap.
+    pub limit: usize,
+    /// Whether the list is longer than the response carries.
+    pub truncated: bool,
+}
+
+/// One exchange, as `GET /api/v0/conversations` reports it
+/// (`noded::social::ConversationView`): what an agent said to a peer, and
+/// whether the peer's session took the call.
+///
+/// `delivery` is the one nullable column — the hub's refusal, or this daemon's
+/// statement that there was nowhere to send the call, and `null` when it was
+/// delivered — so it is a [`Column`]; the rest are plain fields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Conversation {
+    /// The exchange's id (`c<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent that spoke.
+    pub from_cid: u64,
+    /// The guest CID of the agent spoken to.
+    pub to_cid: u64,
+    /// The speaker's identity in the ledger's own terms.
+    pub from_role: String,
+    /// The listener's identity in the ledger's own terms.
+    pub to_role: String,
+    /// What was said.
+    pub text: String,
+    /// When the exchange was recorded, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+    /// Whether the peer's session took the call.
+    pub delivered: bool,
+    /// Why it did not, when it did not; `null` when delivered.
+    pub delivery: Column<String>,
+}
+
+/// One pair's conversation as the daemon folds it (`noded::social::PairView`):
+/// who, how many exchanges, how recently, and whether that recency makes them
+/// active.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Pair {
+    /// The lower of the pair's two guest CIDs.
+    pub a: u64,
+    /// The higher of the pair's two guest CIDs.
+    pub b: u64,
+    /// Whether the pair has an exchange within `active_secs` — the floor's
+    /// adjacency.
+    pub active: bool,
+    /// How many exchanges the pair has had.
+    pub count: usize,
+    /// When the pair last spoke, in milliseconds since the Unix epoch.
+    pub last_at: u64,
+}
+
+/// `GET /api/v0/conversations`: the exchange record
+/// (`noded::social::ConversationsView`) — newest first and bounded, with the
+/// pair summaries the floor derives proximity from.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Conversations {
+    /// Up to the endpoint's limit of exchanges, newest first.
+    pub conversations: Vec<Conversation>,
+    /// One row per pair that has spoken, most recently active first.
+    pub pairs: Vec<Pair>,
+    /// The window [`Pair::active`] is measured over, in seconds.
+    pub active_secs: u64,
+    /// How many exchanges the record holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the record holds more exchanges than the response carries.
+    pub truncated: bool,
+    /// How many pairs have spoken.
+    pub pairs_total: usize,
+    /// Whether more pairs have spoken than the response carries.
+    pub pairs_truncated: bool,
+}
+
+/// `GET /api/v0/conversations/{a}/{b}`: one pair's thread
+/// (`noded::social::ThreadView`) — the exchanges between two agents, oldest
+/// first.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Thread {
+    /// The first guest CID of the pair, as the path named it.
+    pub a: u64,
+    /// The second guest CID of the pair, as the path named it.
+    pub b: u64,
+    /// Whether the pair has an exchange within `active_secs`.
+    pub active: bool,
+    /// The window [`Thread::active`] is measured over, in seconds.
+    pub active_secs: u64,
+    /// The pair's exchanges, oldest first.
+    pub messages: Vec<Conversation>,
+    /// How many exchanges the pair has had.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the pair has had more exchanges than the response carries.
+    pub truncated: bool,
+}
+
+/// The floor's own read: the conversations (who is talking — the adjacency)
+/// and the board (every robot's last post), read together as one read.
+///
+/// Like the treasury's two halves, these are served by the same daemon and are
+/// one fact about the plaza, so a read is both or neither: a failure of either
+/// half is a read that did not happen, which is what gives the floor pane one
+/// schedule and one failure count of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloorRead {
+    /// The public board, newest first.
+    pub board: Posts,
+    /// The exchange record, with the pair summaries the floor draws.
+    pub conversations: Conversations,
+}
+
 /// `POST /api/v0/tasks`: the body sends exactly the fields `noded` accepts
 /// (`noded::tasks::CreateTask`); a field it does not name is absent rather
 /// than null, and the daemon fills its own default.
@@ -1634,6 +1828,53 @@ impl Client {
     /// treasury, is read-only from the console.
     pub fn agora(&self) -> Result<Board, ApiError> {
         self.json("GET", "/api/v0/agora", None)
+    }
+
+    /// `GET /api/v0/board`: the plaza's public posts, newest first and
+    /// bounded, with every agent's unread count.
+    ///
+    /// One GET, so one read. Nothing here writes: a post and a read cursor are
+    /// the daemon's own surface (`POST /api/v0/board` and `…/board/read`),
+    /// driven by the agents' drivers, and this client has no path that would
+    /// post one.
+    pub fn board(&self) -> Result<Posts, ApiError> {
+        self.json("GET", "/api/v0/board", None)
+    }
+
+    /// `GET /api/v0/conversations`: the exchange record, newest first and
+    /// bounded, with the pair summaries the floor derives proximity from.
+    pub fn conversations(&self) -> Result<Conversations, ApiError> {
+        self.json("GET", "/api/v0/conversations", None)
+    }
+
+    /// `GET /api/v0/agents/{cid}/contacts`: one agent's own contact list.
+    ///
+    /// A 404 is an answer: the daemon knows no such agent and the register does
+    /// not show it.
+    pub fn contacts(&self, cid: u64) -> Result<Contacts, ApiError> {
+        self.json("GET", &format!("/api/v0/agents/{cid}/contacts"), None)
+    }
+
+    /// `GET /api/v0/conversations/{a}/{b}`: one pair's thread, oldest first.
+    ///
+    /// The pair is read as the unordered pair the path names, so the thread is
+    /// the same whichever order it is asked in, and a pair that has never
+    /// spoken is an empty thread rather than a refusal.
+    pub fn thread(&self, a: u64, b: u64) -> Result<Thread, ApiError> {
+        self.json("GET", &format!("/api/v0/conversations/{a}/{b}"), None)
+    }
+
+    /// The floor's own read: `GET /api/v0/conversations` and
+    /// `GET /api/v0/board`, read together as one read.
+    ///
+    /// The two endpoints are two halves of one fact — who is talking (the
+    /// adjacency), and what every robot last posted — so a read is both or
+    /// neither, which is what gives the floor pane one schedule and one
+    /// failure count of its own. Still one GET each; nothing here writes.
+    pub fn floor(&self) -> Result<FloorRead, ApiError> {
+        let conversations: Conversations = self.json("GET", "/api/v0/conversations", None)?;
+        let board: Posts = self.json("GET", "/api/v0/board", None)?;
+        Ok(FloorRead { board, conversations })
     }
 
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
@@ -3256,5 +3497,317 @@ mod tests {
         assert_eq!(call.bids.len(), 2);
         assert!(!call.awarded_bid(&call.bids[0]), "the same agent, an older price");
         assert!(call.awarded_bid(&call.bids[1]), "the price the award was made at");
+    }
+
+    // ---- the social layer's own views (docs/agents/social.md) ----
+
+    /// A board body as `GET /api/v0/board` writes it: a hiring note that links
+    /// a task, a plain post that links none, and every agent's unread count.
+    const POSTS: &str = r#"{"posts":[
+        {"id":"p2","agent_cid":100,"role":"builder","subject":"hiring for t1",
+         "body":"I can take t1.","task":"t1","posted_by":"dispatcher",
+         "created_at":1791672000000},
+        {"id":"p1","agent_cid":101,"role":"reviewer","subject":"hello plaza",
+         "body":"first post","task":null,"posted_by":"driver",
+         "created_at":1791671000000}
+        ],"total":2,"limit":1024,"truncated":false,
+        "unread":[{"agent_cid":100,"count":0},{"agent_cid":101,"count":1},
+                  {"agent_cid":102,"count":2}]}"#;
+
+    /// A contacts body as `GET /api/v0/agents/{cid}/contacts` writes it: one
+    /// link the agent made (`met`), one an award recorded for it (`was-hired`).
+    const CONTACTS: &str = r#"{"agent_cid":100,"contacts":[
+        {"peer_cid":101,"role":"reviewer","since":1791673000000,"kind":"met"},
+        {"peer_cid":103,"role":"auditor","since":1791674000000,"kind":"was-hired"}
+        ],"total":2,"limit":256,"truncated":false}"#;
+
+    /// A conversations body as `GET /api/v0/conversations` writes it: an
+    /// exchange that reached the peer, one that did not, and the pair summary
+    /// the floor derives proximity from.
+    const CONVERSATIONS: &str = r#"{"conversations":[
+        {"id":"c2","from_cid":101,"to_cid":100,"from_role":"reviewer","to_role":"builder",
+         "text":"take it","created_at":1791675000000,"delivered":true,"delivery":null},
+        {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
+         "text":"hello","created_at":1791674000000,"delivered":false,
+         "delivery":"the peer has no live session"}
+        ],"pairs":[{"a":100,"b":101,"active":true,"count":2,"last_at":1791675000000}],
+        "active_secs":120,"total":2,"limit":256,"truncated":false,
+        "pairs_total":1,"pairs_truncated":false}"#;
+
+    /// A thread body as `GET /api/v0/conversations/{a}/{b}` writes it.
+    const THREAD: &str = r#"{"a":100,"b":101,"active":true,"active_secs":120,
+        "messages":[
+        {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
+         "text":"hello","created_at":1791674000000,"delivered":false,
+         "delivery":"the peer has no live session"}
+        ],"total":1,"limit":256,"truncated":false}"#;
+
+    /// A body with one path removed, so a test can walk every column the
+    /// daemon writes and prove each is required.
+    fn without(body: &str, path: &str) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(body).expect("the fixture is JSON");
+        let (parent, key) = path.rsplit_once('/').unwrap_or(("", path));
+        let node = if parent.is_empty() {
+            &mut value
+        } else {
+            value
+                .pointer_mut(&format!("/{parent}"))
+                .unwrap_or_else(|| panic!("the fixture has no path {path:?}"))
+        };
+        node.as_object_mut()
+            .expect("the path's parent is an object")
+            .remove(key);
+        value.to_string()
+    }
+
+    #[test]
+    fn a_posts_body_parses_every_column_the_daemon_writes() {
+        let board: Posts = from_body(POSTS);
+        assert_eq!(board.posts.len(), 2);
+        assert_eq!(board.total, 2);
+        assert_eq!(board.limit, 1_024);
+        assert!(!board.truncated);
+
+        let hiring = &board.posts[0];
+        assert_eq!(hiring.id, "p2");
+        assert_eq!(hiring.agent_cid, 100);
+        assert_eq!(hiring.role, "builder");
+        assert_eq!(hiring.subject, "hiring for t1");
+        assert_eq!(hiring.body, "I can take t1.");
+        assert_eq!(hiring.task.as_deref(), Some("t1"));
+        assert_eq!(hiring.posted_by, "dispatcher");
+        assert_eq!(hiring.created_at, 1_791_672_000_000);
+
+        // The plain post links no task: `null`, read as none.
+        assert_eq!(board.posts[1].task.get(), None);
+        // Every agent's unread count, ascending by CID as the daemon writes it.
+        assert_eq!(board.unread.len(), 3);
+        assert_eq!(board.unread[0].agent_cid, 100);
+        assert_eq!(board.unread[0].count, 0);
+        assert_eq!(board.unread[2].count, 2);
+    }
+
+    #[test]
+    fn a_post_missing_a_column_is_an_error_that_names_it() {
+        for path in [
+            "posts",
+            "total",
+            "limit",
+            "truncated",
+            "unread",
+            "posts/0/id",
+            "posts/0/agent_cid",
+            "posts/0/role",
+            "posts/0/subject",
+            "posts/0/body",
+            "posts/0/task",
+            "posts/0/posted_by",
+            "posts/0/created_at",
+            "unread/0/agent_cid",
+            "unread/0/count",
+        ] {
+            let error = serde_json::from_str::<Posts>(&without(POSTS, path))
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posts_task_is_nullable_but_never_absent() {
+        // A post that links no task writes `task: null`, read as none.
+        let board: Posts = from_body(POSTS);
+        assert_eq!(board.posts[1].task.get(), None);
+        // Absent is a different fact from null, and it is named.
+        let error = serde_json::from_str::<Posts>(&without(POSTS, "posts/1/task"))
+            .expect_err("an absent column is not a null one");
+        assert!(error.to_string().contains("task"), "{error}");
+    }
+
+    #[test]
+    fn a_posts_column_the_client_does_not_know_is_ignored() {
+        let mut body: serde_json::Value = from_body(POSTS);
+        body["posts"][0]["pinned"] = serde_json::json!(true);
+        body["posts"][0]["reactions"] = serde_json::json!([{"role": "reviewer"}]);
+        body["unread"][0]["last_at"] = serde_json::json!(0);
+        body["sealed"] = serde_json::json!(false);
+        let board: Posts = from_body(&body.to_string());
+        assert_eq!(board.posts[0].subject, "hiring for t1");
+        assert_eq!(board.unread[0].count, 0);
+    }
+
+    #[test]
+    fn a_contacts_body_parses_every_column_the_daemon_writes() {
+        let contacts: Contacts = from_body(CONTACTS);
+        assert_eq!(contacts.agent_cid, 100);
+        assert_eq!(contacts.total, 2);
+        assert_eq!(contacts.limit, 256);
+        assert!(!contacts.truncated);
+        assert_eq!(contacts.contacts[0].peer_cid, 101);
+        assert_eq!(contacts.contacts[0].role, "reviewer");
+        assert_eq!(contacts.contacts[0].kind, "met");
+        assert_eq!(contacts.contacts[0].since, 1_791_673_000_000);
+        assert_eq!(contacts.contacts[1].kind, "was-hired");
+    }
+
+    #[test]
+    fn a_contact_missing_a_column_is_an_error_that_names_it() {
+        for path in [
+            "agent_cid",
+            "contacts",
+            "total",
+            "limit",
+            "truncated",
+            "contacts/0/peer_cid",
+            "contacts/0/role",
+            "contacts/0/since",
+            "contacts/0/kind",
+        ] {
+            let error = serde_json::from_str::<Contacts>(&without(CONTACTS, path))
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_contact_kind_the_client_does_not_know_reads_as_the_daemons_own_word() {
+        // The contract's three kinds are met/hired/was-hired; a newer daemon
+        // may add one, and it is displayed as written rather than failing.
+        let mut body: serde_json::Value = from_body(CONTACTS);
+        body["contacts"][0]["kind"] = serde_json::json!("co-founded");
+        let contacts: Contacts = from_body(&body.to_string());
+        assert_eq!(contacts.contacts[0].kind, "co-founded");
+    }
+
+    #[test]
+    fn a_conversations_body_parses_every_column_the_daemon_writes() {
+        let record: Conversations = from_body(CONVERSATIONS);
+        assert_eq!(record.conversations.len(), 2);
+        assert_eq!(record.total, 2);
+        assert_eq!(record.active_secs, 120);
+        assert_eq!(record.pairs_total, 1);
+        assert!(!record.pairs_truncated);
+
+        let delivered = &record.conversations[0];
+        assert_eq!(delivered.id, "c2");
+        assert_eq!(delivered.from_cid, 101);
+        assert_eq!(delivered.to_cid, 100);
+        assert_eq!(delivered.from_role, "reviewer");
+        assert_eq!(delivered.text, "take it");
+        assert!(delivered.delivered);
+        assert_eq!(delivered.delivery.get(), None);
+
+        // The one that did not reach: the hub's own words, or this daemon's.
+        let failed = &record.conversations[1];
+        assert!(!failed.delivered);
+        assert_eq!(
+            failed.delivery.as_deref(),
+            Some("the peer has no live session")
+        );
+
+        // The pair summary the floor derives proximity from.
+        let pair = &record.pairs[0];
+        assert_eq!((pair.a, pair.b), (100, 101));
+        assert!(pair.active);
+        assert_eq!(pair.count, 2);
+        assert_eq!(pair.last_at, 1_791_675_000_000);
+    }
+
+    #[test]
+    fn a_conversations_body_missing_a_column_is_an_error_that_names_it() {
+        for path in [
+            "conversations",
+            "pairs",
+            "active_secs",
+            "total",
+            "limit",
+            "truncated",
+            "pairs_total",
+            "pairs_truncated",
+            "conversations/0/id",
+            "conversations/0/from_cid",
+            "conversations/0/to_cid",
+            "conversations/0/from_role",
+            "conversations/0/to_role",
+            "conversations/0/text",
+            "conversations/0/created_at",
+            "conversations/0/delivered",
+            "conversations/0/delivery",
+            "pairs/0/a",
+            "pairs/0/b",
+            "pairs/0/active",
+            "pairs/0/count",
+            "pairs/0/last_at",
+        ] {
+            let error = serde_json::from_str::<Conversations>(&without(CONVERSATIONS, path))
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conversations_delivery_is_nullable_but_never_absent() {
+        let record: Conversations = from_body(CONVERSATIONS);
+        assert_eq!(record.conversations[0].delivery.get(), None);
+        let error =
+            serde_json::from_str::<Conversations>(&without(CONVERSATIONS, "conversations/0/delivery"))
+                .expect_err("an absent column is not a null one");
+        assert!(error.to_string().contains("delivery"), "{error}");
+    }
+
+    #[test]
+    fn a_thread_body_parses_every_column_the_daemon_writes() {
+        let thread: Thread = from_body(THREAD);
+        assert_eq!((thread.a, thread.b), (100, 101));
+        assert!(thread.active);
+        assert_eq!(thread.active_secs, 120);
+        assert_eq!(thread.total, 1);
+        assert!(!thread.truncated);
+        assert_eq!(thread.messages.len(), 1);
+        assert_eq!(thread.messages[0].id, "c1");
+        assert!(!thread.messages[0].delivered);
+    }
+
+    #[test]
+    fn a_thread_missing_a_column_is_an_error_that_names_it() {
+        for path in [
+            "a",
+            "b",
+            "active",
+            "active_secs",
+            "messages",
+            "total",
+            "limit",
+            "truncated",
+            "messages/0/id",
+            "messages/0/from_cid",
+            "messages/0/to_cid",
+            "messages/0/from_role",
+            "messages/0/to_role",
+            "messages/0/text",
+            "messages/0/created_at",
+            "messages/0/delivered",
+            "messages/0/delivery",
+        ] {
+            let error = serde_json::from_str::<Thread>(&without(THREAD, path))
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
     }
 }

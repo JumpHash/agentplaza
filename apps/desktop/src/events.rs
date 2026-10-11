@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::api::{self, Column, Endpoint, EntryKind, RunState, TaskState, VmState};
+use crate::api::{self, Column, Endpoint, EntryKind, Post, RunState, TaskState, VmState};
 
 /// The path the stream lives at.
 pub const PATH: &str = "/api/v0/events";
@@ -143,6 +143,40 @@ pub enum Event {
         agent_cid: u64,
         /// The price bid, or the price the award was made at.
         price: u64,
+    },
+    /// The public board moved: an agent posted (`kind` `post`, with `post` the
+    /// post's own JSON object, exactly as `GET /api/v0/board` writes it) or
+    /// advanced its read cursor (`kind` `read`, with `post` `None` and
+    /// `read_up_to` the post it moved to).
+    ///
+    /// The frame carries the post's own object, so — unlike a bid — a post is
+    /// never *assembled* from a frame: it is the board's own row. The console
+    /// still re-reads the board for the unread counts a read frame moves, but
+    /// the post it holds is the daemon's, not a reconstruction.
+    Board {
+        /// `post` or `read`.
+        kind: BoardKind,
+        /// The post's own object as the board endpoint writes it, or `None`
+        /// for a read.
+        post: Option<Post>,
+        /// The guest CID of the agent that acted.
+        agent_cid: u64,
+        /// The acting agent's identity in the ledger's own terms.
+        role: String,
+        /// The post a read advanced to, or `None` for a post.
+        read_up_to: Option<String>,
+    },
+    /// Two agents spoke: an exchange was recorded. `delivered` says whether
+    /// the peer's session took the `conversation` call.
+    Conversation {
+        /// The exchange's id (`c<seq>`).
+        id: String,
+        /// The guest CID of the agent that spoke.
+        from_cid: u64,
+        /// The guest CID of the agent spoken to.
+        to_cid: u64,
+        /// Whether the peer's session took the call.
+        delivered: bool,
     },
 }
 
@@ -282,6 +316,21 @@ impl Framer {
                 agent_cid: data.agent_cid,
                 price: data.price,
             }),
+            "board" => serde_json::from_str::<BoardData>(&payload).map(|data| Event::Board {
+                kind: data.kind,
+                post: data.post.into_option(),
+                agent_cid: data.agent_cid,
+                role: data.role,
+                read_up_to: data.read_up_to.into_option(),
+            }),
+            "conversation" => {
+                serde_json::from_str::<ConversationData>(&payload).map(|data| Event::Conversation {
+                    id: data.id,
+                    from_cid: data.from_cid,
+                    to_cid: data.to_cid,
+                    delivered: data.delivered,
+                })
+            }
             other => {
                 out.push(Frame::Other(other.to_string()));
                 return;
@@ -383,6 +432,63 @@ struct AgoraData {
     kind: AgoraKind,
     agent_cid: u64,
     price: u64,
+}
+
+/// What moved the public board: a post, or an agent's read cursor
+/// (`noded::events::Event::Board`'s kinds). A kind this console does not know
+/// parses as [`BoardKind::Unknown`] rather than failing the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BoardKind {
+    /// An agent posted to the board.
+    Post,
+    /// An agent advanced its read cursor.
+    Read,
+    /// A kind this dashboard does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl BoardKind {
+    /// The name the daemon's frame uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            BoardKind::Post => "post",
+            BoardKind::Read => "read",
+            BoardKind::Unknown => "unknown",
+        }
+    }
+}
+
+/// A `board` frame's `data`.
+///
+/// `noded` writes all five fields for every post and read it publishes
+/// (`crates/noded/src/events.rs`, `Event::Board::frame`), so an absent
+/// `agent_cid` is not the shape the daemon sends and is refused by name. The
+/// two that are `null` on one branch — `post` on a read, `read_up_to` on a
+/// post — are [`Column`]s, so an absent key reads as a malformed frame, not as
+/// a quiet none. The post is the daemon's own JSON object, so it is read as
+/// the very [`Post`] the board endpoint writes.
+#[derive(Debug, Deserialize)]
+struct BoardData {
+    kind: BoardKind,
+    post: Column<Post>,
+    agent_cid: u64,
+    role: String,
+    read_up_to: Column<String>,
+}
+
+/// A `conversation` frame's `data`.
+///
+/// `noded` writes all four fields for every exchange it publishes
+/// (`crates/noded/src/events.rs`, `Event::Conversation::frame`), so an absent
+/// `delivered` is not the shape the daemon sends and is refused by name.
+#[derive(Debug, Deserialize)]
+struct ConversationData {
+    id: String,
+    from_cid: u64,
+    to_cid: u64,
+    delivered: bool,
 }
 
 /// Why one connection to the stream did not deliver events.
@@ -1065,6 +1171,158 @@ mod tests {
                 state: RunState::Done,
             }),
             "one bad agora frame never ends the stream"
+        );
+    }
+
+    #[test]
+    fn the_framer_reads_a_board_frame_the_daemon_writes() {
+        // `crates/noded/src/events.rs`'s own frames: a post carries the post's
+        // own JSON object, exactly as `GET /api/v0/board` writes it; a read
+        // carries the cursor instead.
+        let post = r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"hiring for t1","body":"I can take it.","task":"t1","posted_by":"dispatcher","created_at":1791672000000}"#;
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            format!(
+                "event: board\ndata: {{\"kind\":\"post\",\"post\":{post},\"agent_cid\":100,\"role\":\"builder\",\"read_up_to\":null}}\n\n\
+                 event: board\ndata: {{\"kind\":\"read\",\"post\":null,\"agent_cid\":101,\"role\":\"librarian\",\"read_up_to\":\"p3\"}}\n\n"
+            )
+            .as_bytes(),
+        );
+        assert_eq!(frames.len(), 2);
+        match &frames[0] {
+            Frame::Event(Event::Board {
+                kind,
+                post: Some(post),
+                agent_cid,
+                role,
+                read_up_to,
+            }) => {
+                assert_eq!(*kind, BoardKind::Post);
+                assert_eq!(post.id, "p1");
+                assert_eq!(post.agent_cid, 100);
+                assert_eq!(post.subject, "hiring for t1");
+                assert_eq!(post.task.as_deref(), Some("t1"));
+                assert_eq!(*agent_cid, 100);
+                assert_eq!(role, "builder");
+                assert!(read_up_to.is_none());
+            }
+            other => panic!("a post frame should carry its post: {other:?}"),
+        }
+        match &frames[1] {
+            Frame::Event(Event::Board {
+                kind,
+                post,
+                agent_cid,
+                role,
+                read_up_to,
+            }) => {
+                assert_eq!(*kind, BoardKind::Read);
+                assert!(post.is_none(), "a read carries no post");
+                assert_eq!(*agent_cid, 101);
+                assert_eq!(role, "librarian");
+                assert_eq!(read_up_to.as_deref(), Some("p3"));
+            }
+            other => panic!("a read frame should carry its cursor: {other:?}"),
+        }
+        assert_eq!(BoardKind::Post.label(), "post");
+        assert_eq!(BoardKind::Read.label(), "read");
+    }
+
+    #[test]
+    fn a_board_frame_with_a_kind_this_console_does_not_know_parses_as_unknown() {
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: board\ndata: {\"kind\":\"pinned\",\"post\":null,\"agent_cid\":100,\"role\":\"builder\",\"read_up_to\":null}\n\n",
+        );
+        assert!(
+            matches!(
+                &frames[0],
+                Frame::Event(Event::Board {
+                    kind: BoardKind::Unknown,
+                    ..
+                })
+            ),
+            "an unknown board kind parses as Unknown: {:?}",
+            frames[0]
+        );
+        assert_eq!(BoardKind::Unknown.label(), "unknown");
+    }
+
+    #[test]
+    fn a_board_frame_missing_a_field_is_named_and_the_next_frame_still_reads() {
+        // The two nullable fields are `Column`s: `null` is a value, but an
+        // absent key is not the shape the daemon sends, and it is named.
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: board\ndata: {\"kind\":\"read\",\"post\":null,\"role\":\"builder\",\"read_up_to\":\"p1\"}\n\n\
+              event: board\ndata: {\"kind\":\"read\",\"post\":null,\"agent_cid\":1,\"role\":\"builder\"}\n\n\
+              event: conversation\ndata: {\"id\":\"c1\",\"from_cid\":1,\"to_cid\":2,\"delivered\":true}\n\n",
+        );
+        assert_eq!(frames.len(), 3);
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("board") && why.contains("agent_cid")),
+            "a board frame with no agent_cid is named: {:?}",
+            frames[0]
+        );
+        assert!(
+            matches!(&frames[1], Frame::Malformed(why) if why.contains("board") && why.contains("read_up_to")),
+            "an absent read_up_to is named: {:?}",
+            frames[1]
+        );
+        assert_eq!(
+            frames[2],
+            Frame::Event(Event::Conversation {
+                id: "c1".to_string(),
+                from_cid: 1,
+                to_cid: 2,
+                delivered: true,
+            }),
+            "one bad board frame never ends the stream"
+        );
+    }
+
+    #[test]
+    fn a_board_post_that_is_not_the_boards_own_shape_is_named() {
+        // The post a frame embeds is the board endpoint's own object, so one
+        // missing a column is not that object and the frame says so — the
+        // console never assembles a post from a partial frame.
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: board\ndata: {\"kind\":\"post\",\"post\":{\"id\":\"p1\"},\"agent_cid\":100,\"role\":\"builder\",\"read_up_to\":null}\n\n",
+        );
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("board")),
+            "a post missing its columns is named: {:?}",
+            frames[0]
+        );
+    }
+
+    #[test]
+    fn the_framer_reads_a_conversation_frame_the_daemon_writes() {
+        let mut framer = Framer::new();
+        assert_eq!(
+            framer.feed(
+                b"event: conversation\ndata: {\"id\":\"c1\",\"from_cid\":100,\"to_cid\":101,\"delivered\":false}\n\n"
+            ),
+            vec![Frame::Event(Event::Conversation {
+                id: "c1".to_string(),
+                from_cid: 100,
+                to_cid: 101,
+                delivered: false,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_conversation_frame_missing_a_field_is_named() {
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: conversation\ndata: {\"id\":\"c1\",\"from_cid\":100,\"to_cid\":101}\n\n",
+        );
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("conversation") && why.contains("delivered")),
+            "a conversation frame with no delivered is named: {:?}",
+            frames[0]
         );
     }
 

@@ -133,6 +133,16 @@ pub fn margin(_theme: &Theme) -> container::Style {
     }
 }
 
+/// A solid colour swatch: the floor legend's status ink, a small filled box.
+pub fn swatch(color: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_theme: &Theme| container::Style {
+        background: Some(Background::Color(color)),
+        border: Border::default().width(1.0).color(INK_3),
+        snap: true,
+        ..container::Style::default()
+    }
+}
+
 /// A stamp: a boxed word, pressed in `tone`.
 pub fn stamp(tone: Tone) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {

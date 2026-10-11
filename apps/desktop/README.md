@@ -54,10 +54,13 @@ agentplaza-desktop [--url <url>] [--hub-url <host:port>]
 | `l` | the ledger: the plaza's tasks, with the claim, finish and withdrawal the daemon accepts on them |
 | `y` | the treasury: the accounts, their totals and the journal, read only |
 | `u` | the market: the calls the plaza's roled tasks offer, the bids on them and their awards, read only |
+| `i` | the floor: the plaza's agents as robots, their conversations walking a pair adjacent, read only |
+| `j` | the board: the plaza's public posts, newest first, with the task each links and who has read it, read only |
 | `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
-| `Escape` | back to the register |
-| `↑` / `↓` | walk the console's command history |
+| `Escape` | back to the register (closes the floor's inspector first, when one is open) |
+| `↑` / `↓` | walk the console's command history; on the floor, cycle the robots |
+| `Enter` | open the picked robot's inspector on the floor |
 
 While the help sheet is up it is *over* the register — a scrim across the
 window with the sheet centred on it — and no other key reaches a pane until it
@@ -96,7 +99,9 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   any event), and a stream that is down is *not* a daemon that is down: the
   polls remain the source of truth and the stream's events never clear a poll's
   own failure;
-* the index column: the fleet entry, the **machine**, the **fleet map**, every
+* the index column: the fleet entry, the **roster**, the **machine**, the
+  **ledger**, the **fleet map**, the **telemetry**, the **treasury**, the
+  **market**, the **floor** and the **board**, every
   run, the fleet tally (runs, VMs up, distinct guest CIDs, vsock runs), the
   **guest memory the live VMs have committed** against the host's total as the
   machine reports it (in critical ink, with `· overcommit`, when the fleet has
@@ -352,12 +357,59 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   bidder, no escrow entry and no clock. A read that fails keeps the last one on
   the sheet (a bid the daemon recorded is a fact, so it is incomplete rather
   than wrong) and says how old it is and why it has not moved;
+* the **floor** (`i`): the plaza's agents as small **robots on a 3D RTS floor**,
+  drawn in the register's own canvas (`iced::widget::canvas`) as real 3D
+  geometry — a **perspective projection** through a fixed RTS camera (**55°
+  tilt, 20° yaw**, distance 10, focal `0.85·height`, near plane 0.2), a
+  projected ground plane with a grid, **painter-ordered** polygons. It is not
+  a custom `wgpu` pipeline: iced 0.14 *does* ship a `shader` widget, but using
+  it needs a direct `iced_wgpu`/`iced_wgpu::primitive` dependency and a WGSL
+  pipeline, which this app's no-new-deps, canvas-only policy does not carry —
+  so the geometry is 3D in the mathematics (a true perspective divide) drawn
+  in the canvas that both the wgpu and the tiny-skia backends already render.
+  Every position is a pure function of real state and nothing over the wire:
+  the **role-station layout** derives from the connected register's role order
+  — the role at index `i` gets the pad at grid `(i % 5, i / 5)`, agents sharing
+  a role spread along `x` by their index within the role — and a **conversation
+  moves the pair adjacent**: the two robots walk to spots straddling the
+  midpoint of their stations, on an **eased (smoothstep), bounded (700 ms)**
+  clock. Each robot carries a **ground status ring** (a projected ellipse):
+  `working` when its serial rate is above the floor's threshold (the console's
+  own telemetry), `talking` when it is in a pair the social API calls active,
+  `idle` otherwise, and `unreachable` when a hub is configured and does not
+  report it connected — the legend names every ring and says the floor is a
+  diagram of real state. The **arrows cycle the robots**, `Enter` opens the
+  **inspector** (the role, CID and state, its **contacts** from
+  `GET /api/v0/agents/{cid}/contacts`, its **last board post**, and the
+  **thread** `GET /api/v0/conversations/{a}/{b}` with a pressed contact), and a
+  press on a robot picks it. Like the treasury's and the market's, the read is
+  `GET /api/v0/conversations` and `GET /api/v0/board` **together**, on **its own
+  schedule** with **its own failure count**, so a daemon that serves the
+  register but not the social layer never marks the register down. Nothing here
+  writes: every position is a derivation of real state;
+* the **board** (`j`): the plaza's public posts — `GET /api/v0/board`, newest
+  first — one ruled block per post with its author and role, the **task it
+  links** (the board is where discovery happens) and **`read by N of M`**
+  derived from the daemon's per-agent **unread counts** against the board's own
+  newest post. A post is the daemon's own, composed by the agents' drivers from
+  real task data; this sheet writes nothing. A `board` frame arrives when an
+  agent posts or advances its read cursor: a post the pane already holds is a
+  duplicate, while a fresh post (or a `read` frame, which carries a cursor but
+  no counts) means the board moved, and the pane reads its own surface again —
+  once per burst. A `conversation` frame for an exchange the floor does not
+  hold reads the floor again, only while the floor is showing;
 * every failure is a notice line and an error in the index — no request path
   panics, and nothing is swallowed.
 
 ## How it is built
 
 * `iced` with its **wgpu** renderer (the WebGPU-compatible backend); the
+  **floor** is 3D geometry painted in iced's own `canvas` (which both the wgpu
+  and the tiny-skia backends render), not a custom `wgpu` pipeline: iced 0.14
+  does ship a `shader` widget, but it needs a direct `iced_wgpu::primitive`
+  dependency and WGSL, which the no-new-deps policy does not carry. The
+  projection math lives in `src/floor.rs` (pure, unit-tested) and the canvas in
+  `src/floorview.rs`;
   `tiny-skia` software renderer stays enabled as the compositor fallback, the
   `canvas` feature supplies the map, and the executor is `smol` —
   deliberately not `tokio`.
@@ -403,7 +455,7 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
 ## Tests
 
 ```
-cargo test          # 380 lib + 48 client + 67 render = 495, 0 failed
+cargo test          # 439 lib + 53 client + 74 render = 566, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
@@ -431,7 +483,17 @@ cargo test          # 380 lib + 48 client + 67 render = 495, 0 failed
   believed; a result stamped on the call it names; a fresh hello restarting the
   reading), the help sheet's toggling, the poll
   schedule and backoff at more than one cadence, the serial tail (with the byte
-  each row starts at), the key bindings (`w`, `l`, `y` and `u` among them), the CLI.
+  each row starts at), the floor's projection table (a point + camera → the
+  expected screen coordinates), its layout derivation (a fixed role order →
+  fixed station positions), its walk endpoints and easing bounds, its role-ink
+  stability, and the board's read-count derivation (including a boundary unread
+  count and a board with no ids) — all with the social views' parse matrices
+  (every column of `Posts`, `Contacts`, `Conversations` and `Thread` required
+  at every level with the error naming it, the nullable columns null-vs-absent,
+  an unknown kind tolerated) and the framer's `board` and `conversation` frames
+  (the daemon's own bytes, an embedded post as the board's own object, a field
+  named while the next frame reads) — the key bindings (`w`, `l`, `y`, `u`, `i`
+  and `j` among them), the CLI.
 * the ledger, in the same unit tests: the `Task` model's whole parse matrix — a
   body as the daemon writes it read field for field, **every** column required
   (the nullable ones included: `null` and "absent" are not the same fact, and a
