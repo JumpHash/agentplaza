@@ -7,8 +7,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use apz_http::Router;
+use apz_gateway::ModelRef;
+use apz_http::{Response, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::state::App;
 
@@ -101,15 +103,42 @@ pub struct Store {
     inner: Mutex<Settings>,
 }
 
+/// The model in canonical `provider/model[@effort]` form.
+fn canonical(model: &str) -> Result<String, String> {
+    ModelRef::parse(model).map(|r| r.to_string()).map_err(|e| e.to_string())
+}
+
+fn tier_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Orchestrator => "orchestrator",
+        Tier::Worker => "worker",
+    }
+}
+
+/// Whether `host` is a bare hostname: no scheme, path, port or whitespace.
+fn is_bare_host(host: &str) -> bool {
+    !host.is_empty()
+        && !host.contains("://")
+        && !host.contains(['/', ':'])
+        && !host.chars().any(char::is_whitespace)
+}
+
 impl Store {
     /// Loads `settings.json` (defaults on first start; dev defaults in dev mode).
     pub fn load(state_dir: &Path, dev_models: bool) -> std::io::Result<Self> {
         // contract
         let path = state_dir.join("settings.json");
-        let settings = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let settings = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Err(_) => {
+                let mut s = Settings::default();
+                if dev_models {
+                    s.default_model = "mock/agent".into();
+                    s.orchestrator_model = "mock/agent".into();
+                }
+                s
+            }
+        };
         Ok(Self { path, dev_models, inner: Mutex::new(settings) })
     }
 
@@ -126,9 +155,55 @@ impl Store {
     /// Whether `model` may run for `tier` (always in dev mode); the error
     /// names the allowed list.
     pub fn allowed(&self, tier: Tier, model: &str) -> Result<(), String> {
-        // contract — TODO(providers slice): canonicalize with apz_gateway::ModelRef
-        let _ = (tier, model, &self.path);
-        Ok(())
+        // contract
+        if self.dev_models {
+            return Ok(());
+        }
+        let wanted = canonical(model)?;
+        let policy = self.get().model_policy;
+        let list = match tier {
+            Tier::Orchestrator => policy.orchestrator,
+            Tier::Worker => policy.worker,
+        };
+        let names: Vec<String> = list.iter().filter_map(|m| canonical(m).ok()).collect();
+        if names.contains(&wanted) {
+            return Ok(());
+        }
+        Err(format!(
+            "{model} is not allowed for the {} tier; allowed: {}",
+            tier_name(tier),
+            names.join(", ")
+        ))
+    }
+
+    /// Validates `new`, writes `settings.json` atomically and replaces the
+    /// in-memory settings. Returns the saved value.
+    pub fn put(&self, new: Settings) -> Result<Settings, String> {
+        self.allowed(Tier::Worker, &new.default_model)?;
+        self.allowed(Tier::Orchestrator, &new.orchestrator_model)?;
+        for (role, model) in &new.role_models {
+            self.allowed(tier_of(role), model)?;
+        }
+        if !(1..=200).contains(&new.max_turns) {
+            return Err(format!("max_turns must be 1..=200, got {}", new.max_turns));
+        }
+        if let Some(effort) = &new.effort {
+            const LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+            if !LEVELS.contains(&effort.as_str()) {
+                return Err(format!("unknown effort {effort:?}; expected one of {}", LEVELS.join(", ")));
+            }
+        }
+        if let Some(bad) = new.fetch_allow.iter().find(|h| !is_bare_host(h)) {
+            return Err(format!("fetch_allow entry {bad:?} is not a bare hostname"));
+        }
+
+        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = serde_json::to_vec_pretty(&new).map_err(|e| e.to_string())?;
+        let tmp = self.path.with_file_name("settings.json.tmp");
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("write settings: {e}"))?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| format!("replace settings: {e}"))?;
+        *guard = new.clone();
+        Ok(new)
     }
 
     /// The model an agent of `role` runs: its own override, else the role's
@@ -151,6 +226,110 @@ impl Store {
 
 /// `GET/PUT /v1/settings`.
 pub fn routes(router: Router<App>) -> Router<App> {
-    // TODO(providers slice)
     router
+        .route("GET", "/v1/settings", |app, _, _| {
+            let mut value = match serde_json::to_value(app.settings.get()) {
+                Ok(value) => value,
+                Err(e) => return Response::json(500, &json!({ "error": e.to_string() })),
+            };
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("dev_models".into(), json!(app.settings.dev_models()));
+            }
+            Response::json(200, &value)
+        })
+        .route("PUT", "/v1/settings", |app, req, _| {
+            let new: Settings = match req.json() {
+                Ok(settings) => settings,
+                Err(e) => return Response::json(400, &json!({ "error": format!("bad settings JSON: {e}") })),
+            };
+            match app.settings.put(new) {
+                Ok(saved) => Response::json(200, &saved),
+                Err(msg) => Response::json(400, &json!({ "error": msg })),
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh, empty state directory under the system temp dir.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-settings-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn allowed_is_per_tier_and_canonical() {
+        let dir = temp_dir("allowed");
+        let store = Store::load(&dir, false).unwrap();
+        // Worker tier: the effort-suffixed entry passes, the plain one does not.
+        assert!(store.allowed(Tier::Worker, "anthropic/claude-opus-5-5@low").is_ok());
+        assert!(store.allowed(Tier::Worker, "deepseek/deepseek-flash").is_ok());
+        assert!(store.allowed(Tier::Worker, "  anthropic/claude-haiku-5-5 ").is_ok());
+        let err = store.allowed(Tier::Worker, "anthropic/claude-opus-5-5").unwrap_err();
+        assert!(err.contains("not allowed for the worker tier"), "{err}");
+        assert!(err.contains("allowed: "), "{err}");
+        // Orchestrator tier: only its own list.
+        assert!(store.allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5").is_ok());
+        assert!(store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").is_err());
+        // Unparseable names fail with the parser's text.
+        assert!(store.allowed(Tier::Worker, "no-slash-here").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dev_mode_allows_mock_and_defaults_to_it() {
+        let dir = temp_dir("dev");
+        let store = Store::load(&dir, true).unwrap();
+        assert!(store.allowed(Tier::Worker, "mock/agent").is_ok());
+        assert!(store.allowed(Tier::Orchestrator, "anything/at-all").is_ok());
+        let s = store.get();
+        assert_eq!(s.default_model, "mock/agent");
+        assert_eq!(s.orchestrator_model, "mock/agent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn put_rejects_bad_fetch_allow_entries() {
+        let dir = temp_dir("fetch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::load(&dir, false).unwrap();
+        for bad in ["https://example.com", "example.com/path", "has space.com", "host:8080", ""] {
+            let mut s = Settings::default();
+            s.fetch_allow = vec![bad.to_string()];
+            assert!(store.put(s).is_err(), "{bad:?} should be rejected");
+        }
+        let mut ok = Settings::default();
+        ok.fetch_allow = vec!["example.com".into()];
+        assert!(store.put(ok).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn put_validates_and_persists() {
+        let dir = temp_dir("persist");
+        let store = Store::load(&dir, false).unwrap();
+        // Orchestrator-only model is refused as a worker default.
+        let mut bad = Settings::default();
+        bad.default_model = "anthropic/claude-fable-5-1".into();
+        assert!(store.put(bad).is_err());
+        let mut zero = Settings::default();
+        zero.max_turns = 0;
+        assert!(store.put(zero).is_err());
+
+        let mut s = Settings::default();
+        s.max_turns = 50;
+        s.effort = Some("low".into());
+        let saved = store.put(s.clone()).unwrap();
+        assert_eq!(saved, s);
+        assert_eq!(store.get(), s);
+        assert!(!dir.join("settings.json.tmp").exists());
+        // A fresh store reads the same values back from disk.
+        let reloaded = Store::load(&dir, false).unwrap();
+        assert_eq!(reloaded.get(), s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
