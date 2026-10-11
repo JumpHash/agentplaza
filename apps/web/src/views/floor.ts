@@ -1,5 +1,6 @@
 // The Floor: districts of robots on a three.js plaza. The scene owns placement,
-// wandering, packets and labels; each robot owns its own animation (floor3d/robot).
+// wandering, socialising, packets, drones and labels; each robot owns its own animation
+// (floor3d/robot), and the furniture comes from floor3d/props.
 
 import '../styles/floor.css';
 
@@ -12,6 +13,7 @@ import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
 import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
+import { buildDistrictProps, buildPaths, buildPlaza } from './floor3d/props';
 import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
 
@@ -23,6 +25,10 @@ const DAIS_H = 0.8; // orchestrator dais height
 const DAIS_R = 2.3;
 const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 const AZIMUTH = Math.PI / 4;
+const SOCIAL_NEAR = 9.5; // districts this close count as neighbours for a visit or a chat
+const STROLL_R = 3.1; // the stroll ring just outside the dais
+const DRONE_Y = 2.6;
+const DUST_N = 90;
 const LABEL_CSS =
   'position:absolute;left:0;top:0;display:none;max-width:220px;padding:3px 6px;' +
   'background:var(--sheet);border:1px solid var(--ink);color:var(--ink);' +
@@ -37,6 +43,15 @@ interface District {
   hue: number;
 }
 
+/** A robot's visit, chat or stroll. In a `talk` the partner stands still, facing it. */
+interface Social {
+  phase: 'go' | 'talk' | 'stroll';
+  partner: Bot | null;
+  gx: number; // where it walks to, grid units
+  gy: number;
+  until: number; // when the social ends, ms; Infinity until the walk is done
+}
+
 interface Bot {
   agent: Agent;
   district: District;
@@ -49,11 +64,14 @@ interface Bot {
   moving: boolean;
   state: RobotState | null;
   nextWander: number;
+  nextSocial: number; // when an idle robot next considers a visit, chat or stroll
+  social: Social | null;
   activity: string; // what the agent is doing right now, shown on its label and card
   robot: Robot;
   robotKey: string;
   pad: THREE.Mesh; // console pad under the home slot, tinted by state
   padMat: THREE.MeshBasicMaterial;
+  token: THREE.Mesh; // the glowing task token, shown while working
   highlighted: boolean;
   label: HTMLDivElement;
   labelName: HTMLElement;
@@ -66,6 +84,25 @@ interface Packet {
   start: number;
   core: THREE.Mesh;
   halo: THREE.Mesh;
+}
+
+interface Drone {
+  group: THREE.Group;
+  ax: number; // the two districts it flies between
+  az: number;
+  bx: number;
+  bz: number;
+  px: number; // unit perpendicular to that line, for the sway
+  pz: number;
+  phase: number;
+  speed: number;
+  spins: THREE.Group[]; // the four rotor holders
+}
+
+/** A district's monitors and whether one of its robots is working right now. */
+interface DistrictLight {
+  screens: THREE.MeshStandardMaterial[];
+  lit: boolean;
 }
 
 interface Palette {
@@ -287,15 +324,42 @@ export function mount(root: HTMLElement): Cleanup {
   // Shared resources.
   const districtGroup = new THREE.Group();
   scene.add(districtGroup);
+  const pathGroup = new THREE.Group();
+  scene.add(pathGroup);
+  const droneGroup = new THREE.Group();
+  scene.add(droneGroup);
+  const plaza = buildPlaza(C);
+  scene.add(plaza);
+  const plazaAnim = plaza.userData.animate as (t: number) => void;
   const padGeo = new THREE.CircleGeometry(0.42, 28);
   const packetGeo = new THREE.SphereGeometry(0.13, 14, 10);
   const haloGeo = new THREE.SphereGeometry(0.34, 14, 10);
+  const tokenGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+  const droneBodyGeo = new THREE.BoxGeometry(0.34, 0.12, 0.34);
+  const rotorGeo = new THREE.CircleGeometry(0.2, 14);
+  const droneMat = new THREE.MeshStandardMaterial({ color: C.ink3, roughness: 0.5, metalness: 0.3 });
+  const rotorMat = new THREE.MeshBasicMaterial({ color: C.ink3, transparent: true, opacity: 0.3, depthWrite: false });
   const mats = {
     accent: new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false }),
     ok: new THREE.MeshBasicMaterial({ color: C.ok, toneMapped: false }),
     accentHalo: new THREE.MeshBasicMaterial({ color: C.signal, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }),
     okHalo: new THREE.MeshBasicMaterial({ color: C.ok, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }),
+    token: new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false }),
   };
+
+  // Dust: sparse motes drifting over the plaza.
+  const dustPos = new Float32Array(DUST_N * 3);
+  const dustAttr = new THREE.BufferAttribute(dustPos, 3);
+  const dustSeeds: { x: number; y: number; z: number; rise: number }[] = [];
+  for (let i = 0; i < DUST_N; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * 9;
+    dustSeeds.push({ x: Math.cos(a) * r, y: Math.random() * 4.2, z: Math.sin(a) * r, rise: 0.04 + Math.random() * 0.05 });
+  }
+  const dustGeo = new THREE.BufferGeometry();
+  dustGeo.setAttribute('position', dustAttr);
+  const dustMat = new THREE.PointsMaterial({ color: C.ink3, size: 0.07, transparent: true, opacity: 0.55, depthWrite: false });
+  scene.add(new THREE.Points(dustGeo, dustMat));
 
   // DOM: stage with the canvas, name labels, the card, the legend.
   const card = h('div.floor-card', { hidden: true });
@@ -323,6 +387,10 @@ export function mount(root: HTMLElement): Cleanup {
   let bots: Bot[] = [];
   const byCid = new Map<number, Bot>();
   const packets: Packet[] = [];
+  const drones: Drone[] = [];
+  const litByRole = new Map<string, DistrictLight>();
+  const propAnim: ((t: number) => void)[] = [];
+  const tmpV = new THREE.Vector3();
   let width = 0;
   let height = 0;
   let hovered: Bot | null = null;
@@ -392,6 +460,13 @@ export function mount(root: HTMLElement): Cleanup {
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: C.rule }));
       edges.position.copy(slab.position);
       g.add(slab, edges);
+      // Furniture for the district: desks, plants, a lamp, and its role's pieces.
+      const props = buildDistrictProps(d.hue, d.r, d.role, C);
+      props.position.set(d.cx, SLAB_H, d.cy);
+      g.add(props);
+      litByRole.set(d.role, { screens: (props.userData.screens ?? []) as THREE.MeshStandardMaterial[], lit: false });
+      const anim = props.userData.animate as ((t: number) => void) | undefined;
+      if (anim) propAnim.push(anim);
     }
     // Role plaque lies flat on the back edge of the slab (the dais for the orchestrator).
     const plaque = new THREE.Mesh(
@@ -404,12 +479,55 @@ export function mount(root: HTMLElement): Cleanup {
     return g;
   }
 
-  function buildDistricts(ds: District[]): void {
+  /** Districts, their paths and their drones, rebuilt whenever the layout changes. */
+  function buildWorld(ds: District[]): void {
     for (const child of [...districtGroup.children]) {
       districtGroup.remove(child);
       disposeTree(child);
     }
+    litByRole.clear();
+    propAnim.length = 0;
     for (const d of ds) districtGroup.add(districtMesh(d));
+    disposeTree(pathGroup);
+    pathGroup.clear();
+    pathGroup.add(buildPaths(ds.map((d) => new THREE.Vector3(d.cx, 0, d.cy)), C));
+    buildDrones(ds);
+  }
+
+  /** Three to five small drones, each looping between two districts. */
+  function buildDrones(ds: District[]): void {
+    droneGroup.clear();
+    drones.length = 0;
+    if (!ds.length) return;
+    const corners: [number, number][] = [
+      [-0.24, -0.24],
+      [0.24, -0.24],
+      [-0.24, 0.24],
+      [0.24, 0.24],
+    ];
+    const n = Math.min(5, Math.max(3, ds.length));
+    for (let i = 0; i < n; i++) {
+      const a = ds[i % ds.length]!;
+      const b = ds[(i * 3 + 1) % ds.length]!;
+      const group = new THREE.Group();
+      group.add(new THREE.Mesh(droneBodyGeo, droneMat));
+      const spins: THREE.Group[] = [];
+      for (const [x, z] of corners) {
+        const holder = new THREE.Group();
+        holder.position.set(x, 0.1, z);
+        const disc = new THREE.Mesh(rotorGeo, rotorMat);
+        disc.rotation.x = -Math.PI / 2;
+        holder.add(disc);
+        group.add(holder);
+        spins.push(holder);
+      }
+      const dx = b.cx - a.cx;
+      const dz = b.cy - a.cy;
+      const len = Math.hypot(dx, dz) || 1;
+      group.rotation.y = Math.atan2(dx, dz);
+      droneGroup.add(group);
+      drones.push({ group, ax: a.cx, az: a.cy, bx: b.cx, bz: b.cy, px: -dz / len, pz: dx / len, phase: i * 1.7, speed: 0.35 + i * 0.05, spins });
+    }
   }
 
   // Robots, labels, pads.
@@ -426,6 +544,9 @@ export function mount(root: HTMLElement): Cleanup {
     pad.rotation.x = -Math.PI / 2;
     pad.position.set(hx, topOf(district) + 0.02, hy);
     scene.add(pad);
+    const token = new THREE.Mesh(tokenGeo, mats.token);
+    token.visible = false;
+    scene.add(token);
     const label = document.createElement('div');
     label.style.cssText = LABEL_CSS;
     const labelName = document.createElement('strong');
@@ -446,11 +567,14 @@ export function mount(root: HTMLElement): Cleanup {
       moving: false,
       state: null,
       nextWander: performance.now() + Math.random() * 3000,
+      nextSocial: performance.now() + 4000 + Math.random() * 10000,
+      social: null,
       activity: 'idle',
       robot,
       robotKey: `${district.hue}|${orch}`,
       pad,
       padMat,
+      token,
       highlighted: false,
       label,
       labelName,
@@ -463,6 +587,7 @@ export function mount(root: HTMLElement): Cleanup {
     b.robot.dispose();
     scene.remove(b.pad);
     b.padMat.dispose();
+    scene.remove(b.token);
     b.label.remove();
   }
 
@@ -472,7 +597,7 @@ export function mount(root: HTMLElement): Cleanup {
     const sig = JSON.stringify(districts);
     if (sig !== districtSig) {
       districtSig = sig;
-      buildDistricts(districts);
+      buildWorld(districts);
     }
     const seen = new Set<number>();
     for (const agent of list) {
@@ -513,19 +638,60 @@ export function mount(root: HTMLElement): Cleanup {
     controls.update();
   }
 
-  /** Robots: wander when idle, head home when working or offline, animate, tint pads. */
+  // Social behaviour: an idle robot may visit a neighbour, chat, or stroll to the ring.
+  const nearby = (a: District, c: District): boolean => a.role === c.role || Math.hypot(a.cx - c.cx, a.cy - c.cy) <= SOCIAL_NEAR;
+
+  function startSocial(b: Bot, now: number): void {
+    b.nextSocial = now + 8000 + Math.random() * 12000;
+    if (Math.random() < 0.3) {
+      const ang = Math.atan2(b.y, b.x);
+      b.social = { phase: 'stroll', partner: null, gx: Math.cos(ang) * STROLL_R, gy: Math.sin(ang) * STROLL_R, until: Infinity };
+      return;
+    }
+    const pool = bots.filter((o) => o !== b && o.agent.status === 'idle' && !o.social && nearby(o.district, b.district));
+    const partner = pool[Math.floor(Math.random() * pool.length)];
+    if (!partner) return;
+    b.social = { phase: 'go', partner, gx: partner.x - 1, gy: partner.y, until: Infinity };
+    partner.social = { phase: 'talk', partner: b, gx: partner.x, gy: partner.y, until: Infinity };
+  }
+
+  function endSocial(b: Bot, now: number): void {
+    const s = b.social;
+    b.social = null;
+    b.nextWander = now;
+    if (s?.partner && s.partner.social?.partner === b) {
+      s.partner.social = null;
+      s.partner.nextWander = now;
+    }
+  }
+
+  /** Robots: wander or socialise when idle, head home when working or offline, animate, tint pads. */
   function updateBots(dt: number, now: number): void {
     const t = now / 1000;
+    for (const p of litByRole.values()) p.lit = false;
     for (const b of bots) {
       const status = b.agent.status;
       const roaming = status === 'idle';
-      if (roaming && now >= b.nextWander) {
-        const span = Math.max(0.5, b.district.r - 0.7);
-        b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
-        b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
-        b.nextWander = now + 3000 + Math.random() * 4000;
+      const partner = b.social?.partner ?? null;
+      if (b.social && (!roaming || (partner && (byCid.get(partner.agent.cid) !== partner || partner.agent.status !== 'idle')))) {
+        endSocial(b, now);
       }
-      const [gx, gy] = roaming ? [b.tx, b.ty] : b.home;
+      if (roaming && !b.social) {
+        if (now >= b.nextWander) {
+          const span = Math.max(0.5, b.district.r - 0.7);
+          b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
+          b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
+          b.nextWander = now + 3000 + Math.random() * 4000;
+        }
+        if (now >= b.nextSocial) startSocial(b, now);
+      }
+      const s = b.social;
+      let gx = b.home[0];
+      let gy = b.home[1];
+      if (roaming) {
+        gx = s ? s.gx : b.tx;
+        gy = s ? s.gy : b.ty;
+      }
       const dx = gx - b.x;
       const dy = gy - b.y;
       const dist = Math.hypot(dx, dy);
@@ -538,9 +704,24 @@ export function mount(root: HTMLElement): Cleanup {
         b.x = gx;
         b.y = gy;
       }
-      if (b.moving) {
-        // Local +Z is forward; turn toward the direction of travel.
-        const want = Math.atan2(dx, dy);
+      // Social arrivals: a visitor that has reached its partner starts the chat; a stroller waits briefly at the ring.
+      if (s && roaming) {
+        if (s.phase === 'go' && !b.moving) {
+          const until = now + 3000 + Math.random() * 2000;
+          s.phase = 'talk';
+          s.until = until;
+          if (s.partner?.social) s.partner.social.until = until;
+        } else if (s.phase === 'stroll' && !b.moving && s.until === Infinity) {
+          s.until = now + 2000;
+        }
+        if (now >= s.until) endSocial(b, now);
+      }
+      // Local +Z is forward. Talkers face each other; walkers face their direction of travel.
+      const talker = s && s.phase === 'talk' ? s.partner : null;
+      let want: number | null = null;
+      if (talker) want = Math.atan2(talker.x - b.x, talker.y - b.y);
+      else if (b.moving) want = Math.atan2(dx, dy);
+      if (want !== null) {
         const diff = Math.atan2(Math.sin(want - b.heading), Math.cos(want - b.heading));
         b.heading += diff * Math.min(1, dt * 8);
       }
@@ -558,7 +739,46 @@ export function mount(root: HTMLElement): Cleanup {
       b.robot.group.rotation.y = b.heading;
       b.robot.update(dt, t);
       b.padMat.color.copy(status === 'working' ? C.info : status === 'idle' ? C.ok : C.ink3);
+      // Working robots stay at their desk, carrying a glowing task token; their district's monitors light up.
+      const working = status === 'working';
+      b.token.visible = working;
+      if (working) {
+        const lit = litByRole.get(b.district.role);
+        if (lit) lit.lit = true;
+        const head = b.robot.labelAnchor(tmpV);
+        b.token.position.set(head.x, head.y + 0.6 + Math.sin(t * 2.5 + b.agent.cid) * 0.08, head.z);
+        b.token.rotation.y += dt * 1.8;
+      }
     }
+    for (const p of litByRole.values()) {
+      const want = p.lit ? 1.2 : 0.05;
+      for (const m of p.screens) if (m.emissiveIntensity !== want) m.emissiveIntensity = want;
+    }
+  }
+
+  /** The drones loop between their two districts with a faint bob, and their rotors turn. */
+  function updateDrones(t: number): void {
+    for (const d of drones) {
+      const s = 0.5 - 0.5 * Math.cos(t * d.speed + d.phase);
+      const sway = Math.sin(t * d.speed * 2 + d.phase) * 0.8;
+      d.group.position.set(
+        d.ax + (d.bx - d.ax) * s + d.px * sway,
+        DRONE_Y + Math.sin(t * 1.7 + d.phase) * 0.12,
+        d.az + (d.bz - d.az) * s + d.pz * sway,
+      );
+      for (const r of d.spins) r.rotation.y = t * 22;
+    }
+  }
+
+  function updateDust(t: number): void {
+    for (let i = 0; i < DUST_N; i++) {
+      const d = dustSeeds[i]!;
+      const k = i * 3;
+      dustPos[k] = d.x + Math.sin(t * 0.3 + i) * 0.25;
+      dustPos[k + 1] = 0.3 + ((d.y + t * d.rise) % 4.2);
+      dustPos[k + 2] = d.z + Math.cos(t * 0.25 + i) * 0.25;
+    }
+    dustAttr.needsUpdate = true;
   }
 
   // Packets: glowing spheres on a curved arc between two robots.
@@ -597,8 +817,8 @@ export function mount(root: HTMLElement): Cleanup {
     }
   }
 
-  /** What labels and the card show: offline overrides whatever the transcript last said. */
-  const shown = (b: Bot): string => (b.agent.status === 'offline' ? 'offline' : b.activity);
+  /** What labels and the card show: offline overrides whatever the transcript last said; a chat shows dots. */
+  const shown = (b: Bot): string => (b.agent.status === 'offline' ? 'offline' : b.social?.phase === 'talk' ? '· · ·' : b.activity);
 
   const nameOf = (cid: unknown): string => {
     const b = typeof cid === 'number' ? byCid.get(cid) : undefined;
@@ -782,8 +1002,13 @@ export function mount(root: HTMLElement): Cleanup {
   const frame = (now: number): void => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    const t = now / 1000;
     updateBots(dt, now);
     updatePackets(now);
+    updateDrones(t);
+    updateDust(t);
+    plazaAnim(t);
+    for (const fn of propAnim) fn(t);
     controls.update();
     renderer.render(scene, camera);
     updateLabels();
@@ -804,12 +1029,23 @@ export function mount(root: HTMLElement): Cleanup {
     bots = [];
     byCid.clear();
     for (const p of packets.splice(0)) dropPacket(p);
+    drones.length = 0;
+    droneGroup.clear();
     disposeTree(districtGroup);
+    disposeTree(pathGroup);
+    disposeTree(plaza);
     disposeTree(ground);
     disposeTree(grid);
+    dustGeo.dispose();
+    dustMat.dispose();
     padGeo.dispose();
     packetGeo.dispose();
     haloGeo.dispose();
+    tokenGeo.dispose();
+    droneBodyGeo.dispose();
+    rotorGeo.dispose();
+    droneMat.dispose();
+    rotorMat.dispose();
     for (const m of Object.values(mats)) m.dispose();
     renderer.dispose();
     root.classList.remove('floor-view');
