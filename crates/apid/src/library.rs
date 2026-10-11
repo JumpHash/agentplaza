@@ -317,8 +317,10 @@ pub fn accept(app: &App, cid: u64, output: &str) -> Result<Entry, String> {
     let report: Report = serde_json::from_str(output).map_err(|e| e.to_string())?;
     let author = app.agents.get(cid).map(|a| a.name.clone()).unwrap_or_default();
     let entry = app.library.insert(cid, &author, report.package)?;
-    if entry.state == "pending" {
-        announce(app, &entry.name, entry.version, &entry.state);
+    announce(app, &entry.name, entry.version, &entry.state);
+    // The author can use its new tool at once: its tool list is pushed again.
+    if let Some(agent) = app.agents.get(cid) {
+        crate::agents::push_profile(app, &agent);
     }
     Ok(entry)
 }
@@ -393,6 +395,8 @@ fn review(app: &App, req: &Request, name: &str, version: &str) -> Response {
     match app.library.review(name, version, body.approve, &body.note) {
         Ok(state) => {
             announce(app, name, version, &state);
+            // A published tool reaches every agent's tool list now.
+            crate::agents::push_profiles(app);
             Response::json(200, &json!({ "state": state }))
         }
         Err(e) => Response::error(409, &e),

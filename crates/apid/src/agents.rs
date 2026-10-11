@@ -179,12 +179,16 @@ pub fn rename(app: &App, cid: u64, raw: &str) -> Result<Agent, String> {
 /// operator enabled a connector.
 pub fn push_profiles(app: &App) {
     for agent in app.agents.list() {
-        if agent.status == Status::Offline {
-            continue;
+        if agent.status != Status::Offline {
+            push_profile(app, &agent);
         }
-        let push = json!({"message": HostMessage::Profile { profile: profile(app, &agent) }});
-        let _ = app.hub.post(&format!("/v1/agents/{}/send", agent.cid), &push);
     }
+}
+
+/// Pushes one agent its current profile.
+pub fn push_profile(app: &App, agent: &Agent) {
+    let push = json!({"message": HostMessage::Profile { profile: profile(app, agent) }});
+    let _ = app.hub.post(&format!("/v1/agents/{}/send", agent.cid), &push);
 }
 
 /// The human label of a role, or the raw name when it is not a known role.
