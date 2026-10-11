@@ -39,6 +39,11 @@
 // [`CHILD_EXIT_RESET`]), so a parent learns how the VM ended from the kernel's
 // own report of the child rather than from a message this program could get
 // wrong.
+//
+// The **control socket** (`--control PATH`, a VM with a balloon only) is the
+// one channel the parent uses to resize the VM's memory while it runs: one
+// request line per connection (`usable N` or `stats`), one reply line back.
+// See [`serve_control`].
 
 // Syscall boundary: this binary's own unsafe allow entry (see
 // `../apz-vmm.rs`, which is `deny(unsafe_code)`). `PR_SET_PDEATHSIG` is one
@@ -49,6 +54,8 @@
 #![allow(unsafe_code)]
 
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -59,13 +66,13 @@ use std::time::Duration;
 
 use vmm::spawner::{
     CHILD_EXIT_FAILED, CHILD_EXIT_RESET, CHILD_EXIT_SHUTDOWN, CHILD_EXIT_USAGE, CHILD_PDEATHSIG,
-    CHILD_READY, GicVersion, SpawnMode, VmExit, VmRuntime, VmSpec, VsockConfig,
+    CHILD_READY, GicVersion, MemoryControl, SpawnMode, VmExit, VmRuntime, VmSpec, VsockConfig,
 };
 
 const USAGE: &str = "\
 usage: apz-vmm --kernel PATH --cmdline STR [--initrd PATH] [--workspace IMAGE]
                [--memory-mib M] [--vcpus V] [--cid N] [--uds PATH]
-               [--gic v2|v3]
+               [--gic v2|v3] [--balloon-usable-mib N] [--control PATH]
 
 Boots exactly one microVM in this process, jailed on its own boot path, and
 serves it:
@@ -84,6 +91,11 @@ serves it:
   --uds PATH         the host Unix socket the VM's vsock muxer binds (the
                      daemon's convention is {uds_dir}/vm{cid})
   --gic v2|v3        aarch64 interrupt controller (ignored on x86_64)
+  --balloon-usable-mib N
+                     with a balloon, the memory the guest may use at boot
+  --control PATH     a Unix socket (mode 0600) the parent resizes the balloon
+                     through: one request line per connection, `usable N` or
+                     `stats`. Needs a balloon.
   -h, --help         print this help
 
 The exit status is the VM's: 0 the guest shut down, 3 the guest reset, 1 a
@@ -104,6 +116,13 @@ const CONSOLE_INPUT_RETRY: Duration = Duration::from_millis(10);
 /// dropped, so a guest that stopped reading cannot build an unbounded backlog.
 const CONSOLE_INPUT_ATTEMPTS: usize = 100;
 
+/// How long one control-socket connection may take to send its request and
+/// read the reply, so a stuck client cannot hold the control thread.
+const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the control thread waits after an accept error before trying again.
+const CONTROL_RETRY: Duration = Duration::from_millis(10);
+
 pub(crate) fn main() -> ExitCode {
     // Before anything else — before the command line is even read — so the
     // window in which this process has no parent-death backstop is as small as
@@ -122,15 +141,15 @@ pub(crate) fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let spec = match parse(&args) {
-        Ok(spec) => spec,
+    let (spec, control) = match parse(&args) {
+        Ok(parsed) => parsed,
         Err(err) => {
             eprintln!("apz-vmm: {err}");
             eprintln!("{USAGE}");
             return ExitCode::from(CHILD_EXIT_USAGE as u8);
         }
     };
-    match run(spec) {
+    match run(spec, control) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("apz-vmm: {err}");
@@ -203,13 +222,14 @@ fn arm_parent_death_signal() -> std::io::Result<()> {
 }
 
 /// The one VM's specification, parsed from the command line the parent laid
-/// out (`vmm::spawner::process::child_args`).
+/// out (`vmm::spawner::process::child_args`), and the control socket's path if
+/// the command line asked for one.
 ///
 /// There is no VM *id* here: this process holds exactly one VM, so the VM is
 /// id `0` in every name this process makes (the VMM thread names, the jail
 /// root). The parent's own handle keeps the caller's id; nothing crosses the
 /// pipe that depends on the two agreeing.
-fn parse(args: &[String]) -> Result<VmSpec, String> {
+fn parse(args: &[String]) -> Result<(VmSpec, Option<PathBuf>), String> {
     let mut kernel: Option<PathBuf> = None;
     let mut cmdline: Option<String> = None;
     let mut initrd: Option<PathBuf> = None;
@@ -220,6 +240,7 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
     let mut uds: Option<PathBuf> = None;
     let mut gic: Option<GicVersion> = None;
     let mut balloon: Option<u32> = None;
+    let mut control: Option<PathBuf> = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -261,6 +282,7 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
                 );
             }
             "--uds" => uds = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--control" => control = Some(PathBuf::from(value(args, &mut index, flag)?)),
             "--gic" => {
                 let text = value(args, &mut index, flag)?;
                 gic = Some(match text {
@@ -290,7 +312,7 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
     // The two optional numbers default to the spec's own, so this binary and
     // `noded` cannot disagree about a VM's shape.
     let defaults = VmSpec::default();
-    Ok(VmSpec {
+    let spec = VmSpec {
         kernel: kernel.ok_or("--kernel is required")?,
         cmdline: cmdline.ok_or("--cmdline is required")?,
         vcpus: vcpus.unwrap_or(defaults.vcpus),
@@ -300,7 +322,8 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
         vsock,
         workspace,
         balloon,
-    })
+    };
+    Ok((spec, control))
 }
 
 /// The value of `flag`: the argument after it, or why it is missing.
@@ -312,13 +335,26 @@ fn value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&'a st
 }
 
 /// Boots the VM, serves its console, and returns its exit status.
-fn run(spec: VmSpec) -> Result<ExitCode, String> {
+fn run(spec: VmSpec, control: Option<PathBuf>) -> Result<ExitCode, String> {
     // This process exists to hold one VM: it can never take the per-VM process
     // mode itself, whatever the operator's environment says — that would be
     // `apz-vmm` spawning `apz-vmm` without end.
     vmm::spawner::set_spawn_mode(SpawnMode::InProcess);
 
     let mut handle = vmm::spawner::spawn(spec).map_err(|err| err.to_string())?;
+
+    // The control socket, when the command line asked for one: bound before the
+    // readiness line, so the parent never holds a handle to a VM whose socket is
+    // not there yet. A VM without a balloon has nothing to resize, so the flag is
+    // refused rather than served with nothing behind it.
+    if let Some(path) = control {
+        match handle.runtime().memory_control() {
+            Some(memory) => serve_control(path, memory)?,
+            None => {
+                return Err("--control needs a VM with a balloon (--balloon-usable-mib)".into());
+            }
+        }
+    }
 
     // The VM is up. This line is the parent's readiness gate; the jailer has
     // already reported itself on stderr by now (it runs inside the boot), so
@@ -372,6 +408,104 @@ fn run(spec: VmSpec) -> Result<ExitCode, String> {
             Ok(ExitCode::from(CHILD_EXIT_FAILED as u8))
         }
     }
+}
+
+/// Binds the control socket at `path` and serves it on a thread of its own:
+/// one request line per connection, one reply line back (see [`answer`]).
+///
+/// The socket is `0600`, and it lives in the UDS directory, which the jail binds
+/// read-write at the same path (`jail::jailer`), so the parent reaches it at the
+/// path it named. A socket file left by an earlier run is removed first, since
+/// `bind(2)` refuses a path that exists. The directory is `0700`, so the window
+/// between `bind` and the `chmod` is closed by the directory, not by the umask.
+fn serve_control(path: PathBuf, memory: Arc<dyn MemoryControl>) -> Result<(), String> {
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(format!(
+                "cannot clear the control socket {}: {err}",
+                path.display()
+            ));
+        }
+    }
+    let listener = UnixListener::bind(&path)
+        .map_err(|err| format!("cannot bind the control socket {}: {err}", path.display()))?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|err| format!("cannot restrict the control socket {}: {err}", path.display()))?;
+    thread::Builder::new()
+        .name("apz_vmm_control".to_string())
+        .spawn(move || {
+            for connection in listener.incoming() {
+                match connection {
+                    Ok(stream) => serve_one(&stream, &*memory),
+                    Err(err) => {
+                        eprintln!("apz-vmm: control socket: {err}");
+                        thread::sleep(CONTROL_RETRY);
+                    }
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|err| format!("cannot start the control thread: {err}"))
+}
+
+/// Answers one control connection: reads one request line, writes one reply
+/// line. A connection that sends nothing, or stalls past [`CONTROL_IO_TIMEOUT`],
+/// is dropped without a reply.
+fn serve_one(stream: &UnixStream, memory: &dyn MemoryControl) {
+    use std::io::BufRead;
+
+    if stream.set_read_timeout(Some(CONTROL_IO_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(CONTROL_IO_TIMEOUT)).is_err()
+    {
+        return;
+    }
+    let mut request = String::new();
+    if std::io::BufReader::new(stream)
+        .read_line(&mut request)
+        .is_err()
+    {
+        return;
+    }
+    let reply = answer(request.trim(), memory);
+    let mut writer = stream;
+    let _ = writeln!(writer, "{reply}");
+}
+
+/// The reply to one request line: `usable N` resizes the balloon and answers
+/// `ok` or `err <why>`; `stats` answers the balloon's counters as
+/// `stats <max> <usable> <held> <free|-> <available|->`. Anything else is
+/// refused with `err`, never guessed at.
+fn answer(request: &str, memory: &dyn MemoryControl) -> String {
+    let mut words = request.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some("usable"), Some(text), None) => match text.parse::<u32>() {
+            Ok(mib) => match memory.set_usable_mib(mib) {
+                Ok(()) => "ok".to_string(),
+                // A reply is one line: an error message never breaks the framing.
+                Err(err) => format!("err {}", err.to_string().replace('\n', " ")),
+            },
+            Err(_) => format!("err {text:?} is not a number of MiB"),
+        },
+        (Some("stats"), None, None) => {
+            let stats = memory.stats();
+            format!(
+                "stats {} {} {} {} {}",
+                stats.max_mib,
+                stats.usable_mib,
+                stats.held_mib,
+                field(stats.free_mib),
+                field(stats.available_mib)
+            )
+        }
+        _ => format!("err {request:?} is not a request this control socket takes"),
+    }
+}
+
+/// An optional counter as a reply writes it: its number, or `-` when unreported.
+fn field<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map_or_else(|| "-".to_string(), |value| value.to_string())
 }
 
 /// Writes the guest's console to stdout as it is produced, until `stop` is set
@@ -447,7 +581,8 @@ fn forward_console_input(runtime: Arc<VmRuntime>, stop: Arc<AtomicBool>) {
 mod tests {
     use super::*;
 
-    /// The command line the parent writes parses back into the same spec.
+    /// The command line the parent writes parses back into the same spec, and
+    /// the control socket the parent names comes back with it.
     #[test]
     fn a_command_line_round_trips() {
         let spec = VmSpec {
@@ -465,7 +600,7 @@ mod tests {
             balloon: Some(32),
         };
         let args = vmm::spawner::process::child_args(&spec);
-        let parsed = parse(&args).expect("the parent's command line parses");
+        let (parsed, control) = parse(&args).expect("the parent's command line parses");
         assert_eq!(parsed.kernel, spec.kernel);
         assert_eq!(parsed.cmdline, spec.cmdline);
         assert_eq!(parsed.vcpus, spec.vcpus);
@@ -475,6 +610,7 @@ mod tests {
         assert_eq!(parsed.vsock, spec.vsock);
         assert_eq!(parsed.workspace, spec.workspace);
         assert_eq!(parsed.balloon, spec.balloon);
+        assert_eq!(control, Some(PathBuf::from("/tmp/plaza-vsock/vm42.ctl")));
     }
 
     /// A command line that does not describe one VM is refused, with the flag
@@ -513,12 +649,13 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string())
             .collect();
-        let spec = parse(&args).expect("a minimal command line");
+        let (spec, control) = parse(&args).expect("a minimal command line");
         assert_eq!(spec.vcpus, VmSpec::default().vcpus);
         assert_eq!(spec.memory_mib, VmSpec::default().memory_mib);
         assert!(spec.vsock.is_none());
         assert!(spec.workspace.is_none());
         assert!(spec.initrd.is_none());
         assert!(spec.gic.is_none());
+        assert!(control.is_none());
     }
 }

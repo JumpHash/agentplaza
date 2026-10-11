@@ -236,6 +236,12 @@ pub enum SpawnError {
     /// The VM has no balloon, so its memory cannot be resized
     #[error("this VM has no balloon")]
     NoBalloon,
+    /// The VM's memory control refused a resize or could not be reached: {reason}
+    #[error("the VM's memory control failed: {reason}")]
+    MemoryControl {
+        /// Why the request failed.
+        reason: String,
+    },
     /// Guest CID {guest_cid} is outside the supported range {min}..={max}
     #[error("guest CID {guest_cid} is outside the supported range {min}..={max}")]
     GuestCidOutOfRange {

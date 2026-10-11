@@ -44,6 +44,13 @@
 //! [`spawn`](super::spawn) call (with the child's own log in the error) rather
 //! than a handle to a VM that does not exist.
 //!
+//! **The memory control is a second socket** (a VM with a balloon only). The
+//! child binds `{uds_path}.ctl` ([`control_path`], `--control`) once its VM is
+//! up, and the parent's [`ChildMemory`] makes one exchange over it per call:
+//! one request line (`usable N` or `stats`), one reply line ([`parse_reply`]).
+//! It lives beside the muxer's socket, so the jail's bind of the UDS directory
+//! covers it at the same path.
+//!
 //! **The child dies with its daemon, structurally.** `apz-vmm` arms
 //! `PR_SET_PDEATHSIG(SIGKILL)` before it does anything else, so a parent that
 //! dies *without* running any stop path — `SIGKILL`, a crash, an OOM kill —
@@ -109,17 +116,27 @@
 //! mode).
 
 use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
-use super::{CHILD_BOOT_TIMEOUT, CHILD_READY, SpawnError, VmRuntime, VmSpec};
+use super::{
+    CHILD_BOOT_TIMEOUT, CHILD_READY, MemoryControl, MemoryStats, SpawnError, VmRuntime, VmSpec,
+};
 
 /// How many lines of the child's stderr log are kept, so a failed boot's error
 /// is its own last words and not an unbounded buffer.
 const CHILD_LOG_LINES: usize = 200;
+
+/// How long one control-socket exchange may take — the connect, the request and
+/// the reply — before the call fails. A resize is a memory operation inside the
+/// child, so two seconds is generous for it, and it bounds a stuck child.
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The environment the per-VM process is given — the whole of it. Each name is
 /// a confinement switch this crate itself reads: the jailer's mode, base and
@@ -298,6 +315,16 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
     // the child's.
     runtime.set_process_id(pid);
 
+    // The memory control of a VM with a balloon: one exchange with the child's
+    // control socket per call (see [`ChildMemory`]). A VM without one installs
+    // nothing, as the in-process shape does.
+    if let Some(path) = control_path(spec) {
+        runtime.set_memory_control(Arc::new(ChildMemory {
+            path,
+            max_mib: u32::try_from(spec.memory_mib).unwrap_or(u32::MAX),
+        }));
+    }
+
     // The guest's serial stream: the child's stdout. The reader blocks in
     // `read`, so it forwards each chunk as it arrives and ends when the child
     // closes the pipe (when it exits).
@@ -467,7 +494,156 @@ pub fn child_args(spec: &VmSpec) -> Vec<String> {
         args.push("--uds".to_string());
         args.push(vsock.uds_path.display().to_string());
     }
+    if let Some(control) = control_path(spec) {
+        args.push("--control".to_string());
+        args.push(control.display().to_string());
+    }
     args
+}
+
+/// The control socket's path for a VM: `{uds_path}.ctl`, beside the muxer's
+/// socket, so the jail's read-write bind of the UDS directory covers it at the
+/// same path. Only a VM with a balloon has one, and only a VM with a vsock
+/// socket path to put it beside.
+fn control_path(spec: &VmSpec) -> Option<PathBuf> {
+    if spec.balloon.is_none() {
+        return None;
+    }
+    let vsock = spec.vsock.as_ref()?;
+    let mut path = vsock.uds_path.clone().into_os_string();
+    path.push(".ctl");
+    Some(PathBuf::from(path))
+}
+
+/// One reply line of the child's control socket.
+#[derive(Debug, PartialEq, Eq)]
+enum Reply {
+    /// `ok`: the resize took.
+    Ok,
+    /// `err <message>`: the child refused or could not carry out the request.
+    Err(String),
+    /// `stats …`: the balloon's counters.
+    Stats(MemoryStats),
+}
+
+/// Parses one reply line: `ok`, `err <message>`, or
+/// `stats <max> <usable> <held> <free|-> <available|->`. A line that is none of
+/// these is an error, never a guess.
+fn parse_reply(line: &str) -> Result<Reply, String> {
+    let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
+    match verb {
+        "ok" if rest.is_empty() => Ok(Reply::Ok),
+        "err" => Ok(Reply::Err(rest.to_string())),
+        "stats" => parse_stats(rest).map(Reply::Stats),
+        _ => Err(format!(
+            "the control socket answered {line:?}, which is not a reply"
+        )),
+    }
+}
+
+/// The five fields of a `stats` reply: the three counters, then the two optional
+/// ones, which the child writes as `-` when the guest has not reported them.
+fn parse_stats(fields: &str) -> Result<MemoryStats, String> {
+    fn number<T: std::str::FromStr>(text: &str, name: &str) -> Result<T, String> {
+        text.parse()
+            .map_err(|_| format!("the stats reply's {name} {text:?} is not a number"))
+    }
+    fn optional(text: &str, name: &str) -> Result<Option<u64>, String> {
+        if text == "-" {
+            Ok(None)
+        } else {
+            number(text, name).map(Some)
+        }
+    }
+    let words: Vec<&str> = fields.split(' ').collect();
+    let [max, usable, held, free, available] = words.as_slice() else {
+        return Err(format!(
+            "the stats reply {fields:?} does not have five fields"
+        ));
+    };
+    Ok(MemoryStats {
+        max_mib: number(max, "max")?,
+        usable_mib: number(usable, "usable")?,
+        held_mib: number(held, "held")?,
+        free_mib: optional(free, "free")?,
+        available_mib: optional(available, "available")?,
+    })
+}
+
+/// One exchange with the child's control socket: connect, send `request` as one
+/// line, read the reply line.
+///
+/// The connect runs on a helper thread, so a listener that stops accepting
+/// cannot hold the caller past [`CONTROL_TIMEOUT`] (a Unix-socket `connect` has
+/// no timeout of its own). If the caller gives up while that thread is still
+/// connecting, the thread finishes or fails on its own and its result is dropped.
+fn exchange(path: &Path, request: &str) -> Result<String, String> {
+    use std::io::BufRead;
+
+    let (connected, answer) = mpsc::channel();
+    let target = path.to_path_buf();
+    thread::spawn(move || {
+        let _ = connected.send(UnixStream::connect(target));
+    });
+    let stream = answer
+        .recv_timeout(CONTROL_TIMEOUT)
+        .map_err(|_| {
+            format!(
+                "the control socket {} did not accept within {}s",
+                path.display(),
+                CONTROL_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|err| format!("cannot reach the control socket {}: {err}", path.display()))?;
+    stream
+        .set_read_timeout(Some(CONTROL_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(CONTROL_TIMEOUT)))
+        .map_err(|err| format!("cannot time the control socket exchange: {err}"))?;
+    let mut writer = &stream;
+    writeln!(writer, "{request}")
+        .map_err(|err| format!("cannot write to the control socket: {err}"))?;
+    let mut reply = String::new();
+    std::io::BufReader::new(&stream)
+        .read_line(&mut reply)
+        .map_err(|err| format!("cannot read the control socket's reply: {err}"))?;
+    Ok(reply.trim_end().to_string())
+}
+
+/// The memory control of a VM in its own process: each call is one exchange
+/// over the child's control socket, which the child serves from its own balloon
+/// (`apz-vmm --control`).
+struct ChildMemory {
+    path: PathBuf,
+    max_mib: u32,
+}
+
+impl MemoryControl for ChildMemory {
+    fn set_usable_mib(&self, mib: u32) -> Result<(), SpawnError> {
+        let reply =
+            exchange(&self.path, &format!("usable {mib}")).and_then(|line| parse_reply(&line));
+        match reply {
+            Ok(Reply::Ok) => Ok(()),
+            Ok(Reply::Err(reason)) | Err(reason) => Err(SpawnError::MemoryControl { reason }),
+            Ok(Reply::Stats(_)) => Err(SpawnError::MemoryControl {
+                reason: "the control socket answered a resize with stats".to_string(),
+            }),
+        }
+    }
+
+    fn stats(&self) -> MemoryStats {
+        match exchange(&self.path, "stats").and_then(|line| parse_reply(&line)) {
+            Ok(Reply::Stats(stats)) => stats,
+            // A child that cannot be asked reports nothing: zeros and no reading,
+            // never a stale or invented one. The maximum is the VM's own spec.
+            _ => MemoryStats {
+                max_mib: self.max_mib,
+                usable_mib: 0,
+                held_mib: 0,
+                free_mib: None,
+                available_mib: None,
+            },
+        }
+    }
 }
 
 /// The child's stderr reader: it forwards every line to the child's log, and
@@ -536,10 +712,10 @@ fn fail_start(child: &mut Child, source: std::io::Error) -> Result<(), SpawnErro
 mod tests {
     use super::*;
     use crate::spawner::{GicVersion, VsockConfig};
-    use std::path::PathBuf;
 
     /// Every `VmSpec` field reaches the child's command line, including the
-    /// exact vsock socket path (never a directory the child re-derives).
+    /// exact vsock socket path (never a directory the child re-derives) and the
+    /// control socket beside it.
     #[test]
     fn the_child_gets_the_whole_spec() {
         let spec = VmSpec {
@@ -573,6 +749,7 @@ mod tests {
             ("--gic", "v2"),
             ("--cid", "42"),
             ("--uds", "/tmp/plaza-vsock/vm42"),
+            ("--control", "/tmp/plaza-vsock/vm42.ctl"),
             ("--workspace", "/tmp/run/workspace-0.ext4"),
             ("--balloon-usable-mib", "32"),
         ] {
@@ -583,8 +760,40 @@ mod tests {
         }
         // The optional fields are absent when the spec has none of them.
         let bare = child_args(&VmSpec::default());
-        for absent in ["--initrd", "--gic", "--cid", "--uds", "--workspace", "--balloon-usable-mib"] {
+        for absent in [
+            "--initrd",
+            "--gic",
+            "--cid",
+            "--uds",
+            "--control",
+            "--workspace",
+            "--balloon-usable-mib",
+        ] {
             assert!(!bare.iter().any(|arg| arg == absent), "{absent} leaked");
+        }
+    }
+
+    /// The control socket's replies parse to what the child meant, and anything
+    /// else is refused rather than guessed at.
+    #[test]
+    fn the_control_replies_parse() {
+        assert_eq!(parse_reply("ok"), Ok(Reply::Ok));
+        assert_eq!(
+            parse_reply("err this VM has no balloon"),
+            Ok(Reply::Err("this VM has no balloon".to_string()))
+        );
+        assert_eq!(
+            parse_reply("stats 512 256 200 - 180"),
+            Ok(Reply::Stats(MemoryStats {
+                max_mib: 512,
+                usable_mib: 256,
+                held_mib: 200,
+                free_mib: None,
+                available_mib: Some(180),
+            }))
+        );
+        for bad in ["", "okay", "ok extra", "stats 512 256", "stats 512 x 200 - -", "usable 5"] {
+            assert!(parse_reply(bad).is_err(), "{bad:?} is not a reply");
         }
     }
 
