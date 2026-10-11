@@ -18,8 +18,15 @@
 // `apz-vmm/linux.rs` behind this gate — the same shape `jailer_probe.rs` uses
 // for the same reason.
 //
-// Safe Rust only: nothing here needs an `unsafe` block.
-#![forbid(unsafe_code)]
+// Safe Rust, with one stated exception. The crate's library is
+// `deny(unsafe_code)` with an enumerated module allowlist (`lib.rs`); this
+// binary's own entry on that discipline is `apz-vmm/linux.rs`, whose only
+// `unsafe` is the `prctl(2)` that arms `PR_SET_PDEATHSIG` — a call no safe
+// interface exposes, and one that has to run in this process because it is
+// this process's *parent* that dies. So this root is `deny` rather than
+// `forbid` and that module carries the explicit `#![allow(unsafe_code)]` and
+// the `// SAFETY:` note, exactly as the library's syscall modules do.
+#![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
 #[path = "apz-vmm/linux.rs"]

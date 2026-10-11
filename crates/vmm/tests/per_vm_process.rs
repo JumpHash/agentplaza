@@ -31,12 +31,14 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use vmm::jail::jailer;
 use vmm::spawner::{
-    SpawnMode, VmExit, VmHandle, VmSpec, VsockConfig, create_uds_dir, set_spawn_mode, spawn,
+    CHILD_BINARY_ENV, CHILD_EXIT_USAGE, CHILD_PDEATHSIG, CHILD_READY, SpawnMode, VmExit, VmHandle,
+    VmSpec, VsockConfig, create_uds_dir, set_spawn_mode, spawn,
 };
 
 /// The process-wide mode switch is shared by every test here: the tests
@@ -627,4 +629,247 @@ fn the_guest_exit_reads_the_same_in_both_modes() {
         serial_tail(&child)
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// The parent-death backstop: `PR_SET_PDEATHSIG(SIGKILL)` in the child.
+// ---------------------------------------------------------------------------
+
+/// The environment variable that tells a re-executed copy of this binary it is
+/// the *parent* of a per-VM process rather than an ordinary test run. Its
+/// value is the scratch directory the parent works in.
+const HELPER_ENV: &str = "APZ_VMM_PARENT_HELPER";
+
+/// The ignored test [`the_per_vm_process_dies_with_its_parent`] re-executes
+/// this binary as.
+const HELPER_TEST: &str = "the_parent_of_a_per_vm_process";
+
+/// The helper's guest CID and command line: a guest that parks forever
+/// (`plaza.halt`), so *nothing* but the host can end its VM — a guest that
+/// could exit on its own would make "the child is gone" ambiguous.
+const HELPER_CID: u64 = 415;
+const HELPER_CMDLINE: &str = "console=ttyS0 panic=-1 plaza.halt=1";
+
+/// How long the child of a `SIGKILL`ed parent is given to be gone. The
+/// mechanism is the kernel's, so delivery is immediate; this is slack for the
+/// reaping (and for a loaded machine), not a timeout the mechanism needs.
+const ORPHAN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The `apz-vmm` binary these tests run directly: [`CHILD_BINARY_ENV`] when an
+/// operator set it (the spawner's own override), else the one cargo built for
+/// this test.
+fn child_binary() -> PathBuf {
+    match std::env::var_os(CHILD_BINARY_ENV) {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => PathBuf::from(env!("CARGO_BIN_EXE_apz-vmm")),
+    }
+}
+
+/// The `/proc/<pid>/stat` state of the process at `proc`: `None` when there is
+/// no such process (or no readable stat), else the one-letter state.
+fn proc_state(proc: &Path) -> Option<char> {
+    let stat = fs::read_to_string(proc.join("stat")).ok()?;
+    // `pid (comm) state ...`: `comm` can hold spaces and parentheses, so the
+    // state is the first field after the *last* `)`.
+    let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().next()?.chars().next()
+}
+
+/// Whether the process `/proc/<pid>` names has **ended**: its directory is
+/// gone (reaped), or its state is a dead one. "Ended" is the claim; whether
+/// the host's PID 1 has collected the corpse is not — a zombie counts, so this
+/// does not assume the reaper is prompt.
+fn is_dead(proc: &Path) -> bool {
+    match proc_state(proc) {
+        None | Some('Z' | 'X' | 'x') => true,
+        Some(_) => false,
+    }
+}
+
+/// The tail of the parent helper's own stderr, for an assertion message.
+fn helper_tail(dir: &Path) -> String {
+    let Ok(text) = fs::read_to_string(dir.join("helper.err")) else {
+        return "no helper log".to_string();
+    };
+    text[text.len().saturating_sub(600)..].to_string()
+}
+
+/// (e) The per-VM process **dies with its parent**: a parent that is `SIGKILL`ed
+/// — its stop path never runs, so neither the graceful `SIGTERM` nor the stdin
+/// close happens — leaves no live `apz-vmm` behind, because the child armed
+/// `PR_SET_PDEATHSIG(SIGKILL)` and the kernel delivers it.
+///
+/// The parent cannot be this test process, so it is a re-executed copy of this
+/// binary (`the_parent_of_a_per_vm_process`): the same `spawner::spawn` call a
+/// daemon makes, the same pipes, and the child a real jailed `apz-vmm` with a
+/// guest parked forever. What the test asserts is the *outcome* — a live child
+/// before, and no live child within [`ORPHAN_DEADLINE`] after — and the
+/// mechanism is the signal: measured, with the backstop absent, a child in
+/// exactly this shape outlived its `SIGKILL`ed parent for minutes with its
+/// guest still parked (the stdin EOF only ends console-input forwarding; see
+/// `arm_parent_death_signal` in `src/bin/apz-vmm/linux.rs`).
+#[test]
+fn the_per_vm_process_dies_with_its_parent() {
+    if smoke_kernel().is_none() {
+        eprintln!("skipping: set APZ_VMM_SMOKE_KERNEL (needs a hypervisor and a guest kernel)");
+        return;
+    }
+    assert!(harness_initrd().is_some(), "a guest initramfs is required");
+
+    let dir = scratch("orphan");
+    let pidfile = dir.join("child.pid");
+    let logfile = dir.join("child.log");
+    let helper_err = fs::File::create(dir.join("helper.err")).expect("the helper's log file");
+
+    // The parent: a copy of this binary, in its own process, holding a real
+    // per-VM process's stdin pipe.
+    let mut helper = Command::new(std::env::current_exe().expect("the test binary's path"))
+        .args([
+            "--ignored",
+            "--exact",
+            HELPER_TEST,
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(HELPER_ENV, &dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(helper_err))
+        .spawn()
+        .expect("the parent helper starts");
+
+    // It reports its child (the real per-VM process) once that child's VM is up.
+    assert!(
+        wait_until(|| pidfile.is_file(), SETTLE),
+        "the parent helper never booted a per-VM process: {}",
+        helper_tail(&dir)
+    );
+    let pid: i32 = fs::read_to_string(&pidfile)
+        .expect("the child's pid file")
+        .trim()
+        .parse()
+        .expect("a pid");
+    let proc = PathBuf::from(format!("/proc/{pid}"));
+
+    // The child is a live VM process — the kernel's own name for it, never the
+    // helper's claim — and it armed the backstop before it did anything else.
+    assert!(
+        wait_until(
+            || fs::read_to_string(proc.join("status")).is_ok_and(|status| status
+                .lines()
+                .any(|line| line.starts_with("Name:") && line.contains("apz-vmm"))),
+            SETTLE
+        ),
+        "/proc/{pid} is not a live per-VM process: {}",
+        helper_tail(&dir)
+    );
+    let log = fs::read_to_string(&logfile).expect("the helper reported the child's log");
+    assert!(
+        log.contains(CHILD_PDEATHSIG),
+        "the child never armed its parent-death signal: {log}"
+    );
+    assert!(
+        log.contains(CHILD_READY),
+        "the child never reported its VM up: {log}"
+    );
+    assert!(
+        !is_dead(&proc),
+        "the child {pid} ended before the parent was killed — the test proves nothing"
+    );
+
+    // The parent dies *without asking*: `Child::kill` is `SIGKILL`, so no stop
+    // path (no `SIGTERM`, and the stdin pipe is closed only by death) runs.
+    let killed_at = Instant::now();
+    helper.kill().expect("the parent helper is SIGKILLed");
+    let _ = helper.wait();
+
+    assert!(
+        wait_until(|| is_dead(&proc), ORPHAN_DEADLINE),
+        "the per-VM process {pid} outlived its SIGKILLed parent by {:?} (state {:?}, log {log:?}): \
+         the parent-death signal did not take",
+        killed_at.elapsed(),
+        proc_state(&proc)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The parent helper: what the test above re-executes this binary to run. It
+/// is the parent of a real per-VM process and then does nothing but stay alive
+/// until the test `SIGKILL`s it.
+///
+/// `#[ignore]`d so an ordinary `cargo test` never starts it (it boots a guest
+/// and sleeps); run without [`HELPER_ENV`] — an operator asking for ignored
+/// tests — it is a no-op.
+#[test]
+#[ignore = "re-executed by the parent-death test as the parent of a real apz-vmm"]
+fn the_parent_of_a_per_vm_process() {
+    let Ok(dir) = std::env::var(HELPER_ENV) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+
+    set_spawn_mode(SpawnMode::Process);
+    let vm = spawn(spec(&dir, HELPER_CID, HELPER_CMDLINE)).expect("the parent helper boots its VM");
+    let pid = vm.process_id().expect("a per-VM process");
+    fs::write(dir.join("child.pid"), pid.to_string()).expect("the child's pid is reported");
+    // The child's log as it stands once the VM is up, so the test can assert
+    // what the child said about itself: the child is a different process, and
+    // the helper — which holds the pipe the log came down — is the one that
+    // gets `SIGKILL`ed.
+    fs::write(dir.join("child.log"), vm.process_log().join("\n"))
+        .expect("the child's log is reported");
+
+    // Stay the parent until the test kills us. Bounded, so an interrupted test
+    // cannot leave this process behind forever.
+    for _ in 0..600 {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// (f) The child **arms the parent-death signal first** — before it parses its
+/// command line, let alone boots a VM. A command line it must refuse is the
+/// smallest run that shows the ordering, and it needs no hypervisor, no guest
+/// kernel and no VM; `--help` shows the same line on the success path.
+///
+/// This is the only cheap observable there is for the setting: the child logs
+/// the kernel's answer (the `prctl(2)` return code, which gates the line), and
+/// no `/proc` field reports it — `/proc/<pid>/status` carries `SigPnd`/
+/// `SigCgt` (pending signals and *dispositions*) and no parent-death field,
+/// while `PR_GET_PDEATHSIG` only answers about the calling thread itself. The
+/// *behaviour* is the test above.
+#[test]
+fn the_child_arms_its_parent_death_signal_first() {
+    let binary = child_binary();
+
+    let refused = Command::new(&binary)
+        .arg("--nonsense")
+        .output()
+        .expect("the per-VM process runs");
+    assert_eq!(
+        refused.status.code(),
+        Some(CHILD_EXIT_USAGE),
+        "a command line with no VM in it is refused: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        stderr.lines().next(),
+        Some(CHILD_PDEATHSIG),
+        "the child's first line must be the arming, before it reads the command line: {stderr:?}"
+    );
+
+    let help = Command::new(&binary)
+        .arg("--help")
+        .output()
+        .expect("the per-VM process runs");
+    assert!(help.status.success(), "--help exits 0");
+    assert_eq!(
+        String::from_utf8_lossy(&help.stderr).lines().next(),
+        Some(CHILD_PDEATHSIG),
+        "the arming line is on stderr, and the usage is on stdout"
+    );
+    assert!(
+        String::from_utf8_lossy(&help.stdout).starts_with("usage: apz-vmm"),
+        "--help still prints the usage"
+    );
 }

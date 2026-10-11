@@ -44,6 +44,25 @@
 //! [`spawn`](super::spawn) call (with the child's own log in the error) rather
 //! than a handle to a VM that does not exist.
 //!
+//! **The child dies with its parent, structurally.** `apz-vmm` arms
+//! `PR_SET_PDEATHSIG(SIGKILL)` before it does anything else, so a parent that
+//! dies *without* running any stop path — `SIGKILL`, a crash, an OOM kill —
+//! takes the child and its guest with it, in the kernel, with no cooperation
+//! from either side. That is the backstop; the graceful stop is the two
+//! mechanisms above: the parent holds the child's stdin open for the VM's life
+//! and closes it, and its stop control asks with `SIGTERM` (then `SIGKILL`).
+//! Both are wanted because they cover different failures — a parent that is
+//! shutting down *asks*, reads the VM's exit, and lets the guest end its own
+//! way, while a parent that has been killed *cannot* ask. The stdin close is
+//! not itself a stop: it ends the child's console-input forwarding (its reader
+//! returns on `read` → 0) and leaves the guest running — measured, with the
+//! backstop absent, a child outlived a `SIGKILL`ed parent with its
+//! `plaza.halt` guest still parked — which is exactly why the backstop is a
+//! kernel signal and not "the pipe closed". The one window neither covers is a
+//! parent that dies before the child's `prctl(2)` lands; it is one syscall
+//! wide, and it is documented at the child's `arm_parent_death_signal`
+//! (`crates/vmm/src/bin/apz-vmm/linux.rs`).
+//!
 //! **The muxer: the child binds its own socket.** `VmSpec::vsock`'s
 //! `uds_path` is handed to the child verbatim (`--uds`), and the child's
 //! [`crate::builder::boot`] builds the same [`crate::devices::virtio::vsock`]

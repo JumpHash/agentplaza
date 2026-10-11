@@ -13,6 +13,13 @@
 // a host without any jail privilege still gets a per-VM root, a mount
 // namespace and a `pivot_root`, which no in-daemon VM can.
 //
+// **Dying with its parent.** The first thing this process does is arm
+// `PR_SET_PDEATHSIG(SIGKILL)` ([`arm_parent_death_signal`]), so the kernel
+// kills it if the process that spawned it dies *without* asking — the
+// structural backstop behind the normal stop path (the parent's `SIGTERM`,
+// and the stdin close). The race that leaves, and what the stdin EOF does and
+// does not do, are stated at that function.
+//
 // The three streams are the contract with the parent
 // (`vmm::spawner::process::boot`):
 //
@@ -33,6 +40,14 @@
 // own report of the child rather than from a message this program could get
 // wrong.
 
+// Syscall boundary: this binary's own unsafe allow entry (see
+// `../apz-vmm.rs`, which is `deny(unsafe_code)`). `PR_SET_PDEATHSIG` is one
+// `prctl(2)` call that no safe-Rust interface exposes, and it has to run in
+// *this* process — it is this process's parent that dies. It is the only
+// `unsafe` in the binary, its block carries the `// SAFETY:` note, and the
+// crate's library keeps the same posture with the allowlist in `lib.rs`.
+#![allow(unsafe_code)]
+
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,8 +58,8 @@ use std::thread;
 use std::time::Duration;
 
 use vmm::spawner::{
-    CHILD_EXIT_FAILED, CHILD_EXIT_RESET, CHILD_EXIT_SHUTDOWN, CHILD_EXIT_USAGE, CHILD_READY,
-    GicVersion, SpawnMode, VmExit, VmRuntime, VmSpec, VsockConfig,
+    CHILD_EXIT_FAILED, CHILD_EXIT_RESET, CHILD_EXIT_SHUTDOWN, CHILD_EXIT_USAGE, CHILD_PDEATHSIG,
+    CHILD_READY, GicVersion, SpawnMode, VmExit, VmRuntime, VmSpec, VsockConfig,
 };
 
 const USAGE: &str = "\
@@ -90,6 +105,18 @@ const CONSOLE_INPUT_RETRY: Duration = Duration::from_millis(10);
 const CONSOLE_INPUT_ATTEMPTS: usize = 100;
 
 pub(crate) fn main() -> ExitCode {
+    // Before anything else — before the command line is even read — so the
+    // window in which this process has no parent-death backstop is as small as
+    // a process can make it. See [`arm_parent_death_signal`] for the race that
+    // window is, and for what this does *not* replace.
+    if let Err(err) = arm_parent_death_signal() {
+        // Fail closed. A process that cannot promise to die with the parent
+        // that spawned it is not one to hold a VM in: the parent is entitled
+        // to assume that when it dies, the VM goes with it.
+        eprintln!("apz-vmm: cannot arm the parent-death signal: {err}");
+        return ExitCode::from(CHILD_EXIT_FAILED as u8);
+    }
+    eprintln!("{CHILD_PDEATHSIG}");
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         println!("{USAGE}");
@@ -109,6 +136,68 @@ pub(crate) fn main() -> ExitCode {
             eprintln!("apz-vmm: {err}");
             ExitCode::from(CHILD_EXIT_FAILED as u8)
         }
+    }
+}
+
+/// The signal taken when the process that spawned this one dies: `SIGKILL`,
+/// and deliberately the only one. The parent's own stop path is a graceful
+/// `SIGTERM` *first* (`vmm::spawner::process`), so a `SIGKILL` here means the
+/// parent had no chance to ask — and there is nothing left to negotiate with
+/// on the other end of the pipes.
+const PARENT_DEATH_SIGNAL: libc::c_int = libc::SIGKILL;
+
+/// Arms the parent-death backstop: `prctl(PR_SET_PDEATHSIG, SIGKILL)`, so this
+/// process is killed by the kernel the moment the process that spawned it dies
+/// — however it dies (a `SIGKILL`ed daemon, a crash, an OOM kill, an exit that
+/// skipped the stop path).
+///
+/// **The race, exactly.** The signal is delivered only for a parent that dies
+/// *after* this call: a parent that dies in the window between the
+/// `fork`/`clone` that made this process and this `prctl` leaves it with no
+/// signal and no way to notice — `getppid(2)` becoming 1 is the only trace,
+/// and nothing here polls it. Arming first is what makes that window one
+/// syscall wide, and no ordering makes it zero, because the arming has to
+/// happen in this process, after the parent exists.
+///
+/// The `execve(2)` that got here is not part of that window: the setting is
+/// *not* cleared by `execve` in general (measured on Linux 7.2.8: a `prctl`ed
+/// value survived an `execve` into an unrelated program and still fired) — it
+/// is cleared on `fork(2)`, and, since 2.4.36/2.6.23, when executing a
+/// set-user-ID/set-group-ID binary or one with file capabilities. This
+/// process's parent `exec`s it, so nothing is inherited from the parent's own
+/// state, and the arm happens after that exec: arm-then-serve is the ordering
+/// that matters.
+///
+/// **Whose death counts.** Measured on Linux 7.2.8: the signal was delivered
+/// when the parent *process* died, and it was *not* delivered when a
+/// non-leader thread that spawned the child exited while its process lived —
+/// the child outlived that thread for as long as the worker's process lived,
+/// and died when the process did. (The conservative reading of `prctl(2)` —
+/// that the signal belongs to the spawning *thread* — is therefore stricter
+/// than this kernel's behaviour.) So a parent must keep the *process* alive,
+/// not any particular thread, which is the shape a daemon has.
+///
+/// **What it is not.** This neither replaces the graceful path nor stops the
+/// guest the way `VmHandle::kill` does. The parent holds this process's stdin
+/// open for the VM's life and asks it to stop with `SIGTERM` (then `SIGKILL`);
+/// closing stdin only ends console-input forwarding — [`forward_console_input`]
+/// sees `read` → 0 and returns, and the *guest keeps running* (measured: with
+/// this signal absent, a child outlived a `SIGKILL`ed parent with its
+/// `plaza.halt` guest still parked). So the two cover different failures:
+/// `SIGTERM` is the asked-for stop — the guest ends its own way and the parent
+/// reads the VM's exit — while this is the backstop for a parent that could
+/// not ask, and `SIGKILL` is the right backstop because there is nothing left
+/// to negotiate with.
+fn arm_parent_death_signal() -> std::io::Result<()> {
+    // SAFETY: `PR_SET_PDEATHSIG` takes the signal as an integer in its second
+    // argument and reads no memory; the remaining variadic slots are unused
+    // and passed as 0, as the kernel requires. The call touches no pointer and
+    // no other thread.
+    let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, PARENT_DEATH_SIGNAL, 0, 0, 0) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 

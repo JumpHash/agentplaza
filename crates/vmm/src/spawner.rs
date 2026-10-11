@@ -310,6 +310,14 @@ pub const CHILD_BINARY_NAME: &str = "apz-vmm";
 /// out, and anything else on the child's stderr is its log.
 pub const CHILD_READY: &str = "apz-vmm: ready";
 
+/// The one line the per-VM process writes on **stderr** once it has armed its
+/// parent-death signal (`PR_SET_PDEATHSIG(SIGKILL)`) — before it parses its
+/// command line, let alone boots a VM. It is the parent's (and a test's)
+/// observable that the `prctl(2)` ran and the kernel accepted it: `/proc`
+/// exposes no field for the setting itself, and `PR_GET_PDEATHSIG` can only be
+/// asked of one's own thread.
+pub const CHILD_PDEATHSIG: &str = "apz-vmm: parent-death signal armed (SIGKILL)";
+
 /// The per-VM process's exit status when the guest shut the VM down
 /// (`VmExit::GuestExited { reset: false }`).
 pub const CHILD_EXIT_SHUTDOWN: i32 = 0;
