@@ -19,6 +19,7 @@ mod providers;
 mod role;
 mod scheduler;
 mod settings;
+mod spawned;
 mod state;
 mod tools;
 mod transcript;

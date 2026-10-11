@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::upstream::Upstream;
-use crate::{agents, api, events, plaza, providers, scheduler, settings, transcript};
+use crate::{agents, api, events, plaza, providers, scheduler, settings, spawned, transcript};
 
 /// Command-line configuration.
 #[derive(Debug, Clone)]
@@ -76,6 +76,8 @@ pub struct App {
     pub agents: agents::Roster,
     /// Agent names by CID, persisted at `<state-dir>/names.json`.
     pub names: agents::Names,
+    /// Operator-spawned agents and model overrides, at `<state-dir>/spawned.json`.
+    pub spawned: spawned::Store,
     pub transcripts: transcript::Store,
     pub work: scheduler::Queues,
     pub plaza: plaza::Plaza,
@@ -98,6 +100,7 @@ impl App {
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             names: agents::Names::load(config.state_dir.join("names.json")),
+            spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
             agents: agents::Roster::default(),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
@@ -109,6 +112,7 @@ impl App {
         });
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
+        spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         let server = apz_http::Server::bind(app.config.port)?;
         let router = api::router();
