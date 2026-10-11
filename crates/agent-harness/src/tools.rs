@@ -26,10 +26,11 @@ use std::fs;
 
 use serde_json::Value;
 
+use crate::egress;
 use crate::files::{self, Workspace};
 
 /// The tools, by name.
-const TOOLS: [Tool; 10] = [
+const TOOLS: [Tool; 12] = [
     Tool {
         name: "echo",
         run: echo,
@@ -69,6 +70,14 @@ const TOOLS: [Tool; 10] = [
     Tool {
         name: "search",
         run: files::search,
+    },
+    Tool {
+        name: "fetch_url",
+        run: egress::fetch_url,
+    },
+    Tool {
+        name: "download",
+        run: files::download,
     },
 ];
 

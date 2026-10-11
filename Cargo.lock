@@ -41,6 +41,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

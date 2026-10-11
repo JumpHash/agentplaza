@@ -26,6 +26,10 @@ const DEFAULT_TIMEOUT_S: u64 = 60;
 const MAX_TIMEOUT_S: u64 = 300;
 const SHELL: &str = "/bin/sh";
 const SYSTEM_PATH: &str = "/bin:/usr/bin";
+/// The egress shim's listen address and the proxy URL every guest client is given
+/// (see [`crate::egress`]).
+pub const PROXY_ADDR: &str = "127.0.0.1:3128";
+pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 /// The uid and gid a root guest runs commands as.
 const UNPRIVILEGED: u32 = 1000;
 /// The most output kept; past it the rest is drained and dropped.
@@ -64,6 +68,10 @@ pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
         .env_clear()
         .env("HOME", root)
         .env("PATH", SYSTEM_PATH)
+        .env("http_proxy", PROXY_URL)
+        .env("https_proxy", PROXY_URL)
+        .env("HTTP_PROXY", PROXY_URL)
+        .env("HTTPS_PROXY", PROXY_URL)
         .stdin(Stdio::null())
         .stdout(writer)
         .stderr(stderr)

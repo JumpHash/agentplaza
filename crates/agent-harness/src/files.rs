@@ -64,6 +64,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::egress;
 use crate::session::escape_for_transcript;
 use crate::tools::ToolError;
 
@@ -521,6 +522,43 @@ pub fn share_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErr
     }
     let content = read_text(&path, &label)?;
     Ok(json!({ "path": label, "size": metadata.len(), "content": content }).to_string())
+}
+
+/// `download`: GETs an http(s) URL through the proxy and saves the body as one
+/// file inside the workspace.
+///
+/// Arguments: `url` (required, http or https), `path` (required, relative; the
+/// rules of `write_file`). A body over [`crate::egress::DOWNLOAD_CAP`] is refused
+/// rather than saved short. Output: `{"path", "bytes", "created"}`.
+pub fn download(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
+    let url = egress::http_url_arg(args)?;
+    let raw = string_arg(args, "path")?;
+    let (path, label) = workspace.resolve(&raw)?;
+    refuse_symlink_target(&path, &label)?;
+    if fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err(invalid(format!(
+            "{label} is a directory; download writes one file"
+        )));
+    }
+    let fetched = egress::fetch(&url, egress::DOWNLOAD_CAP)?;
+    if fetched.truncated {
+        return Err(limit(format!(
+            "{url} is over the {}-byte download cap",
+            egress::DOWNLOAD_CAP
+        )));
+    }
+    let created = !path.exists();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
+    }
+    write_atomic(&path, &fetched.body)
+        .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
+    Ok(json!({
+        "path": label,
+        "bytes": fetched.body.len(),
+        "created": created,
+    })
+    .to_string())
 }
 
 /// The optional line window of `read_file`, as the index of the first line and
