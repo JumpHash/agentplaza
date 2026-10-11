@@ -7,7 +7,9 @@ license.workspace = true
 
 [dependencies]
 apz-proto.workspace = true
+globset = "0.4"
 libc.workspace = true
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true
