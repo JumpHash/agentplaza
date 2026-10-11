@@ -264,6 +264,50 @@ pub fn ledger_claim_refused(list: &str, tasks: &str, task: &str, error: &str) ->
     }))
 }
 
+/// A ledger whose artifact read answers `read` (an HTTP status and a body):
+/// the register answers `list`, the ledger `tasks`, every other read `task`,
+/// and `POST /api/v0/tasks/{id}/artifact` answers `read` — the artifact the
+/// task's agent read, or the daemon's own refusal (the hub's `403`, the
+/// agent's `422`, or a `503` read-through that is switched off).
+pub fn ledger_artifact(
+    list: &str,
+    tasks: &str,
+    task: &str,
+    read: (u16, &str),
+) -> Stub {
+    let list = list.to_string();
+    let tasks = tasks.to_string();
+    let task = task.to_string();
+    let (status, body) = (read.0, read.1.to_string());
+    spawn(Box::new(move |request, _| {
+        if request.method == "POST" && request.target.ends_with("/artifact") {
+            return Some(response(status, &body));
+        }
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/runs") => list.as_str(),
+            (_, "/api/v0/tasks") => tasks.as_str(),
+            _ => task.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A ledger whose one ended task was finished by the dispatcher, so its note
+/// is the `artifacts:` line that names the file its agent wrote.
+pub const TASKS_ARTIFACT: &str = r#"{"tasks":[
+    {"id":"t3","goal":"verify the fixed loop","acceptance":"a note exists",
+     "budget":2000,"role":"builder","state":"done","outcome":"accepted",
+     "assignee_id":"builder","verifier_id":null,"agent_cid":103,
+     "note":"artifacts: build-notes.txt (2 tool call(s))",
+     "created_at":1791675134319,"updated_at":1791675198671}
+]}"#;
+
+/// An artifact as `POST /api/v0/tasks/t3/artifact` answers it: the file the
+/// task's agent read back, in the shape the live daemon answered with.
+pub const ARTIFACT: &str = r#"{"task":"t3","agent_cid":103,"path":"build-notes.txt",
+    "content":"task t3: verify the fixed loop\nthe loop held\n","size":45,
+    "truncated":false}"#;
+
 /// A whole stub daemon: the register's paths answer `list`/`detail`, the
 /// machine `MACHINE`, and `GET /api/v0/events` an event stream of `events`.
 pub fn live(list: &str, detail: &str, events: &str) -> Stub {

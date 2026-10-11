@@ -194,6 +194,42 @@ pub fn agent_cid(typed: &str) -> Result<u64, String> {
         .map_err(|_| "claim: the agent CID must be a whole number".to_string())
 }
 
+/// The artifacts a task's finish note names, read back out of it; an empty list
+/// when the note names none.
+///
+/// `dispatchd` finishes a task `done` with the note
+/// `artifacts: <path>[, <path>…] (<n> tool call(s))` (`done_note`), and that one
+/// line is the only place the workspace's artifact paths are recorded. This
+/// reads the paths out of it as literal text — never a path *policy*: where a
+/// path points and what it reaches is the agent's own harness's rule, and a
+/// read of a path named here may still be refused.
+///
+/// A note of any other shape — a read-only run's summary line, an operator's
+/// own words, a note still being written — names no artifacts and answers an
+/// empty list rather than guessing a path out of prose. The call count the note
+/// trails is not part of the list; a note that has not (yet) been given one is
+/// still read, so the paths come out either way.
+pub fn artifact_paths(note: &str) -> Vec<String> {
+    let Some(list) = note.trim().strip_prefix("artifacts:") else {
+        // Not the dispatcher's artifacts line: it names no artifact, and a
+        // summary or a human's sentence is not a path.
+        return Vec::new();
+    };
+    // The dispatcher writes the call count after the paths:
+    // `artifacts: a.txt, b.txt (2 tool call(s))`. When that tail is there the
+    // list ends where it begins; a note somebody wrote without it is read
+    // whole, because the paths are the prefix either way.
+    let list = match list.rfind(" (") {
+        Some(at) if list.ends_with("tool call(s))") => &list[..at],
+        _ => list,
+    };
+    list.split(',')
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +403,68 @@ mod tests {
         assert_eq!(
             agent_cid("nine").unwrap_err(),
             "claim: the agent CID must be a whole number"
+        );
+    }
+
+    /// The finish note is the only place a task's artifact paths are recorded:
+    /// the dispatcher's `done_note` line, read for the paths it names.
+    #[test]
+    fn a_finish_notes_artifacts_are_read_back_out_of_it() {
+        // The dispatcher's own note, byte for byte (`done_note`).
+        assert_eq!(
+            artifact_paths("artifacts: build-notes.txt (2 tool call(s))"),
+            vec!["build-notes.txt".to_string()]
+        );
+        // Several artifacts, joined with ", ".
+        assert_eq!(
+            artifact_paths("artifacts: index.txt, notes.txt (3 tool call(s))"),
+            vec!["index.txt".to_string(), "notes.txt".to_string()]
+        );
+        // A run that wrote nothing names an empty list, and gets an empty one.
+        assert!(artifact_paths("artifacts:  (0 tool call(s))").is_empty());
+        // A note without the call count still names its paths — the paths are
+        // the prefix either way, and the count is not the list.
+        assert_eq!(
+            artifact_paths("artifacts: notes.txt"),
+            vec!["notes.txt".to_string()]
+        );
+        // The note's own trim is not a path, and neither is the space after a
+        // comma.
+        assert_eq!(
+            artifact_paths("  artifacts: a.txt,b.txt  "),
+            vec!["a.txt".to_string(), "b.txt".to_string()]
+        );
+    }
+
+    /// A note that is not the dispatcher's artifacts line names no artifact:
+    /// the pane has nothing to offer rather than a path guessed out of prose.
+    #[test]
+    fn a_note_that_is_not_the_artifacts_line_names_nothing() {
+        for note in [
+            "",
+            "   ",
+            "every negative covered",
+            // A read-only run's note is a summary, and its artifact *is* the
+            // line itself: there is no file to read.
+            "read-only: search \"plaza\" -> 2 match(es) in index.txt (1 tool call(s))",
+            // A capital A is a different line, not the dispatcher's.
+            "Artifacts: notes.txt (1 tool call(s))",
+            // The call count with no paths before it is nothing.
+            "artifacts: (0 tool call(s))",
+        ] {
+            assert!(artifact_paths(note).is_empty(), "{note:?} names no artifact");
+        }
+    }
+
+    /// The helper reads text and only text: a path it reports is a candidate
+    /// the agent's own harness still judges, and no path policy is invented
+    /// here.
+    #[test]
+    fn the_artifacts_line_is_not_a_path_policy() {
+        assert_eq!(
+            artifact_paths("artifacts: ../escape (1 tool call(s))"),
+            vec!["../escape".to_string()],
+            "the helper does not sanitize a path; it reports what the note says"
         );
     }
 }

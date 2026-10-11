@@ -11,18 +11,18 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Padding};
 
-use crate::api::{FinishOutcome, Run, RunState, Task, TaskState, Vm, VmState};
+use crate::api::{FinishOutcome, Run, RunState, Task, TaskArtifact, TaskState, Vm, VmState};
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
 use crate::form::{Field, Preset};
 use crate::history;
-use crate::ledger::TaskField;
+use crate::ledger::{TaskField, artifact_paths};
 use crate::mapview::{self, FleetMap};
 use crate::model::{
-    Health, HistoryStep, Message, Model, Notice, NoticeKind, Pane, RosterAgent, SERIAL_TAIL_LINES,
-    duration_label, hub_facts, hub_line, instant_label, memory_label, preset_footprint,
-    roster_line, roster_tally, serial_tail, tally_line, task_line, task_state_line, task_tally,
-    transcript_span,
+    ARTIFACT_TAIL_LINES, ArtifactState, Health, HistoryStep, Message, Model, Notice, NoticeKind,
+    Pane, RosterAgent, SERIAL_TAIL_LINES, duration_label, hub_facts, hub_line, instant_label,
+    memory_label, preset_footprint, roster_line, roster_tally, serial_tail, tally_line, task_line,
+    task_state_line, task_tally, transcript_span,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
@@ -1085,6 +1085,11 @@ const TASK_COL_STAMP: f32 = 92.0;
 /// constant, so the table's own width is a sum rather than a guess.
 const COL_SPACING: f32 = 6.0;
 
+/// The height of the box an artifact's text is read in: bounded, so a long
+/// file scrolls inside it rather than stretching the ledger's detail down the
+/// sheet.
+const ARTIFACT_VIEW_HEIGHT: f32 = 220.0;
+
 /// The ledger's column heads, matched to the cells below them: the task, what
 /// it is for, and everything the daemon reports about how it stands.
 fn task_heads() -> Element<'static, Message> {
@@ -1215,6 +1220,10 @@ fn task_detail<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
         .into(),
     ];
 
+    if let Some(section) = task_artifact_section(model, task) {
+        body.push(section);
+    }
+
     if task.state.is_finished() {
         body.push(
             container(serif(
@@ -1242,6 +1251,168 @@ fn task_detail<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
     }
     body.push(task_withdraw_row(model, task));
     Column::with_children(body).spacing(8.0).into()
+}
+
+/// The artifact section: the files the open task's finish note names, each
+/// readable through the daemon and the task's own agent, and the one that was
+/// read.
+///
+/// The paths come out of the note the dispatcher left ([`artifact_paths`]).
+/// Each row drives the task agent's `read_file` through the daemon
+/// (`POST /api/v0/tasks/{id}/artifact`), and what comes back is the agent's
+/// own file, drawn as ruled text and never interpreted: it is the guest's
+/// bytes. A read is in one of three honest states when it is not in flight —
+/// the agent read it, the daemon refused it in its own words, or the daemon
+/// was never told where the hub's admin surface is.
+///
+/// A note that names no artifact (a read-only run's summary line, or a task
+/// nobody has finished) gets no section: there is nothing to read, and saying
+/// so would only be noise.
+fn task_artifact_section<'a>(model: &'a Model, task: &'a Task) -> Option<Element<'a, Message>> {
+    let paths = match task.note.as_deref() {
+        Some(note) => artifact_paths(note),
+        None => Vec::new(),
+    };
+    // The read belongs to the task it was asked of: a read for another task
+    // is not drawn under this one.
+    let state = model
+        .artifact
+        .as_ref()
+        .filter(|state| state.task() == task.id);
+    if paths.is_empty() && state.is_none() {
+        return None;
+    }
+
+    let mut body: Vec<Element<'a, Message>> = vec![
+        row![
+            mono("Artifacts", 10.5, INK_3),
+            space::horizontal(),
+            mono(
+                format!("POST /api/v0/tasks/{}/artifact", task.id),
+                10.0,
+                INK_3,
+            ),
+        ]
+        .align_y(Alignment::Center)
+        .into(),
+        rule_heading(),
+    ];
+    for path in &paths {
+        let selected = state.is_some_and(|state| state.path() == path.as_str());
+        body.push(artifact_row(path.clone(), selected));
+    }
+    match state {
+        Some(ArtifactState::Loading { path, .. }) => body.push(
+            serif(
+                format!("Reading {path} through task {}'s agent…", task.id),
+                11.5,
+                INK_3,
+            )
+            .into(),
+        ),
+        Some(ArtifactState::Read { artifact, .. }) => body.extend(artifact_read(artifact)),
+        Some(ArtifactState::Refused { path, error, .. }) => body.push(
+            serif(format!("{path} was not read: {error}"), 11.5, theme::CRIT).into(),
+        ),
+        Some(ArtifactState::NotConfigured { path, message, .. }) => body.push(
+            serif(
+                format!(
+                    "{path} was not read: the daemon was not told where the hub's admin \
+                     surface is — {message}"
+                ),
+                11.5,
+                INK_2,
+            )
+            .into(),
+        ),
+        None => {}
+    }
+    Some(Column::with_children(body).spacing(6.0).into())
+}
+
+/// One artifact path as a selectable row: pressing it reads that file through
+/// the task's agent. The row the pane is showing is marked, so a re-read of the
+/// same path is a knowing choice rather than a guess.
+fn artifact_row<'a>(path: String, selected: bool) -> Element<'a, Message> {
+    button(
+        row![
+            mono("read", 10.0, INK_3).width(Length::Fixed(34.0)),
+            mono(path.clone(), 11.5, INK).width(Length::Fill),
+            mono(
+                if selected {
+                    "shown below"
+                } else {
+                    "through the task's agent"
+                },
+                9.5,
+                INK_3,
+            ),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::TaskArtifactRead(path))
+    .style(theme::register_row(selected))
+    .padding(edge(4.0, 6.0, 4.0, 6.0))
+    .width(Length::Fill)
+    .into()
+}
+
+/// One artifact the agent read: a heading naming the file, its span and the
+/// agent that read it, and the text itself — ruled and bounded, every line in
+/// the margin with the byte it starts at, exactly as the transcript is drawn.
+/// The bytes are the guest's, so they are displayed and never interpreted.
+fn artifact_read<'a>(artifact: &'a TaskArtifact) -> Vec<Element<'a, Message>> {
+    let (skipped, rows) = serial_tail(&artifact.content, ARTIFACT_TAIL_LINES);
+    let heading = match transcript_span(&artifact.content, &rows) {
+        Some((from, to)) => format!(
+            "{} · {} line(s) · byte {from}–{to} · {} bytes · read by agent cid {}",
+            artifact.path,
+            rows.len(),
+            artifact.size,
+            artifact.agent_cid
+        ),
+        // A file the agent read as empty has no span to name, and says so
+        // rather than naming a byte nobody read.
+        None => format!(
+            "{} · no bytes · read by agent cid {}",
+            artifact.path, artifact.agent_cid
+        ),
+    };
+    let mut lines: Vec<Element<'a, Message>> = vec![mono(heading, 10.0, INK_3).into()];
+    if artifact.truncated {
+        lines.push(
+            mono(
+                "the agent's own read cap ended this file: what is shown is not all of it",
+                10.0,
+                WARN,
+            )
+            .into(),
+        );
+    }
+    if skipped > 0 {
+        lines.push(mono(format!("… {skipped} earlier line(s) not shown"), 10.0, INK_3).into());
+    }
+    for row in &rows {
+        lines.push(
+            row![
+                mono(row.offset.to_string(), 9.5, INK_3)
+                    .width(Length::Fixed(58.0))
+                    .align_x(iced::alignment::Horizontal::Right),
+                mono(row.text, 11.0, INK),
+            ]
+            .spacing(8.0)
+            .into(),
+        );
+    }
+    vec![container(
+        scrollable(Column::with_children(lines).spacing(1.0).width(Length::Fill))
+            .height(Length::Fixed(ARTIFACT_VIEW_HEIGHT)),
+    )
+    .style(theme::boxed)
+    .width(Length::Fill)
+    .padding(edge(10.0, 10.0, 10.0, 10.0))
+    .into()]
 }
 
 /// The claim row: the agent's guest CID, the button that claims as it, and —

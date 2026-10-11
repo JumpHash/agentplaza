@@ -565,6 +565,47 @@ pub struct TasksPage {
     pub tasks: Vec<Task>,
 }
 
+/// A task's artifact, as `POST /api/v0/tasks/{id}/artifact` reports it
+/// (`noded`'s `ArtifactView`): the file the task's agent read back out of its
+/// own workspace, and the terms its `read_file` returned it in.
+///
+/// Every column the daemon writes is required — a body missing one is an
+/// error that names it — while a column this client does not know is ignored,
+/// so a newer daemon may add to its view without breaking the console. None of
+/// these columns is nullable: the CID is the one the daemon resolved the
+/// task's assignee to, and a read is always reported with its own size and
+/// truncation. So this needs no [`Column`] — the nullable columns are
+/// [`Task`]'s, and this body has none.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TaskArtifact {
+    /// The task whose agent read the file.
+    pub task: String,
+    /// The guest CID of the agent that read it (the task's assignee).
+    pub agent_cid: u64,
+    /// The path the caller asked for, as it sent it.
+    pub path: String,
+    /// The text the agent read.
+    pub content: String,
+    /// The file's size on disk, in bytes, as the agent reported it.
+    pub size: u64,
+    /// Whether the agent's read cap, rather than the end of the file, ended
+    /// the content.
+    pub truncated: bool,
+}
+
+/// `POST /api/v0/tasks/{id}/artifact`: the body names the file to read
+/// (`noded`'s `ArtifactRequest`).
+///
+/// The daemon drives the task's agent's `read_file` with this path, so where a
+/// path may point and what it may reach is the agent's harness's rule, not
+/// this client's: this sends the path as given and the refusal, when there is
+/// one, is the agent's own words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ArtifactRequest {
+    /// The path of the file to read, as the task's agent wrote it.
+    path: String,
+}
+
 /// `POST /api/v0/tasks`: the body sends exactly the fields `noded` accepts
 /// (`noded::tasks::CreateTask`); a field it does not name is absent rather
 /// than null, and the daemon fills its own default.
@@ -926,6 +967,35 @@ impl Client {
     /// `DELETE /api/v0/tasks/{id}`: withdraws a task before it ends.
     pub fn withdraw_task(&self, id: &str) -> Result<Task, ApiError> {
         self.json("DELETE", &format!("/api/v0/tasks/{}", checked_id(id)?), None)
+    }
+
+    /// `POST /api/v0/tasks/{id}/artifact`: reads one file the task's agent
+    /// wrote into its own workspace, by driving that agent's `read_file`
+    /// through the daemon's hub admin surface.
+    ///
+    /// It is a POST, not a GET, and deliberately so: it drives the agent's
+    /// session — a tool call with a real cost, a real refusal mode and a real
+    /// effect on the agent's turn — so it must not be replayed by a prefetch,
+    /// a retry or a crawler.
+    ///
+    /// The refusal statuses are the daemon's own and are carried through
+    /// unchanged, in its own words: `403` is the hub's role policy, `422` the
+    /// agent's own refusal (a directory, a path outside the workspace, a file
+    /// that is not UTF-8 text), `409` a task with no assignee or an agent no
+    /// longer connected, `400` a path this endpoint cannot carry, and `503` a
+    /// daemon never told where the hub's admin surface is.
+    pub fn task_artifact(&self, id: &str, path: &str) -> Result<TaskArtifact, ApiError> {
+        let body = serde_json::to_string(&ArtifactRequest {
+            path: path.to_string(),
+        })
+        .map_err(|err| {
+            ApiError::Malformed(format!("cannot serialize the artifact request: {err}"))
+        })?;
+        self.json(
+            "POST",
+            &format!("/api/v0/tasks/{}/artifact", checked_id(id)?),
+            Some(&body),
+        )
     }
 
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
@@ -1687,6 +1757,74 @@ mod tests {
         assert!(!task.state.is_finished());
         assert!(!task.state.is_claimable());
         assert!(!task.state.is_withdrawable());
+    }
+
+    /// An artifact body as `POST /api/v0/tasks/{id}/artifact` answers it, byte
+    /// for byte the shape the live daemon answered with.
+    const ARTIFACT: &str = r#"{"task":"t3","agent_cid":103,"path":"build-notes.txt",
+        "content":"task t3: verify the fixed loop","size":30,"truncated":false}"#;
+
+    #[test]
+    fn an_artifact_body_parses_every_column_the_daemon_writes() {
+        let artifact: TaskArtifact = from_body(ARTIFACT);
+        assert_eq!(artifact.task, "t3");
+        assert_eq!(artifact.agent_cid, 103);
+        assert_eq!(artifact.path, "build-notes.txt");
+        assert_eq!(artifact.content, "task t3: verify the fixed loop");
+        assert_eq!(artifact.size, 30);
+        assert!(!artifact.truncated);
+    }
+
+    #[test]
+    fn an_artifact_missing_a_column_is_an_error_that_names_it() {
+        // None of the artifact's columns is nullable, so every one of them is
+        // required: a body that omits one is not the shape this client reads.
+        for column in ["task", "agent_cid", "path", "content", "size", "truncated"] {
+            let mut body: serde_json::Value = from_body(ARTIFACT);
+            body.as_object_mut()
+                .expect("the body is an object")
+                .remove(column);
+            let error = serde_json::from_str::<TaskArtifact>(&body.to_string())
+                .expect_err("a body missing a column must be refused");
+            assert!(
+                error.to_string().contains(column),
+                "the error should name {column:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_artifact_column_the_client_does_not_know_is_ignored() {
+        let artifact: TaskArtifact = from_body(
+            r#"{"task":"t3","agent_cid":103,"path":"n.txt","content":"hi","size":2,
+                "truncated":true,"mime":"text/plain","blob_hash":"abc"}"#,
+        );
+        assert_eq!(artifact.content, "hi");
+        assert!(artifact.truncated);
+    }
+
+    #[test]
+    fn an_artifact_request_body_carries_exactly_the_path() {
+        let request = ArtifactRequest {
+            path: "build-notes.txt".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&request).expect("serializable"),
+            r#"{"path":"build-notes.txt"}"#
+        );
+    }
+
+    #[test]
+    fn an_artifact_task_id_that_is_not_plain_is_refused_before_it_reaches_a_path() {
+        for id in ["", "t1/../t2", "t1?x=1", "t1 t2"] {
+            assert!(
+                matches!(
+                    Client::default().task_artifact(id, "notes.txt"),
+                    Err(ApiError::Config(_))
+                ),
+                "{id:?} should never reach a path"
+            );
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use crate::api::{
     ApiError, Column, CreateRun, CreateTask, Endpoint, FinishOutcome, HubAgent, HubStatus, Machine,
-    Run, RunState, RunsPage, Task, TaskState, TasksPage, VmState,
+    Run, RunState, RunsPage, Task, TaskArtifact, TaskState, TasksPage, VmState,
 };
 use crate::events::Event;
 use crate::export::{
@@ -44,6 +44,12 @@ pub const HISTORY_DEPTH: usize = 64;
 /// is unbounded in principle; the layout is not, so the tail is what is drawn
 /// and the count left out is shown above it.
 pub const SERIAL_TAIL_LINES: usize = 400;
+
+/// How many lines of a task's artifact the ledger lays out. The daemon's read
+/// cap bounds the content, but the layout is bounded too: the tail is drawn
+/// and the lines left out are counted above it, exactly as the transcript
+/// does.
+pub const ARTIFACT_TAIL_LINES: usize = 400;
 
 /// Which sheet the register is showing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +200,110 @@ pub struct FinishCall {
     pub note: Option<String>,
 }
 
+/// One artifact read the runtime has to make: a task, and one path its agent
+/// wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactCall {
+    /// The task whose agent would read the path.
+    pub id: String,
+    /// The path to read, as the task's finish note named it.
+    pub path: String,
+}
+
+/// The artifact the ledger's detail has read, or is reading, from the open
+/// task's agent.
+///
+/// A read is a POST that drives the agent's `read_file`, so its answer is one
+/// of four honest states, never a missing one: the read is in flight, the
+/// agent read the file, the daemon refused it, or the daemon was never told
+/// where the hub's admin surface is. The task it names is the task it was asked
+/// of, so a read for one task is never drawn under another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactState {
+    /// The row was pressed; the read is in flight.
+    Loading {
+        /// The task whose agent is reading.
+        task: String,
+        /// The path being read.
+        path: String,
+    },
+    /// The agent read the file.
+    Read {
+        /// The task whose agent read it.
+        task: String,
+        /// What it read, and the terms it read it in.
+        artifact: TaskArtifact,
+    },
+    /// The daemon refused the read, in its own words: the hub's role policy
+    /// (`403`), the agent's own refusal (`422`), a task with no live agent to
+    /// read it (`404`/`409`), or a daemon that could not be asked at all.
+    Refused {
+        /// The task whose artifact was asked for.
+        task: String,
+        /// The path that was asked for.
+        path: String,
+        /// Why, as the client reads it.
+        error: ApiError,
+    },
+    /// The daemon was never told where the hub's admin surface is (`503`), so
+    /// the read-through is switched off rather than refused. That is a
+    /// different fact from a refusal, and is drawn as one.
+    NotConfigured {
+        /// The task whose artifact was asked for.
+        task: String,
+        /// The path that was asked for.
+        path: String,
+        /// The daemon's own words for it.
+        message: String,
+    },
+}
+
+impl ArtifactState {
+    /// The task this read was asked of.
+    pub fn task(&self) -> &str {
+        match self {
+            ArtifactState::Loading { task, .. } | ArtifactState::Read { task, .. } => task,
+            ArtifactState::Refused { task, .. } | ArtifactState::NotConfigured { task, .. } => task,
+        }
+    }
+
+    /// The path this read was asked for.
+    pub fn path(&self) -> &str {
+        match self {
+            ArtifactState::Loading { path, .. } | ArtifactState::Refused { path, .. } => path,
+            ArtifactState::NotConfigured { path, .. } => path,
+            ArtifactState::Read { artifact, .. } => &artifact.path,
+        }
+    }
+
+    /// Classifies one read's answer: a `503` is the read-through being off,
+    /// everything else the daemon refuses is a refusal, and `Ok` is what the
+    /// agent read.
+    fn from_answer(task: &str, path: &str, result: Result<TaskArtifact, ApiError>) -> Self {
+        match result {
+            Ok(artifact) => ArtifactState::Read {
+                task: task.to_string(),
+                artifact,
+            },
+            // A daemon not told where the hub's admin surface is answers 503:
+            // the read-through is off, not refused, and the console says which.
+            Err(ApiError::Status {
+                status: 503,
+                message,
+            }) => ArtifactState::NotConfigured {
+                task: task.to_string(),
+                path: path.to_string(),
+                message,
+            },
+            Err(error) => ArtifactState::Refused {
+                task: task.to_string(),
+                path: path.to_string(),
+                error,
+            },
+        }
+    }
+}
+
 /// What the last action did, as a line in the register.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
@@ -297,6 +407,8 @@ pub struct Effect {
     pub finish_task: Option<FinishCall>,
     /// `DELETE /api/v0/tasks/{id}`.
     pub withdraw_task: Option<String>,
+    /// `POST /api/v0/tasks/{id}/artifact` with this path.
+    pub artifact: Option<ArtifactCall>,
 }
 
 impl Effect {
@@ -387,6 +499,17 @@ impl Effect {
     pub fn task(id: impl Into<String>) -> Self {
         Self {
             fetch_task: Some(id.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Read one artifact through the task's agent.
+    pub fn artifact(id: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            artifact: Some(ArtifactCall {
+                id: id.into(),
+                path: path.into(),
+            }),
             ..Self::default()
         }
     }
@@ -617,6 +740,20 @@ pub enum Message {
         /// The answer.
         result: Result<Task, ApiError>,
     },
+    /// An artifact row was pressed: read that path through the open task's
+    /// agent.
+    TaskArtifactRead(String),
+    /// `POST /api/v0/tasks/{id}/artifact` answered.
+    TaskArtifact {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// Which task's agent was asked.
+        id: String,
+        /// Which path was asked for.
+        path: String,
+        /// The answer: what the agent read, or why it did not.
+        result: Result<TaskArtifact, ApiError>,
+    },
     /// The daemon's event stream delivered an event, at `at_ms` milliseconds
     /// since the Unix epoch (when the console read it, since the frames carry
     /// no clock of their own).
@@ -657,6 +794,7 @@ impl Message {
             | Message::TaskClaimed { at_ms, .. }
             | Message::TaskFinished { at_ms, .. }
             | Message::TaskWithdrawn { at_ms, .. }
+            | Message::TaskArtifact { at_ms, .. }
             | Message::Event { at_ms, .. } => Some(*at_ms),
             Message::Show(_)
             | Message::Key(_)
@@ -687,6 +825,7 @@ impl Message {
             | Message::FinishNoteEdit(_)
             | Message::TaskFinish(_)
             | Message::TaskWithdrawClicked(_)
+            | Message::TaskArtifactRead(_)
             | Message::DismissNotice => None,
         }
     }
@@ -771,6 +910,10 @@ pub struct Model {
     /// The task whose withdraw button was pressed once and is waiting for a
     /// second press.
     pub armed_task: Option<String>,
+    /// The artifact the ledger's detail has read, or is reading, for the open
+    /// task — a file the task's agent wrote, read back out of its workspace.
+    /// `None` before any of the note's paths has been pressed.
+    pub artifact: Option<ArtifactState>,
     /// Whether a task event has already asked for the ledger and the answer
     /// has not landed: a burst of events naming a task the ledger does not
     /// hold is one read, not one per event.
@@ -834,6 +977,7 @@ impl Default for Model {
             claim_cid: String::new(),
             finish_note: String::new(),
             armed_task: None,
+            artifact: None,
             ledger_asked: false,
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
@@ -1330,6 +1474,16 @@ impl Model {
             Message::Tasks { at_ms, result } => self.tasks_answer(at_ms, result),
             Message::Task { at_ms, id, result } => self.task_answer(at_ms, &id, result),
             Message::SelectTask(id) => {
+                // An artifact read belongs to the task it was asked of:
+                // selecting another task drops it rather than leaving a read
+                // the detail no longer draws.
+                if self
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|state| state.task() != id.as_str())
+                {
+                    self.artifact = None;
+                }
                 self.task_selected = Some(id);
                 Effect::none()
             }
@@ -1383,6 +1537,13 @@ impl Model {
             Message::TaskWithdrawn { at_ms, id, result } => {
                 self.task_withdrawn(at_ms, &id, result)
             }
+            Message::TaskArtifactRead(path) => self.task_artifact_read(path),
+            Message::TaskArtifact {
+                at_ms,
+                id,
+                path,
+                result,
+            } => self.task_artifact_answer(at_ms, &id, &path, result),
             Message::Event { at_ms, event } => self.event(at_ms, event),
         }
     }
@@ -1816,6 +1977,7 @@ impl Model {
         if dropped {
             self.task_selected = None;
             self.armed_task = None;
+            self.artifact = None;
         }
         self.tasks = page;
     }
@@ -1834,6 +1996,7 @@ impl Model {
                 if self.task_selected.as_deref() == Some(id) {
                     self.task_selected = None;
                     self.armed_task = None;
+                    self.artifact = None;
                 }
                 self.refuse(format!("task {id} is gone"))
             }
@@ -2024,6 +2187,54 @@ impl Model {
                 self.refuse(format!("task {id} withdraw: {error}"))
             }
         }
+    }
+
+    /// Reads one of the open task's artifacts: the path its note names, read
+    /// through the task's own agent.
+    ///
+    /// The row that was pressed only exists under an open task's detail, so
+    /// the task is the ledger's selection. The read is in flight from here
+    /// until its answer lands.
+    fn task_artifact_read(&mut self, path: String) -> Effect {
+        let Some(task) = self.task_selected.clone() else {
+            return self.refuse("artifact: no task is open on the ledger");
+        };
+        self.artifact = Some(ArtifactState::Loading {
+            task: task.clone(),
+            path: path.clone(),
+        });
+        Effect::artifact(task, path)
+    }
+
+    /// An artifact read's answer: the file the task's agent read back out of
+    /// its workspace, or the reason it did not.
+    ///
+    /// This call's whole purpose is a read the agent can refuse — a path
+    /// outside its workspace, a directory, a file that is not text — so a
+    /// refusal *is* the daemon answering rather than failing: it is drawn in
+    /// the artifact section, in the daemon's own words, and it neither backs
+    /// the poll off nor marks the register down. Only a daemon that could not
+    /// be reached is a failed call.
+    ///
+    /// A read answers for the task it was asked of: one for a task the ledger
+    /// no longer has open is a view the operator has left, and is dropped
+    /// rather than drawn under another task.
+    fn task_artifact_answer(
+        &mut self,
+        at_ms: u64,
+        id: &str,
+        path: &str,
+        result: Result<TaskArtifact, ApiError>,
+    ) -> Effect {
+        if self.task_selected.as_deref() != Some(id) {
+            return Effect::none();
+        }
+        match &result {
+            Err(error) if error.is_unreachable() => self.failed(at_ms, error),
+            _ => self.succeeded(at_ms),
+        }
+        self.artifact = Some(ArtifactState::from_answer(id, path, result));
+        Effect::none()
     }
 
     /// Refuses locally: a complaint in the notice line, and nothing sent.
@@ -6398,5 +6609,185 @@ mod tests {
         // No register at all, no agents to offer.
         let empty = Model::new();
         assert!(empty.live_agents().is_empty());
+    }
+
+    /// One artifact as `POST /api/v0/tasks/{id}/artifact` answers it: what the
+    /// task's agent read back out of its workspace.
+    fn artifact(task: &str, path: &str, content: &str) -> TaskArtifact {
+        TaskArtifact {
+            task: task.to_string(),
+            agent_cid: 103,
+            path: path.to_string(),
+            content: content.to_string(),
+            size: content.len() as u64,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn reading_an_artifact_row_asks_the_daemon_for_that_path_on_the_open_task() {
+        let mut model = with_ledger(vec![task("t1", "claimed", Some("builder"), Some(103))]);
+        model.apply(Message::SelectTask("t1".to_string()));
+        assert_eq!(
+            model.apply(Message::TaskArtifactRead("build-notes.txt".to_string())),
+            Effect::artifact("t1", "build-notes.txt")
+        );
+        assert_eq!(
+            model.artifact,
+            Some(ArtifactState::Loading {
+                task: "t1".to_string(),
+                path: "build-notes.txt".to_string(),
+            }),
+            "the read is in flight until its answer lands"
+        );
+
+        // With no task open there is nothing to read, and the ledger says so
+        // rather than sending a read against a task nobody selected.
+        let mut closed = with_ledger(vec![task("t1", "claimed", Some("builder"), Some(103))]);
+        assert!(closed
+            .apply(Message::TaskArtifactRead("build-notes.txt".to_string()))
+            .is_idle());
+        assert_eq!(
+            closed.notice.as_ref().expect("a refusal").text,
+            "artifact: no task is open on the ledger"
+        );
+        assert!(closed.artifact.is_none(), "nothing was asked for");
+    }
+
+    #[test]
+    fn an_artifacts_answer_is_the_agents_file_or_the_daemons_refusal() {
+        // The agent read the file: the content and the terms it came in.
+        let mut model = with_ledger(vec![task("t1", "done", Some("builder"), Some(103))]);
+        model.apply(Message::SelectTask("t1".to_string()));
+        let read = artifact("t1", "build-notes.txt", "task t1: verify\n");
+        model.apply(Message::TaskArtifact {
+            at_ms: 10_100,
+            id: "t1".to_string(),
+            path: "build-notes.txt".to_string(),
+            result: Ok(read.clone()),
+        });
+        assert_eq!(
+            model.artifact,
+            Some(ArtifactState::Read {
+                task: "t1".to_string(),
+                artifact: read,
+            })
+        );
+
+        // A refusal is the daemon answering: its own words, kept verbatim,
+        // and the daemon is not marked down for a read the agent declined.
+        model.apply(Message::TaskArtifact {
+            at_ms: 10_200,
+            id: "t1".to_string(),
+            path: "build-notes.txt".to_string(),
+            result: Err(ApiError::Status {
+                status: 422,
+                message: "denied: \"..\" is outside the workspace".to_string(),
+            }),
+        });
+        match &model.artifact {
+            Some(ArtifactState::Refused { path, error, .. }) => {
+                assert_eq!(path, "build-notes.txt");
+                assert_eq!(error.status(), Some(422));
+                assert_eq!(error.to_string(), "422: denied: \"..\" is outside the workspace");
+            }
+            other => panic!("a refusal should be its own state: {other:?}"),
+        }
+        assert_eq!(model.failures, 0, "a refusal is an answer, not a failure");
+
+        // A daemon that could not be reached *is* a failed call: the register
+        // backs off and says so.
+        model.apply(Message::TaskArtifact {
+            at_ms: 10_300,
+            id: "t1".to_string(),
+            path: "build-notes.txt".to_string(),
+            result: Err(ApiError::Connect("127.0.0.1:8899: refused".to_string())),
+        });
+        assert_eq!(model.failures, 1, "an unreachable daemon is a failure");
+        assert!(matches!(model.artifact, Some(ArtifactState::Refused { .. })));
+    }
+
+    #[test]
+    fn a_503_is_the_read_through_being_off_rather_than_a_refusal() {
+        let mut model = with_ledger(vec![task("t1", "done", Some("builder"), Some(103))]);
+        model.apply(Message::SelectTask("t1".to_string()));
+        model.apply(Message::TaskArtifact {
+            at_ms: 10_100,
+            id: "t1".to_string(),
+            path: "build-notes.txt".to_string(),
+            result: Err(ApiError::Status {
+                status: 503,
+                message: "hub admin is not configured".to_string(),
+            }),
+        });
+        assert_eq!(
+            model.artifact,
+            Some(ArtifactState::NotConfigured {
+                task: "t1".to_string(),
+                path: "build-notes.txt".to_string(),
+                message: "hub admin is not configured".to_string(),
+            }),
+            "a read-through switched off is not the same fact as a refusal"
+        );
+        assert_eq!(model.failures, 0, "the daemon answered, and is up");
+    }
+
+    #[test]
+    fn an_artifacts_answer_for_another_task_is_dropped() {
+        let mut model = with_ledger(vec![
+            task("t1", "done", Some("builder"), Some(103)),
+            task("t2", "open", None, None),
+        ]);
+        model.apply(Message::SelectTask("t2".to_string()));
+
+        // A read that raced the selection change answers for the task the
+        // operator has left, and is not drawn under the one they opened.
+        model.apply(Message::TaskArtifact {
+            at_ms: 10_100,
+            id: "t1".to_string(),
+            path: "build-notes.txt".to_string(),
+            result: Ok(artifact("t1", "build-notes.txt", "hi\n")),
+        });
+        assert!(model.artifact.is_none());
+    }
+
+    #[test]
+    fn selecting_another_task_drops_a_read_of_the_first() {
+        let mut model = with_ledger(vec![
+            task("t1", "done", Some("builder"), Some(103)),
+            task("t2", "done", Some("builder"), Some(103)),
+        ]);
+        model.apply(Message::SelectTask("t1".to_string()));
+        model.apply(Message::TaskArtifactRead("build-notes.txt".to_string()));
+        assert!(model.artifact.is_some());
+
+        // Selecting the task the read belongs to keeps it; selecting another
+        // drops it rather than leaving a read the detail no longer draws.
+        model.apply(Message::SelectTask("t1".to_string()));
+        assert!(model.artifact.is_some());
+        model.apply(Message::SelectTask("t2".to_string()));
+        assert!(model.artifact.is_none());
+    }
+
+    #[test]
+    fn a_task_that_leaves_the_ledger_takes_its_artifact_with_it() {
+        let mut model = with_ledger(vec![task("t1", "done", Some("builder"), Some(103))]);
+        model.apply(Message::SelectTask("t1".to_string()));
+        model.apply(Message::TaskArtifact {
+            at_ms: 10_100,
+            id: "t1".to_string(),
+            path: "build-notes.txt".to_string(),
+            result: Ok(artifact("t1", "build-notes.txt", "hi\n")),
+        });
+        assert!(model.artifact.is_some());
+
+        // The ledger no longer holds t1: the selection and the read go with
+        // it, rather than a read of a task the daemon has forgotten.
+        model.apply(Message::Tasks {
+            at_ms: 10_200,
+            result: ledger(vec![task("t2", "open", None, None)]),
+        });
+        assert!(model.task_selected.is_none());
+        assert!(model.artifact.is_none());
     }
 }

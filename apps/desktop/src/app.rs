@@ -432,6 +432,23 @@ fn dispatch(effect: Effect, client: &Client, hub: Option<&Client>) -> Task<Messa
             },
         ));
     }
+    if let Some(call) = effect.artifact {
+        let client = client.clone();
+        let requested = call.id.clone();
+        let path = call.path.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.task_artifact(&call.id, &call.path);
+                (epoch_ms(), result)
+            },
+            move |(at_ms, result)| Message::TaskArtifact {
+                at_ms,
+                id: requested.clone(),
+                path: path.clone(),
+                result,
+            },
+        ));
+    }
     Task::batch(tasks)
 }
 

@@ -262,7 +262,23 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   from a frame that carries no goal, no budget and no clock. The index's ledger
   entry carries the daemon's own counts (`3 task(s) · 1 open · 1 claimed · 1
   ended`) once the ledger has answered, and says `not read yet` before that: a
-  ledger nobody read is not an empty ledger;
+  ledger nobody read is not an empty ledger. The detail's **artifact section**
+  reads a task's work product back out of its agent's workspace: the paths the
+  agent's finish note names (`artifacts: <path>[, <path>…] (n tool call(s))`,
+  read out of the note by `ledger::artifact_paths`) are offered as selectable
+  rows, and pressing one drives that agent's `read_file` through the daemon
+  (`POST /api/v0/tasks/{id}/artifact`) — the one read-through, which is a POST
+  because it drives the agent's session. What comes back is the agent's own
+  file, drawn as ruled text with every line's byte in the margin, bounded and
+  scrolled, and **displayed, never interpreted** (it is the guest's bytes). The
+  read is in one of four honest states: in flight, read (with the file's size,
+  the span and the CID it was read through), refused — the hub's `403` role
+  policy, the agent's `422`, an unassigned or unconnected `409` — in the
+  daemon's own words, or **not configured**, the `503` of a daemon never told
+  where the hub's admin surface is, which is a different fact from a refusal.
+  A read the agent declines is the daemon answering, so it neither marks the
+  register down nor backs the poll off; only an unreachable daemon is a failed
+  call;
 * every failure is a notice line and an error in the index — no request path
   panics, and nothing is swallowed.
 
@@ -294,7 +310,8 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   the map's geometry and activity
   (`src/map.rs`),
   the exit kinds (`src/exit.rs`), the form and its presets (`src/form.rs`), the
-  ledger's create form (`src/ledger.rs`), the export (`src/export.rs`), the
+  ledger's create form and the finish note's artifact paths
+  (`src/ledger.rs`), the export (`src/export.rs`), the
   frozen vsock session read back out of a serial
   capture (`src/session.rs`), the session's rolling history
   (`src/history.rs`), the charts' arithmetic (`src/chart.rs`), the client
@@ -313,7 +330,7 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
 ## Tests
 
 ```
-cargo test          # 312 lib + 32 client + 50 render = 394, 0 failed
+cargo test          # 326 lib + 34 client + 53 render = 413, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
@@ -356,7 +373,18 @@ cargo test          # 312 lib + 32 client + 50 render = 394, 0 failed
   event or older list answer walks back, a duplicate event as a no-op, a reused
   task id inheriting nothing, the claim's guards and the daemon's `409` kept
   verbatim in the notice line, the finish's note and its absence, the withdraw's
-  arm/confirm, and the live agents the register's running role VMs offer.
+  arm/confirm, and the live agents the register's running role VMs offer. The
+  artifact read-through is here too: the `TaskArtifact` parse matrix (the live
+  body field for field, every column required — none of them nullable — and an
+  unknown column tolerated), the finish note's artifact paths read out of the
+  line the dispatcher writes (one path, several, a zero-call empty list, and
+  every other note shape naming nothing), and the reducer's read paths — a row
+  asking the daemon for exactly that path on the task the ledger has open, the
+  answer landing as the file the agent read or as the daemon's refusal in its
+  own words, a `503` drawn as the read-through being *off* rather than refused,
+  an unreachable daemon as the one failed call, an answer for a task that is no
+  longer open dropped, and a selection change or a task leaving the ledger
+  taking its read with it.
 * the stream: the frame parser's whole matrix (the daemon's frames, a frame
   split mid-line across reads, a heartbeat, CRLF frames, a leading blank line,
   an unknown event kind, a data line with no kind, a malformed frame followed
@@ -387,7 +415,13 @@ cargo test          # 312 lib + 32 client + 50 render = 394, 0 failed
   column, one task on its own path (`GET /api/v0/tasks/t1`), a missing task as a
   recognizable 404, an id that could change the path refused before a socket is
   opened, and a refused claim carrying the daemon's own `409` — `no live agent
-  has guest CID 4` — through unchanged. The hub's status
+  has guest CID 4` — through unchanged. The artifact read-through is read the
+  same way: the `POST /api/v0/tasks/t3/artifact` request and its
+  `{"path":…}` body, the file the agent read parsed field for field, and the
+  refusals carried verbatim — the hub's `403` role policy, the agent's `422`
+  (`denied: path "../escape" contains ".."; every path is inside the
+  workspace`), and the `503` of a read-through that was never configured. The
+  hub's status
   surface is read the same way, off its own stub: `GET /status` on the status
   path, the frozen body parsed field for field, an empty registry as an answer
   rather than a failure, an unknown extra field tolerated, a missing field
@@ -453,9 +487,16 @@ cargo test          # 312 lib + 32 client + 50 render = 394, 0 failed
   `POST /api/v0/tasks` whose answer is filed, selected and named in the notice
   line; the withdraw's arm/confirm; the index entry and the `l` key reaching the
   sheet; a scrollable ledger drawn over a real frame whose claimed and done
-  stamps are asserted in pixels; and the **whole application following a task
-  event** between polls — the state and assignee off the stream, the ledger
-  still holding exactly the daemon's rows), and a full application frame
+  stamps are asserted in pixels; the **artifact section** over a real frame —
+  the note's path offered as a pressable row, a click on it reading the file
+  through the daemon, the read in flight named while it is, the agent's file
+  drawn as ruled text (its span, its size, the CID it was read through, and a
+  long file's tail with the lines the ledger's window left out counted above
+  it), a `403` refusal drawn in the register's red in the hub's own words, and a
+  `503` drawn as the read-through being *off*; and the **whole application
+  following a task event** between polls — the state and assignee off the
+  stream, the ledger still holding exactly the daemon's rows), and a full
+  application frame
   written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
   the telemetry pane's to `target/tmp/telemetry-frame.rgba`, the stream's to
@@ -464,7 +505,10 @@ cargo test          # 312 lib + 32 client + 50 render = 394, 0 failed
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
 read a running daemon (read-only: it reads the machine, lists runs, reads
 each one with its serial and exit kind, and reads the ledger — every task, and
-each task by its own id — mutating nothing). Set `APZ_DESKTOP_LIVE_HUB=host:port`
+each task by its own id — mutating nothing; it also reads each task's artifact
+back through that task's agent, the one POST of the walk, which drives the
+agent's `read_file` and touches nothing but the file it reports). Set
+`APZ_DESKTOP_LIVE_HUB=host:port`
 to have it read a running hub's status surface too (read-only: the served CIDs,
 the uptime, the session count, and every connected agent's role, call count and
 heartbeat age). Neither is set by default, so the suite runs on a host with

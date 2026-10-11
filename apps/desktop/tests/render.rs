@@ -12,11 +12,12 @@ use std::time::Duration;
 
 use common::{DETAIL, EXITS, LIST, MACHINE, REPORT_DETAIL, ROLE_DETAIL, ROLE_LIST};
 
-use agentplaza_desktop::api::{Client, Endpoint};
+use agentplaza_desktop::api::{Client, Endpoint, TaskArtifact};
 use agentplaza_desktop::cli::Config;
 use agentplaza_desktop::export::ExportTarget;
 use agentplaza_desktop::model::{
-    Effect, Message, Model, NoticeKind, Pane, Selection, DEFAULT_REFRESH_MS,
+    ARTIFACT_TAIL_LINES, ArtifactState, Effect, Message, Model, NoticeKind, Pane, Selection,
+    DEFAULT_REFRESH_MS,
 };
 use agentplaza_desktop::{app, theme, view};
 
@@ -229,6 +230,15 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
         model.apply(Message::TaskWithdrawn {
             at_ms: model.now_ms,
             id,
+            result,
+        });
+    }
+    if let Some(call) = effect.artifact {
+        let result = client.task_artifact(&call.id, &call.path);
+        model.apply(Message::TaskArtifact {
+            at_ms: model.now_ms,
+            id: call.id,
+            path: call.path,
             result,
         });
     }
@@ -2438,6 +2448,12 @@ fn pressing_a_task_row_opens_its_detail_and_the_moves_the_daemon_accepts() {
         ui.find(says("binds this open task to the agent connected as that CID")).is_err(),
         "a task in hand is not offered for claiming again"
     );
+    // This task's note is null: there is no artifact to read, and the section
+    // that would offer one is not drawn at all.
+    assert!(
+        ui.find(says("Artifacts")).is_err(),
+        "a note that names no artifact gets no artifact section"
+    );
     }
 
     // The open task, drawn from the same model, is offered for claiming — with
@@ -2681,6 +2697,202 @@ fn the_ledger_pane_is_drawn_over_a_real_frame() {
         );
     }
     assert!(distinct_colors(pixels) > 100);
+}
+
+/// The artifact section: the note's file read back through the task's own
+/// agent, drawn as ruled text — and the states a read can be in on the way.
+#[test]
+fn reading_a_tasks_artifact_draws_the_agents_file_over_a_real_frame() {
+    // The ledger's one task was finished by the dispatcher: its note is the
+    // `artifacts:` line that names the file its agent wrote, and the daemon
+    // reads that file back through the agent.
+    let server = common::ledger_artifact(
+        LIST,
+        common::TASKS_ARTIFACT,
+        common::TASK,
+        (200, common::ARTIFACT),
+    );
+    let mut model = ledger_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    model.apply(Message::SelectTask("t3".to_string()));
+
+    // The note's artifact is offered as a row, and nothing is read until it is
+    // pressed.
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Artifacts")).is_ok());
+        assert!(ui.find(says("through the task's agent")).is_ok());
+    }
+    assert!(model.artifact.is_none(), "nothing is read unprompted");
+
+    // The click the operator makes on the row.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        ui.click("build-notes.txt")
+            .expect("the artifact row is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert_eq!(
+        messages,
+        vec![Message::TaskArtifactRead("build-notes.txt".to_string())],
+        "pressing the row asks for that path"
+    );
+    let effect = model.apply(messages[0].clone());
+    assert_eq!(effect, Effect::artifact("t3", "build-notes.txt"));
+
+    // Before the answer lands the pane names the read in flight: a distinct
+    // state rather than a blank.
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says("Reading build-notes.txt through task t3's agent")).is_ok(),
+            "the read in flight says so"
+        );
+    }
+
+    perform(effect, &mut model, &client);
+
+    // The agent's file: its text, the terms it came in, and the agent that
+    // read it. Every line is the guest's bytes, displayed and not interpreted.
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "task t3: verify the fixed loop",
+        "the loop held",
+        "build-notes.txt · 2 line(s)",
+        "45 bytes",
+        "read by agent cid 103",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the artifact should show {expected:?}"
+        );
+    }
+    drop(ui);
+
+    let frame = frame_of(model);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+    for (name, color, tolerance) in [
+        ("the page", PAPER, 2),
+        ("the ink", INK, 8),
+        ("a done stamp", OK, 8),
+    ] {
+        assert!(
+            holds(&frame, color, tolerance),
+            "{name} is not on the artifact's frame"
+        );
+    }
+    assert!(distinct_colors(frame.rgba.as_ref()) > 100);
+}
+
+/// A file the ledger's window cuts short — and one the agent's own read cap
+/// did too: each says what is missing rather than pretending to be whole.
+#[test]
+fn an_artifact_cut_short_names_what_is_missing() {
+    let server = ledger_server(LIST, DETAIL);
+    let mut model = ledger_from(server.port);
+    model.apply(Message::SelectTask("t3".to_string()));
+
+    let content: String = (0..ARTIFACT_TAIL_LINES + 5)
+        .map(|line| format!("line {line}\n"))
+        .collect();
+    model.artifact = Some(ArtifactState::Read {
+        task: "t3".to_string(),
+        artifact: TaskArtifact {
+            task: "t3".to_string(),
+            agent_cid: 103,
+            path: "big.txt".to_string(),
+            size: content.len() as u64 + 5_000,
+            content,
+            truncated: true,
+        },
+    });
+
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("… 5 earlier line(s) not shown")).is_ok(),
+        "the lines the ledger's window left out are counted above the ones drawn"
+    );
+    assert!(
+        ui.find(says("the agent's own read cap ended this file")).is_ok(),
+        "and the cap that cut the file short is drawn too"
+    );
+    assert!(
+        ui.find(says(&format!("line {}", ARTIFACT_TAIL_LINES + 4))).is_ok(),
+        "the tail is drawn"
+    );
+    assert!(
+        ui.find(says("line 0")).is_err(),
+        "the earliest lines are not drawn"
+    );
+}
+
+/// A refused read and a read-through that is switched off are two different
+/// honest states, and the sheet says which.
+#[test]
+fn an_artifacts_refusal_and_a_read_through_that_is_off_are_distinct_states() {
+    // The hub's role policy refuses the read, and the daemon surfaces the
+    // hub's own 403 in its own words.
+    let server = common::ledger_artifact(
+        LIST,
+        common::TASKS_ARTIFACT,
+        common::TASK,
+        (403, r#"{"error":"role librarian does not grant read_file"}"#),
+    );
+    let mut model = ledger_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    model.apply(Message::SelectTask("t3".to_string()));
+    let effect = model.apply(Message::TaskArtifactRead("build-notes.txt".to_string()));
+    perform(effect, &mut model, &client);
+
+    // A refusal is the daemon answering, so the register is still live.
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says(
+                "build-notes.txt was not read: 403: role librarian does not grant read_file"
+            ))
+            .is_ok(),
+            "the hub's own words, verbatim"
+        );
+    }
+    // The refusal is drawn in the register's red; the same model with the read
+    // dropped has strictly less of it.
+    let mut plain = model.clone();
+    plain.artifact = None;
+    assert!(
+        count_near(&frame_of(model.clone()), CRIT, 8) > count_near(&frame_of(plain), CRIT, 8),
+        "the refused read is drawn in the register's red"
+    );
+
+    // A daemon never told where the hub's admin surface is answers 503: the
+    // read-through is off, which is a different fact from a refusal.
+    let server = common::ledger_artifact(
+        LIST,
+        common::TASKS_ARTIFACT,
+        common::TASK,
+        (503, r#"{"error":"hub admin is not configured"}"#),
+    );
+    let mut off = ledger_from(server.port);
+    let client = Client::new(off.endpoint.clone());
+    off.apply(Message::SelectTask("t3".to_string()));
+    let effect = off.apply(Message::TaskArtifactRead("build-notes.txt".to_string()));
+    perform(effect, &mut off, &client);
+
+    let mut ui = simulator(view::view(&off));
+    assert!(
+        ui.find(says("the daemon was not told where the hub's admin surface is"))
+            .is_ok(),
+        "a read-through switched off says so"
+    );
+    assert!(
+        ui.find(says("build-notes.txt was not read")).is_ok(),
+        "and names the path it could not read"
+    );
+    assert!(
+        ui.find(says("403: role librarian does not grant read_file")).is_err(),
+        "an off read-through is not a policy refusal"
+    );
 }
 
 #[test]
