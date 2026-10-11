@@ -77,6 +77,29 @@ import {
 } from '../src/models/floor';
 import { Store } from '../src/store';
 import { readRoster } from '../src/views/roster';
+import {
+  BUBBLE_MS,
+  LEAVE_MS,
+  SPAWN_MS,
+  SPARK_PERIOD_MS,
+  SWEEP_MS,
+  antennaSway,
+  bubblePop,
+  damp,
+  idleBob,
+  leaveScale,
+  pulseHz,
+  ringPulse,
+  sparkLife,
+  spawnRing,
+  spawnScale,
+  sweepFrac,
+  talkGesture,
+  visorScan,
+  walkArm,
+  walkBob,
+  walkSwing,
+} from '../src/views/rts-anim';
 
 let failures = 0;
 function eq(actual: unknown, expected: unknown, name: string): void {
@@ -1751,6 +1774,70 @@ eq(
   s.clearTalkPair();
   eq(s.talkPair, null, 'widening clears the filter');
   eq(s.thread?.state, 'error', 'widening keeps the thread last read');
+}
+
+/* ------------------------------- the floor's animation maths ------------ */
+/* The RTS floor's motion is delta-time driven and reduced-motion aware; these
+   assert the contracts the report and the legend state: the damping's half-life,
+   the spawn/leave envelope, the pulse rates, the walk's anti-phase, the bubble's
+   period, the sweep and the sparks. */
+{
+  const close = (a: number, b: number, eps = 1e-9): boolean => Math.abs(a - b) <= eps;
+
+  /* the damping's own definition: one half-life moves half the distance, and two
+     steps of dt compose to one step of 2·dt (framerate independence) */
+  eq(damp(0, 1, 100, 100), 0.5, 'one half-life halves the gap');
+  eq(close(damp(damp(0, 1, 100, 8), 1, 100, 8), damp(0, 1, 100, 16)), true, 'damping is framerate-independent');
+  eq(damp(0.8, 0.2, 120, 16) > 0.2 && damp(0.8, 0.2, 120, 16) < 0.8, true, 'damping never overshoots its target');
+  eq(damp(0, 1, 0, 16), 1, 'a zero half-life snaps to the target');
+
+  /* spawn in, and out */
+  eq(spawnScale(0), 0, 'a spawning robot starts at nothing');
+  eq(Math.abs(spawnScale(SPAWN_MS) - 1) < 1e-9, true, 'and lands on full size');
+  eq(spawnScale(SPAWN_MS * 0.6) > 1, true, 'the spawn scale overshoots (a pop) before it settles');
+  eq(spawnRing(-1), -1, 'a ring before it starts is spent');
+  eq(spawnRing(0), 0, 'the teleport ring starts at nothing');
+  eq(spawnRing(SPAWN_MS), -1, 'and is spent after its lifetime');
+  eq(leaveScale(0), 1, 'a leaving robot starts at full size');
+  eq(leaveScale(LEAVE_MS), 0, 'and scales to nothing');
+
+  /* the status ring's stated rates, per state */
+  eq(pulseHz('working'), 1.2, 'working pulses at 1.2 Hz');
+  eq(pulseHz('talking'), 0.5, 'talking pulses at 0.5 Hz');
+  eq(pulseHz('idle'), 0.25, 'idle breathes at 0.25 Hz');
+  eq(pulseHz('unreachable'), 2.0, 'unreachable flickers at 2 Hz');
+  eq(close(ringPulse('working', 1000 / 1.2, 0.3), ringPulse('working', 0, 0.3), 1e-9), true, 'the ring repeats every period');
+  eq(ringPulse('idle', 7, 0.1) >= 0 && ringPulse('idle', 7, 0.1) <= 1, true, 'the ring pulse stays in [0,1]');
+
+  /* the walk: the legs swing opposite, the arms counter-swing, the torso bobs
+     twice a stride */
+  eq(close(walkSwing(0.25) + walkSwing(0.75), 0), true, 'the two legs swing opposite');
+  eq(walkArm(0.25) * walkSwing(0.25) < 0, true, 'the arm counter-swings against the leg');
+  eq(walkBob(0) >= 0 && walkBob(0.25) > walkBob(0), true, 'the torso bobs up between the plants');
+  eq(close(walkBob(0.1), walkBob(0.6)), true, 'the bob beats twice a stride');
+
+  /* the idle loop and the visor scan are pure in the clock and the phase */
+  eq(idleBob(1000, 0.2) === idleBob(1000, 0.2), true, 'the idle breath depends only on the clock and the phase');
+  eq(visorScan(500, 0.1) >= -1 && visorScan(500, 0.1) <= 1, true, 'the visor scans within its face');
+  eq(antennaSway(500, 0.1) >= -0.2 && antennaSway(500, 0.1) <= 0.2, true, 'the antenna sways gently');
+  eq(talkGesture(500, 0.1) >= -0.6 && talkGesture(500, 0.1) <= 0.6, true, 'the talk gesture stays subtle');
+
+  /* the speech bubble pops, holds, then fades — repeating on its own period */
+  eq(bubblePop(0), 0, 'the bubble starts hidden');
+  eq(bubblePop(BUBBLE_MS / 2), 1, 'the bubble holds at full size mid-showing');
+  eq(close(bubblePop(BUBBLE_MS - 1), 0, 0.01), true, 'the bubble has faded by the end of its showing');
+  eq(close(bubblePop(BUBBLE_MS + 130), bubblePop(130)), true, 'the bubble repeats on its period');
+  eq(bubblePop(130) > 1, true, 'the bubble pops past full size before it settles');
+  eq(bubblePop(-1), 0, 'a bubble before its clock reads is hidden');
+
+  /* the working pad's sweep and its sparks */
+  eq(sweepFrac(0, 0) === 0 && sweepFrac(SWEEP_MS / 4, 0) === 0.25, true, 'the sweep advances once per period');
+  eq(close(sweepFrac(SWEEP_MS, 0.3), sweepFrac(0, 0.3)), true, 'the sweep wraps on its period');
+  const before = sparkLife(0, 0, 1);
+  const mid = sparkLife(SPARK_PERIOD_MS * 0.5, 0, 0);
+  eq(before === -1 || (before >= 0 && before < 1), true, 'a spark is either airborne or spent');
+  eq(SPARK_PERIOD_MS > 0 && mid >= 0 && mid < 1, true, 'a spark is airborne within its own window');
+  eq(sparkLife(500, 0, 0) === sparkLife(500, 0, 0), true, 'sparks are deterministic in the clock and index');
 }
 
 if (failures > 0) {

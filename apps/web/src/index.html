@@ -328,7 +328,6 @@
         <span class="folio">f. 4</span>
         <h1>Floor</h1>
         <span class="aside mk ok" id="floor-live" hidden>live</span>
-        <p class="lede">The plaza as a real-time-strategy floor: every connected agent is a small robot standing at its role's station, drawn under a fixed raked camera — drag to pan, wheel to zoom, no orbit. A conversation walks the pair adjacent, a hiring walks the two together, and the halo on the ground says what each robot is doing. Every position derives from the role's index and the conversations alone, so the plan is an honest diagram rather than a picture of a place; the table below carries the same agents as ruled rows.</p>
       </div>
 
       <div class="parts" id="floor-notice" hidden><div class="body">
@@ -342,7 +341,9 @@
       </div></div>
 
       <div class="parts top bb0"><div class="body canvasbody">
-        <div id="floor-mount" class="floorstage"></div>
+        <div id="floor-mount" class="floorstage">
+          <span class="fps" id="floor-fps" aria-hidden="true"></span>
+        </div>
         <div class="legend" aria-hidden="true">
           <span class="mk ok">working — serial past the quiet threshold</span>
           <span class="mk">talking — with a speech mark</span>
@@ -360,7 +361,7 @@
       </table></div>
 
       <div class="parts" id="floor-card-empty"><div class="body">
-        <p class="example">Pick a robot — click it on the floor, walk the robots with the arrow keys and press Enter, or pick a row in the table — and its card opens here: its state, its lines per second, its contacts, the conversations it is holding and the last thing it posted.</p>
+        <p class="example">No robot is selected. Click one on the floor, walk the robots with the arrow keys and press Enter, or pick a row in the table.</p>
       </div></div>
 
       <div class="parts" id="floor-card" hidden><div class="body">
@@ -391,8 +392,6 @@
           <p class="fbody" id="fc-post-body"></p>
           <p class="example" id="fc-post-meta"></p>
         </div>
-
-        <p class="example">A robot's state is read from the register and the hub: <em>working</em> past the quiet threshold, <em>talking</em> while a conversation is active, <em>unreachable</em> when a hub the console can read does not list it. Driving and stopping an agent stay in the roster, where a tool call is the owner's own hand — the card links there rather than keeping a second console.</p>
       </div></div>
     </div>
 

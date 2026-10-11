@@ -15,7 +15,7 @@ import { renderBoard } from './views/board';
 import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
 import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
 import { initCouncil, disarmCouncil, renderCouncil } from './views/council';
-import { floorState, initFloor, syncFloor, syncFloorVisibility } from './views/floor';
+import { floorFrame, floorState, initFloor, syncFloor, syncFloorVisibility } from './views/floor';
 import { initKeys, keysOpen, toggleKeys } from './views/keys';
 import { initLedger, renderLedger } from './views/ledger';
 import { renderMarket } from './views/market';
@@ -242,6 +242,9 @@ window.__PLAZA_DIAG__ = {
     };
   },
   get floor() { return floorState(); },
+  /** drives one floor frame when the tab fires no animation frames (headless
+      verification); the page's own loop never calls it */
+  floorFrame: () => floorFrame(),
   get board() {
     return {
       posts: store.board.length,

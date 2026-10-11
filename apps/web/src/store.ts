@@ -99,6 +99,7 @@ declare global {
         readonly states: Record<string, number>;
         readonly selected: number | null;
         readonly walks: number;
+        readonly leaving: number;
         readonly positions: ReadonlyArray<{
           readonly cid: number | null;
           readonly x: number;
@@ -106,10 +107,23 @@ declare global {
           readonly gathering: string | null;
         }>;
         readonly tint_cycle: number;
+        readonly frames: number;
+        readonly fps: number;
+        readonly frame_ms: number;
+        readonly draws: number;
+        readonly triangles: number;
+        readonly parts: number;
+        readonly ghost_capacity: number;
+        readonly webgl2: boolean;
+        readonly reduced: boolean;
         readonly camera: { readonly zoom: number; readonly pan: readonly number[]; readonly view_h: number };
         readonly plan: { readonly width: number; readonly height: number };
         readonly label: string | null;
       } | null;
+      /** Drives one floor frame when the tab fires no animation frames (a
+          headless tab); it returns the frame's own cost in milliseconds. The
+          page's own loop never calls it. */
+      readonly floorFrame: () => number;
       /** The public board as the store holds it: how many posts the console
           carries, the board's own total, the read cursors it reports, and the
           error (with its status) when the board is unreadable. */
