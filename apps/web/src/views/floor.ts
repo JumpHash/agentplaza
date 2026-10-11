@@ -13,7 +13,8 @@ import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
 import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
-import { buildDistrictProps, buildPaths, buildPlaza } from './floor3d/props';
+import { buildDistrictProps, buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
+import { grass, polish, slabSide, tiles } from './floor3d/textures';
 import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
 
@@ -302,7 +303,7 @@ export function mount(root: HTMLElement): Cleanup {
   controls.minDistance = 6;
   controls.maxDistance = 300;
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a9a, 1.6));
+  scene.add(new THREE.HemisphereLight(0xfff3e2, 0xb3a18a, 1.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.4);
   sun.position.set(22, 40, 16);
   sun.castShadow = true;
@@ -316,7 +317,7 @@ export function mount(root: HTMLElement): Cleanup {
   // Ground: a large sheet with a subtle grid.
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(200, 200),
-    new THREE.MeshStandardMaterial({ color: C.sheet, roughness: 1 }),
+    new THREE.MeshStandardMaterial({ map: grass(), roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.01;
@@ -441,7 +442,7 @@ export function mount(root: HTMLElement): Cleanup {
     if (orch) {
       const dais = new THREE.Mesh(
         new THREE.CylinderGeometry(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48),
-        new THREE.MeshStandardMaterial({ color: C.sheet, roughness: 0.9 }),
+        new THREE.MeshStandardMaterial({ map: polish(C.sheet), roughness: 0.35, metalness: 0.05 }),
       );
       dais.position.set(d.cx, DAIS_H / 2, d.cy);
       dais.castShadow = true;
@@ -456,7 +457,7 @@ export function mount(root: HTMLElement): Cleanup {
       box.rotateY(Math.PI / 4);
       const slab = new THREE.Mesh(
         box,
-        new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.25, 0.86, THREE.SRGBColorSpace), roughness: 0.95 }),
+        [slabSide(d.hue), new THREE.MeshStandardMaterial({ map: tiles(d.hue), roughness: 0.95 }), slabSide(d.hue)],
       );
       slab.position.set(d.cx, SLAB_H / 2, d.cy);
       slab.castShadow = true;
@@ -502,6 +503,13 @@ export function mount(root: HTMLElement): Cleanup {
     disposeTree(pathGroup);
     pathGroup.clear();
     pathGroup.add(buildPaths(ds.map((d) => new THREE.Vector3(d.cx, 0, d.cy)), C));
+    const fountain = buildPlazaFurniture(C, ds.map((d) => Math.atan2(d.cy, d.cx)));
+    pathGroup.add(fountain.group);
+    propAnim.push(fountain.animate);
+    for (const b of fountain.boxes) propBoxes.push(b);
+    const outside = buildScatter(ds, C);
+    pathGroup.add(outside.group);
+    for (const b of outside.boxes) propBoxes.push(b);
   }
 
   // Robots, labels, pads.
