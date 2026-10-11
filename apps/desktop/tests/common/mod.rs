@@ -358,6 +358,42 @@ pub fn hub(body: &str) -> Stub {
     }))
 }
 
+/// A `/tell` answer as the hub's admin surface serves it: the agent's own `ok`
+/// and the tool's output.
+pub const TELL_ANSWER: &str = r#"{"ok":true,"output":"3.20 3.13 1.00"}"#;
+
+/// A `/tell` answer from a tool that declined: `ok:false` with its reason.
+pub const TELL_DECLINED: &str = r#"{"ok":false,"output":"denied: no such file"}"#;
+
+/// The hub's role-policy refusal: a `403` in the tell shape, its own words.
+pub const TELL_ROLE_POLICY: &str = r#"{"ok":false,"output":"role librarian does not grant list"}"#;
+
+/// A `/stop` answer that ended the session, with the guest's `bye` count.
+pub const STOP_ENDED: &str = r#"{"cid":100,"stopped":true,"calls":3}"#;
+
+/// A `/stop` answer whose wait lapsed: the session is still up and nothing was
+/// torn down.
+pub const STOP_STILL_UP: &str =
+    r#"{"cid":100,"stopped":false,"reason":"the agent did not end within 5000 ms"}"#;
+
+/// The hub's admin surface: `POST /tell` answers `tell`, `POST /stop` answers
+/// `stop` — an HTTP status and a body each — and every other path or method is
+/// the 404 the surface serves.
+///
+/// Every request is recorded, so a test can assert exactly what the operator's
+/// console put on the wire.
+pub fn admin(tell: (u16, &str), stop: (u16, &str)) -> Stub {
+    let tell = (tell.0, tell.1.to_string());
+    let stop = (stop.0, stop.1.to_string());
+    spawn(Box::new(move |request, _| {
+        Some(match (request.method.as_str(), request.target.as_str()) {
+            ("POST", "/tell") => response(tell.0, &tell.1),
+            ("POST", "/stop") => response(stop.0, &stop.1),
+            _ => response(404, r#"{"error":"no such endpoint"}"#),
+        })
+    }))
+}
+
 /// A stub answering `replies` in order; a request past the end is a 500.
 pub fn replies(replies: Vec<(u16, String)>) -> Stub {
     let mut queue = replies.into_iter();

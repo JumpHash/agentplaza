@@ -10,6 +10,15 @@
 //! the roster reads to learn who is connected. It is off by default, and held
 //! to the same exact-loopback policy with its port required — see
 //! [`Endpoint::hub_url`](crate::api::Endpoint::hub_url).
+//!
+//! `--hub-admin-url` and `APZ_DESKTOP_HUB_ADMIN` name the hub's *admin*
+//! surface (`vsockd --admin-port`), the one the operator's controls drive: the
+//! roster can ask a connected agent to run one tool (`POST /tell`) or to end
+//! its session (`POST /stop`). It is off by default — with no admin url the
+//! controls are absent from the roster — and held to the same exact-loopback,
+//! port-required policy as the status surface, for the same reason: the
+//! surface is off unless its flag asked for it — see
+//! [`Endpoint::hub_admin_url`](crate::api::Endpoint::hub_admin_url).
 
 use std::time::Duration;
 
@@ -22,6 +31,11 @@ pub const URL_ENV: &str = "APZ_DESKTOP_URL";
 /// The environment variable naming the hub's status surface, when there is
 /// one: `vsockd --status-port`'s read-only `/status`.
 pub const HUB_ENV: &str = "APZ_DESKTOP_HUB";
+
+/// The environment variable naming the hub's admin surface, when there is one:
+/// `vsockd --admin-port`'s `/tell` and `/stop`, the surface the operator's
+/// controls drive.
+pub const HUB_ADMIN_ENV: &str = "APZ_DESKTOP_HUB_ADMIN";
 
 /// The environment variable bounding one call, in seconds.
 pub const TIMEOUT_ENV: &str = "APZ_DESKTOP_TIMEOUT_SECS";
@@ -50,6 +64,10 @@ pub struct Config {
     /// port that says who is connected, rather than the register's word for
     /// who should be. `None` — the default — is a console with no hub half.
     pub hub: Option<Endpoint>,
+    /// The hub's admin surface, when one was named: the second port the
+    /// operator's controls drive (`POST /tell`, `POST /stop`). `None` — the
+    /// default — is a console with no operator controls.
+    pub hub_admin: Option<Endpoint>,
     /// The bound on one call.
     pub timeout: Duration,
     /// How often a healthy daemon is polled, in milliseconds.
@@ -61,6 +79,7 @@ impl Default for Config {
         Self {
             endpoint: Endpoint::default(),
             hub: None,
+            hub_admin: None,
             timeout: DEFAULT_TIMEOUT,
             refresh_ms: DEFAULT_REFRESH_MS,
         }
@@ -73,6 +92,7 @@ agentplaza-desktop — the AgentPlaza fleet register
 
 USAGE:
     agentplaza-desktop [--url <url>] [--hub-url <host:port>]
+                       [--hub-admin-url <host:port>]
                        [--refresh-ms <milliseconds>] [--timeout-secs <seconds>]
 
 OPTIONS:
@@ -84,6 +104,14 @@ OPTIONS:
                            accepted, and the port is required. Off by default:
                            without it the roster draws the register's half
                            only.
+    --hub-admin-url <host:port>
+                           the hub's admin surface (vsockd --admin-port), which
+                           the roster's operator controls drive: one row's
+                           'drive' asks a connected agent to run one tool
+                           (POST /tell) and its 'stop' asks it to end its
+                           session (POST /stop). Only a loopback host is
+                           accepted, and the port is required. Off by default:
+                           without it the controls are absent from the roster.
     --refresh-ms <n>       how often a healthy daemon is polled, 250–30000;
                            2000 by default. A failing daemon backs off from
                            here, doubling to a 30 s ceiling.
@@ -93,6 +121,7 @@ OPTIONS:
 ENVIRONMENT:
     APZ_DESKTOP_URL           the same as --url
     APZ_DESKTOP_HUB           the same as --hub-url
+    APZ_DESKTOP_HUB_ADMIN     the same as --hub-admin-url
     APZ_DESKTOP_REFRESH_MS    the same as --refresh-ms
     APZ_DESKTOP_TIMEOUT_SECS  the same as --timeout-secs
 
@@ -101,7 +130,9 @@ KEYS:
     m                      the machine (GET /api/v0/machine)
     f                      the fleet map
     w                      the roster: who is running by role, and — when a
-                           hub url is configured — who is connected to it
+                           hub url is configured — who is connected to it,
+                           with the operator controls when an admin url is
+                           too: drive one tool, or stop a session
     l                      the ledger: the plaza's tasks, with the claim,
                            finish and withdrawal the daemon accepts on them
     t                      the session's telemetry, one observation per poll
@@ -128,6 +159,14 @@ register reports and the hub does not is drawn 'registered, not connected',
 and one the hub reports and the register does not is 'connected, not
 registered'. The hub is a second process: its failures are its own and never
 mark the daemon down.
+When --hub-admin-url names the admin surface, each roster row gains the
+operator's controls: 'drive' opens a console that asks the agent connected as
+that row's guest CID to run one tool (POST /tell, with the tool's name, its
+arguments as JSON, and a timeout), the answer or the hub's own refusal drawn in
+a bounded, ruled text region; 'stop' arms, and a second press asks the agent to
+end its session (POST /stop), the outcome drawn honestly — a session that ended
+and its call count, or the hub's own 'not stopped' reason and nothing torn
+down. With no admin url the controls are absent and the roster is read-only.
 The spawn form's quick boots fill the form; the run pane exports a transcript,
 and the telemetry pane the session's CSV, to the path in its box with plain
 std::fs.
@@ -141,6 +180,7 @@ where
 {
     let mut url = env(URL_ENV);
     let mut hub = env(HUB_ENV);
+    let mut hub_admin = env(HUB_ADMIN_ENV);
     let mut timeout_secs = env(TIMEOUT_ENV).map(|value| parse_secs(&value)).transpose()?;
     let mut refresh_ms = env(REFRESH_ENV)
         .map(|value| parse_refresh_ms(&value))
@@ -157,6 +197,10 @@ where
         }
         if let Some(value) = value_of(&arg, "--hub-url", &mut args)? {
             hub = Some(value);
+            continue;
+        }
+        if let Some(value) = value_of(&arg, "--hub-admin-url", &mut args)? {
+            hub_admin = Some(value);
             continue;
         }
         if let Some(value) = value_of(&arg, "--timeout-secs", &mut args)? {
@@ -180,6 +224,13 @@ where
         Some(url) => Some(Endpoint::hub_url(&url).map_err(|err| err.to_string())?),
         None => None,
     };
+    // The hub's admin surface is optional and independent of the status
+    // surface: the same loopback-only, port-required policy, and `None` (the
+    // default) leaves the roster without its operator controls.
+    let hub_admin = match hub_admin {
+        Some(url) => Some(Endpoint::hub_admin_url(&url).map_err(|err| err.to_string())?),
+        None => None,
+    };
     let timeout = match timeout_secs {
         Some(secs) => Duration::from_secs(secs),
         None => DEFAULT_TIMEOUT,
@@ -187,6 +238,7 @@ where
     Ok(Invocation::Run(Config {
         endpoint,
         hub,
+        hub_admin,
         timeout,
         refresh_ms: refresh_ms.unwrap_or(DEFAULT_REFRESH_MS),
     }))
@@ -330,6 +382,13 @@ mod tests {
         assert!(HELP.contains("--hub-url"));
         assert!(HELP.contains("APZ_DESKTOP_HUB"));
         assert!(HELP.contains("registered, not connected"));
+        // And the operator controls: the admin surface they drive, and the
+        // two laws they answer to (a refusal, and nothing torn down).
+        assert!(HELP.contains("--hub-admin-url"));
+        assert!(HELP.contains("APZ_DESKTOP_HUB_ADMIN"));
+        assert!(HELP.contains("POST /tell"));
+        assert!(HELP.contains("POST /stop"));
+        assert!(HELP.contains("nothing torn"));
     }
 
     #[test]
@@ -396,6 +455,76 @@ mod tests {
         let error = parse(args(&["--hub-url", "127.0.0.1"]), &no_env)
             .expect_err("must be refused");
         assert!(error.contains("--status-port"), "{error}");
+    }
+
+    #[test]
+    fn no_hub_admin_is_configured_by_default() {
+        assert_eq!(config(&[]).hub_admin, None);
+    }
+
+    #[test]
+    fn the_hub_admin_argument_takes_both_spellings_and_a_port() {
+        assert_eq!(
+            config(&["--hub-admin-url", "127.0.0.1:19081"]).hub_admin,
+            Some(Endpoint::loopback_at("127.0.0.1", 19_081).expect("loopback"))
+        );
+        assert_eq!(
+            config(&["--hub-admin-url=http://localhost:19082/"]).hub_admin,
+            Some(Endpoint::loopback_at("127.0.0.1", 19_082).expect("loopback"))
+        );
+        assert_eq!(
+            parse(args(&["--hub-admin-url"]), &no_env).expect_err("needs a value"),
+            "--hub-admin-url needs a value"
+        );
+        // The two hub surfaces are independent: naming one leaves the other
+        // off.
+        let config = config(&["--hub-admin-url", "127.0.0.1:19081"]);
+        assert_eq!(config.hub, None);
+    }
+
+    #[test]
+    fn the_hub_admin_environment_names_the_surface_and_an_argument_wins() {
+        let env = |name: &str| match name {
+            HUB_ADMIN_ENV => Some("127.0.0.1:19081".to_string()),
+            _ => None,
+        };
+        let Invocation::Run(config) = parse(args(&[]), &env).expect("parses") else {
+            panic!("not help")
+        };
+        assert_eq!(config.hub_admin.expect("an admin").port(), 19_081);
+
+        let Invocation::Run(config) =
+            parse(args(&["--hub-admin-url", "127.0.0.1:19083"]), &env).expect("parses")
+        else {
+            panic!("not help")
+        };
+        assert_eq!(config.hub_admin.expect("an admin").port(), 19_083);
+
+        let broken = |name: &str| match name {
+            HUB_ADMIN_ENV => Some("not a url".to_string()),
+            _ => None,
+        };
+        assert!(parse(args(&[]), &broken).is_err());
+    }
+
+    #[test]
+    fn a_hub_admin_url_off_the_loopback_or_without_a_port_is_refused_by_name() {
+        for url in [
+            "http://10.0.0.9:19081",
+            "http://127.0.0.1.evil.tld:19081",
+            "api.example.com:19081",
+            "127.0.0.1.",
+            "127.0.0.1:19081/tell",
+        ] {
+            let error = parse(args(&["--hub-admin-url", url]), &no_env)
+                .expect_err("must be refused");
+            assert!(!error.is_empty(), "{url}: {error}");
+        }
+        // The admin surface is off unless `--admin-port` asked for it, so a
+        // bare host names that flag rather than defaulting to any port.
+        let error = parse(args(&["--hub-admin-url", "127.0.0.1"]), &no_env)
+            .expect_err("must be refused");
+        assert!(error.contains("--admin-port"), "{error}");
     }
 
     #[test]

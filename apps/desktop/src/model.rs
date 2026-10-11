@@ -8,7 +8,8 @@
 
 use crate::api::{
     ApiError, Column, CreateRun, CreateTask, Endpoint, FinishOutcome, HubAgent, HubStatus, Machine,
-    Run, RunState, RunsPage, Task, TaskArtifact, TaskState, TasksPage, VmState,
+    Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState, TasksPage, TellAnswer,
+    VmState,
 };
 use crate::events::Event;
 use crate::export::{
@@ -367,11 +368,333 @@ impl Health {
     }
 }
 
+/// The most a tool name may occupy, in bytes: the hub's own bound
+/// (`crates/vsockd/src/admin.rs`, `MAX_TOOL_NAME`), mirrored so the console
+/// refuses the same names the hub would.
+pub const MAX_TOOL_NAME: usize = 256;
+
+/// How long a `/tell` waits by default, in milliseconds: the hub's own default
+/// (`DEFAULT_TELL_TIMEOUT_MS`), and the value the console's timeout box starts
+/// at.
+pub const DEFAULT_TELL_TIMEOUT_MS: u64 = 5_000;
+
+/// The longest a drive may wait, in milliseconds: the hub's own ceiling
+/// (`MAX_TELL_TIMEOUT_MS`), mirrored for the same reason.
+pub const MAX_TELL_TIMEOUT_MS: u64 = 5_000;
+
+/// One field of the roster console's drive form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConsoleField {
+    /// The tool to run.
+    Tool,
+    /// The tool's arguments, as a JSON object.
+    Args,
+    /// How long to wait, in milliseconds.
+    Timeout,
+}
+
+impl ConsoleField {
+    /// The box's placeholder, naming what belongs in it.
+    pub fn hint(self) -> &'static str {
+        match self {
+            ConsoleField::Tool => "the tool to run, e.g. uptime",
+            ConsoleField::Args => r#"args as a JSON object, e.g. {"path":"."}"#,
+            ConsoleField::Timeout => "ms to wait, 1–5000",
+        }
+    }
+}
+
+/// The operator's console on the roster: which connected agent it is aimed at,
+/// the drive form's raw input, and the last drive answer and stop outcome.
+///
+/// It is opened by a row's 'drive' (or by confirming a stop) and aimed at that
+/// row's guest CID — the key the hub's admin surface reaches an agent by. The
+/// fields hold exactly what the operator typed; the JSON parse and the bounds
+/// are checked on send, mirroring the hub's own contract.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterConsole {
+    /// The guest CID the console is aimed at.
+    pub cid: u64,
+    /// The tool-name box.
+    pub tool: String,
+    /// The args box: a JSON object, or empty for `{}`.
+    pub args: String,
+    /// The timeout box, in milliseconds.
+    pub timeout: String,
+    /// The last drive on this agent, from what the hub actually said.
+    pub drive: Option<DriveState>,
+    /// The last stop asked of this agent, if any.
+    pub stop: Option<StopState>,
+}
+
+impl RosterConsole {
+    /// A fresh console aimed at `cid`: an empty form, the hub's own default
+    /// timeout, and nothing answered yet.
+    pub fn new(cid: u64) -> Self {
+        Self {
+            cid,
+            tool: String::new(),
+            args: String::new(),
+            timeout: DEFAULT_TELL_TIMEOUT_MS.to_string(),
+            drive: None,
+            stop: None,
+        }
+    }
+}
+
+/// What the operator's last drive on the roster console produced, from what
+/// the hub's admin surface actually said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DriveState {
+    /// The call is in flight.
+    Driving {
+        /// The agent it was asked of.
+        cid: u64,
+        /// The tool it asked for.
+        name: String,
+        /// The wait it will give the agent.
+        timeout_ms: u64,
+    },
+    /// The agent answered: the tool's own `ok` and its output. `ok: false` is
+    /// the tool declining — still an answer, its reason in `output`.
+    Answered {
+        /// The agent that answered.
+        cid: u64,
+        /// The tool that ran.
+        name: String,
+        /// Whether the tool succeeded.
+        ok: bool,
+        /// The tool's output — the agent's own words.
+        output: String,
+    },
+    /// The hub refused the call itself, in its own words: the session's role
+    /// not granting the tool (`403`, decided before anything reached the
+    /// agent) or the request outside its contract (`400`/`404`/`409`/`504`).
+    Refused {
+        /// The agent the call named.
+        cid: u64,
+        /// The tool the call named.
+        name: String,
+        /// The hub's HTTP status.
+        status: u16,
+        /// The hub's own words for the refusal.
+        message: String,
+    },
+    /// The admin surface itself could not be read: unreachable, or an answer
+    /// this console cannot parse.
+    Unreachable {
+        /// The agent the call named.
+        cid: u64,
+        /// The tool the call named.
+        name: String,
+        /// Why it could not be read.
+        message: String,
+    },
+    /// The form was refused before it was sent: this console's own validation,
+    /// mirroring the hub's contract, so the operator learns it without a round
+    /// trip — and nothing reached the agent.
+    Rejected {
+        /// The agent it was aimed at.
+        cid: u64,
+        /// What the form itself said.
+        message: String,
+    },
+}
+
+impl DriveState {
+    /// The guest CID this state is about.
+    pub fn cid(&self) -> u64 {
+        match self {
+            DriveState::Driving { cid, .. }
+            | DriveState::Answered { cid, .. }
+            | DriveState::Refused { cid, .. }
+            | DriveState::Unreachable { cid, .. }
+            | DriveState::Rejected { cid, .. } => *cid,
+        }
+    }
+
+    /// The tool this state names, when it names one (a rejected form names
+    /// none).
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            DriveState::Driving { name, .. }
+            | DriveState::Answered { name, .. }
+            | DriveState::Refused { name, .. }
+            | DriveState::Unreachable { name, .. } => Some(name),
+            DriveState::Rejected { .. } => None,
+        }
+    }
+
+    /// The word the console presses as this state's mark.
+    pub fn mark(&self) -> &'static str {
+        match self {
+            DriveState::Driving { .. } => "DRIVING",
+            DriveState::Answered { ok: true, .. } => "ANSWERED",
+            DriveState::Answered { ok: false, .. } => "TOOL DECLINED",
+            DriveState::Refused { status: 403, .. } => "ROLE POLICY",
+            DriveState::Refused { .. } => "REFUSED",
+            DriveState::Unreachable { .. } => "UNREACHABLE",
+            DriveState::Rejected { .. } => "NOT SENT",
+        }
+    }
+
+    /// The meta line under the mark: the tool, the wait, and the CID — or the
+    /// hub's status when the call was refused.
+    pub fn meta(&self) -> String {
+        match self {
+            DriveState::Driving {
+                cid,
+                name,
+                timeout_ms,
+            } => format!("{name} · {timeout_ms} ms · cid {cid} · waiting for the agent"),
+            DriveState::Answered {
+                cid,
+                name,
+                ok: true,
+                ..
+            } => format!("{name} · cid {cid} · the agent's own answer"),
+            DriveState::Answered {
+                cid,
+                name,
+                ok: false,
+                ..
+            } => format!("{name} · cid {cid} · the tool declined"),
+            DriveState::Refused {
+                cid, name, status, ..
+            } => format!("{name} · cid {cid} · HTTP {status}"),
+            DriveState::Unreachable { cid, name, .. } => {
+                format!("{name} · cid {cid} · the admin surface could not be read")
+            }
+            DriveState::Rejected { cid, .. } => format!("cid {cid} · nothing was sent"),
+        }
+    }
+
+    /// The text the console's bounded region shows: the agent's own answer, or
+    /// the hub's own words for a refusal — or `None` while the call is in
+    /// flight or for a form that was never sent.
+    ///
+    /// Every byte here is somebody else's (the tool's output, the hub's
+    /// message): the console displays it and never interprets it.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            DriveState::Driving { .. } => None,
+            DriveState::Answered { output, .. } => Some(output),
+            DriveState::Refused { message, .. } => Some(message),
+            DriveState::Unreachable { message, .. } => Some(message),
+            DriveState::Rejected { message, .. } => Some(message),
+        }
+    }
+}
+
+/// What the operator's last stop on the roster console produced, from what the
+/// hub's admin surface actually said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StopState {
+    /// The stop is in flight.
+    Stopping {
+        /// The agent it was asked of.
+        cid: u64,
+    },
+    /// The session ended: the guest's `bye` count. The agent's VM stays up.
+    Stopped {
+        /// The agent whose session ended.
+        cid: u64,
+        /// The calls the ended session had served.
+        calls: u64,
+    },
+    /// The wait lapsed and the session is still up: **nothing was torn down**,
+    /// and the hub's own reason says so.
+    StillUp {
+        /// The agent that did not end.
+        cid: u64,
+        /// The hub's own words for the lapse.
+        reason: String,
+    },
+    /// The hub refused the stop, in its own words: a CID it does not serve
+    /// (404) or has no live session for (409).
+    Refused {
+        /// The agent the stop named.
+        cid: u64,
+        /// The hub's HTTP status.
+        status: u16,
+        /// The hub's own words.
+        message: String,
+    },
+    /// The admin surface itself could not be read.
+    Unreachable {
+        /// The agent the stop named.
+        cid: u64,
+        /// Why it could not be read.
+        message: String,
+    },
+}
+
+impl StopState {
+    /// The guest CID this state is about.
+    pub fn cid(&self) -> u64 {
+        match self {
+            StopState::Stopping { cid }
+            | StopState::Stopped { cid, .. }
+            | StopState::StillUp { cid, .. }
+            | StopState::Refused { cid, .. }
+            | StopState::Unreachable { cid, .. } => *cid,
+        }
+    }
+
+    /// The word the console presses as this state's mark.
+    pub fn mark(&self) -> &'static str {
+        match self {
+            StopState::Stopping { .. } => "STOPPING",
+            StopState::Stopped { .. } => "STOPPED",
+            StopState::StillUp { .. } => "NOT STOPPED",
+            StopState::Refused { .. } => "REFUSED",
+            StopState::Unreachable { .. } => "UNREACHABLE",
+        }
+    }
+
+    /// The honest sentence the console shows: what happened, and — every time
+    /// something did not end — that nothing was torn down.
+    pub fn text(&self) -> String {
+        match self {
+            StopState::Stopping { cid } => {
+                format!("asking the agent on cid {cid} to end its session…")
+            }
+            StopState::Stopped { calls, .. } => format!(
+                "the session ended after {calls} call(s); the agent's VM stays up"
+            ),
+            StopState::StillUp { reason, .. } => {
+                format!("not stopped: {reason} — nothing was torn down")
+            }
+            StopState::Refused { message, .. } => message.clone(),
+            StopState::Unreachable { message, .. } => message.clone(),
+        }
+    }
+}
+
+/// One `POST /tell` to make on the hub's admin surface: the tool, its
+/// arguments, and how long to wait — already validated against the hub's own
+/// contract.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TellCall {
+    /// The agent to drive.
+    pub cid: u64,
+    /// The tool to run.
+    pub name: String,
+    /// The tool's arguments, a JSON object.
+    pub args: serde_json::Value,
+    /// How long to wait for the agent, in milliseconds.
+    pub timeout_ms: u64,
+}
+
 /// What the reducer asks the runtime to do next.
 ///
 /// Every field is an independent call, so the runtime can run them in any
 /// order; the model never depends on which finished first.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// No `Eq`: a drive carries the arguments as parsed JSON ([`serde_json::Value`]
+/// is `PartialEq` but not `Eq`, since a number may be a float), which is the
+/// only field here that cannot be totally ordered.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Effect {
     /// Poll `GET /api/v0/runs`.
     pub poll_list: bool,
@@ -409,6 +732,12 @@ pub struct Effect {
     pub withdraw_task: Option<String>,
     /// `POST /api/v0/tasks/{id}/artifact` with this path.
     pub artifact: Option<ArtifactCall>,
+    /// `POST /tell` on the hub's admin surface with this drive: one tool on
+    /// one connected agent.
+    pub tell_agent: Option<TellCall>,
+    /// `POST /stop` on the hub's admin surface for this guest CID: ask the
+    /// agent to end its session.
+    pub stop_agent: Option<u64>,
 }
 
 impl Effect {
@@ -514,6 +843,23 @@ impl Effect {
         }
     }
 
+    /// Drive one tool on the hub's admin surface: one `POST /tell`.
+    pub fn tell(call: TellCall) -> Self {
+        Self {
+            tell_agent: Some(call),
+            ..Self::default()
+        }
+    }
+
+    /// Ask one agent to end its session on the hub's admin surface: one
+    /// `POST /stop`.
+    pub fn stop(cid: u64) -> Self {
+        Self {
+            stop_agent: Some(cid),
+            ..Self::default()
+        }
+    }
+
     /// Whether there is nothing to do.
     pub fn is_idle(&self) -> bool {
         *self == Self::default()
@@ -558,6 +904,44 @@ pub enum Message {
         at_ms: u64,
         /// The answer.
         result: Result<HubStatus, ApiError>,
+    },
+    /// A roster row's 'drive' was pressed: open the operator console aimed at
+    /// that agent's guest CID.
+    SelectAgent(u64),
+    /// The roster console's drive form was edited.
+    DriveEdit {
+        /// Which box.
+        field: ConsoleField,
+        /// Its new text.
+        value: String,
+    },
+    /// The roster console's send button was pressed: validate the form and
+    /// drive the tool.
+    DriveSend,
+    /// The roster console was closed.
+    DriveClose,
+    /// A roster row's 'stop' was pressed; confirming it asks the agent to end
+    /// its session.
+    StopClicked(u64),
+    /// `POST /tell` on the hub's admin surface answered.
+    Told {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The agent that was driven.
+        cid: u64,
+        /// The tool that was asked for.
+        name: String,
+        /// The answer, or why it did not arrive.
+        result: Result<TellAnswer, ApiError>,
+    },
+    /// `POST /stop` on the hub's admin surface answered.
+    Stopped {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The agent the stop named.
+        cid: u64,
+        /// The outcome, or why it did not arrive.
+        result: Result<StopOutcome, ApiError>,
     },
     /// `POST /api/v0/runs/{id}/input` answered.
     Input {
@@ -783,6 +1167,8 @@ impl Message {
             | Message::Run { at_ms, .. }
             | Message::Machine { at_ms, .. }
             | Message::Hub { at_ms, .. }
+            | Message::Told { at_ms, .. }
+            | Message::Stopped { at_ms, .. }
             | Message::Input { at_ms, .. }
             | Message::Killed { at_ms, .. }
             | Message::Spawned { at_ms, .. }
@@ -800,6 +1186,11 @@ impl Message {
             | Message::Key(_)
             | Message::Select { .. }
             | Message::SelectVm(_)
+            | Message::SelectAgent(_)
+            | Message::DriveEdit { .. }
+            | Message::DriveSend
+            | Message::DriveClose
+            | Message::StopClicked(_)
             | Message::ConsoleEdit(_)
             | Message::ConsoleSend
             | Message::ConsoleQuick(_)
@@ -841,6 +1232,10 @@ pub struct Model {
     /// connected — as opposed to the register's word for who should be. `None`
     /// is a console with no hub half.
     pub hub: Option<Endpoint>,
+    /// The hub's admin surface, when `--hub-admin-url` named one: the second
+    /// process the operator's controls drive (`POST /tell`, `POST /stop`).
+    /// `None` — the default — is a roster with no operator controls at all.
+    pub hub_admin: Option<Endpoint>,
     /// The hub's last answer, or `None` when it has not been read or its last
     /// read failed.
     ///
@@ -927,6 +1322,14 @@ pub struct Model {
     /// The run whose kill button was pressed once and is waiting for a second
     /// press.
     pub armed: Option<String>,
+    /// The roster's operator console: which connected agent it is aimed at,
+    /// its drive form, and the last drive answer and stop outcome. `None`
+    /// until a row's 'drive' is pressed — and always `None` with no
+    /// `--hub-admin-url`, since the controls are absent then.
+    pub agent_console: Option<RosterConsole>,
+    /// The agent whose 'stop' button was pressed once and is waiting for a
+    /// second press.
+    pub armed_stop: Option<u64>,
     /// The last action's outcome.
     pub notice: Option<Notice>,
     /// The wall-clock time of the last message, in milliseconds since the Unix
@@ -949,6 +1352,7 @@ impl Default for Model {
         Self {
             endpoint: Endpoint::loopback(),
             hub: None,
+            hub_admin: None,
             hub_status: None,
             hub_error: None,
             hub_last_ok_ms: None,
@@ -983,6 +1387,8 @@ impl Default for Model {
             form: SpawnForm::default(),
             errors: Vec::new(),
             armed: None,
+            agent_console: None,
+            armed_stop: None,
             notice: None,
             now_ms: 0,
             next_poll_at_ms: 0,
@@ -1030,6 +1436,21 @@ impl Model {
     /// connected half at all.
     pub fn has_hub(&self) -> bool {
         self.hub.is_some()
+    }
+
+    /// The same, with the hub's admin surface to drive as well: the roster's
+    /// operator controls. `None` leaves the roster read-only, exactly as it
+    /// was before the controls existed.
+    pub fn with_hub_admin(mut self, hub_admin: Option<Endpoint>) -> Self {
+        self.hub_admin = hub_admin;
+        self
+    }
+
+    /// Whether the hub's admin surface is configured: whether the roster
+    /// carries the operator's controls at all. With no admin url the controls
+    /// are absent, not drawn-but-disabled.
+    pub fn has_hub_admin(&self) -> bool {
+        self.hub_admin.is_some()
     }
 
     /// The register's first effect: the first poll, and the machine once, so
@@ -1168,6 +1589,18 @@ impl Model {
             .flat_map(|run| run.vms.iter())
             .filter(|vm| vm.role.is_some() && vm.state == VmState::Running)
             .count()
+    }
+
+    /// The role the roster files the agent with this guest CID under, when the
+    /// roster reports it: what the operator console names the agent by. `None`
+    /// for a CID no roster row carries — which is what a console aimed at an
+    /// agent the roster has since dropped reads.
+    pub fn roster_role(&self, cid: u64) -> Option<String> {
+        self.roster()
+            .into_iter()
+            .flat_map(|group| group.agents)
+            .find(|agent| agent.cid() == Some(cid))
+            .map(|agent| agent.role().to_string())
     }
 
     /// How many agents the hub reports connected right now, when it has
@@ -1331,6 +1764,44 @@ impl Model {
                     }
                 }
             }
+            Message::SelectAgent(cid) => self.open_agent_console(cid),
+            Message::DriveEdit { field, value } => {
+                if let Some(console) = self.agent_console.as_mut() {
+                    match field {
+                        ConsoleField::Tool => console.tool = value,
+                        ConsoleField::Args => console.args = value,
+                        ConsoleField::Timeout => console.timeout = value,
+                    }
+                }
+                Effect::none()
+            }
+            Message::DriveSend => self.drive_send(),
+            Message::DriveClose => {
+                self.agent_console = None;
+                self.armed_stop = None;
+                Effect::none()
+            }
+            Message::StopClicked(cid) => {
+                if self.armed_stop == Some(cid) {
+                    self.armed_stop = None;
+                    // The stop's outcome lives in the console, so confirming a
+                    // stop opens the console on the agent it names — and marks
+                    // the stop in flight — before anything is sent.
+                    let effect = self.open_agent_console(cid);
+                    debug_assert!(effect.is_idle());
+                    if let Some(console) = self.agent_console.as_mut() {
+                        console.stop = Some(StopState::Stopping { cid });
+                    }
+                    Effect::stop(cid)
+                } else {
+                    self.armed_stop = Some(cid);
+                    Effect::none()
+                }
+            }
+            Message::Told {
+                cid, name, result, ..
+            } => self.told(cid, name, result),
+            Message::Stopped { cid, result, .. } => self.stopped(cid, result),
             Message::SpawnClicked => self.spawn_clicked(),
             Message::Spawned { at_ms, result } => match result {
                 Ok(run) => {
@@ -1634,6 +2105,149 @@ impl Model {
                 self.hub_failures = self.hub_failures.saturating_add(1);
                 self.hub_next_at_ms = at_ms
                     .saturating_add(poll_interval_ms(self.refresh_ms, self.hub_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// Open the roster's operator console aimed at `cid`.
+    ///
+    /// An already open console on the same agent is kept — the form the
+    /// operator typed is not thrown away by a second press — while another
+    /// agent's console is replaced.
+    fn open_agent_console(&mut self, cid: u64) -> Effect {
+        if self.agent_console.as_ref().map(|console| console.cid) != Some(cid) {
+            self.agent_console = Some(RosterConsole::new(cid));
+        }
+        Effect::none()
+    }
+
+    /// The drive form's send button: validate against the hub's own contract
+    /// and, when it holds, ask for the call. A form that does not hold is
+    /// recorded as [`DriveState::Rejected`] — the hub's own wording — and
+    /// nothing is sent, so nothing reaches the agent on a bad form.
+    fn drive_send(&mut self) -> Effect {
+        let Some(console) = self.agent_console.as_ref() else {
+            return Effect::none();
+        };
+        let cid = console.cid;
+        let name = console.tool.trim().to_string();
+        let args_text = console.args.clone();
+        let timeout_text = console.timeout.trim().to_string();
+
+        if name.is_empty() {
+            return self.reject_drive(cid, "a tell needs a tool name");
+        }
+        if name.len() > MAX_TOOL_NAME {
+            return self.reject_drive(
+                cid,
+                &format!("the tool name is longer than {MAX_TOOL_NAME} bytes"),
+            );
+        }
+        let args = match parse_args(&args_text) {
+            Ok(args) => args,
+            Err(message) => return self.reject_drive(cid, &message),
+        };
+        let timeout_ms = match timeout_text.parse::<u64>() {
+            Ok(ms) if (1..=MAX_TELL_TIMEOUT_MS).contains(&ms) => ms,
+            _ => {
+                return self
+                    .reject_drive(cid, &format!("timeout_ms must be 1..={MAX_TELL_TIMEOUT_MS}"));
+            }
+        };
+        if let Some(console) = self.agent_console.as_mut() {
+            console.drive = Some(DriveState::Driving {
+                cid,
+                name: name.clone(),
+                timeout_ms,
+            });
+        }
+        Effect::tell(TellCall {
+            cid,
+            name,
+            args,
+            timeout_ms,
+        })
+    }
+
+    /// Record a drive the form itself refused, and send nothing.
+    fn reject_drive(&mut self, cid: u64, message: &str) -> Effect {
+        if let Some(console) = self.agent_console.as_mut() {
+            console.drive = Some(DriveState::Rejected {
+                cid,
+                message: message.to_string(),
+            });
+        }
+        Effect::none()
+    }
+
+    /// A `POST /tell` answered: the agent's own answer, or the hub's own words
+    /// for a refusal.
+    ///
+    /// It lands on the console it was asked from when that console is still
+    /// open on the same agent; when it is not — the console moved or closed
+    /// while the call was in flight — a one-line notice carries the outcome, so
+    /// an answer that arrived is never silently lost. A hub refusal never
+    /// touches the register's health: the hub is a second process.
+    fn told(&mut self, cid: u64, name: String, result: Result<TellAnswer, ApiError>) -> Effect {
+        let (state, kind) = match result {
+            Ok(answer) => {
+                let kind = if answer.ok {
+                    NoticeKind::Done
+                } else {
+                    // The call finished; the tool declined. Not a register
+                    // failure, but worth an amber word when it falls to a
+                    // notice.
+                    NoticeKind::Failed
+                };
+                (
+                    DriveState::Answered {
+                        cid,
+                        name: name.clone(),
+                        ok: answer.ok,
+                        output: answer.output,
+                    },
+                    kind,
+                )
+            }
+            Err(error) => {
+                let state = drive_error(cid, name.clone(), error);
+                (state, NoticeKind::Failed)
+            }
+        };
+        match self.agent_console.as_mut() {
+            Some(console) if console.cid == cid => console.drive = Some(state),
+            _ => {
+                let text = state
+                    .text()
+                    .map(|text| format!("cid {cid} · {text}"))
+                    .unwrap_or_else(|| format!("cid {cid} · {}", state.mark().to_lowercase()));
+                self.notice = Some(Notice { kind, text });
+            }
+        }
+        Effect::none()
+    }
+
+    /// A `POST /stop` answered: the session ended, or it did not — and, every
+    /// time it did not, that nothing was torn down.
+    fn stopped(&mut self, cid: u64, result: Result<StopOutcome, ApiError>) -> Effect {
+        let (state, kind) = match result {
+            Ok(StopOutcome::Stopped { calls }) => (
+                StopState::Stopped { cid, calls },
+                NoticeKind::Done,
+            ),
+            Ok(StopOutcome::StillUp { reason }) => {
+                (StopState::StillUp { cid, reason }, NoticeKind::Failed)
+            }
+            Err(error) => (stop_error(cid, error), NoticeKind::Failed),
+        };
+        match self.agent_console.as_mut() {
+            Some(console) if console.cid == cid => console.stop = Some(state),
+            _ => {
+                self.notice = Some(Notice {
+                    kind,
+                    text: format!("cid {cid} · {}", state.text()),
+                });
             }
         }
         Effect::none()
@@ -2253,9 +2867,15 @@ impl Model {
     /// Shows `pane`, fetching what it needs.
     fn show(&mut self, pane: Pane) -> Effect {
         // Arming is per sheet: a kill or a withdraw that was armed on the
-        // sheet the operator just left is not armed on the one arriving.
+        // sheet the operator just left is not armed on the one arriving. The
+        // roster's operator console is the roster's, so leaving the roster
+        // closes it too — and disarms any stop waiting on a second press.
         self.armed = None;
         self.armed_task = None;
+        if pane != Pane::Roster {
+            self.agent_console = None;
+            self.armed_stop = None;
+        }
         match pane {
             Pane::Fleet => {
                 self.pane = Pane::Fleet;
@@ -2924,6 +3544,59 @@ fn file(groups: &mut Vec<RosterGroup>, agent: RosterAgent) {
             role,
             agents: vec![agent],
         }),
+    }
+}
+
+/// The roster console's args box, parsed as the JSON object the hub's `/tell`
+/// expects.
+///
+/// An empty box is `{}` — which is what a tool taking no arguments (`uptime`)
+/// wants — and anything that is not a JSON object is refused with the hub's own
+/// wording, so the same complaint reads whether this console or the hub said
+/// it.
+pub fn parse_args(text: &str) -> Result<serde_json::Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(serde_json::Value::Object(serde_json::Map::new()));
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value @ serde_json::Value::Object(_)) => Ok(value),
+        _ => Err("args must be a JSON object".to_string()),
+    }
+}
+
+/// The drive state an `ApiError` names: the hub's own refusal (its `403` role
+/// policy, or another status), or the admin surface being unreadable.
+fn drive_error(cid: u64, name: String, error: ApiError) -> DriveState {
+    match error {
+        ApiError::Status { status, message } => DriveState::Refused {
+            cid,
+            name,
+            status,
+            message,
+        },
+        error => DriveState::Unreachable {
+            cid,
+            name,
+            message: error.to_string(),
+        },
+    }
+}
+
+/// The stop state an `ApiError` names: the hub's own refusal (`404` a CID it
+/// does not serve, `409` a served CID with no live session), or the admin
+/// surface being unreadable.
+fn stop_error(cid: u64, error: ApiError) -> StopState {
+    match error {
+        ApiError::Status { status, message } => StopState::Refused {
+            cid,
+            status,
+            message,
+        },
+        error => StopState::Unreachable {
+            cid,
+            message: error.to_string(),
+        },
     }
 }
 
@@ -4711,6 +5384,367 @@ mod tests {
             result: Ok(hub_status(agents)),
         });
         model
+    }
+
+    /// `fleet_with_roles` with the hub's admin surface configured: the roster
+    /// carrying the operator's controls.
+    fn fleet_with_admin() -> Model {
+        fleet_with_roles().with_hub_admin(Some(
+            Endpoint::loopback_at("127.0.0.1", 19_081).expect("loopback"),
+        ))
+    }
+
+    /// The drive state the console is currently showing.
+    fn drive(model: &Model) -> &DriveState {
+        model
+            .agent_console
+            .as_ref()
+            .expect("a console is open")
+            .drive
+            .as_ref()
+            .expect("a drive has been made")
+    }
+
+    /// Fill the console's form and press send, returning the effect.
+    fn drive_with(model: &mut Model, tool: &str, args: &str, timeout: &str) -> Effect {
+        model.apply(Message::DriveEdit {
+            field: ConsoleField::Tool,
+            value: tool.to_string(),
+        });
+        model.apply(Message::DriveEdit {
+            field: ConsoleField::Args,
+            value: args.to_string(),
+        });
+        model.apply(Message::DriveEdit {
+            field: ConsoleField::Timeout,
+            value: timeout.to_string(),
+        });
+        model.apply(Message::DriveSend)
+    }
+
+    #[test]
+    fn the_args_box_is_a_json_object_or_the_hubs_own_refusal() {
+        assert_eq!(parse_args(""), Ok(serde_json::json!({})));
+        assert_eq!(parse_args("   "), Ok(serde_json::json!({})));
+        assert_eq!(
+            parse_args(r#" {"path":"."} "#),
+            Ok(serde_json::json!({"path": "."}))
+        );
+        for text in ["[1,2]", "5", "\"hi\"", "null", "true", "{oops"] {
+            assert_eq!(
+                parse_args(text),
+                Err("args must be a JSON object".to_string()),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_operator_console_opens_on_the_row_the_operator_pressed() {
+        let mut model = fleet_with_admin();
+        assert!(model.has_hub_admin());
+        assert!(model.agent_console.is_none(), "nothing is open until pressed");
+
+        assert!(model.apply(Message::SelectAgent(100)).is_idle());
+        let console = model.agent_console.as_ref().expect("open");
+        assert_eq!(console.cid, 100);
+        assert_eq!(console.tool, "");
+        assert_eq!(console.args, "");
+        assert_eq!(console.timeout, DEFAULT_TELL_TIMEOUT_MS.to_string());
+        assert!(console.drive.is_none() && console.stop.is_none());
+
+        // Pressing the same row again keeps the form the operator typed; a
+        // different row replaces the console.
+        model.apply(Message::DriveEdit {
+            field: ConsoleField::Tool,
+            value: "uptime".to_string(),
+        });
+        model.apply(Message::SelectAgent(100));
+        assert_eq!(model.agent_console.as_ref().expect("kept").tool, "uptime");
+        model.apply(Message::SelectAgent(101));
+        let console = model.agent_console.as_ref().expect("moved");
+        assert_eq!(console.cid, 101);
+        assert_eq!(console.tool, "", "another agent is a fresh console");
+
+        model.apply(Message::DriveClose);
+        assert!(model.agent_console.is_none());
+    }
+
+    #[test]
+    fn a_drive_is_validated_against_the_hubs_own_contract_before_it_is_sent() {
+        let mut model = fleet_with_admin();
+        model.apply(Message::SelectAgent(100));
+
+        // An empty tool name.
+        assert!(drive_with(&mut model, "", "", "5000").is_idle());
+        assert_eq!(drive(&model).text(), Some("a tell needs a tool name"));
+        assert_eq!(drive(&model).mark(), "NOT SENT");
+
+        // A name past the hub's own bound.
+        let long = "x".repeat(MAX_TOOL_NAME + 1);
+        assert!(drive_with(&mut model, &long, "", "5000").is_idle());
+        assert_eq!(
+            drive(&model).text(),
+            Some("the tool name is longer than 256 bytes")
+        );
+
+        // Args that are not a JSON object.
+        assert!(drive_with(&mut model, "list", "[1,2]", "5000").is_idle());
+        assert_eq!(drive(&model).text(), Some("args must be a JSON object"));
+
+        // A timeout outside the hub's range (and one that is not a number).
+        for timeout in ["0", "5001", "", "soon"] {
+            assert!(drive_with(&mut model, "list", "{}", timeout).is_idle());
+            assert_eq!(
+                drive(&model).text(),
+                Some("timeout_ms must be 1..=5000"),
+                "{timeout:?}"
+            );
+        }
+        // Nothing was ever sent: no call left the model on a bad form.
+        assert!(matches!(drive(&model), DriveState::Rejected { .. }));
+    }
+
+    #[test]
+    fn a_valid_drive_asks_for_the_call_with_the_parsed_arguments() {
+        let mut model = fleet_with_admin();
+        model.apply(Message::SelectAgent(100));
+
+        let effect = drive_with(&mut model, "list", r#"{"path":"."}"#, "2000");
+        let call = effect.tell_agent.expect("a drive was asked for");
+        assert_eq!(call.cid, 100);
+        assert_eq!(call.name, "list");
+        assert_eq!(call.args, serde_json::json!({ "path": "." }));
+        assert_eq!(call.timeout_ms, 2_000);
+        assert!(matches!(
+            drive(&model),
+            DriveState::Driving { cid: 100, timeout_ms: 2_000, .. }
+        ));
+
+        // An empty args box is the empty object a no-argument tool wants, and
+        // the tool name is trimmed.
+        let effect = drive_with(&mut model, "  uptime  ", "", "5000");
+        let call = effect.tell_agent.expect("a drive was asked for");
+        assert_eq!(call.name, "uptime");
+        assert_eq!(call.args, serde_json::json!({}));
+        assert_eq!(call.timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn a_tell_answer_is_recorded_in_the_hubs_and_the_agents_own_words() {
+        let mut model = fleet_with_admin();
+        model.apply(Message::SelectAgent(100));
+
+        // The agent answered: its `ok` and its output.
+        model.apply(Message::Told {
+            at_ms: 20_000,
+            cid: 100,
+            name: "uptime".to_string(),
+            result: Ok(TellAnswer {
+                ok: true,
+                output: "3.20 3.13 1.00".to_string(),
+            }),
+        });
+        assert_eq!(drive(&model).mark(), "ANSWERED");
+        assert_eq!(drive(&model).text(), Some("3.20 3.13 1.00"));
+
+        // A declining tool is an answer too: `ok:false` with its reason.
+        model.apply(Message::Told {
+            at_ms: 21_000,
+            cid: 100,
+            name: "read_file".to_string(),
+            result: Ok(TellAnswer {
+                ok: false,
+                output: "denied: path \"../x\" contains \"..\"".to_string(),
+            }),
+        });
+        assert_eq!(drive(&model).mark(), "TOOL DECLINED");
+        assert_eq!(
+            drive(&model).text(),
+            Some("denied: path \"../x\" contains \"..\"")
+        );
+
+        // The hub's role policy, in its own words.
+        model.apply(Message::Told {
+            at_ms: 22_000,
+            cid: 100,
+            name: "list".to_string(),
+            result: Err(ApiError::Status {
+                status: 403,
+                message: "role librarian does not grant list".to_string(),
+            }),
+        });
+        assert_eq!(drive(&model).mark(), "ROLE POLICY");
+        assert_eq!(drive(&model).text(), Some("role librarian does not grant list"));
+        assert_eq!(drive(&model).meta(), "list · cid 100 · HTTP 403");
+
+        // A served CID with no live session, and a silent agent.
+        model.apply(Message::Told {
+            at_ms: 23_000,
+            cid: 100,
+            name: "list".to_string(),
+            result: Err(ApiError::Status {
+                status: 409,
+                message: "agent with guest CID 100 is not connected".to_string(),
+            }),
+        });
+        assert_eq!(drive(&model).mark(), "REFUSED");
+        model.apply(Message::Told {
+            at_ms: 24_000,
+            cid: 100,
+            name: "list".to_string(),
+            result: Err(ApiError::Status {
+                status: 504,
+                message: "agent did not answer within 1 ms".to_string(),
+            }),
+        });
+        assert_eq!(drive(&model).text(), Some("agent did not answer within 1 ms"));
+
+        // The admin surface could not be read at all.
+        model.apply(Message::Told {
+            at_ms: 25_000,
+            cid: 100,
+            name: "list".to_string(),
+            result: Err(ApiError::Connect(
+                "http://127.0.0.1:19081: refused".to_string(),
+            )),
+        });
+        assert_eq!(drive(&model).mark(), "UNREACHABLE");
+        // A hub refusal never marks the register down: the hub is a second
+        // process on a second port.
+        assert_eq!(model.failures, 0);
+        assert_eq!(model.last_error, None);
+    }
+
+    #[test]
+    fn a_tell_answer_for_a_console_that_moved_is_a_notice_not_a_loss() {
+        let mut model = fleet_with_admin();
+        model.apply(Message::SelectAgent(100));
+        // The operator moves the console to another agent while the call is
+        // in flight.
+        model.apply(Message::SelectAgent(101));
+        model.apply(Message::Told {
+            at_ms: 20_000,
+            cid: 100,
+            name: "uptime".to_string(),
+            result: Ok(TellAnswer {
+                ok: true,
+                output: "3.20 3.13".to_string(),
+            }),
+        });
+        // The answer is not recorded on the console that moved away...
+        assert!(model.agent_console.as_ref().expect("open").drive.is_none());
+        // ...and it is not silently lost either.
+        let notice = model.notice.as_ref().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Done);
+        assert_eq!(notice.text, "cid 100 · 3.20 3.13");
+    }
+
+    #[test]
+    fn stopping_takes_two_presses_and_opens_the_console_on_its_agent() {
+        let mut model = fleet_with_admin();
+        assert!(model.apply(Message::StopClicked(100)).is_idle());
+        assert_eq!(model.armed_stop, Some(100));
+
+        // Pressing another agent's stop moves the arm.
+        assert!(model.apply(Message::StopClicked(101)).is_idle());
+        assert_eq!(model.armed_stop, Some(101));
+
+        let effect = model.apply(Message::StopClicked(101));
+        assert_eq!(effect, Effect::stop(101));
+        assert_eq!(model.armed_stop, None);
+        let console = model.agent_console.as_ref().expect("the stop opened its console");
+        assert_eq!(console.cid, 101);
+        assert!(matches!(console.stop, Some(StopState::Stopping { cid: 101 })));
+    }
+
+    #[test]
+    fn a_stop_outcome_is_recorded_honestly_and_tears_nothing_down() {
+        let mut model = fleet_with_admin();
+        model.apply(Message::SelectAgent(100));
+
+        // The session ended, with the guest's own `bye` count.
+        model.apply(Message::Stopped {
+            at_ms: 20_000,
+            cid: 100,
+            result: Ok(StopOutcome::Stopped { calls: 3 }),
+        });
+        let state = model.agent_console.as_ref().expect("open").stop.clone().expect("a stop");
+        assert_eq!(state.mark(), "STOPPED");
+        assert_eq!(state.text(), "the session ended after 3 call(s); the agent's VM stays up");
+
+        // The wait lapsed and the session is still up: the honest `not
+        // stopped`, with the hub's own reason, and nothing torn down.
+        model.apply(Message::Stopped {
+            at_ms: 21_000,
+            cid: 100,
+            result: Ok(StopOutcome::StillUp {
+                reason: "the agent did not end within 5000 ms".to_string(),
+            }),
+        });
+        let state = model.agent_console.as_ref().expect("open").stop.clone().expect("a stop");
+        assert_eq!(state.mark(), "NOT STOPPED");
+        assert_eq!(
+            state.text(),
+            "not stopped: the agent did not end within 5000 ms — nothing was torn down"
+        );
+
+        // A CID the hub does not serve, and a served CID with no live session.
+        for (status, message) in [
+            (404u16, "no agent with guest CID 99"),
+            (409, "agent with guest CID 100 is not connected"),
+        ] {
+            model.apply(Message::Stopped {
+                at_ms: 22_000,
+                cid: 100,
+                result: Err(ApiError::Status {
+                    status,
+                    message: message.to_string(),
+                }),
+            });
+            let state = model.agent_console.as_ref().expect("open").stop.clone().expect("a stop");
+            assert_eq!(state.mark(), "REFUSED");
+            assert_eq!(state.text(), message);
+        }
+
+        // And the admin surface being unreadable.
+        model.apply(Message::Stopped {
+            at_ms: 23_000,
+            cid: 100,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        let state = model.agent_console.as_ref().expect("open").stop.clone().expect("a stop");
+        assert_eq!(state.mark(), "UNREACHABLE");
+        assert_eq!(model.failures, 0, "a hub refusal is not a register failure");
+    }
+
+    #[test]
+    fn leaving_the_roster_closes_the_operator_console_and_disarms_the_stop() {
+        let mut model = fleet_with_admin();
+        model.apply(Message::SelectAgent(100));
+        model.apply(Message::StopClicked(100));
+        assert_eq!(model.armed_stop, Some(100));
+        assert!(model.agent_console.is_some());
+
+        // Showing another sheet is leaving the roster: the console is the
+        // roster's, and the arm goes with it.
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(model.agent_console.is_none());
+        assert_eq!(model.armed_stop, None);
+
+        // Re-showing the roster does not resurrect it.
+        model.apply(Message::Show(Pane::Roster));
+        assert!(model.agent_console.is_none());
+    }
+
+    #[test]
+    fn no_admin_surface_is_a_roster_with_no_controls() {
+        let model = fleet_with_roles();
+        assert!(!model.has_hub_admin());
+        assert_eq!(model.hub_admin, None);
+        // The console cannot be opened by the reducer either: nothing selects
+        // an agent, and the roster draws no control to select one with.
+        assert_eq!(model.agent_console, None);
     }
 
     #[test]

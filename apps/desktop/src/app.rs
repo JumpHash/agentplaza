@@ -30,20 +30,33 @@ pub fn application(
         .hub
         .clone()
         .map(|endpoint| Client::new(endpoint).with_timeout(config.timeout));
-    let model = Model::at_cadence(config.endpoint, config.refresh_ms).with_hub(config.hub);
+    // The hub's admin surface is yet another: the one the roster's operator
+    // controls drive (`POST /tell`, `POST /stop`). `None` when no
+    // `--hub-admin-url` named one, which leaves a read-only roster.
+    let admin = config
+        .hub_admin
+        .clone()
+        .map(|endpoint| Client::new(endpoint).with_timeout(config.timeout));
+    let model = Model::at_cadence(config.endpoint, config.refresh_ms)
+        .with_hub(config.hub)
+        .with_hub_admin(config.hub_admin);
 
     // The first poll is the first tick: the reducer schedules it and counts
     // it, and the timer takes over from there.
     let boot_client = client.clone();
     let boot_hub = hub.clone();
+    let boot_admin = admin.clone();
     let boot = move || {
         let mut model = model.clone();
         let effect = model.boot(epoch_ms());
-        (model, dispatch(effect, &boot_client, boot_hub.as_ref()))
+        (
+            model,
+            dispatch(effect, &boot_client, boot_hub.as_ref(), boot_admin.as_ref()),
+        )
     };
     let update = move |model: &mut Model, message: Message| {
         let effect = model.apply(message);
-        dispatch(effect, &client, hub.as_ref())
+        dispatch(effect, &client, hub.as_ref(), admin.as_ref())
     };
 
     iced::application(boot, update, view::view)
@@ -204,7 +217,12 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
 }
 
 /// Runs one effect's calls concurrently and turns their answers into messages.
-fn dispatch(effect: Effect, client: &Client, hub: Option<&Client>) -> Task<Message> {
+fn dispatch(
+    effect: Effect,
+    client: &Client,
+    hub: Option<&Client>,
+    admin: Option<&Client>,
+) -> Task<Message> {
     let mut tasks: Vec<Task<Message>> = Vec::new();
     if effect.poll_list {
         let client = client.clone();
@@ -448,6 +466,38 @@ fn dispatch(effect: Effect, client: &Client, hub: Option<&Client>) -> Task<Messa
                 result,
             },
         ));
+    }
+    if let Some(call) = effect.tell_agent {
+        // The hub's admin surface, its own client and its own message: a hub
+        // that refuses a drive is never mistaken for a daemon that is down.
+        if let Some(admin) = admin.cloned() {
+            let cid = call.cid;
+            let asked = call.name.clone();
+            let reported = call.name.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let result = admin.hub_tell(cid, &asked, &call.args, call.timeout_ms);
+                    (epoch_ms(), result)
+                },
+                move |(at_ms, result)| Message::Told {
+                    at_ms,
+                    cid,
+                    name: reported.clone(),
+                    result,
+                },
+            ));
+        }
+    }
+    if let Some(cid) = effect.stop_agent {
+        if let Some(admin) = admin.cloned() {
+            tasks.push(Task::perform(
+                async move {
+                    let result = admin.hub_stop(cid);
+                    (epoch_ms(), result)
+                },
+                move |(at_ms, result)| Message::Stopped { at_ms, cid, result },
+            ));
+        }
     }
     Task::batch(tasks)
 }

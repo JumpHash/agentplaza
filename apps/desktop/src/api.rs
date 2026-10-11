@@ -339,6 +339,86 @@ impl HubStatus {
     }
 }
 
+/// One `POST /tell` answer from the hub's admin surface: the agent's own `ok`
+/// and the tool's `output`.
+///
+/// The hub writes `{"ok": <bool>, "output": "<text>"}`. `ok: true` is the tool
+/// succeeding and `ok: false` the tool declining — both are the agent
+/// *answering*, and its answer is data. A *refusal of the call itself* (a role
+/// that does not grant the tool, a CID that is not connected, a timeout) never
+/// reaches this shape: it is an HTTP status and an `ApiError::Status` instead,
+/// carrying the hub's own words.
+///
+/// The parse is permissive by construction: a field this console does not know
+/// is ignored, while a missing `ok` or `output` is an error that names it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TellAnswer {
+    /// Whether the tool succeeded (`false` is the tool declining, its reason
+    /// in `output`).
+    pub ok: bool,
+    /// The tool's output — the agent's own words, displayed and never
+    /// interpreted.
+    pub output: String,
+}
+
+/// What one `POST /stop` on the hub's admin surface produced.
+///
+/// The surface answers every stop it accepts with `200` and one of two shapes,
+/// so this is the whole of an accepted stop: the session ended, or the wait
+/// lapsed with the session still up. A CID the hub does not serve (404) or has
+/// no live session for (409) is an `ApiError::Status` instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The session ended cleanly. `calls` is what the guest's `bye` counted,
+    /// or the session's own served-call count when the end did not come by a
+    /// `bye`.
+    Stopped {
+        /// The calls the ended session had served.
+        calls: u64,
+    },
+    /// The wait lapsed and the session is still up: **nothing was torn down**,
+    /// and the hub's own reason says so.
+    StillUp {
+        /// The hub's own words for the lapse.
+        reason: String,
+    },
+}
+
+/// The `POST /stop` body the surface writes: `stopped` is the tag, and the
+/// branch's own field sits beside it. Read defensively — `stopped` is required
+/// (a body without it is not a stop answer), while `calls` and `reason` are
+/// read by the branch they belong to.
+#[derive(Debug, Deserialize)]
+struct StopAnswer {
+    stopped: bool,
+    #[serde(default)]
+    calls: Option<u64>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl StopAnswer {
+    /// The outcome this body describes, or an error naming what the branch it
+    /// chose is missing.
+    fn into_outcome(self) -> Result<StopOutcome, ApiError> {
+        if self.stopped {
+            let calls = self.calls.ok_or_else(|| {
+                ApiError::Malformed(
+                    "the stop answer says stopped but names no calls count".to_string(),
+                )
+            })?;
+            Ok(StopOutcome::Stopped { calls })
+        } else {
+            let reason = self.reason.ok_or_else(|| {
+                ApiError::Malformed(
+                    "the stop answer says not stopped but gives no reason".to_string(),
+                )
+            })?;
+            Ok(StopOutcome::StillUp { reason })
+        }
+    }
+}
+
 /// A column the daemon always writes, whose value may be `null`.
 ///
 /// `noded`'s task view writes every column a task has, so an **absent** key is
@@ -734,7 +814,7 @@ impl Endpoint {
     /// Parses `http://127.0.0.1[:port]` (a bare `host[:port]` is accepted
     /// too): the daemon serves its API at the root of a known default port.
     pub fn from_url(url: &str) -> Result<Self, ApiError> {
-        Self::parse_url(url, Some(DEFAULT_PORT))
+        Self::parse_url(url, Surface::Daemon)
     }
 
     /// Parses the hub's status url: the same parsing and the same
@@ -744,13 +824,24 @@ impl Endpoint {
     /// `--status-port`, so there is no default to fall back to — a bare host
     /// would silently poll whatever happens to hold the daemon's port.
     pub fn hub_url(url: &str) -> Result<Self, ApiError> {
-        Self::parse_url(url, None)
+        Self::parse_url(url, Surface::HubStatus)
+    }
+
+    /// Parses the hub's admin url: the same parsing and the same
+    /// loopback-only policy as the status surface, with the port required.
+    ///
+    /// `vsockd`'s admin surface is off unless it was started with
+    /// `--admin-port`, so there is no default to fall back to and a bare host
+    /// is refused by name — the operator's own second process, reached over
+    /// the loopback exactly as the status surface is.
+    pub fn hub_admin_url(url: &str) -> Result<Self, ApiError> {
+        Self::parse_url(url, Surface::HubAdmin)
     }
 
     /// Parses `host[:port]` (an `http://` prefix is accepted too), filling a
-    /// missing port from `default_port` — or, when there is none, refusing the
-    /// url because its caller needs the port named.
-    fn parse_url(url: &str, default_port: Option<u16>) -> Result<Self, ApiError> {
+    /// missing port from the surface's default — or, when it has none,
+    /// refusing the url because its caller needs the port named.
+    fn parse_url(url: &str, surface: Surface) -> Result<Self, ApiError> {
         let url = url.trim();
         let rest = match url.strip_prefix("http://") {
             Some(rest) => rest,
@@ -774,12 +865,12 @@ impl Endpoint {
                 })?;
                 (host, port)
             }
-            None => match default_port {
+            None => match surface.default_port() {
                 Some(port) => (rest, port),
                 None => {
                     return Err(ApiError::Config(format!(
-                        "{url:?} names no port: the hub's status surface is off unless it was \
-                         started with --status-port, so its url must carry the port it serves on"
+                        "{url:?} names no port: {}",
+                        surface.portless_reason()
                     )));
                 }
             },
@@ -806,6 +897,50 @@ impl Endpoint {
 impl Default for Endpoint {
     fn default() -> Self {
         Self::loopback()
+    }
+}
+
+/// Which loopback surface a url names. It decides the two things the three
+/// endpoints differ on: whether a missing port may be filled from a default,
+/// and — when it may not — why the url must name its port.
+///
+/// The daemon holds a well-known port, so `--url 127.0.0.1` means something.
+/// The hub's status and admin surfaces are each off unless their own flag
+/// asked for them, so a bare host there would silently poll whatever happens
+/// to hold the daemon's port; naming the surface makes the refusal say which
+/// flag turns it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    /// The node daemon: its API is served at the root of a well-known port.
+    Daemon,
+    /// The hub's read-only status surface (`vsockd --status-port`).
+    HubStatus,
+    /// The hub's admin surface (`vsockd --admin-port`): `/tell` and `/stop`.
+    HubAdmin,
+}
+
+impl Surface {
+    /// The port a url for this surface may fall back to, if any.
+    fn default_port(self) -> Option<u16> {
+        match self {
+            Surface::Daemon => Some(DEFAULT_PORT),
+            Surface::HubStatus | Surface::HubAdmin => None,
+        }
+    }
+
+    /// Why a url naming this surface must carry its port.
+    fn portless_reason(self) -> &'static str {
+        match self {
+            Surface::Daemon => "the daemon serves its API on a default port",
+            Surface::HubStatus => {
+                "the hub's status surface is off unless it was started with --status-port, \
+                 so its url must carry the port it serves on"
+            }
+            Surface::HubAdmin => {
+                "the hub's admin surface is off unless it was started with --admin-port, \
+                 so its url must carry the port it serves on"
+            }
+        }
     }
 }
 
@@ -906,6 +1041,66 @@ impl Client {
     /// process on a second loopback port, and its body is not the daemon's.
     pub fn hub_status(&self) -> Result<HubStatus, ApiError> {
         self.json("GET", "/status", None)
+    }
+
+    /// `POST /tell` on the hub's admin surface: drive one tool on the agent
+    /// connected as `cid`.
+    ///
+    /// The hub writes the agent's own answer as `{"ok": <bool>, "output":
+    /// "<text>"}` — `ok: false` is the tool declining, which is still an
+    /// answer. The call *refusals* are the hub's own statuses, carried through
+    /// unchanged in its own words: `403` is the session's role not granting the
+    /// tool (decided before anything reaches the agent), `400` a request
+    /// outside the body's contract, `404` a CID the hub does not serve, `409`
+    /// a served CID with no live session, and `504` an agent that did not
+    /// answer within `timeout_ms`.
+    ///
+    /// It is a POST, not a GET, and deliberately so: it runs a real tool in the
+    /// agent's session — a real cost, a real refusal mode and a real effect on
+    /// the agent's turn — so a request a prefetch or a crawler could replay
+    /// must not be advertised as repeat-safe.
+    pub fn hub_tell(
+        &self,
+        cid: u64,
+        name: &str,
+        args: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<TellAnswer, ApiError> {
+        let body = serde_json::json!({
+            "cid": cid,
+            "name": name,
+            "args": args,
+            "timeout_ms": timeout_ms,
+        })
+        .to_string();
+        let reply = self.send("POST", "/tell", Some(&body))?;
+        if !(200..300).contains(&reply.status) {
+            return Err(reply.into_error());
+        }
+        serde_json::from_str(&reply.body)
+            .map_err(|err| ApiError::Malformed(format!("POST /tell: {err}")))
+    }
+
+    /// `POST /stop` on the hub's admin surface: ask the agent connected as
+    /// `cid` to end its session.
+    ///
+    /// Every stop the hub accepts is a `200`, carrying either `stopped: true`
+    /// with the calls the guest's `bye` counted, or `stopped: false` with the
+    /// hub's own reason — the wait lapsed and **nothing was torn down**. A CID
+    /// the hub does not serve is a `404` and a served CID with no live session
+    /// a `409`, each in the hub's own words.
+    ///
+    /// No reason is sent: the hub's own default (`the operator stopped this
+    /// session`) is the honest one, and the operator supplies none.
+    pub fn hub_stop(&self, cid: u64) -> Result<StopOutcome, ApiError> {
+        let body = serde_json::json!({ "cid": cid }).to_string();
+        let reply = self.send("POST", "/stop", Some(&body))?;
+        if !(200..300).contains(&reply.status) {
+            return Err(reply.into_error());
+        }
+        serde_json::from_str::<StopAnswer>(&reply.body)
+            .map_err(|err| ApiError::Malformed(format!("POST /stop: {err}")))?
+            .into_outcome()
     }
 
     /// `GET /api/v0/tasks`: the plaza's ledger, oldest task first.
@@ -1111,15 +1306,27 @@ struct Reply {
 }
 
 impl Reply {
-    /// The refusal this response carries.
+    /// The refusal this response carries, in the answering surface's own
+    /// words.
+    ///
+    /// The daemon writes `{"error": "..."}` for every refusal. The hub's admin
+    /// surface writes the same for most, but answers a role-policy refusal
+    /// (403) with its tell body `{"ok":false,"output":"role <r> does not grant
+    /// <tool>"}` — so the message is the string `error` when present, else the
+    /// string `output`, else the whole body. Nothing is invented: a body that
+    /// is not one of these shapes arrives as it was written.
     fn into_error(self) -> ApiError {
         #[derive(Deserialize)]
-        struct ErrorBody {
-            error: String,
+        struct Refusal {
+            #[serde(default)]
+            error: Option<String>,
+            #[serde(default)]
+            output: Option<String>,
         }
-        let message = serde_json::from_str::<ErrorBody>(&self.body)
-            .map(|body| body.error)
-            .unwrap_or_else(|_| self.body.trim().to_string());
+        let message = serde_json::from_str::<Refusal>(&self.body)
+            .ok()
+            .and_then(|body| body.error.or(body.output))
+            .unwrap_or_else(|| self.body.trim().to_string());
         ApiError::Status {
             status: self.status,
             message,
@@ -1605,6 +1812,140 @@ mod tests {
         // name rather than pointed at the daemon's port.
         let error = Endpoint::hub_url("127.0.0.1").expect_err("no port to read");
         assert!(error.to_string().contains("--status-port"), "{error}");
+    }
+
+    #[test]
+    fn the_hub_admin_url_holds_the_same_loopback_policy_and_names_its_own_flag() {
+        assert_eq!(
+            Endpoint::hub_admin_url("127.0.0.1:19081").expect("loopback").port(),
+            19_081
+        );
+        assert_eq!(
+            Endpoint::hub_admin_url("http://localhost:19081/").expect("loopback").host(),
+            "127.0.0.1"
+        );
+        // The admin surface is off unless `--admin-port` asked for it, so a
+        // bare host is refused by the flag that turns it on — never pointed at
+        // the status port, the daemon's port, or anything else.
+        let error = Endpoint::hub_admin_url("127.0.0.1").expect_err("no port to reach");
+        assert!(error.to_string().contains("--admin-port"), "{error}");
+
+        // The same exact-loopback negatives as the daemon and status urls: no
+        // suffix, prefix, case or IP lookalike is a loopback host.
+        for url in [
+            "http://10.0.0.9:19081",
+            "http://127.0.0.1.evil.tld:19081",
+            "api.example.com:19081",
+            "127.0.0.1.",
+            "LOCALHOST:19081",
+            "http://[::1]:19081",
+            "0.0.0.0:19081",
+            "https://127.0.0.1:19081",
+            "127.0.0.1:19081/tell",
+            "127.0.0.1:0",
+        ] {
+            let error = Endpoint::hub_admin_url(url)
+                .expect_err("must be refused");
+            assert!(
+                matches!(error, ApiError::Config(_)),
+                "{url} should be a configuration error, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_frozen_tell_answer_parses_and_a_missing_field_is_named() {
+        let answer: TellAnswer =
+            from_body(r#"{"ok":true,"output":"3.20 3.13 1.00","cid":300}"#);
+        assert!(answer.ok);
+        assert_eq!(answer.output, "3.20 3.13 1.00");
+
+        // A declining tool is an answer too: `ok:false` with its reason.
+        let declined: TellAnswer = from_body(r#"{"ok":false,"output":"denied: no such file"}"#);
+        assert!(!declined.ok);
+        assert_eq!(declined.output, "denied: no such file");
+
+        // A missing field is an error that names it, at either position.
+        for (body, field) in [
+            (r#"{"output":"x"}"#, "ok"),
+            (r#"{"ok":true}"#, "output"),
+        ] {
+            let error = serde_json::from_str::<TellAnswer>(body)
+                .expect_err("a missing field must be refused");
+            assert!(error.to_string().contains(field), "should name {field:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_tell_refusal_carries_the_hubs_own_role_policy_words() {
+        // The 403 the hub answers a role that does not grant the tool: its
+        // tell body, not an `{"error": ...}` — and the message is the words it
+        // wrote, not the JSON wrapper.
+        let reply = Reply {
+            status: 403,
+            body: r#"{"ok":false,"output":"role librarian does not grant list"}"#.to_string(),
+        };
+        let error = reply.into_error();
+        assert_eq!(error.status(), Some(403));
+        assert_eq!(error.to_string(), "403: role librarian does not grant list");
+
+        // Every other refusal is the hub's `{"error": ...}`, carried through.
+        for (status, body, message) in [
+            (404, r#"{"error":"no agent with guest CID 99"}"#, "no agent with guest CID 99"),
+            (
+                409,
+                r#"{"error":"agent with guest CID 300 is not connected"}"#,
+                "agent with guest CID 300 is not connected",
+            ),
+            (504, r#"{"error":"agent did not answer within 1 ms"}"#, "agent did not answer within 1 ms"),
+            (400, r#"{"error":"a tell needs a tool name"}"#, "a tell needs a tool name"),
+        ] {
+            let error = Reply {
+                status,
+                body: body.to_string(),
+            }
+            .into_error();
+            assert_eq!(error.status(), Some(status));
+            assert_eq!(error.to_string(), format!("{status}: {message}"));
+        }
+    }
+
+    #[test]
+    fn a_stop_answer_parses_both_outcomes() {
+        let stopped: StopAnswer =
+            from_body(r#"{"cid":300,"stopped":true,"calls":3}"#);
+        assert_eq!(
+            stopped.into_outcome().expect("an outcome"),
+            StopOutcome::Stopped { calls: 3 }
+        );
+
+        // A lapsed wait is a `200` too: nothing was torn down, and the hub says
+        // why.
+        let up: StopAnswer = from_body(
+            r#"{"cid":300,"stopped":false,"reason":"the agent did not end within 5000 ms"}"#,
+        );
+        assert_eq!(
+            up.into_outcome().expect("an outcome"),
+            StopOutcome::StillUp {
+                reason: "the agent did not end within 5000 ms".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_stop_answer_missing_its_branchs_field_is_named() {
+        // `stopped` is required: a body without it is not a stop answer.
+        assert!(serde_json::from_str::<StopAnswer>(r#"{"cid":300,"calls":3}"#).is_err());
+
+        // The branch's own field: `calls` when stopped, `reason` when not.
+        let ended = from_body::<StopAnswer>(r#"{"cid":300,"stopped":true}"#);
+        let error = ended.into_outcome().expect_err("no count to read");
+        assert!(matches!(error, ApiError::Malformed(_)), "{error:?}");
+        assert!(error.to_string().contains("calls"), "{error}");
+
+        let up = from_body::<StopAnswer>(r#"{"cid":300,"stopped":false}"#);
+        let error = up.into_outcome().expect_err("no reason to read");
+        assert!(error.to_string().contains("reason"), "{error}");
     }
 
     #[test]

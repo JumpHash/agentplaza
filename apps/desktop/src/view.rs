@@ -19,10 +19,11 @@ use crate::history;
 use crate::ledger::{TaskField, artifact_paths};
 use crate::mapview::{self, FleetMap};
 use crate::model::{
-    ARTIFACT_TAIL_LINES, ArtifactState, Health, HistoryStep, Message, Model, Notice, NoticeKind,
-    Pane, RosterAgent, SERIAL_TAIL_LINES, duration_label, hub_facts, hub_line, instant_label,
-    memory_label, preset_footprint, roster_line, roster_tally, serial_tail, tally_line, task_line,
-    task_state_line, task_tally, transcript_span,
+    ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DriveState, Health, HistoryStep, Message,
+    Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES, StopState,
+    duration_label, hub_facts, hub_line, instant_label, memory_label, preset_footprint,
+    roster_line, roster_tally, serial_tail, tally_line, task_line, task_state_line, task_tally,
+    transcript_span,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
@@ -738,20 +739,25 @@ fn roster_pane(model: &Model) -> Element<'_, Message> {
     let groups = model.roster();
     let live = model.roster_live();
     let hub_known = model.hub_status.is_some();
+    let controls = model.has_hub_admin();
 
-    let mut body: Vec<Element<'_, Message>> = vec![
-        serif(
-            "One row per role agent: the register's side (its run, VM, guest CID, state and \
-             serial rate) and the hub's side (the session it holds — when it connected, its last \
-             heartbeat and the calls it has served). The halves are joined by guest CID and never \
-             merged, so an agent only one of the two reports is drawn as exactly that. Grouped by \
-             role, in the order the roles appear.",
-            12.0,
-            INK_2,
-        )
-        .into(),
-        hub_header(model),
-    ];
+    let lede = if controls {
+        "One row per role agent: the register's side (its run, VM, guest CID, state and serial \
+         rate) and the hub's side (the session it holds — when it connected, its last heartbeat \
+         and the calls it has served). The halves are joined by guest CID and never merged, so an \
+         agent only one of the two reports is drawn as exactly that. Grouped by role, in the order \
+         the roles appear. Because a hub admin surface is configured, each row also carries the \
+         operator's controls: the row's drive opens a console that asks the agent to run one \
+         tool, and the row's stop asks it to end its session."
+    } else {
+        "One row per role agent: the register's side (its run, VM, guest CID, state and serial \
+         rate) and the hub's side (the session it holds — when it connected, its last heartbeat \
+         and the calls it has served). The halves are joined by guest CID and never merged, so an \
+         agent only one of the two reports is drawn as exactly that. Grouped by role, in the order \
+         the roles appear."
+    };
+
+    let mut body: Vec<Element<'_, Message>> = vec![serif(lede, 12.0, INK_2).into(), hub_header(model)];
 
     if groups.is_empty() {
         let message = if model.health() == Health::Unknown && !hub_known {
@@ -772,63 +778,259 @@ fn roster_pane(model: &Model) -> Element<'_, Message> {
                 .padding(edge(16.0, 14.0, 16.0, 14.0))
                 .into(),
         );
-        return scrollable(Column::with_children(body).spacing(10.0))
-            .height(Length::Fill)
-            .into();
-    }
-
-    body.push(
-        mono(
-            roster_tally(&groups),
-            11.5,
-            if live > 0 { INK } else { INK_2 },
-        )
-        .into(),
-    );
-    body.push(rule::horizontal(1.0).style(theme::rule_ink).into());
-
-    for group in &groups {
-        let mut counts = format!("{} agent(s) · {} up", group.agents.len(), group.live());
-        if hub_known {
-            counts.push_str(&format!(" · {} connected", group.connected()));
-        }
-        counts.push_str(&format!(" · {:.1} line(s)/s", group.lps()));
+    } else {
         body.push(
-            row![
-                stamp(group.role.to_uppercase(), Tone::Neutral),
-                mono(group.role.clone(), 12.0, INK),
-                space::horizontal(),
-                mono(counts, 10.5, INK_3),
-            ]
-            .spacing(8.0)
-            .align_y(Alignment::Center)
-            .into(),
-        );
-        body.push(roster_heads(hub_known));
-        body.push(rule_heading());
-        for agent in &group.agents {
-            body.push(roster_row(agent, hub_known, model.now_ms));
-        }
-        body.push(vertical(8.0));
-    }
-    if live == 0 {
-        body.push(
-            serif(
-                "No role agent is up right now: the register reports every role below, and every \
-                 one of their VMs has stopped.",
-                12.0,
-                INK_2,
+            mono(
+                roster_tally(&groups),
+                11.5,
+                if live > 0 { INK } else { INK_2 },
             )
             .into(),
         );
+        body.push(rule::horizontal(1.0).style(theme::rule_ink).into());
+
+        for group in &groups {
+            let mut counts = format!("{} agent(s) · {} up", group.agents.len(), group.live());
+            if hub_known {
+                counts.push_str(&format!(" · {} connected", group.connected()));
+            }
+            counts.push_str(&format!(" · {:.1} line(s)/s", group.lps()));
+            body.push(
+                row![
+                    stamp(group.role.to_uppercase(), Tone::Neutral),
+                    mono(group.role.clone(), 12.0, INK),
+                    space::horizontal(),
+                    mono(counts, 10.5, INK_3),
+                ]
+                .spacing(8.0)
+                .align_y(Alignment::Center)
+                .into(),
+            );
+            body.push(roster_heads(hub_known, controls));
+            body.push(rule_heading());
+            for agent in &group.agents {
+                body.push(roster_row(
+                    agent,
+                    hub_known,
+                    controls,
+                    model.armed_stop,
+                    model.now_ms,
+                ));
+            }
+            body.push(vertical(8.0));
+        }
+        if live == 0 {
+            body.push(
+                serif(
+                    "No role agent is up right now: the register reports every role below, and \
+                     every one of their VMs has stopped.",
+                    12.0,
+                    INK_2,
+                )
+                .into(),
+            );
+        }
     }
 
     // A role per the codex is twenty-one in this fleet, and each group is a
     // heading, a table and its agents: the sheet scrolls rather than showing
-    // the first few roles and silently hiding the rest.
-    scrollable(Column::with_children(body).spacing(6.0))
-        .height(Length::Fill)
+    // the first few roles and silently hiding the rest. The operator console
+    // sits below the table — pinned, not scrolled away — so an answer the
+    // operator asked for is always in sight.
+    let table = scrollable(Column::with_children(body).spacing(6.0)).height(Length::Fill);
+    match &model.agent_console {
+        Some(console) if controls => column![table, agent_console_panel(model, console)].spacing(10.0).into(),
+        _ => table.into(),
+    }
+}
+
+/// The width of a roster row's operator-controls cell, wide enough for the
+/// armed stop's own label and the hint under it.
+const COL_CONTROLS: f32 = 210.0;
+
+/// The height of the console's answer region: bounded, so a tool that answers
+/// with a page scrolls inside it rather than stretching the sheet.
+const CONSOLE_VIEW_HEIGHT: f32 = 150.0;
+
+/// The roster's operator console: the drive form, the answer or the hub's own
+/// refusal in a bounded ruled region, and the stop control with its outcome.
+///
+/// It is drawn only when `--hub-admin-url` named an admin surface — with none
+/// the controls are absent, not drawn-but-dead — and only for the agent whose
+/// row was pressed. Every byte in the answer region is somebody else's (the
+/// tool's output, or the hub's own message): displayed, never interpreted.
+fn agent_console_panel<'a>(model: &'a Model, console: &'a RosterConsole) -> Element<'a, Message> {
+    let who = match model.roster_role(console.cid) {
+        Some(role) => format!("cid {} · {role}", console.cid),
+        None => format!("cid {}", console.cid),
+    };
+    let body: Vec<Element<'a, Message>> = vec![
+        row![
+            mono("Operator console", 10.5, INK_3),
+            space::horizontal(),
+            mono(who, 11.0, INK),
+            button(mono("CLOSE", 10.0, INK_2))
+                .on_press(Message::DriveClose)
+                .style(theme::primary_button)
+                .padding(edge(4.0, 8.0, 4.0, 8.0)),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center)
+        .into(),
+        serif(
+            "Drive one tool on this agent: the hub's admin surface (POST /tell) runs it in the \
+             agent's session and answers with the tool's own output. Name the tool, give its \
+             arguments as a JSON object (empty is {}), and how long to wait. The answer is the \
+             agent's own — displayed here, never interpreted.",
+            11.5,
+            INK_2,
+        )
+        .into(),
+        rule_heading(),
+        drive_form(console),
+        drive_region(console.drive.as_ref()),
+        vertical(6.0),
+        rule_heading(),
+        stop_outcome(console),
+    ];
+    container(Column::with_children(body).spacing(6.0))
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .padding(edge(12.0, 10.0, 12.0, 10.0))
         .into()
+}
+
+/// The console's drive form: a tool-name box, an args box, a timeout box, and
+/// the button that sends the call. Nothing is sent until it is pressed.
+fn drive_form(console: &RosterConsole) -> Element<'_, Message> {
+    let tool = text_input(ConsoleField::Tool.hint(), console.tool.as_str())
+        .on_input(|value| Message::DriveEdit {
+            field: ConsoleField::Tool,
+            value,
+        })
+        .on_submit(Message::DriveSend)
+        .font(MONO)
+        .size(12.0);
+    let args = text_input(ConsoleField::Args.hint(), console.args.as_str())
+        .on_input(|value| Message::DriveEdit {
+            field: ConsoleField::Args,
+            value,
+        })
+        .on_submit(Message::DriveSend)
+        .font(MONO)
+        .size(12.0);
+    let timeout = text_input(ConsoleField::Timeout.hint(), console.timeout.as_str())
+        .on_input(|value| Message::DriveEdit {
+            field: ConsoleField::Timeout,
+            value,
+        })
+        .on_submit(Message::DriveSend)
+        .font(MONO)
+        .size(12.0);
+    column![
+        row![
+            mono("tool", 10.0, INK_3).width(Length::Fixed(40.0)),
+            tool.width(Length::Fixed(200.0)),
+            mono("args", 10.0, INK_3).width(Length::Fixed(36.0)),
+            args.width(Length::Fixed(320.0)),
+            mono("timeout", 10.0, INK_3).width(Length::Fixed(54.0)),
+            timeout.width(Length::Fixed(90.0)),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center),
+        row![button(mono("DRIVE THIS TOOL CALL", 10.5, INK))
+            .on_press(Message::DriveSend)
+            .style(theme::primary_button)
+            .padding(edge(6.0, 12.0, 6.0, 12.0))],
+    ]
+    .spacing(6.0)
+    .into()
+}
+
+/// The drive's answer (or refusal), ruled and bounded: the mark, the meta
+/// line, and the text — the agent's own output or the hub's own words.
+fn drive_region(state: Option<&DriveState>) -> Element<'_, Message> {
+    let Some(state) = state else {
+        return serif(
+            "No call yet: name a tool and its arguments, then drive the call.",
+            11.0,
+            INK_3,
+        )
+        .into();
+    };
+    let mut lines: Vec<Element<'_, Message>> = vec![row![
+        stamp(state.mark(), drive_tone(state)),
+        mono(state.meta(), 10.5, INK_3),
+    ]
+    .spacing(8.0)
+    .align_y(Alignment::Center)
+    .into()];
+    if let Some(text) = state.text() {
+        lines.push(mono(text, 11.0, INK).into());
+    } else {
+        lines.push(serif("waiting for the agent to answer…", 11.0, INK_3).into());
+    }
+    container(
+        scrollable(Column::with_children(lines).spacing(4.0).width(Length::Fill))
+            .height(Length::Fixed(CONSOLE_VIEW_HEIGHT)),
+    )
+    .style(theme::boxed)
+    .width(Length::Fill)
+    .padding(edge(10.0, 8.0, 10.0, 8.0))
+    .into()
+}
+
+/// The last stop on this agent, as the console writes it: the mark and the
+/// honest sentence — the session that ended and its call count, or the hub's
+/// own `not stopped` with its reason, where nothing was torn down.
+///
+/// The button that asks for a stop lives on the row (arm, then confirm), not
+/// here; the console's job is to say what became of it.
+fn stop_outcome(console: &RosterConsole) -> Element<'_, Message> {
+    let Some(state) = &console.stop else {
+        return serif(
+            "No stop has been asked of this agent. The row's stop asks it — two presses — to \
+             end its session.",
+            11.0,
+            INK_3,
+        )
+        .into();
+    };
+    column![
+        row![
+            stamp(state.mark(), stop_tone(state)),
+            mono(state.text(), 10.5, INK_2),
+        ]
+        .spacing(8.0)
+        .align_y(Alignment::Center),
+    ]
+    .into()
+}
+
+/// The tone a drive state is marked in: an answer is good (a tool declining is
+/// the tool's own word, in amber), the hub's refusals are critical, and an
+/// unreadable surface or a form this console refused is amber.
+fn drive_tone(state: &DriveState) -> Tone {
+    match state {
+        DriveState::Answered { ok: true, .. } => Tone::Ok,
+        DriveState::Answered { ok: false, .. } => Tone::Warn,
+        DriveState::Refused { .. } => Tone::Crit,
+        DriveState::Unreachable { .. } => Tone::Warn,
+        DriveState::Rejected { .. } => Tone::Warn,
+        DriveState::Driving { .. } => Tone::Neutral,
+    }
+}
+
+/// The tone a stop state is marked in: a session that ended is good, a lapse
+/// or an unreadable surface is amber, and the hub's refusals are critical.
+fn stop_tone(state: &StopState) -> Tone {
+    match state {
+        StopState::Stopped { .. } => Tone::Ok,
+        StopState::Stopping { .. } => Tone::Neutral,
+        StopState::StillUp { .. } => Tone::Warn,
+        StopState::Unreachable { .. } => Tone::Warn,
+        StopState::Refused { .. } => Tone::Crit,
+    }
 }
 
 /// The roster's hub header: what the status surface says — its host facts and
@@ -876,8 +1078,9 @@ const ROSTER_REGISTER_HALF: f32 =
     COL_RUN + 8.0 + COL_VM + 8.0 + COL_STATE + 8.0 + COL_RATE;
 
 /// The roster's column heads, matched to the cells below them: the join key,
-/// the register's half, and — when the hub was read — the hub's half.
-fn roster_heads(hub_known: bool) -> Element<'static, Message> {
+/// the register's half, and — when the hub was read — the hub's half, then the
+/// operator's controls when an admin surface is configured.
+fn roster_heads(hub_known: bool, controls: bool) -> Element<'static, Message> {
     let mut cells: Vec<Element<'static, Message>> = vec![
         mono("guest cid", 10.0, INK_3).width(Length::Fixed(COL_CID)).into(),
         mono("run", 10.0, INK_3).width(Length::Fixed(COL_RUN)).into(),
@@ -891,18 +1094,29 @@ fn roster_heads(hub_known: bool) -> Element<'static, Message> {
         cells.push(mono("calls", 10.0, INK_3).width(Length::Fixed(COL_CALLS)).into());
         cells.push(mono("role (hub)", 10.0, INK_3).into());
     }
+    if controls {
+        cells.push(mono("controls", 10.0, INK_3).width(Length::Fixed(COL_CONTROLS)).into());
+    }
     Row::with_children(cells).spacing(8.0).into()
 }
 
 /// One agent's row: the CID the halves were joined on, then the register's
 /// side and the hub's side, each drawn from what that surface actually
-/// reports.
+/// reports — and, when an admin surface is configured, the operator's controls.
 ///
-/// Pressing it opens its run with its VM selected — the same target the map's
-/// cells and the console use — when the register reports one. A row only the
-/// hub knows has no run to open, so it is not a button: a press that goes
-/// nowhere is worse than no press at all.
-fn roster_row(agent: &RosterAgent, hub_known: bool, now_ms: u64) -> Element<'static, Message> {
+/// Pressing the row's own half opens its run with its VM selected — the same
+/// target the map's cells and the console use — when the register reports one.
+/// A row only the hub knows has no run to open, so that half is not a button: a
+/// press that goes nowhere is worse than no press at all. The controls are
+/// siblings of that press, never nested inside it, and are drawn only for a row
+/// with a guest CID (there is no agent to reach without one).
+fn roster_row(
+    agent: &RosterAgent,
+    hub_known: bool,
+    controls: bool,
+    armed_stop: Option<u64>,
+    now_ms: u64,
+) -> Element<'static, Message> {
     let cid = match agent.cid() {
         Some(cid) => format!("cid {cid}"),
         None => "no vsock".to_string(),
@@ -914,9 +1128,9 @@ fn roster_row(agent: &RosterAgent, hub_known: bool, now_ms: u64) -> Element<'sta
     if hub_known {
         cells.push(hub_half(agent, now_ms));
     }
-    let row = Row::with_children(cells).spacing(8.0).align_y(Alignment::Center);
-    match &agent.registered {
-        Some(registered) => button(row)
+    let content = Row::with_children(cells).spacing(8.0).align_y(Alignment::Center);
+    let content: Element<'static, Message> = match &agent.registered {
+        Some(registered) => button(content)
             .on_press(Message::Select {
                 run: registered.run.clone(),
                 vm: registered.vm,
@@ -925,11 +1139,50 @@ fn roster_row(agent: &RosterAgent, hub_known: bool, now_ms: u64) -> Element<'sta
             .padding(edge(4.0, 6.0, 4.0, 6.0))
             .width(Length::Fill)
             .into(),
-        None => container(row)
+        None => container(content)
             .padding(edge(4.0, 6.0, 4.0, 6.0))
             .width(Length::Fill)
             .into(),
+    };
+
+    let mut row = Row::with_children(vec![content]).align_y(Alignment::Center);
+    if controls {
+        row = row.push(match agent.cid() {
+            Some(cid) => roster_controls(cid, armed_stop == Some(cid)),
+            None => mono("—", 10.5, INK_3)
+                .width(Length::Fixed(COL_CONTROLS))
+                .into(),
+        });
     }
+    row.into()
+}
+
+/// One row's operator controls: DRIVE opens the console aimed at this agent,
+/// and STOP arms then confirms the end of its session — two presses, like a
+/// run's kill.
+fn roster_controls(cid: u64, armed: bool) -> Element<'static, Message> {
+    let label = if armed { "CONFIRM STOP" } else { "STOP" };
+    let mut cell: Vec<Element<'static, Message>> = vec![
+        row![
+            button(mono("DRIVE", 10.0, INK))
+                .on_press(Message::SelectAgent(cid))
+                .style(theme::primary_button)
+                .padding(edge(4.0, 10.0, 4.0, 10.0)),
+            button(mono(label, 10.0, if armed { theme::SHEET } else { theme::CRIT }))
+                .on_press(Message::StopClicked(cid))
+                .style(theme::kill_button(armed))
+                .padding(edge(4.0, 10.0, 4.0, 10.0)),
+        ]
+        .spacing(6.0)
+        .align_y(Alignment::Center)
+        .into(),
+    ];
+    if armed {
+        cell.push(mono("press again to stop", 9.5, theme::CRIT).into());
+    }
+    container(Column::with_children(cell).spacing(2.0))
+        .width(Length::Fixed(COL_CONTROLS))
+        .into()
 }
 
 /// The register's half of an agent's row: which run and VM its guest is, the

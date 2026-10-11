@@ -11,6 +11,8 @@
 //!   loopback only, no client dependency. The hub's read-only status surface
 //!   (`GET /status` on a second loopback port) is the same client and the
 //!   same policy: who is connected, as opposed to who the register reports.
+//!   The hub's *admin* surface (`POST /tell`, `POST /stop`) is the same client
+//!   too: the one surface the operator's controls drive an agent through.
 //! * [`chart`] — the charts' arithmetic: the ceiling, the window, the plate.
 //! * [`events`] — the daemon's event stream: the server-sent frames, the
 //!   parser, and the connection that follows the stream.
@@ -39,8 +41,9 @@
 //!   [`chart`] and [`history`] compute.
 //! * [`theme`] — the register's palette, stamps and rulings.
 //! * [`view`] — iced widgets built from the model.
-//! * [`cli`] — `--url` / `--hub-url` / `--refresh-ms` / `APZ_DESKTOP_URL` /
-//!   `APZ_DESKTOP_HUB` and the call timeout.
+//! * [`cli`] — `--url` / `--hub-url` / `--hub-admin-url` / `--refresh-ms` /
+//!   `APZ_DESKTOP_URL` / `APZ_DESKTOP_HUB` / `APZ_DESKTOP_HUB_ADMIN` and the
+//!   call timeout.
 
 pub mod api;
 pub mod app;

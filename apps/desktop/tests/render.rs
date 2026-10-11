@@ -16,8 +16,8 @@ use agentplaza_desktop::api::{Client, Endpoint, TaskArtifact};
 use agentplaza_desktop::cli::Config;
 use agentplaza_desktop::export::ExportTarget;
 use agentplaza_desktop::model::{
-    ARTIFACT_TAIL_LINES, ArtifactState, Effect, Message, Model, NoticeKind, Pane, Selection,
-    DEFAULT_REFRESH_MS,
+    ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, Effect, Message, Model, NoticeKind, Pane,
+    Selection, DEFAULT_REFRESH_MS,
 };
 use agentplaza_desktop::{app, theme, view};
 
@@ -47,6 +47,7 @@ fn config(port: u16) -> Config {
     Config {
         endpoint: Endpoint::loopback_at("127.0.0.1", port).expect("loopback"),
         hub: None,
+        hub_admin: None,
         timeout: Duration::from_secs(5),
         refresh_ms: DEFAULT_REFRESH_MS,
     }
@@ -241,6 +242,34 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             path: call.path,
             result,
         });
+    }
+    if let Some(call) = effect.tell_agent {
+        // The hub's admin surface, the model's own endpoint: what the runtime
+        // does for a drive, done synchronously.
+        if let Some(admin) = model.hub_admin.clone() {
+            let result =
+                Client::new(admin)
+                    .with_timeout(Duration::from_secs(5))
+                    .hub_tell(call.cid, &call.name, &call.args, call.timeout_ms);
+            model.apply(Message::Told {
+                at_ms: model.now_ms,
+                cid: call.cid,
+                name: call.name,
+                result,
+            });
+        }
+    }
+    if let Some(cid) = effect.stop_agent {
+        if let Some(admin) = model.hub_admin.clone() {
+            let result = Client::new(admin)
+                .with_timeout(Duration::from_secs(5))
+                .hub_stop(cid);
+            model.apply(Message::Stopped {
+                at_ms: model.now_ms,
+                cid,
+                result,
+            });
+        }
     }
 }
 
@@ -1719,6 +1748,7 @@ fn config_at(port: u16, refresh_ms: u64) -> Config {
     Config {
         endpoint: Endpoint::loopback_at("127.0.0.1", port).expect("loopback"),
         hub: None,
+        hub_admin: None,
         timeout: Duration::from_secs(5),
         refresh_ms,
     }
@@ -2269,6 +2299,176 @@ fn a_hub_with_nobody_connected_is_an_answer_the_roster_draws() {
     );
     assert!(ui.find(says("registered, not connected")).is_ok());
     assert!(ui.find(says("connected, not registered")).is_err());
+}
+
+/// A register with one role agent: a single builder on cid 10, so a row's
+/// operator controls are unambiguously clickable.
+const ONE_AGENT_LIST: &str = r#"{"runs":[
+    {"id":"r1","state":"running","vcpus":1,"memory_mib":128,"beats":null,
+     "created_at":1760000000000,"ended_at":null,
+     "vms":[{"id":0,"guest_cid":10,"role":"builder","state":"running",
+             "serial":"agent-harness: role builder accepted\r\n"}]}
+]}"#;
+
+/// The same register as a single-run GET reports it.
+const ONE_AGENT_DETAIL: &str = r#"{"id":"r1","state":"running","vcpus":1,"memory_mib":128,
+    "beats":null,"created_at":1760000000000,"ended_at":null,
+    "vms":[{"id":0,"guest_cid":10,"role":"builder","state":"running",
+            "serial":"agent-harness: role builder accepted\r\n"}]}"#;
+
+/// A model over `port`, with the hub's admin surface on `admin_port`
+/// configured, showing the roster.
+fn admin_model(port: u16, admin_port: u16) -> Model {
+    let mut model = model_from(port).with_hub_admin(Some(
+        Endpoint::loopback_at("127.0.0.1", admin_port).expect("loopback"),
+    ));
+    model.apply(Message::Show(Pane::Roster));
+    model
+}
+
+/// The messages a click on `label` produces, over the model as it stands.
+fn clicked(model: &Model, label: &str) -> Vec<Message> {
+    let mut ui = simulator(view::view(model));
+    ui.click(label).expect("the control is on the sheet");
+    ui.into_messages().collect()
+}
+
+/// Apply each message and do what the runtime does for its effect.
+fn settle(model: &mut Model, client: &Client, messages: Vec<Message>) {
+    for message in messages {
+        let effect = model.apply(message);
+        perform(effect, model, client);
+    }
+}
+
+#[test]
+fn the_operator_controls_are_drawn_only_when_an_admin_surface_is_configured() {
+    let server = common::fleet(ONE_AGENT_LIST, ONE_AGENT_DETAIL);
+    let admin = common::admin((200, common::TELL_ANSWER), (200, common::STOP_ENDED));
+
+    // With an admin surface: the controls have a column, the row carries both,
+    // and no console is open until the operator presses one.
+    let mut model = admin_model(server.port, admin.port);
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("controls")).is_ok(), "the controls have a column");
+    assert!(ui.find(says("DRIVE")).is_ok(), "the drive control is on the row");
+    assert!(ui.find(says("STOP")).is_ok(), "the stop control is on the row");
+    assert!(ui.find(says("Operator console")).is_err(), "it opens on a press");
+    drop(ui);
+
+    // With no admin surface the controls are absent — not drawn-but-dead.
+    let mut plain = model_from(server.port);
+    plain.pane = Pane::Roster;
+    let mut ui = simulator(view::view(&plain));
+    assert!(ui.find(says("DRIVE")).is_err(), "no admin, no drive control");
+    assert!(ui.find(says("STOP")).is_err(), "no admin, no stop control");
+    assert!(ui.find(says("controls")).is_err(), "no admin, no controls column");
+    assert!(ui.find(says("Operator console")).is_err());
+
+    // Pressing DRIVE opens the console aimed at that agent.
+    let messages = clicked(&model, "DRIVE");
+    assert!(messages.contains(&Message::SelectAgent(10)), "{messages:?}");
+    for message in messages {
+        model.apply(message);
+    }
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Operator console")).is_ok());
+    assert!(ui.find(says("cid 10 · builder")).is_ok(), "the console names its agent");
+    // The drive form's three boxes, by their labels.
+    assert!(ui.find(says("tool")).is_ok());
+    assert!(ui.find(says("args")).is_ok());
+    assert!(ui.find(says("timeout")).is_ok());
+    assert!(ui.find(says("DRIVE THIS TOOL CALL")).is_ok());
+    assert!(ui.find(says("No call yet")).is_ok());
+}
+
+#[test]
+fn driving_a_tool_renders_the_agents_own_answer_over_a_real_frame() {
+    let server = common::fleet(ONE_AGENT_LIST, ONE_AGENT_DETAIL);
+    let admin = common::admin((200, common::TELL_ANSWER), (200, common::STOP_ENDED));
+    let mut model = admin_model(server.port, admin.port);
+    let client = Client::new(model.endpoint.clone());
+
+    // Open the console, type the call, and press the button.
+    let messages = clicked(&model, "DRIVE");
+    settle(&mut model, &client, messages);
+    model.apply(Message::DriveEdit {
+        field: ConsoleField::Tool,
+        value: "uptime".to_string(),
+    });
+    model.apply(Message::DriveEdit {
+        field: ConsoleField::Args,
+        value: "{}".to_string(),
+    });
+    let messages = clicked(&model, "DRIVE THIS TOOL CALL");
+    assert!(messages.contains(&Message::DriveSend), "{messages:?}");
+    settle(&mut model, &client, messages);
+
+    // The agent really ran it: the stub answered through the app's own client,
+    // and the sheet shows the answer in the console's bounded region.
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("ANSWERED")).is_ok());
+    assert!(ui.find(says("the agent's own answer")).is_ok());
+    assert!(
+        ui.find(says("3.20 3.13 1.00")).is_ok(),
+        "the tool's output is drawn, not interpreted away"
+    );
+}
+
+#[test]
+fn a_role_policy_refusal_is_rendered_in_the_hubs_own_words_over_a_real_frame() {
+    let server = common::fleet(ONE_AGENT_LIST, ONE_AGENT_DETAIL);
+    let admin = common::admin((403, common::TELL_ROLE_POLICY), (200, common::STOP_ENDED));
+    let mut model = admin_model(server.port, admin.port);
+    let client = Client::new(model.endpoint.clone());
+
+    let messages = clicked(&model, "DRIVE");
+    settle(&mut model, &client, messages);
+    model.apply(Message::DriveEdit {
+        field: ConsoleField::Tool,
+        value: "list".to_string(),
+    });
+    let messages = clicked(&model, "DRIVE THIS TOOL CALL");
+    settle(&mut model, &client, messages);
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("ROLE POLICY")).is_ok());
+    assert!(ui.find(says("HTTP 403")).is_ok());
+    assert!(
+        ui.find(says("role librarian does not grant list")).is_ok(),
+        "the hub's own words, verbatim"
+    );
+}
+
+#[test]
+fn the_stop_confirm_arms_and_renders_the_outcome_honestly_over_a_real_frame() {
+    let server = common::fleet(ONE_AGENT_LIST, ONE_AGENT_DETAIL);
+    // The hub's own lapse: the session is still up and nothing was torn down.
+    let admin = common::admin((200, common::TELL_ANSWER), (200, common::STOP_STILL_UP));
+    let mut model = admin_model(server.port, admin.port);
+    let client = Client::new(model.endpoint.clone());
+
+    // The first press arms; the sheet shows the arm and says what a second
+    // press does.
+    let messages = clicked(&model, "STOP");
+    assert!(messages.contains(&Message::StopClicked(10)), "{messages:?}");
+    settle(&mut model, &client, messages);
+    assert_eq!(model.armed_stop, Some(10));
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("CONFIRM STOP")).is_ok());
+    assert!(ui.find(says("press again to stop")).is_ok());
+    drop(ui);
+
+    // The second press asks the hub, and the outcome is drawn honestly: not
+    // stopped, with the hub's reason, and nothing torn down.
+    let messages = clicked(&model, "CONFIRM STOP");
+    assert!(messages.contains(&Message::StopClicked(10)), "{messages:?}");
+    settle(&mut model, &client, messages);
+    assert_eq!(model.armed_stop, None, "the arm is spent");
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("NOT STOPPED")).is_ok());
+    assert!(ui.find(says("the agent did not end within 5000 ms")).is_ok());
+    assert!(ui.find(says("nothing was torn down")).is_ok());
 }
 
 #[test]

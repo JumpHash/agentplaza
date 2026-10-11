@@ -15,8 +15,8 @@ use std::time::Duration;
 use common::{DETAIL, LIST, MACHINE, always, raw, replies, streams};
 
 use agentplaza_desktop::api::{
-    ApiError, Client, CreateRun, CreateTask, Endpoint, FinishOutcome, RunState, TaskOutcome,
-    TaskState, VmState,
+    ApiError, Client, CreateRun, CreateTask, Endpoint, FinishOutcome, RunState, StopOutcome,
+    TaskOutcome, TaskState, VmState,
 };
 use agentplaza_desktop::events;
 use agentplaza_desktop::exit::{ExitKind, exit_kind};
@@ -256,6 +256,197 @@ fn a_hub_url_off_the_loopback_is_refused_before_any_socket_is_opened() {
     // And the port is required: there is no default status port to fall to.
     let error = Endpoint::hub_url("127.0.0.1").expect_err("no port to read");
     assert!(error.to_string().contains("--status-port"), "{error}");
+}
+
+/// Drives one tool over a real socket: the exact `POST /tell` the console
+/// sends, and the agent's own answer read back.
+#[test]
+fn driving_a_tool_posts_to_tell_and_reads_the_agents_own_answer() {
+    let server = common::admin((200, common::TELL_ANSWER), (200, common::STOP_ENDED));
+    let answer = client(server.port)
+        .hub_tell(100, "list", &serde_json::json!({ "path": "." }), 2_000)
+        .expect("the agent's answer should parse");
+    assert!(answer.ok);
+    assert_eq!(answer.output, "3.20 3.13 1.00");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "one request, on the tell path");
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/tell");
+    assert_eq!(
+        requests[0].body,
+        r#"{"args":{"path":"."},"cid":100,"name":"list","timeout_ms":2000}"#
+    );
+}
+
+#[test]
+fn a_declining_tool_is_an_answer_not_a_failure() {
+    let server = common::admin((200, common::TELL_DECLINED), (200, common::STOP_ENDED));
+    let answer = client(server.port)
+        .hub_tell(100, "read_file", &serde_json::json!({}), 5_000)
+        .expect("a tool declining is still the agent answering");
+    assert!(!answer.ok);
+    assert_eq!(answer.output, "denied: no such file");
+}
+
+#[test]
+fn the_hubs_own_refusals_are_carried_verbatim() {
+    // The role policy — a `403` in the tell shape: the words are the hub's own
+    // `output`, not the JSON wrapper around it.
+    let server = common::admin((403, common::TELL_ROLE_POLICY), (200, common::STOP_ENDED));
+    let error = client(server.port)
+        .hub_tell(100, "list", &serde_json::json!({}), 5_000)
+        .expect_err("the role does not grant the tool");
+    assert_eq!(error.status(), Some(403));
+    assert_eq!(error.to_string(), "403: role librarian does not grant list");
+
+    // The request refused before the agent (a name the hub will not carry), a
+    // CID it does not serve, one with no live session, and a silent agent —
+    // each the hub's `{"error": ...}`, carried through unchanged.
+    for (status, body, message) in [
+        (400u16, r#"{"error":"a tell needs a tool name"}"#, "a tell needs a tool name"),
+        (404, r#"{"error":"no agent with guest CID 99"}"#, "no agent with guest CID 99"),
+        (
+            409,
+            r#"{"error":"agent with guest CID 100 is not connected"}"#,
+            "agent with guest CID 100 is not connected",
+        ),
+        (504, r#"{"error":"agent did not answer within 1 ms"}"#, "agent did not answer within 1 ms"),
+    ] {
+        let server = common::admin((status, body), (200, common::STOP_ENDED));
+        let error = client(server.port)
+            .hub_tell(100, "list", &serde_json::json!({}), 1)
+            .expect_err("the hub refused the call");
+        assert_eq!(error.status(), Some(status));
+        assert_eq!(error.to_string(), format!("{status}: {message}"));
+    }
+}
+
+#[test]
+fn a_tell_answer_missing_a_field_is_a_named_malformed_error() {
+    for (body, field) in [
+        (r#"{"output":"x"}"#, "ok"),
+        (r#"{"ok":true}"#, "output"),
+        ("not json", "expected"),
+    ] {
+        let server = common::admin((200, body), (200, common::STOP_ENDED));
+        let error = client(server.port)
+            .hub_tell(100, "list", &serde_json::json!({}), 5_000)
+            .expect_err("the answer is not the tell shape");
+        assert!(matches!(error, ApiError::Malformed(_)), "{error:?}");
+        assert!(error.to_string().contains(field), "{body}: {error}");
+    }
+}
+
+#[test]
+fn stopping_posts_to_stop_and_reads_both_outcomes() {
+    // A session that ended: the guest's `bye` count.
+    let server = common::admin((200, common::TELL_ANSWER), (200, common::STOP_ENDED));
+    let outcome = client(server.port)
+        .hub_stop(100)
+        .expect("the stop should parse");
+    assert_eq!(outcome, StopOutcome::Stopped { calls: 3 });
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, "/stop");
+    assert_eq!(requests[0].body, r#"{"cid":100}"#);
+
+    // A wait that lapsed: the session is still up, nothing torn down, and the
+    // hub's own reason comes through.
+    let server = common::admin((200, common::TELL_ANSWER), (200, common::STOP_STILL_UP));
+    let outcome = client(server.port).hub_stop(100).expect("a lapse is a 200");
+    assert_eq!(
+        outcome,
+        StopOutcome::StillUp {
+            reason: "the agent did not end within 5000 ms".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_stop_refusal_is_the_hubs_own_words() {
+    for (status, body, message) in [
+        (404u16, r#"{"error":"no agent with guest CID 99"}"#, "no agent with guest CID 99"),
+        (
+            409,
+            r#"{"error":"agent with guest CID 100 is not connected"}"#,
+            "agent with guest CID 100 is not connected",
+        ),
+    ] {
+        let server = common::admin((200, common::TELL_ANSWER), (status, body));
+        let error = client(server.port)
+            .hub_stop(100)
+            .expect_err("the hub refused the stop");
+        assert_eq!(error.status(), Some(status));
+        assert_eq!(error.to_string(), format!("{status}: {message}"));
+    }
+}
+
+#[test]
+fn a_stop_answer_missing_its_branchs_field_is_a_named_malformed_error() {
+    for (body, field) in [
+        (r#"{"cid":100,"stopped":true}"#, "calls"),
+        (r#"{"cid":100,"stopped":false}"#, "reason"),
+        (r#"{"cid":100,"calls":3}"#, "stopped"),
+    ] {
+        let server = common::admin((200, common::TELL_ANSWER), (200, body));
+        let error = client(server.port)
+            .hub_stop(100)
+            .expect_err("the answer is not a stop answer");
+        assert!(matches!(error, ApiError::Malformed(_)), "{error:?}");
+        assert!(error.to_string().contains(field), "{body}: {error}");
+    }
+}
+
+#[test]
+fn an_admin_url_off_the_loopback_is_refused_before_any_socket_is_opened() {
+    for url in [
+        "example.com:19081",
+        "10.0.0.1:19081",
+        "192.168.1.10:19081",
+        "127.0.0.1.evil.tld:19081",
+        "api.127.0.0.1:19081",
+        "localhost.evil.tld:19081",
+        "127.0.0.1.:19081",
+        "LOCALHOST:19081",
+        "Localhost:19081",
+        "http://[::1]:19081",
+        "http://0.0.0.0:19081",
+        "https://127.0.0.1:19081",
+        "127.0.0.1:0",
+        "http://127.0.0.1:19081/tell",
+        "http://127.0.0.1:19081?q=1",
+    ] {
+        let error = Endpoint::hub_admin_url(url).expect_err("must be refused");
+        assert!(
+            matches!(error, ApiError::Config(_)),
+            "{url} should be a configuration error, got {error:?}"
+        );
+    }
+    // The two exact loopback names, and only those, are the admin surface's.
+    assert_eq!(
+        Endpoint::hub_admin_url("localhost:19081").expect("localhost is loopback").host(),
+        "127.0.0.1"
+    );
+    assert_eq!(Endpoint::hub_admin_url("127.0.0.1:19081").expect("loopback").port(), 19_081);
+    // And the port is required: there is no default admin port to fall to.
+    let error = Endpoint::hub_admin_url("127.0.0.1").expect_err("no port to reach");
+    assert!(error.to_string().contains("--admin-port"), "{error}");
+}
+
+#[test]
+fn an_unreachable_admin_is_a_connect_error_rather_than_a_panic() {
+    // Nothing listens on port 1 of the loopback.
+    let error = client(1)
+        .hub_tell(100, "uptime", &serde_json::json!({}), 5_000)
+        .expect_err("the admin surface is not there");
+    assert!(error.is_unreachable(), "{error:?}");
+    let error = client(1)
+        .hub_stop(100)
+        .expect_err("the admin surface is not there");
+    assert!(error.is_unreachable(), "{error:?}");
 }
 
 #[test]
