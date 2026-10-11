@@ -16,5 +16,9 @@
     "simple-icons": "^16.35.0",
     "simple-icons-11": "npm:simple-icons@^11.15.0",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@types/three": "^0.186.0",
+    "three": "^0.186.1"
   }
 }
