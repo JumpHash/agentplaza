@@ -1,0 +1,25 @@
+/* Floor */
+.floor-view { max-width: none; height: calc(100vh - var(--topbar-h)); }
+.floor-stage {
+  position: relative; flex: 1; min-height: 420px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  background:
+    radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
+    var(--bg);
+}
+.floor-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.floor-tip {
+  position: absolute; z-index: 2; pointer-events: none; display: flex; flex-direction: column; gap: 2px;
+  max-width: 280px; padding: var(--s2) var(--s3); border-radius: var(--r-md);
+  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: var(--fs-sm);
+}
+.floor-legend {
+  position: absolute; left: var(--s4); bottom: var(--s4); display: flex; gap: var(--s4);
+  padding: 6px var(--s3); border-radius: 999px; background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border: 1px solid var(--border); font-size: var(--fs-xs); color: var(--text-2);
+}
+.floor-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.floor-key { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.floor-key.working { background: var(--info); box-shadow: 0 0 0 3px var(--info-bg); }
+.floor-key.idle { background: var(--ok); }
+.floor-key.offline { background: var(--text-3); }
