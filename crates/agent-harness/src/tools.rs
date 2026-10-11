@@ -29,7 +29,7 @@ use serde_json::Value;
 use crate::files::{self, Workspace};
 
 /// The tools, by name.
-const TOOLS: [Tool; 9] = [
+const TOOLS: [Tool; 10] = [
     Tool {
         name: "echo",
         run: echo,
@@ -45,6 +45,10 @@ const TOOLS: [Tool; 9] = [
     Tool {
         name: "read_file",
         run: files::read_file,
+    },
+    Tool {
+        name: "share_file",
+        run: files::share_file,
     },
     Tool {
         name: "write_file",
