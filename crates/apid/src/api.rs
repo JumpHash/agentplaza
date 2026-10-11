@@ -57,6 +57,11 @@ fn machines(app: &App) -> Response {
     entry.insert("noded_port".into(), json!(app.noded.port));
     entry.insert("runs".into(), runs);
     entry.insert("agents".into(), json!(agents));
+    let stats = match app.noded.get("/v1/machine/stats") {
+        Ok((200, body)) => body,
+        _ => Value::Null,
+    };
+    entry.insert("stats".into(), stats);
     Response::json(200, &json!([entry]))
 }
 

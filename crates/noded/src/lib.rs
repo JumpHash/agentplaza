@@ -3,6 +3,7 @@
 //! `noded` — the node daemon: one machine's microVMs over a loopback HTTP API.
 //!
 //! * `GET /v1/machine` — the machine's facts
+//! * `GET /v1/machine/stats` — live CPU, load, memory and VM counts, with history
 //! * `GET /v1/runs` · `POST /v1/runs` — runs (groups of VMs) · boot one
 //! * `GET /v1/runs/{id}` · `DELETE /v1/runs/{id}` — one run with its serial captures · kill it
 //! * `POST /v1/runs/{id}/input` — write to one VM's serial console
@@ -15,6 +16,7 @@
 pub mod events;
 pub mod fleet;
 pub mod registry;
+pub mod stats;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -86,6 +88,7 @@ impl Default for Config {
 pub struct Node {
     registry: Registry,
     started_at_ms: u64,
+    stats: Arc<stats::Stats>,
 }
 
 /// `GET /v1/machine`.
@@ -110,6 +113,7 @@ impl Node {
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new()),
             started_at_ms: epoch_ms(),
+            stats: Arc::new(stats::Stats::new()),
         }
     }
 
@@ -344,6 +348,7 @@ impl Server {
     pub fn start(config: Config) -> std::io::Result<Self> {
         let server = apz_http::Server::bind(config.port)?;
         let node = Arc::new(Node::new(config));
+        stats::spawn(Arc::clone(&node.stats))?;
         let (router, serving) = (router(), Arc::clone(&node));
         let http = server.spawn(move |request| router.handle(&serving, request))?;
         Ok(Self { http, node })
@@ -391,11 +396,29 @@ fn router() -> Router<Node> {
             let receiver = node.events().subscribe();
             Response::sse(move |sse| events::stream(&receiver, sse))
         })
+        .get("/v1/machine/stats", |node, _, _| machine_stats(node))
         .get("/v1/runs", |node, _, _| list_runs(node))
         .post("/v1/runs", |node, request, _| create_run(node, &request.body))
         .get("/v1/runs/{id}", |node, _, params| get_run(node, params.get("id")))
         .delete("/v1/runs/{id}", |node, _, params| delete_run(node, params.get("id")))
         .post("/v1/runs/{id}/input", |node, request, params| send_input(node, params.get("id"), &request.body))
+}
+
+/// `GET /v1/machine/stats`: the latest host sample, the last minute of samples,
+/// and the running VMs with the guest memory they were booted with.
+fn machine_stats(node: &Node) -> Response {
+    let (mut vms_running, mut guest_mem_mib) = (0_u64, 0_u64);
+    for run in node.registry().list() {
+        let view = run.view(Detail::Summary);
+        for _ in view.vms.iter().filter(|vm| vm.state == "running") {
+            vms_running += 1;
+            guest_mem_mib += u64::from(view.memory_mib);
+        }
+    }
+    match node.stats.view(vms_running, guest_mem_mib) {
+        Some(view) => Response::json(200, &view),
+        None => Response::error(503, "no host sample yet"),
+    }
 }
 
 /// `GET /v1/runs`: every run, without serial captures.
