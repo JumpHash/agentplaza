@@ -234,7 +234,7 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
         description: optional(req.query_param("description")),
         task: optional(req.query_param("task")),
         content_type: optional(req.header("content-type")).unwrap_or_else(|| guess_type(&name).to_string()),
-        author: cid.to_string(),
+        author: app.agents.get(cid).map(|a| a.name).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
         author_cid: cid,
         name,
     };
