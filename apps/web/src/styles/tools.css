@@ -15,7 +15,7 @@
   align-items: center;
   gap: 6px;
   padding: 2px 8px;
-  font-size: var(--fs-xs);
+  font: 500 11px var(--mono);
   color: var(--text-2);
   background: var(--surface-2);
   border: 1px solid var(--border);
