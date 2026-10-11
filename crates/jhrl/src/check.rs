@@ -1033,6 +1033,7 @@ impl<'a> Checker<'a> {
             Item::Mutant(m) => self.mutant(m),
             Item::Witness(w) => self.witness(w),
             Item::Scenario(s) => self.scenario(s),
+            _ => {}
         }
     }
 

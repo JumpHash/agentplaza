@@ -249,6 +249,14 @@ pub enum Item {
     Mutant(MutantDecl),
     Witness(WitnessDecl),
     Scenario(ScenarioDecl),
+    /// Spec 9.13: `operation tool.call(principal: …, resource: …, context: {…})`.
+    Operation(Operation),
+    /// Spec 9.14: `law "id" "title" { … }`.
+    Law(Law),
+    /// Spec 9.14: `fixture "name" "title" { Type("id") { … } … }`.
+    Fixture(Fixture),
+    /// Spec 9.14: `authz "name" using "fixture" { allow|deny … }`.
+    Authz(Authz),
 }
 
 impl Item {
@@ -288,8 +296,97 @@ impl Item {
             Item::Mutant(d) => d.span,
             Item::Witness(d) => d.span,
             Item::Scenario(d) => d.span,
+            Item::Operation(d) => d.span,
+            Item::Law(d) => d.span,
+            Item::Fixture(d) => d.span,
+            Item::Authz(d) => d.span,
         }
     }
+}
+
+/// An operation signature: `operation name(principal: A | B, resource: R, context: {f: T, g: T optional})`.
+#[derive(Clone, Debug)]
+pub struct Operation {
+    pub name: String,
+    pub principal: Vec<String>,
+    pub resource: String,
+    /// `(field, type, optional)`.
+    pub context: Vec<(String, TypeExpr, bool)>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    Permit,
+    Forbid,
+}
+
+/// A principal or resource scope in a law: `is T`, `== e` or `in e`.
+#[derive(Clone, Debug)]
+pub enum Scope {
+    Is(TypeExpr),
+    Eq(Expr),
+    In(Expr),
+}
+
+/// A law. `ops` holds the dotted operation names, or the single entry `"any"`.
+#[derive(Clone, Debug)]
+pub struct Law {
+    pub id: String,
+    pub title: String,
+    pub tier: Option<String>,
+    pub enforcement: Option<String>,
+    pub severity: Option<String>,
+    pub statement: Option<String>,
+    pub rationale: Option<String>,
+    pub effect: Effect,
+    pub ops: Vec<String>,
+    pub principal: Option<Scope>,
+    pub resource: Option<Scope>,
+    pub when: Vec<Expr>,
+    pub unless: Vec<Expr>,
+    pub town: Option<String>,
+    pub expires: Option<Expr>,
+    pub implements: Vec<String>,
+    pub span: Span,
+}
+
+/// An entity literal `Type("id")`, optionally with a `{ field: expr, … }` block.
+#[derive(Clone, Debug)]
+pub struct EntityLit {
+    pub ty: String,
+    pub id: String,
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Fixture {
+    pub name: String,
+    pub title: String,
+    pub entities: Vec<EntityLit>,
+    pub span: Span,
+}
+
+/// One `allow`/`deny` line of an authz block.
+#[derive(Clone, Debug)]
+pub struct AuthzCase {
+    pub allow: bool,
+    pub label: String,
+    pub subject: EntityLit,
+    pub op: String,
+    pub object: EntityLit,
+    pub record: Expr,
+    pub law: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Authz {
+    pub name: String,
+    pub fixture: String,
+    pub cases: Vec<AuthzCase>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
