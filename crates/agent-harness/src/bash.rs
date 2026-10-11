@@ -25,7 +25,7 @@ use crate::files::Workspace;
 
 const DEFAULT_TIMEOUT_S: u64 = 60;
 const MAX_TIMEOUT_S: u64 = 300;
-const SHELL: &str = "/bin/sh";
+pub(crate) const SHELL: &str = "/bin/sh";
 /// The agent's PATH: the system bins, then what it installs for itself (pip
 /// `--user`, `go install`, npm's global prefix under its home).
 const USER_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/workspace/.local/bin:/workspace/go/bin:/workspace/.npm-global/bin";
@@ -104,9 +104,32 @@ fn package_name_ok(name: &str) -> bool {
 
 /// Who a command runs as: the agent (uid 1000 in a root guest), or root for package installs.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Privilege {
+pub(crate) enum Privilege {
     Agent,
     Root,
+}
+
+/// The command `program args` in `dir` as `privilege`: a cleared environment (the proxy
+/// set), stdin closed, its own process group, and the agent's uid drop in a root guest.
+/// The caller sets stdout and stderr.
+pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privilege: Privilege) -> Result<Command, String> {
+    let mut builder = Command::new(program);
+    builder
+        .args(args)
+        .current_dir(dir)
+        .env_clear()
+        .env("HOME", if privilege == Privilege::Root { std::path::Path::new("/root") } else { dir })
+        .env("PATH", if privilege == Privilege::Root { ADMIN_PATH } else { USER_PATH })
+        .env("http_proxy", PROXY_URL)
+        .env("https_proxy", PROXY_URL)
+        .env("HTTP_PROXY", PROXY_URL)
+        .env("HTTPS_PROXY", PROXY_URL)
+        .stdin(Stdio::null())
+        .process_group(0);
+    if privilege == Privilege::Agent && runs_as_root()? {
+        builder.uid(UNPRIVILEGED).gid(UNPRIVILEGED);
+    }
+    Ok(builder)
 }
 
 /// Runs `program args` in `dir` with a cleared environment (the proxy set), output captured
@@ -115,24 +138,8 @@ fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeout_s: u64, 
     let root = dir;
     let (reader, writer) = io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
     let stderr = writer.try_clone().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
-    let mut builder = Command::new(program);
-    builder
-        .args(args)
-        .current_dir(root)
-        .env_clear()
-        .env("HOME", if privilege == Privilege::Root { std::path::Path::new("/root") } else { root })
-        .env("PATH", if privilege == Privilege::Root { ADMIN_PATH } else { USER_PATH })
-        .env("http_proxy", PROXY_URL)
-        .env("https_proxy", PROXY_URL)
-        .env("HTTP_PROXY", PROXY_URL)
-        .env("HTTPS_PROXY", PROXY_URL)
-        .stdin(Stdio::null())
-        .stdout(writer)
-        .stderr(stderr)
-        .process_group(0);
-    if privilege == Privilege::Agent && runs_as_root()? {
-        builder.uid(UNPRIVILEGED).gid(UNPRIVILEGED);
-    }
+    let mut builder = command(program, args, root, privilege)?;
+    builder.stdout(writer).stderr(stderr);
     let mut child = builder.spawn().map_err(|err| format!("internal: cannot start the shell: {err}"))?;
     // The builder holds the pipe's write ends; dropping it lets the reader see EOF.
     drop(builder);
