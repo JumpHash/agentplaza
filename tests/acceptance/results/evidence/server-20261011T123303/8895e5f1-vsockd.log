@@ -1,0 +1,321 @@
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm30_5000 for guest CID 30
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm31_5000 for guest CID 31
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm32_5000 for guest CID 32
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm33_5000 for guest CID 33
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm34_5000 for guest CID 34
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm35_5000 for guest CID 35
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm36_5000 for guest CID 36
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/kill-churn-uds/vm37_5000 for guest CID 37
+vsockd: accepted a connection from cid 31
+[guest 31 vm? ->] {"type":"hello","vm":1,"guest_cid":31}
+vsockd: guest 31 vm 1 says hello (accepted on the socket for cid 31)
+[<-] guest 31 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 31 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-31-hello"}}
+[<-] guest 31 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-31-hello"}
+vsockd: answered call 1 (echo) for guest 31 vm 1
+[guest 31 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 31 vm1 {"type":"tool_result","call":2,"ok":true,"output":"324113.04 6876282.95"}
+vsockd: answered call 2 (uptime) for guest 31 vm 1
+[guest 31 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 31 vm 1 said bye after 2 tool calls
+vsockd: session with guest 31 vm 1 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 32
+[guest 32 vm? ->] {"type":"hello","vm":2,"guest_cid":32}
+vsockd: guest 32 vm 2 says hello (accepted on the socket for cid 32)
+[<-] guest 32 vm2 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 32 vm2 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-32-hello"}}
+[<-] guest 32 vm2 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-32-hello"}
+vsockd: answered call 1 (echo) for guest 32 vm 2
+[guest 32 vm2 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 32 vm2 {"type":"tool_result","call":2,"ok":true,"output":"324113.06 6876283.28"}
+vsockd: answered call 2 (uptime) for guest 32 vm 2
+[guest 32 vm2 ->] {"type":"bye","calls":2}
+vsockd: guest 32 vm 2 said bye after 2 tool calls
+vsockd: session with guest 32 vm 2 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 34
+[guest 34 vm? ->] {"type":"hello","vm":4,"guest_cid":34}
+vsockd: guest 34 vm 4 says hello (accepted on the socket for cid 34)
+[<-] guest 34 vm4 {"type":"welcome","echo":"plaza-orchestrator"}
+vsockd: accepted a connection from cid 33
+[guest 33 vm? ->] {"type":"hello","vm":3,"guest_cid":33}
+vsockd: guest 33 vm 3 says hello (accepted on the socket for cid 33)
+[<-] guest 33 vm3 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 34 vm4 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-34-hello"}}
+[<-] guest 34 vm4 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-34-hello"}
+vsockd: answered call 1 (echo) for guest 34 vm 4
+[guest 33 vm3 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-33-hello"}}
+[<-] guest 33 vm3 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-33-hello"}
+vsockd: answered call 1 (echo) for guest 33 vm 3
+[guest 34 vm4 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 34 vm4 {"type":"tool_result","call":2,"ok":true,"output":"324113.09 6876284.03"}
+vsockd: answered call 2 (uptime) for guest 34 vm 4
+[guest 33 vm3 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 33 vm3 {"type":"tool_result","call":2,"ok":true,"output":"324113.09 6876284.05"}
+vsockd: answered call 2 (uptime) for guest 33 vm 3
+[guest 34 vm4 ->] {"type":"bye","calls":2}
+vsockd: guest 34 vm 4 said bye after 2 tool calls
+vsockd: session with guest 34 vm 4 ended cleanly after 2 tool calls
+[guest 33 vm3 ->] {"type":"bye","calls":2}
+vsockd: guest 33 vm 3 said bye after 2 tool calls
+vsockd: session with guest 33 vm 3 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 37
+[guest 37 vm? ->] {"type":"hello","vm":7,"guest_cid":37}
+vsockd: guest 37 vm 7 says hello (accepted on the socket for cid 37)
+[<-] guest 37 vm7 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 37 vm7 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-37-hello"}}
+[<-] guest 37 vm7 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-37-hello"}
+vsockd: answered call 1 (echo) for guest 37 vm 7
+[guest 37 vm7 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 37 vm7 {"type":"tool_result","call":2,"ok":true,"output":"324113.14 6876285.16"}
+vsockd: answered call 2 (uptime) for guest 37 vm 7
+[guest 37 vm7 ->] {"type":"bye","calls":2}
+vsockd: guest 37 vm 7 said bye after 2 tool calls
+vsockd: session with guest 37 vm 7 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 30
+[guest 30 vm? ->] {"type":"hello","vm":0,"guest_cid":30}
+vsockd: guest 30 vm 0 says hello (accepted on the socket for cid 30)
+[<-] guest 30 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 30 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-30-hello"}}
+[<-] guest 30 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-30-hello"}
+vsockd: answered call 1 (echo) for guest 30 vm 0
+[guest 30 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 30 vm0 {"type":"tool_result","call":2,"ok":true,"output":"324113.17 6876285.95"}
+vsockd: answered call 2 (uptime) for guest 30 vm 0
+[guest 30 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 30 vm 0 said bye after 2 tool calls
+vsockd: session with guest 30 vm 0 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 36
+[guest 36 vm? ->] {"type":"hello","vm":6,"guest_cid":36}
+vsockd: guest 36 vm 6 says hello (accepted on the socket for cid 36)
+[<-] guest 36 vm6 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 36 vm6 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-36-hello"}}
+[<-] guest 36 vm6 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-36-hello"}
+vsockd: answered call 1 (echo) for guest 36 vm 6
+[guest 36 vm6 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 36 vm6 {"type":"tool_result","call":2,"ok":true,"output":"324113.18 6876286.13"}
+vsockd: answered call 2 (uptime) for guest 36 vm 6
+[guest 36 vm6 ->] {"type":"bye","calls":2}
+vsockd: guest 36 vm 6 said bye after 2 tool calls
+vsockd: session with guest 36 vm 6 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 35
+[guest 35 vm? ->] {"type":"hello","vm":5,"guest_cid":35}
+vsockd: guest 35 vm 5 says hello (accepted on the socket for cid 35)
+[<-] guest 35 vm5 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 35 vm5 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-35-hello"}}
+[<-] guest 35 vm5 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-35-hello"}
+vsockd: answered call 1 (echo) for guest 35 vm 5
+[guest 35 vm5 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 35 vm5 {"type":"tool_result","call":2,"ok":true,"output":"324113.24 6876287.53"}
+vsockd: answered call 2 (uptime) for guest 35 vm 5
+[guest 35 vm5 ->] {"type":"bye","calls":2}
+vsockd: guest 35 vm 5 said bye after 2 tool calls
+vsockd: session with guest 35 vm 5 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 30
+[guest 30 vm? ->] {"type":"hello","vm":0,"guest_cid":30}
+vsockd: guest 30 vm 0 says hello (accepted on the socket for cid 30)
+[<-] guest 30 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 30 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-30-hello"}}
+[<-] guest 30 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-30-hello"}
+vsockd: answered call 1 (echo) for guest 30 vm 0
+[guest 30 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 30 vm0 {"type":"tool_result","call":2,"ok":true,"output":"324120.72 6876447.49"}
+vsockd: answered call 2 (uptime) for guest 30 vm 0
+[guest 30 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 30 vm 0 said bye after 2 tool calls
+vsockd: session with guest 30 vm 0 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 32
+[guest 32 vm? ->] {"type":"hello","vm":2,"guest_cid":32}
+vsockd: guest 32 vm 2 says hello (accepted on the socket for cid 32)
+[<-] guest 32 vm2 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 32 vm2 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-32-hello"}}
+[<-] guest 32 vm2 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-32-hello"}
+vsockd: answered call 1 (echo) for guest 32 vm 2
+[guest 32 vm2 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 32 vm2 {"type":"tool_result","call":2,"ok":true,"output":"324120.75 6876448.14"}
+vsockd: answered call 2 (uptime) for guest 32 vm 2
+[guest 32 vm2 ->] {"type":"bye","calls":2}
+vsockd: guest 32 vm 2 said bye after 2 tool calls
+vsockd: session with guest 32 vm 2 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 33
+[guest 33 vm? ->] {"type":"hello","vm":3,"guest_cid":33}
+vsockd: guest 33 vm 3 says hello (accepted on the socket for cid 33)
+[<-] guest 33 vm3 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 33 vm3 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-33-hello"}}
+[<-] guest 33 vm3 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-33-hello"}
+vsockd: answered call 1 (echo) for guest 33 vm 3
+vsockd: accepted a connection from cid 36
+vsockd: accepted a connection from cid 31
+vsockd: accepted a connection from cid 34
+[guest 33 vm3 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[guest 36 vm? ->] {"type":"hello","vm":6,"guest_cid":36}
+vsockd: guest 36 vm 6 says hello (accepted on the socket for cid 36)
+[<-] guest 36 vm6 {"type":"welcome","echo":"plaza-orchestrator"}
+[<-] guest 33 vm3 {"type":"tool_result","call":2,"ok":true,"output":"324120.78 6876448.75"}
+vsockd: answered call 2 (uptime) for guest 33 vm 3
+[guest 33 vm3 ->] {"type":"bye","calls":2}
+vsockd: guest 33 vm 3 said bye after 2 tool calls
+vsockd: session with guest 33 vm 3 ended cleanly after 2 tool calls
+[guest 36 vm6 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-36-hello"}}
+[<-] guest 36 vm6 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-36-hello"}
+vsockd: answered call 1 (echo) for guest 36 vm 6
+vsockd: accepted a connection from cid 35
+[guest 31 vm? ->] {"type":"hello","vm":1,"guest_cid":31}
+vsockd: guest 31 vm 1 says hello (accepted on the socket for cid 31)
+[<-] guest 31 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 34 vm? ->] {"type":"hello","vm":4,"guest_cid":34}
+vsockd: guest 34 vm 4 says hello (accepted on the socket for cid 34)
+[<-] guest 34 vm4 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 35 vm? ->] {"type":"hello","vm":5,"guest_cid":35}
+vsockd: guest 35 vm 5 says hello (accepted on the socket for cid 35)
+[<-] guest 35 vm5 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 31 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-31-hello"}}
+[<-] guest 31 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-31-hello"}
+vsockd: answered call 1 (echo) for guest 31 vm 1
+[guest 34 vm4 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-34-hello"}}
+[<-] guest 34 vm4 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-34-hello"}
+vsockd: answered call 1 (echo) for guest 34 vm 4
+[guest 36 vm6 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 36 vm6 {"type":"tool_result","call":2,"ok":true,"output":"324120.78 6876448.79"}
+vsockd: answered call 2 (uptime) for guest 36 vm 6
+[guest 35 vm5 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-35-hello"}}
+[<-] guest 35 vm5 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-35-hello"}
+vsockd: answered call 1 (echo) for guest 35 vm 5
+[guest 31 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 31 vm1 {"type":"tool_result","call":2,"ok":true,"output":"324120.78 6876448.80"}
+vsockd: answered call 2 (uptime) for guest 31 vm 1
+[guest 36 vm6 ->] {"type":"bye","calls":2}
+vsockd: guest 36 vm 6 said bye after 2 tool calls
+vsockd: session with guest 36 vm 6 ended cleanly after 2 tool calls
+[guest 34 vm4 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 34 vm4 {"type":"tool_result","call":2,"ok":true,"output":"324120.78 6876448.81"}
+vsockd: answered call 2 (uptime) for guest 34 vm 4
+[guest 35 vm5 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 35 vm5 {"type":"tool_result","call":2,"ok":true,"output":"324120.78 6876448.82"}
+vsockd: answered call 2 (uptime) for guest 35 vm 5
+[guest 31 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 31 vm 1 said bye after 2 tool calls
+vsockd: session with guest 31 vm 1 ended cleanly after 2 tool calls
+[guest 34 vm4 ->] {"type":"bye","calls":2}
+vsockd: guest 34 vm 4 said bye after 2 tool calls
+vsockd: session with guest 34 vm 4 ended cleanly after 2 tool calls
+[guest 35 vm5 ->] {"type":"bye","calls":2}
+vsockd: guest 35 vm 5 said bye after 2 tool calls
+vsockd: session with guest 35 vm 5 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 37
+[guest 37 vm? ->] {"type":"hello","vm":7,"guest_cid":37}
+vsockd: guest 37 vm 7 says hello (accepted on the socket for cid 37)
+[<-] guest 37 vm7 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 37 vm7 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-37-hello"}}
+[<-] guest 37 vm7 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-37-hello"}
+vsockd: answered call 1 (echo) for guest 37 vm 7
+[guest 37 vm7 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 37 vm7 {"type":"tool_result","call":2,"ok":true,"output":"324120.85 6876450.20"}
+vsockd: answered call 2 (uptime) for guest 37 vm 7
+[guest 37 vm7 ->] {"type":"bye","calls":2}
+vsockd: guest 37 vm 7 said bye after 2 tool calls
+vsockd: session with guest 37 vm 7 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 31
+[guest 31 vm? ->] {"type":"hello","vm":1,"guest_cid":31}
+vsockd: guest 31 vm 1 says hello (accepted on the socket for cid 31)
+[<-] guest 31 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 31 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-31-hello"}}
+[<-] guest 31 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-31-hello"}
+vsockd: answered call 1 (echo) for guest 31 vm 1
+[guest 31 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 31 vm1 {"type":"tool_result","call":2,"ok":true,"output":"324128.42 6876616.43"}
+vsockd: answered call 2 (uptime) for guest 31 vm 1
+[guest 31 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 31 vm 1 said bye after 2 tool calls
+vsockd: session with guest 31 vm 1 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 32
+[guest 32 vm? ->] {"type":"hello","vm":2,"guest_cid":32}
+vsockd: guest 32 vm 2 says hello (accepted on the socket for cid 32)
+[<-] guest 32 vm2 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 32 vm2 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-32-hello"}}
+[<-] guest 32 vm2 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-32-hello"}
+vsockd: answered call 1 (echo) for guest 32 vm 2
+vsockd: accepted a connection from cid 30
+[guest 30 vm? ->] {"type":"hello","vm":0,"guest_cid":30}
+vsockd: guest 30 vm 0 says hello (accepted on the socket for cid 30)
+[<-] guest 30 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 32 vm2 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 32 vm2 {"type":"tool_result","call":2,"ok":true,"output":"324128.43 6876616.71"}
+vsockd: answered call 2 (uptime) for guest 32 vm 2
+[guest 30 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-30-hello"}}
+[<-] guest 30 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-30-hello"}
+vsockd: answered call 1 (echo) for guest 30 vm 0
+[guest 32 vm2 ->] {"type":"bye","calls":2}
+vsockd: guest 32 vm 2 said bye after 2 tool calls
+vsockd: session with guest 32 vm 2 ended cleanly after 2 tool calls
+[guest 30 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 30 vm0 {"type":"tool_result","call":2,"ok":true,"output":"324128.44 6876616.75"}
+vsockd: answered call 2 (uptime) for guest 30 vm 0
+[guest 30 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 30 vm 0 said bye after 2 tool calls
+vsockd: session with guest 30 vm 0 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 33
+[guest 33 vm? ->] {"type":"hello","vm":3,"guest_cid":33}
+vsockd: guest 33 vm 3 says hello (accepted on the socket for cid 33)
+[<-] guest 33 vm3 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 33 vm3 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-33-hello"}}
+[<-] guest 33 vm3 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-33-hello"}
+vsockd: answered call 1 (echo) for guest 33 vm 3
+[guest 33 vm3 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 33 vm3 {"type":"tool_result","call":2,"ok":true,"output":"324128.44 6876616.88"}
+vsockd: answered call 2 (uptime) for guest 33 vm 3
+[guest 33 vm3 ->] {"type":"bye","calls":2}
+vsockd: guest 33 vm 3 said bye after 2 tool calls
+vsockd: session with guest 33 vm 3 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 37
+[guest 37 vm? ->] {"type":"hello","vm":7,"guest_cid":37}
+vsockd: guest 37 vm 7 says hello (accepted on the socket for cid 37)
+[<-] guest 37 vm7 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 37 vm7 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-37-hello"}}
+[<-] guest 37 vm7 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-37-hello"}
+vsockd: answered call 1 (echo) for guest 37 vm 7
+[guest 37 vm7 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 37 vm7 {"type":"tool_result","call":2,"ok":true,"output":"324128.48 6876617.79"}
+vsockd: answered call 2 (uptime) for guest 37 vm 7
+[guest 37 vm7 ->] {"type":"bye","calls":2}
+vsockd: guest 37 vm 7 said bye after 2 tool calls
+vsockd: session with guest 37 vm 7 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 36
+[guest 36 vm? ->] {"type":"hello","vm":6,"guest_cid":36}
+vsockd: guest 36 vm 6 says hello (accepted on the socket for cid 36)
+[<-] guest 36 vm6 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 36 vm6 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-36-hello"}}
+[<-] guest 36 vm6 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-36-hello"}
+vsockd: answered call 1 (echo) for guest 36 vm 6
+[guest 36 vm6 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 36 vm6 {"type":"tool_result","call":2,"ok":true,"output":"324128.49 6876617.94"}
+vsockd: answered call 2 (uptime) for guest 36 vm 6
+[guest 36 vm6 ->] {"type":"bye","calls":2}
+vsockd: guest 36 vm 6 said bye after 2 tool calls
+vsockd: session with guest 36 vm 6 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 34
+[guest 34 vm? ->] {"type":"hello","vm":4,"guest_cid":34}
+vsockd: guest 34 vm 4 says hello (accepted on the socket for cid 34)
+[<-] guest 34 vm4 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 34 vm4 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-34-hello"}}
+[<-] guest 34 vm4 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-34-hello"}
+vsockd: answered call 1 (echo) for guest 34 vm 4
+[guest 34 vm4 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 34 vm4 {"type":"tool_result","call":2,"ok":true,"output":"324128.51 6876618.42"}
+vsockd: answered call 2 (uptime) for guest 34 vm 4
+[guest 34 vm4 ->] {"type":"bye","calls":2}
+vsockd: guest 34 vm 4 said bye after 2 tool calls
+vsockd: session with guest 34 vm 4 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 35
+[guest 35 vm? ->] {"type":"hello","vm":5,"guest_cid":35}
+vsockd: guest 35 vm 5 says hello (accepted on the socket for cid 35)
+[<-] guest 35 vm5 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 35 vm5 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-35-hello"}}
+[<-] guest 35 vm5 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-35-hello"}
+vsockd: answered call 1 (echo) for guest 35 vm 5
+[guest 35 vm5 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 35 vm5 {"type":"tool_result","call":2,"ok":true,"output":"324128.55 6876619.29"}
+vsockd: answered call 2 (uptime) for guest 35 vm 5
+[guest 35 vm5 ->] {"type":"bye","calls":2}
+vsockd: guest 35 vm 5 said bye after 2 tool calls
+vsockd: session with guest 35 vm 5 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

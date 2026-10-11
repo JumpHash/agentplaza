@@ -1,0 +1,3 @@
+{"id":"c1","from_cid":176,"to_cid":175,"from_role":"librarian","to_role":"builder","text":"the plaza says hello apz-acceptance-v1","created_at":1791715799823,"delivered":true,"delivery":null}
+{"id":"c2","from_cid":175,"to_cid":176,"from_role":"builder","to_role":"librarian","text":"on my way apz-acceptance-v1","created_at":1791715801871,"delivered":true,"delivery":null}
+{"id":"c3","from_cid":175,"to_cid":176,"from_role":"builder","to_role":"librarian","text":"the undeliverable one apz-acceptance-v1","created_at":1791715803825,"delivered":false,"delivery":"the hub refused with 409: agent with guest CID 176 is not connected"}

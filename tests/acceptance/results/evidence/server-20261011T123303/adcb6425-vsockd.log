@@ -1,0 +1,7 @@
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/redteam-wire-uds/vm10_5000 for guest CID 10
+vsockd: listening on /tmp/apz-acceptance-server-326jx5y2/redteam-wire-uds/vm11_5000 for guest CID 11
+vsockd: accepted a connection from cid 10
+vsockd: accepted a connection from cid 10
+vsockd: session with cid 10 dropped: protocol violation (the guest closed before sending hello)
+vsockd: session with cid 10 dropped: protocol violation (the guest closed before sending hello)
+vsockd: stop requested, closing the listeners

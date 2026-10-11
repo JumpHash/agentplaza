@@ -2,15 +2,15 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "BLOCKED",
   "machine_class": "pi5",
-  "generated_at": "2026-10-11T12:30:58+0200",
-  "wall_seconds": 0.06,
+  "generated_at": "2026-10-11T12:50:23+0200",
+  "wall_seconds": 0.056,
   "manifest": {
     "suite": "council",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "8ad86ac2f8f6b82b43ea0724589ebdd5f5720319",
+      "head": "b1b7e4099edd2071a758b2f87854c4d1fb4b4a1f",
       "dirty": true,
-      "harness_tree_sha256": "7c5e3f16aeb8481145aeb55b8e14efafa28e8af8ece2bec08114e2b8d5a46b60"
+      "harness_tree_sha256": "8b166f131f551303dafc63f64e24464660d49fde888b1f5cbec0f96910f77084"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
@@ -35,8 +35,8 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-pi5-zxu6l4mk",
-    "started_at": "2026-10-11T12:30:58+0200",
+    "artifacts_dir": "/tmp/apz-acceptance-pi5-yn_vs1df",
+    "started_at": "2026-10-11T12:50:23+0200",
     "binaries": {
       "noded": {
         "path": "/mnt/fast/AgentPlaza/target/debug/noded",
@@ -50,10 +50,10 @@
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-pi5-zxu6l4mk/kernel-seccomp-audit.log",
+        "source": "/tmp/apz-acceptance-pi5-yn_vs1df/kernel-seccomp-audit.log",
         "bytes": 1,
         "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-        "excerpt": "tests/acceptance/results/evidence/pi5-20261011T123058/01ba4719-kernel-seccomp-audit.log",
+        "excerpt": "tests/acceptance/results/evidence/pi5-20261011T125023/01ba4719-kernel-seccomp-audit.log",
         "excerpt_bytes": 1
       }
     ]
@@ -64,11 +64,11 @@
   "kernel_seccomp_audit": {
     "available": true,
     "reason": null,
-    "since_epoch": 1791714658,
+    "since_epoch": 1791715823,
     "records": 0,
     "attributed": [],
     "kills": [],
-    "artifact": "/tmp/apz-acceptance-pi5-zxu6l4mk/kernel-seccomp-audit.log"
+    "artifact": "/tmp/apz-acceptance-pi5-yn_vs1df/kernel-seccomp-audit.log"
   },
   "sut_binary": {
     "bin_dir": "/mnt/fast/AgentPlaza/target/debug",
@@ -78,9 +78,9 @@
     },
     "changed_mid_run": {},
     "sut_git_at_start": {
-      "head": "8ad86ac2f8f6b82b43ea0724589ebdd5f5720319",
+      "head": "b1b7e4099edd2071a758b2f87854c4d1fb4b4a1f",
       "dirty": true,
-      "harness_tree_sha256": "7c5e3f16aeb8481145aeb55b8e14efafa28e8af8ece2bec08114e2b8d5a46b60"
+      "harness_tree_sha256": "8b166f131f551303dafc63f64e24464660d49fde888b1f5cbec0f96910f77084"
     }
   },
   "suites": [
@@ -95,7 +95,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:30:58+0200",
+      "started_at": "2026-10-11T12:50:23+0200",
       "duration_s": 0.0
     }
   ],

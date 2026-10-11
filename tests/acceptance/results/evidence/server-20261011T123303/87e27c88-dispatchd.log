@@ -1,0 +1,10 @@
+exit=0
+dispatchd: pass 1: 1 task(s) in the ledger, 2 agent(s) connected
+dispatchd: social: agent cid 177 (builder) read the board to p2; 0 unread left
+dispatchd: social: agent cid 177 (builder) posted available for t1 about open task t1 (p3)
+dispatchd: council: task t1 is open and unnamed but no seat is connected; nothing proposed
+dispatchd: task t1 (role builder) -> agent cid 177: claimed
+dispatchd: task t1 (role builder) -> agent cid 177 finished done: artifacts: build-notes.txt (2 tool call(s))
+dispatchd: social: agent cid 177 finished task t1 (done) but the board names no awarder for it; nothing said
+dispatchd: pass 1: 1 considered, 1 claimed, 1 done, 0 failed, 0 deferred, 0 skipped
+

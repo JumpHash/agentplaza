@@ -1,0 +1,49 @@
+{
+  "id": "m1",
+  "proposer_cid": 200,
+  "proposer_role": "finance",
+  "kind": "priority",
+  "text": "priority: t1 \u2014 rule on the plaza's petition",
+  "needs_owner": false,
+  "state": "carried",
+  "votes": [
+    {
+      "seat": "finance",
+      "agent_cid": 200,
+      "vote": "yes",
+      "reason": "the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1",
+      "at": 1791715829217
+    },
+    {
+      "seat": "legal-agents-counsel",
+      "agent_cid": 202,
+      "vote": "yes",
+      "reason": "the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1",
+      "at": 1791715829219
+    },
+    {
+      "seat": "incident",
+      "agent_cid": 201,
+      "vote": "yes",
+      "reason": "the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1",
+      "at": 1791715829221
+    },
+    {
+      "seat": "mayor-office",
+      "agent_cid": 204,
+      "vote": "yes",
+      "reason": "the record: priority 'priority: t1 \u2014 rule on the plaza's petition' names open task t1",
+      "at": 1791715829224
+    }
+  ],
+  "tally": {
+    "yes": 4,
+    "no": 0,
+    "abstain": 0,
+    "voted": 4,
+    "seats": 4
+  },
+  "owner": null,
+  "created_at": 1791715829214,
+  "updated_at": 1791715829224
+}

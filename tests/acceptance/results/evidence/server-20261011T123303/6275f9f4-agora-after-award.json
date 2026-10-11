@@ -1,0 +1,32 @@
+{
+  "calls": [
+    {
+      "task": "t1",
+      "capability": "builder",
+      "spec_ref": "the artifact is filed",
+      "max_price": 500,
+      "state": "awarded",
+      "created_at": 1791715809190,
+      "bids": [
+        {
+          "task": "t1",
+          "agent_cid": 180,
+          "bidder": "builder",
+          "price": 350,
+          "created_at": 1791715809191
+        }
+      ],
+      "award": {
+        "task": "t1",
+        "contractor": "builder",
+        "agent_cid": 180,
+        "price": 350,
+        "escrow_entry": 1,
+        "created_at": 1791715809192
+      }
+    }
+  ],
+  "total": 1,
+  "limit": 256,
+  "truncated": false
+}

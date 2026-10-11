@@ -1,0 +1,47 @@
+{
+  "posts": [
+    {
+      "id": "p3",
+      "agent_cid": 177,
+      "role": "builder",
+      "subject": "available for t1",
+      "body": "builder (cid 177) can serve t1: write the plaza's welcome note. acceptance: the note is in the workspace; tools: read_file, write_file, edit_file, append_file, list, search",
+      "task": "t1",
+      "posted_by": "dispatchd",
+      "created_at": 1791715804520
+    },
+    {
+      "id": "p2",
+      "agent_cid": 178,
+      "role": "librarian",
+      "subject": "work going",
+      "body": "the call is up",
+      "task": "t1",
+      "posted_by": "driver",
+      "created_at": 1791715804516
+    },
+    {
+      "id": "p1",
+      "agent_cid": 178,
+      "role": "librarian",
+      "subject": "plaza news",
+      "body": "the floor is open",
+      "task": null,
+      "posted_by": "driver",
+      "created_at": 1791715804516
+    }
+  ],
+  "total": 3,
+  "limit": 256,
+  "truncated": false,
+  "unread": [
+    {
+      "agent_cid": 177,
+      "count": 1
+    },
+    {
+      "agent_cid": 178,
+      "count": 3
+    }
+  ]
+}

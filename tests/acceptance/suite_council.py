@@ -54,7 +54,10 @@ unknown id is a ``404``; a wrong method is a ``405``.
 **(h) the owner's decision.** ``POST /api/v0/motions/{id}/decide`` is the
 **operator's** hand — the body names no agent CID, so the seat checks that gate
 proposing and voting do not apply, and an ``agent_cid`` sent anyway is ignored
-(no agent lookup). The owner decides **only a motion the count gated to them**
+(no agent lookup — ``DecideRequest`` has no such field and ``Council::decide``
+takes no agent, the daemon-wide convention rather than an oversight; the case
+records the author's rationale). The owner decides **only a motion the count
+gated to them**
 (``tie_to_owner``, ``awaiting_owner``): ``open``, ``carried``/``rejected`` are
 ``409`` naming the state (a majority is never routed around), and a second
 decide is ``409`` too (decided once). Both gated states are decided **each way**
@@ -438,7 +441,8 @@ CASE_DECIDE = (
     "ratified with a note, a second tie -> vetoed with none, two awaiting_owner carries -> ratified "
     "and vetoed) with the note byte-exact in the decide response, the single-motion GET and the "
     "collection view, and `null` in both when absent; the body's authority is the operator's (an "
-    "`agent_cid`, here the unseated builder's, is ignored — no agent lookup); the tally and the four "
+    "`agent_cid`, here the unseated builder's, is ignored BY DESIGN — no agent lookup; see the case "
+    "note); the tally and the four "
     "votes survive the decision; a decided motion takes no further vote (409 naming ratified and "
     "vetoed) and is decided once (409); and the SSE frame stays exactly {id,kind,state} carrying "
     "ratified AND vetoed with no text",
@@ -1140,9 +1144,22 @@ def _body_decide(case, lab: Lab, roles: dict[str, int], observed: dict) -> None:
         )
         case.invariant(
             "the decide body's authority is the operator's: an `agent_cid` (the unseated builder's) is "
-            "IGNORED — no agent lookup, the decision is taken (no `deny_unknown_fields`)",
+            "IGNORED — no agent lookup, the decision is taken",
             authority.status == 200 and authority.json["state"] == "ratified",
             f"{authority.status} {authority.body[:260]}",
+        )
+        case.note(
+            "the IGNORED `agent_cid` above is INTENDED behaviour, not a gap (the SUT author's own "
+            "reasoning, recorded so a later reader does not 'fix' it): the owner is the operator, so no "
+            "agent identity is meaningful on this path — `DecideRequest` has no `agent_cid` field and "
+            "`Council::decide` takes no `ConnectedAgent`, so there is nothing to look up; ignoring an "
+            "extra key is the daemon-wide convention (`ProposeRequest` and `VoteRequest` carry no "
+            "`deny_unknown_fields` either), and a caller that meant to act as an agent uses `/vote`, "
+            "where `agent_cid` is required, typed and register-checked. A stray `agent_cid` on "
+            "`/decide` grants nothing and changes nothing. If a future operator-identity slice (a real "
+            "principal on the loopback edge) makes the principal explicit, `agent_cid` on `/decide` "
+            "should become a 400 and this case must change with it: the invariant above pins today's "
+            "intended behaviour, not a defect."
         )
         case.invariant(
             "the second waiting motion is decided the other way: `approve` false on a gated carry vetoes it",
