@@ -365,6 +365,27 @@ pub struct PostView {
     pub posted_by: String,
     /// When the post was recorded, in milliseconds since the Unix epoch.
     pub created_at: u64,
+    /// The post's comments, oldest first. A post keeps its newest
+    /// [`Social::MAX_COMMENTS`]; the oldest is dropped past that.
+    pub comments: Vec<CommentView>,
+}
+
+/// One comment on a board post's thread, as the API reports it: the contract's
+/// `{id: c<seq>, post, agent_cid, author, body, created_at}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommentView {
+    /// The comment's id (`c<seq>`), on its own counter, monotonic and never reused.
+    pub id: String,
+    /// The post the comment is on (`p<seq>`).
+    pub post: String,
+    /// The commenter's guest CID, or `None` when the owner commented.
+    pub agent_cid: Option<u64>,
+    /// The commenter's name: the agent's role, or `owner`.
+    pub author: String,
+    /// The comment itself, at most [`Social::MAX_COMMENT_BODY`] characters.
+    pub body: String,
+    /// When the comment was recorded, in milliseconds since the Unix epoch.
+    pub created_at: u64,
 }
 
 /// One agent's unread count: how many posts the board holds that the agent's
@@ -560,6 +581,8 @@ struct SocialInner {
     conversations: Vec<ConversationView>,
     /// The number of the newest exchange (`0` while none has been recorded).
     conv_seq: u64,
+    /// The number of the newest comment (`0` while none has been recorded).
+    comment_seq: u64,
 }
 
 impl Social {
@@ -641,12 +664,82 @@ impl Social {
             task: post.task,
             posted_by: post.posted_by,
             created_at: now_ms(),
+            comments: Vec::new(),
         };
         inner.posts.push(post.clone());
         // Published under the lock, so a stream sees the board in post order —
         // the ledger and the agora publish their transitions the same way.
         self.publish_board("post", Some(&post), author, None);
         Ok(post)
+    }
+
+    /// The most comments a post keeps; the oldest is dropped past it.
+    pub const MAX_COMMENTS: usize = 200;
+    /// The most characters a comment body may hold.
+    pub const MAX_COMMENT_BODY: usize = 1000;
+
+    /// Records a comment on post `post_id`, by `author` (`agent_cid` is `None`
+    /// for the owner), and publishes it on the bus.
+    ///
+    /// The post must exist ([`SocialError::Unknown`]); the trimmed body must
+    /// hold 1 to [`Social::MAX_COMMENT_BODY`] characters
+    /// ([`SocialError::Invalid`]).
+    pub fn comment(
+        &self,
+        post_id: &str,
+        agent_cid: Option<u64>,
+        author: &str,
+        body: &str,
+    ) -> Result<CommentView, SocialError> {
+        let body = body.trim();
+        if body.is_empty() {
+            return Err(SocialError::Invalid("a comment must not be empty".to_string()));
+        }
+        if body.chars().count() > Self::MAX_COMMENT_BODY {
+            return Err(SocialError::Invalid(format!(
+                "a comment must be at most {} characters",
+                Self::MAX_COMMENT_BODY
+            )));
+        }
+        let mut inner = self.lock();
+        let index = inner
+            .posts
+            .iter()
+            .position(|post| post.id == post_id)
+            .ok_or_else(|| SocialError::Unknown(format!("no post {post_id}")))?;
+        inner.comment_seq += 1;
+        let comment = CommentView {
+            id: format!("c{}", inner.comment_seq),
+            post: post_id.to_string(),
+            agent_cid,
+            author: author.to_string(),
+            body: body.to_string(),
+            created_at: now_ms(),
+        };
+        let thread = &mut inner.posts[index].comments;
+        if thread.len() >= Self::MAX_COMMENTS {
+            thread.remove(0);
+        }
+        thread.push(comment.clone());
+        // The frame carries the post and the comment, so a stream reads a thread
+        // in the order it was made, under the same lock the thread was filed under.
+        #[derive(Serialize)]
+        struct Frame<'a> {
+            post: &'a str,
+            comment: &'a CommentView,
+        }
+        self.events.publish(Event::Board {
+            kind: "comment",
+            post: serde_json::to_string(&Frame {
+                post: post_id,
+                comment: &comment,
+            })
+            .ok(),
+            agent_cid: agent_cid.unwrap_or(0),
+            role: author.to_string(),
+            read_up_to: None,
+        });
+        Ok(comment)
     }
 
     /// Advances `agent`'s read cursor to `up_to`, or says why it will not.
@@ -1106,6 +1199,78 @@ mod tests {
         social
             .post(auth, request.checked().expect("a post inside the caps"))
             .expect("room on the board")
+    }
+
+    #[test]
+    fn a_comment_joins_its_post_and_the_owner_and_agents_may_both_comment() {
+        let (social, _notes) = lab();
+        let auth = agent(100, "builder");
+        let row = posted(&social, &auth, "hiring?");
+        assert!(row.comments.is_empty());
+        let first = social
+            .comment(&row.id, Some(101), "scout", "  I can help.  ")
+            .expect("a comment on a post");
+        assert_eq!(first.id, "c1");
+        assert_eq!(first.post, "p1");
+        assert_eq!(first.agent_cid, Some(101));
+        assert_eq!(first.author, "scout");
+        assert_eq!(first.body, "I can help.");
+        let owner = social
+            .comment("p1", None, "owner", "Go on.")
+            .expect("the owner comments too");
+        assert_eq!(owner.id, "c2");
+        assert_eq!(owner.agent_cid, None);
+        // An unknown post and a body outside 1..=1000 characters are refused.
+        assert_eq!(
+            social.comment("p9", None, "owner", "hello").unwrap_err(),
+            SocialError::Unknown("no post p9".to_string())
+        );
+        assert_eq!(
+            social.comment("p1", None, "owner", "   ").unwrap_err(),
+            SocialError::Invalid("a comment must not be empty".to_string())
+        );
+        assert!(matches!(
+            social.comment("p1", None, "owner", &"x".repeat(Social::MAX_COMMENT_BODY + 1)),
+            Err(SocialError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn the_board_carries_each_posts_thread_oldest_first() {
+        let (social, _notes) = lab();
+        let auth = agent(100, "builder");
+        posted(&social, &auth, "first");
+        posted(&social, &auth, "second");
+        social.comment("p1", Some(101), "scout", "one").expect("a comment");
+        social.comment("p2", None, "owner", "two").expect("a comment");
+        social.comment("p1", None, "owner", "three").expect("a comment");
+        let board = social.board(&[], 10);
+        assert_eq!(board.posts[0].id, "p2");
+        assert_eq!(board.posts[1].id, "p1");
+        assert_eq!(board.posts[0].comments[0].body, "two");
+        let bodies: Vec<&str> = board.posts[1]
+            .comments
+            .iter()
+            .map(|comment| comment.body.as_str())
+            .collect();
+        assert_eq!(bodies, ["one", "three"]);
+    }
+
+    #[test]
+    fn a_post_keeps_its_newest_comments_and_drops_the_oldest() {
+        let (social, _notes) = lab();
+        let auth = agent(100, "builder");
+        posted(&social, &auth, "busy");
+        for n in 0..=Social::MAX_COMMENTS {
+            social
+                .comment("p1", None, "owner", &format!("comment {n}"))
+                .expect("a comment under the body cap is never refused");
+        }
+        let board = social.board(&[], 1);
+        let thread = &board.posts[0].comments;
+        assert_eq!(thread.len(), Social::MAX_COMMENTS);
+        assert_eq!(thread[0].body, "comment 1");
+        assert_eq!(thread[Social::MAX_COMMENTS - 1].body, format!("comment {}", Social::MAX_COMMENTS));
     }
 
     #[test]
@@ -1780,11 +1945,12 @@ mod tests {
             task: None,
             posted_by: DEFAULT_POSTED_BY.to_string(),
             created_at: 7,
+            comments: Vec::new(),
         };
         let encoded = serde_json::to_string(&post).expect("a serializable post");
         assert_eq!(
             encoded,
-            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7}"#
+            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7,"comments":[]}"#
         );
         let frame = Event::Board {
             kind: "post",
