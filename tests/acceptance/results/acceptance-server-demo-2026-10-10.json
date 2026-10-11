@@ -2,22 +2,25 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "PASS",
   "machine_class": "server",
-  "generated_at": "2026-10-10T23:07:46+0200",
-  "wall_seconds": 402.485,
+  "generated_at": "2026-10-10T23:50:37+0200",
+  "wall_seconds": 405.817,
   "manifest": {
     "suite": "demo",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "a07ae130bc7d29635342c88e34cbf5eaf8d21c6d",
+      "head": "155f59f8f8eb7f9c115651c9c5a4eae91a8919c5",
       "dirty": true,
-      "harness_tree_sha256": "44c46d5f0e6e294291c8731b52abd791792a23eedea54d67d426f027f717a6a6"
+      "harness_tree_sha256": "6711cebc408fa2a5b427e33795f0902b4f7a7f71aca38c2a784d334bf9b6b800"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
       "kernel": "/boot/vmlinuz-linux",
       "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
       "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
-      "initrd_sha256": "452e478a40d413fd83a14ad10096605bbfc5a9aeb4f2e502be46ec687d54d087"
+      "initrd_sha256": "ec07915b9306f694b999e5f03c0b1d4ed97beedb0a76f3da6b4f62ae1e2674f8",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
     },
     "host": {
       "machine_class": "server",
@@ -32,32 +35,32 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-server-2lk96ffa",
-    "started_at": "2026-10-10T23:07:47+0200",
+    "artifacts_dir": "/tmp/apz-acceptance-server-v9szmhs6",
+    "started_at": "2026-10-10T23:50:37+0200",
     "binaries": {
       "noded": {
         "path": "/mnt/fast/AgentPlaza/target/debug/noded",
-        "sha256": "d3cbd595b59050afd66e5e3cdb7b25e615796b255edb5bbc275a702f3ff012e5"
+        "sha256": "7e16364a6058f905ebe7279c5fd0ef17398ce34b5acfdecf98a44bdbb8beeba4"
       },
       "vsockd": {
         "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
-        "sha256": "f2908eddfe7ed0fa575656de10e176ffe65c03366286edf33d15b06742175ceb"
+        "sha256": "bc8757d28a936a0d6bd5a34801a4f2a3d06392275c08c3af8253b005a90adf07"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-server-2lk96ffa/demo-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-v9szmhs6/demo-logs/noded.log",
         "bytes": 1067556,
-        "sha256": "d588b3383f1c1d2afaa5f8bcf8687b2b5dd8a3d141740fe10edb81c1f4da1b03",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T230104/d588b338-noded.log",
+        "sha256": "aa766814d65a3e137e59b716ae06017baee79997147e837ac68ce99014dd9204",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T234351/aa766814-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-2lk96ffa/demo-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-v9szmhs6/demo-logs/vsockd.log",
         "bytes": 112708,
-        "sha256": "ea3e384d35572e543fbc9213fae781ef366ff1befbac067e890b101214809105",
-        "excerpt": "tests/acceptance/results/evidence/server-20261010T230104/ea3e384d-vsockd.log",
+        "sha256": "d054fb0813d0c39c6ab274e0ff268187d709c994d8485b74a56f99f106b5bb9c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261010T234351/d054fb08-vsockd.log",
         "excerpt_bytes": 65536
       }
     ]
@@ -79,6 +82,7 @@
           "detail": "n=1 vcpus=1 memory_mib=128 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -96,7 +100,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='274921.13 5906268.41'"
+              "detail": "output='277488.36 5959167.43'"
             },
             {
               "name": "bye cid 10",
@@ -128,7 +132,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -163,6 +167,7 @@
           "detail": "n=1 vcpus=1 memory_mib=128 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -180,7 +185,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='274928.57 5906429.85'"
+              "detail": "output='277495.76 5959316.31'"
             },
             {
               "name": "bye cid 10",
@@ -247,6 +252,7 @@
           "detail": "n=1 vcpus=1 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -264,7 +270,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='274935.99 5906586.20'"
+              "detail": "output='277503.33 5959429.10'"
             },
             {
               "name": "bye cid 100",
@@ -274,7 +280,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20840"
+              "detail": "serial_bytes=20841"
             }
           ],
           "invariants": [
@@ -296,7 +302,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.6s"
             },
             {
               "name": "done run carries ended_at",
@@ -331,6 +337,7 @@
           "detail": "n=1 vcpus=1 memory_mib=128 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -348,7 +355,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='274943.46 5906749.04'"
+              "detail": "output='277510.93 5959497.05'"
             },
             {
               "name": "bye cid 100",
@@ -380,7 +387,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.6s"
             },
             {
               "name": "done run carries ended_at",
@@ -415,6 +422,7 @@
           "detail": "n=1 vcpus=1 memory_mib=512 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -432,7 +440,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='274950.85 5906904.04'"
+              "detail": "output='277518.47 5959565.34'"
             },
             {
               "name": "bye cid 10",
@@ -442,7 +450,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20846"
+              "detail": "serial_bytes=20847"
             }
           ],
           "invariants": [
@@ -464,7 +472,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -499,6 +507,7 @@
           "detail": "n=1 vcpus=1 memory_mib=512 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -516,7 +525,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='274958.29 5907059.12'"
+              "detail": "output='277525.91 5959632.78'"
             },
             {
               "name": "bye cid 10",
@@ -583,6 +592,7 @@
           "detail": "n=1 vcpus=1 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -600,7 +610,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='274965.69 5907215.62'"
+              "detail": "output='277533.38 5959762.02'"
             },
             {
               "name": "bye cid 100",
@@ -610,7 +620,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20851"
+              "detail": "serial_bytes=20852"
             }
           ],
           "invariants": [
@@ -632,7 +642,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -667,6 +677,7 @@
           "detail": "n=1 vcpus=1 memory_mib=512 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -684,7 +695,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='274973.11 5907371.41'"
+              "detail": "output='277540.85 5959878.37'"
             },
             {
               "name": "bye cid 100",
@@ -694,7 +705,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20879"
+              "detail": "serial_bytes=20880"
             }
           ],
           "invariants": [
@@ -751,6 +762,7 @@
           "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -768,7 +780,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='274980.54 5907527.21'"
+              "detail": "output='277548.28 5959998.54'"
             },
             {
               "name": "bye cid 10",
@@ -778,7 +790,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21439"
+              "detail": "serial_bytes=21440"
             }
           ],
           "invariants": [
@@ -800,7 +812,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -835,6 +847,7 @@
           "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -852,7 +865,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='274987.94 5907683.58'"
+              "detail": "output='277555.77 5960115.20'"
             },
             {
               "name": "bye cid 10",
@@ -862,7 +875,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21466"
+              "detail": "serial_bytes=21468"
             }
           ],
           "invariants": [
@@ -884,7 +897,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -919,6 +932,7 @@
           "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -936,7 +950,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='274995.37 5907840.78'"
+              "detail": "output='277563.21 5960227.04'"
             },
             {
               "name": "bye cid 100",
@@ -946,7 +960,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21444"
+              "detail": "serial_bytes=21445"
             }
           ],
           "invariants": [
@@ -968,7 +982,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -1003,6 +1017,7 @@
           "detail": "n=1 vcpus=2 memory_mib=128 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -1020,7 +1035,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275002.77 5907999.35'"
+              "detail": "output='277570.65 5960336.10'"
             },
             {
               "name": "bye cid 100",
@@ -1087,6 +1102,7 @@
           "detail": "n=1 vcpus=2 memory_mib=512 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -1104,7 +1120,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275010.21 5908154.49'"
+              "detail": "output='277578.08 5960446.83'"
             },
             {
               "name": "bye cid 10",
@@ -1114,7 +1130,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21450"
+              "detail": "serial_bytes=21451"
             }
           ],
           "invariants": [
@@ -1171,6 +1187,7 @@
           "detail": "n=1 vcpus=2 memory_mib=512 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -1188,7 +1205,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275017.63 5908314.81'"
+              "detail": "output='277585.54 5960558.18'"
             },
             {
               "name": "bye cid 10",
@@ -1198,7 +1215,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21478"
+              "detail": "serial_bytes=21479"
             }
           ],
           "invariants": [
@@ -1220,7 +1237,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -1255,6 +1272,7 @@
           "detail": "n=1 vcpus=2 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -1272,7 +1290,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275025.05 5908471.84'"
+              "detail": "output='277593.00 5960678.57'"
             },
             {
               "name": "bye cid 100",
@@ -1282,7 +1300,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21455"
+              "detail": "serial_bytes=21456"
             }
           ],
           "invariants": [
@@ -1304,7 +1322,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -1339,6 +1357,7 @@
           "detail": "n=1 vcpus=2 memory_mib=512 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 5,
           "tasks_required": 4,
           "tasks_total": 5,
@@ -1356,7 +1375,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275032.46 5908630.55'"
+              "detail": "output='277600.42 5960830.04'"
             },
             {
               "name": "bye cid 100",
@@ -1366,7 +1385,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21483"
+              "detail": "serial_bytes=21482"
             }
           ],
           "invariants": [
@@ -1423,6 +1442,7 @@
           "detail": "n=2 vcpus=1 memory_mib=128 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -1440,7 +1460,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275039.86 5908786.71'"
+              "detail": "output='277607.82 5960956.17'"
             },
             {
               "name": "bye cid 10",
@@ -1450,7 +1470,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20836"
+              "detail": "serial_bytes=20835"
             },
             {
               "name": "handshake cid 11",
@@ -1465,7 +1485,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275039.86 5908786.89'"
+              "detail": "output='277607.83 5960956.28'"
             },
             {
               "name": "bye cid 11",
@@ -1475,7 +1495,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=20836"
+              "detail": "serial_bytes=20835"
             }
           ],
           "invariants": [
@@ -1497,7 +1517,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -1537,6 +1557,7 @@
           "detail": "n=2 vcpus=1 memory_mib=128 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -1554,7 +1575,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275047.32 5908946.11'"
+              "detail": "output='277615.26 5961087.62'"
             },
             {
               "name": "bye cid 10",
@@ -1579,7 +1600,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275047.33 5908946.30'"
+              "detail": "output='277615.25 5961087.41'"
             },
             {
               "name": "bye cid 11",
@@ -1589,7 +1610,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=20864"
+              "detail": "serial_bytes=20863"
             }
           ],
           "invariants": [
@@ -1611,7 +1632,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.6s"
             },
             {
               "name": "done run carries ended_at",
@@ -1651,6 +1672,7 @@
           "detail": "n=2 vcpus=1 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -1668,7 +1690,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275054.73 5909103.96'"
+              "detail": "output='277623.19 5961215.81'"
             },
             {
               "name": "bye cid 100",
@@ -1678,7 +1700,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20840"
+              "detail": "serial_bytes=20842"
             },
             {
               "name": "handshake cid 101",
@@ -1693,7 +1715,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275054.74 5909104.14'"
+              "detail": "output='277623.35 5961219.29'"
             },
             {
               "name": "bye cid 101",
@@ -1703,7 +1725,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=20841"
+              "detail": "serial_bytes=20842"
             }
           ],
           "invariants": [
@@ -1725,7 +1747,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 8.0s"
             },
             {
               "name": "done run carries ended_at",
@@ -1765,6 +1787,7 @@
           "detail": "n=2 vcpus=1 memory_mib=128 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -1782,7 +1805,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275062.17 5909260.10'"
+              "detail": "output='277630.80 5961351.60'"
             },
             {
               "name": "bye cid 100",
@@ -1807,7 +1830,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275062.17 5909260.18'"
+              "detail": "output='277630.82 5961351.73'"
             },
             {
               "name": "bye cid 101",
@@ -1839,7 +1862,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -1879,6 +1902,7 @@
           "detail": "n=2 vcpus=1 memory_mib=512 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -1896,7 +1920,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275069.59 5909418.12'"
+              "detail": "output='277638.26 5961505.64'"
             },
             {
               "name": "bye cid 10",
@@ -1921,7 +1945,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275069.59 5909418.23'"
+              "detail": "output='277638.26 5961505.58'"
             },
             {
               "name": "bye cid 11",
@@ -1953,7 +1977,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -1993,6 +2017,7 @@
           "detail": "n=2 vcpus=1 memory_mib=512 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2010,7 +2035,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275077.05 5909571.94'"
+              "detail": "output='277645.68 5961664.87'"
             },
             {
               "name": "bye cid 10",
@@ -2020,7 +2045,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20875"
+              "detail": "serial_bytes=20874"
             },
             {
               "name": "handshake cid 11",
@@ -2035,7 +2060,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275077.05 5909571.87'"
+              "detail": "output='277645.66 5961664.56'"
             },
             {
               "name": "bye cid 11",
@@ -2067,7 +2092,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -2107,6 +2132,7 @@
           "detail": "n=2 vcpus=1 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2124,7 +2150,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275084.50 5909723.26'"
+              "detail": "output='277653.11 5961819.97'"
             },
             {
               "name": "bye cid 100",
@@ -2134,7 +2160,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20851"
+              "detail": "serial_bytes=20852"
             },
             {
               "name": "handshake cid 101",
@@ -2149,7 +2175,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275084.51 5909723.43'"
+              "detail": "output='277653.10 5961819.91'"
             },
             {
               "name": "bye cid 101",
@@ -2160,120 +2186,6 @@
               "name": "guest transcript cid 101",
               "ok": true,
               "detail": "serial_bytes=20851"
-            }
-          ],
-          "invariants": [
-            {
-              "name": "POST accepted the run (201)",
-              "ok": true,
-              "detail": "status=201"
-            },
-            {
-              "name": "run is running when POST answers",
-              "ok": true,
-              "detail": "state=running"
-            },
-            {
-              "name": "run has n VMs",
-              "ok": true,
-              "detail": "vms=2"
-            },
-            {
-              "name": "run reached done before the deadline",
-              "ok": true,
-              "detail": "state=done after 7.5s"
-            },
-            {
-              "name": "done run carries ended_at",
-              "ok": true,
-              "detail": ""
-            },
-            {
-              "name": "every VM exited",
-              "ok": true,
-              "detail": "states=exited,exited"
-            },
-            {
-              "name": "per-VM CIDs are base+i",
-              "ok": true,
-              "detail": "cids=[100, 101]"
-            },
-            {
-              "name": "fresh capture cid 100",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "fresh capture cid 101",
-              "ok": true,
-              "detail": "boot banners=1"
-            },
-            {
-              "name": "no leftover vsock sockets",
-              "ok": true,
-              "detail": "leftover=[]"
-            }
-          ],
-          "notes": []
-        },
-        {
-          "name": "cell n=2 vcpus=1 mem=512 cid=100 beats=2",
-          "detail": "n=2 vcpus=1 memory_mib=512 vsock_cid=100 beats=2",
-          "vector": null,
-          "ok": true,
-          "tasks_passed": 10,
-          "tasks_required": 4,
-          "tasks_total": 10,
-          "tasks": [
-            {
-              "name": "handshake cid 100",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 100} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 100",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-100-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-100-hello'}"
-            },
-            {
-              "name": "uptime cid 100",
-              "ok": true,
-              "detail": "output='275091.97 5909884.62'"
-            },
-            {
-              "name": "bye cid 100",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 100",
-              "ok": true,
-              "detail": "serial_bytes=20879"
-            },
-            {
-              "name": "handshake cid 101",
-              "ok": true,
-              "detail": "hello={'type': 'hello', 'vm': 1, 'guest_cid': 101} welcome='plaza-orchestrator'"
-            },
-            {
-              "name": "echo cid 101",
-              "ok": true,
-              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-101-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-101-hello'}"
-            },
-            {
-              "name": "uptime cid 101",
-              "ok": true,
-              "detail": "output='275091.97 5909884.67'"
-            },
-            {
-              "name": "bye cid 101",
-              "ok": true,
-              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
-            },
-            {
-              "name": "guest transcript cid 101",
-              "ok": true,
-              "detail": "serial_bytes=20879"
             }
           ],
           "invariants": [
@@ -2331,10 +2243,126 @@
           "notes": []
         },
         {
+          "name": "cell n=2 vcpus=1 mem=512 cid=100 beats=2",
+          "detail": "n=2 vcpus=1 memory_mib=512 vsock_cid=100 beats=2",
+          "vector": null,
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 10,
+          "tasks_required": 4,
+          "tasks_total": 10,
+          "tasks": [
+            {
+              "name": "handshake cid 100",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 0, 'guest_cid': 100} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 100",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-100-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-100-hello'}"
+            },
+            {
+              "name": "uptime cid 100",
+              "ok": true,
+              "detail": "output='277660.56 5961951.49'"
+            },
+            {
+              "name": "bye cid 100",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 100",
+              "ok": true,
+              "detail": "serial_bytes=20880"
+            },
+            {
+              "name": "handshake cid 101",
+              "ok": true,
+              "detail": "hello={'type': 'hello', 'vm': 1, 'guest_cid': 101} welcome='plaza-orchestrator'"
+            },
+            {
+              "name": "echo cid 101",
+              "ok": true,
+              "detail": "call={'type': 'tool_call', 'call': 1, 'name': 'echo', 'args': {'text': 'plaza-guest-101-hello'}} result={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-101-hello'}"
+            },
+            {
+              "name": "uptime cid 101",
+              "ok": true,
+              "detail": "output='277660.57 5961951.56'"
+            },
+            {
+              "name": "bye cid 101",
+              "ok": true,
+              "detail": "bye={'type': 'bye', 'calls': 2} clean=2"
+            },
+            {
+              "name": "guest transcript cid 101",
+              "ok": true,
+              "detail": "serial_bytes=20880"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "run is running when POST answers",
+              "ok": true,
+              "detail": "state=running"
+            },
+            {
+              "name": "run has n VMs",
+              "ok": true,
+              "detail": "vms=2"
+            },
+            {
+              "name": "run reached done before the deadline",
+              "ok": true,
+              "detail": "state=done after 7.5s"
+            },
+            {
+              "name": "done run carries ended_at",
+              "ok": true,
+              "detail": ""
+            },
+            {
+              "name": "every VM exited",
+              "ok": true,
+              "detail": "states=exited,exited"
+            },
+            {
+              "name": "per-VM CIDs are base+i",
+              "ok": true,
+              "detail": "cids=[100, 101]"
+            },
+            {
+              "name": "fresh capture cid 100",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "fresh capture cid 101",
+              "ok": true,
+              "detail": "boot banners=1"
+            },
+            {
+              "name": "no leftover vsock sockets",
+              "ok": true,
+              "detail": "leftover=[]"
+            }
+          ],
+          "notes": []
+        },
+        {
           "name": "cell n=2 vcpus=2 mem=128 cid=10 beats=None",
           "detail": "n=2 vcpus=2 memory_mib=128 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2352,7 +2380,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275099.40 5910041.56'"
+              "detail": "output='277667.99 5962092.03'"
             },
             {
               "name": "bye cid 10",
@@ -2377,7 +2405,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275099.42 5910041.94'"
+              "detail": "output='277667.99 5962092.02'"
             },
             {
               "name": "bye cid 11",
@@ -2387,7 +2415,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21438"
+              "detail": "serial_bytes=21439"
             }
           ],
           "invariants": [
@@ -2449,6 +2477,7 @@
           "detail": "n=2 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2466,7 +2495,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275106.86 5910199.69'"
+              "detail": "output='277675.42 5962233.53'"
             },
             {
               "name": "bye cid 10",
@@ -2491,7 +2520,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275106.86 5910199.67'"
+              "detail": "output='277675.42 5962233.59'"
             },
             {
               "name": "bye cid 11",
@@ -2563,6 +2592,7 @@
           "detail": "n=2 vcpus=2 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2580,7 +2610,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275114.28 5910356.55'"
+              "detail": "output='277682.85 5962344.54'"
             },
             {
               "name": "bye cid 100",
@@ -2590,7 +2620,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21444"
+              "detail": "serial_bytes=21445"
             },
             {
               "name": "handshake cid 101",
@@ -2605,7 +2635,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275114.28 5910356.43'"
+              "detail": "output='277682.86 5962344.56'"
             },
             {
               "name": "bye cid 101",
@@ -2615,7 +2645,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=21443"
+              "detail": "serial_bytes=21445"
             }
           ],
           "invariants": [
@@ -2637,7 +2667,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -2677,6 +2707,7 @@
           "detail": "n=2 vcpus=2 memory_mib=128 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2694,7 +2725,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275121.71 5910514.83'"
+              "detail": "output='277690.34 5962457.94'"
             },
             {
               "name": "bye cid 100",
@@ -2704,7 +2735,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21471"
+              "detail": "serial_bytes=21473"
             },
             {
               "name": "handshake cid 101",
@@ -2719,7 +2750,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275121.72 5910514.97'"
+              "detail": "output='277690.33 5962457.80'"
             },
             {
               "name": "bye cid 101",
@@ -2729,7 +2760,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=21471"
+              "detail": "serial_bytes=21473"
             }
           ],
           "invariants": [
@@ -2751,7 +2782,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -2791,6 +2822,7 @@
           "detail": "n=2 vcpus=2 memory_mib=512 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2808,7 +2840,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275129.14 5910672.74'"
+              "detail": "output='277697.79 5962568.42'"
             },
             {
               "name": "bye cid 10",
@@ -2833,7 +2865,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275129.15 5910672.85'"
+              "detail": "output='277697.80 5962568.47'"
             },
             {
               "name": "bye cid 11",
@@ -2843,7 +2875,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21450"
+              "detail": "serial_bytes=21451"
             }
           ],
           "invariants": [
@@ -2865,7 +2897,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -2905,6 +2937,7 @@
           "detail": "n=2 vcpus=2 memory_mib=512 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -2922,7 +2955,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275136.62 5910829.34'"
+              "detail": "output='277705.20 5962715.56'"
             },
             {
               "name": "bye cid 10",
@@ -2932,7 +2965,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21479"
+              "detail": "serial_bytes=21478"
             },
             {
               "name": "handshake cid 11",
@@ -2947,7 +2980,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275136.62 5910829.30'"
+              "detail": "output='277705.21 5962715.67'"
             },
             {
               "name": "bye cid 11",
@@ -2979,7 +3012,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -3019,6 +3052,7 @@
           "detail": "n=2 vcpus=2 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -3036,7 +3070,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275144.09 5910992.69'"
+              "detail": "output='277712.66 5962866.29'"
             },
             {
               "name": "bye cid 100",
@@ -3061,7 +3095,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275144.09 5910992.71'"
+              "detail": "output='277712.65 5962866.10'"
             },
             {
               "name": "bye cid 101",
@@ -3071,7 +3105,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=21454"
+              "detail": "serial_bytes=21455"
             }
           ],
           "invariants": [
@@ -3133,6 +3167,7 @@
           "detail": "n=2 vcpus=2 memory_mib=512 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 10,
           "tasks_required": 4,
           "tasks_total": 10,
@@ -3150,7 +3185,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275151.54 5911148.45'"
+              "detail": "output='277720.11 5962984.16'"
             },
             {
               "name": "bye cid 100",
@@ -3160,7 +3195,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21482"
+              "detail": "serial_bytes=21483"
             },
             {
               "name": "handshake cid 101",
@@ -3175,7 +3210,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275151.56 5911148.91'"
+              "detail": "output='277720.13 5962984.45'"
             },
             {
               "name": "bye cid 101",
@@ -3185,7 +3220,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=21482"
+              "detail": "serial_bytes=21483"
             }
           ],
           "invariants": [
@@ -3207,7 +3242,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -3247,6 +3282,7 @@
           "detail": "n=4 vcpus=1 memory_mib=128 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -3264,7 +3300,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275158.99 5911303.27'"
+              "detail": "output='277728.07 5963047.96'"
             },
             {
               "name": "bye cid 10",
@@ -3274,7 +3310,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20836"
+              "detail": "serial_bytes=20837"
             },
             {
               "name": "handshake cid 11",
@@ -3289,7 +3325,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275158.99 5911303.27'"
+              "detail": "output='277728.17 5963047.97'"
             },
             {
               "name": "bye cid 11",
@@ -3299,7 +3335,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=20836"
+              "detail": "serial_bytes=20838"
             },
             {
               "name": "handshake cid 12",
@@ -3314,7 +3350,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275158.99 5911303.34'"
+              "detail": "output='277728.35 5963048.05'"
             },
             {
               "name": "bye cid 12",
@@ -3324,7 +3360,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=20836"
+              "detail": "serial_bytes=20838"
             },
             {
               "name": "handshake cid 13",
@@ -3339,7 +3375,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275159.01 5911303.63'"
+              "detail": "output='277727.98 5963047.96'"
             },
             {
               "name": "bye cid 13",
@@ -3371,7 +3407,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 8.2s"
             },
             {
               "name": "done run carries ended_at",
@@ -3421,6 +3457,7 @@
           "detail": "n=4 vcpus=1 memory_mib=128 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -3438,7 +3475,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275166.42 5911458.32'"
+              "detail": "output='277735.78 5963111.12'"
             },
             {
               "name": "bye cid 10",
@@ -3463,7 +3500,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275166.45 5911458.98'"
+              "detail": "output='277735.80 5963111.38'"
             },
             {
               "name": "bye cid 11",
@@ -3473,7 +3510,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=20864"
+              "detail": "serial_bytes=20863"
             },
             {
               "name": "handshake cid 12",
@@ -3488,7 +3525,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275166.44 5911458.62'"
+              "detail": "output='277735.81 5963111.63'"
             },
             {
               "name": "bye cid 12",
@@ -3498,7 +3535,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=20864"
+              "detail": "serial_bytes=20863"
             },
             {
               "name": "handshake cid 13",
@@ -3513,7 +3550,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275166.44 5911458.77'"
+              "detail": "output='277735.80 5963111.47'"
             },
             {
               "name": "bye cid 13",
@@ -3523,7 +3560,7 @@
             {
               "name": "guest transcript cid 13",
               "ok": true,
-              "detail": "serial_bytes=20864"
+              "detail": "serial_bytes=20863"
             }
           ],
           "invariants": [
@@ -3595,6 +3632,7 @@
           "detail": "n=4 vcpus=1 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -3612,7 +3650,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275173.91 5911615.59'"
+              "detail": "output='277744.14 5963183.01'"
             },
             {
               "name": "bye cid 100",
@@ -3622,7 +3660,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=20841"
+              "detail": "serial_bytes=20843"
             },
             {
               "name": "handshake cid 101",
@@ -3637,7 +3675,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275173.91 5911615.60'"
+              "detail": "output='277743.39 5963182.78'"
             },
             {
               "name": "bye cid 101",
@@ -3662,7 +3700,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275173.91 5911615.62'"
+              "detail": "output='277743.45 5963182.84'"
             },
             {
               "name": "bye cid 102",
@@ -3672,7 +3710,7 @@
             {
               "name": "guest transcript cid 102",
               "ok": true,
-              "detail": "serial_bytes=20840"
+              "detail": "serial_bytes=20841"
             },
             {
               "name": "handshake cid 103",
@@ -3687,7 +3725,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275173.92 5911615.83'"
+              "detail": "output='277743.62 5963182.89'"
             },
             {
               "name": "bye cid 103",
@@ -3697,7 +3735,7 @@
             {
               "name": "guest transcript cid 103",
               "ok": true,
-              "detail": "serial_bytes=20841"
+              "detail": "serial_bytes=20843"
             }
           ],
           "invariants": [
@@ -3719,7 +3757,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 8.3s"
             },
             {
               "name": "done run carries ended_at",
@@ -3769,6 +3807,7 @@
           "detail": "n=4 vcpus=1 memory_mib=128 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -3786,7 +3825,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275181.37 5911776.11'"
+              "detail": "output='277751.62 5963242.99'"
             },
             {
               "name": "bye cid 100",
@@ -3811,7 +3850,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275181.37 5911776.15'"
+              "detail": "output='277751.61 5963242.86'"
             },
             {
               "name": "bye cid 101",
@@ -3836,7 +3875,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275181.37 5911776.14'"
+              "detail": "output='277751.62 5963242.97'"
             },
             {
               "name": "bye cid 102",
@@ -3861,7 +3900,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275181.39 5911776.47'"
+              "detail": "output='277751.64 5963243.21'"
             },
             {
               "name": "bye cid 103",
@@ -3943,6 +3982,7 @@
           "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -3960,7 +4000,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275188.84 5911933.73'"
+              "detail": "output='277759.37 5963319.30'"
             },
             {
               "name": "bye cid 10",
@@ -3970,7 +4010,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=20847"
+              "detail": "serial_bytes=20849"
             },
             {
               "name": "handshake cid 11",
@@ -3985,7 +4025,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275188.84 5911933.80'"
+              "detail": "output='277759.23 5963318.96'"
             },
             {
               "name": "bye cid 11",
@@ -4010,7 +4050,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275188.85 5911934.00'"
+              "detail": "output='277759.54 5963319.36'"
             },
             {
               "name": "bye cid 12",
@@ -4020,7 +4060,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=20847"
+              "detail": "serial_bytes=20849"
             },
             {
               "name": "handshake cid 13",
@@ -4035,7 +4075,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275188.85 5911934.03'"
+              "detail": "output='277759.15 5963318.36'"
             },
             {
               "name": "bye cid 13",
@@ -4045,7 +4085,7 @@
             {
               "name": "guest transcript cid 13",
               "ok": true,
-              "detail": "serial_bytes=20846"
+              "detail": "serial_bytes=20847"
             }
           ],
           "invariants": [
@@ -4067,7 +4107,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.9s"
             },
             {
               "name": "done run carries ended_at",
@@ -4117,6 +4157,7 @@
           "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -4134,7 +4175,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275196.36 5912090.89'"
+              "detail": "output='277766.95 5963424.61'"
             },
             {
               "name": "bye cid 10",
@@ -4159,7 +4200,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275196.37 5912091.03'"
+              "detail": "output='277766.97 5963425.08'"
             },
             {
               "name": "bye cid 11",
@@ -4184,7 +4225,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275196.38 5912091.07'"
+              "detail": "output='277766.98 5963425.24'"
             },
             {
               "name": "bye cid 12",
@@ -4194,7 +4235,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=20875"
+              "detail": "serial_bytes=20874"
             },
             {
               "name": "handshake cid 13",
@@ -4209,7 +4250,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275196.38 5912091.07'"
+              "detail": "output='277766.97 5963425.05'"
             },
             {
               "name": "bye cid 13",
@@ -4291,6 +4332,7 @@
           "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -4308,7 +4350,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275203.81 5912251.78'"
+              "detail": "output='277774.45 5963580.73'"
             },
             {
               "name": "bye cid 100",
@@ -4333,7 +4375,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275203.81 5912251.93'"
+              "detail": "output='277774.46 5963580.97'"
             },
             {
               "name": "bye cid 101",
@@ -4358,7 +4400,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275203.82 5912252.05'"
+              "detail": "output='277774.47 5963581.10'"
             },
             {
               "name": "bye cid 102",
@@ -4368,7 +4410,7 @@
             {
               "name": "guest transcript cid 102",
               "ok": true,
-              "detail": "serial_bytes=20851"
+              "detail": "serial_bytes=20852"
             },
             {
               "name": "handshake cid 103",
@@ -4383,7 +4425,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275203.82 5912252.11'"
+              "detail": "output='277774.47 5963581.19'"
             },
             {
               "name": "bye cid 103",
@@ -4415,7 +4457,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -4465,6 +4507,7 @@
           "detail": "n=4 vcpus=1 memory_mib=512 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -4482,7 +4525,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275211.25 5912407.47'"
+              "detail": "output='277781.93 5963738.52'"
             },
             {
               "name": "bye cid 100",
@@ -4507,7 +4550,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275211.26 5912407.59'"
+              "detail": "output='277781.93 5963738.48'"
             },
             {
               "name": "bye cid 101",
@@ -4532,7 +4575,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275211.26 5912407.59'"
+              "detail": "output='277781.94 5963738.66'"
             },
             {
               "name": "bye cid 102",
@@ -4557,7 +4600,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275211.26 5912407.62'"
+              "detail": "output='277781.94 5963738.76'"
             },
             {
               "name": "bye cid 103",
@@ -4567,7 +4610,7 @@
             {
               "name": "guest transcript cid 103",
               "ok": true,
-              "detail": "serial_bytes=20879"
+              "detail": "serial_bytes=20880"
             }
           ],
           "invariants": [
@@ -4589,7 +4632,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -4639,6 +4682,7 @@
           "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -4656,7 +4700,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275218.69 5912567.69'"
+              "detail": "output='277789.39 5963894.15'"
             },
             {
               "name": "bye cid 10",
@@ -4666,7 +4710,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21440"
+              "detail": "serial_bytes=21438"
             },
             {
               "name": "handshake cid 11",
@@ -4681,7 +4725,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275218.68 5912567.64'"
+              "detail": "output='277789.42 5963894.74'"
             },
             {
               "name": "bye cid 11",
@@ -4691,7 +4735,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21438"
+              "detail": "serial_bytes=21439"
             },
             {
               "name": "handshake cid 12",
@@ -4706,7 +4750,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275218.71 5912567.93'"
+              "detail": "output='277789.41 5963894.64'"
             },
             {
               "name": "bye cid 12",
@@ -4716,7 +4760,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=21438"
+              "detail": "serial_bytes=21440"
             },
             {
               "name": "handshake cid 13",
@@ -4731,7 +4775,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275218.72 5912568.08'"
+              "detail": "output='277789.43 5963895.04'"
             },
             {
               "name": "bye cid 13",
@@ -4741,7 +4785,7 @@
             {
               "name": "guest transcript cid 13",
               "ok": true,
-              "detail": "serial_bytes=21438"
+              "detail": "serial_bytes=21440"
             }
           ],
           "invariants": [
@@ -4763,7 +4807,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -4813,6 +4857,7 @@
           "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -4830,7 +4875,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275226.14 5912718.21'"
+              "detail": "output='277796.87 5964047.64'"
             },
             {
               "name": "bye cid 10",
@@ -4840,7 +4885,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21467"
+              "detail": "serial_bytes=21468"
             },
             {
               "name": "handshake cid 11",
@@ -4855,7 +4900,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275226.15 5912718.35'"
+              "detail": "output='277796.88 5964047.80'"
             },
             {
               "name": "bye cid 11",
@@ -4865,7 +4910,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21467"
+              "detail": "serial_bytes=21468"
             },
             {
               "name": "handshake cid 12",
@@ -4880,7 +4925,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275226.14 5912718.24'"
+              "detail": "output='277796.88 5964047.78'"
             },
             {
               "name": "bye cid 12",
@@ -4890,7 +4935,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=21466"
+              "detail": "serial_bytes=21467"
             },
             {
               "name": "handshake cid 13",
@@ -4905,7 +4950,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275226.15 5912718.32'"
+              "detail": "output='277796.89 5964047.85'"
             },
             {
               "name": "bye cid 13",
@@ -4915,7 +4960,7 @@
             {
               "name": "guest transcript cid 13",
               "ok": true,
-              "detail": "serial_bytes=21467"
+              "detail": "serial_bytes=21466"
             }
           ],
           "invariants": [
@@ -4987,6 +5032,7 @@
           "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -5004,7 +5050,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275233.59 5912874.42'"
+              "detail": "output='277804.35 5964197.04'"
             },
             {
               "name": "bye cid 100",
@@ -5029,7 +5075,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275233.59 5912874.42'"
+              "detail": "output='277804.33 5964196.48'"
             },
             {
               "name": "bye cid 101",
@@ -5054,7 +5100,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275233.60 5912874.48'"
+              "detail": "output='277804.34 5964196.81'"
             },
             {
               "name": "bye cid 102",
@@ -5079,7 +5125,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275233.61 5912874.59'"
+              "detail": "output='277804.38 5964197.55'"
             },
             {
               "name": "bye cid 103",
@@ -5161,6 +5207,7 @@
           "detail": "n=4 vcpus=2 memory_mib=128 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -5178,7 +5225,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275241.08 5913029.79'"
+              "detail": "output='277811.81 5964347.90'"
             },
             {
               "name": "bye cid 100",
@@ -5188,7 +5235,7 @@
             {
               "name": "guest transcript cid 100",
               "ok": true,
-              "detail": "serial_bytes=21473"
+              "detail": "serial_bytes=21471"
             },
             {
               "name": "handshake cid 101",
@@ -5203,7 +5250,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275241.10 5913030.23'"
+              "detail": "output='277811.80 5964347.75'"
             },
             {
               "name": "bye cid 101",
@@ -5213,7 +5260,7 @@
             {
               "name": "guest transcript cid 101",
               "ok": true,
-              "detail": "serial_bytes=21473"
+              "detail": "serial_bytes=21472"
             },
             {
               "name": "handshake cid 102",
@@ -5228,7 +5275,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275241.10 5913030.36'"
+              "detail": "output='277811.83 5964348.10'"
             },
             {
               "name": "bye cid 102",
@@ -5238,7 +5285,7 @@
             {
               "name": "guest transcript cid 102",
               "ok": true,
-              "detail": "serial_bytes=21473"
+              "detail": "serial_bytes=21472"
             },
             {
               "name": "handshake cid 103",
@@ -5253,7 +5300,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275241.10 5913030.34'"
+              "detail": "output='277811.83 5964348.13'"
             },
             {
               "name": "bye cid 103",
@@ -5263,7 +5310,7 @@
             {
               "name": "guest transcript cid 103",
               "ok": true,
-              "detail": "serial_bytes=21473"
+              "detail": "serial_bytes=21471"
             }
           ],
           "invariants": [
@@ -5285,7 +5332,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.5s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -5335,6 +5382,7 @@
           "detail": "n=4 vcpus=2 memory_mib=512 vsock_cid=10 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -5352,7 +5400,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275248.72 5913180.74'"
+              "detail": "output='277819.25 5964503.23'"
             },
             {
               "name": "bye cid 10",
@@ -5362,7 +5410,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21452"
+              "detail": "serial_bytes=21451"
             },
             {
               "name": "handshake cid 11",
@@ -5377,7 +5425,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275248.62 5913178.93'"
+              "detail": "output='277819.25 5964503.24'"
             },
             {
               "name": "bye cid 11",
@@ -5387,7 +5435,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21451"
+              "detail": "serial_bytes=21450"
             },
             {
               "name": "handshake cid 12",
@@ -5402,7 +5450,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275248.69 5913180.23'"
+              "detail": "output='277819.26 5964503.43'"
             },
             {
               "name": "bye cid 12",
@@ -5427,7 +5475,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275248.65 5913179.46'"
+              "detail": "output='277819.27 5964503.58'"
             },
             {
               "name": "bye cid 13",
@@ -5437,7 +5485,7 @@
             {
               "name": "guest transcript cid 13",
               "ok": true,
-              "detail": "serial_bytes=21451"
+              "detail": "serial_bytes=21450"
             }
           ],
           "invariants": [
@@ -5459,7 +5507,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.7s"
+              "detail": "state=done after 7.4s"
             },
             {
               "name": "done run carries ended_at",
@@ -5509,6 +5557,7 @@
           "detail": "n=4 vcpus=2 memory_mib=512 vsock_cid=10 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -5526,7 +5575,7 @@
             {
               "name": "uptime cid 10",
               "ok": true,
-              "detail": "output='275256.19 5913336.90'"
+              "detail": "output='277826.70 5964622.41'"
             },
             {
               "name": "bye cid 10",
@@ -5536,7 +5585,7 @@
             {
               "name": "guest transcript cid 10",
               "ok": true,
-              "detail": "serial_bytes=21479"
+              "detail": "serial_bytes=21478"
             },
             {
               "name": "handshake cid 11",
@@ -5551,7 +5600,7 @@
             {
               "name": "uptime cid 11",
               "ok": true,
-              "detail": "output='275256.19 5913336.84'"
+              "detail": "output='277826.69 5964622.41'"
             },
             {
               "name": "bye cid 11",
@@ -5561,7 +5610,7 @@
             {
               "name": "guest transcript cid 11",
               "ok": true,
-              "detail": "serial_bytes=21479"
+              "detail": "serial_bytes=21478"
             },
             {
               "name": "handshake cid 12",
@@ -5576,7 +5625,7 @@
             {
               "name": "uptime cid 12",
               "ok": true,
-              "detail": "output='275256.20 5913336.98'"
+              "detail": "output='277826.72 5964622.41'"
             },
             {
               "name": "bye cid 12",
@@ -5586,7 +5635,7 @@
             {
               "name": "guest transcript cid 12",
               "ok": true,
-              "detail": "serial_bytes=21479"
+              "detail": "serial_bytes=21477"
             },
             {
               "name": "handshake cid 13",
@@ -5601,7 +5650,7 @@
             {
               "name": "uptime cid 13",
               "ok": true,
-              "detail": "output='275256.21 5913337.27'"
+              "detail": "output='277826.71 5964622.41'"
             },
             {
               "name": "bye cid 13",
@@ -5611,7 +5660,7 @@
             {
               "name": "guest transcript cid 13",
               "ok": true,
-              "detail": "serial_bytes=21478"
+              "detail": "serial_bytes=21479"
             }
           ],
           "invariants": [
@@ -5683,6 +5732,7 @@
           "detail": "n=4 vcpus=2 memory_mib=512 vsock_cid=100 beats=None",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -5700,7 +5750,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275263.63 5913492.38'"
+              "detail": "output='277834.20 5964743.57'"
             },
             {
               "name": "bye cid 100",
@@ -5725,7 +5775,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275263.64 5913492.61'"
+              "detail": "output='277834.20 5964743.57'"
             },
             {
               "name": "bye cid 101",
@@ -5750,7 +5800,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275263.64 5913492.70'"
+              "detail": "output='277834.24 5964743.58'"
             },
             {
               "name": "bye cid 102",
@@ -5760,7 +5810,7 @@
             {
               "name": "guest transcript cid 102",
               "ok": true,
-              "detail": "serial_bytes=21455"
+              "detail": "serial_bytes=21456"
             },
             {
               "name": "handshake cid 103",
@@ -5775,7 +5825,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275263.64 5913492.63'"
+              "detail": "output='277834.21 5964743.57'"
             },
             {
               "name": "bye cid 103",
@@ -5785,7 +5835,7 @@
             {
               "name": "guest transcript cid 103",
               "ok": true,
-              "detail": "serial_bytes=21455"
+              "detail": "serial_bytes=21456"
             }
           ],
           "invariants": [
@@ -5807,7 +5857,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -5857,6 +5907,7 @@
           "detail": "n=4 vcpus=2 memory_mib=512 vsock_cid=100 beats=2",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 20,
           "tasks_required": 4,
           "tasks_total": 20,
@@ -5874,7 +5925,7 @@
             {
               "name": "uptime cid 100",
               "ok": true,
-              "detail": "output='275271.08 5913654.88'"
+              "detail": "output='277841.75 5964865.83'"
             },
             {
               "name": "bye cid 100",
@@ -5899,7 +5950,7 @@
             {
               "name": "uptime cid 101",
               "ok": true,
-              "detail": "output='275271.08 5913654.88'"
+              "detail": "output='277841.74 5964865.66'"
             },
             {
               "name": "bye cid 101",
@@ -5924,7 +5975,7 @@
             {
               "name": "uptime cid 102",
               "ok": true,
-              "detail": "output='275271.08 5913654.77'"
+              "detail": "output='277841.73 5964865.53'"
             },
             {
               "name": "bye cid 102",
@@ -5934,7 +5985,7 @@
             {
               "name": "guest transcript cid 102",
               "ok": true,
-              "detail": "serial_bytes=21482"
+              "detail": "serial_bytes=21484"
             },
             {
               "name": "handshake cid 103",
@@ -5949,7 +6000,7 @@
             {
               "name": "uptime cid 103",
               "ok": true,
-              "detail": "output='275271.09 5913655.01'"
+              "detail": "output='277841.72 5964865.35'"
             },
             {
               "name": "bye cid 103",
@@ -5959,7 +6010,7 @@
             {
               "name": "guest transcript cid 103",
               "ok": true,
-              "detail": "serial_bytes=21483"
+              "detail": "serial_bytes=21484"
             }
           ],
           "invariants": [
@@ -5981,7 +6032,7 @@
             {
               "name": "run reached done before the deadline",
               "ok": true,
-              "detail": "state=done after 7.4s"
+              "detail": "state=done after 7.5s"
             },
             {
               "name": "done run carries ended_at",
@@ -6031,6 +6082,7 @@
           "detail": "",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 0,
           "tasks_required": 0,
           "tasks_total": 0,
@@ -6064,6 +6116,7 @@
           "detail": "",
           "vector": null,
           "ok": true,
+          "blocked_reason": null,
           "tasks_passed": 0,
           "tasks_required": 0,
           "tasks_total": 0,
@@ -6108,8 +6161,8 @@
         "matrix: 48 cells over the served CIDs [10, 11, 12, 13, 100, 101, 102, 103]"
       ],
       "findings": [],
-      "started_at": "2026-10-10T23:01:04+0200",
-      "duration_s": 402.481
+      "started_at": "2026-10-10T23:43:51+0200",
+      "duration_s": 405.812
     }
   ],
   "findings": []

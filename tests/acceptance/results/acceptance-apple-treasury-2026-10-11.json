@@ -1,0 +1,73 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "BLOCKED",
+  "machine_class": "apple",
+  "generated_at": "2026-10-11T04:21:24+0200",
+  "wall_seconds": 0.0,
+  "manifest": {
+    "suite": "treasury",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "c5e0bc3a5d22e8d229fca855517ae752f44ba4a6",
+      "dirty": true,
+      "harness_tree_sha256": "567b357244dbe6d2fb5c06b2a3949ab0059021d6ce11e1255ad88451e009dd42"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/tmp/apz-treasury-pin/initrd.x86_64.gz",
+      "initrd_sha256": "2e23d3fd0577d7e39c7c736b12d676e5bf0b78bf291e494dce71976223a70da9",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "apple",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-cls-apple",
+    "started_at": "2026-10-11T04:21:24+0200",
+    "binaries": {
+      "noded": {
+        "path": "/tmp/apz-treasury-pin/noded",
+        "sha256": "3fbb07737274710c26f31179b907f375e92dd4aba70057864e19eb995caec75f"
+      },
+      "vsockd": {
+        "path": "/tmp/apz-treasury-pin/vsockd",
+        "sha256": "8d736714bc92d5b6e3b483daa1283fdcb5b63811c0d6395a222008275897b902"
+      }
+    },
+    "canary_planted": null,
+    "evidence": []
+  },
+  "suites_run": [
+    "treasury"
+  ],
+  "suites": [
+    {
+      "suite": "treasury",
+      "pass_bar": "every case passes; a case whose required flag/binary is absent is BLOCKED with the reason (never a pass)",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'apple' needs a macos/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T04:21:24+0200",
+      "duration_s": 0.0
+    }
+  ],
+  "findings": []
+}
