@@ -1,5 +1,6 @@
 // The board screen: the agents' shared feed of posts, newest first, set as a
-// ruled register. One row per post; a body longer than five lines clamps.
+// ruled register. One line per post; an older body that differs from the
+// subject shows beneath it, clamped to three lines.
 
 import '../styles/social.css';
 import { api, type BoardPost } from '../api';
@@ -10,6 +11,7 @@ import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
+const CLAMP_LINES = '3';
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const author = h('select.board-filter', { 'aria-label': 'Filter by author' });
@@ -38,7 +40,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   // Rebuilds the author options from the posts on the board, keeping the choice.
   const syncAuthors = (): void => {
     const seen = new Map<string, string>();
-    for (const p of posts) if (!seen.has(p.agent_cid)) seen.set(p.agent_cid, nameOf(p));
+    for (const p of posts) {
+      const cid = String(p.agent_cid);
+      if (!seen.has(cid)) seen.set(cid, nameOf(p));
+    }
     const list = Array.from(seen).sort((x, y) => x[1].localeCompare(y[1]));
     if (authorCid && !seen.has(authorCid)) authorCid = '';
     replace(
@@ -49,7 +54,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     author.value = authorCid;
   };
 
-  // A body that overflows its five-line clamp gets its "Show more" toggle.
+  // A body that overflows its clamp gets its "Show more" toggle.
   const fit = (): void => {
     for (const body of feed.querySelectorAll<HTMLElement>('.board-body')) {
       const toggle = body.nextElementSibling;
@@ -66,7 +71,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const needle = query.trim().toLowerCase();
     const shown = ordered
       .map((p, i) => ({ p, no: ordered.length - i }))
-      .filter(({ p }) => !authorCid || p.agent_cid === authorCid)
+      .filter(({ p }) => !authorCid || String(p.agent_cid) === authorCid)
       .filter(({ p }) => !needle || `${p.subject}\n${p.body}`.toLowerCase().includes(needle));
     if (!shown.length) return replace(feed, empty('board', 'Nothing on the board matches.'));
     replace(feed, shown.map(({ p, no }) => entry(p, no, nameOf(p))));
@@ -108,8 +113,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 }
 
 function entry(p: BoardPost, no: number, name: string): HTMLElement {
-  const rest = withoutSubject(p.body, p.subject);
-  const body = rest ? h('p.board-body', null, rest) : null;
+  const extra = p.body.trim();
+  const body = extra && extra !== p.subject.trim() ? h('p.board-body', null, extra) : null;
+  if (body) body.style.setProperty('-webkit-line-clamp', CLAMP_LINES);
   const more: HTMLButtonElement = h(
     'button.board-more',
     {
@@ -118,6 +124,7 @@ function entry(p: BoardPost, no: number, name: string): HTMLElement {
       onclick: () => {
         if (!body) return;
         const open = body.classList.toggle('open');
+        body.style.setProperty('-webkit-line-clamp', open ? 'none' : CLAMP_LINES);
         more.textContent = open ? 'Show less' : 'Show more';
       },
     },
@@ -135,7 +142,6 @@ function entry(p: BoardPost, no: number, name: string): HTMLElement {
         null,
         h('a.board-author', { href: href('agents', p.agent_cid) }, name),
         h('span.board-role', null, p.role),
-        p.task ? h('span.board-tag', null, 'Task') : null,
       ),
       h('h3.board-subject', null, p.subject),
       body,
@@ -143,14 +149,4 @@ function entry(p: BoardPost, no: number, name: string): HTMLElement {
     ),
     h('time.board-time', null, ago(p.created_at)),
   );
-}
-
-// The body without a leading repeat of the subject ("Subject: rest" keeps "rest").
-function withoutSubject(body: string, subject: string): string {
-  const text = body.trim();
-  const head = subject.trim();
-  if (!head || !text.toLowerCase().startsWith(head.toLowerCase())) return text;
-  const after = text.slice(head.length);
-  if (/^[a-z0-9]/i.test(after)) return text;
-  return after.replace(/^[\s:.\-–—]+/, '');
 }
