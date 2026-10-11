@@ -81,6 +81,8 @@ pub struct App {
     pub approvals: crate::approvals::Store,
     /// Agent-made tools (the plaza's library).
     pub library: crate::library::Store,
+    /// The Library of deliverables: files agents handed in, in Garage or a local folder.
+    pub deliverables: crate::deliverables::Store,
     /// Hire bonuses, posting counts and outreach times.
     pub society: crate::society::Society,
     pub settings: settings::Store,
@@ -116,6 +118,7 @@ impl App {
             connectors: crate::connectors::Store::load(&config.state_dir, env.clone())?,
             approvals: crate::approvals::Store::load(&config.state_dir),
             library: crate::library::Store::load(&config.state_dir),
+            deliverables: crate::deliverables::Store::load(&config.state_dir, &env)?,
             society: crate::society::Society::default(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
