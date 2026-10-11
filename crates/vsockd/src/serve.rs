@@ -409,7 +409,7 @@ impl Session<'_> {
 
     fn send<S: Write>(&self, lines: &mut Lines<S>, message: &HostMessage) -> Result<(), HostError> {
         let line = message.to_line().map_err(|err| violation(format!("cannot encode a host line: {err}")))?;
-        self.log.line(&format!("[<-] guest {} vm{} {line}", self.cid, self.vm));
+        self.log.line(&format!("[<-] guest {} vm{} {}", self.cid, self.vm, sanitize_for_log(&line)));
         lines.send(&line)?;
         Ok(())
     }
@@ -498,15 +498,24 @@ fn host_uptime() -> io::Result<String> {
     }
 }
 
-/// Escapes control characters so a guest cannot forge or erase log lines.
+/// The most of one protocol line the log keeps (model calls carry whole
+/// conversations; the transcript in apid is the full record).
+const LOG_LINE_CHARS: usize = 240;
+
+/// Escapes control characters so a guest cannot forge or erase log lines, and
+/// cuts long lines to [`LOG_LINE_CHARS`].
 fn sanitize_for_log(line: &str) -> String {
-    let mut sanitized = String::with_capacity(line.len());
-    for character in line.chars() {
+    let mut sanitized = String::with_capacity(line.len().min(LOG_LINE_CHARS + 32));
+    let total = line.chars().count();
+    for character in line.chars().take(LOG_LINE_CHARS) {
         if character.is_control() {
             sanitized.push_str(&format!("\\x{:02x}", character as u32));
         } else {
             sanitized.push(character);
         }
+    }
+    if total > LOG_LINE_CHARS {
+        sanitized.push_str(&format!(" … ({total} chars)"));
     }
     sanitized
 }

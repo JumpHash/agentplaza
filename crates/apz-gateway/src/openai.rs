@@ -154,7 +154,7 @@ pub(crate) fn complete(
             other => break other?,
         }
     };
-    read_stream(http::reader(resp), sink, tool_use_count(&req.messages))
+    read_stream(http::reader(resp), sink, tool_use_count(&req.messages), replays_reasoning(ctx))
 }
 
 /// A tool call being streamed.
@@ -165,7 +165,12 @@ struct Call {
     args: String,
 }
 
-fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta), first_call: usize) -> Result<ChatResponse, GatewayError> {
+fn read_stream(
+    body: impl Read,
+    sink: &mut dyn FnMut(Delta),
+    first_call: usize,
+    keep_reasoning: bool,
+) -> Result<ChatResponse, GatewayError> {
     let (mut text, mut thinking, mut model) = (String::new(), String::new(), String::new());
     let mut calls: BTreeMap<u64, Call> = BTreeMap::new();
     let mut usage = Usage::default();
@@ -231,8 +236,10 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta), first_call: usize) 
     }
     let mut content = Vec::new();
     if !thinking.is_empty() {
-        // Kept whole so a provider that needs it back (`replay_reasoning`) gets it.
-        content.push(Block::Opaque { kind: TAG.into(), raw: Value::String(thinking.clone()) });
+        // Kept whole only for a provider that needs it back (`replay_reasoning`).
+        if keep_reasoning {
+            content.push(Block::Opaque { kind: TAG.into(), raw: Value::String(thinking.clone()) });
+        }
         content.push(Block::Thinking { text: thinking });
     }
     if !text.is_empty() {
@@ -356,7 +363,6 @@ mod tests {
         assert_eq!(resp.stop, StopReason::ToolUse);
         assert_eq!(resp.usage, Usage { input_tokens: 40, output_tokens: 20, cache_read_tokens: 60, cache_write_tokens: 0 });
         assert_eq!(resp.content, vec![
-            opaque("think"),
             Block::Thinking { text: "think".into() },
             Block::Text { text: "Let me look.".into() },
             Block::ToolUse { id: "call_a".into(), name: "bash".into(), input: json!({"command": "ls"}), meta: None },
@@ -380,7 +386,7 @@ mod tests {
         let gw = gateway(vec![p]);
         let req = ChatRequest { model: "ollama/qwen3:8b".into(), max_tokens: 64, effort: Some("high".into()), ..request("hi") };
         let resp = gw.complete(&req, &mut |_| {}).unwrap();
-        assert_eq!(resp.content, vec![opaque("hmm "), Block::Thinking { text: "hmm ".into() }, Block::Text { text: "hello".into() }]);
+        assert_eq!(resp.content, vec![Block::Thinking { text: "hmm ".into() }, Block::Text { text: "hello".into() }]);
         assert_eq!(resp.stop, StopReason::MaxTokens);
         gw.complete(&req, &mut |_| {}).unwrap();
         let sent = server.requests();

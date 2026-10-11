@@ -221,7 +221,15 @@ impl Workspace {
 /// Refuses an absolute path, a Windows-style prefix and a `..` component;
 /// `.` is dropped. An empty result is the workspace root itself, which only
 /// the directory tools (`list`, `search`) accept.
+/// Where the workspace is mounted in the guest.
+const WORKSPACE_MOUNT: &str = "/workspace";
+
 fn relative_parts(raw: &str) -> Result<Vec<String>, ToolError> {
+    // Models name the workspace by its mount point; `/workspace/x` is `x`.
+    let raw = match raw.strip_prefix(WORKSPACE_MOUNT) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => rest.trim_start_matches('/'),
+        _ => raw,
+    };
     let mut parts = Vec::new();
     for component in Path::new(raw).components() {
         match component {
@@ -549,6 +557,11 @@ pub fn write_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErr
         )));
     }
     let created = !path.exists();
+    // `resolve` proved the deepest existing ancestor is inside the workspace,
+    // so the missing directories it creates are too.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| io_tool_error(err, format!("cannot create the folders of {label}")))?;
+    }
     write_atomic(&path, content.as_bytes())
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
     Ok(json!({
@@ -1360,6 +1373,21 @@ mod tests {
     }
 
     // --- write_file --------------------------------------------------------
+
+    #[test]
+    fn the_mount_point_prefix_is_the_workspace() {
+        assert_eq!(relative_parts("/workspace/a/b.txt").unwrap(), ["a", "b.txt"]);
+        assert!(relative_parts("/workspace").unwrap().is_empty());
+        assert!(relative_parts("/workspacex/a").is_err());
+        assert!(relative_parts("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn write_file_creates_missing_folders() {
+        let (workspace, _outside) = scratch("nested-write");
+        write_file(&workspace, &json!({"path": "notes/a/b.md", "content": "hi"})).expect("nested write");
+        assert_eq!(fs::read_to_string(workspace.root().join("notes/a/b.md")).unwrap(), "hi");
+    }
 
     #[test]
     fn write_file_creates_then_replaces() {
