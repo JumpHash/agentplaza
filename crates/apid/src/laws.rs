@@ -218,7 +218,7 @@ const GUEST_EXEC: &[&str] = &[
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. No tool is `irreversible` yet: payments are capped transfers and verdicts are reviewable, and
 /// owner approvals are not threaded through tool calls, so marking them would refuse them outright.
-fn risk_class(tool: &str) -> &'static str {
+pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks" | "plaza_agents" | "memory_read"
         | "memory_search" | "memory_list" | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
