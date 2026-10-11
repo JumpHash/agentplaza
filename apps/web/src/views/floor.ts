@@ -23,6 +23,9 @@ const MAX_PACKETS = 60;
 const SLAB_H = 0.5; // district slab height
 const DAIS_H = 0.8; // orchestrator dais height
 const DAIS_R = 2.3;
+const RAMP = 1.5; // width of the sloped band around a district slab
+const DAIS_RAMP = 2.2; // width of the dais's sloped skirt
+const GRAVITY = 9.8; // world units per second squared
 const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 const AZIMUTH = Math.PI / 4;
 const SOCIAL_NEAR = 9.5; // districts this close count as neighbours for a visit or a chat
@@ -63,6 +66,8 @@ interface Bot {
   ty: number;
   heading: number; // radians about the vertical axis
   moving: boolean;
+  py: number; // height of the feet
+  vy: number; // vertical speed (falling)
   state: RobotState | null;
   nextWander: number;
   nextSocial: number; // when an idle robot next considers a visit, chat or stroll
@@ -137,7 +142,7 @@ export function layoutDistricts(list: Agent[]): { districts: District[]; homes: 
   // Slabs are sized by member count; the ring is wide enough that neighbouring slabs do not overlap.
   const slabR = (n: number): number => Math.ceil(1.5 * Math.max(1, Math.ceil(Math.sqrt(n))) + 1);
   const rMax = roles.reduce((m, role) => Math.max(m, slabR(groups.get(role)!.length)), 0);
-  const ringR = Math.max(9, Math.ceil((2 * rMax + 1.5) / (2 * Math.sin(Math.PI / Math.max(3, roles.length)))));
+  const ringR = Math.max(9 + RAMP, Math.ceil((2 * (rMax + RAMP) + 1.5) / (2 * Math.sin(Math.PI / Math.max(3, roles.length)))));
   roles.forEach((role, i) => {
     const members = groups.get(role)!;
     const angle = (i / roles.length) * Math.PI * 2 - Math.PI / 2;
@@ -190,12 +195,6 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 const topOf = (d: District): number => (d.role === 'orchestrator' ? DAIS_H : SLAB_H);
-
-/** Whether (x, y) lies on a district's walkable top, inset by margin. */
-const onSlab = (d: District, x: number, y: number, margin: number): boolean =>
-  d.role === 'orchestrator'
-    ? Math.hypot(x - d.cx, y - d.cy) <= DAIS_R - margin
-    : Math.abs(x - d.cx) <= d.r - margin && Math.abs(y - d.cy) <= d.r - margin;
 
 /** A prop's ground footprint, in grid units. */
 interface Footprint {
@@ -441,7 +440,7 @@ export function mount(root: HTMLElement): Cleanup {
     const orch = d.role === 'orchestrator';
     if (orch) {
       const dais = new THREE.Mesh(
-        new THREE.CylinderGeometry(DAIS_R, DAIS_R + 0.2, DAIS_H, 48),
+        new THREE.CylinderGeometry(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48),
         new THREE.MeshStandardMaterial({ color: C.sheet, roughness: 0.9 }),
       );
       dais.position.set(d.cx, DAIS_H / 2, d.cy);
@@ -452,7 +451,9 @@ export function mount(root: HTMLElement): Cleanup {
       rim.position.set(d.cx, DAIS_H + 0.01, d.cy);
       g.add(dais, rim);
     } else {
-      const box = new THREE.BoxGeometry(2 * d.r, SLAB_H, 2 * d.r);
+      // A terrace: the flat top plus a sloped band on every side, so robots can walk on and off.
+      const box = new THREE.CylinderGeometry(d.r * Math.SQRT2, (d.r + RAMP) * Math.SQRT2, SLAB_H, 4, 1);
+      box.rotateY(Math.PI / 4);
       const slab = new THREE.Mesh(
         box,
         new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.25, 0.86, THREE.SRGBColorSpace), roughness: 0.95 }),
@@ -538,6 +539,8 @@ export function mount(root: HTMLElement): Cleanup {
       ty: hy,
       heading: 0,
       moving: false,
+      py: 0,
+      vy: 0,
       state: null,
       nextWander: performance.now() + Math.random() * 3000,
       nextSocial: performance.now() + 4000 + Math.random() * 10000,
@@ -641,7 +644,16 @@ export function mount(root: HTMLElement): Cleanup {
   /** The top of whatever lies under (x, y): a dais, a district slab, or the bare floor. */
   function surfaceAt(x: number, y: number): number {
     let top = 0;
-    for (const d of districts) if (onSlab(d, x, y, 0)) top = Math.max(top, topOf(d));
+    for (const d of districts) {
+      const orch = d.role === 'orchestrator';
+      // Distance out from the walkable top: square for slabs, round for the dais.
+      const out = orch
+        ? Math.hypot(x - d.cx, y - d.cy) - DAIS_R
+        : Math.max(Math.abs(x - d.cx), Math.abs(y - d.cy)) - d.r;
+      const band = orch ? DAIS_RAMP : RAMP;
+      const h = out <= 0 ? topOf(d) : out < band ? topOf(d) * (1 - out / band) : 0;
+      top = Math.max(top, h);
+    }
     return top;
   }
 
@@ -649,7 +661,6 @@ export function mount(root: HTMLElement): Cleanup {
   function blocked(b: Bot, x: number, y: number, checkProps: boolean): boolean {
     if (checkProps) {
       for (const p of propBoxes) if (near(p, x, y) && !near(p, b.x, b.y)) return true;
-      if (!onSlab(b.district, x, y, ROBOT_R) && onSlab(b.district, b.x, b.y, 0)) return true;
     }
     const partner = b.social?.partner ?? null;
     for (const o of bots) {
@@ -692,7 +703,7 @@ export function mount(root: HTMLElement): Cleanup {
       const dist = Math.hypot(dx, dy);
       b.moving = dist > 0.02;
       // Step toward the goal. A blocked step tries nearby headings, else the robot waits this frame.
-      const checkProps = roaming && !s;
+      const checkProps = Math.hypot(b.home[0] - b.x, b.home[1] - b.y) > 0.9;
       let travel: number | null = null;
       if (b.moving) {
         const step = Math.min(SPEED * dt, dist);
@@ -739,7 +750,17 @@ export function mount(root: HTMLElement): Cleanup {
         b.highlighted = highlight;
         b.robot.setHighlighted(highlight);
       }
-      b.robot.group.position.set(b.x, surfaceAt(b.x, b.y), b.y);
+      // Gravity: walk up slopes, fall where the ground drops away.
+      const ground = surfaceAt(b.x, b.y);
+      if (b.py > ground + 0.001) {
+        b.vy -= GRAVITY * dt;
+        b.py = Math.max(ground, b.py + b.vy * dt);
+        if (b.py === ground) b.vy = 0;
+      } else {
+        b.py = ground;
+        b.vy = 0;
+      }
+      b.robot.group.position.set(b.x, b.py, b.y);
       b.robot.group.rotation.y = b.heading;
       b.robot.update(dt, t);
       b.padMat.color.copy(status === 'working' ? C.info : status === 'idle' ? C.ok : C.ink3);
