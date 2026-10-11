@@ -52,12 +52,22 @@
 //!
 //! Run states and transitions are the schema's (`core.run_transitions`,
 //! `docs/orchestrator-draft/schema.sql`), restricted to the states noded v0
-//! implements: see [`registry`]. The task ledger is `core.tasks` restricted
-//! the same way, and only ever accepts a claim from an agent the register
-//! shows connected right now: see [`tasks`]. A task's budget is real money in
-//! the treasury's journal, minted into the task's escrow on create and
-//! refunded when the task ends: see [`treasury`]. The council's motions, their
-//! votes and the count that decides them are [`council`], over the four seats
+//! implements: see [`registry`]. Every VM of every run carries the agent
+//! harness - the guest's vsock client - so every VM has a guest CID, and a
+//! create request that names no `vsock_cid` is given a span of the node's run
+//! range (`20..=99`, [`registry::RUN_CID_BASE`]..=[`registry::RUN_CID_END`]),
+//! held for the run's lifetime and released when it ends. A run whose
+//! `vsock_cid` the caller pinned speaks the demo task's frozen one-shot
+//! session (the harness the acceptance suites drive, byte for byte); a run the
+//! node allocated CIDs for is an **operator run**: its guests speak the
+//! keepalive agent session, role-less, so the plaza's hub serves them, the
+//! console's roster sees them, and `/tell` can drive them. The task ledger is
+//! `core.tasks` restricted the same way, and only ever accepts a claim from an
+//! agent the register shows connected right now: see [`tasks`]. A task's
+//! budget is real money in the treasury's journal, minted into the task's
+//! escrow on create and refunded when the task ends: see [`treasury`]. The
+//! council's motions, their votes and the count that decides them are
+//! [`council`], over the four seats
 //! `docs/agents/council.md` pins.
 
 pub mod agora;

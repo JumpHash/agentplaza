@@ -50,12 +50,21 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         return;
     }
     let root = repo_root();
+    // The run's CIDs are allocated from the node's own run range now, and the
+    // muxer binds `{uds_dir}/vm{cid}`: a private socket directory is what
+    // keeps this test off a live daemon's paths (and off its CIDs), the same
+    // reason the task-ledger test below uses one.
+    let scratch = std::env::temp_dir().join(format!("noded-churn-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("a scratch directory");
+    let uds_dir = scratch.join("vsock");
+    vmm::spawner::create_uds_dir(&uds_dir).expect("the run's socket directory");
     let config = noded::Config {
         port: 0,
         kernel: PathBuf::from(noded::DEFAULT_KERNEL),
         initrd: root.join(noded::DEFAULT_INITRD),
         console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
-        uds_dir: root.join(noded::DEFAULT_UDS_DIR),
+        uds_dir: uds_dir.clone(),
         workspace: None,
         // The smoke run is the churn path, not the fleet: no initial agents.
         ..noded::Config::default()
@@ -81,6 +90,68 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
     );
     assert!(created["ended_at"].is_null(), "{}", reply.body);
     eprintln!("smoke: {id} is running");
+
+    // The request named no `vsock_cid`, so the node allocated one: the run's
+    // VMs carry the run range's span, and each VM's vsock muxer is bound for
+    // it (the guest's harness is the client that dials it).
+    let cids: Vec<u64> = created["vms"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|vm| {
+            vm["guest_cid"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("VM {} has no guest CID: {vm}", vm["id"]))
+        })
+        .collect();
+    assert_eq!(
+        cids,
+        vec![
+            noded::registry::RUN_CID_BASE,
+            noded::registry::RUN_CID_BASE + 1
+        ],
+        "an allocated run draws the run range in order: {created}"
+    );
+    for cid in &cids {
+        let socket = uds_dir.join(format!("vm{cid}"));
+        let mut bound = socket.exists();
+        for _ in 0..100 {
+            if bound {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+            bound = socket.exists();
+        }
+        assert!(bound, "no muxer bound {} for CID {cid}", socket.display());
+    }
+
+    // A second run created while this one is live is given a *different* span:
+    // two live runs never share a CID, so two VMs never race one muxer socket.
+    let second = request(
+        port,
+        "POST",
+        "/api/v0/runs",
+        Some(r#"{"n":1,"vcpus":1,"memory_mib":128,"beats":null}"#),
+    );
+    assert_eq!(second.status, 201, "{}", second.body);
+    let second = second.json();
+    let second_cid = second["vms"][0]["guest_cid"]
+        .as_u64()
+        .expect("the second run's VM has an allocated CID");
+    assert!(
+        second_cid >= noded::registry::RUN_CID_BASE
+            && second_cid <= noded::registry::RUN_CID_END,
+        "the second run's CID is inside the run range: {second}"
+    );
+    assert!(
+        !cids.contains(&second_cid),
+        "two live runs were given the same CID: {cids:?} and {second_cid}"
+    );
+    let second_id = second["id"].as_str().expect("an id").to_string();
+    let killed = request(port, "DELETE", &format!("/api/v0/runs/{second_id}"), None);
+    assert_eq!(killed.status, 200, "{}", killed.body);
+    assert_eq!(killed.json()["state"], "killed", "{}", killed.body);
+    eprintln!("smoke: {second_id} ran one VM on CID {second_cid} and was killed");
 
     // A GET of a live run must not queue behind the run's own watcher: with
     // the watcher polling under the run's lock this waited for the run's whole
@@ -130,6 +201,26 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
                 assert!(
                     serial.contains("heartbeat"),
                     "VM {} produced no heartbeat: {serial}",
+                    vm["id"]
+                );
+                // The guest's own kernel command line, as the kernel printed
+                // it: the harness and the operator run's keepalive session,
+                // with this VM's index - which is what makes the VM an agent
+                // at all. (The CID is not on the command line by design: one
+                // line is shared by every VM of a spawn and the device gives
+                // each VM its own CID, which is why the run's view carries it.)
+                assert!(
+                    serial.contains(&format!(
+                        "plaza.harness=1 plaza.keepalive=1 plaza.vm={}",
+                        vm["id"]
+                    )),
+                    "VM {} did not boot with the harness: {serial}",
+                    vm["id"]
+                );
+                // And the guest acted on it: `init` forked the harness.
+                assert!(
+                    serial.contains("plaza guest: agent harness running as pid"),
+                    "VM {} never started the harness: {serial}",
                     vm["id"]
                 );
                 assert_eq!(vm["state"], "exited", "{vm}");

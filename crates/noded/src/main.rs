@@ -68,6 +68,19 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    anything.
   -h, --help       print this help
 
+Runs. Every VM of every run carries the agent harness (the guest's vsock
+client), so every run has guest CIDs. A create request that names no
+`vsock_cid` is given the first free span of the node's run range (CIDs
+20..=99, comfortably wider than a full-size run's 64) - held for the run's
+lifetime and released when the run ends, and refused before any VM boots
+when the range has no room. Which session the guests speak follows who chose
+the CIDs: a run whose `vsock_cid` the caller pinned keeps the demo task's
+frozen one-shot session (it ends by rebooting the guest, so the run reaches
+`done`), and a run the node allocated CIDs for is an operator run - its
+guests run the keepalive agent session, role-less, so a hub that serves the
+run range (vsockd --cids) shows them as connected agents and can drive them,
+and they stay up until the run is killed or `beats` churns the guest.
+
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
 POST /api/v0/runs/{id}/input, GET/POST /api/v0/tasks,
 GET/DELETE /api/v0/tasks/{id}, POST /api/v0/tasks/{id}/claim,

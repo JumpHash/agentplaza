@@ -16,7 +16,19 @@
 //! watcher polls with a bounded timeout under the run's lock, which is the
 //! same lock a kill takes, so a kill and a wait never block on the same handle
 //! at once.
+//!
+//! Every VM of every run carries the agent harness, and so every VM has a
+//! guest CID. A create request that names no `vsock_cid` draws one span from
+//! the node's run range ([`RUN_CID_BASE`]..=[`RUN_CID_END`]); the span is held
+//! for the run's lifetime ([`CidBook`]) and released when the run ends, and a
+//! create the node cannot give CIDs to is refused before any VM boots.
+//!
+//! Which harness session a run's guests speak follows who chose the CIDs (see
+//! [`RunSession`]): a caller who pins `vsock_cid` gets the demo task's frozen
+//! one-shot session, unchanged, and a run the node allocated CIDs for is an
+//! operator run whose VMs are long-running, hub-connected agents.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -39,6 +51,24 @@ pub const MAX_VCPUS: u32 = 64;
 
 /// The least guest memory one VM may have, in MiB (`memory_mib`).
 pub const MIN_MEMORY_MIB: u32 = 128;
+
+/// The first guest CID of the range a run draws from when its create request
+/// names no `vsock_cid`.
+///
+/// Every VM of a run has a CID - the guest's harness is the vsock client, and
+/// the guest cannot have a harness without one - so a request that names none
+/// is given a span of `RUN_CID_BASE..=RUN_CID_END`. The range is the node's
+/// own: it is disjoint from the role fleet's default first CID (`--agents-cid-base`,
+/// 100) and from the hub's long-standing served set (10..=15), it holds more
+/// than one [`MAX_VMS`] run ([`MAX_VMS`] is 64 and the range is 80 wide, so a
+/// full-size run always fits), and the hub has to serve it for the guests to
+/// reach it (`vsockd --cids`).
+pub const RUN_CID_BASE: u64 = 20;
+
+/// The last guest CID of the run range, **inclusive**: a run's CIDs are
+/// `RUN_CID_BASE..=RUN_CID_END` at the widest, so a run of [`MAX_VMS`] VMs
+/// still fits.
+pub const RUN_CID_END: u64 = 99;
 
 /// The guest's console device: the first flag of every run's command line.
 const CONSOLE: &str = "console=ttyS0";
@@ -77,74 +107,120 @@ pub struct CreateRun {
     /// the guest long-lived.
     #[serde(default)]
     pub beats: Option<u32>,
-    /// Base guest CID for the run's vsock devices (`vsock_cid + i` for VM `i`);
-    /// `None` boots the VMs without a vsock device.
+    /// Base guest CID for the run's VMs (`vsock_cid + i` for VM `i`), or
+    /// `None` to let the node allocate a span from its run range
+    /// ([`RUN_CID_BASE`]..=[`RUN_CID_END`]).
+    ///
+    /// Pinning the base is the caller's choice and is validated as it always
+    /// was; a request that names none is given the first free span of the run
+    /// range, and refused before any VM boots when the range has no room. The
+    /// choice also selects the run's session (see [`RunSession`]): a pinned
+    /// run is the demo task's frozen one-shot session, an allocated one is an
+    /// operator run of long-running agents.
     #[serde(default)]
     pub vsock_cid: Option<u64>,
 }
 
+/// The harness session a run's guests speak.
+///
+/// Both are started by `plaza.harness=1`; which one is honest for a run
+/// follows who chose the run's CIDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunSession {
+    /// The frozen v1 session - `hello`, `welcome`, `echo`, `uptime`, `bye` -
+    /// after which the guest's `init` reboots it, so the run ends as `done`.
+    /// This is the demo task's contract, and it is what a run whose CIDs the
+    /// caller **pinned** speaks: the acceptance suites drive it byte for byte,
+    /// and it is why `beats` has any meaning there only as an upper bound.
+    Frozen,
+    /// The keepalive agent session: the guest registers on the hub, beats,
+    /// serves the hub's tool calls, and its `init` never reboots it. A run
+    /// whose CIDs the **node allocated** is an operator run - the owner's
+    /// console creates one by leaving `vsock_cid` empty - so its VMs are
+    /// agents the plaza can see (`vsockd`'s `/status`) and drive (`/tell`)
+    /// until the run is killed or `beats` churns the guest.
+    Agent,
+}
+
 impl CreateRun {
-    /// Checks the contract's ranges and turns the request into what the
-    /// spawner needs: the VMs' template spec, how many of them to boot, and the
-    /// run's first guest CID.
+    /// Checks the request's counts and, when the caller named one, its
+    /// `vsock_cid`; returns how many VMs the run has and the base the caller
+    /// named.
     ///
-    /// `n` is 1..=64, `vcpus` is 1..=64 and `memory_mib` is at least 128;
-    /// anything else is refused with the reason, before any run exists.
-    fn spec(&self, images: &VmImages) -> Result<(VmSpec, usize, Option<u64>), String> {
+    /// `n` is 1..=64, `vcpus` is 1..=64, `memory_mib` is at least 128, and a
+    /// named `vsock_cid` must be a base whose whole span `base..base + n` fits
+    /// the vsock transport. Anything else is refused with the reason, before
+    /// any run exists - and before any CID is allocated, so a malformed shape
+    /// never reaches the allocator.
+    fn checked(&self) -> Result<(usize, Option<u64>), String> {
         let vms = checked_count("n", self.n, 1, MAX_VMS)?;
-        let vcpus = spawner_vcpus(self.vcpus)?;
-        let memory_mib = spawner_memory_mib(self.memory_mib)?;
-        let vsock_cid = match self.vsock_cid {
-            Some(cid) => {
-                if cid < MIN_GUEST_CID {
-                    return Err(format!(
-                        "vsock_cid must be at least {MIN_GUEST_CID} (1 and 2 are reserved)"
-                    ));
-                }
-                // A CID the kernel's vsock stack always refuses — VMADDR_CID_ANY
-                // (u32::MAX) and anything above it — is rejected here rather
-                // than left to a boot that would fail on it.
-                if cid > MAX_GUEST_CID {
-                    return Err(format!(
-                        "vsock_cid must be at most {MAX_GUEST_CID}: the kernel refuses \
-                         VMADDR_CID_ANY and above"
-                    ));
-                }
-                // Every VM's CID, up to the run's last, must fit the transport.
-                let last = cid
-                    .checked_add(u64::try_from(vms).map_err(|_| "n is too large".to_string())? - 1)
-                    .ok_or_else(|| "vsock_cid is too large for this many VMs".to_string())?;
-                if last > MAX_GUEST_CID {
-                    return Err(
-                        "vsock_cid and n together run past the last guest CID".to_string(),
-                    );
-                }
-                Some(cid)
-            }
+        // The shape is checked here at the edge as well as in `boot_run`,
+        // which every creation path passes: a malformed count is refused
+        // before a run id, a CID or a workspace copy is spent on it.
+        spawner_vcpus(self.vcpus)?;
+        spawner_memory_mib(self.memory_mib)?;
+        let named = match self.vsock_cid {
+            Some(base) => Some(checked_base(base, vms)?),
             None => None,
         };
-        // A run with vsock devices boots the agent harness in its guests: the
-        // harness is the vsock client (handbook: every tool call goes over
-        // vsock), and it exits by rebooting the guest when its session ends.
-        let cmdline = match (self.beats, vsock_cid) {
-            (Some(beats), Some(_)) => format!("{CONSOLE} plaza.beats={beats} plaza.harness=1"),
-            (Some(beats), None) => format!("{CONSOLE} plaza.beats={beats}"),
-            (None, Some(_)) => format!("{CONSOLE} plaza.harness=1"),
-            (None, None) => CONSOLE.to_string(),
-        };
-        let spec = VmSpec {
-            kernel: images.kernel.clone(),
-            cmdline,
-            vcpus,
-            memory_mib,
-            initrd: Some(images.initrd.clone()),
-            gic: None,
-            vsock: None,
-            // Filled in per VM by `create_run`, from the run's image copies.
-            workspace: None,
-        };
-        Ok((spec, vms, vsock_cid))
+        Ok((vms, named))
     }
+
+    /// The template command line every VM of the run shares, before its own
+    /// index: the console device, the churn count when the run has one, the
+    /// harness, and - for an operator run - the keepalive flag that makes each
+    /// guest a long-lived plaza agent rather than the demo task's one-shot
+    /// session.
+    fn cmdline(&self, session: RunSession) -> String {
+        let beats = match self.beats {
+            Some(beats) => format!(" plaza.beats={beats}"),
+            None => String::new(),
+        };
+        let keepalive = match session {
+            RunSession::Frozen => "",
+            RunSession::Agent => " plaza.keepalive=1",
+        };
+        format!("{CONSOLE}{beats} plaza.harness=1{keepalive}")
+    }
+}
+
+/// Checks an explicit `vsock_cid` base, and the run of CIDs it roots, against
+/// the vsock transport: `base` is at least [`MIN_GUEST_CID`] (1 and 2 are
+/// reserved, and 0 is the hypervisor), and the run's last VM's CID
+/// (`base + n - 1`) still fits `MAX_GUEST_CID`.
+fn checked_base(base: u64, vms: usize) -> Result<u64, String> {
+    if base < MIN_GUEST_CID {
+        return Err(format!(
+            "vsock_cid must be at least {MIN_GUEST_CID} (1 and 2 are reserved)"
+        ));
+    }
+    // A CID the kernel's vsock stack always refuses — VMADDR_CID_ANY
+    // (u32::MAX) and anything above it — is rejected here rather than left to
+    // a boot that would fail on it.
+    if base > MAX_GUEST_CID {
+        return Err(format!(
+            "vsock_cid must be at most {MAX_GUEST_CID}: the kernel refuses \
+             VMADDR_CID_ANY and above"
+        ));
+    }
+    // Every VM's CID, up to the run's last, must fit the transport.
+    let last = base
+        .checked_add(u64::try_from(vms).map_err(|_| "n is too large".to_string())? - 1)
+        .ok_or_else(|| "vsock_cid is too large for this many VMs".to_string())?;
+    if last > MAX_GUEST_CID {
+        return Err("vsock_cid and n together run past the last guest CID".to_string());
+    }
+    Ok(base)
+}
+
+/// The `count` guest CIDs a run rooted at `base` holds: `base`, `base + 1`,
+/// ... .
+///
+/// The span is checked against the vsock transport before this (see
+/// [`checked_base`]), and an allocated base is inside [`RUN_CID_BASE`]..=
+/// [`RUN_CID_END`] by construction, so the addition cannot overflow.
+fn cid_span(base: u64, count: u32) -> Vec<u64> {
+    (0..count).map(|offset| base + u64::from(offset)).collect()
 }
 
 /// vCPUs per VM as the spawner wants them, or why the request is outside the
@@ -163,6 +239,100 @@ fn spawner_memory_mib(memory_mib: u32) -> Result<usize, String> {
     usize::try_from(memory_mib).map_err(|_| "memory_mib is too large for this host".to_string())
 }
 
+/// The guest CIDs this node's runs hold, and the run range they are drawn
+/// from.
+///
+/// Every VM of every run has a CID, so a create request always needs one - or
+/// a span of them, one per VM. A request that names a `vsock_cid` holds exactly
+/// its own span (the caller's choice, validated before this); a request that
+/// names none is given the first free span of [`RUN_CID_BASE`]..=[`RUN_CID_END`].
+/// The book is what makes an allocation honest: two live runs are never given
+/// the same CID, so two VMs never race the same vsock muxer socket, and a run
+/// that cannot get a span is refused here - before any VM boots, and before
+/// the run is registered. A run releases its span when it ends, so a finished
+/// run's CIDs are the next run's to draw.
+#[derive(Debug, Default)]
+struct CidBook {
+    /// One entry per live run: its id and every CID it holds, in order.
+    held: Mutex<Vec<(String, Vec<u64>)>>,
+}
+
+impl CidBook {
+    /// The book, poison-proof: a panicking run must not take the node's other
+    /// runs with it.
+    fn held(&self) -> MutexGuard<'_, Vec<(String, Vec<u64>)>> {
+        self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Holds `cids` for `run`.
+    ///
+    /// Holding the same run twice replaces its earlier span (every creation
+    /// path holds once, before its VMs boot). A span that names a CID another
+    /// live run holds is held as it stands: two callers may pin overlapping
+    /// ranges - the caller's choice, exactly as before this book existed - and
+    /// the book's job is to keep an *allocation* off every CID a run already
+    /// owns.
+    fn hold(&self, run: &str, cids: Vec<u64>) {
+        put(&mut self.held(), run, cids);
+    }
+
+    /// Gives `run` the first free span of `count` consecutive CIDs of
+    /// [`RUN_CID_BASE`]..=[`RUN_CID_END`] and returns its base.
+    ///
+    /// The search and the hold happen under one lock, so two runs created at
+    /// once can never be handed the same span. `Err` names the range and every
+    /// CID a live run holds: exhaustion is a refusal the caller reads, not a
+    /// VM booted without a CID.
+    fn allocate(&self, run: &str, count: u32) -> Result<u64, String> {
+        let mut held = self.held();
+        let busy = busy(&held);
+        let free = (RUN_CID_BASE..=RUN_CID_END).find(|base| {
+            (0..count).all(|offset| {
+                base.checked_add(u64::from(offset))
+                    .is_some_and(|cid| cid <= RUN_CID_END && !busy.contains(&cid))
+            })
+        });
+        match free {
+            Some(base) => {
+                let cids = cid_span(base, count);
+                put(&mut held, run, cids);
+                Ok(base)
+            }
+            None => Err(format!(
+                "the run range {RUN_CID_BASE}..={RUN_CID_END} has no free span of {count} \
+                 guest CIDs (in use: {})",
+                busy.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+            )),
+        }
+    }
+
+    /// Releases `run`'s span and returns whether the run held one.
+    ///
+    /// Idempotent: every path that ends a run calls it, and only the first
+    /// call finds the span.
+    fn release(&self, run: &str) -> bool {
+        let mut held = self.held();
+        let before = held.len();
+        held.retain(|(id, _)| id != run);
+        held.len() != before
+    }
+}
+
+/// Every CID the runs in `held` hold.
+fn busy(held: &[(String, Vec<u64>)]) -> BTreeSet<u64> {
+    held.iter()
+        .flat_map(|(_, cids)| cids.iter().copied())
+        .collect()
+}
+
+/// Holds `cids` for `run` in `held`, replacing whatever span it held before.
+fn put(held: &mut Vec<(String, Vec<u64>)>, run: &str, cids: Vec<u64>) {
+    match held.iter_mut().find(|(id, _)| id == run) {
+        Some(entry) => entry.1 = cids,
+        None => held.push((run.to_string(), cids)),
+    }
+}
+
 /// The run-level shape every VM of a run shares.
 #[derive(Debug, Clone, Copy)]
 struct RunMeta {
@@ -175,17 +345,20 @@ struct RunMeta {
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
-/// vsock CID when the run has vsock devices, and its role when it has one.
+/// vsock CID, and its role when it has one.
 ///
 /// The per-VM plan is the only thing the two creation paths differ in — a
-/// request's VMs share `plaza.vm=<i>` and a CID span, the role fleet's VMs each
-/// carry their role — so everything else about a run's life is shared.
+/// request's VMs share `plaza.vm=<i>` on one CID span, the role fleet's VMs
+/// each carry their role — so everything else about a run's life is shared.
+///
+/// Every plan has a CID: the harness is the guest's vsock client, so a VM
+/// without one could not be an agent at all.
 #[derive(Debug, Clone)]
 struct VmPlan {
     /// The VM's whole kernel command line.
     cmdline: String,
-    /// The VM's guest CID, when the run has vsock devices.
-    vsock_cid: Option<u64>,
+    /// The VM's guest CID.
+    vsock_cid: u64,
     /// The role this VM's guest runs as, when it runs as one.
     role: Option<String>,
 }
@@ -386,8 +559,13 @@ pub struct RunView<'a> {
 pub struct VmView {
     /// The VM's index among the run's VMs.
     pub id: u32,
-    /// The VM's vsock guest CID (`vsock_cid + index`); absent when the run has
-    /// no vsock devices.
+    /// The VM's vsock guest CID (`vsock_cid + index`), or the base the node
+    /// allocated for a run whose request named none.
+    ///
+    /// Every VM of every run has one now - the harness is the vsock client -
+    /// so a run's VM row always carries it; it stays optional in the JSON
+    /// because a client reads its absence as "no vsock device", a reading the
+    /// daemon no longer produces but the console's parsers still model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guest_cid: Option<u64>,
     /// The role this VM's guest runs as (the role fleet's VM rows carry one);
@@ -452,6 +630,10 @@ pub struct Registry {
     epoch_ms: u64,
     /// Where the registry's run, VM and serial-delta events are published.
     events: Arc<EventBus>,
+    /// The guest CIDs the node's runs hold (see [`CidBook`]). It is shared
+    /// with every run, so a run that ends releases its own span without the
+    /// registry having to watch for it.
+    cids: Arc<CidBook>,
     inner: Mutex<RegistryInner>,
 }
 
@@ -470,6 +652,7 @@ impl Registry {
             uds_dir,
             epoch_ms: now_ms(),
             events,
+            cids: Arc::new(CidBook::default()),
             inner: Mutex::new(RegistryInner {
                 next_seq: 0,
                 runs: Vec::new(),
@@ -486,30 +669,51 @@ impl Registry {
 
     /// Creates and boots a run from a `POST /api/v0/runs` request.
     ///
-    /// The run is registered in `starting` before its VMs are booted, so a
-    /// concurrent GET can see it, and moves to `running` once they are up (or
-    /// `failed` when they are not). A `DELETE` that arrives while the VMs are
-    /// booting moves the run to `killed`, and the VMs that come up afterwards
-    /// are killed rather than left behind.
+    /// The run's guest CIDs are taken first - the caller's own span when it
+    /// named a `vsock_cid`, otherwise the first free span of the run range
+    /// ([`RUN_CID_BASE`]..=[`RUN_CID_END`], held in the node's [`CidBook`]) -
+    /// so a request the node cannot give CIDs to is refused with no run, no
+    /// workspace copies and no VM behind it. The run is then registered in
+    /// `starting` before its VMs are booted, so a concurrent GET can see it,
+    /// and moves to `running` once they are up (or `failed` when they are
+    /// not). A `DELETE` that arrives while the VMs are booting moves the run to
+    /// `killed`, and the VMs that come up afterwards are killed rather than
+    /// left behind.
+    ///
+    /// Every VM carries the harness and so every VM has a CID; which session
+    /// its guest speaks follows who chose the CIDs (see [`RunSession`]). A
+    /// request refused for lack of CIDs has already taken the next run id (the
+    /// book keys a span by the run that holds it), so the refusal leaves a gap
+    /// in the run numbering - the same gap [`Registry::reserve_run_id`] has
+    /// always documented, and the run's id names nothing until the run exists.
     pub fn create_run(&self, request: &CreateRun) -> Result<Arc<Run>, String> {
-        let (template, vms, vsock_cid) = request.spec(&self.images)?;
-        // One plan per VM. One command line is shared by every VM of a spawn,
-        // so the per-VM index rides as a flag the guest harness can trust, and
-        // every VM's CID is the run's base plus its index.
+        let (vms, named) = request.checked()?;
+        let count = u32::try_from(vms).map_err(|_| "n is too large".to_string())?;
+        // The id is reserved before the CIDs, because the book keys a span by
+        // the run that holds it: allocating and holding happen under the
+        // book's lock, so two creates racing here never draw the same span.
+        let id = self.reserve_run_id();
+        let (base, session) = match named {
+            Some(base) => {
+                self.cids.hold(&id, cid_span(base, count));
+                (base, RunSession::Frozen)
+            }
+            None => (self.cids.allocate(&id, count)?, RunSession::Agent),
+        };
+        let template = request.cmdline(session);
+        // One plan per VM. Every VM's CID is the run's base plus its index,
+        // and its index rides on the command line as the flag the guest
+        // harness reads for its identity within the run.
         let mut plans = Vec::with_capacity(vms);
-        for index in 0..vms {
-            let index = u32::try_from(index).map_err(|_| "n is too large".to_string())?;
+        for index in 0..count {
             plans.push(VmPlan {
-                cmdline: if vsock_cid.is_some() || self.images.workspace.is_some() {
-                    format!("{} plaza.vm={index}", template.cmdline)
-                } else {
-                    template.cmdline.clone()
-                },
-                vsock_cid: vsock_cid.map(|base| base + u64::from(index)),
+                cmdline: format!("{template} plaza.vm={index}"),
+                vsock_cid: base + u64::from(index),
                 role: None,
             });
         }
         self.boot_run(
+            id,
             RunMeta {
                 vcpus: request.vcpus,
                 memory_mib: request.memory_mib,
@@ -531,14 +735,22 @@ impl Registry {
     /// `failed` with the VMs that had come up already stopped (the spawner's
     /// all-or-nothing boot), and the caller reports that the setup does not
     /// stand rather than serving a node without its agents.
+    ///
+    /// The fleet's own CIDs are held like any run's, so an allocated run or
+    /// another caller's pinned run never draws a CID a live fleet owns.
     pub fn create_agent_fleet(&self, fleet: &Fleet) -> Result<Arc<Run>, String> {
+        let plans = Self::fleet_plans(fleet);
+        let id = self.reserve_run_id();
+        self.cids
+            .hold(&id, plans.iter().map(|plan| plan.vsock_cid).collect());
         self.boot_run(
+            id,
             RunMeta {
                 vcpus: u32::from(fleet.vcpus()),
                 memory_mib: fleet.memory_mib(),
                 beats: None,
             },
-            Self::fleet_plans(fleet),
+            plans,
         )
     }
 
@@ -550,23 +762,27 @@ impl Registry {
             .into_iter()
             .map(|vm| VmPlan {
                 cmdline: format!("{CONSOLE} {}", vm.flags),
-                vsock_cid: Some(vm.guest_cid),
+                vsock_cid: vm.guest_cid,
                 role: Some(vm.role),
             })
             .collect()
     }
 
-    /// Boots one run from its `plans`: reserves its id, lays out its per-VM
-    /// workspace copies, registers it in `starting`, spawns every VM, and moves
-    /// it to `running` (or `failed`).
+    /// Boots one run from its `plans`: reserves its workspace copies,
+    /// registers it in `starting`, spawns every VM, and moves it to `running`
+    /// (or `failed`).
     ///
     /// Every creation path goes through here, so a run's life is the same
-    /// however it was asked for; only the plans differ.
-    fn boot_run(&self, meta: RunMeta, plans: Vec<VmPlan>) -> Result<Arc<Run>, String> {
+    /// however it was asked for; only the plans and the reserved `id` differ.
+    /// The caller has already taken the run's guest CIDs in the node's
+    /// [`CidBook`] - it needs the id to do that - so this never boots a VM the
+    /// book does not cover, and every refusal *before* a run is registered
+    /// hands that span back.
+    fn boot_run(&self, id: String, meta: RunMeta, plans: Vec<VmPlan>) -> Result<Arc<Run>, String> {
         // The shape is checked here, at the one place every path passes, as
         // well as at the edge where the request is read.
-        let vcpus = spawner_vcpus(meta.vcpus)?;
-        let memory_mib = spawner_memory_mib(meta.memory_mib)?;
+        let vcpus = spawner_vcpus(meta.vcpus).map_err(|err| self.give_back(&id, err))?;
+        let memory_mib = spawner_memory_mib(meta.memory_mib).map_err(|err| self.give_back(&id, err))?;
         let vms = plans.len();
         // A run's workspace volume is writable, so every VM of the run gets its
         // own copy of the base image: one copy per VM, in the run's own
@@ -575,7 +791,6 @@ impl Registry {
         // made before the run is registered, so a failure to prepare them is
         // reported to the caller without leaving a run behind. The copies stay
         // when the run ends: they hold the guests' work.
-        let id = self.reserve_run_id();
         let workspaces = match &self.images.workspace {
             Some(base) => {
                 // The directory name carries the daemon's start stamp as well
@@ -586,7 +801,10 @@ impl Registry {
                 let run_dir = self.run_dir(&id);
                 Some(
                     spawner::materialize_workspaces(base, &run_dir, vms).map_err(|err| {
-                        format!("cannot prepare the run's workspace images: {err}")
+                        self.give_back(
+                            &id,
+                            format!("cannot prepare the run's workspace images: {err}"),
+                        )
                     })?,
                 )
             }
@@ -604,9 +822,9 @@ impl Registry {
                 memory_mib,
                 initrd: Some(self.images.initrd.clone()),
                 gic: None,
-                vsock: plan.vsock_cid.map(|guest_cid| VsockConfig {
-                    guest_cid,
-                    uds_path: self.uds_dir.join(format!("vm{guest_cid}")),
+                vsock: Some(VsockConfig {
+                    guest_cid: plan.vsock_cid,
+                    uds_path: self.uds_dir.join(format!("vm{}", plan.vsock_cid)),
                 }),
                 // One image per VM, in the order `materialize_workspaces`
                 // produced them: the spawn's ids are `0..vms` and the run has
@@ -640,7 +858,7 @@ impl Registry {
                     .enumerate()
                     .map(|(index, handle)| VmSlot {
                         id: handle.id(),
-                        guest_cid: plans[index].vsock_cid,
+                        guest_cid: Some(plans[index].vsock_cid),
                         role: plans[index].role.clone(),
                         runtime: handle.runtime(),
                         handle: Some(handle),
@@ -673,6 +891,10 @@ impl Registry {
                 if let Err(refused) = inner.transition(RunState::Failed) {
                     eprintln!("noded: run {}: {refused} (a kill raced the failed boot)", run.id);
                 } else {
+                    // The run ended here, so its CIDs go back to the book: the
+                    // next run may draw them, and none of this run's VMs ever
+                    // reached a guest.
+                    run.release_cids();
                     run.events.publish(Event::Run {
                         id: run.id.clone(),
                         state: RunState::Failed.as_str(),
@@ -681,6 +903,15 @@ impl Registry {
             }
         }
         Ok(run)
+    }
+
+    /// Gives the span reserved for `id` back to the node's [`CidBook`] and
+    /// hands `err` on: what every refusal in [`Registry::boot_run`] that
+    /// happens *before* a run is registered does, so a request that never
+    /// became a run never holds CIDs.
+    fn give_back(&self, id: &str, err: String) -> String {
+        self.cids.release(id);
+        err
     }
 
     /// The registry's event bus, so a stream endpoint can subscribe to it.
@@ -753,6 +984,7 @@ impl Registry {
             beats: meta.beats,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
+            cids: Arc::clone(&self.cids),
             inner: Mutex::new(RunInner {
                 state: RunState::Starting,
                 ended_at: None,
@@ -786,6 +1018,9 @@ pub struct Run {
     created_at: u64,
     /// Where this run's state, VM and serial-delta events are published.
     events: Arc<EventBus>,
+    /// The node's CID book: this run's span is held there for the run's
+    /// lifetime and released when it ends ([`Run::release_cids`]).
+    cids: Arc<CidBook>,
     inner: Mutex<RunInner>,
 }
 
@@ -1009,6 +1244,28 @@ impl Run {
                 });
             }
         }
+        // The run is over once its VMs have been stopped, so its CIDs go back
+        // to the book and the next run may draw them. A VM that refused to
+        // stop still holds its CID's muxer socket, so its span is *not* given
+        // back: the leak is reported above, and handing that CID to a new run
+        // would make the new run's muxer bind fail on a path a live guest
+        // still owns.
+        let all_stopped = inner.all_vms_stopped();
+        drop(inner);
+        if all_stopped {
+            self.release_cids();
+        }
+    }
+
+    /// Releases this run's guest CIDs: the run has ended, so its span is the
+    /// next run's to draw.
+    ///
+    /// Idempotent, and called by every path that ends a run (the boot's
+    /// failure, a kill, and the watcher's `done`); only the first call finds
+    /// the span. A run that has not ended holds it, which is what keeps a
+    /// second run off its CIDs.
+    fn release_cids(&self) {
+        self.cids.release(&self.id);
     }
 
     fn lock(&self) -> MutexGuard<'_, RunInner> {
@@ -1105,6 +1362,12 @@ fn watch_run(run: &Run) {
                     id: run.id.clone(),
                     state: inner.state.as_str(),
                 });
+                // The run is over, so its CIDs go back to the book and the
+                // next run may draw them. Release is idempotent (a kill that
+                // raced this last exit released them already), and it is done
+                // outside the run's lock: the book has its own.
+                drop(inner);
+                run.release_cids();
                 return;
             }
         }
@@ -1151,7 +1414,6 @@ pub(crate) fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     const STATES: [RunState; 5] = [
         RunState::Starting,
@@ -1365,6 +1627,18 @@ mod tests {
         cid: Option<u64>,
         role: Option<&str>,
     ) -> Arc<Run> {
+        run_with_one_vm_and_book(run_state, vm_state, cid, role, Arc::new(CidBook::default()))
+    }
+
+    /// The same run, holding `cids` as its CID book: what a run whose CIDs are
+    /// in the node's book is (see [`an_ending_run_gives_its_cids_back`]).
+    fn run_with_one_vm_and_book(
+        run_state: RunState,
+        vm_state: VmState,
+        cid: Option<u64>,
+        role: Option<&str>,
+        cids: Arc<CidBook>,
+    ) -> Arc<Run> {
         Arc::new(Run {
             id: "r1".to_string(),
             vcpus: 1,
@@ -1372,6 +1646,7 @@ mod tests {
             beats: None,
             created_at: now_ms(),
             events: EventBus::new(),
+            cids,
             inner: Mutex::new(RunInner {
                 state: run_state,
                 ended_at: None,
@@ -1459,6 +1734,60 @@ mod tests {
         assert_eq!(VmState::from_exit(VmExit::Killed), VmState::Killed);
     }
 
+    /// A run whose CIDs the caller pins is the demo task's frozen session, and
+    /// its VMs carry the harness; a run the node allocates CIDs for is an
+    /// operator run, and its VMs are keepalive agents. Both command lines name
+    /// the harness, which is what makes `plaza.vm=<i>` meaningful at all.
+    #[test]
+    fn the_cmdline_names_the_harness_and_the_runs_session() {
+        let request = |beats: Option<u32>| CreateRun {
+            n: 1,
+            vcpus: 1,
+            memory_mib: 128,
+            beats,
+            vsock_cid: None,
+        };
+
+        // The demo session: the harness, exactly as it was before the run
+        // range existed.
+        assert_eq!(
+            request(None).cmdline(RunSession::Frozen),
+            "console=ttyS0 plaza.harness=1"
+        );
+        assert_eq!(
+            request(Some(2)).cmdline(RunSession::Frozen),
+            "console=ttyS0 plaza.beats=2 plaza.harness=1"
+        );
+
+        // The operator run: the same harness, kept up by the keepalive flag.
+        assert_eq!(
+            request(None).cmdline(RunSession::Agent),
+            "console=ttyS0 plaza.harness=1 plaza.keepalive=1"
+        );
+        assert_eq!(
+            request(Some(2)).cmdline(RunSession::Agent),
+            "console=ttyS0 plaza.beats=2 plaza.harness=1 plaza.keepalive=1"
+        );
+    }
+
+    /// The run range must hold one full-size run: a request of [`MAX_VMS`] VMs
+    /// with no `vsock_cid` is one the node has to be able to serve.
+    #[test]
+    fn the_run_range_holds_a_full_size_run() {
+        let width = RUN_CID_END - RUN_CID_BASE + 1;
+        assert!(
+            width >= u64::from(MAX_VMS),
+            "the run range is {width} wide and a run may have {MAX_VMS} VMs"
+        );
+        // The range is the node's own: it must not collide with the role
+        // fleet's default first CID.
+        assert!(
+            RUN_CID_END < crate::DEFAULT_AGENTS_CID_BASE,
+            "the run range runs into the fleet's default CID base"
+        );
+        assert!(RUN_CID_BASE >= MIN_GUEST_CID);
+    }
+
     #[test]
     fn a_create_request_is_range_checked_before_a_run_exists() {
         let request = |n: u32, vcpus: u32, memory_mib: u32| CreateRun {
@@ -1469,15 +1798,11 @@ mod tests {
             vsock_cid: None,
         };
 
-        let (spec, vms, vsock_cid) = request(2, 2, 512)
-            .spec(&images())
+        let (vms, named) = request(2, 2, 512)
+            .checked()
             .expect("a request inside the ranges");
-        assert_eq!(vsock_cid, None);
         assert_eq!(vms, 2);
-        assert_eq!(spec.vcpus, 2);
-        assert_eq!(spec.memory_mib, 512);
-        assert_eq!(spec.cmdline, "console=ttyS0");
-        assert_eq!(spec.initrd.as_deref(), Some(Path::new("initrd")));
+        assert_eq!(named, None, "no CID was named, so the node allocates one");
 
         for bad in [
             request(0, 1, 128),
@@ -1486,7 +1811,7 @@ mod tests {
             request(1, 65, 128),
             request(1, 1, 127),
         ] {
-            assert!(bad.spec(&images()).is_err(), "should be refused: {bad:?}");
+            assert!(bad.checked().is_err(), "should be refused: {bad:?}");
         }
 
         let edges = [
@@ -1495,7 +1820,7 @@ mod tests {
             request(1, 1, u32::MAX),
         ];
         for edge in edges {
-            assert!(edge.spec(&images()).is_ok(), "should be allowed: {edge:?}");
+            assert!(edge.checked().is_ok(), "should be allowed: {edge:?}");
         }
     }
 
@@ -1510,28 +1835,275 @@ mod tests {
         };
 
         // A CID inside the valid range is accepted, base + n - 1 included.
-        assert!(request(Some(3)).spec(&images()).is_ok());
-        assert!(request(Some(MAX_GUEST_CID - 1)).spec(&images()).is_ok());
+        assert_eq!(
+            request(Some(3)).checked().expect("a valid CID").1,
+            Some(3)
+        );
+        assert_eq!(
+            request(Some(MAX_GUEST_CID - 1))
+                .checked()
+                .expect("a valid CID")
+                .1,
+            Some(MAX_GUEST_CID - 1)
+        );
 
         // The kernel refuses VMADDR_CID_ANY (u32::MAX) and anything above it.
-        assert!(request(Some(u32::MAX as u64)).spec(&images()).is_err());
-        assert!(request(Some(u64::from(u32::MAX) + 1)).spec(&images()).is_err());
+        assert!(request(Some(u32::MAX as u64)).checked().is_err());
+        assert!(request(Some(u64::from(u32::MAX) + 1)).checked().is_err());
 
         // The run's last VM (base + n - 1) must still fit the transport.
-        assert!(request(Some(MAX_GUEST_CID)).spec(&images()).is_err());
+        assert!(request(Some(MAX_GUEST_CID)).checked().is_err());
+
+        // A CID the caller names is kept, not replaced by an allocation.
+        assert_eq!(
+            request(Some(RUN_CID_BASE)).checked().expect("in range").1,
+            Some(RUN_CID_BASE)
+        );
     }
 
+    /// The book hands out the first free span of the run range, one span per
+    /// run, and gives a released span back.
     #[test]
-    fn beats_becomes_the_guest_cmdline() {
-        let request = CreateRun {
-            n: 1,
-            vcpus: 1,
-            memory_mib: 128,
-            beats: Some(2),
-            vsock_cid: None,
+    fn an_allocation_takes_the_first_free_span_and_gives_it_back() {
+        let book = CidBook::default();
+        assert_eq!(book.allocate("r1", 1).expect("the range is empty"), RUN_CID_BASE);
+        assert_eq!(
+            book.allocate("r2", 1).expect("the next span is free"),
+            RUN_CID_BASE + 1
+        );
+        let span = book.allocate("r3", 3).expect("three more are free");
+        assert_eq!(span, RUN_CID_BASE + 2);
+        assert_eq!(busy(&book.held()).len(), 5, "three runs, five CIDs");
+
+        // Releasing gives exactly that run's span back: the next allocation
+        // reuses the hole, not the tail.
+        assert!(book.release("r1"));
+        assert_eq!(book.allocate("r4", 1).expect("the hole is free"), RUN_CID_BASE);
+        assert!(!book.release("r1"), "release is idempotent");
+
+        // Every live run's span is its own: no two allocations overlap.
+        let held = book.held();
+        let mut all: Vec<u64> = held.iter().flat_map(|(_, cids)| cids.iter().copied()).collect();
+        let count = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), count, "two runs were given the same CID: {held:?}");
+    }
+
+    /// A span the caller pinned is never allocated to another run: the
+    /// caller's choice wins, and the allocator works around it.
+    #[test]
+    fn a_pinned_span_is_never_allocated() {
+        let book = CidBook::default();
+        book.hold("pinned", cid_span(RUN_CID_BASE, 2));
+        assert_eq!(
+            book.allocate("r1", 1).expect("room above the pinned span"),
+            RUN_CID_BASE + 2
+        );
+        // A pinned span *outside* the run range costs the allocator nothing.
+        book.hold("elsewhere", cid_span(crate::DEFAULT_AGENTS_CID_BASE, 3));
+        assert_eq!(
+            book.allocate("r2", 1).expect("the range is still free"),
+            RUN_CID_BASE + 3
+        );
+    }
+
+    /// Exhaustion is a refusal that names the range and every busy CID, not a
+    /// span quietly handed out twice.
+    #[test]
+    fn a_full_range_refuses_the_next_allocation_and_names_it() {
+        let book = CidBook::default();
+        let width = u32::try_from(RUN_CID_END - RUN_CID_BASE + 1).expect("the range fits");
+        for index in 0..width {
+            book.allocate(&format!("r{index}"), 1)
+                .expect("every CID of the range is free at the start");
+        }
+        let refused = book.allocate("late", 1).expect_err("the range is full");
+        assert!(
+            refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")),
+            "{refused}"
+        );
+        assert!(refused.contains(&format!("in use: {RUN_CID_BASE}, ")), "{refused}");
+        assert!(refused.contains(&format!(", {RUN_CID_END}")), "{refused}");
+
+        // A span wider than the whole range is refused the same way, and a
+        // released CID makes room for it again.
+        assert!(book.allocate("wide", width + 1).is_err());
+        assert!(book.release("r0"));
+        assert_eq!(book.allocate("late", 1).expect("the hole is free"), RUN_CID_BASE);
+    }
+
+    /// A create that cannot prepare its workspace copies is refused with no
+    /// run - and, because it had already reserved a span, with those CIDs back
+    /// in the book: a request that never became a run holds nothing.
+    #[test]
+    fn a_boot_that_never_registers_a_run_holds_no_cids() {
+        let dir = scratch("cid-unbooted");
+        let images = VmImages {
+            kernel: PathBuf::from("no-such-kernel"),
+            initrd: PathBuf::from("no-such-initrd"),
+            // A base image that is not there: `materialize_workspaces` fails,
+            // so the run is never registered.
+            workspace: Some(dir.join("no-such-base.ext4")),
         };
-        let (spec, _, _) = request.spec(&images()).expect("a request inside the ranges");
-        assert_eq!(spec.cmdline, "console=ttyS0 plaza.beats=2");
+        let registry = Registry::new(images, dir.join("uds"), EventBus::new());
+
+        let refused = registry
+            .create_run(&CreateRun {
+                n: 2,
+                vcpus: 1,
+                memory_mib: MIN_MEMORY_MIB,
+                beats: None,
+                vsock_cid: None,
+            })
+            .err()
+            .expect("the workspace copies cannot be prepared");
+        assert!(
+            refused.contains("cannot prepare the run's workspace images"),
+            "{refused}"
+        );
+        assert!(registry.list().is_empty(), "a refused create left a run behind");
+        assert!(
+            busy(&registry.cids.held()).is_empty(),
+            "a create that never became a run kept its CIDs: {:?}",
+            registry.cids.held()
+        );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A run whose create request cannot get CIDs is refused *before* anything
+    /// is spent on it: no run in the register, and - with a workspace base, the
+    /// first thing a boot would do - no run directory either.
+    #[test]
+    fn a_run_that_cannot_get_cids_is_refused_before_anything_is_booted() {
+        let dir = scratch("cid-exhausted");
+        let base = dir.join("workspace.ext4");
+        std::fs::write(&base, b"workspace bytes").expect("the base image");
+        let uds_dir = dir.join("uds");
+        let images = VmImages {
+            kernel: PathBuf::from("no-such-kernel"),
+            initrd: PathBuf::from("no-such-initrd"),
+            workspace: Some(base),
+        };
+        let registry = Registry::new(images, uds_dir.clone(), EventBus::new());
+        // Take the whole run range the way another live run would.
+        let width = u32::try_from(RUN_CID_END - RUN_CID_BASE + 1).expect("the range fits");
+        registry
+            .cids
+            .hold("elsewhere", cid_span(RUN_CID_BASE, width));
+
+        let refused = registry
+            .create_run(&CreateRun {
+                n: 1,
+                vcpus: 1,
+                memory_mib: MIN_MEMORY_MIB,
+                beats: None,
+                vsock_cid: None,
+            })
+            .err()
+            .expect("the run range is full");
+        assert!(refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")), "{refused}");
+        assert!(refused.contains("in use: "), "{refused}");
+        // Nothing was created and nothing was laid out: the refusal came
+        // before a run id became a run directory.
+        assert!(registry.list().is_empty(), "a refused create left a run behind");
+        let laid_out = std::fs::read_dir(&uds_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with("run-"))
+            })
+            .unwrap_or(false);
+        assert!(!laid_out, "a refused create laid out a workspace copy");
+
+        // A pinned request still works while the range is full: the caller's
+        // own CID is not drawn from the range.
+        let _pinned = registry
+            .create_run(&CreateRun {
+                n: 2,
+                vcpus: 1,
+                memory_mib: MIN_MEMORY_MIB,
+                beats: None,
+                vsock_cid: Some(crate::DEFAULT_AGENTS_CID_BASE),
+            })
+            .expect("a pinned run does not need the run range");
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A run that ends - here, a boot that fails, which the tests can produce
+    /// without a hypervisor - gives its CIDs back, so the next run draws the
+    /// same span instead of the range leaking a span per attempt.
+    #[test]
+    fn a_finished_run_gives_its_cids_back() {
+        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new());
+        for _ in 0..3 {
+            let run = registry
+                .create_run(&CreateRun {
+                    n: 2,
+                    vcpus: 1,
+                    memory_mib: MIN_MEMORY_MIB,
+                    beats: None,
+                    vsock_cid: None,
+                })
+                .expect("the run exists even when its VMs cannot boot");
+            assert_eq!(run.view(Detail::Summary).state, "failed");
+            // The failed boot released the span: the book is empty again.
+            assert!(
+                busy(&registry.cids.held()).is_empty(),
+                "a failed run kept its CIDs"
+            );
+        }
+    }
+
+    /// A run that ends by itself, or is killed, gives its CIDs back exactly
+    /// once - the watcher's `done` and the kill both go through
+    /// [`Run::release_cids`].
+    #[test]
+    fn an_ending_run_gives_its_cids_back() {
+        // The watcher: every VM has stopped, so the run finishes as `done`.
+        let book = Arc::new(CidBook::default());
+        book.hold("r1", cid_span(RUN_CID_BASE, 2));
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Exited,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::clone(&book),
+        );
+        watch_run(&run);
+        assert_eq!(run.view(Detail::Summary).state, "done");
+        assert!(busy(&book.held()).is_empty(), "a `done` run kept its CIDs");
+
+        // The kill: a run whose VMs have already stopped is marked `killed`
+        // and releases the span the same way.
+        let book = Arc::new(CidBook::default());
+        book.hold("r1", cid_span(RUN_CID_BASE, 2));
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Exited,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::clone(&book),
+        );
+        run.kill();
+        assert_eq!(run.view(Detail::Summary).state, "killed");
+        assert!(busy(&book.held()).is_empty(), "a killed run kept its CIDs");
+
+        // A run that has *not* ended keeps them: this is what stops a second
+        // run from being handed a live run's CIDs.
+        let book = Arc::new(CidBook::default());
+        book.hold("r1", cid_span(RUN_CID_BASE, 1));
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Running,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::clone(&book),
+        );
+        assert_eq!(run.view(Detail::Summary).state, "running");
+        assert!(busy(&book.held()).contains(&RUN_CID_BASE));
     }
 
     /// A two-role manifest, as the daemon reads it.
@@ -1558,13 +2130,13 @@ mod tests {
             plans[0].cmdline,
             "console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=0"
         );
-        assert_eq!(plans[0].vsock_cid, Some(100));
+        assert_eq!(plans[0].vsock_cid, 100);
         assert_eq!(plans[0].role.as_deref(), Some("builder"));
         assert_eq!(
             plans[1].cmdline,
             "console=ttyS0 plaza.role=reviewer plaza.keepalive=1 plaza.vm=1"
         );
-        assert_eq!(plans[1].vsock_cid, Some(101));
+        assert_eq!(plans[1].vsock_cid, 101);
         assert_eq!(plans[1].role.as_deref(), Some("reviewer"));
     }
 
