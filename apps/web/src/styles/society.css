@@ -4,9 +4,10 @@
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
   gap: var(--s4);
-  height: calc(100vh - var(--topbar-h) - 120px);
-  min-height: 480px;
+  flex: 1;
+  min-height: 0;
 }
+.soc-panel { overflow-y: auto; }
 
 .soc-graph {
   position: relative;

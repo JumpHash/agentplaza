@@ -38,6 +38,8 @@ export function mount(root: HTMLElement): Cleanup {
   const graph = h('div.soc-graph');
   const aside = h('aside.soc-panel', { 'aria-label': 'Selected agent' });
   root.append(h('div.view-head', null, h('h1', null, 'Society')), h('div.soc', null, graph, aside));
+  // Like the Floor, the Society fills the window and never scrolls the page.
+  document.body.classList.add('floor-mode');
 
   const pos = new Map<number, Pt>();
   let data: Society | null = null;
@@ -89,6 +91,7 @@ export function mount(root: HTMLElement): Cleanup {
   return () => {
     alive = false;
     window.clearInterval(timer);
+    document.body.classList.remove('floor-mode');
   };
 }
 
@@ -194,9 +197,9 @@ function drawGraph(d: Society, selected: number | null, pos: Map<number, Pt>, pi
   const bondOf = new Map(d.bonds.map((b) => [`${b.from}>${b.to}`, b] as const));
   const mutual = (b: Bond): boolean => bondOf.has(`${b.to}>${b.from}`);
 
-  const bg = s('rect', { class: 'soc-bg', x: 0, y: 0, width: W, height: H });
+  const bg = s('rect', { class: 'soc-bg', x: -W, y: -H, width: 3 * W, height: 3 * H });
   bg.addEventListener('click', () => pick(null));
-  const dots = s('rect', { class: 'soc-dots', x: 0, y: 0, width: W, height: H, fill: 'url(#soc-dots)' });
+  const dots = s('rect', { class: 'soc-dots', x: -W, y: -H, width: 3 * W, height: 3 * H, fill: 'url(#soc-dots)' });
   const defs = s(
     'defs',
     {},
@@ -244,7 +247,9 @@ function drawGraph(d: Society, selected: number | null, pos: Map<number, Pt>, pi
     const label = clip(name, 16);
     const w = Math.max(56, label.length * 7.4 + 16);
     const classes = ['soc-node'];
-    if (selected !== null && selected !== a.cid) classes.push('soc-dim');
+    // The selected agent's own contacts, either way round, stay bright; everyone else fades.
+    const linked = selected !== null && (bondOf.has(`${selected}>${a.cid}`) || bondOf.has(`${a.cid}>${selected}`));
+    if (selected !== null && selected !== a.cid && !linked) classes.push('soc-dim');
     if (a.cid === selected) classes.push('soc-sel');
 
     const node = s('g', {
@@ -288,7 +293,13 @@ function drawGraph(d: Society, selected: number | null, pos: Map<number, Pt>, pi
     nodes.appendChild(node);
   }
 
-  return s('svg', { class: 'soc-svg', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet', 'aria-label': 'Society graph' }, defs, bg, dots, edges, nodes);
+  // Frame the agents: the view box is their bounds plus room for heads and name tags.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pos.values()) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+  }
+  const box = Number.isFinite(x0) ? `${x0 - 90} ${y0 - 80} ${x1 - x0 + 180} ${y1 - y0 + 170}` : `0 0 ${W} ${H}`;
+  return s('svg', { class: 'soc-svg', viewBox: box, preserveAspectRatio: 'xMidYMid meet', 'aria-label': 'Society graph' }, defs, bg, dots, edges, nodes);
 }
 
 /** A curved path from a's edge to z's edge, bowed to one side. Reversed bonds bow apart. */

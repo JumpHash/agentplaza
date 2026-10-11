@@ -235,11 +235,16 @@ fn model_call(
     }
 }
 
-/// Charges `credits` of metered spend to the work's task (or to the plaza budget
-/// when the work has no task). An exhausted escrow is recorded, and task work is
-/// cancelled.
+/// Charges `credits` of metered spend to the work's task escrow. Only hired work
+/// (a task) is charged: agents talking, reaching out, naming themselves or
+/// debating motions cost the plaza's budget nothing (their tokens are still
+/// counted in their usage). An exhausted escrow is recorded and the task's work
+/// is cancelled.
 fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(), String> {
-    let task = app.work.current(cid).and_then(|item| item.origin.task);
+    let Some(task) = app.work.current(cid).and_then(|item| item.origin.task) else {
+        return Ok(());
+    };
+    let task = Some(task);
     match app.plaza.treasury.charge_spend(task.as_deref(), credits, memo) {
         Ok(_) => {
             if let Some(task) = task.as_deref() {
