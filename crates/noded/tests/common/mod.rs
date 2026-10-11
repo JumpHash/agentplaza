@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use noded::hub::{HubAdmin, HubStatus};
+use noded::hub::Hub;
 use noded::{Config, Server};
 
 /// How long a test waits for a response before failing.
@@ -32,43 +32,21 @@ pub fn missing_kernel() -> PathBuf {
 /// A daemon serving on an ephemeral port whose runs boot from
 /// [`missing_kernel`], with `console_dir` as its console.
 pub fn start(console_dir: PathBuf) -> Server {
-    start_with(console_dir, Config::default().hub_status)
+    start_with(console_dir, Config::default().hub)
 }
 
-/// Like [`start`], with the hub's status surface chosen: `Some` proxies it,
-/// `None` is the `--hub-status off` daemon.
-pub fn start_with(console_dir: PathBuf, hub_status: Option<HubStatus>) -> Server {
-    start_with_hubs(console_dir, hub_status, Config::default().hub_admin)
-}
-
-/// Like [`start_with`], with the hub's admin surface chosen too: `Some` drives
-/// a task's agent through it, `None` is the `--hub-admin off` daemon.
-pub fn start_with_hubs(
-    console_dir: PathBuf,
-    hub_status: Option<HubStatus>,
-    hub_admin: Option<HubAdmin>,
-) -> Server {
-    Server::start(config_with(console_dir, hub_status, hub_admin))
-        .expect("the test daemon should bind")
+/// Like [`start`], with the hub chosen: `None` is the `--hub-port off` daemon.
+pub fn start_with(console_dir: PathBuf, hub: Option<Hub>) -> Server {
+    Server::start(config(console_dir, hub)).expect("the test daemon should bind")
 }
 
 /// The config [`start_with`] runs a daemon with.
-pub fn config(console_dir: PathBuf, hub_status: Option<HubStatus>) -> Config {
-    config_with(console_dir, hub_status, Config::default().hub_admin)
-}
-
-/// The config [`start_with_hubs`] runs a daemon with.
-pub fn config_with(
-    console_dir: PathBuf,
-    hub_status: Option<HubStatus>,
-    hub_admin: Option<HubAdmin>,
-) -> Config {
+pub fn config(console_dir: PathBuf, hub: Option<Hub>) -> Config {
     Config {
         port: 0,
         kernel: missing_kernel(),
         initrd: missing_kernel(),
-        hub_status,
-        hub_admin,
+        hub,
         console_dir,
         uds_dir: PathBuf::from("/tmp/plaza-vsock"),
         workspace: None,

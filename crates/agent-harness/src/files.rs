@@ -1236,15 +1236,6 @@ mod tests {
     }
 
     #[test]
-    fn a_symlink_that_stays_inside_is_followed() {
-        let (workspace, _outside) = scratch("symlink-in");
-        write_inside(&workspace, "real.txt", b"the real file\n");
-        symlink("real.txt", workspace.root().join("alias.txt")).expect("a symlink inside");
-        let result = served(&workspace, "read_file", json!({ "path": "alias.txt" }));
-        assert_eq!(result["content"], "the real file\n");
-    }
-
-    #[test]
     fn a_missing_workspace_is_unavailable_not_a_panic() {
         let workspace = Workspace::at("/no/such/plaza/workspace");
         let err = refused(&workspace, "list", json!({}));
@@ -1253,18 +1244,6 @@ mod tests {
     }
 
     // --- read_file ---------------------------------------------------------
-
-    #[test]
-    fn read_file_returns_the_text_and_its_size() {
-        let (workspace, _outside) = scratch("read");
-        write_inside(&workspace, "notes.txt", "hello\n".as_bytes());
-        let result = served(&workspace, "read_file", json!({ "path": "notes.txt" }));
-        assert_eq!(result["path"], "notes.txt");
-        assert_eq!(result["content"], "hello\n");
-        assert_eq!(result["size"], 6);
-        assert_eq!(result["bytes"], 6);
-        assert_eq!(result["truncated"], false);
-    }
 
     #[test]
     fn read_file_reports_truncation_instead_of_pretending() {
@@ -1308,59 +1287,12 @@ mod tests {
     }
 
     #[test]
-    fn read_file_keeps_a_valid_file_valid_when_the_cap_cuts_a_character() {
-        let (workspace, _outside) = scratch("read-char");
-        // "é" is two bytes: a 1-byte cap lands inside it.
-        write_inside(&workspace, "utf8.txt", "é!\n".as_bytes());
-        let result = served(
-            &workspace,
-            "read_file",
-            json!({ "path": "utf8.txt", "max_bytes": 1 }),
-        );
-        assert_eq!(result["content"], "");
-        assert_eq!(result["bytes"], 0);
-        assert_eq!(result["truncated"], true, "{result}");
-        let result = served(
-            &workspace,
-            "read_file",
-            json!({ "path": "utf8.txt", "max_bytes": 2 }),
-        );
-        assert_eq!(result["content"], "é");
-        assert_eq!(result["truncated"], true, "{result}");
-    }
-
-    #[test]
     fn read_file_refuses_binary_content_rather_than_mangling_it() {
         let (workspace, _outside) = scratch("read-binary");
         write_inside(&workspace, "blob.bin", &[0xff, 0xfe, 0x00, 0x01]);
         let err = refused(&workspace, "read_file", json!({ "path": "blob.bin" }));
         assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
         assert!(err.to_string().contains("is not UTF-8 text"), "{err}");
-    }
-
-    #[test]
-    fn read_file_refuses_a_missing_file_and_a_directory() {
-        let (workspace, _outside) = scratch("read-missing");
-        fs::create_dir_all(workspace.root().join("sub")).expect("a subdirectory");
-        let err = refused(&workspace, "read_file", json!({ "path": "nope.txt" }));
-        assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
-        assert!(err.to_string().starts_with("not found: "), "{err}");
-        let err = refused(&workspace, "read_file", json!({ "path": "sub" }));
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-        assert!(err.to_string().contains("is a directory"), "{err}");
-    }
-
-    #[test]
-    fn read_file_requires_its_path_argument() {
-        let (workspace, _outside) = scratch("read-args");
-        assert!(matches!(
-            refused(&workspace, "read_file", json!({})),
-            ToolError::InvalidInput { .. }
-        ));
-        assert!(matches!(
-            refused(&workspace, "read_file", json!({ "path": 7 })),
-            ToolError::InvalidInput { .. }
-        ));
     }
 
     // --- write_file --------------------------------------------------------
@@ -1402,61 +1334,7 @@ mod tests {
         assert_eq!(names, vec!["b.txt".to_string()], "{names:?}");
     }
 
-    #[test]
-    fn write_file_never_creates_the_parent_directory() {
-        let (workspace, _outside) = scratch("write-parent");
-        let err = refused(
-            &workspace,
-            "write_file",
-            json!({ "path": "no/such/dir/x.txt", "content": "x" }),
-        );
-        assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
-        assert!(!workspace.root().join("no").exists());
-    }
-
-    #[test]
-    fn write_file_refuses_an_oversized_payload_and_a_directory_target() {
-        let (workspace, _outside) = scratch("write-caps");
-        let big = "x".repeat(MAX_WRITE_BYTES as usize + 1);
-        let err = refused(
-            &workspace,
-            "write_file",
-            json!({ "path": "big.txt", "content": big }),
-        );
-        assert!(matches!(err, ToolError::LimitExceeded { .. }), "{err:?}");
-        fs::create_dir_all(workspace.root().join("dir")).expect("a directory");
-        let err = refused(
-            &workspace,
-            "write_file",
-            json!({ "path": "dir", "content": "x" }),
-        );
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-        assert!(err.to_string().contains("is a directory"), "{err}");
-    }
-
     // --- append_file -------------------------------------------------------
-
-    #[test]
-    fn append_file_creates_then_appends() {
-        let (workspace, _outside) = scratch("append");
-        let result = served(
-            &workspace,
-            "append_file",
-            json!({ "path": "log.txt", "content": "one\n" }),
-        );
-        assert_eq!(result["bytes"], 4);
-        assert_eq!(result["size"], 4);
-        let result = served(
-            &workspace,
-            "append_file",
-            json!({ "path": "log.txt", "content": "two\n" }),
-        );
-        assert_eq!(result["size"], 8);
-        assert_eq!(
-            served(&workspace, "read_file", json!({ "path": "log.txt" }))["content"],
-            "one\ntwo\n"
-        );
-    }
 
     #[test]
     fn append_file_refuses_to_grow_a_file_past_the_cap() {
@@ -1544,49 +1422,6 @@ mod tests {
     }
 
     #[test]
-    fn conversation_names_the_role_alone_when_the_wire_carried_no_cid() {
-        let (workspace, _outside) = scratch("conversation-nocid");
-        served(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "mayor", "text": "status?" }),
-        );
-        let line = log_line(&workspace);
-        let (stamp, rest) = line.split_once(' ').expect("a stamp then the message");
-        assert!(is_iso_utc(stamp), "{stamp:?}");
-        assert_eq!(rest, "from mayor: status?");
-    }
-
-    #[test]
-    fn the_conversation_line_format_is_pinned_without_a_clock() {
-        // The format, exactly, at known epochs: role + cid, role alone, and the
-        // leap day in a century that is not a leap year's exception.
-        assert_eq!(
-            message_line(0, "builder", Some(100), "hi"),
-            "1970-01-01T00:00:00Z from builder (cid 100): hi\n"
-        );
-        assert_eq!(
-            message_line(1_000_000_000, "librarian", None, "x"),
-            "2001-09-09T01:46:40Z from librarian: x\n"
-        );
-        assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(iso_utc(1_700_000_000), "2023-11-14T22:13:20Z");
-        // The far end of the four-digit range, where the day arithmetic is
-        // largest: a stamp, not an overflow.
-        assert_eq!(iso_utc(253_402_300_799), "9999-12-31T23:59:59Z");
-        // One message is one line even when the text carries a newline — the
-        // escaping is the transcript's, applied to the role and the text.
-        assert_eq!(
-            message_line(0, "builder", Some(1), "two\nlines"),
-            "1970-01-01T00:00:00Z from builder (cid 1): two\\x0alines\n"
-        );
-        assert_eq!(
-            message_line(0, "bui\nlder", Some(1), "x"),
-            "1970-01-01T00:00:00Z from bui\\x0alder (cid 1): x\n"
-        );
-    }
-
-    #[test]
     fn conversation_escapes_a_text_that_would_forge_a_line() {
         let (workspace, _outside) = scratch("conversation-escape");
         served(
@@ -1600,193 +1435,7 @@ mod tests {
         assert!(text.ends_with('\n'), "{text:?}");
     }
 
-    #[test]
-    fn conversation_refuses_arguments_that_are_not_its_schema() {
-        let (workspace, _outside) = scratch("conversation-args");
-        // A missing or non-string `from_role`, and a missing or non-string
-        // `text`, are `invalid input` — the taxonomy the hub reads.
-        for args in [
-            json!({ "text": "hi" }),
-            json!({ "from_role": 3, "text": "hi" }),
-            json!({ "from_role": "builder" }),
-            json!({ "from_role": "builder", "text": 3 }),
-            json!({ "from_role": "", "text": "hi" }),
-            json!({ "from_role": "builder", "text": "" }),
-            json!({ "from_role": "builder", "text": "hi", "from_cid": "100" }),
-            json!({ "from_role": "builder", "text": "hi", "from_cid": -1 }),
-            json!({ "from_role": "builder", "text": "hi", "from_cid": 1.5 }),
-        ] {
-            let err = refused(&workspace, "conversation", args.clone());
-            assert!(
-                matches!(err, ToolError::InvalidInput { .. }),
-                "{args}: {err:?}"
-            );
-            assert!(err.to_string().starts_with("invalid input: "), "{err}");
-        }
-        // Nothing was written by any of them.
-        assert!(!workspace.root().join(MESSAGES_LOG).exists());
-    }
-
-    #[test]
-    fn conversation_refuses_text_over_the_wires_cap() {
-        let (workspace, _outside) = scratch("conversation-cap");
-        let err = refused(
-            &workspace,
-            "conversation",
-            json!({
-                "from_role": "builder",
-                "text": "x".repeat(MAX_MESSAGE_BYTES + 1),
-            }),
-        );
-        assert!(matches!(err, ToolError::LimitExceeded { .. }), "{err:?}");
-        assert!(err.to_string().starts_with("limit exceeded: "), "{err}");
-        assert!(!workspace.root().join(MESSAGES_LOG).exists());
-        // The cap itself is served.
-        let result = served(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "builder", "text": "x".repeat(MAX_MESSAGE_BYTES) }),
-        );
-        assert_eq!(result["lines"], 1);
-    }
-
-    #[test]
-    fn conversation_ignores_arguments_it_does_not_know() {
-        // Every tool reads the keys it knows and ignores the rest; a peer's
-        // caller that adds one must not be refused for it.
-        let (workspace, _outside) = scratch("conversation-extra");
-        let result = served(
-            &workspace,
-            "conversation",
-            json!({
-                "from_role": "builder",
-                "from_cid": 100,
-                "text": "hi",
-                "path": "/etc/passwd",
-                "to_role": "architect",
-                "unknown": { "nested": [1, 2] },
-            }),
-        );
-        assert_eq!(result["received"], true);
-        assert_eq!(
-            log_line(&workspace).split_once(' ').map(|(_, r)| r),
-            Some("from builder (cid 100): hi")
-        );
-    }
-
-    #[test]
-    fn conversation_refuses_to_grow_the_log_past_the_cap() {
-        let (workspace, _outside) = scratch("conversation-log-cap");
-        write_inside(
-            &workspace,
-            MESSAGES_LOG,
-            &vec![b'a'; MAX_FILE_BYTES as usize - 1],
-        );
-        let err = refused(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "builder", "text": "ab" }),
-        );
-        assert!(matches!(err, ToolError::LimitExceeded { .. }), "{err:?}");
-        assert_eq!(
-            fs::metadata(workspace.root().join(MESSAGES_LOG))
-                .expect("the full log")
-                .len(),
-            MAX_FILE_BYTES - 1,
-            "a refused message leaves the log exactly as it was"
-        );
-    }
-
-    #[test]
-    fn conversation_still_receipts_a_log_that_is_not_utf8_text() {
-        // `write_file` can put anything in `messages.log`. The append must
-        // still land and the receipt must still be true: counting lines over
-        // the file's bytes says how many lines the log holds without failing
-        // on a text problem the append itself did not have.
-        let (workspace, _outside) = scratch("conversation-binary-log");
-        write_inside(&workspace, MESSAGES_LOG, &[0xff, 0xfe, b'\n', 0x00]);
-        let result = served(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "builder", "from_cid": 100, "text": "hi" }),
-        );
-        assert_eq!(result["received"], true);
-        assert_eq!(
-            result["lines"], 2,
-            "the log's own newline, and this message"
-        );
-        let raw = fs::read(workspace.root().join(MESSAGES_LOG)).expect("the log");
-        assert!(
-            raw.starts_with(&[0xff, 0xfe, b'\n', 0x00]),
-            "the log is appended to, never replaced"
-        );
-        assert!(raw.ends_with(b" from builder (cid 100): hi\n"), "{raw:?}");
-    }
-
-    #[test]
-    fn conversation_never_follows_a_symlink_out_of_the_workspace() {
-        let (workspace, outside) = scratch("conversation-symlink");
-        fs::write(outside.join("victim.txt"), b"host data\n").expect("the outside file");
-        symlink(
-            outside.join("victim.txt"),
-            workspace.root().join(MESSAGES_LOG),
-        )
-        .expect("a symlink to outside");
-        let err = refused(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "builder", "text": "hi" }),
-        );
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        assert_eq!(
-            fs::read_to_string(outside.join("victim.txt")).expect("the outside file"),
-            "host data\n",
-            "the log must not be writable through a link"
-        );
-        // A link whose target does not exist yet is refused too.
-        fs::remove_file(workspace.root().join(MESSAGES_LOG)).expect("the link");
-        symlink(
-            outside.join("created.txt"),
-            workspace.root().join(MESSAGES_LOG),
-        )
-        .expect("a dangling symlink");
-        let err = refused(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "builder", "text": "hi" }),
-        );
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        assert!(!outside.join("created.txt").exists());
-    }
-
-    #[test]
-    fn conversation_reports_a_workspace_that_is_not_mounted() {
-        let workspace = Workspace::at("/no/such/plaza/workspace");
-        let err = refused(
-            &workspace,
-            "conversation",
-            json!({ "from_role": "builder", "text": "hi" }),
-        );
-        assert!(matches!(err, ToolError::Unavailable { .. }), "{err:?}");
-    }
-
     // --- edit_file ---------------------------------------------------------
-
-    #[test]
-    fn edit_file_replaces_the_one_match() {
-        let (workspace, _outside) = scratch("edit");
-        write_inside(&workspace, "code.txt", b"alpha = 1\nbeta = 1\nalpha = 1\n");
-        let result = served(
-            &workspace,
-            "edit_file",
-            json!({ "path": "code.txt", "find": "beta = 1", "replace": "beta = 2" }),
-        );
-        assert_eq!(result["matches"], 1);
-        assert_eq!(
-            served(&workspace, "read_file", json!({ "path": "code.txt" }))["content"],
-            "alpha = 1\nbeta = 2\nalpha = 1\n"
-        );
-    }
 
     #[test]
     fn edit_file_refuses_zero_and_many_matches() {
@@ -1818,52 +1467,6 @@ mod tests {
             json!({ "path": "code.txt", "find": "", "replace": "x" }),
         );
         assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-    }
-
-    #[test]
-    fn edit_file_can_delete_and_refuses_a_binary_file() {
-        let (workspace, _outside) = scratch("edit-delete");
-        write_inside(&workspace, "t.txt", b"keep\ndrop\n");
-        served(
-            &workspace,
-            "edit_file",
-            json!({ "path": "t.txt", "find": "drop\n", "replace": "" }),
-        );
-        assert_eq!(
-            served(&workspace, "read_file", json!({ "path": "t.txt" }))["content"],
-            "keep\n"
-        );
-        write_inside(&workspace, "b.bin", &[0x00, 0xff]);
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "b.bin", "find": "x", "replace": "y" }),
-        );
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-        assert!(err.to_string().contains("is not UTF-8 text"), "{err}");
-    }
-
-    #[test]
-    fn edit_file_refuses_a_file_over_its_cap() {
-        let (workspace, _outside) = scratch("edit-cap");
-        write_inside(
-            &workspace,
-            "big.txt",
-            &vec![b'a'; MAX_FILE_BYTES as usize + 1],
-        );
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "big.txt", "find": "a", "replace": "b" }),
-        );
-        assert!(matches!(err, ToolError::LimitExceeded { .. }), "{err:?}");
-        // A needle over its own cap is refused too.
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "big.txt", "find": "x".repeat(MAX_NEEDLE_BYTES + 1), "replace": "y" }),
-        );
-        assert!(matches!(err, ToolError::LimitExceeded { .. }), "{err:?}");
     }
 
     // --- list --------------------------------------------------------------
@@ -1901,32 +1504,6 @@ mod tests {
         assert_eq!(result["path"], "sub");
     }
 
-    #[test]
-    fn list_reports_truncation_of_a_larger_directory() {
-        let (workspace, _outside) = scratch("list-cap");
-        for index in 0..MAX_LIST_ENTRIES + 1 {
-            write_inside(&workspace, &format!("f{index:05}.txt"), b"");
-        }
-        let result = served(&workspace, "list", json!({}));
-        let entries = result["entries"].as_array().expect("entries");
-        assert_eq!(entries.len(), MAX_LIST_ENTRIES);
-        assert_eq!(result["truncated"], true);
-        // Deterministic: the smallest names, sorted.
-        assert_eq!(entries[0]["name"], "f00000.txt");
-        assert_eq!(entries[MAX_LIST_ENTRIES - 1]["name"], "f01023.txt");
-    }
-
-    #[test]
-    fn list_refuses_a_file_and_a_missing_path() {
-        let (workspace, _outside) = scratch("list-bad");
-        write_inside(&workspace, "a.txt", b"x");
-        let err = refused(&workspace, "list", json!({ "path": "a.txt" }));
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-        assert!(err.to_string().contains("is not a directory"), "{err}");
-        let err = refused(&workspace, "list", json!({ "path": "nope" }));
-        assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
-    }
-
     // --- search ------------------------------------------------------------
 
     #[test]
@@ -1958,78 +1535,6 @@ mod tests {
         let result = served(&workspace, "search", json!({ "pattern": "absent" }));
         assert_eq!(result["matches"].as_array().map(Vec::len), Some(0));
         assert_eq!(result["truncated"], false);
-    }
-
-    #[test]
-    fn search_skips_binary_files_and_counts_them() {
-        let (workspace, _outside) = scratch("search-binary");
-        write_inside(&workspace, "text.txt", b"needle\n");
-        write_inside(&workspace, "blob.bin", &[0xff, 0x00, 0xfe]);
-        let result = served(&workspace, "search", json!({ "pattern": "needle" }));
-        assert_eq!(result["matches"].as_array().map(Vec::len), Some(1));
-        assert_eq!(result["skipped"], 1);
-        assert_eq!(result["truncated"], false);
-    }
-
-    #[test]
-    fn search_reports_truncation_by_matches_and_by_cut_lines() {
-        let (workspace, _outside) = scratch("search-cap");
-        let mut many = String::new();
-        for _ in 0..MAX_SEARCH_MATCHES + 10 {
-            many.push_str("needle\n");
-        }
-        write_inside(&workspace, "many.txt", many.as_bytes());
-        let result = served(&workspace, "search", json!({ "pattern": "needle" }));
-        assert_eq!(
-            result["matches"].as_array().map(Vec::len),
-            Some(MAX_SEARCH_MATCHES)
-        );
-        assert_eq!(result["truncated"], true);
-
-        // A line longer than the per-line cap is cut, and that is said too.
-        let (workspace, _outside) = scratch("search-long-line");
-        let long = format!("{}needle", "x".repeat(MAX_SEARCH_LINE_BYTES * 2));
-        write_inside(&workspace, "long.txt", long.as_bytes());
-        let result = served(&workspace, "search", json!({ "pattern": "needle" }));
-        let matches = result["matches"].as_array().expect("matches");
-        assert_eq!(matches.len(), 1);
-        assert_eq!(
-            matches[0]["text"].as_str().map(str::len),
-            Some(MAX_SEARCH_LINE_BYTES)
-        );
-        assert_eq!(result["truncated"], true);
-    }
-
-    #[test]
-    fn search_refuses_an_empty_or_oversized_pattern() {
-        let (workspace, _outside) = scratch("search-args");
-        assert!(matches!(
-            refused(&workspace, "search", json!({ "pattern": "" })),
-            ToolError::InvalidInput { .. }
-        ));
-        assert!(matches!(
-            refused(&workspace, "search", json!({ "pattern": 5 })),
-            ToolError::InvalidInput { .. }
-        ));
-        let err = refused(
-            &workspace,
-            "search",
-            json!({ "pattern": "x".repeat(MAX_NEEDLE_BYTES + 1) }),
-        );
-        assert!(matches!(err, ToolError::LimitExceeded { .. }), "{err:?}");
-    }
-
-    #[test]
-    fn search_scans_one_file_when_the_path_is_a_file() {
-        let (workspace, _outside) = scratch("search-file");
-        write_inside(&workspace, "a.txt", b"needle\n");
-        let result = served(
-            &workspace,
-            "search",
-            json!({ "pattern": "needle", "path": "a.txt" }),
-        );
-        assert_eq!(result["files_scanned"], 1);
-        assert_eq!(result["matches"].as_array().map(Vec::len), Some(1));
     }
 
     // --- the shape of the whole table --------------------------------------

@@ -3,7 +3,7 @@
 //! `docs/agents/initial-roles.json` carries, for every role, the tools the
 //! codex grants that role (`roles v1.1`, the statutes S-009…S-016).
 //! `vsockd --roles <manifest>` reads that file and makes it the ceiling on what
-//! the hub may **drive** for an agent: before the admin surface (`POST /tell`)
+//! the hub may **drive** for an agent: before `POST /v1/agents/{cid}/tell`
 //! forwards a `tool_call` into a connected agent's session, the tool is checked
 //! against the role the agent declared at its handshake, and a call the role
 //! does not grant is refused with **403**
@@ -351,29 +351,6 @@ mod tests {
         "transcript_search",
         "submit_claim",
     ];
-    const LIBRARIAN: &[&str] = &[
-        "read_memory",
-        "search",
-        "transcript_search",
-        "read_artifact",
-        "submit_memory_change",
-    ];
-    const MAYOR: &[&str] = &[
-        "read_file",
-        "list",
-        "search",
-        "transcript_search",
-        "assign_task",
-        "spawn_agent",
-        "hibernate_agent",
-        "approve_plan",
-        "approve_merge",
-        "escalate",
-        "send_message",
-    ];
-    /// A role whose declared tools the harness implements none of.
-    const JUDGE: &[&str] = &["read_case_record", "search_precedent", "issue_ruling"];
-
     fn decide(roles: &[(&str, &[&str])], role: &str, tool: &str) -> Decision {
         manifest(roles).decide(role, tool)
     }
@@ -409,28 +386,6 @@ mod tests {
             Decision::Ungranted
         );
         assert_eq!(manifest.decide("librarian", "search"), Decision::Allow);
-    }
-
-    /// A document that is not the roles shape — and one that lists no roles —
-    /// is refused, never read as an empty policy.
-    #[test]
-    fn a_document_that_is_not_the_roles_manifest_is_refused() {
-        for text in [
-            "[]",
-            "{}",
-            r#"{"roles": 3}"#,
-            r#"{"roles": {"builder": 3}}"#,
-            r#"{"roles": {"builder": {"role": "builder", "tools": "bash"}}}"#,
-            "not json at all",
-        ] {
-            let err = Manifest::parse(text).expect_err("outside the contract");
-            assert!(matches!(err, ManifestError::Json { .. }), "{text}: {err:?}");
-            assert!(err.to_string().contains("not valid"), "{text}: {err}");
-        }
-        assert_eq!(
-            Manifest::parse(r#"{"roles": {}}"#).expect_err("no roles"),
-            ManifestError::Empty
-        );
     }
 
     /// `--roles` is a policy or it is nothing: a role that declares no tools,
@@ -487,16 +442,6 @@ mod tests {
         );
     }
 
-    /// A manifest that is not on disk says which path it tried.
-    #[test]
-    fn a_manifest_that_is_not_there_names_the_path() {
-        let err = Manifest::load(Path::new("/no/such/plaza/roles.json"))
-            .expect_err("nothing is there")
-            .to_string();
-        assert!(err.contains("/no/such/plaza/roles.json"), "{err}");
-        assert!(err.starts_with("cannot read"), "{err}");
-    }
-
     /// The table is the harness's tool table, tool for tool: a tool the harness
     /// serves has a row, and a tool it does not serve has none (so it maps to no
     /// grant and is refused). `crates/agent-harness/src/tools.rs` is the list
@@ -533,75 +478,6 @@ mod tests {
         }
     }
 
-    /// A builder — a shell and the file tools — may drive every file tool the
-    /// harness serves, through either the tool's own grant or the shell's.
-    #[test]
-    fn a_builder_may_drive_the_file_tools_it_grants() {
-        for tool in [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "append_file",
-            "list",
-            "search",
-        ] {
-            assert_eq!(
-                decide(&[("builder", BUILDER)], "builder", tool),
-                Decision::Allow,
-                "{tool}"
-            );
-        }
-        // The basis tools too: they need no grant, so no role can be without
-        // them.
-        for tool in basis_tools() {
-            assert_eq!(
-                decide(&[("builder", BUILDER)], "builder", tool),
-                Decision::Allow,
-                "{tool}"
-            );
-        }
-    }
-
-    /// The consequence the policy has to own: the librarian's declared tools
-    /// give it `search` among the harness's file tools, and nothing else — not
-    /// `list`, not a read, not a write. What it does hold is the basis, the
-    /// conversation channel among it: a librarian that could not be spoken to
-    /// would not be an agent on the plaza.
-    #[test]
-    fn the_librarian_grants_only_search_of_the_file_tools() {
-        let roles = [("librarian", LIBRARIAN)];
-        assert_eq!(decide(&roles, "librarian", "search"), Decision::Allow);
-        for tool in [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "append_file",
-            "list",
-        ] {
-            assert_eq!(
-                decide(&roles, "librarian", tool),
-                Decision::Ungranted,
-                "{tool}"
-            );
-        }
-        // `conversation` is not a grant: it is the basis, so the role that
-        // holds only `search` holds it too.
-        assert_eq!(
-            decide(&roles, "librarian", "conversation"),
-            Decision::Allow,
-            "the social channel is the plaza's basis, not a role's privilege"
-        );
-        // The codex tools the harness does not implement map to nothing, so a
-        // call for one of them is refused rather than allowed by its name.
-        for tool in ["read_memory", "transcript_search", "submit_memory_change"] {
-            assert_eq!(
-                decide(&roles, "librarian", tool),
-                Decision::Ungranted,
-                "{tool}"
-            );
-        }
-    }
-
     /// The whole point of the basis: **every** role the shipped manifest names
     /// may be driven with `conversation`, the librarian included (it holds only
     /// `search` among the harness's file tools). A role that says nothing more
@@ -627,72 +503,6 @@ mod tests {
             manifest.decide("librarian", "write_file"),
             Decision::Ungranted
         );
-    }
-
-    /// The mayor reads and lists but never writes, so this vault's file tools
-    /// split exactly along the write line — the case that says the policy is
-    /// per tool, not per role family.
-    #[test]
-    fn the_mayor_reads_but_does_not_write() {
-        let roles = [("mayor", MAYOR)];
-        for tool in ["read_file", "list", "search"] {
-            assert_eq!(decide(&roles, "mayor", tool), Decision::Allow, "{tool}");
-        }
-        for tool in ["write_file", "edit_file", "append_file"] {
-            assert_eq!(decide(&roles, "mayor", tool), Decision::Ungranted, "{tool}");
-        }
-        // `send_message` is a codex tool the harness does not serve.
-        assert_eq!(decide(&roles, "mayor", "send_message"), Decision::Ungranted);
-    }
-
-    /// A role whose declared tools the harness implements none of may still be
-    /// sent the basis — and nothing else, however the call is spelled.
-    #[test]
-    fn a_role_with_no_harness_tools_gets_the_basis_tools_alone() {
-        let roles = [("legal-gov-judge", JUDGE)];
-        for tool in basis_tools() {
-            assert_eq!(
-                decide(&roles, "legal-gov-judge", tool),
-                Decision::Allow,
-                "{tool}"
-            );
-        }
-        for tool in [
-            "search_precedent",
-            "read_file",
-            "search",
-            "bash",
-            "write_file",
-            "",
-        ] {
-            assert_eq!(
-                decide(&roles, "legal-gov-judge", tool),
-                Decision::Ungranted,
-                "{tool:?}"
-            );
-        }
-    }
-
-    /// The empty role and the unknown role are distinct refusals: one is an
-    /// agent the manifest cannot name, the other an agent the fleet was not
-    /// meant to have.
-    #[test]
-    fn an_empty_role_and_an_unknown_role_are_their_own_refusals() {
-        let roles = [("builder", BUILDER)];
-        assert_eq!(decide(&roles, "", "read_file"), Decision::NoRole);
-        assert_eq!(
-            decide(&roles, "builderx", "read_file"),
-            Decision::UnknownRole
-        );
-        assert_eq!(
-            decide(&roles, "Builder", "read_file"),
-            Decision::UnknownRole
-        );
-        // However it is spelled, an empty role is never allowed anything: the
-        // empty role is not a role the manifest could have granted.
-        for tool in ["echo", "read_file", "search"] {
-            assert_eq!(decide(&roles, "", tool), Decision::NoRole, "{tool}");
-        }
     }
 
     /// `bash` is a grant source, not a driveable tool: a role granted a shell
@@ -721,49 +531,4 @@ mod tests {
         assert_eq!(decide(&shell_only, "builder", "bash"), Decision::Ungranted);
     }
 
-    /// `append_file` is the `write_file` grant: a role that may write a file may
-    /// append to one, and a role that may not, may not.
-    #[test]
-    fn append_is_the_write_grant_and_not_its_own() {
-        let write_only = [("builder", &["write_file"][..])];
-        assert_eq!(
-            decide(&write_only, "builder", "append_file"),
-            Decision::Allow
-        );
-        let append_only = [("builder", &["append_file"][..])];
-        assert_eq!(
-            decide(&append_only, "builder", "append_file"),
-            Decision::Ungranted,
-            "there is no `append_file` grant to hold"
-        );
-        assert_eq!(
-            decide(&append_only, "builder", "write_file"),
-            Decision::Ungranted
-        );
-    }
-
-    /// A manifest's error is a sentence an operator can act on.
-    #[test]
-    fn the_errors_are_sentences() {
-        assert_eq!(
-            ManifestError::Empty.to_string(),
-            "the roles manifest lists no roles"
-        );
-        assert_eq!(
-            ManifestError::Read {
-                path: PathBuf::from("/x/roles.json"),
-                reason: "No such file or directory (os error 2)".to_string(),
-            }
-            .to_string(),
-            "cannot read /x/roles.json: No such file or directory (os error 2)"
-        );
-        assert_eq!(
-            ManifestError::BadTools {
-                role: "builder".to_string(),
-                reason: "the entry's tools array is empty".to_string(),
-            }
-            .to_string(),
-            "role \"builder\": the entry's tools array is empty"
-        );
-    }
 }

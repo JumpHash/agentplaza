@@ -115,9 +115,9 @@
 //!
 //! Every bid and every award publishes one `agora` event ([`Event::Agora`]) —
 //! `{"task":…,"kind":"bid"|"award","agent_cid":…,"price":…}` — so a console
-//! watching `GET /api/v0/events` sees the bidding live. That frame is the only
-//! thing a stream is told here: polling `GET /api/v0/agora` stays the source
-//! of truth for the board itself, the way `GET /api/v0/tasks` does for the
+//! watching `GET /v1/events` sees the bidding live. That frame is the only
+//! thing a stream is told here: polling `GET /v1/agora` stays the source
+//! of truth for the board itself, the way `GET /v1/tasks` does for the
 //! ledger.
 
 use std::collections::HashMap;

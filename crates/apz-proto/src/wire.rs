@@ -86,7 +86,11 @@ pub enum HostMessage {
     ToolResult { call: u64, ok: bool, output: String },
     /// v2: the operator drives one tool in the guest.
     ToolCall { call: u64, name: String, args: Value },
-    Stop { reason: String },
+    Stop {
+        /// Always written; a `stop` without one still parses.
+        #[serde(default)]
+        reason: String,
+    },
     /// v3: a unit of work for the agent loop.
     Work { work: u64, kind: WorkKind, thread: String, prompt: String },
     /// v3: the answer to a [`GuestMessage::ModelCall`].
@@ -220,7 +224,34 @@ mod tests {
             GuestMessage::Heartbeat { seq: 7, busy: None }.to_line().unwrap(),
             r#"{"type":"heartbeat","seq":7}"#
         );
-        assert!(GuestMessage::from_line(r#"{"type":"hello","vm":0,"guest_cid":3,"role":7}"#).is_err());
+        let keepalive = GuestMessage::Hello { vm: 0, guest_cid: 7, role: None, keepalive: Some(true) };
+        assert_eq!(keepalive.to_line().unwrap(), r#"{"type":"hello","vm":0,"guest_cid":7,"keepalive":true}"#);
+        let call = GuestMessage::ToolCall { call: 1, name: "echo".into(), args: json!({"text": "hi"}) };
+        assert_eq!(call.to_line().unwrap(), r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"hi"}}"#);
+        let result = GuestMessage::ToolResult { call: 2, ok: false, output: "no such tool: x".into() };
+        assert_eq!(result.to_line().unwrap(), r#"{"type":"tool_result","call":2,"ok":false,"output":"no such tool: x"}"#);
+        assert_eq!(GuestMessage::Bye { calls: 2 }.to_line().unwrap(), r#"{"type":"bye","calls":2}"#);
+        let host_result = HostMessage::ToolResult { call: 2, ok: true, output: "12.34 56.78".into() };
+        assert_eq!(host_result.to_line().unwrap(), r#"{"type":"tool_result","call":2,"ok":true,"output":"12.34 56.78"}"#);
+        let host_call = HostMessage::ToolCall { call: 3, name: "uptime".into(), args: json!({}) };
+        assert_eq!(host_call.to_line().unwrap(), r#"{"type":"tool_call","call":3,"name":"uptime","args":{}}"#);
+        let stop = HostMessage::Stop { reason: "fleet shutdown".into() };
+        assert_eq!(stop.to_line().unwrap(), r#"{"type":"stop","reason":"fleet shutdown"}"#);
+        assert_eq!(HostMessage::from_line(r#"{"type":"stop"}"#).unwrap(), HostMessage::Stop { reason: String::new() });
+    }
+
+    #[test]
+    fn wrong_types_and_wrong_directions_do_not_parse() {
+        for line in [
+            r#"{"type":"hello","vm":0,"guest_cid":3,"role":7}"#,
+            r#"{"type":"hello","vm":0,"guest_cid":3,"keepalive":"yes"}"#,
+            r#"{"type":"welcome","echo":"plaza-orchestrator"}"#,
+        ] {
+            assert!(GuestMessage::from_line(line).is_err(), "{line}");
+        }
+        for line in [r#"{"type":"heartbeat","seq":1}"#, r#"{"type":"bye","calls":2}"#] {
+            assert!(HostMessage::from_line(line).is_err(), "{line}");
+        }
     }
 
     #[test]

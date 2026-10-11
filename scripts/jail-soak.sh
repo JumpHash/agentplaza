@@ -114,12 +114,12 @@ def await_line(path, needle, timeout, proc):
 noded_log, vsockd_log = logs / "noded.log", logs / "vsockd.log"
 vsockd = subprocess.Popen(
     [vsockd_bin, "--uds-dir", str(uds), "--cids", ",".join(map(str, CIDS)),
-     "--port", str(VSOCK_PORT), "--status-port", "0", "--admin-port", "0"],
+     "--port", str(VSOCK_PORT), "--http-port", "0"],
     stdout=open(vsockd_log, "wb"), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
     start_new_session=True)
 await_line(vsockd_log, "listening on", 30, vsockd)
 admin_port = int(re.search(r"127\.0\.0\.1:(\d+)",
-                           await_line(vsockd_log, "admin on http", 30, vsockd)).group(1))
+                           await_line(vsockd_log, "http on http", 30, vsockd)).group(1))
 
 noded_env = dict(os.environ)
 # The mode under test reaches the daemon's VMM threads through its environment.
@@ -132,7 +132,7 @@ else:
 
 argv = [noded_bin, "--port", "0", "--uds-dir", str(uds), "--kernel", kernel,
         "--initrd", initrd, "--agents", str(manifest), "--agents-cid-base", str(CID_BASE),
-        "--hub-admin", f"127.0.0.1:{admin_port}", "--hub-status", "off"]
+        "--hub-port", str(admin_port)]
 workspace_path = Path(workspace)
 if workspace_path.exists():
     argv += ["--workspace", str(workspace_path)]
@@ -199,7 +199,7 @@ def rst_connect(path):
 
 base = f"http://127.0.0.1:{port}"
 try:
-    run = http("GET", f"{base}/api/v0/runs")[1]["runs"][0]["id"]
+    run = http("GET", f"{base}/v1/runs")[1]["runs"][0]["id"]
 except Exception as err:  # the fleet run is the daemon's own
     raise SystemExit(f"jail-soak: cannot read the fleet run: {err}")
 
@@ -239,18 +239,18 @@ while time.time() - started < minutes * 60:
         break
     # A hub-driven tool call into a connected agent.
     if cycle % 3 == 1:
-        status, _ = http("POST", f"{base}/api/v0/agents/{CID_BASE}/tell",
+        status, _ = http("POST", f"{base}/v1/agents/{CID_BASE}/tell",
                          {"name": "echo", "args": {"text": f"soak-{cycle}"}})
         tells += status == 200
     # A workspace write over a guest's serial console (virtio-blk on the vCPU).
     if cycle % 4 == 2:
-        status, _ = http("POST", f"{base}/api/v0/runs/{run}/input",
+        status, _ = http("POST", f"{base}/v1/runs/{run}/input",
                          {"vm": 0, "data": f"wspace soak-{cycle}\n"})
         wsrites += status == 200
     # The hub's stop view: the agent answers `bye`, the session drains and the
     # guest's harness reconnects — session churn of the kind the live fleet saw.
     if cycle % 45 == 0:
-        status, _ = http("POST", f"{base}/api/v0/agents/{CID_BASE + 2}/stop",
+        status, _ = http("POST", f"{base}/v1/agents/{CID_BASE + 2}/stop",
                          {"reason": "jail-soak"})
         stops += status == 200
     time.sleep(1.0)

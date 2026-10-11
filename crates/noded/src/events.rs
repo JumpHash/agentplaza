@@ -5,7 +5,7 @@
 //!
 //! The registry publishes run and VM state transitions and each VM's serial
 //! deltas as they happen, and the task ledger publishes every task transition,
-//! to `GET /api/v0/events`, which streams every event to a connected console as
+//! to `GET /v1/events`, which streams every event to a connected console as
 //! server-sent events, so a console sees a run's or a task's life between its
 //! polls. Polling stays the source of truth for a full snapshot (the register,
 //! the ledger, and a run's whole serial capture); the stream is the deltas.
@@ -55,7 +55,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// One event, as `GET /api/v0/events` frames it.
+/// One event, as `GET /v1/events` frames it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A run's state changed (or the run was registered, as `starting`).
@@ -104,7 +104,7 @@ pub enum Event {
         price: u64,
     },
     /// The board moved: an agent posted (`kind` `post`, with `post` the post's
-    /// own JSON object, exactly as `GET /api/v0/board` writes it) or advanced
+    /// own JSON object, exactly as `GET /v1/board` writes it) or advanced
     /// its read cursor (`kind` `read`, with `post` `null` and `read_up_to` the
     /// post it moved to). `agent_cid` and `role` are the agent that acted.
     ///
@@ -151,10 +151,9 @@ pub enum Event {
 }
 
 impl Event {
-    /// The event's server-sent frame: an `event:` line, a `data:` line of
-    /// JSON, and the blank line that ends the frame.
-    pub fn frame(&self) -> String {
-        let data = match self {
+    /// The frame's one-line JSON `data`.
+    pub fn data(&self) -> String {
+        match self {
             Event::Run { id, state } => {
                 format!("{{\"id\":{},\"state\":{}}}", quote(id), quote(state))
             }
@@ -250,8 +249,12 @@ impl Event {
                 quote(kind),
                 quote(state)
             ),
-        };
-        let name = match self {
+        }
+    }
+
+    /// The frame's `event` name.
+    pub fn kind(&self) -> &'static str {
+        match self {
             Event::Run { .. } => "run",
             Event::Vm { .. } => "vm",
             Event::Serial { .. } => "serial",
@@ -261,8 +264,12 @@ impl Event {
             Event::Board { .. } => "board",
             Event::Conversation { .. } => "conversation",
             Event::Motion { .. } => "motion",
-        };
-        format!("event: {name}\ndata: {data}\n\n")
+        }
+    }
+
+    /// The whole server-sent frame.
+    pub fn frame(&self) -> String {
+        format!("event: {}\ndata: {}\n\n", self.kind(), self.data())
     }
 }
 
@@ -335,28 +342,16 @@ impl EventBus {
 
 }
 
-/// Streams `receiver`'s events as server-sent frames to `writer`: the
-/// stream head first, then one frame per event, and a heartbeat comment
-/// whenever [`HEARTBEAT_INTERVAL`]] passes without one. Returns when the
-/// stream's channel ends (the daemon dropped it) or a write fails (the
-/// console closed the stream) — the two ways a stream honestly ends.
-pub fn stream(
-    receiver: &Receiver<Event>,
-    writer: &mut impl std::io::Write,
-) -> std::io::Result<()> {
-    writer.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-          Cache-Control: no-store\r\nConnection: close\r\n\r\n",
-    )?;
-    writer.flush()?;
+/// Streams `receiver`'s events, with a heartbeat after every quiet
+/// [`HEARTBEAT_INTERVAL`], until the bus is dropped or a write fails (the
+/// console went away).
+pub fn stream(receiver: &Receiver<Event>, sse: &mut apz_http::Sse<'_>) -> std::io::Result<()> {
     loop {
         match receiver.recv_timeout(HEARTBEAT_INTERVAL) {
-            Ok(event) => writer.write_all(event.frame().as_bytes())?,
-            Err(RecvTimeoutError::Timeout) => writer.write_all(b": heartbeat\n\n")?,
-            // Every sender was dropped: the bus is gone, so the stream ends.
+            Ok(event) => sse.event(event.kind(), &event.data())?,
+            Err(RecvTimeoutError::Timeout) => sse.heartbeat()?,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
-        writer.flush()?;
     }
 }
 
@@ -613,7 +608,8 @@ mod tests {
         // shutdown ends its streams.
         drop(bus);
         let mut out = Vec::new();
-        assert!(stream(&receiver, &mut out).is_ok());
+        let response = apz_http::Response::sse(move |sse| stream(&receiver, sse));
+        assert!(response.write_to(&mut out).is_ok());
         assert!(
             out.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"),
             "the stream head is written: {out:?}"

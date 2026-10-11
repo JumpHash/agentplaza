@@ -1,28 +1,22 @@
-//! `noded` - the AgentPlaza node daemon v0.
+//! `noded` - the AgentPlaza node daemon.
 //!
 //! ```text
 //! noded [--port 8899] [--kernel /boot/vmlinuz-linux]
-//!       [--initrd target/guest/initrd.x86_64.gz]
-//!       [--hub-status 127.0.0.1:19080] [--hub-admin 127.0.0.1:19081]
+//!       [--initrd target/guest/initrd.x86_64.gz] [--hub-port 19080|off]
 //! ```
 //!
-//! Binds `127.0.0.1` only and serves the run API plus the console's static
-//! files; see the crate documentation for the endpoints. `--hub-status` names
-//! the hub's status surface to proxy at `GET /api/v0/hub`, so the console can
-//! read the fleet through this daemon despite its `connect-src 'self'` policy,
-//! and `--hub-admin` names the hub's admin surface that
-//! `POST /api/v0/tasks/{id}/artifact` drives a task's agent through, so the
-//! console can read a task's artifact from the same origin, and that
-//! `POST /api/v0/agents/{cid}/tell` drives one tool call through, so the
-//! operator's console can drive the fleet from the same origin. The guest
-//! images and the console directory are read relative to the working
-//! directory, so the daemon is started from the repository root.
+//! Binds `127.0.0.1` only and serves the `/v1` API plus the console's static
+//! files (see the crate documentation). `--hub-port` is the hub's HTTP port:
+//! `GET /v1/hub` proxies its status and `/v1/agents/{cid}/{tell,stop}`, the
+//! artifact read-through and the social delivery drive agents through it. The
+//! guest images and the console are read relative to the working directory,
+//! so the daemon is started from the repository root.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use noded::fleet::Fleet;
-use noded::hub::{HubAdmin, HubStatus};
+use noded::hub::Hub;
 use noded::registry::Detail;
 use noded::{Config, Server};
 
@@ -30,7 +24,7 @@ const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--workspace IMAGE] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
-             [--hub-status HOST:PORT|off] [--hub-admin HOST:PORT|off]
+             [--hub-port PORT|off]
 
   --port PORT      port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH    guest kernel image (default /boot/vmlinuz-linux)
@@ -49,23 +43,10 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                         (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 128)
   --agents-vcpus N      vCPUs per agent VM (default 1)
-  --hub-status HOST:PORT  where the hub (vsockd)'s status surface is, proxied
-                   at GET /api/v0/hub and /api/v0/hub/healthz so the console
-                   can read the fleet from this daemon's origin. Loopback
-                   only: exactly 127.0.0.1 or localhost
-                   (default 127.0.0.1:19080). `off` serves those endpoints
-                   with a 503: a daemon not told where the hub is must not
-                   report an empty registry.
-  --hub-admin HOST:PORT  where the hub (vsockd)'s admin surface is, driven by
-                   POST /api/v0/tasks/{id}/artifact so the console can read a
-                   claimed task's artifact (the file its agent wrote), and by
-                   POST /api/v0/agents/{cid}/tell so the operator's console can
-                   drive one tool call on a connected agent - both from this
-                   daemon's origin. Loopback only: exactly 127.0.0.1 or
-                   localhost (default 127.0.0.1:19081). `off` serves those
-                   endpoints with a 503: a daemon not told where the admin
-                   surface is cannot ask any agent to read anything, or to run
-                   anything.
+  --hub-port PORT  the hub's (vsockd's) HTTP port on 127.0.0.1 (default 19080):
+                   GET /v1/hub proxies its status, and the agent drive
+                   (tell, stop, artifact, say) goes through it. `off` answers
+                   those endpoints with a 503.
   -h, --help       print this help
 
 Runs. Every VM of every run carries the agent harness (the guest's vsock
@@ -81,16 +62,8 @@ guests run the keepalive agent session, role-less, so a hub that serves the
 run range (vsockd --cids) shows them as connected agents and can drive them,
 and they stay up until the run is killed or `beats` churns the guest.
 
-Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
-POST /api/v0/runs/{id}/input, GET/POST /api/v0/tasks,
-GET/DELETE /api/v0/tasks/{id}, POST /api/v0/tasks/{id}/claim,
-/api/v0/tasks/{id}/finish, /api/v0/tasks/{id}/bid,
-/api/v0/tasks/{id}/award and /api/v0/tasks/{id}/artifact,
-GET /api/v0/treasury and /api/v0/treasury/journal, GET /api/v0/agora,
-POST /api/v0/agents/{cid}/tell, GET/POST /api/v0/motions,
-GET /api/v0/motions/{id}, POST /api/v0/motions/{id}/vote,
-POST /api/v0/motions/{id}/decide (the owner's), GET /api/v0/hub[/healthz]
-and the web app's files from apps/web.";
+Serves the /v1 API (runs, tasks, treasury, agora, board, conversations,
+motions, agents, hub, events) and the web app's files from apps/web.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -136,26 +109,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
     server.wait().map_err(|err| format!("server error: {err}"))
 }
 
-/// Reads `--hub-status`: `off` disables the proxy, and anything else must be a
-/// loopback `host:port`.
-fn parse_hub_status(value: &str) -> Result<Option<HubStatus>, String> {
+/// Reads `--hub-port`: a port, or `off`.
+fn parse_hub_port(value: &str) -> Result<Option<Hub>, String> {
     if value == "off" {
         return Ok(None);
     }
-    HubStatus::parse(value)
-        .map(Some)
-        .map_err(|err| format!("--hub-status: {err}"))
-}
-
-/// Reads `--hub-admin`: `off` disables the read-through, and anything else must
-/// be a loopback `host:port` (the same policy as `--hub-status`).
-fn parse_hub_admin(value: &str) -> Result<Option<HubAdmin>, String> {
-    if value == "off" {
-        return Ok(None);
+    match value.parse::<u16>() {
+        Ok(port) if port != 0 => Ok(Some(Hub::new(port))),
+        _ => Err(format!("--hub-port: {value:?} is not a port")),
     }
-    HubAdmin::parse(value)
-        .map(Some)
-        .map_err(|err| format!("--hub-admin: {err}"))
 }
 
 /// Boots the initial role fleet, or reports why the node cannot serve it.
@@ -236,8 +198,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .parse()
                     .map_err(|err| format!("--agents-vcpus: {err}"))?;
             }
-            "--hub-status" => config.hub_status = parse_hub_status(&value("--hub-status")?)?,
-            "--hub-admin" => config.hub_admin = parse_hub_admin(&value("--hub-admin")?)?,
+            "--hub-port" => config.hub = parse_hub_port(&value("--hub-port")?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -318,69 +279,21 @@ mod tests {
             vec!["--agents-cid-base".to_string(), "x".to_string()],
             vec!["--agents-memory-mib".to_string(), "x".to_string()],
             vec!["--agents-vcpus".to_string(), "x".to_string()],
-            vec!["--hub-status".to_string()],
-            vec!["--hub-status".to_string(), "10.0.0.1:19080".to_string()],
-            vec!["--hub-status".to_string(), "127.0.0.1".to_string()],
-            vec!["--hub-admin".to_string()],
-            vec!["--hub-admin".to_string(), "10.0.0.1:19081".to_string()],
-            vec!["--hub-admin".to_string(), "127.0.0.1.evil.tld:19081".to_string()],
-            vec!["--hub-admin".to_string(), "127.0.0.1".to_string()],
+            vec!["--hub-port".to_string()],
+            vec!["--hub-port".to_string(), "0".to_string()],
+            vec!["--hub-port".to_string(), "127.0.0.1:19080".to_string()],
         ] {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }
     }
 
     #[test]
-    fn the_hub_status_defaults_to_the_live_surface() {
+    fn the_hub_port_defaults_to_the_hubs_and_can_be_turned_off() {
         let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(
-            config.hub_status.map(|hub| hub.addr().to_string()),
-            Some("127.0.0.1:19080".to_string())
-        );
-    }
-
-    #[test]
-    fn the_hub_status_flag_overrides_and_disables() {
-        let config = parse_args(
-            ["--hub-status", "localhost:19081"]
-                .map(String::from)
-                .to_vec(),
-        )
-        .expect("a loopback surface");
-        assert_eq!(
-            config.hub_status.map(|hub| hub.addr().to_string()),
-            Some("127.0.0.1:19081".to_string()),
-            "localhost normalizes to the literal loopback"
-        );
-
-        let config = parse_args(["--hub-status", "off"].map(String::from).to_vec())
-            .expect("off is not an error");
-        assert_eq!(config.hub_status, None);
-    }
-
-    #[test]
-    fn the_hub_admin_defaults_to_the_live_surface() {
-        let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(
-            config.hub_admin.map(|hub| hub.addr().to_string()),
-            Some("127.0.0.1:19081".to_string())
-        );
-    }
-
-    #[test]
-    fn the_hub_admin_flag_overrides_and_disables() {
-        let config = parse_args(
-            ["--hub-admin", "localhost:19082"].map(String::from).to_vec(),
-        )
-        .expect("a loopback surface");
-        assert_eq!(
-            config.hub_admin.map(|hub| hub.addr().to_string()),
-            Some("127.0.0.1:19082".to_string()),
-            "localhost normalizes to the literal loopback"
-        );
-
-        let config = parse_args(["--hub-admin", "off"].map(String::from).to_vec())
-            .expect("off is not an error");
-        assert_eq!(config.hub_admin, None);
+        assert_eq!(config.hub, Some(Hub::new(19080)));
+        let config = parse_args(["--hub-port", "19090"].map(String::from).to_vec()).expect("a port");
+        assert_eq!(config.hub, Some(Hub::new(19090)));
+        let config = parse_args(["--hub-port", "off"].map(String::from).to_vec()).expect("off");
+        assert_eq!(config.hub, None);
     }
 }

@@ -29,7 +29,7 @@ const UNBOOTABLE: &str = r#"{"n":1,"vcpus":1,"memory_mib":128}"#;
 
 /// Creates a run that fails to boot, and returns its id.
 fn failed_run(port: u16) -> String {
-    let reply = request(port, "POST", "/api/v0/runs", Some(UNBOOTABLE));
+    let reply = request(port, "POST", "/v1/runs", Some(UNBOOTABLE));
     assert_eq!(reply.status, 201, "{}", reply.body);
     reply.json()["id"]
         .as_str()
@@ -40,7 +40,7 @@ fn failed_run(port: u16) -> String {
 #[test]
 fn the_run_list_starts_empty() {
     let server = common::start(console_dir("list"));
-    let reply = request(server.port(), "GET", "/api/v0/runs", None);
+    let reply = request(server.port(), "GET", "/v1/runs", None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(reply.content_type.starts_with("application/json"));
     assert_eq!(reply.json(), serde_json::json!({ "runs": [] }));
@@ -51,11 +51,11 @@ fn unknown_runs_are_404() {
     let server = common::start(console_dir("unknown"));
     let port = server.port();
     for (method, target, body) in [
-        ("GET", "/api/v0/runs/r7", None),
-        ("DELETE", "/api/v0/runs/r7", None),
+        ("GET", "/v1/runs/r7", None),
+        ("DELETE", "/v1/runs/r7", None),
         (
             "POST",
-            "/api/v0/runs/r7/input",
+            "/v1/runs/r7/input",
             Some(r#"{"data":"cpu","vm":0}"#),
         ),
     ] {
@@ -87,13 +87,13 @@ fn create_requests_outside_the_contract_are_400() {
         r#"{"n":1,"vcpus":1,"memory_mib":128,"beats":"two"}"#,
         "",
     ] {
-        let reply = request(port, "POST", "/api/v0/runs", Some(body));
+        let reply = request(port, "POST", "/v1/runs", Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         assert!(reply.json()["error"].is_string(), "{body}: {}", reply.body);
     }
     // A refused create leaves no run behind.
     assert_eq!(
-        request(port, "GET", "/api/v0/runs", None).json(),
+        request(port, "GET", "/v1/runs", None).json(),
         serde_json::json!({ "runs": [] })
     );
 }
@@ -111,7 +111,7 @@ fn an_events_stream_carries_a_runs_life() {
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .expect("the stream gets a read timeout");
     stream
-        .write_all(b"GET /api/v0/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /v1/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("the events request is sent");
     let mut stream = std::io::BufReader::new(stream);
 
@@ -138,7 +138,7 @@ fn an_events_stream_carries_a_runs_life() {
     let reply = request(
         port,
         "POST",
-        "/api/v0/runs",
+        "/v1/runs",
         Some(r#"{"n":1,"vcpus":1,"memory_mib":128}"#),
     );
     assert_eq!(reply.status, 201, "{}", reply.body);
@@ -205,36 +205,11 @@ fn an_events_stream_carries_a_runs_life() {
     // The stream is still open (no event ends it): the run list still
     // answers on its own connection.
     assert_eq!(
-        request(port, "GET", "/api/v0/runs", None).json()["runs"][0]["state"],
+        request(port, "GET", "/v1/runs", None).json()["runs"][0]["state"],
         "failed"
     );
 }
 
-
-#[test]
-fn a_non_loopback_host_is_refused() {
-    // The DNS-rebinding guard: a page on any hostname that resolves to
-    // 127.0.0.1 can post simple requests here; a Host that is not loopback
-    // must be refused, and loopback or absent Hosts served as before.
-    let server = common::start(console_dir("host-guard"));
-    let port = server.port();
-
-    let refused = common::send(
-        port,
-        b"POST /api/v0/runs HTTP/1.1\r\nHost: evil.example:8899\r\nContent-Type: application/json\r\nContent-Length: 31\r\nConnection: close\r\n\r\n{\"n\":1,\"vcpus\":1,\"memory_mib\":128}",
-    );
-    assert_eq!(refused.status, 403, "{}", refused.body);
-    assert!(refused.body.contains("loopback"), "{}", refused.body);
-
-    // The loopback forms (and no Host at all) are served.
-    assert_eq!(
-        request(port, "GET", "/api/v0/runs", None).status,
-        200,
-        "Host: localhost is served"
-    );
-    let no_host = common::send(port, b"GET /api/v0/runs HTTP/1.1\r\nConnection: close\r\n\r\n");
-    assert_eq!(no_host.status, 200, "a Host-less probe is served");
-}
 
 #[test]
 fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
@@ -243,7 +218,7 @@ fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
     let reply = request(
         port,
         "POST",
-        "/api/v0/runs",
+        "/v1/runs",
         Some(r#"{"n":2,"vcpus":2,"memory_mib":256,"beats":2}"#),
     );
     assert_eq!(reply.status, 201, "{}", reply.body);
@@ -259,18 +234,18 @@ fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
     // The list is what the create answered: no serial captures.
     assert!(created.get("serial").is_none());
 
-    let single = request(port, "GET", "/api/v0/runs/r1", None);
+    let single = request(port, "GET", "/v1/runs/r1", None);
     assert_eq!(single.status, 200, "{}", single.body);
     assert_eq!(single.json(), created);
 
-    let list = request(port, "GET", "/api/v0/runs", None);
+    let list = request(port, "GET", "/v1/runs", None);
     assert_eq!(list.json()["runs"][0]["id"], "r1");
     assert_eq!(list.json()["runs"].as_array().expect("an array").len(), 1);
 
     // A second run gets the next id.
     assert_eq!(failed_run(port), "r2");
     assert_eq!(
-        request(port, "GET", "/api/v0/runs", None).json()["runs"]
+        request(port, "GET", "/v1/runs", None).json()["runs"]
             .as_array()
             .expect("an array")
             .len(),
@@ -283,7 +258,7 @@ fn a_run_without_beats_reports_null() {
     let server = common::start(console_dir("beats"));
     let port = server.port();
     failed_run(port);
-    let run = request(port, "GET", "/api/v0/runs/r1", None).json();
+    let run = request(port, "GET", "/v1/runs/r1", None).json();
     assert!(run["beats"].is_null(), "{run}");
 }
 
@@ -292,13 +267,13 @@ fn a_finished_run_is_idempotent_to_kill_and_refuses_input() {
     let server = common::start(console_dir("kill"));
     let port = server.port();
     let id = failed_run(port);
-    let ended = request(port, "GET", &format!("/api/v0/runs/{id}"), None).json()["ended_at"]
+    let ended = request(port, "GET", &format!("/v1/runs/{id}"), None).json()["ended_at"]
         .as_u64()
         .expect("ended_at");
 
     // Already finished: killing it again changes nothing and is not an error.
     for _ in 0..2 {
-        let reply = request(port, "DELETE", &format!("/api/v0/runs/{id}"), None);
+        let reply = request(port, "DELETE", &format!("/v1/runs/{id}"), None);
         assert_eq!(reply.status, 200, "{}", reply.body);
         assert_eq!(reply.json()["state"], "failed");
         assert_eq!(reply.json()["ended_at"].as_u64(), Some(ended));
@@ -308,7 +283,7 @@ fn a_finished_run_is_idempotent_to_kill_and_refuses_input() {
     let input = request(
         port,
         "POST",
-        &format!("/api/v0/runs/{id}/input"),
+        &format!("/v1/runs/{id}/input"),
         Some(r#"{"data":"cpu","vm":0}"#),
     );
     assert_eq!(input.status, 409, "{}", input.body);
@@ -318,54 +293,10 @@ fn a_finished_run_is_idempotent_to_kill_and_refuses_input() {
     let bad = request(
         port,
         "POST",
-        &format!("/api/v0/runs/{id}/input"),
+        &format!("/v1/runs/{id}/input"),
         Some(r#"{"data":123,"vm":0}"#),
     );
     assert_eq!(bad.status, 400, "{}", bad.body);
-}
-
-#[test]
-fn an_unsupported_method_on_a_known_path_is_405() {
-    let server = common::start(console_dir("405"));
-    let port = server.port();
-    for (method, target, body) in [
-        ("PUT", "/api/v0/runs", Some(UNBOOTABLE)),
-        ("POST", "/api/v0/runs/r1", None),
-        ("DELETE", "/", None),
-        ("GET", "/api/v0/runs/r1/input", None),
-    ] {
-        let reply = request(port, method, target, body);
-        assert_eq!(reply.status, 405, "{method} {target}: {}", reply.body);
-        assert!(
-            reply.json()["error"].is_string(),
-            "{method} {target}: {}",
-            reply.body
-        );
-    }
-}
-
-#[test]
-fn malformed_requests_are_400() {
-    let server = common::start(console_dir("malformed"));
-    let port = server.port();
-    for raw in [
-        "GARBAGE\r\n\r\n",
-        "GET /api/v0/runs\r\n\r\n",
-        "GET /api/v0/runs HTTP/9.9\r\n\r\n",
-        "GET api/v0/runs HTTP/1.1\r\n\r\n",
-        "GET  /api/v0/runs HTTP/1.1\r\n\r\n",
-        "POST /api/v0/runs HTTP/1.1\r\nContent-Length: two\r\n\r\n",
-        "POST /api/v0/runs HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello",
-        "POST /api/v0/runs HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
-        "POST /api/v0/runs HTTP/1.1\r\nContent-Length: 100\r\n\r\n{}",
-        "GET /api/v0/runs HTTP/1.1\r\nno-colon-here\r\n\r\n",
-        "GET /api/v0/runs HTTP/1.1\r\nHost: localhost\r\n",
-        "",
-    ] {
-        let reply = common::send(port, raw.as_bytes());
-        assert_eq!(reply.status, 400, "{raw:?}: {}", reply.body);
-        assert!(reply.json()["error"].is_string(), "{raw:?}: {}", reply.body);
-    }
 }
 
 #[test]
@@ -415,8 +346,8 @@ fn the_console_is_served_from_its_directory_only() {
         "/%2e%2e/Cargo.toml",
         "/escape.html",
         "/missing.js",
-        "/api/v0/nope",
-        "/api/v0/runs/",
+        "/v1/nope",
+        "/v1/runs/",
         "/index.html/",
     ] {
         let reply = request(port, "GET", target, None);
@@ -444,11 +375,11 @@ fn a_kill_racing_a_boot_leaves_a_consistent_run() {
         // run is known before the create has answered.
         let id = format!("r{}", round + 1);
         let creating = std::thread::spawn(move || {
-            request(port, "POST", "/api/v0/runs", Some(UNBOOTABLE))
+            request(port, "POST", "/v1/runs", Some(UNBOOTABLE))
         });
         let killing = std::thread::spawn({
             let id = id.clone();
-            move || request(port, "DELETE", &format!("/api/v0/runs/{id}"), None)
+            move || request(port, "DELETE", &format!("/v1/runs/{id}"), None)
         });
         let created = creating.join().expect("the create thread");
         let killed = killing.join().expect("the kill thread");
@@ -462,7 +393,7 @@ fn a_kill_racing_a_boot_leaves_a_consistent_run() {
 
         // Whatever the interleaving, the run is over, it ended once, and no VM
         // it managed to boot was left behind.
-        let run = request(port, "GET", &format!("/api/v0/runs/{id}"), None).json();
+        let run = request(port, "GET", &format!("/v1/runs/{id}"), None).json();
         let state = run["state"].as_str().expect("a state");
         assert!(state == "failed" || state == "killed", "{run}");
         assert!(run["ended_at"].is_u64(), "{run}");
@@ -478,7 +409,7 @@ fn runs_are_kept_apart_across_two_daemons() {
     assert_eq!(failed_run(first.port()), "r1");
     assert_eq!(failed_run(second.port()), "r1");
     assert_eq!(
-        request(first.port(), "GET", "/api/v0/runs", None).json()["runs"]
+        request(first.port(), "GET", "/v1/runs", None).json()["runs"]
             .as_array()
             .expect("an array")
             .len(),

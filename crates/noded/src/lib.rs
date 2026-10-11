@@ -12,42 +12,43 @@
 //!
 //! The daemon binds `127.0.0.1` and serves, as JSON:
 //!
-//! * `GET    /api/v0/runs`             - every run, without serial captures
-//! * `POST   /api/v0/runs`             - boot a run's VMs
-//! * `GET    /api/v0/runs/{id}`        - one run, with every VM's serial
-//! * `POST   /api/v0/runs/{id}/input`  - write to one VM's serial console
-//! * `DELETE /api/v0/runs/{id}`        - kill a run's VMs
-//! * `GET    /api/v0/tasks`            - every task, oldest first
-//! * `POST   /api/v0/tasks`            - create a task, `open` (its budget minted into escrow)
-//! * `GET    /api/v0/tasks/{id}`       - one task
-//! * `POST   /api/v0/tasks/{id}/claim` - claim an open task as a live agent
-//! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`), refunding its escrow
-//! * `POST   /api/v0/tasks/{id}/artifact` - read a file the task's agent wrote
-//! * `POST   /api/v0/tasks/{id}/bid`   - bid on a roled open task's call
-//! * `POST   /api/v0/tasks/{id}/award` - award the call to a bidder (binding
+//! * `GET    /v1/runs`             - every run, without serial captures
+//! * `POST   /v1/runs`             - boot a run's VMs
+//! * `GET    /v1/runs/{id}`        - one run, with every VM's serial
+//! * `POST   /v1/runs/{id}/input`  - write to one VM's serial console
+//! * `DELETE /v1/runs/{id}`        - kill a run's VMs
+//! * `GET    /v1/tasks`            - every task, oldest first
+//! * `POST   /v1/tasks`            - create a task, `open` (its budget minted into escrow)
+//! * `GET    /v1/tasks/{id}`       - one task
+//! * `POST   /v1/tasks/{id}/claim` - claim an open task as a live agent
+//! * `POST   /v1/tasks/{id}/finish`- end a claimed task (`done`/`failed`), refunding its escrow
+//! * `POST   /v1/tasks/{id}/artifact` - read a file the task's agent wrote
+//! * `POST   /v1/tasks/{id}/bid`   - bid on a roled open task's call
+//! * `POST   /v1/tasks/{id}/award` - award the call to a bidder (binding
 //!   the task through the claim; with an `awarder_cid` it also posts the
 //!   board's hiring note and links the two agents' contacts)
-//! * `GET    /api/v0/agora`            - the calls, with their bids and awards
-//! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends (refunding its escrow)
-//! * `GET    /api/v0/treasury`         - the accounts and their derived balances, and totals
-//! * `GET    /api/v0/treasury/journal` - the double-entry journal, oldest first (bounded)
-//! * `GET    /api/v0/board`            - the public posts, newest first (bounded), with every agent's unread count
-//! * `POST   /api/v0/board`            - post to the public board for a connected agent
-//! * `POST   /api/v0/board/read`       - advance a connected agent's read cursor
-//! * `GET    /api/v0/agents/{cid}/contacts` - an agent's contact list
-//! * `POST   /api/v0/agents/{cid}/contacts` - add a contact (both connected, idempotent)
-//! * `POST   /api/v0/agents/{cid}/say` - speak to a peer: the exchange is recorded and delivered
-//! * `GET    /api/v0/conversations`    - the exchanges, newest first (bounded), with the pair summaries
-//! * `GET    /api/v0/conversations/{a}/{b}` - one pair's thread, oldest first
-//! * `GET    /api/v0/motions`          - the council's motions, newest first (bounded)
-//! * `POST   /api/v0/motions`          - propose a motion as a seated connected agent
-//! * `GET    /api/v0/motions/{id}`     - one motion
-//! * `POST   /api/v0/motions/{id}/vote`- a seated connected agent votes on an open motion
-//! * `POST   /api/v0/motions/{id}/decide`- the owner (the operator: no agent CID) ratifies or vetoes a gated motion
-//! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
-//! * `POST   /api/v0/agents/{cid}/stop`- end one connected agent's session (the hub's own stop view, verbatim)
-//! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
-//! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
+//! * `GET    /v1/agora`            - the calls, with their bids and awards
+//! * `DELETE /v1/tasks/{id}`       - withdraw a task before it ends (refunding its escrow)
+//! * `GET    /v1/treasury`         - the accounts and their derived balances, and totals
+//! * `GET    /v1/treasury/journal` - the double-entry journal, oldest first (bounded)
+//! * `GET    /v1/board`            - the public posts, newest first (bounded), with every agent's unread count
+//! * `POST   /v1/board`            - post to the public board for a connected agent
+//! * `POST   /v1/board/read`       - advance a connected agent's read cursor
+//! * `GET    /v1/agents/{cid}/contacts` - an agent's contact list
+//! * `POST   /v1/agents/{cid}/contacts` - add a contact (both connected, idempotent)
+//! * `POST   /v1/agents/{cid}/say` - speak to a peer: the exchange is recorded and delivered
+//! * `GET    /v1/conversations`    - the exchanges, newest first (bounded), with the pair summaries
+//! * `GET    /v1/conversations/{a}/{b}` - one pair's thread, oldest first
+//! * `GET    /v1/motions`          - the council's motions, newest first (bounded)
+//! * `POST   /v1/motions`          - propose a motion as a seated connected agent
+//! * `GET    /v1/motions/{id}`     - one motion
+//! * `POST   /v1/motions/{id}/vote`- a seated connected agent votes on an open motion
+//! * `POST   /v1/motions/{id}/decide`- the owner (the operator: no agent CID) ratifies or vetoes a gated motion
+//! * `POST   /v1/agents/{cid}/tell`- drive one tool call on a connected agent
+//! * `POST   /v1/agents/{cid}/stop`- end one connected agent's session (the hub's own stop view, verbatim)
+//! * `GET    /v1/hub`              - the hub's `/v1/status`, proxied verbatim
+//! * `GET    /v1/hub/healthz`      - the hub's `/healthz`, proxied verbatim
+//! * `GET    /v1/events`           - server-sent events (see [`events`])
 //! * `GET    /` and `GET /<file>`      - the console's static files
 //!
 //! Run states and transitions are the schema's (`core.run_transitions`,
@@ -74,7 +75,6 @@ pub mod agora;
 pub mod council;
 pub mod events;
 pub mod fleet;
-pub mod http;
 pub mod hub;
 pub mod registry;
 pub mod social;
@@ -82,14 +82,10 @@ pub mod static_files;
 pub mod tasks;
 pub mod treasury;
 
-use std::borrow::Cow;
-use std::io::BufReader;
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+
+use apz_http::{Response, Router};
 
 use serde::{Deserialize, Serialize};
 use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
@@ -99,8 +95,7 @@ use crate::council::{
     CheckedDecision, CheckedProposal, CheckedVote, Council, DecideRequest, ProposeRequest,
     VoteRequest,
 };
-use crate::http::Response;
-use crate::hub::{HubAdmin, HubStatus, StopOutcome, TellOutcome};
+use crate::hub::{Hub, StopOutcome, TellOutcome};
 use crate::registry::{ConnectedAgent, CreateRun, Detail, Registry, VmImages};
 use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
 use crate::treasury::Treasury;
@@ -139,9 +134,6 @@ pub const DEFAULT_AGENTS_MEMORY_MIB: u32 = 128;
 /// vCPUs per agent VM unless `--agents-vcpus` says otherwise.
 pub const DEFAULT_AGENTS_VCPUS: u32 = 1;
 
-/// How long a client has to send its request and to take its response.
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Where the daemon listens and what it boots.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -151,18 +143,9 @@ pub struct Config {
     pub kernel: PathBuf,
     /// The guest initrd every run boots.
     pub initrd: PathBuf,
-    /// Where the hub's status surface is, when `--hub-status` named one. `Some`
-    /// serves `GET /api/v0/hub` and `/api/v0/hub/healthz` as a proxy of it;
-    /// `None` (`--hub-status off`) answers those endpoints with a 503, because
-    /// a daemon not told where the hub is cannot know its state and must not
-    /// pretend the registry is empty.
-    pub hub_status: Option<HubStatus>,
-    /// Where the hub's admin surface is, when `--hub-admin` named one. `Some`
-    /// serves `POST /api/v0/tasks/{id}/artifact`, which drives the task's
-    /// agent's `read_file` through it; `None` (`--hub-admin off`) answers that
-    /// endpoint with a 503, because a daemon not told where the admin surface
-    /// is cannot ask any agent to read anything.
-    pub hub_admin: Option<HubAdmin>,
+    /// Where the hub is (`--hub-port`); `None` (`off`) answers the endpoints
+    /// that need it with a 503 rather than pretend the fleet is empty.
+    pub hub: Option<Hub>,
     /// The directory `GET /` and `GET <file>` serve.
     pub console_dir: PathBuf,
     /// The directory holding the per-VM vsock Unix sockets; VM `i`'s muxer
@@ -193,8 +176,7 @@ impl Default for Config {
             port: DEFAULT_PORT,
             kernel: PathBuf::from(DEFAULT_KERNEL),
             initrd: PathBuf::from(DEFAULT_INITRD),
-            hub_status: Some(HubStatus::default()),
-            hub_admin: Some(HubAdmin::default()),
+            hub: Some(Hub::default()),
             console_dir: PathBuf::from(DEFAULT_CONSOLE_DIR),
             uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
             workspace: None,
@@ -210,7 +192,7 @@ impl Default for Config {
 /// budgets are escrowed in, the agora its calls' bids and awards live in, the
 /// plaza's social layer (the board, the contact lists and the conversations
 /// between its agents), the council's motions and votes, the console directory
-/// it serves, the hub's status surface it proxies, and when it started (the
+/// it serves, the hub's status it proxies, and when it started (the
 /// machine view's uptime).
 pub struct Node {
     registry: Registry,
@@ -220,8 +202,7 @@ pub struct Node {
     social: Arc<Social>,
     council: Arc<Council>,
     console_dir: PathBuf,
-    hub_status: Option<HubStatus>,
-    hub_admin: Option<HubAdmin>,
+    hub: Option<Hub>,
     started_at_ms: u64,
 }
 
@@ -281,13 +262,12 @@ impl Node {
             social,
             council,
             console_dir: config.console_dir,
-            hub_status: config.hub_status,
-            hub_admin: config.hub_admin,
+            hub: config.hub,
             started_at_ms: epoch_ms(),
         }
     }
 
-    /// The node as a machine (`GET /api/v0/machine`).
+    /// The node as a machine (`GET /v1/machine`).
     pub fn machine(&self) -> MachineView {
         MachineView {
             name: hostname(),
@@ -336,7 +316,7 @@ impl Node {
         &self.council
     }
 
-    /// The node's event bus (`GET /api/v0/events` streams it).
+    /// The node's event bus (`GET /v1/events` streams it).
     pub fn events(&self) -> &events::EventBus {
         self.registry.events_bus()
     }
@@ -348,16 +328,9 @@ impl Node {
         &self.console_dir
     }
 
-    /// Where the hub's status surface is, or `None` when the daemon was not
-    /// told (`--hub-status off`).
-    pub fn hub_status(&self) -> Option<&HubStatus> {
-        self.hub_status.as_ref()
-    }
-
-    /// Where the hub's admin surface is, or `None` when the daemon was not
-    /// told (`--hub-admin off`).
-    pub fn hub_admin(&self) -> Option<&HubAdmin> {
-        self.hub_admin.as_ref()
+    /// Where the hub is, when the daemon was told.
+    pub fn hub(&self) -> Option<&Hub> {
+        self.hub.as_ref()
     }
 }
 
@@ -441,142 +414,44 @@ fn host_memory_mib() -> u64 {
 }
 
 
-/// A bound, serving node daemon: one accept thread, one thread per connection.
+/// A bound, serving node daemon.
 pub struct Server {
-    port: u16,
-    shutdown: Arc<AtomicBool>,
-    accept: Option<JoinHandle<()>>,
-    /// The daemon's state, also held by the accept thread. The daemon's
-    /// startup (the initial role fleet) reaches the registry through this.
+    http: apz_http::Handle,
     node: Arc<Node>,
 }
 
 impl Server {
-    /// Binds `config.port` on localhost and starts serving.
+    /// Binds `config.port` on 127.0.0.1 and starts serving.
     pub fn start(config: Config) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", config.port))?;
-        let port = listener.local_addr()?.port();
+        let server = apz_http::Server::bind(config.port)?;
         let node = Arc::new(Node::new(config));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&shutdown);
-        let serving = Arc::clone(&node);
-        let accept = thread::spawn(move || accept_loop(&listener, &serving, &flag));
-        Ok(Self {
-            port,
-            shutdown,
-            accept: Some(accept),
-            node,
-        })
+        let (router, serving) = (router(), Arc::clone(&node));
+        let http = server.spawn(move |request| router.handle(&serving, request))?;
+        Ok(Self { http, node })
     }
 
-    /// The daemon's state (`registry`, event bus), for the startup that has to
-    /// reach it before the daemon is left to serve.
+    /// The daemon's state, for the startup that runs before it serves.
     pub fn node(&self) -> &Arc<Node> {
         &self.node
     }
 
-    /// The port the daemon is listening on: `config.port`, or the ephemeral
-    /// port the kernel chose when that was `0`.
+    /// The bound port (the kernel's choice when `config.port` was 0).
     pub fn port(&self) -> u16 {
-        self.port
+        self.http.port()
     }
 
-    /// Serves until the listener fails.
-    pub fn wait(mut self) -> std::io::Result<()> {
-        match self.accept.take() {
-            Some(accept) => accept
-                .join()
-                .map_err(|_| std::io::Error::other("the accept thread panicked")),
-            None => Ok(()),
-        }
+    /// Serves until the server is stopped.
+    pub fn wait(self) -> std::io::Result<()> {
+        self.http.join()
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        if self.accept.is_some() {
-            // Wake the accept loop out of `accept(2)`: it checks `shutdown`
-            // after every connection it accepts.
-            let _ = TcpStream::connect(("127.0.0.1", self.port));
-            if let Some(accept) = self.accept.take() {
-                let _ = accept.join();
-            }
-        }
-    }
-}
-
-/// Binds `config.port` and serves until the listener fails.
+/// Binds `config.port` and serves.
 pub fn serve(config: Config) -> std::io::Result<()> {
     Server::start(config)?.wait()
 }
 
-/// Accepts connections until `shutdown` is set or the listener fails, and
-/// hands each one to its own thread.
-fn accept_loop(listener: &TcpListener, node: &Arc<Node>, shutdown: &AtomicBool) {
-    for stream in listener.incoming() {
-        if shutdown.load(Ordering::SeqCst) {
-            return;
-        }
-        match stream {
-            Ok(stream) => {
-                let node = Arc::clone(node);
-                thread::spawn(move || handle_connection(stream, &node));
-            }
-            Err(err) => {
-                eprintln!("noded: accept failed: {err}");
-                return;
-            }
-        }
-    }
-}
-
-/// Whether a `Host` header names loopback: `127.0.0.1` or `localhost`
-/// (case-insensitively), with any `:port` suffix. Anything else — a rebinding
-/// hostname, a LAN address, a bracketed IPv6 form — is not this daemon's name.
-fn host_names_loopback(host: &str) -> bool {
-    let name = host.split(':').next().unwrap_or(host);
-    name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost")
-}
-
-/// Serves one connection: read one request, answer it, close. The events
-/// endpoint is the one exception — its answer is a stream that ends when the
-/// connection does, not a response.
-fn handle_connection(stream: TcpStream, node: &Node) {
-    let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
-    let mut stream = BufReader::new(stream);
-    let response = match http::read_request(&mut stream) {
-        Ok(request) => {
-            // The loopback guard: a page served from any hostname that
-            // resolves to 127.0.0.1 (DNS rebinding) can post a simple request
-            // here and the browser executes it, even though the answer is
-            // unreadable. A Host that names anything but loopback is refused;
-            // a request with no Host at all (a raw probe, not a browser) is
-            // served as before.
-            if let Some(host) = request.host()
-                && !host_names_loopback(host)
-            {
-                Response::error(403, "the Host header must name loopback")
-            } else if request.method() == "GET" && request.path() == "/api/v0/events" {
-                let receiver = node.events().subscribe();
-                if let Err(err) = events::stream(&receiver, stream.get_mut()) {
-                    eprintln!("noded: an events stream ended: {err}");
-                }
-                return;
-            } else {
-                route(&request, node)
-            }
-        }
-        Err(err) => Response::error(400, err.message()),
-    };
-    if let Err(err) = response.write_to(stream.get_mut()) {
-        eprintln!("noded: could not answer a request: {err}");
-    }
-}
-
-/// The `POST /api/v0/runs/{id}/input` body.
+/// The `POST /v1/runs/{id}/input` body.
 #[derive(Debug, Deserialize)]
 struct InputRequest {
     /// The line (or bytes) to write to the VM's console.
@@ -585,226 +460,56 @@ struct InputRequest {
     vm: u32,
 }
 
-/// Routes one parsed request to its endpoint.
-fn route(request: &http::Request, node: &Node) -> Response {
-    let path = request.path();
-    match path {
-        "/api/v0/machine" => match request.method() {
-            "GET" => json_response(200, &node.machine()),
-            _ => method_not_allowed("GET"),
-        },
-        "/api/v0/hub" => match request.method() {
-            "GET" => proxy_hub(node, "/status"),
-            _ => method_not_allowed("GET"),
-        },
-        "/api/v0/hub/healthz" => match request.method() {
-            "GET" => proxy_hub(node, "/healthz"),
-            _ => method_not_allowed("GET"),
-        },
-        "/api/v0/runs" => match request.method() {
-            "GET" => list_runs(node),
-            "POST" => create_run(node, request.body()),
-            _ => method_not_allowed("GET, POST"),
-        },
-        "/api/v0/tasks" => match request.method() {
-            "GET" => list_tasks(node),
-            "POST" => create_task(node, request.body()),
-            _ => method_not_allowed("GET, POST"),
-        },
-        "/api/v0/treasury" => match request.method() {
-            "GET" => treasury_view(node),
-            _ => method_not_allowed("GET"),
-        },
-        "/api/v0/agora" => match request.method() {
-            "GET" => agora_view(node),
-            _ => method_not_allowed("GET"),
-        },
-        "/api/v0/board" => match request.method() {
-            "GET" => board_view(node),
-            "POST" => board_post(node, request.body()),
-            _ => method_not_allowed("GET, POST"),
-        },
-        "/api/v0/board/read" => match request.method() {
-            "POST" => board_read(node, request.body()),
-            _ => method_not_allowed("POST"),
-        },
-        "/api/v0/conversations" => match request.method() {
-            "GET" => conversations_view(node),
-            _ => method_not_allowed("GET"),
-        },
-        "/api/v0/motions" => match request.method() {
-            "GET" => motions_view(node),
-            "POST" => motion_propose(node, request.body()),
-            _ => method_not_allowed("GET, POST"),
-        },
-        "/" => match request.method() {
-            "GET" => static_files::serve(node.console_dir(), static_files::INDEX),
-            _ => method_not_allowed("GET"),
-        },
-        _ => match path.strip_prefix("/api/v0/runs/") {
-            Some(rest) => run_endpoint(rest, request, node),
-            None => match path.strip_prefix("/api/v0/tasks/") {
-                Some(rest) => task_endpoint(rest, request, node),
-                None => match path.strip_prefix("/api/v0/agents/") {
-                    Some(rest) => agent_endpoint(rest, request, node),
-                    None => match path.strip_prefix("/api/v0/conversations/") {
-                        Some(rest) => conversation_endpoint(rest, request, node),
-                        None => match path.strip_prefix("/api/v0/motions/") {
-                            Some(rest) => motion_endpoint(rest, request, node),
-                            None => match path.strip_prefix("/api/v0/treasury/") {
-                                Some(rest) => treasury_endpoint(rest, request, node),
-                                None => match request.method() {
-                                    "GET" => static_files::serve(
-                                        node.console_dir(),
-                                        path.strip_prefix('/').unwrap_or(path),
-                                    ),
-                                    _ => method_not_allowed("GET"),
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    }
-}
-
-/// Routes a request under `/api/v0/treasury/`.
-fn treasury_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
-    match rest {
-        "journal" => match request.method() {
-            "GET" => treasury_journal(node),
-            _ => method_not_allowed("GET"),
-        },
-        _ => no_such_endpoint(),
-    }
-}
-
-/// Routes a request under `/api/v0/tasks/`.
-fn task_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
-    if let Some(id) = rest.strip_suffix("/claim") {
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return claim_task(node, id, request.body());
-    }
-    if let Some(id) = rest.strip_suffix("/finish") {
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return finish_task(node, id, request.body());
-    }
-    if let Some(id) = rest.strip_suffix("/bid") {
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return bid_task(node, id, request.body());
-    }
-    if let Some(id) = rest.strip_suffix("/award") {
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return award_task(node, id, request.body());
-    }
-    if let Some(id) = rest.strip_suffix("/artifact") {
-        // The read-through is a POST, not a GET, and deliberately so: it
-        // drives the task's agent - a tool call with a real cost, a real
-        // refusal mode and a real effect on the agent's turn - so a request
-        // that can be replayed by a prefetch, a retry or a crawler must not be
-        // advertised as safe to repeat. The console posts it.
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return read_artifact(node, id, request.body());
-    }
-    if rest.is_empty() || rest.contains('/') {
-        return no_such_endpoint();
-    }
-    match request.method() {
-        "GET" => get_task(node, rest),
-        "DELETE" => withdraw_task(node, rest),
-        _ => method_not_allowed("GET, DELETE"),
-    }
-}
-
-/// Routes a request under `/api/v0/runs/`.
-fn run_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
-    if let Some(id) = rest.strip_suffix("/input") {
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return send_input(node, id, request.body());
-    }
-    if rest.is_empty() || rest.contains('/') {
-        return no_such_endpoint();
-    }
-    match request.method() {
-        "GET" => get_run(node, rest),
-        "DELETE" => delete_run(node, rest),
-        _ => method_not_allowed("GET, DELETE"),
-    }
-}
-
-/// Routes a request under `/api/v0/agents/`.
+/// The API under `/v1`, and the console's files.
 ///
-/// Three surfaces, each named by the segment after the CID: the operator's
-/// tool drive (`tell`), the agent's contact list (`contacts`), and the agent
-/// speaking to a peer (`say`).
-fn agent_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
-    if let Some(cid) = rest.strip_suffix("/contacts") {
-        if cid.is_empty() || cid.contains('/') {
-            return no_such_endpoint();
-        }
-        return match request.method() {
-            "GET" => agent_contacts(node, cid),
-            "POST" => agent_contact_add(node, cid, request.body()),
-            _ => method_not_allowed("GET, POST"),
-        };
-    }
-    if let Some(cid) = rest.strip_suffix("/say") {
-        if cid.is_empty() || cid.contains('/') {
-            return no_such_endpoint();
-        }
-        // Speaking records an exchange *and* drives the peer's session, so it is
-        // a POST for the same reason `/tell` is: a request that runs a real tool
-        // in an agent's turn must not be advertised as safe for a prefetch or a
-        // retry to replay.
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return agent_say(node, cid, request.body());
-    }
-    if let Some(cid) = rest.strip_suffix("/stop") {
-        if cid.is_empty() || cid.contains('/') {
-            return no_such_endpoint();
-        }
-        // Stopping ends a session, so it is a POST for the same reason `/tell`
-        // is: a request with a real effect on an agent's turn must not be
-        // advertised as safe for a prefetch or a retry to replay.
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return stop_agent(node, cid, request.body());
-    }
-    let Some(cid) = rest.strip_suffix("/tell") else {
-        return no_such_endpoint();
-    };
-    if cid.is_empty() || cid.contains('/') {
-        return no_such_endpoint();
-    }
-    // Driving an agent is a POST, not a GET, and deliberately so - for the same
-    // reason `POST /api/v0/tasks/{id}/artifact` is: it runs a real tool in the
-    // agent's session (a call with a cost, a refusal mode and an effect on the
-    // agent's turn), so a request that can be replayed by a prefetch, a retry
-    // or a crawler must not be advertised as safe to repeat. The console posts
-    // it.
-    if request.method() != "POST" {
-        return method_not_allowed("POST");
-    }
-    tell_agent(node, cid, request.body())
+/// Everything that changes state or drives an agent is a POST (or DELETE), so
+/// a prefetch, a retry or a crawler never replays it.
+fn router() -> Router<Node> {
+    Router::<Node>::new()
+        .get("/v1/machine", |node, _, _| Response::json(200, &node.machine()))
+        .get("/v1/hub", |node, _, _| proxy_hub(node, "/v1/status"))
+        .get("/v1/hub/healthz", |node, _, _| proxy_hub(node, "/healthz"))
+        .get("/v1/events", |node, _, _| {
+            let receiver = node.events().subscribe();
+            Response::sse(move |sse| events::stream(&receiver, sse))
+        })
+        .get("/v1/runs", |node, _, _| list_runs(node))
+        .post("/v1/runs", |node, request, _| create_run(node, &request.body))
+        .get("/v1/runs/{id}", |node, _, params| get_run(node, params.get("id")))
+        .delete("/v1/runs/{id}", |node, _, params| delete_run(node, params.get("id")))
+        .post("/v1/runs/{id}/input", |node, request, params| send_input(node, params.get("id"), &request.body))
+        .get("/v1/tasks", |node, _, _| list_tasks(node))
+        .post("/v1/tasks", |node, request, _| create_task(node, &request.body))
+        .get("/v1/tasks/{id}", |node, _, params| get_task(node, params.get("id")))
+        .delete("/v1/tasks/{id}", |node, _, params| withdraw_task(node, params.get("id")))
+        .post("/v1/tasks/{id}/claim", |node, request, params| claim_task(node, params.get("id"), &request.body))
+        .post("/v1/tasks/{id}/finish", |node, request, params| finish_task(node, params.get("id"), &request.body))
+        .post("/v1/tasks/{id}/bid", |node, request, params| bid_task(node, params.get("id"), &request.body))
+        .post("/v1/tasks/{id}/award", |node, request, params| award_task(node, params.get("id"), &request.body))
+        .post("/v1/tasks/{id}/artifact", |node, request, params| read_artifact(node, params.get("id"), &request.body))
+        .get("/v1/treasury", |node, _, _| treasury_view(node))
+        .get("/v1/treasury/journal", |node, _, _| treasury_journal(node))
+        .get("/v1/agora", |node, _, _| agora_view(node))
+        .get("/v1/board", |node, _, _| board_view(node))
+        .post("/v1/board", |node, request, _| board_post(node, &request.body))
+        .post("/v1/board/read", |node, request, _| board_read(node, &request.body))
+        .get("/v1/conversations", |node, _, _| conversations_view(node))
+        .get("/v1/conversations/{a}/{b}", |node, _, params| conversation_thread(node, params.get("a"), params.get("b")))
+        .get("/v1/motions", |node, _, _| motions_view(node))
+        .post("/v1/motions", |node, request, _| motion_propose(node, &request.body))
+        .get("/v1/motions/{id}", |node, _, params| motion_get(node, params.get("id")))
+        .post("/v1/motions/{id}/vote", |node, request, params| motion_vote(node, params.get("id"), &request.body))
+        .post("/v1/motions/{id}/decide", |node, request, params| motion_decide(node, params.get("id"), &request.body))
+        .get("/v1/agents/{cid}/contacts", |node, _, params| agent_contacts(node, params.get("cid")))
+        .post("/v1/agents/{cid}/contacts", |node, request, params| agent_contact_add(node, params.get("cid"), &request.body))
+        .post("/v1/agents/{cid}/say", |node, request, params| agent_say(node, params.get("cid"), &request.body))
+        .post("/v1/agents/{cid}/tell", |node, request, params| tell_agent(node, params.get("cid"), &request.body))
+        .post("/v1/agents/{cid}/stop", |node, request, params| stop_agent(node, params.get("cid"), &request.body))
+        .get("/", |node, _, _| static_files::serve(node.console_dir(), static_files::INDEX))
+        .get("/{file}", |node, _, params| static_files::serve(node.console_dir(), params.get("file")))
 }
 
-/// `GET /api/v0/hub` and `GET /api/v0/hub/healthz`: the hub's status surface,
+/// `GET /v1/hub` and `GET /v1/hub/healthz`: the hub's status,
 /// proxied so the console can read it from this daemon's own origin (its CSP's
 /// `connect-src 'self'` blocks the cross-origin fetch the hub would need).
 ///
@@ -814,28 +519,25 @@ fn agent_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response 
 /// and a daemon that was never told where the hub is a 503. Both are JSON
 /// errors, never an empty registry dressed up as an answer.
 fn proxy_hub(node: &Node, path: &str) -> Response {
-    let Some(hub) = node.hub_status() else {
-        return Response::error(503, "hub status is not configured");
+    let Some(hub) = node.hub() else {
+        return Response::error(503, "the hub is not configured");
     };
     match hub::get(hub, path) {
-        Ok(answer) => {
-            let (status, content_type, body) = answer.into_parts();
-            Response::bytes(status, Cow::Owned(content_type), body)
-        }
+        Ok(reply) => Response::new(reply.status, &reply.content_type, reply.body),
         Err(reason) => Response::error(502, &format!("hub unreachable: {reason}")),
     }
 }
 
-/// `GET /api/v0/runs`: every run, without serial captures.
+/// `GET /v1/runs`: every run, without serial captures.
 fn list_runs(node: &Node) -> Response {
     let runs = node.registry().list();
     let view = registry::RunsView {
         runs: runs.iter().map(|run| run.view(Detail::Summary)).collect(),
     };
-    json_response(200, &view)
+    Response::json(200, &view)
 }
 
-/// `POST /api/v0/runs`: boots a run's VMs.
+/// `POST /v1/runs`: boots a run's VMs.
 ///
 /// The run is created before its VMs are booted and is `running` by the time
 /// this answers (or `failed`, when a VM could not be booted - the run exists
@@ -846,20 +548,20 @@ fn create_run(node: &Node, body: &[u8]) -> Response {
         Err(err) => return Response::error(400, &format!("invalid create request: {err}")),
     };
     match node.registry().create_run(&request) {
-        Ok(run) => json_response(201, &run.view(Detail::Summary)),
+        Ok(run) => Response::json(201, &run.view(Detail::Summary)),
         Err(reason) => Response::error(400, &reason),
     }
 }
 
-/// `GET /api/v0/runs/{id}`: one run, with every VM's serial capture.
+/// `GET /v1/runs/{id}`: one run, with every VM's serial capture.
 fn get_run(node: &Node, id: &str) -> Response {
     match node.registry().find(id) {
-        Some(run) => json_response(200, &run.view(Detail::Full)),
+        Some(run) => Response::json(200, &run.view(Detail::Full)),
         None => Response::error(404, &format!("no run with id {id}")),
     }
 }
 
-/// `POST /api/v0/runs/{id}/input`: writes to one VM's serial console.
+/// `POST /v1/runs/{id}/input`: writes to one VM's serial console.
 ///
 /// The data is newline-terminated when the caller did not terminate it, so a
 /// bare command line reaches the guest as a line.
@@ -876,48 +578,48 @@ fn send_input(node: &Node, id: &str, body: &[u8]) -> Response {
         data.push(b'\n');
     }
     match run.send_input(request.vm, &data) {
-        Ok(()) => json_response(200, &run.view(Detail::Full)),
+        Ok(()) => Response::json(200, &run.view(Detail::Full)),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
 
-/// `DELETE /api/v0/runs/{id}`: kills a run's VMs.
+/// `DELETE /v1/runs/{id}`: kills a run's VMs.
 fn delete_run(node: &Node, id: &str) -> Response {
     match node.registry().find(id) {
         Some(run) => {
             run.kill();
-            json_response(200, &run.view(Detail::Full))
+            Response::json(200, &run.view(Detail::Full))
         }
         None => Response::error(404, &format!("no run with id {id}")),
     }
 }
 
-/// `GET /api/v0/tasks`: every task, oldest first.
+/// `GET /v1/tasks`: every task, oldest first.
 fn list_tasks(node: &Node) -> Response {
     let tasks = node.tasks().list();
     let view = TasksView {
         tasks: tasks.iter().map(|task| task.view()).collect(),
     };
-    json_response(200, &view)
+    Response::json(200, &view)
 }
 
-/// `GET /api/v0/treasury`: the accounts with their balances, a totals line,
+/// `GET /v1/treasury`: the accounts with their balances, a totals line,
 /// and v0's honest note on real spend.
 ///
 /// Balances are derived from the journal's postings, never stored (see
 /// [`treasury`]), and the view says in its own words that v0 meters no real
 /// spend (`spent: 0`, `note`).
 fn treasury_view(node: &Node) -> Response {
-    json_response(200, &node.treasury().view())
+    Response::json(200, &node.treasury().view())
 }
 
-/// `GET /api/v0/treasury/journal`: the double-entry journal, oldest first and
+/// `GET /v1/treasury/journal`: the double-entry journal, oldest first and
 /// newest last, bounded to the newest [`treasury::JOURNAL_LIMIT`] entries.
 fn treasury_journal(node: &Node) -> Response {
-    json_response(200, &node.treasury().journal(treasury::JOURNAL_LIMIT))
+    Response::json(200, &node.treasury().journal(treasury::JOURNAL_LIMIT))
 }
 
-/// `POST /api/v0/tasks`: creates a task in `open`.
+/// `POST /v1/tasks`: creates a task in `open`.
 ///
 /// The ledger checks the request and its cap before an id is handed out, so a
 /// refused create is a 400 (outside the contract) or a 409 (the ledger is
@@ -928,20 +630,20 @@ fn create_task(node: &Node, body: &[u8]) -> Response {
         Err(err) => return Response::error(400, &format!("invalid create request: {err}")),
     };
     match node.tasks().create(&request) {
-        Ok(task) => json_response(201, &task.view()),
+        Ok(task) => Response::json(201, &task.view()),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
 
-/// `GET /api/v0/tasks/{id}`: one task.
+/// `GET /v1/tasks/{id}`: one task.
 fn get_task(node: &Node, id: &str) -> Response {
     match node.tasks().find(id) {
-        Some(task) => json_response(200, &task.view()),
+        Some(task) => Response::json(200, &task.view()),
         None => Response::error(404, &format!("no task with id {id}")),
     }
 }
 
-/// `POST /api/v0/tasks/{id}/claim`: binds an open task to a live agent.
+/// `POST /v1/tasks/{id}/claim`: binds an open task to a live agent.
 ///
 /// The claim is only accepted from an agent the node's register shows
 /// connected right now - a VM that is running, reached by its guest CID - so
@@ -961,7 +663,7 @@ fn claim_task(node: &Node, id: &str, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match task.claim(&agent) {
-        Ok(()) => json_response(200, &task.view()),
+        Ok(()) => Response::json(200, &task.view()),
         Err(refused) => {
             let refused = ClaimError::Refused(refused);
             Response::error(refused.status(), &refused.to_string())
@@ -986,7 +688,7 @@ fn connected_agent(node: &Node, cid: u64) -> Result<ConnectedAgent, Response> {
     })
 }
 
-/// `POST /api/v0/tasks/{id}/finish`: ends a claimed task as `done` or
+/// `POST /v1/tasks/{id}/finish`: ends a claimed task as `done` or
 /// `failed`, refunding the escrow it still holds.
 fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
     let Some(task) = node.tasks().find(id) else {
@@ -1000,12 +702,12 @@ fn finish_task(node: &Node, id: &str, body: &[u8]) -> Response {
         return Response::error(400, &reason);
     }
     match task.finish(request.outcome, request.note) {
-        Ok(()) => json_response(200, &task.view()),
+        Ok(()) => Response::json(200, &task.view()),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
-/// The `POST /api/v0/tasks/{id}/bid` body: who bids, and what they ask.
+/// The `POST /v1/tasks/{id}/bid` body: who bids, and what they ask.
 #[derive(Debug, Deserialize)]
 struct BidRequest {
     /// The guest CID of the agent making the bid.
@@ -1016,7 +718,7 @@ struct BidRequest {
     price: u64,
 }
 
-/// The `POST /api/v0/tasks/{id}/award` body: who the call is awarded to. **No
+/// The `POST /v1/tasks/{id}/award` body: who the call is awarded to. **No
 /// price**: `agora.check_award` awards a bidder at the price they bid, so a
 /// price here could only disagree with the bid.
 #[derive(Debug, Deserialize)]
@@ -1039,7 +741,7 @@ struct AwardRequest {
     awarder_cid: Option<u64>,
 }
 
-/// `POST /api/v0/tasks/{id}/bid`: a connected agent bids on a roled open
+/// `POST /v1/tasks/{id}/bid`: a connected agent bids on a roled open
 /// task's call.
 ///
 /// The rules, each at its own enforcement point:
@@ -1074,14 +776,14 @@ fn bid_task(node: &Node, id: &str, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match node.agora().bid(&task, &agent, request.price) {
-        Ok(bid) => json_response(200, &bid),
+        Ok(bid) => Response::json(200, &bid),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
-/// `POST /api/v0/tasks/{id}/award`: awards a roled task's call to one of its
+/// `POST /v1/tasks/{id}/award`: awards a roled task's call to one of its
 /// bidders — and **binds the task through the ledger's own claim**, exactly
-/// the transition `POST /api/v0/tasks/{id}/claim` performs.
+/// the transition `POST /v1/tasks/{id}/claim` performs.
 ///
 /// That integration is the agora's choice and it is deliberate: an award has
 /// one way to bind a task, the same state machine and the same event every
@@ -1147,13 +849,13 @@ fn award_task(node: &Node, id: &str, body: &[u8]) -> Response {
                     );
                 }
             }
-            json_response(200, &task.view())
+            Response::json(200, &task.view())
         }
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
-/// `GET /api/v0/agora`: the board — the calls the node's roled tasks offer,
+/// `GET /v1/agora`: the board — the calls the node's roled tasks offer,
 /// each with the bids it holds and the award that closed it.
 ///
 /// The calls are **derived from the ledger, oldest first** (see [`agora`]),
@@ -1161,13 +863,13 @@ fn award_task(node: &Node, id: &str, body: &[u8]) -> Response {
 /// [`agora::AGORA_LIMIT`] calls, the newest window of them, oldest first
 /// within it, with `total`, `limit` and `truncated` saying what the window
 /// left out. Polling this endpoint is the source of truth for the board; the
-/// `agora` frames on `GET /api/v0/events` are the deltas.
+/// `agora` frames on `GET /v1/events` are the deltas.
 fn agora_view(node: &Node) -> Response {
     let tasks = node.tasks().list();
-    json_response(200, &node.agora().calls(&tasks, agora::AGORA_LIMIT))
+    Response::json(200, &node.agora().calls(&tasks, agora::AGORA_LIMIT))
 }
 
-/// `GET /api/v0/board`: the plaza's public posts, newest first and bounded,
+/// `GET /v1/board`: the plaza's public posts, newest first and bounded,
 /// with every agent's unread count beside them.
 ///
 /// The unread counts are computed here, against the cursors the social layer
@@ -1175,7 +877,7 @@ fn agora_view(node: &Node) -> Response {
 /// is the register's answer (the same one the claim and the bid ask for), and
 /// the posts a cursor has not reached is the board's own arithmetic. Polling
 /// this endpoint is the source of truth for the board; the `board` frames on
-/// `GET /api/v0/events` are the deltas.
+/// `GET /v1/events` are the deltas.
 fn board_view(node: &Node) -> Response {
     let connected: Vec<u64> = node
         .registry()
@@ -1183,13 +885,13 @@ fn board_view(node: &Node) -> Response {
         .iter()
         .map(|agent| agent.cid)
         .collect();
-    json_response(
+    Response::json(
         200,
         &node.social().board(&connected, social::BOARD_LIMIT),
     )
 }
 
-/// `POST /api/v0/board`: records a post for a connected agent — the agent
+/// `POST /v1/board`: records a post for a connected agent — the agent
 /// speaks, the caller is the driver acting for it.
 ///
 /// The rules, each at its own enforcement point:
@@ -1205,7 +907,7 @@ fn board_view(node: &Node) -> Response {
 ///
 /// | status | when |
 /// |---|---|
-/// | 201 | the post is recorded: the post, as `GET /api/v0/board` reports one |
+/// | 201 | the post is recorded: the post, as `GET /v1/board` reports one |
 /// | 400 | the body, or the task it links, is outside this endpoint's contract |
 /// | 405 | any method but `GET` or `POST` |
 /// | 409 | the caller is not a connected agent, or the board holds its cap of posts |
@@ -1228,12 +930,12 @@ fn board_post(node: &Node, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match node.social().post(&author, post) {
-        Ok(post) => json_response(201, &post),
+        Ok(post) => Response::json(201, &post),
         Err(refused) => Response::error(refused.status(), refused.message()),
     }
 }
 
-/// `POST /api/v0/board/read`: advances a connected agent's read cursor.
+/// `POST /v1/board/read`: advances a connected agent's read cursor.
 ///
 /// The cursor is a post id (`p<seq>`), and the rules are the social layer's:
 /// it must name a post, be at or before the newest one, and be at or after the
@@ -1257,15 +959,15 @@ fn board_read(node: &Node, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match node.social().read(&reader, &request.up_to) {
-        Ok(read) => json_response(200, &read),
+        Ok(read) => Response::json(200, &read),
         Err(refused) => Response::error(refused.status(), refused.message()),
     }
 }
 
-/// `GET /api/v0/conversations`: the exchange record, newest first and bounded,
+/// `GET /v1/conversations`: the exchange record, newest first and bounded,
 /// with the pair summaries the floor derives proximity from.
 fn conversations_view(node: &Node) -> Response {
-    json_response(
+    Response::json(
         200,
         &node
             .social()
@@ -1273,22 +975,9 @@ fn conversations_view(node: &Node) -> Response {
     )
 }
 
-/// Routes a request under `/api/v0/conversations/`: one pair's thread.
-///
-/// The pair is two guest CIDs, and the thread is derived from the record — an
-/// empty thread for a pair that has never spoken, which is an answer rather
-/// than a 404. The pair is read as unordered, so a thread is the same whichever
-/// way it is asked for.
-fn conversation_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
-    let Some((a, b)) = rest.split_once('/') else {
-        return no_such_endpoint();
-    };
-    if a.is_empty() || b.is_empty() || b.contains('/') {
-        return no_such_endpoint();
-    }
-    if request.method() != "GET" {
-        return method_not_allowed("GET");
-    }
+/// `GET /v1/conversations/{a}/{b}`: one pair's thread, read as unordered; a
+/// pair that never spoke is an empty thread, not a 404.
+fn conversation_thread(node: &Node, a: &str, b: &str) -> Response {
     let a = match checked_guest_cid(a) {
         Ok(cid) => cid,
         Err(reason) => return Response::error(400, &reason),
@@ -1297,38 +986,35 @@ fn conversation_endpoint(rest: &str, request: &http::Request, node: &Node) -> Re
         Ok(cid) => cid,
         Err(reason) => return Response::error(400, &reason),
     };
-    json_response(
-        200,
-        &node.social().thread(a, b, social::CONVERSATIONS_LIMIT),
-    )
+    Response::json(200, &node.social().thread(a, b, social::CONVERSATIONS_LIMIT))
 }
 
-/// `GET /api/v0/motions`: the council's motions, newest first and bounded.
+/// `GET /v1/motions`: the council's motions, newest first and bounded.
 ///
 /// The response is bounded exactly as the journal's and the board's are: at
 /// most [`council::MOTIONS_LIMIT`] motions, newest first, with `total`, `limit`
 /// and `truncated` saying what the window left out. Polling this endpoint is
 /// the source of truth for the council; the `motion` frames on
-/// `GET /api/v0/events` are the deltas.
+/// `GET /v1/events` are the deltas.
 fn motions_view(node: &Node) -> Response {
-    json_response(200, &node.council().motions(council::MOTIONS_LIMIT))
+    Response::json(200, &node.council().motions(council::MOTIONS_LIMIT))
 }
 
-/// `GET /api/v0/motions/{id}`: one motion.
+/// `GET /v1/motions/{id}`: one motion.
 ///
 /// | status | when |
 /// |---|---|
-/// | 200 | the motion, as `GET /api/v0/motions` reports one |
+/// | 200 | the motion, as `GET /v1/motions` reports one |
 /// | 404 | no motion with that id |
 /// | 405 | any method but `GET` |
 fn motion_get(node: &Node, id: &str) -> Response {
     match node.council().motion(id) {
-        Some(motion) => json_response(200, &motion),
+        Some(motion) => Response::json(200, &motion),
         None => Response::error(404, &format!("no motion with id {id}")),
     }
 }
 
-/// `POST /api/v0/motions`: a seat proposes a motion.
+/// `POST /v1/motions`: a seat proposes a motion.
 ///
 /// Proposing is a **seat action** (S-008a): the proposer must be a connected
 /// agent (the register's answer, the same check and the same words the claim
@@ -1349,7 +1035,7 @@ fn motion_get(node: &Node, id: &str) -> Response {
 ///
 /// | status | when |
 /// |---|---|
-/// | 201 | the motion is recorded: `{id: m<seq>, …, state: "open"}`, as `GET /api/v0/motions` reports one |
+/// | 201 | the motion is recorded: `{id: m<seq>, …, state: "open"}`, as `GET /v1/motions` reports one |
 /// | 400 | the body, or its `needs_owner`, is outside this endpoint's contract |
 /// | 403 | the proposer's role holds no council seat (the role is named) |
 /// | 405 | any method but `GET` or `POST` |
@@ -1371,12 +1057,12 @@ fn motion_propose(node: &Node, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match node.council().propose(&proposer, proposal) {
-        Ok(motion) => json_response(201, &motion),
+        Ok(motion) => Response::json(201, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
-/// `POST /api/v0/motions/{id}/vote`: a seat votes on an open motion.
+/// `POST /v1/motions/{id}/vote`: a seat votes on an open motion.
 ///
 /// Voting is a **seat action** too: the voter must be a connected agent whose
 /// role holds a seat, and a role that holds none is refused with the role named
@@ -1408,12 +1094,12 @@ fn motion_vote(node: &Node, id: &str, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match node.council().vote(id, &voter, cast) {
-        Ok(motion) => json_response(200, &motion),
+        Ok(motion) => Response::json(200, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
-/// `POST /api/v0/motions/{id}/decide`: the **owner** decides a motion the count
+/// `POST /v1/motions/{id}/decide`: the **owner** decides a motion the count
 /// gated to them.
 ///
 /// **The owner is the operator, not an agent.** This body names no agent CID
@@ -1447,49 +1133,12 @@ fn motion_decide(node: &Node, id: &str, body: &[u8]) -> Response {
         Err(reason) => return Response::error(400, &reason),
     };
     match node.council().decide(id, decision) {
-        Ok(motion) => json_response(200, &motion),
+        Ok(motion) => Response::json(200, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
-/// Routes a request under `/api/v0/motions/`.
-///
-/// Three surfaces, each named by the segment after the motion's id: the vote
-/// (`/vote`), the owner's decision (`/decide`), and the motion itself.
-fn motion_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
-    if let Some(id) = rest.strip_suffix("/vote") {
-        if id.is_empty() || id.contains('/') {
-            return no_such_endpoint();
-        }
-        // A vote is a POST for the same reason the claim and the read are: it
-        // changes the record, so a request a prefetch or a retry could replay
-        // must not be advertised as safe to repeat.
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return motion_vote(node, id, request.body());
-    }
-    if let Some(id) = rest.strip_suffix("/decide") {
-        if id.is_empty() || id.contains('/') {
-            return no_such_endpoint();
-        }
-        // The owner's decision is a POST, for the vote's reason: it changes the
-        // record and must not be advertised as safe to replay.
-        if request.method() != "POST" {
-            return method_not_allowed("POST");
-        }
-        return motion_decide(node, id, request.body());
-    }
-    if rest.is_empty() || rest.contains('/') {
-        return no_such_endpoint();
-    }
-    match request.method() {
-        "GET" => motion_get(node, rest),
-        _ => method_not_allowed("GET"),
-    }
-}
-
-/// The `POST /api/v0/tasks/{id}/artifact` body.
+/// The `POST /v1/tasks/{id}/artifact` body.
 #[derive(Debug, Deserialize)]
 struct ArtifactRequest {
     /// The path of the file to read, as the task's agent wrote it.
@@ -1513,9 +1162,9 @@ struct ReadFileOutput {
     content: String,
 }
 
-/// `POST /api/v0/tasks/{id}/artifact`: reads one file the task's agent wrote
+/// `POST /v1/tasks/{id}/artifact`: reads one file the task's agent wrote
 /// into its own workspace, by driving that agent's `read_file` through the
-/// hub's admin surface.
+/// hub.
 ///
 /// The read-through exists because the dispatcher finishes a task with a note
 /// naming the artifacts its agent wrote (`artifacts: index.txt (3 tool
@@ -1540,7 +1189,7 @@ struct ReadFileOutput {
 /// | 409 | the task has no assignee yet, or the hub's agent is not connected |
 /// | 422 | the agent answered and refused the read (its own words are the reason) |
 /// | 502 | the hub could not be reached, or answered something unreadable, or the agent's `read_file` output is not the tool's JSON |
-/// | 503 | `--hub-admin off`: the daemon was never told where the admin surface is |
+/// | 503 | `--hub-port off`: the daemon was never told where the hub is |
 ///
 /// The ledger names the agent by the CID it recorded at claim time; whether
 /// that CID is connected *now* is the hub's to say, and it says it in its own
@@ -1555,8 +1204,8 @@ struct ReadFileOutput {
 /// copy of a rule the agent already owns; a refusal comes back as the agent's
 /// own words with a 422.
 fn read_artifact(node: &Node, id: &str, body: &[u8]) -> Response {
-    let Some(admin) = node.hub_admin() else {
-        return Response::error(503, "hub admin is not configured");
+    let Some(admin) = node.hub() else {
+        return Response::error(503, "the hub is not configured");
     };
     let request: ArtifactRequest = match serde_json::from_slice(body) {
         Ok(request) => request,
@@ -1576,7 +1225,7 @@ fn read_artifact(node: &Node, id: &str, body: &[u8]) -> Response {
     match hub::tell(admin, agent_cid, hub::READ_FILE, args, hub::TELL_TIMEOUT_MS) {
         TellOutcome::Answered { ok: true, output } => {
             match serde_json::from_str::<ReadFileOutput>(&output) {
-                Ok(read) => json_response(
+                Ok(read) => Response::json(
                     200,
                     &ArtifactView {
                         task: id,
@@ -1642,7 +1291,7 @@ struct ArtifactView<'a> {
     truncated: bool,
 }
 
-/// The `POST /api/v0/agents/{cid}/tell` body: the tool to drive and its
+/// The `POST /v1/agents/{cid}/tell` body: the tool to drive and its
 /// arguments, read the way the hub's own `/tell` body reads them (minus the
 /// CID, which the path names).
 #[derive(Debug, Deserialize)]
@@ -1686,8 +1335,8 @@ struct TellView<'a> {
     output: &'a str,
 }
 
-/// `POST /api/v0/agents/{cid}/tell`: drives one tool call on the agent
-/// connected as `cid`, through the hub's admin surface - the operator's own
+/// `POST /v1/agents/{cid}/tell`: drives one tool call on the agent
+/// connected as `cid`, through the hub - the operator's own
 /// hand on the fleet, and the console's one-origin path to it.
 ///
 /// This is the operator's console *driving a real agent*: the named tool runs
@@ -1707,7 +1356,7 @@ struct TellView<'a> {
 /// | 409 | the hub's agent is not connected |
 /// | 504 | the agent did not answer within `timeout_ms` |
 /// | 502 | the hub could not be reached, or answered something unreadable |
-/// | 503 | `--hub-admin off`: the daemon was never told where the admin surface is |
+/// | 503 | `--hub-port off`: the daemon was never told where the hub is |
 ///
 /// The request is validated exactly as the hub's own `/tell` validates it - a
 /// non-empty tool name of at most [`MAX_TOOL_NAME`] bytes, an `args` object,
@@ -1720,8 +1369,8 @@ struct TellView<'a> {
 /// too, in its own 404 and 409, rather than a check made here and raced against
 /// its own answer.
 fn tell_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
-    let Some(admin) = node.hub_admin() else {
-        return Response::error(503, "hub admin is not configured");
+    let Some(admin) = node.hub() else {
+        return Response::error(503, "the hub is not configured");
     };
     let cid = match checked_guest_cid(cid_segment) {
         Ok(cid) => cid,
@@ -1751,7 +1400,7 @@ fn tell_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
         );
     }
     match hub::tell(admin, cid, &request.name, request.args, timeout_ms) {
-        TellOutcome::Answered { ok, output } => json_response(
+        TellOutcome::Answered { ok, output } => Response::json(
             200,
             &TellView {
                 cid,
@@ -1768,7 +1417,7 @@ fn tell_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
     }
 }
 
-/// The `POST /api/v0/agents/{cid}/stop` body: the reason the session is being
+/// The `POST /v1/agents/{cid}/stop` body: the reason the session is being
 /// stopped, which the hub carries to the guest's transcript and the operator's
 /// log. The CID is the path's, not the body's.
 #[derive(Debug, Deserialize)]
@@ -1782,8 +1431,8 @@ struct StopRequest {
 /// same reasons.
 const MAX_STOP_REASON: usize = 256;
 
-/// `POST /api/v0/agents/{cid}/stop`: ends the agent's session through the
-/// hub's admin surface - the operator's own hand on a session, and the
+/// `POST /v1/agents/{cid}/stop`: ends the agent's session through the
+/// hub - the operator's own hand on a session, and the
 /// console's one-origin path to it.
 ///
 /// This ends a real session: the hub delivers its `stop` to the guest, waits
@@ -1801,7 +1450,7 @@ const MAX_STOP_REASON: usize = 256;
 /// | 404 | the hub does not serve the agent's CID |
 /// | 409 | the hub's agent is not connected |
 /// | 502 | the hub could not be reached, or answered something unreadable |
-/// | 503 | `--hub-admin off`: the daemon was never told where the admin surface is |
+/// | 503 | `--hub-port off`: the daemon was never told where the hub is |
 ///
 /// **Whether the session ended is the hub's to say** - `stopped: true` with the
 /// call count, or `stopped: false` with its reason - and this daemon passes
@@ -1809,8 +1458,8 @@ const MAX_STOP_REASON: usize = 256;
 /// of its own. The VM is the registry's: stopping a session never tears a
 /// guest down, and this daemon touches no run state here.
 fn stop_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
-    let Some(admin) = node.hub_admin() else {
-        return Response::error(503, "hub admin is not configured");
+    let Some(admin) = node.hub() else {
+        return Response::error(503, "the hub is not configured");
     };
     let cid = match checked_guest_cid(cid_segment) {
         Ok(cid) => cid,
@@ -1830,11 +1479,7 @@ fn stop_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
     }
     match hub::stop(admin, cid, request.reason.as_deref()) {
         // The hub's own view, verbatim: the console reads `stopped` itself.
-        StopOutcome::Answered(view) => Response::bytes(
-            200,
-            Cow::Owned("application/json".to_string()),
-            view.into_bytes(),
-        ),
+        StopOutcome::Answered(view) => Response::new(200, apz_http::JSON, view),
         // The hub's own words and its own status (404 unserved, 409 not
         // connected).
         StopOutcome::Refused { status, message } => Response::error(status, &message),
@@ -1862,7 +1507,7 @@ fn checked_guest_cid(segment: &str) -> Result<u64, String> {
     Ok(cid)
 }
 
-/// `GET /api/v0/agents/{cid}/contacts`: the agent's own contact list.
+/// `GET /v1/agents/{cid}/contacts`: the agent's own contact list.
 ///
 /// The list is answered for a CID this daemon knows: an agent the register
 /// shows connected (an empty list is a fair answer for one that has met nobody
@@ -1887,12 +1532,12 @@ fn agent_contacts(node: &Node, cid_segment: &str) -> Response {
         Presence::Absent
     };
     match node.social().contacts(cid, presence) {
-        Ok(contacts) => json_response(200, &contacts),
+        Ok(contacts) => Response::json(200, &contacts),
         Err(refused) => Response::error(refused.status(), refused.message()),
     }
 }
 
-/// `POST /api/v0/agents/{cid}/contacts`: adds one peer to the agent's list.
+/// `POST /v1/agents/{cid}/contacts`: adds one peer to the agent's list.
 ///
 /// Both CIDs must be connected *right now* (the register's answer, the same
 /// check and the same words the claim uses), an agent is never its own contact,
@@ -1924,12 +1569,12 @@ fn agent_contact_add(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
         Err(refused) => return refused,
     };
     match node.social().add_contact(&agent, &peer) {
-        Ok(contact) => json_response(200, &contact),
+        Ok(contact) => Response::json(200, &contact),
         Err(refused) => Response::error(refused.status(), refused.message()),
     }
 }
 
-/// `POST /api/v0/agents/{cid}/say`: the agent speaks to a peer — the exchange is
+/// `POST /v1/agents/{cid}/say`: the agent speaks to a peer — the exchange is
 /// recorded, and the peer's session is asked to take it.
 ///
 /// Both CIDs must be connected right now, an agent does not speak to itself, and
@@ -1938,7 +1583,7 @@ fn agent_contact_add(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
 /// delivered as the contract's `conversation` tool call through the hub's admin
 /// surface, and a delivery that is refused, unreachable or impossible is
 /// recorded in the row (`delivered: false`, `delivery` the reason) rather than
-/// failing the exchange. A `--hub-admin off` daemon therefore records every
+/// failing the exchange. A `--hub-port off` daemon therefore records every
 /// exchange as undelivered, in its own words, and that is the honest answer.
 ///
 /// | status | when |
@@ -1971,40 +1616,23 @@ fn agent_say(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
     // with the delivery's own honest reason (see `Social::say`).
     match node
         .social()
-        .say(&from, &to, &request.text, node.hub_admin())
+        .say(&from, &to, &request.text, node.hub())
     {
-        Ok(exchange) => json_response(201, &exchange),
+        Ok(exchange) => Response::json(201, &exchange),
         Err(refused) => Response::error(refused.status(), refused.message()),
     }
 }
 
-/// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended, refunding
+/// `DELETE /v1/tasks/{id}`: withdraws a task that has not ended, refunding
 /// the escrow it still holds.
 fn withdraw_task(node: &Node, id: &str) -> Response {
     match node.tasks().find(id) {
         Some(task) => match task.withdraw() {
-            Ok(()) => json_response(200, &task.view()),
+            Ok(()) => Response::json(200, &task.view()),
             Err(refused) => Response::error(refused.status(), &refused.to_string()),
         },
         None => Response::error(404, &format!("no task with id {id}")),
     }
 }
 
-/// A JSON response with the given status, or a 500 when the view cannot be
-/// serialized (which would be a bug here, not a client error).
-fn json_response<T: Serialize>(status: u16, value: &T) -> Response {
-    match serde_json::to_string(value) {
-        Ok(body) => Response::json(status, body),
-        Err(err) => Response::error(500, &format!("cannot serialize the response: {err}")),
-    }
-}
 
-/// The 405 for a method the matched endpoint does not accept.
-fn method_not_allowed(allowed: &str) -> Response {
-    Response::error(405, &format!("this endpoint accepts {allowed}"))
-}
-
-/// The 404 for a request that matches no endpoint at all.
-fn no_such_endpoint() -> Response {
-    Response::error(404, "no such endpoint")
-}

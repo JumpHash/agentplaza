@@ -30,7 +30,7 @@ fn console_dir(name: &str) -> PathBuf {
 
 /// Creates a task and returns its id.
 fn task(port: u16, body: &str) -> String {
-    let reply = request(port, "POST", "/api/v0/tasks", Some(body));
+    let reply = request(port, "POST", "/v1/tasks", Some(body));
     assert_eq!(reply.status, 201, "{body}: {}", reply.body);
     reply.json()["id"]
         .as_str()
@@ -40,7 +40,7 @@ fn task(port: u16, body: &str) -> String {
 
 /// The board the daemon serves.
 fn board(port: u16) -> serde_json::Value {
-    let reply = request(port, "GET", "/api/v0/agora", None);
+    let reply = request(port, "GET", "/v1/agora", None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(
         reply.content_type.starts_with("application/json"),
@@ -80,7 +80,7 @@ fn a_roled_open_task_is_a_call_and_an_unroled_one_is_not() {
     let refused = request(
         port,
         "POST",
-        &format!("/api/v0/tasks/{plain}/bid"),
+        &format!("/v1/tasks/{plain}/bid"),
         Some(r#"{"agent_cid":100,"price":1}"#),
     );
     assert_eq!(refused.status, 409, "{}", refused.body);
@@ -95,7 +95,7 @@ fn a_roled_open_task_is_a_call_and_an_unroled_one_is_not() {
         port,
         r#"{"goal":"ship the agora","acceptance":"the suite is green","budget":500,"role":"builder"}"#,
     );
-    let listed = request(port, "GET", &format!("/api/v0/tasks/{called}"), None).json();
+    let listed = request(port, "GET", &format!("/v1/tasks/{called}"), None).json();
     let view = board(port);
     assert_eq!(view["total"], 1);
     assert_eq!(view["truncated"], false);
@@ -129,7 +129,7 @@ fn a_roled_open_task_is_a_call_and_an_unroled_one_is_not() {
     // leaves the board: its offer is over and the agora never saw a bid.
     let withdrawn = task(port, r#"{"goal":"unwanted","role":"builder"}"#);
     assert_eq!(board(port)["total"], 3);
-    let reply = request(port, "DELETE", &format!("/api/v0/tasks/{withdrawn}"), None);
+    let reply = request(port, "DELETE", &format!("/v1/tasks/{withdrawn}"), None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert_eq!(
         board(port)["total"],
@@ -162,14 +162,14 @@ fn bid_and_award_requests_outside_the_contract_are_400() {
         "[]",
         "",
     ] {
-        let reply = request(port, "POST", &format!("/api/v0/tasks/{id}/bid"), Some(body));
+        let reply = request(port, "POST", &format!("/v1/tasks/{id}/bid"), Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         assert!(reply.json()["error"].is_string(), "{body}: {}", reply.body);
     }
     // An award needs the agent and nothing else: a price would have nothing to
     // match the bid with.
     for body in [r#"{}"#, r#"{"price":5}"#, r#"{"agent_cid":"x"}"#, "[]"] {
-        let reply = request(port, "POST", &format!("/api/v0/tasks/{id}/award"), Some(body));
+        let reply = request(port, "POST", &format!("/v1/tasks/{id}/award"), Some(body));
         assert_eq!(reply.status, 400, "{body}: {}", reply.body);
         assert!(reply.json()["error"].is_string(), "{body}: {}", reply.body);
     }
@@ -178,7 +178,7 @@ fn bid_and_award_requests_outside_the_contract_are_400() {
     assert_eq!(board(port)["calls"][0]["bids"], serde_json::json!([]));
     assert_eq!(board(port)["calls"][0]["award"], serde_json::Value::Null);
     assert_eq!(
-        request(port, "GET", &format!("/api/v0/tasks/{id}"), None).json()["state"],
+        request(port, "GET", &format!("/v1/tasks/{id}"), None).json()["state"],
         "open"
     );
 }
@@ -198,7 +198,7 @@ fn a_bid_or_an_award_needs_a_connected_agent_of_the_role() {
     let failed = request(
         port,
         "POST",
-        "/api/v0/runs",
+        "/v1/runs",
         Some(r#"{"n":1,"vcpus":1,"memory_mib":128,"vsock_cid":100}"#),
     );
     assert_eq!(failed.status, 201, "{}", failed.body);
@@ -208,7 +208,7 @@ fn a_bid_or_an_award_needs_a_connected_agent_of_the_role() {
         let reply = request(
             port,
             "POST",
-            &format!("/api/v0/tasks/{id}/bid"),
+            &format!("/v1/tasks/{id}/bid"),
             Some(&format!(r#"{{"agent_cid":{cid},"price":5}}"#)),
         );
         assert_eq!(reply.status, 409, "cid {cid}: {}", reply.body);
@@ -220,7 +220,7 @@ fn a_bid_or_an_award_needs_a_connected_agent_of_the_role() {
         let reply = request(
             port,
             "POST",
-            &format!("/api/v0/tasks/{id}/award"),
+            &format!("/v1/tasks/{id}/award"),
             Some(&format!(r#"{{"agent_cid":{cid}}}"#)),
         );
         assert_eq!(reply.status, 409, "cid {cid}: {}", reply.body);
@@ -247,17 +247,17 @@ fn unknown_calls_are_404_and_wrong_methods_are_405() {
     for (method, target, body) in [
         (
             "POST",
-            "/api/v0/tasks/t9/bid".to_string(),
+            "/v1/tasks/t9/bid".to_string(),
             Some(r#"{"agent_cid":100,"price":5}"#),
         ),
         (
             "POST",
-            "/api/v0/tasks/t9/award".to_string(),
+            "/v1/tasks/t9/award".to_string(),
             Some(r#"{"agent_cid":100}"#),
         ),
         // Paths under the agora's own names that are not endpoints.
-        ("GET", "/api/v0/agora/calls".to_string(), None),
-        ("GET", "/api/v0/tasks/t1/bids".to_string(), None),
+        ("GET", "/v1/agora/calls".to_string(), None),
+        ("GET", "/v1/tasks/t1/bids".to_string(), None),
     ] {
         let reply = request(port, method, &target, body);
         assert_eq!(reply.status, 404, "{method} {target}: {}", reply.body);
@@ -268,8 +268,8 @@ fn unknown_calls_are_404_and_wrong_methods_are_405() {
         );
     }
 
-    let bid = format!("/api/v0/tasks/{id}/bid");
-    let award = format!("/api/v0/tasks/{id}/award");
+    let bid = format!("/v1/tasks/{id}/bid");
+    let award = format!("/v1/tasks/{id}/award");
     for (method, target, body) in [
         ("GET", bid.as_str(), None),
         ("PUT", bid.as_str(), Some(r#"{"agent_cid":100,"price":5}"#)),
@@ -277,9 +277,9 @@ fn unknown_calls_are_404_and_wrong_methods_are_405() {
         ("GET", award.as_str(), None),
         ("PUT", award.as_str(), Some(r#"{"agent_cid":100}"#)),
         ("DELETE", award.as_str(), None),
-        ("POST", "/api/v0/agora", Some("{}")),
-        ("PUT", "/api/v0/agora", Some("{}")),
-        ("DELETE", "/api/v0/agora", None),
+        ("POST", "/v1/agora", Some("{}")),
+        ("PUT", "/v1/agora", Some("{}")),
+        ("DELETE", "/v1/agora", None),
     ] {
         let reply = request(port, method, target, body);
         assert_eq!(reply.status, 405, "{method} {target}: {}", reply.body);

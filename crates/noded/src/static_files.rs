@@ -11,7 +11,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::http::Response;
+use apz_http::Response;
 
 /// The file `GET /` serves.
 pub const INDEX: &str = "index.html";
@@ -43,7 +43,7 @@ pub fn serve(console_dir: &Path, name: &str) -> Response {
         return Response::error(404, &format!("no such file: {name}"));
     }
     match fs::read(&path) {
-        Ok(body) => Response::file(content_type(name), body),
+        Ok(body) => Response::new(200, content_type(name), body),
         Err(err) => Response::error(500, &format!("cannot read {name}: {err}")),
     }
 }
@@ -109,6 +109,6 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&missing);
         let response = serve(&missing, INDEX);
-        assert_eq!(response.status(), 404);
+        assert_eq!(response.status, 404);
     }
 }

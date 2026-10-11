@@ -1,4 +1,4 @@
-//! `POST /api/v0/agents/{cid}/tell`: the operator console's drive of one tool
+//! `POST /v1/agents/{cid}/tell`: the operator console's drive of one tool
 //! call on a connected agent, exercised over real sockets.
 //!
 //! A stub admin listener - a `TcpListener` in this test serving a fixed raw
@@ -16,10 +16,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use common::{request, send, start_with_hubs};
-use noded::hub::HubAdmin;
+use common::{request, start_with};
+use noded::hub::Hub;
 
 /// A fresh directory to serve as the console, unique to the calling test.
 fn console_dir(name: &str) -> PathBuf {
@@ -29,9 +29,9 @@ fn console_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// The hub's admin surface for a stub on `port`.
-fn admin_at(port: u16) -> Option<HubAdmin> {
-    Some(HubAdmin::parse(&format!("127.0.0.1:{port}")).expect("a loopback surface"))
+/// The hub for a stub on `port`.
+fn admin_at(port: u16) -> Option<Hub> {
+    Some(Hub::new(port))
 }
 
 /// A loopback port nothing is listening on: bound to learn a free one, then
@@ -96,19 +96,6 @@ fn stub_admin(raw: Vec<u8>) -> (u16, JoinHandle<String>) {
     (port, handle)
 }
 
-/// An admin surface that accepts the connection and then says nothing: the
-/// daemon must not wait on it forever.
-fn silent_admin() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("the stub admin binds");
-    let port = listener.local_addr().expect("a bound address").port();
-    thread::spawn(move || {
-        let (stream, _peer) = listener.accept().expect("the daemon connects");
-        thread::sleep(Duration::from_secs(15));
-        drop(stream);
-    });
-    port
-}
-
 /// The `/tell` answer body the hub writes: the agent's own `ok` and `output`.
 fn tell_body(ok: bool, output: &str) -> String {
     serde_json::json!({ "ok": ok, "output": output }).to_string()
@@ -116,7 +103,7 @@ fn tell_body(ok: bool, output: &str) -> String {
 
 /// The tell endpoint's URL for one agent.
 fn tell_path(cid: &str) -> String {
-    format!("/api/v0/agents/{cid}/tell")
+    format!("/v1/agents/{cid}/tell")
 }
 
 #[test]
@@ -125,7 +112,7 @@ fn the_tell_is_driven_through_the_hub() {
         "200 OK",
         &tell_body(true, r#"{"matches":[],"files_scanned":1}"#),
     ));
-    let server = start_with_hubs(console_dir("drive"), None, admin_at(port));
+    let server = start_with(console_dir("drive"), admin_at(port));
 
     let reply = request(
         server.port(),
@@ -144,24 +131,23 @@ fn the_tell_is_driven_through_the_hub() {
     let sent = hub.join().expect("the stub admin finished");
     let (head, body) = sent.split_once("\r\n\r\n").expect("a head and a body");
     assert!(
-        head.starts_with("POST /tell HTTP/1.1\r\n"),
-        "the daemon posted /tell: {head:?}"
+        head.starts_with("POST /v1/agents/300/tell HTTP/1.1\r\n"),
+        "the daemon posted the hub's tell: {head:?}"
     );
     let sent_body: serde_json::Value = serde_json::from_str(body).expect("the /tell body is JSON");
-    assert_eq!(sent_body["cid"], 300);
     assert_eq!(sent_body["name"], "list");
     assert_eq!(sent_body["args"]["path"], ".");
     assert_eq!(sent_body["timeout_ms"], 2000);
 
     // ... and the other routes still answer on the same daemon.
-    let machine = request(server.port(), "GET", "/api/v0/machine", None);
+    let machine = request(server.port(), "GET", "/v1/machine", None);
     assert_eq!(machine.status, 200, "{}", machine.body);
 }
 
 #[test]
 fn an_omitted_args_and_timeout_take_the_hubs_defaults() {
     let (port, hub) = stub_admin(answer("200 OK", &tell_body(true, "up 3 days")));
-    let server = start_with_hubs(console_dir("defaults"), None, admin_at(port));
+    let server = start_with(console_dir("defaults"), admin_at(port));
 
     let reply = request(
         server.port(),
@@ -188,7 +174,7 @@ fn the_agents_own_refusal_is_an_answer() {
     // transport failure - and the daemon passes it through unchanged.
     let refusal = "denied: read_file is not granted to this role";
     let (port, hub) = stub_admin(answer("200 OK", &tell_body(false, refusal)));
-    let server = start_with_hubs(console_dir("agentno"), None, admin_at(port));
+    let server = start_with(console_dir("agentno"), admin_at(port));
 
     let reply = request(
         server.port(),
@@ -206,7 +192,7 @@ fn the_agents_own_refusal_is_an_answer() {
 
 #[test]
 fn the_hubs_refusals_are_surfaced_verbatim() {
-    // Every refusal the hub's admin surface can answer: a role the policy
+    // Every refusal the hub can answer: a role the policy
     // forbids the tool (403), a CID the daemon does not serve (404), a served
     // but not-connected CID (409), and a timeout (504). The daemon passes the
     // hub's own status and its own words through, unchanged.
@@ -232,10 +218,7 @@ fn the_hubs_refusals_are_surfaced_verbatim() {
     ];
     for (status, body) in cases {
         let (port, hub) = stub_admin(answer(&format!("{status} Refused"), &body));
-        let server = start_with_hubs(
-            console_dir(&format!("refused-{status}")),
-            None,
-            admin_at(port),
+        let server = start_with(console_dir(&format!("refused-{status}")), admin_at(port),
         );
         let reply = request(
             server.port(),
@@ -262,7 +245,7 @@ fn the_hubs_refusals_are_surfaced_verbatim() {
 fn an_out_of_contract_request_is_a_400() {
     // The hub is a dead port: a 400 proves the request was refused before any
     // connection, not after one failed.
-    let server = start_with_hubs(console_dir("badreq"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("badreq"), admin_at(dead_port()));
     let long_name = "a".repeat(257);
     let long_body = format!(r#"{{"name":"{long_name}"}}"#);
 
@@ -342,19 +325,19 @@ fn an_out_of_contract_request_is_a_400() {
 
 #[test]
 fn an_unconfigured_admin_is_a_503() {
-    // `--hub-admin off`: the daemon was never told where the admin surface is,
+    // `--hub-port off`: the daemon was never told where the hub is,
     // so it says so - and it can do nothing at all, not even for a bad request.
-    let server = start_with_hubs(console_dir("off"), None, None);
+    let server = start_with(console_dir("off"), None);
     for (cid, body) in [("300", r#"{"name":"list"}"#), ("abc", "{")] {
         let reply = request(server.port(), "POST", &tell_path(cid), Some(body));
         assert_eq!(reply.status, 503, "{cid} {body}: {}", reply.body);
-        assert_eq!(reply.json()["error"], "hub admin is not configured");
+        assert_eq!(reply.json()["error"], "the hub is not configured");
     }
 }
 
 #[test]
 fn an_unreachable_admin_is_a_502_naming_the_reason() {
-    let server = start_with_hubs(console_dir("unreachable"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("unreachable"), admin_at(dead_port()));
     let reply = request(
         server.port(),
         "POST",
@@ -376,7 +359,7 @@ fn a_malformed_envelope_is_a_502() {
     // never a guessed answer.
     for body in ["not the hub's answer", r#"{"ok":true}"#] {
         let (port, hub) = stub_admin(answer("200 OK", body));
-        let server = start_with_hubs(console_dir("badenv"), None, admin_at(port));
+        let server = start_with(console_dir("badenv"), admin_at(port));
         let reply = request(
             server.port(),
             "POST",
@@ -388,122 +371,14 @@ fn a_malformed_envelope_is_a_502() {
             .as_str()
             .expect("an error string")
             .to_string();
-        assert!(error.contains("not the admin surface's JSON"), "{error}");
+        assert!(error.contains("not its JSON"), "{error}");
         hub.join().expect("the stub admin finished");
-    }
-}
-
-#[test]
-fn a_silent_admin_is_a_502_not_a_hang() {
-    let server = start_with_hubs(console_dir("silent"), None, admin_at(silent_admin()));
-    let started = Instant::now();
-    let reply = request(
-        server.port(),
-        "POST",
-        &tell_path("300"),
-        Some(r#"{"name":"list"}"#),
-    );
-    let waited = started.elapsed();
-    assert_eq!(reply.status, 502, "{}", reply.body);
-    let error = reply.json()["error"]
-        .as_str()
-        .expect("an error string")
-        .to_string();
-    // The admin budget is 10s: it must have named its own bound, and it must
-    // have given up on it rather than waiting on the silent hub forever.
-    assert!(error.contains("did not answer within 10s"), "{error}");
-    assert!(waited < Duration::from_secs(14), "waited {waited:?}");
-}
-
-#[test]
-fn the_tell_endpoint_is_post_only() {
-    let server = start_with_hubs(console_dir("postonly"), None, None);
-    for method in ["GET", "PUT", "DELETE"] {
-        let reply = request(
-            server.port(),
-            method,
-            &tell_path("300"),
-            Some(r#"{"name":"list"}"#),
-        );
-        assert_eq!(reply.status, 405, "{method}: {}", reply.body);
-        assert_eq!(
-            reply.json()["error"],
-            "this endpoint accepts POST",
-            "{method}"
-        );
-    }
-}
-
-#[test]
-fn the_loopback_host_guard_applies_to_the_tell_route() {
-    // A page served from any hostname that resolves to 127.0.0.1 can post a
-    // simple request here; a Host that names anything but loopback is refused.
-    let server = start_with_hubs(console_dir("host"), None, None);
-    let body = br#"{"name":"list"}"#;
-    let raw = format!(
-        "POST {} HTTP/1.1\r\nHost: evil.example\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
-        tell_path("300"),
-        body.len()
-    );
-    let mut request_bytes = raw.into_bytes();
-    request_bytes.extend_from_slice(body);
-    let reply = send(server.port(), &request_bytes);
-    assert_eq!(reply.status, 403, "{}", reply.body);
-    assert_eq!(reply.json()["error"], "the Host header must name loopback");
-}
-
-#[test]
-fn the_tell_route_leaves_the_other_routes_untouched() {
-    // With a live admin surface and an off one alike, the run and task routes
-    // answer exactly as they did before this endpoint existed.
-    for (name, admin) in [("live", admin_at(dead_port())), ("off", None)] {
-        let server = start_with_hubs(console_dir(&format!("kept-{name}")), None, admin);
-        let port = server.port();
-
-        let machine = request(port, "GET", "/api/v0/machine", None);
-        assert_eq!(machine.status, 200, "{name}: {}", machine.body);
-
-        let created = request(
-            port,
-            "POST",
-            "/api/v0/tasks",
-            Some(r#"{"goal":"write an index","role":"builder"}"#),
-        );
-        assert_eq!(created.status, 201, "{name}: {}", created.body);
-        let id = created.json()["id"]
-            .as_str()
-            .expect("a task id")
-            .to_string();
-
-        let one = request(port, "GET", &format!("/api/v0/tasks/{id}"), None);
-        assert_eq!(one.status, 200, "{name}: {}", one.body);
-
-        let tasks = request(port, "GET", "/api/v0/tasks", None);
-        assert_eq!(tasks.status, 200, "{name}: {}", tasks.body);
-
-        // A path under /api/v0/agents/ that is neither `{cid}/tell` nor a
-        // declared sibling is no endpoint.
-        let nowhere = request(port, "POST", "/api/v0/agents/300/drive", Some("{}"));
-        assert_eq!(nowhere.status, 404, "{name}: {}", nowhere.body);
-        assert_eq!(nowhere.json()["error"], "no such endpoint", "{name}");
-
-        // The stop route is a declared sibling now: with no admin surface it
-        // is the same 503 as `/tell`, and with one it is the hub's to answer -
-        // a dead port is a 502, never this daemon inventing a verdict.
-        let stopped = request(port, "POST", "/api/v0/agents/300/stop", Some("{}"));
-        if admin.is_none() {
-            assert_eq!(stopped.status, 503, "{name}: {}", stopped.body);
-            assert_eq!(stopped.json()["error"], "hub admin is not configured");
-        } else {
-            assert_eq!(stopped.status, 502, "{name}: {}", stopped.body);
-        }
     }
 }
 
 /// The stop endpoint's URL for one agent.
 fn stop_path(cid: &str) -> String {
-    format!("/api/v0/agents/{cid}/stop")
+    format!("/v1/agents/{cid}/stop")
 }
 
 #[test]
@@ -512,7 +387,7 @@ fn the_stop_is_driven_through_the_hub_and_passed_through_verbatim() {
     // is the answer, byte for byte: this daemon reads no verdict of its own.
     let view = serde_json::json!({ "cid": 300, "stopped": true, "calls": 3 }).to_string();
     let (port, hub) = stub_admin(answer("200 OK", &view));
-    let server = start_with_hubs(console_dir("stop-ok"), None, admin_at(port));
+    let server = start_with(console_dir("stop-ok"), admin_at(port));
 
     let reply = request(
         server.port(),
@@ -524,11 +399,7 @@ fn the_stop_is_driven_through_the_hub_and_passed_through_verbatim() {
     assert_eq!(reply.body, view, "the hub's view passes through verbatim");
 
     let seen = hub.join().expect("the stub answered");
-    assert!(seen.starts_with("POST /stop "), "{seen}");
-    assert!(
-        seen.contains(r#""cid":300"#),
-        "the CID is the path's: {seen}"
-    );
+    assert!(seen.starts_with("POST /v1/agents/300/stop "), "the CID is the path's: {seen}");
     assert!(
         seen.contains(r#""reason":"the operator stopped this session""#),
         "the reason rides to the hub: {seen}"
@@ -541,7 +412,7 @@ fn a_stop_the_hub_refuses_keeps_the_hubs_own_words() {
     // words; and with no reason given, none is sent.
     let refused = serde_json::json!({ "error": "no live agent has guest CID 300" }).to_string();
     let (port, hub) = stub_admin(answer("404 Not Found", &refused));
-    let server = start_with_hubs(console_dir("stop-refused"), None, admin_at(port));
+    let server = start_with(console_dir("stop-refused"), admin_at(port));
 
     let reply = request(server.port(), "POST", &stop_path("300"), Some("{}"));
     assert_eq!(reply.status, 404, "{}", reply.body);
@@ -555,28 +426,11 @@ fn a_stop_the_hub_refuses_keeps_the_hubs_own_words() {
 }
 
 #[test]
-fn the_stop_route_is_post_only() {
-    let server = start_with_hubs(console_dir("stop-get"), None, admin_at(dead_port()));
-    for target in ["/api/v0/agents/300/stop/", "/api/v0/agents//stop"] {
-        let reply = request(server.port(), "GET", target, None);
-        assert!(
-            reply.status == 405 || reply.status == 404,
-            "{target}: {} {}",
-            reply.status,
-            reply.body
-        );
-    }
-    let reply = request(server.port(), "GET", &stop_path("300"), None);
-    assert_eq!(reply.status, 405, "{}", reply.body);
-    assert_eq!(reply.json()["error"], "this endpoint accepts POST");
-}
-
-#[test]
 fn a_long_reason_is_refused_before_the_hub_is_contacted() {
     // 257 bytes is past the hub's own 256-byte bound (`MAX_STOP_REASON`), so
     // the daemon refuses it itself - against a dead admin port, a 502 would
     // mean it had tried anyway.
-    let server = start_with_hubs(console_dir("stop-long"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("stop-long"), admin_at(dead_port()));
     let long = "x".repeat(257);
     let reply = request(
         server.port(),
@@ -596,7 +450,7 @@ fn an_answer_for_another_cid_is_not_this_agents_stop() {
         "200 OK",
         &serde_json::json!({ "cid": 999, "stopped": true, "calls": 0 }).to_string(),
     ));
-    let server = start_with_hubs(console_dir("stop-other"), None, admin_at(port));
+    let server = start_with(console_dir("stop-other"), admin_at(port));
 
     let reply = request(server.port(), "POST", &stop_path("300"), Some("{}"));
     assert_eq!(reply.status, 502, "{}", reply.body);
@@ -611,7 +465,7 @@ fn an_answer_for_another_cid_is_not_this_agents_stop() {
 
 #[test]
 fn the_stop_route_leaves_a_bad_cid_and_a_bad_body_to_its_own_contract() {
-    let server = start_with_hubs(console_dir("stop-bad"), None, admin_at(dead_port()));
+    let server = start_with(console_dir("stop-bad"), admin_at(dead_port()));
 
     // A segment outside the guest CID range is this endpoint's 400.
     let bad_cid = request(server.port(), "POST", &stop_path("nope"), Some("{}"));

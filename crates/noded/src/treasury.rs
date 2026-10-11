@@ -1214,7 +1214,7 @@ pub struct TotalsView {
     pub balance: i128,
 }
 
-/// `GET /api/v0/treasury`'s body.
+/// `GET /v1/treasury`'s body.
 #[derive(Debug, Serialize)]
 pub struct TreasuryView {
     /// The accounts, in creation order, each with its derived balance.

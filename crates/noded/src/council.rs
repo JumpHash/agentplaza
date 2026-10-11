@@ -86,7 +86,7 @@
 //!
 //! # The owner's decision
 //!
-//! `POST /api/v0/motions/{id}/decide {approve, note?}` is the owner's hand
+//! `POST /v1/motions/{id}/decide {approve, note?}` is the owner's hand
 //! ([`Council::decide`]). **The owner is the operator, not an agent**: the
 //! request names no agent CID and none is looked up — the owner has no seat,
 //! no role and no session, so the seat checks that gate proposing and voting do
@@ -395,7 +395,7 @@ impl std::fmt::Display for CouncilError {
 
 impl std::error::Error for CouncilError {}
 
-/// The `POST /api/v0/motions` body.
+/// The `POST /v1/motions` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProposeRequest {
     /// The guest CID of the agent proposing — a connected agent whose role
@@ -465,7 +465,7 @@ impl ProposeRequest {
     }
 }
 
-/// The `POST /api/v0/motions/{id}/vote` body.
+/// The `POST /v1/motions/{id}/vote` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoteRequest {
     /// The guest CID of the voter — a connected agent whose role holds a seat.
@@ -497,7 +497,7 @@ impl VoteRequest {
     }
 }
 
-/// The `POST /api/v0/motions/{id}/decide` body: the owner's decision.
+/// The `POST /v1/motions/{id}/decide` body: the owner's decision.
 ///
 /// **The owner is the operator, not an agent**, so this body names no agent
 /// CID and none is looked up: the operator is not on the register, holds no

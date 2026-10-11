@@ -4,18 +4,14 @@
 //! nothing else — so this module is the harness's entire network surface: it
 //! can open one stream, to the host CID, and it can do nothing else.
 
-// Syscall boundary (see the allowlist in `main.rs`): AF_VSOCK is not exposed by
-// `std`, so the whole of this module is `socket(2)`/`connect(2)`/`poll(2)`/
-// `fcntl(2)`/`ioctl(2)`/`read(2)`/`write(2)`/`close(2)` on one descriptor. It
-// is the only module in this crate that needs `unsafe`, which is why it is the
-// only entry on the crate's allowlist.
+// Syscall boundary (the crate's one `unsafe` module): AF_VSOCK is not in `std`.
 #![allow(unsafe_code)]
 
 use std::io::{self, Read, Write};
 use std::os::fd::RawFd;
 use std::time::Duration;
 
-use crate::line::WaitReadable;
+use apz_proto::line::ReadTimeout;
 
 /// The orchestrator's CID (`VMADDR_CID_HOST`).
 pub const HOST_CID: u32 = libc::VMADDR_CID_HOST as u32;
@@ -35,11 +31,9 @@ const fn ioctl_expr(kind: u32, nr: u32) -> libc::c_ulong {
     ((kind << 8) | nr) as libc::c_ulong
 }
 
-/// How long a read waits for the orchestrator before failing, in seconds.
-///
-/// Every wait on the peer is bounded: a half-dead connection must not park the
-/// harness forever, because the guest has no other way to notice.
-const READ_TIMEOUT_SECS: i64 = 30;
+/// How long a read waits for the orchestrator unless a session sets its own
+/// bound: a half-dead connection must not park the harness forever.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long one connect attempt may take before it is abandoned, in
 /// milliseconds. A device that has accepted the request but never completes it
@@ -56,7 +50,7 @@ pub struct VsockStream {
 
 impl VsockStream {
     /// Connects to `cid`:`port`, giving up after [`CONNECT_TIMEOUT_MS`], and
-    /// sets [`READ_TIMEOUT_SECS`] as the socket's receive timeout so a read
+    /// sets [`READ_TIMEOUT`] as the socket's receive timeout so a read
     /// from a peer that has gone silent fails (with
     /// [`io::ErrorKind::WouldBlock`]) instead of blocking forever.
     pub fn connect(cid: u32, port: u32) -> io::Result<Self> {
@@ -98,7 +92,7 @@ impl VsockStream {
         }
 
         stream.set_flag(libc::O_NONBLOCK, false)?;
-        stream.set_read_timeout()?;
+        stream.set_read_timeout(Some(READ_TIMEOUT))?;
         Ok(stream)
     }
 
@@ -160,29 +154,6 @@ impl VsockStream {
         }
         Ok(())
     }
-
-    /// Sets the socket's receive timeout.
-    fn set_read_timeout(&self) -> io::Result<()> {
-        let timeout = libc::timeval {
-            tv_sec: READ_TIMEOUT_SECS,
-            tv_usec: 0,
-        };
-        // SAFETY: `timeout` is a valid `timeval` and `self.fd` is a live
-        // socket; the option is `SO_RCVTIMEO`, whose value is a `timeval`.
-        let rc = unsafe {
-            libc::setsockopt(
-                self.fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVTIMEO,
-                std::ptr::from_ref(&timeout).cast(),
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            )
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
 }
 
 /// The guest CID this VM was assigned, as the vsock stack itself reports it.
@@ -221,36 +192,32 @@ pub fn device_guest_cid() -> io::Result<u32> {
     Ok(cid)
 }
 
-/// The guest's AF_VSOCK stream answers framing's one question about
-/// readability with `poll(2)`: the keepalive session beats on a schedule, so a
-/// receive has to be able to end on time rather than block until the peer
-/// speaks.
-impl WaitReadable for VsockStream {
-    fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {
-        // A wait longer than `i32::MAX` milliseconds is not expressible to
-        // `poll`; the caller's waits are seconds at most, so clamping is
-        // honest rather than a silent truncation to a negative value.
-        let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-        let mut fds = [libc::pollfd {
-            fd: self.fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        // SAFETY: `fds` is a one-element array of a valid `pollfd` for the
-        // live socket `self.fd`.
-        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) };
-        if rc < 0 {
-            let err = io::Error::last_os_error();
-            // An interrupted wait is not an answer either way: say the socket
-            // may be readable, and let the read itself decide.
-            if err.kind() == io::ErrorKind::Interrupted {
-                return Ok(true);
-            }
-            return Err(err);
+impl ReadTimeout for VsockStream {
+    /// `SO_RCVTIMEO`: a read that waits longer fails with `WouldBlock`.
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        if timeout == Some(Duration::ZERO) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "a zero read timeout"));
         }
-        // Any reported event (POLLIN, and the error/hangup events) means a
-        // read returns promptly: the read reports what actually happened.
-        Ok(rc > 0)
+        let timeout = timeout.unwrap_or(Duration::ZERO);
+        let value = libc::timeval {
+            tv_sec: libc::time_t::try_from(timeout.as_secs()).unwrap_or(libc::time_t::MAX),
+            tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+        };
+        // SAFETY: `value` is a valid `timeval` and `self.fd` a live socket; the
+        // option is `SO_RCVTIMEO`, whose value is a `timeval`.
+        let rc = unsafe {
+            libc::setsockopt(
+                self.fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                std::ptr::from_ref(&value).cast(),
+                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 
