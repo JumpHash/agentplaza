@@ -939,6 +939,204 @@ pub fn social_growing(
     }))
 }
 
+/// A motions body as `GET /api/v0/motions` sends it, byte for byte the shape
+/// the live plaza answered with: a priority carried 4–0, a law proposal
+/// carried 4–0 and waiting for the owner, and a priority tied 2–2 and sent to
+/// the owner. No motion names an amount, so no row carries the key.
+pub const MOTIONS: &str = r#"{"motions":[
+    {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise t2 The gable dispute needs a ruling this week",
+     "needs_owner":false,"state":"carried",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706571791},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706586797},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706601806},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706616816}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "created_at":1791706568274,"updated_at":1791706616816},
+    {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+     "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+     "needs_owner":true,"state":"awaiting_owner",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record supports it","at":1791705629367},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record supports it","at":1791705629458},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record supports it","at":1791705629412},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record supports it","at":1791705629506}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "created_at":1791705629200,"updated_at":1791705629506},
+    {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise the east wing over new towns this week",
+     "needs_owner":false,"state":"tie_to_owner",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the wing is the season's work","at":1791705628987},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record on the east wing","at":1791705623911},
+       {"seat":"incident","agent_cid":106,"vote":"no",
+        "reason":"the record on the east wing","at":1791705623782},
+       {"seat":"mayor-office","agent_cid":114,"vote":"no",
+        "reason":"the record on the east wing","at":1791705624070}
+     ],
+     "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+     "created_at":1791705623593,"updated_at":1791705628987}
+    ],"total":3,"limit":256,"truncated":false}"#;
+
+/// A single-motion body as `GET /api/v0/motions/m1` sends it: the tie of
+/// [`MOTIONS`], read on its own.
+pub const MOTION_M1: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
+    "kind":"priority","text":"prioritise the east wing over new towns this week",
+    "needs_owner":false,"state":"tie_to_owner",
+    "votes":[
+      {"seat":"finance","agent_cid":105,"vote":"yes",
+       "reason":"the wing is the season's work","at":1791705628987},
+      {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+       "reason":"the record on the east wing","at":1791705623911},
+      {"seat":"incident","agent_cid":106,"vote":"no",
+       "reason":"the record on the east wing","at":1791705623782},
+      {"seat":"mayor-office","agent_cid":114,"vote":"no",
+       "reason":"the record on the east wing","at":1791705624070}
+    ],
+    "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+    "created_at":1791705623593,"updated_at":1791705628987}"#;
+
+/// The council of [`MOTIONS`] once one more motion was proposed and is still
+/// taking votes: what a later read answers with, and what a `motion` frame's
+/// read brings in. The new row carries a text and a vote a frame cannot — a
+/// console that draws it drew it from a read.
+pub const MOTIONS_AFTER: &str = r#"{"motions":[
+    {"id":"m4","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+     "kind":"other","text":"open a second reading on the annex",
+     "needs_owner":false,"state":"open",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the annex is on the record","at":1791709000000}
+     ],
+     "tally":{"yes":1,"no":0,"abstain":0,"voted":1,"seats":4},
+     "created_at":1791708990000,"updated_at":1791709000000},
+    {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise t2 The gable dispute needs a ruling this week",
+     "needs_owner":false,"state":"carried",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706571791},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706586797},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706601806},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record: priority names open task t2","at":1791706616816}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "created_at":1791706568274,"updated_at":1791706616816},
+    {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+     "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+     "needs_owner":true,"state":"awaiting_owner",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the record supports it","at":1791705629367},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record supports it","at":1791705629458},
+       {"seat":"incident","agent_cid":106,"vote":"yes",
+        "reason":"the record supports it","at":1791705629412},
+       {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+        "reason":"the record supports it","at":1791705629506}
+     ],
+     "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+     "created_at":1791705629200,"updated_at":1791705629506},
+    {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+     "text":"prioritise the east wing over new towns this week",
+     "needs_owner":false,"state":"tie_to_owner",
+     "votes":[
+       {"seat":"finance","agent_cid":105,"vote":"yes",
+        "reason":"the wing is the season's work","at":1791705628987},
+       {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+        "reason":"the record on the east wing","at":1791705623911},
+       {"seat":"incident","agent_cid":106,"vote":"no",
+        "reason":"the record on the east wing","at":1791705623782},
+       {"seat":"mayor-office","agent_cid":114,"vote":"no",
+        "reason":"the record on the east wing","at":1791705624070}
+     ],
+     "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+     "created_at":1791705623593,"updated_at":1791705628987}
+    ],"total":4,"limit":256,"truncated":false}"#;
+
+/// A whole stub daemon for the council pane: the register, the machine, an
+/// event stream, and the council — `GET /api/v0/motions` answers `motions`,
+/// `GET /api/v0/motions/{id}` answers `motion`, and every other read answers
+/// `detail`.
+pub fn council_live(
+    list: &str,
+    detail: &str,
+    events: &str,
+    motions: &str,
+    motion: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let motions = motions.to_string();
+    let motion = motion.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/motions") => motions.as_str(),
+            ("GET", target) if target.starts_with("/api/v0/motions/") => motion.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon whose council grows between reads: the first read
+/// answers `motions`, and every later read answers `motions_after` — the
+/// daemon's own answer once one more motion was proposed.
+///
+/// It is how a test proves a `motion` frame asks the pane's own surface for a
+/// read rather than assembling a motion from the frame: the motion the frame
+/// never described is the daemon's own row, and it arrives only through a read.
+pub fn council_growing(
+    list: &str,
+    detail: &str,
+    events: &str,
+    motions: &str,
+    motions_after: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let motions = motions.to_string();
+    let motions_after = motions_after.to_string();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&reads);
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/motions") => {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    motions.as_str()
+                } else {
+                    motions_after.as_str()
+                }
+            }
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
 
 /// How a stub answers: the bytes to send for a request, or `None` to send
 /// nothing at all (which is what a malformed answer looks like).

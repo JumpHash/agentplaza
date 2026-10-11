@@ -12,8 +12,9 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::api::{
-    CallState, Contact, Conversation, Conversations, FinishOutcome, Pair, Post, Posts, Run,
-    RunState, Task, TaskArtifact, TaskState, Thread, Vm, VmState,
+    CallState, Contact, Conversation, Conversations, FinishOutcome, Motion, MotionState, Motions,
+    Pair, Post, Posts, Run, RunState, SEATS, Tally, Task, TaskArtifact, TaskState, Thread, Vote,
+    VoteWord, Vm, VmState,
 };
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
@@ -26,10 +27,11 @@ use crate::mapview::{self, FleetMap};
 use crate::model::{
     ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DriveState, Health, HistoryStep, Message,
     Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES, StopState,
-    award_line, board_line, board_tally, duration_label, entry_task, floor_line, floor_tally,
-    hub_facts, hub_line, instant_label, journal_tally, market_line, memory_label, money_label,
-    posting_account, preset_footprint, roster_line, roster_tally, serial_tail, tally_line,
-    talk_line, task_line, task_state_line, task_tally, totals_line, transcript_span, treasury_line,
+    award_line, board_line, board_tally, council_line, council_tally, duration_label, entry_task,
+    floor_line, floor_tally, hub_facts, hub_line, instant_label, journal_tally, market_line,
+    memory_label, money_label, posting_account, preset_footprint, roster_line, roster_tally,
+    serial_tail, tally_line, talk_line, task_line, task_state_line, task_tally, totals_line,
+    transcript_span, treasury_line,
 };
 use crate::social;
 use crate::telemetryview::{self, ChartKind};
@@ -131,6 +133,7 @@ fn index(model: &Model) -> Container<'_, Message> {
         index_entry(model, "8", "Floor", floor_line(model), Pane::Floor),
         index_entry(model, "9", "Board", board_line(model), Pane::Board),
         index_entry(model, "10", "Talk", talk_line(model), Pane::Talk),
+        index_entry(model, "11", "Council", council_line(model), Pane::Council),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
         rule_heading(),
@@ -243,7 +246,7 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 15] = [
+const KEYS: [(&str, &str); 16] = [
     ("r", "register"),
     ("w", "roster: running + connected, by role"),
     ("l", "ledger: the plaza's tasks"),
@@ -252,13 +255,14 @@ const KEYS: [(&str, &str); 15] = [
     ("i", "floor: the robots, their conversations + the plaza"),
     ("j", "board: the plaza's public posts"),
     ("k", "talk: the conversations, the pairs + their threads"),
+    ("o", "council: the motions, the votes + the owner's gate"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
     ("?", "this help"),
     ("esc", "back; closes this sheet"),
-    ("↑ ↓", "console history; on the floor cycle the robots, on the talk pane walk the pairs"),
-    ("↵", "floor: open the picked robot's inspector; talk: narrow to the picked pair (again widens)"),
+    ("↑ ↓", "console history; on the floor cycle the robots, on the talk + council panes walk the filter"),
+    ("↵", "floor: open the picked robot's inspector; talk: narrow to the picked pair (again widens); council: filter to the picked state (again widens)"),
 ];
 
 /// The help sheet, centred over the register: every key the register binds,
@@ -367,6 +371,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Floor => body.push(floor_pane(model)),
         Pane::Board => body.push(board_pane(model)),
         Pane::Talk => body.push(talk_pane(model)),
+        Pane::Council => body.push(council_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -438,6 +443,12 @@ fn running_head(model: &Model) -> Element<'_, Message> {
             "Talk".to_string(),
             "the plaza's conversations, newest first: a pair as two identities, the words as the \
              agent's own, the delivery as the hub's · GET /api/v0/conversations"
+                .to_string(),
+        ),
+        Pane::Council => (
+            "Council".to_string(),
+            "the seats' motions, the votes beneath them and the owner's gate · \
+             GET /api/v0/motions"
                 .to_string(),
         ),
         Pane::Telemetry => (
@@ -3425,10 +3436,7 @@ fn floor_pane(model: &Model) -> Element<'_, Message> {
     // recorded is a fact, so it is incomplete rather than wrong.
     if model.floor.is_some() {
         if let Some(error) = &model.floor_error {
-            let age = model
-                .floor_last_ok_ms
-                .map(|last| format!(", last read {} ago", duration_label(model.now_ms.saturating_sub(last))))
-                .unwrap_or_default();
+            let age = last_read_age(model, model.floor_last_ok_ms);
             body.push(
                 mono(
                     format!("the floor could not be read again: {error}{age}"),
@@ -3688,10 +3696,7 @@ fn board_pane(model: &Model) -> Element<'_, Message> {
     // recorded is a fact, so it is incomplete rather than wrong.
     if model.board.is_some() {
         if let Some(error) = &model.board_error {
-            let age = model
-                .board_last_ok_ms
-                .map(|last| format!(", last read {} ago", duration_label(model.now_ms.saturating_sub(last))))
-                .unwrap_or_default();
+            let age = last_read_age(model, model.board_last_ok_ms);
             body.push(mono(format!("the board could not be read again: {error}{age}"), 10.5, WARN).into());
         }
     }
@@ -3806,15 +3811,7 @@ fn talk_pane(model: &Model) -> Element<'_, Message> {
     // daemon recorded is a fact, so it is incomplete rather than wrong.
     if model.talk.is_some() {
         if let Some(error) = &model.talk_error {
-            let age = model
-                .talk_last_ok_ms
-                .map(|last| {
-                    format!(
-                        ", last read {} ago",
-                        duration_label(model.now_ms.saturating_sub(last))
-                    )
-                })
-                .unwrap_or_default();
+            let age = last_read_age(model, model.talk_last_ok_ms);
             body.push(
                 mono(
                     format!("the talk log could not be read again: {error}{age}"),
@@ -4028,6 +4025,381 @@ fn tone_for_delivery(conversation: &Conversation) -> Tone {
     }
 }
 
+/// The `, last read N ago` tail a stale read's line carries, or nothing when
+/// the read never landed — one place, so every pane ages a kept read the same
+/// way.
+fn last_read_age(model: &Model, last_ok_ms: Option<u64>) -> String {
+    last_ok_ms
+        .map(|last| {
+            format!(
+                ", last read {} ago",
+                duration_label(model.now_ms.saturating_sub(last))
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// The council: the seats' motions, newest first, each with its votes, the
+/// count that decided it and — where one applies — the owner's gate.
+///
+/// Everything on the sheet is the daemon's own: the motions, the seats that
+/// proposed them, every vote and its reason, and the state and tally the
+/// daemon derived. Nothing here is composed, and nothing here is a write —
+/// proposing and voting are seat actions this console does not take.
+fn council_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "The council's motions, newest first: what was proposed and by which seat, the kind, \
+             the state the count left it in, the tally beside a ruled seat bar, and every seat's \
+             vote beneath it with the reason why. A motion above the council's authority is \
+             stamped as the owner's. Every word is the daemon's own — the motions, the votes and \
+             the reasons — and this sheet writes nothing.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    ];
+    match (&model.council, &model.council_error) {
+        (Some(page), _) => {
+            body.push(mono(format!("Council · {}", council_tally(page)), 11.5, INK).into());
+            body.push(council_strip(model, page));
+            body.push(council_motions(model));
+        }
+        // A 404 is the absence of a council, not a failure of one: the pane
+        // says so plainly rather than drawing a read that could not happen.
+        (None, Some(error)) if model.council_unserved => body.push(no_council(error)),
+        (None, Some(error)) => body.push(
+            mono(format!("the council could not be read: {error}"), 11.5, theme::CRIT).into(),
+        ),
+        (None, None) => body.push(
+            mono("waiting for the council's first answer…", 11.0, INK_3).into(),
+        ),
+    }
+    // A read that failed after a good one keeps the last council: a motion the
+    // daemon recorded is a fact, so it is incomplete rather than wrong.
+    if model.council.is_some() {
+        if let Some(error) = &model.council_error {
+            let age = last_read_age(model, model.council_last_ok_ms);
+            body.push(
+                mono(
+                    format!("the council could not be read again: {error}{age}"),
+                    10.5,
+                    WARN,
+                )
+                .into(),
+            );
+        }
+    }
+    scrollable(Column::with_children(body).spacing(8.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// What the council pane says when the daemon serves no council: a 404 is the
+/// absence of a layer, stated plainly, with the daemon's own words beside it so
+/// the reason is never hidden.
+fn no_council(error: &str) -> Element<'_, Message> {
+    mono(
+        format!("no council: this daemon serves no motions — the daemon answered {error}"),
+        11.5,
+        INK_2,
+    )
+    .into()
+}
+
+/// The state strip: one pressable row per state the council carries, with the
+/// row the arrows are on marked and the filtered row stamped — the talk pane's
+/// pair filter, over the states instead of the pairs.
+fn council_strip<'a>(model: &'a Model, page: &'a Motions) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![mono(
+        "Filter by state · ↑ ↓ pick, Enter narrows (again, or Escape, widens)",
+        10.5,
+        INK_3,
+    )
+    .into()];
+    let states = model.council_states();
+    if states.is_empty() {
+        body.push(
+            serif(
+                "no state to filter by: the council holds no motion",
+                12.0,
+                INK_3,
+            )
+            .into(),
+        );
+    }
+    for state in states {
+        let picked = model.council_picked == Some(state);
+        let filtered = model.council_filter == Some(state);
+        let count = page.motions.iter().filter(|motion| motion.state == state).count();
+        let mut marks: Vec<Element<'a, Message>> = vec![
+            stamp(state.stamp_label(), tone_for_motion_state(state)).into(),
+            mono(format!("{count} motion(s)"), 11.0, INK).into(),
+            space::horizontal().into(),
+        ];
+        if filtered {
+            marks.push(stamp("FILTERED", Tone::Neutral).into());
+        }
+        body.push(
+            button(Row::with_children(marks).spacing(10.0).align_y(Alignment::Center))
+                .on_press(Message::StatePick(state))
+                .style(theme::register_row(picked))
+                .padding(edge(6.0, 8.0, 6.0, 4.0))
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+    Column::with_children(body).spacing(4.0).into()
+}
+
+/// The motions the council pane draws: newest first, the whole council or the
+/// state it is filtered to, with the honest nothing for a council that holds no
+/// motion or a filter that selects none.
+fn council_motions(model: &Model) -> Element<'_, Message> {
+    let shown = model.council_view();
+    let mut body: Vec<Element<'_, Message>> = Vec::new();
+    match model.council_filter {
+        Some(state) => body.push(
+            mono(
+                format!("Filtered to {} · {} motion(s)", state.label(), shown.len()),
+                11.5,
+                INK,
+            )
+            .into(),
+        ),
+        None => body.push(
+            mono(format!("Motions · {} carried", shown.len()), 11.5, INK).into(),
+        ),
+    }
+    if shown.is_empty() {
+        let message = match model.council_filter {
+            Some(state) => format!("no motion is {}: the filter selects none", state.label()),
+            None => "the council is empty: no seat has proposed a motion yet".to_string(),
+        };
+        body.push(serif(message, 12.0, INK_3).into());
+        return Column::with_children(body).spacing(6.0).into();
+    }
+    for motion in shown {
+        body.push(motion_row(model, motion));
+    }
+    Column::with_children(body).spacing(8.0).into()
+}
+
+/// One motion: its number, its proposer, its kind and the motion as prose; the
+/// state stamp and the tally in figures beside the ruled seat bar; the amount a
+/// `budget_move` names, the gate line where one applies, and every vote beneath
+/// it.
+fn motion_row<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
+    let mut cells: Vec<Element<'a, Message>> = Vec::new();
+    // The head: the number, the proposer as a seat and a CID, the kind, and
+    // the state as a stamp — the gated states toned distinctly.
+    cells.push(
+        Row::with_children(vec![
+            stamp(motion.id.clone(), Tone::Neutral).into(),
+            mono(
+                format!("{} · cid {}", motion.proposer_role, motion.proposer_cid),
+                11.5,
+                INK,
+            )
+            .into(),
+            mono(format!("kind {}", motion.kind.label()), 10.5, INK_3).into(),
+            space::horizontal().into(),
+            stamp(motion.state.stamp_label(), tone_for_motion_state(motion.state)).into(),
+        ])
+        .spacing(10.0)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    // The motion itself, as prose.
+    cells.push(serif(motion.text.clone(), 12.5, INK).into());
+    // The tally in figures beside the ruled seat bar, and the amount a
+    // budget_move names.
+    let mut figures: Vec<Element<'a, Message>> = vec![
+        mono(tally_figures(&motion.tally), 11.0, INK).into(),
+        seat_bar(&motion.tally),
+    ];
+    if let Some(amount) = motion.amount {
+        figures.push(mono(format!("amount {amount}"), 10.5, INK_2).into());
+    }
+    cells.push(
+        Row::with_children(figures)
+            .spacing(12.0)
+            .align_y(Alignment::Center)
+            .into(),
+    );
+    // A tally the pane cannot reconcile with the votes it carries is flagged,
+    // never corrected: the arithmetic on the wire is the daemon's.
+    if !motion.tally_is_tidy() {
+        cells.push(
+            mono(
+                "the tally disagrees with the votes it carries: flagged, never corrected",
+                10.5,
+                WARN,
+            )
+            .into(),
+        );
+    }
+    // The owner's gate, in plain words, for a gated motion.
+    if let Some(gate) = gate_line(motion) {
+        cells.push(gate);
+    }
+    // Every vote beneath it.
+    cells.push(votes_block(model, motion));
+    // When it was proposed and when it last moved.
+    cells.push(
+        mono(
+            format!(
+                "proposed {} · last moved {}",
+                instant_label(motion.created_at, model.now_ms),
+                instant_label(motion.updated_at, model.now_ms)
+            ),
+            10.0,
+            INK_3,
+        )
+        .into(),
+    );
+    container(Column::with_children(cells).spacing(4.0))
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .padding(edge(8.0, 10.0, 8.0, 10.0))
+        .into()
+}
+
+/// A tally in figures, as the pane writes it beside the seat bar: the three
+/// words, then the voted count against the seats.
+fn tally_figures(tally: &Tally) -> String {
+    format!(
+        "{} yes · {} no · {} abstain · {} of {} voted",
+        tally.yes, tally.no, tally.abstain, tally.voted, tally.seats
+    )
+}
+
+/// The ruled seat bar: one tick per seat, toned by how that seat's vote reads —
+/// the green of a yes, the red of a no, the amber of an abstention, and the
+/// faint ink of a seat that has not voted.
+///
+/// The bar is drawn from the tally's own figures, so a tally that disagrees
+/// with its votes draws a bar that disagrees too — and the flag beside it says
+/// so. The bar is a reading of the same count, never a second one.
+fn seat_bar(tally: &Tally) -> Element<'static, Message> {
+    let mut ticks: Vec<Element<'static, Message>> = Vec::new();
+    for _ in 0..tally.yes {
+        ticks.push(seat_tick(Tone::Ok));
+    }
+    for _ in 0..tally.no {
+        ticks.push(seat_tick(Tone::Crit));
+    }
+    for _ in 0..tally.abstain {
+        ticks.push(seat_tick(Tone::Warn));
+    }
+    let voted = tally.yes.saturating_add(tally.no).saturating_add(tally.abstain);
+    for _ in voted..SEATS {
+        ticks.push(seat_tick_silent());
+    }
+    Row::with_children(ticks).spacing(3.0).into()
+}
+
+/// One tick of the seat bar, toned.
+fn seat_tick(tone: Tone) -> Element<'static, Message> {
+    container(space::vertical().height(Length::Fixed(9.0)))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(9.0))
+        .style(theme::swatch(tone.color()))
+        .into()
+}
+
+/// One tick of the seat bar for a seat that has not voted.
+fn seat_tick_silent() -> Element<'static, Message> {
+    container(space::vertical().height(Length::Fixed(9.0)))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(9.0))
+        .style(theme::swatch(theme::RULE_FAINT))
+        .into()
+}
+
+/// The gate line: in plain words, which door a gated motion is waiting at.
+/// `None` for a motion the owner's gate did not take.
+fn gate_line<'a>(motion: &'a Motion) -> Option<Element<'a, Message>> {
+    let text = match motion.state {
+        MotionState::TieToOwner => format!(
+            "above the council's authority: the seats split {}–{}, so the tie waits for the \
+             owner's ratification",
+            motion.tally.yes, motion.tally.no
+        ),
+        MotionState::AwaitingOwner => format!(
+            "above the council's authority: carried {}–{} on a {}, so the decision waits for the \
+             owner's ratification",
+            motion.tally.yes,
+            motion.tally.no,
+            motion.kind.label()
+        ),
+        _ => return None,
+    };
+    Some(mono(text, 11.0, tone_for_motion_state(motion.state).color()).into())
+}
+
+/// Every vote beneath a motion: the seat, the cid that cast it, the word toned,
+/// the reason why and the stamp of when. The words are the voters' own.
+fn votes_block<'a>(model: &'a Model, motion: &'a Motion) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![mono(
+        format!("Votes · {} of {} seat(s)", motion.votes.len(), SEATS),
+        10.5,
+        INK_3,
+    )
+    .into()];
+    if motion.votes.is_empty() {
+        body.push(serif("no seat has voted yet", 11.5, INK_3).into());
+    }
+    for vote in &motion.votes {
+        body.push(vote_row(model, vote));
+    }
+    Column::with_children(body).spacing(2.0).into()
+}
+
+/// One vote as its row writes it: which seat, which cid acted for it, the word
+/// toned, the reason in the voter's own words, and when.
+fn vote_row<'a>(model: &'a Model, vote: &'a Vote) -> Element<'a, Message> {
+    Row::with_children(vec![
+        mono(vote.seat.as_str(), 11.0, INK)
+            .width(Length::Fixed(176.0))
+            .into(),
+        mono(format!("cid {}", vote.agent_cid), 10.5, INK_3)
+            .width(Length::Fixed(68.0))
+            .into(),
+        stamp(vote.vote.stamp_label(), tone_for_vote(vote.vote)).into(),
+        serif(vote.reason.as_str(), 11.5, INK_2).width(Length::Fill).into(),
+        mono(instant_label(vote.at, model.now_ms), 10.0, INK_3).into(),
+    ])
+    .spacing(8.0)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The tone a vote word is stamped in: a yes is the register's green, a no its
+/// red, an abstention its amber, and a word this console does not know the
+/// neutral rather than a guess.
+fn tone_for_vote(word: VoteWord) -> Tone {
+    match word {
+        VoteWord::Yes => Tone::Ok,
+        VoteWord::No => Tone::Crit,
+        VoteWord::Abstain => Tone::Warn,
+        VoteWord::Unknown => Tone::Neutral,
+    }
+}
+
+/// The tone a motion's state is stamped in: the two gated states are the
+/// register's one hot signal, so a motion waiting on the owner stands out from
+/// the settled ones — an open motion neutral, a carry green, a rejection red.
+fn tone_for_motion_state(state: MotionState) -> Tone {
+    match state {
+        MotionState::Open => Tone::Neutral,
+        MotionState::Carried => Tone::Ok,
+        MotionState::Rejected => Tone::Crit,
+        MotionState::TieToOwner | MotionState::AwaitingOwner => Tone::Signal,
+        MotionState::Unknown => Tone::Neutral,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4064,6 +4436,78 @@ mod tests {
                 state: VmState::Running,
                 serial: Some("$ uname\nLinux\n".to_string()),
             }],
+        }
+    }
+
+    /// The live plaza's own motions body, plus one motion still taking votes:
+    /// a carried priority, a gated law proposal, a 2–2 tie and an open motion.
+    /// The shape the council pane draws.
+    const COUNCIL: &str = r#"{"motions":[
+        {"id":"m4","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+         "kind":"other","text":"open a second reading on the annex","needs_owner":false,
+         "state":"open",
+         "votes":[{"seat":"finance","agent_cid":105,"vote":"yes",
+                   "reason":"the annex is on the record","at":1791709000000}],
+         "tally":{"yes":1,"no":0,"abstain":0,"voted":1,"seats":4},
+         "created_at":1791708990000,"updated_at":1791709000000},
+        {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+         "text":"prioritise t2 The gable dispute needs a ruling this week",
+         "needs_owner":false,"state":"carried",
+         "votes":[
+           {"seat":"finance","agent_cid":105,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706571791},
+           {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706586797},
+           {"seat":"incident","agent_cid":106,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706601806},
+           {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706616816}],
+         "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "created_at":1791706568274,"updated_at":1791706616816},
+        {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+         "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+         "needs_owner":true,"state":"awaiting_owner",
+         "votes":[
+           {"seat":"finance","agent_cid":105,"vote":"yes",
+            "reason":"the record supports it","at":1791705629367},
+           {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+            "reason":"the record supports it","at":1791705629458},
+           {"seat":"incident","agent_cid":106,"vote":"yes",
+            "reason":"the record supports it","at":1791705629412},
+           {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+            "reason":"the record supports it","at":1791705629506}],
+         "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "created_at":1791705629200,"updated_at":1791705629506},
+        {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+         "text":"prioritise the east wing over new towns this week",
+         "needs_owner":false,"state":"tie_to_owner",
+         "votes":[
+           {"seat":"finance","agent_cid":105,"vote":"yes",
+            "reason":"the wing is the season's work","at":1791705628987},
+           {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+            "reason":"the record on the east wing","at":1791705623911},
+           {"seat":"incident","agent_cid":106,"vote":"no",
+            "reason":"the record on the east wing","at":1791705623782},
+           {"seat":"mayor-office","agent_cid":114,"vote":"no",
+            "reason":"the record on the east wing","at":1791705624070}],
+         "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+         "created_at":1791705623593,"updated_at":1791705628987}
+        ],"total":4,"limit":256,"truncated":false}"#;
+
+    fn council() -> Motions {
+        serde_json::from_str(COUNCIL).expect("the council fixture parses")
+    }
+
+    #[test]
+    fn the_council_pane_names_its_tally_figures_and_opens_the_gate_in_plain_words() {
+        let page = council();
+        assert_eq!(
+            tally_figures(&page.motions[2].tally),
+            "4 yes · 0 no · 0 abstain · 4 of 4 voted"
+        );
+        // The gate line is drawn for the two gated states and for nothing else.
+        for (index, gated) in [(0usize, false), (1, false), (2, true), (3, true)] {
+            assert_eq!(gate_line(&page.motions[index]).is_some(), gated, "{}", page.motions[index].id);
         }
     }
 
@@ -4129,6 +4573,32 @@ mod tests {
         assert!(CallState::Awarded.is_awarded());
         assert!(CallState::Open.is_offer());
         assert!(!CallState::Open.is_awarded());
+        // A motion's states, plus the unknown one: the two gated states read as
+        // the register's one hot signal, and an unknown word reads neutral.
+        for (state, tone) in [
+            (MotionState::Open, Tone::Neutral),
+            (MotionState::Carried, Tone::Ok),
+            (MotionState::Rejected, Tone::Crit),
+            (MotionState::TieToOwner, Tone::Signal),
+            (MotionState::AwaitingOwner, Tone::Signal),
+            (MotionState::Unknown, Tone::Neutral),
+        ] {
+            assert!(!state.stamp_label().is_empty());
+            assert_eq!(tone_for_motion_state(state), tone, "{state:?}");
+        }
+        assert_eq!(MotionState::TieToOwner.stamp_label(), "TIE TO THE OWNER");
+        assert_eq!(MotionState::AwaitingOwner.stamp_label(), "AWAITING THE OWNER");
+        assert!(MotionState::TieToOwner.is_gated());
+        // And the vote words: a yes green, a no red, an abstention amber.
+        for (word, tone) in [
+            (VoteWord::Yes, Tone::Ok),
+            (VoteWord::No, Tone::Crit),
+            (VoteWord::Abstain, Tone::Warn),
+            (VoteWord::Unknown, Tone::Neutral),
+        ] {
+            assert!(!word.stamp_label().is_empty());
+            assert_eq!(tone_for_vote(word), tone, "{word:?}");
+        }
     }
 
     /// The ledger's columns, summed: what its table occupies before spacing.
@@ -4174,6 +4644,7 @@ mod tests {
             vm: 0,
         });
         model.polls = 3;
+        model.council = Some(council());
 
         for pane in [
             Pane::Fleet,
@@ -4186,6 +4657,7 @@ mod tests {
             Pane::Treasury,
             Pane::Market,
             Pane::Telemetry,
+            Pane::Council,
         ] {
             model.pane = pane;
             let _: Element<'_, Message> = view(&model);
@@ -4340,7 +4812,7 @@ mod tests {
     #[test]
     fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
         let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
-        for bound in ["r", "w", "l", "y", "u", "i", "j", "k", "m", "f", "t", "?", "esc", "↑ ↓"] {
+        for bound in ["r", "w", "l", "y", "u", "i", "j", "k", "o", "m", "f", "t", "?", "esc", "↑ ↓"] {
             assert!(keys.contains(&bound), "the register binds {bound:?}");
         }
         for (_, what) in KEYS {

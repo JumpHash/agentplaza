@@ -8,9 +8,9 @@
 
 use crate::api::{
     ApiError, Award, Board, Column, Contacts, Conversations, CreateRun, CreateTask, Endpoint,
-    Entry, FinishOutcome, FloorRead, HubAgent, HubStatus, Journal, Machine, Post, Posting, Posts,
-    Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState, TasksPage, TellAnswer,
-    Thread, Totals, TreasuryRead, VmState,
+    Entry, FinishOutcome, FloorRead, HubAgent, HubStatus, Journal, Machine, Motion, MotionState,
+    Motions, Post, Posting, Posts, Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact,
+    TaskState, TasksPage, TellAnswer, Thread, Totals, TreasuryRead, VmState,
 };
 use crate::events::{AgoraKind, Event};
 use crate::export::{
@@ -100,6 +100,11 @@ pub enum Pane {
     /// thread when one is narrowed. Read-only — an exchange is the daemon's own
     /// and the delivery mark is the hub's.
     Talk,
+    /// The council: the seats' motions, every vote beneath each, the count
+    /// that decided it and the owner's gate. Read-only — a motion and a vote
+    /// are the daemon's own, and proposing and voting are seat actions this
+    /// console does not take.
+    Council,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -147,6 +152,9 @@ pub enum KeyAction {
     /// `k`: the talk — the plaza's conversation log, its pairs and its
     /// threads.
     Talk,
+    /// `o`: the council — the seats' motions, their votes and the owner's
+    /// gate.
+    Council,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
@@ -779,6 +787,9 @@ pub struct Effect {
     /// Read the talk log: `GET /api/v0/conversations`, on the talk pane's own
     /// schedule.
     pub poll_talk: bool,
+    /// Read the council: `GET /api/v0/motions`, on the council pane's own
+    /// schedule.
+    pub poll_motions: bool,
     /// Read an agent's contacts: `GET /api/v0/agents/{cid}/contacts`.
     pub fetch_contacts: Option<u64>,
     /// Read a pair's thread: `GET /api/v0/conversations/{a}/{b}`.
@@ -924,6 +935,15 @@ impl Effect {
     pub fn talk() -> Self {
         Self {
             poll_talk: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read the council: the seats' motions, newest first, every vote beneath
+    /// each.
+    pub fn council() -> Self {
+        Self {
+            poll_motions: true,
             ..Self::default()
         }
     }
@@ -1222,8 +1242,19 @@ pub enum Message {
         /// The answer, or why the read did not happen.
         result: Result<Conversations, ApiError>,
     },
+    /// The council answered: the seats' motions, newest first, each with its
+    /// votes and its tally.
+    Motions {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<Motions, ApiError>,
+    },
     /// A pair row on the talk pane was pressed: narrow to its thread.
     PairPick(u64, u64),
+    /// A state row on the council pane's strip was pressed: filter to that
+    /// state, or widen back to the whole council when already filtered to it.
+    StatePick(MotionState),
     /// An agent's contacts answered.
     Contacts {
         /// When the answer arrived.
@@ -1381,6 +1412,7 @@ impl Message {
             | Message::Floor { at_ms, .. }
             | Message::Board { at_ms, .. }
             | Message::Talk { at_ms, .. }
+            | Message::Motions { at_ms, .. }
             | Message::Contacts { at_ms, .. }
             | Message::Thread { at_ms, .. }
             | Message::Task { at_ms, .. }
@@ -1421,6 +1453,7 @@ impl Message {
             | Message::Inspect
             | Message::InspectClose
             | Message::PairPick(_, _)
+            | Message::StatePick(_)
             | Message::ThreadPick(_)
             | Message::TaskEdit { .. }
             | Message::TaskCreate
@@ -1657,6 +1690,37 @@ pub struct Model {
     pub talk_thread: Option<Thread>,
     /// Why the narrowed thread's read failed, if it did.
     pub talk_thread_error: Option<String>,
+    /// The council: the seats' motions, newest first, each with its votes and
+    /// its tally, as the pane's own read reported them. `None` until the pane's
+    /// first read answers — a council nobody has read is not an empty council.
+    ///
+    /// The last read is kept when a later read fails: a motion the daemon
+    /// recorded is a fact, so an older council is incomplete rather than wrong,
+    /// and the pane says which it is.
+    pub council: Option<Motions>,
+    /// Why the council's last read failed, if it did.
+    pub council_error: Option<String>,
+    /// Whether the council's last read failed with the daemon's own 404 — a
+    /// daemon that serves no council. The pane states that plainly, as the
+    /// absence of a layer rather than a failure of one.
+    pub council_unserved: bool,
+    /// When the council last answered, in milliseconds since the Unix epoch.
+    pub council_last_ok_ms: Option<u64>,
+    /// When the council should be read next.
+    pub council_next_at_ms: u64,
+    /// How many council reads have failed in a row: the council pane's own
+    /// backoff, so a daemon that serves the register but not the council never
+    /// marks the register down.
+    pub council_failures: u32,
+    /// Whether a motion frame has already asked for the council and the answer
+    /// has not landed: a burst of motions is one read, not one per motion.
+    pub council_asked: bool,
+    /// The state the council pane's arrows last picked, on the state strip: the
+    /// row `Enter` narrows the motions to.
+    pub council_picked: Option<MotionState>,
+    /// The state the council pane is filtered to, whose motions are drawn
+    /// instead of the whole council. `None` is the whole council.
+    pub council_filter: Option<MotionState>,
     /// The floor's derived layout, kept current while the floor shows so the
     /// canvas can borrow the model's own copy (a view cannot own the local
     /// [`Model::floor`] returns). Empty until the floor is first shown.
@@ -1774,6 +1838,15 @@ impl Default for Model {
             talk_narrow: None,
             talk_thread: None,
             talk_thread_error: None,
+            council: None,
+            council_error: None,
+            council_unserved: false,
+            council_last_ok_ms: None,
+            council_next_at_ms: 0,
+            council_failures: 0,
+            council_asked: false,
+            council_picked: None,
+            council_filter: None,
             floor_layout: FloorLayout::default(),
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
@@ -2419,6 +2492,7 @@ impl Model {
             Message::Floor { at_ms, result } => self.floor_answer(at_ms, result),
             Message::Board { at_ms, result } => self.board_answer(at_ms, result),
             Message::Talk { at_ms, result } => self.talk_answer(at_ms, result),
+            Message::Motions { at_ms, result } => self.council_answer(at_ms, result),
             Message::Contacts { at_ms, cid, result } => {
                 self.contacts_answer(at_ms, cid, result)
             }
@@ -2434,6 +2508,7 @@ impl Model {
             }
             Message::ThreadPick(peer) => self.read_thread(peer),
             Message::PairPick(a, b) => self.narrow_pair(a, b),
+            Message::StatePick(state) => self.pick_council_state(state),
             Message::TaskArtifactRead(path) => self.task_artifact_read(path),
             Message::TaskArtifact {
                 at_ms,
@@ -2498,6 +2573,9 @@ impl Model {
                 effect.fetch_thread = Some(pair);
             }
         }
+        // And the council's, the same way: its own motions read on its own
+        // schedule.
+        effect.poll_motions = self.council_tick(at_ms);
         // A finished walk (home, or fully adjacent) is dropped every tick, so
         // the floor's walk list stays as small as the talking pairs are.
         self.prune_walks(at_ms);
@@ -3109,6 +3187,213 @@ impl Model {
         Effect::none()
     }
 
+    /// The council pane's own schedule: read the motions only while the pane is
+    /// showing.
+    ///
+    /// Like the talk pane's, this is independent of the register's cadence and
+    /// failures — it returns `false` off the sheet, and backs off on the
+    /// council's own failures — so a daemon that serves the register but not the
+    /// council never reads the register down, and a console that never opened
+    /// the sheet never reads the council at all.
+    fn council_tick(&mut self, at_ms: u64) -> bool {
+        if self.pane != Pane::Council || at_ms < self.council_next_at_ms {
+            return false;
+        }
+        self.council_next_at_ms = at_ms
+            .saturating_add(poll_interval_ms(self.refresh_ms, self.council_failures));
+        true
+    }
+
+    /// The council answered — or could not be read.
+    ///
+    /// The read is kept when a later one fails: a motion the daemon recorded is
+    /// a fact, so the council stays true rather than being cleared, and the
+    /// failure is recorded beside it rather than pretending the council is
+    /// empty. Its health is its own: a surface of its own, like the treasury's
+    /// and the talk pane's, that never moves the register's. A 404 is the
+    /// absence of a council, stated as such.
+    fn council_answer(&mut self, at_ms: u64, result: Result<Motions, ApiError>) -> Effect {
+        self.council_asked = false;
+        match result {
+            Ok(page) => {
+                self.council = Some(page);
+                self.council_error = None;
+                self.council_unserved = false;
+                self.council_last_ok_ms = Some(at_ms);
+                self.council_failures = 0;
+                self.council_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+                // A council that no longer holds the picked state moves the
+                // cursor back onto one it does, so the strip never points at
+                // nothing.
+                self.reconcile_council_state();
+            }
+            Err(error) => {
+                self.council_unserved = error.is_not_found();
+                self.council_error = Some(error.to_string());
+                self.council_failures = self.council_failures.saturating_add(1);
+                self.council_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.council_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// Asks for the council, at most once per outstanding answer.
+    fn ask_for_the_council(&mut self) -> Effect {
+        if self.council_asked {
+            return Effect::none();
+        }
+        self.council_asked = true;
+        Effect::council()
+    }
+
+    /// Applies one motion frame: the council's own delta between its reads.
+    ///
+    /// A frame announces that a motion moved and names it, its kind and its new
+    /// state — and **nothing else**. It carries no text, no votes and no tally,
+    /// so the console never assembles a motion from one: a frame the pane
+    /// already reflects (a motion it holds, in the state the frame names) is a
+    /// duplicate and a no-op, while anything else means the council moved past
+    /// what the pane saw, and the showing pane reads its own surface again —
+    /// once, however many motions arrive at once.
+    fn motion_event(&mut self, id: &str, state: MotionState) -> Effect {
+        // Only a pane that is showing is refreshed: nothing else draws the
+        // council, and the sheet reads it when it opens.
+        if self.pane != Pane::Council {
+            return Effect::none();
+        }
+        let seen = self.council.as_ref().is_some_and(|page| {
+            page.motions
+                .iter()
+                .any(|motion| motion.id == id && motion.state == state)
+        });
+        if seen {
+            return Effect::none();
+        }
+        self.ask_for_the_council()
+    }
+
+    /// The states the council pane's strip offers: the states its motions
+    /// actually carry, in the doctrine's own order — so the filter never points
+    /// at a state no motion is in.
+    ///
+    /// A state this console does not know (one a newer daemon may add) is
+    /// offered only when some motion carries it, and it is offered last.
+    pub fn council_states(&self) -> Vec<MotionState> {
+        let Some(page) = &self.council else {
+            return Vec::new();
+        };
+        let mut states: Vec<MotionState> = MotionState::ALL
+            .into_iter()
+            .filter(|state| page.motions.iter().any(|motion| motion.state == *state))
+            .collect();
+        if page
+            .motions
+            .iter()
+            .any(|motion| !MotionState::ALL.contains(&motion.state))
+        {
+            states.push(MotionState::Unknown);
+        }
+        states
+    }
+
+    /// Keeps the council pane's state cursor on a state the council actually
+    /// holds: the one it held when it is still there, the first otherwise, and
+    /// nothing when no motion is in any state.
+    fn reconcile_council_state(&mut self) {
+        let states = self.council_states();
+        if !self.council_picked.is_some_and(|held| states.contains(&held)) {
+            self.council_picked = states.first().copied();
+        }
+    }
+
+    /// Cycles the council pane's state cursor by one row, wrapping — the talk
+    /// pane's pair idiom, over the states instead of the pairs. With nothing
+    /// picked, a step forward picks the first state and a step back the last.
+    ///
+    /// Moving the cursor does not filter: the motions are narrowed only when a
+    /// state is chosen, so walking the strip costs nothing.
+    fn cycle_council_state(&mut self, step: HistoryStep) -> Effect {
+        let states = self.council_states();
+        if states.is_empty() {
+            self.council_picked = None;
+            return Effect::none();
+        }
+        let next = match self
+            .council_picked
+            .and_then(|held| states.iter().position(|state| *state == held))
+        {
+            Some(index) => match step {
+                HistoryStep::Next => (index + 1) % states.len(),
+                HistoryStep::Prev => (index + states.len() - 1) % states.len(),
+            },
+            None => match step {
+                HistoryStep::Next => 0,
+                HistoryStep::Prev => states.len() - 1,
+            },
+        };
+        self.council_picked = Some(states[next]);
+        Effect::none()
+    }
+
+    /// `Enter` on the council pane: narrow the motions to the picked state, or
+    /// widen back to the whole council when already filtered — the talk pane's
+    /// pair idiom, over the states.
+    ///
+    /// Narrowing reads nothing: the votes are already in the read the list
+    /// carries, so filtering is a view, never a second call.
+    fn toggle_council_filter(&mut self) -> Effect {
+        match self.council_filter {
+            Some(_) => self.widen_council(),
+            None => match self.council_picked {
+                Some(state) => {
+                    self.council_filter = Some(state);
+                    Effect::none()
+                }
+                None => self.refuse("the council holds no motion to filter by"),
+            },
+        }
+    }
+
+    /// Widens the council pane back to the whole council.
+    fn widen_council(&mut self) -> Effect {
+        self.council_filter = None;
+        Effect::none()
+    }
+
+    /// A state row on the strip was pressed: move the cursor to it and toggle
+    /// the filter — narrow to that state, or widen back to the whole council
+    /// when it is already filtered to it. The talk pane's pair idiom, where a
+    /// press narrows and a second press on the same row widens.
+    fn pick_council_state(&mut self, state: MotionState) -> Effect {
+        self.council_picked = Some(state);
+        if self.council_filter == Some(state) {
+            self.widen_council()
+        } else {
+            self.council_filter = Some(state);
+            Effect::none()
+        }
+    }
+
+    /// The motions the council pane draws: the whole council, or the ones in
+    /// the state it is filtered to, newest first as the daemon lists them.
+    ///
+    /// The filter never reorders and never invents: a state the council does
+    /// not hold selects no motion, which the pane says plainly rather than
+    /// drawing the whole council as if it were that state.
+    pub fn council_view(&self) -> Vec<&Motion> {
+        let Some(page) = &self.council else {
+            return Vec::new();
+        };
+        page.motions
+            .iter()
+            .filter(|motion| match self.council_filter {
+                Some(state) => motion.state == state,
+                None => true,
+            })
+            .collect()
+    }
+
     /// Applies one board frame: the public board moved.
     ///
     /// A `post` frame carries the post's own JSON object, exactly as
@@ -3584,6 +3869,7 @@ impl Model {
             } => self.agora_event(&task, kind, agent_cid, price),
             Event::Board { post, .. } => self.board_event(post.as_ref()),
             Event::Conversation { id, .. } => self.conversation_event(&id),
+            Event::Motion { id, state, .. } => self.motion_event(&id, state),
         }
     }
 
@@ -4154,6 +4440,12 @@ impl Model {
             self.talk_thread = None;
             self.talk_thread_error = None;
         }
+        // The council's filter is the council's: leaving it widens back to the
+        // whole council. The state cursor is kept — the next visit reconciles
+        // it onto a state the council carries.
+        if pane != Pane::Council {
+            self.council_filter = None;
+        }
         match pane {
             Pane::Fleet => {
                 self.pane = Pane::Fleet;
@@ -4278,6 +4570,19 @@ impl Model {
                 // filter is never pointing at nothing.
                 self.reconcile_pair();
                 Effect::talk()
+            }
+            Pane::Council => {
+                self.pane = Pane::Council;
+                self.detail = None;
+                // The council is one read: every motion, newest first, each
+                // with its votes and its tally. Opening the sheet is a reason
+                // to want it now, and the schedule runs from this read so the
+                // next tick does not read again on top of it.
+                self.council_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
+                // Put the state cursor back on a state the council carries, so
+                // the strip is never pointing at nothing.
+                self.reconcile_council_state();
+                Effect::council()
             }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
@@ -4433,23 +4738,30 @@ impl Model {
             KeyAction::Floor => self.show(Pane::Floor),
             KeyAction::Board => self.show(Pane::Board),
             KeyAction::Talk => self.show(Pane::Talk),
+            KeyAction::Council => self.show(Pane::Council),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
                 Effect::none()
             }
-            // Enter opens the floor's inspector for the selected robot, and
-            // narrows the talk pane to its picked pair (or widens it again); on
-            // any other pane it names nothing and does nothing.
+            // Enter opens the floor's inspector for the selected robot, narrows
+            // the talk pane to its picked pair (or widens it again) and filters
+            // the council to its picked state (or widens it again); on any
+            // other pane it names nothing and does nothing.
             KeyAction::Inspect => match self.pane {
                 Pane::Talk => self.toggle_pair(),
+                Pane::Council => self.toggle_council_filter(),
                 _ => self.open_inspector(),
             },
-            // Escape widens the talk pane first, when it is narrowed: one
-            // Escape leaves the thread and a second leaves the pane, exactly as
-            // Escape leaves the floor's inspector before the floor.
+            // Escape widens the talk pane first, when it is narrowed, and the
+            // council first, when it is filtered: one Escape leaves the thread
+            // or the filter and a second leaves the pane, exactly as Escape
+            // leaves the floor's inspector before the floor.
             KeyAction::Back if self.pane == Pane::Talk && self.talk_narrow.is_some() => {
                 self.widen_pair()
+            }
+            KeyAction::Back if self.pane == Pane::Council && self.council_filter.is_some() => {
+                self.widen_council()
             }
             // Escape closes the floor's inspector first, when one is open:
             // the inspector is over the floor, so one Escape leaves it and a
@@ -4471,12 +4783,14 @@ impl Model {
                 } else {
                     HistoryStep::Next
                 };
-                // On the floor the arrows cycle the robots, and on the talk
-                // pane they walk the pairs filter; elsewhere they walk the
-                // console's history (which only a run pane has).
+                // On the floor the arrows cycle the robots, on the talk pane
+                // they walk the pairs filter and on the council they walk the
+                // state strip; elsewhere they walk the console's history
+                // (which only a run pane has).
                 match self.pane {
                     Pane::Floor => self.cycle_robot(step),
                     Pane::Talk => self.cycle_pair(step),
+                    Pane::Council => self.cycle_council_state(step),
                     _ => self.console_history(step),
                 }
             }
@@ -5025,6 +5339,7 @@ pub fn title(model: &Model) -> String {
         Pane::Floor => "AgentPlaza register — floor".to_string(),
         Pane::Board => "AgentPlaza register — board".to_string(),
         Pane::Talk => "AgentPlaza register — talk".to_string(),
+        Pane::Council => "AgentPlaza register — council".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -5278,6 +5593,43 @@ pub fn talk_line(model: &Model) -> String {
     }
 }
 
+/// The council as the index column writes it: the motions once the pane has
+/// read them, and the honest nothing before that.
+///
+/// A council nobody has read is not an empty council: the entry the operator
+/// reads first says which of the two it is rather than claiming a plaza that
+/// has decided nothing — the ledger's, the treasury's and the talk pane's own
+/// rule.
+pub fn council_line(model: &Model) -> String {
+    match &model.council {
+        Some(page) => format!(
+            "{} motion(s) · {} open · {} with the owner",
+            page.total,
+            page.motions.iter().filter(|motion| motion.state.is_open()).count(),
+            page.motions.iter().filter(|motion| motion.state.is_gated()).count(),
+        ),
+        None => "not read yet".to_string(),
+    }
+}
+
+/// How the council stands, as the pane's own tally writes it: the motions the
+/// response carries of the council's own total, and the three counts that
+/// matter to a reader watching the gate — the open motions still taking votes,
+/// the ones carried and waiting for the owner, and the ties sent up to it.
+pub fn council_tally(page: &Motions) -> String {
+    let count = |state: MotionState| {
+        page.motions.iter().filter(|motion| motion.state == state).count()
+    };
+    format!(
+        "{} motion(s) carried of {} · {} open · {} awaiting the owner · {} tie(s)",
+        page.motions.len(),
+        page.total,
+        count(MotionState::Open),
+        count(MotionState::AwaitingOwner),
+        count(MotionState::TieToOwner),
+    )
+}
+
 /// How the market stands, as the sheet's tally writes it: the calls the
 /// response carries, the board's own total, how many bids they hold, how many
 /// closed with an award, and whether the read was cut to the daemon's limit.
@@ -5463,7 +5815,7 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{EntryKind, Vm};
+    use crate::api::{EntryKind, MotionKind, Vm};
     use crate::events::BoardKind;
 
     fn vm(id: u32, state: VmState, cid: Option<u64>, serial: Option<&str>) -> Vm {
@@ -11037,5 +11389,344 @@ mod tests {
         assert!(!call.awarded_bid(&call.bids[1]));
         // The open call's offer stamp is its own word.
         assert_eq!(board.calls[1].state.stamp_label(), "OFFERED");
+    }
+
+    // ---- the council pane: the motions, the votes and the owner's gate ----
+
+    /// A motions read as the daemon answers one: the rows, with the bounding
+    /// line the endpoint carries.
+    fn motions_of(rows: serde_json::Value) -> Motions {
+        let count = rows.as_array().map_or(0, Vec::len);
+        serde_json::from_value(serde_json::json!({
+            "motions": rows,
+            "total": count,
+            "limit": 256,
+            "truncated": false,
+        }))
+        .expect("the fixture is the shape the daemon writes")
+    }
+
+    /// One motion row: `state` over the seats' votes, each seat's word given in
+    /// `words`, each reason the same, and the tally derived from the words.
+    fn motion(id: &str, kind: &str, state: &str, words: &[&str]) -> serde_json::Value {
+        const SEATS: [&str; 4] = ["finance", "legal-agents-counsel", "incident", "mayor-office"];
+        let votes: Vec<serde_json::Value> = words
+            .iter()
+            .enumerate()
+            .map(|(index, word)| {
+                serde_json::json!({
+                    "seat": SEATS[index], "agent_cid": 100 + index as u64,
+                    "vote": word, "reason": "the record", "at": 9_000,
+                })
+            })
+            .collect();
+        let count = |word: &str| words.iter().filter(|held| **held == word).count();
+        serde_json::json!({
+            "id": id, "proposer_cid": 100, "proposer_role": "finance",
+            "kind": kind, "text": format!("{id} text"), "needs_owner": false,
+            "state": state, "votes": votes,
+            "tally": {
+                "yes": count("yes"), "no": count("no"), "abstain": count("abstain"),
+                "voted": words.len(), "seats": 4,
+            },
+            "created_at": 8_000, "updated_at": 9_000,
+        })
+    }
+
+    /// The live plaza's own council shape: a carried priority, a gated law
+    /// proposal, a 2–2 tie, and one motion still open.
+    fn council_log() -> Motions {
+        motions_of(serde_json::json!([
+            motion("m4", "other", "open", &["yes"]),
+            motion("m3", "priority", "carried", &["yes", "yes", "yes", "yes"]),
+            motion("m2", "law_proposal", "awaiting_owner", &["yes", "yes", "yes", "yes"]),
+            motion("m1", "priority", "tie_to_owner", &["yes", "yes", "no", "no"]),
+        ]))
+    }
+
+    /// A model showing the council, with one read already answered.
+    fn with_council(page: Motions) -> Model {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Council));
+        model.apply(Message::Motions {
+            at_ms: 10_000,
+            result: Ok(page),
+        });
+        model
+    }
+
+    #[test]
+    fn showing_the_council_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::Key(KeyAction::Council));
+        assert_eq!(model.pane, Pane::Council);
+        assert_eq!(effect, Effect::council());
+        // The cursor is picked from the first read, so the strip never points
+        // at nothing while the read is in flight.
+        assert_eq!(model.council_picked, None, "nothing is picked before a read");
+
+        model.apply(Message::Motions {
+            at_ms: 10_000,
+            result: Ok(council_log()),
+        });
+        assert!(model.council.is_some());
+        assert_eq!(
+            model.council_picked,
+            Some(MotionState::Open),
+            "the first state the doctrine orders and the council carries is picked"
+        );
+        assert_eq!(model.council_next_at_ms, 12_000);
+        assert!(!model.apply(Message::Tick { at_ms: 11_000 }).poll_motions);
+        assert!(model.apply(Message::Tick { at_ms: 13_000 }).poll_motions);
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 20_000 }).poll_motions);
+    }
+
+    #[test]
+    fn the_council_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Council));
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        model.apply(Message::Motions {
+            at_ms: 3_300,
+            result: Err(ApiError::Status {
+                status: 404,
+                message: "no such endpoint".to_string(),
+            }),
+        });
+        assert_eq!(model.council_failures, 1);
+        assert!(model.council_error.is_some());
+        assert!(model.council_unserved, "a 404 is the absence of a layer");
+        assert_eq!(
+            model.council_next_at_ms,
+            3_300 + poll_interval_ms(DEFAULT_REFRESH_MS, 1),
+            "the council backs off on its own failures"
+        );
+        assert_eq!(model.failures, 0);
+        assert_eq!(model.health(), Health::Live);
+
+        // A read that fails after a good one keeps the last council and names
+        // the failure — a motion the daemon recorded is a fact.
+        let mut model = with_council(council_log());
+        model.apply(Message::Runs {
+            at_ms: 10_500,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        let held = model.council.clone();
+        model.apply(Message::Motions {
+            at_ms: 11_000,
+            result: Err(ApiError::Connect("connection refused".to_string())),
+        });
+        assert_eq!(model.council, held, "the last council is kept, not blanked");
+        assert!(model.council_error.is_some());
+        assert!(!model.council_unserved, "a connect error is not a missing layer");
+        assert_eq!(model.health(), Health::Live);
+
+        // A healthy read clears both the failure and the absence.
+        model.apply(Message::Motions {
+            at_ms: 13_000,
+            result: Ok(council_log()),
+        });
+        assert_eq!(model.council_failures, 0);
+        assert!(!model.council_unserved);
+        assert_eq!(model.council_next_at_ms, 15_000, "the cadence measures from the answer");
+    }
+
+    #[test]
+    fn the_council_filter_walks_the_states_and_enter_narrows_and_widens() {
+        let mut model = with_council(council_log());
+        // The strip carries only the states the council is actually in, in the
+        // doctrine's own order.
+        assert_eq!(
+            model.council_states(),
+            vec![
+                MotionState::Open,
+                MotionState::Carried,
+                MotionState::TieToOwner,
+                MotionState::AwaitingOwner,
+            ]
+        );
+        assert_eq!(model.council_picked, Some(MotionState::Open));
+        assert_eq!(model.council_filter, None);
+        assert_eq!(model.council_view().len(), 4, "the whole council is drawn");
+
+        // The arrows cycle the states the council carries, wrapping.
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.council_picked, Some(MotionState::Carried));
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.council_picked, Some(MotionState::TieToOwner));
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.council_picked, Some(MotionState::AwaitingOwner));
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.council_picked, Some(MotionState::Open), "it wraps");
+        model.apply(Message::Key(KeyAction::HistoryPrev));
+        assert_eq!(model.council_picked, Some(MotionState::AwaitingOwner), "and back");
+
+        // A refresh keeps the cursor on the state it was on.
+        model.apply(Message::Motions {
+            at_ms: 11_000,
+            result: Ok(council_log()),
+        });
+        assert_eq!(model.council_picked, Some(MotionState::AwaitingOwner));
+
+        // Enter narrows the motions to the picked state — a view over the read
+        // already held, never a second call.
+        let effect = model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(effect, Effect::none());
+        assert_eq!(model.council_filter, Some(MotionState::AwaitingOwner));
+        assert_eq!(model.council_view().len(), 1);
+        assert_eq!(model.council_view()[0].id, "m2");
+
+        // Enter again widens back to the whole council.
+        model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.council_filter, None);
+        assert_eq!(model.council_view().len(), 4);
+
+        // Escape widens a filter too, and a second Escape leaves the pane.
+        model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.council_filter, Some(MotionState::AwaitingOwner));
+        model.apply(Message::Key(KeyAction::Back));
+        assert_eq!(model.council_filter, None);
+        assert_eq!(model.pane, Pane::Council, "the first Escape widens, not leaves");
+        model.apply(Message::Key(KeyAction::Back));
+        assert_eq!(model.pane, Pane::Fleet);
+    }
+
+    #[test]
+    fn a_state_that_leaves_the_council_moves_the_cursor_back_onto_one_it_carries() {
+        let mut model = with_council(council_log());
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.council_picked, Some(MotionState::Carried));
+        // The council now holds only an open motion: the cursor, which was on a
+        // state no motion is in, moves back onto one that is.
+        model.apply(Message::Motions {
+            at_ms: 11_000,
+            result: Ok(motions_of(serde_json::json!([
+                motion("m5", "other", "open", &["yes"]),
+            ]))),
+        });
+        assert_eq!(model.council_picked, Some(MotionState::Open));
+        assert_eq!(model.council_states(), vec![MotionState::Open]);
+
+        // A council that holds nothing moves the cursor to nothing.
+        model.apply(Message::Motions {
+            at_ms: 12_000,
+            result: Ok(motions_of(serde_json::json!([]))),
+        });
+        assert_eq!(model.council_picked, None);
+        assert!(model.council_view().is_empty());
+    }
+
+    #[test]
+    fn a_pressed_state_row_narrows_and_a_second_press_widens() {
+        let mut model = with_council(council_log());
+        model.apply(Message::StatePick(MotionState::TieToOwner));
+        assert_eq!(model.council_picked, Some(MotionState::TieToOwner));
+        assert_eq!(model.council_filter, Some(MotionState::TieToOwner));
+        model.apply(Message::StatePick(MotionState::TieToOwner));
+        assert_eq!(model.council_filter, None, "a second press on the filtered row widens");
+        model.apply(Message::StatePick(MotionState::Carried));
+        assert_eq!(model.council_filter, Some(MotionState::Carried));
+    }
+
+    #[test]
+    fn a_motion_frame_asks_for_the_council_once_and_never_invents_a_motion() {
+        let mut model = with_council(council_log());
+
+        // A frame the pane already reflects — a held motion, in the state the
+        // frame names — is a duplicate and a no-op.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_000,
+                event: Event::Motion {
+                    id: "m3".to_string(),
+                    kind: MotionKind::Priority,
+                    state: MotionState::Carried,
+                },
+            }),
+            Effect::none()
+        );
+
+        // A frame for a motion the pane does not hold, and one for a held
+        // motion whose state moved, both mean the council moved past what the
+        // pane saw: it reads its own surface again, once per burst.
+        let moved = model.apply(Message::Event {
+            at_ms: 11_100,
+            event: Event::Motion {
+                id: "m4".to_string(),
+                kind: MotionKind::Other,
+                state: MotionState::Carried,
+            },
+        });
+        assert_eq!(moved, Effect::council(), "a held motion's state moved");
+        // The read is coalesced: a second frame before the answer asks for
+        // nothing new.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_200,
+                event: Event::Motion {
+                    id: "m5".to_string(),
+                    kind: MotionKind::Priority,
+                    state: MotionState::Open,
+                },
+            }),
+            Effect::none(),
+            "the outstanding read already covers the burst"
+        );
+        // The answer lands, and the request is clear.
+        model.apply(Message::Motions {
+            at_ms: 11_300,
+            result: Ok(council_log()),
+        });
+        assert!(!model.council_asked);
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_400,
+                event: Event::Motion {
+                    id: "m5".to_string(),
+                    kind: MotionKind::Priority,
+                    state: MotionState::Open,
+                },
+            }),
+            Effect::council()
+        );
+
+        // Off the sheet there is nothing to refresh: the sheet reads the
+        // council when it opens.
+        model.apply(Message::Show(Pane::Fleet));
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 12_000,
+                event: Event::Motion {
+                    id: "m6".to_string(),
+                    kind: MotionKind::Other,
+                    state: MotionState::Open,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn the_council_lines_name_what_the_sheet_draws() {
+        let mut model = Model::new();
+        assert_eq!(
+            council_line(&model),
+            "not read yet",
+            "a council nobody read is not an empty council"
+        );
+        let page = council_log();
+        model.apply(Message::Motions {
+            at_ms: 10_000,
+            result: Ok(page.clone()),
+        });
+        assert_eq!(council_line(&model), "4 motion(s) · 1 open · 2 with the owner");
+        assert_eq!(
+            council_tally(&page),
+            "4 motion(s) carried of 4 · 1 open · 1 awaiting the owner · 1 tie(s)"
+        );
     }
 }

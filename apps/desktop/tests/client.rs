@@ -1269,6 +1269,100 @@ fn a_social_surface_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
     }
 }
 
+#[test]
+fn reading_the_council_reads_the_motions_newest_first_with_every_vote() {
+    // The council pane's own read: every motion in one GET, newest first, each
+    // with its proposer, its kind, its state, all four seats' votes and the
+    // tally the daemon derived.
+    let server = common::council_live(LIST, DETAIL, "", common::MOTIONS, common::MOTION_M1);
+    let page = client(server.port)
+        .motions()
+        .expect("the council should parse");
+    assert_eq!(page.motions.len(), 3);
+    assert_eq!(page.total, 3);
+    assert_eq!(page.limit, 256);
+    assert!(!page.truncated);
+
+    // The newest motion: a priority carried 4–0.
+    let carried = &page.motions[0];
+    assert_eq!(carried.id, "m3");
+    assert_eq!(carried.proposer_cid, 105);
+    assert_eq!(carried.proposer_role, "finance");
+    assert_eq!(carried.kind, agentplaza_desktop::api::MotionKind::Priority);
+    assert_eq!(carried.state, agentplaza_desktop::api::MotionState::Carried);
+    assert_eq!(carried.amount, None, "the motion names no amount, so the daemon omits it");
+    assert_eq!(carried.votes.len(), 4);
+    assert_eq!(carried.votes[0].seat, "finance");
+    assert_eq!(carried.votes[0].vote, agentplaza_desktop::api::VoteWord::Yes);
+    assert_eq!(carried.tally.yes, 4);
+    assert_eq!(carried.tally.seats, 4);
+    assert!(carried.tally_is_tidy(), "the daemon's count agrees with its votes");
+
+    // The gated law proposal, and the 2–2 tie.
+    let gated = &page.motions[1];
+    assert_eq!(gated.kind, agentplaza_desktop::api::MotionKind::LawProposal);
+    assert!(gated.needs_owner);
+    assert_eq!(gated.state, agentplaza_desktop::api::MotionState::AwaitingOwner);
+    let tied = &page.motions[2];
+    assert_eq!(tied.state, agentplaza_desktop::api::MotionState::TieToOwner);
+    assert_eq!(tied.votes[2].vote, agentplaza_desktop::api::VoteWord::No);
+    assert!(tied.state.is_gated());
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/motions");
+}
+
+#[test]
+fn reading_one_motion_follows_the_motions_path() {
+    let server = common::council_live(LIST, DETAIL, "", common::MOTIONS, common::MOTION_M1);
+    let motion = client(server.port)
+        .motion("m1")
+        .expect("the motion should parse");
+    assert_eq!(motion.id, "m1");
+    assert_eq!(motion.state, agentplaza_desktop::api::MotionState::TieToOwner);
+    assert_eq!(motion.tally.yes, 2);
+    assert_eq!(motion.tally.no, 2);
+    assert!(motion.tally_is_tidy());
+    // The single read is the list's own row.
+    let page = client(server.port).motions().expect("the council should parse");
+    assert_eq!(page.motions[2], motion);
+    assert_eq!(server.requests()[0].target, "/api/v0/motions/m1");
+}
+
+#[test]
+fn a_missing_motion_and_a_motion_id_that_is_not_plain_are_both_refused() {
+    let server = always(404, r#"{"error":"no motion with id m9"}"#);
+    let error = client(server.port)
+        .motion("m9")
+        .expect_err("there is no such motion");
+    assert!(error.is_not_found());
+    assert_eq!(error.to_string(), "404: no motion with id m9");
+    for id in ["", "m1/../m2", "m1?x=1", "m1 m2", "m\u{00e9}"] {
+        assert!(
+            matches!(
+                Client::default().motion(id),
+                Err(agentplaza_desktop::api::ApiError::Config(_))
+            ),
+            "{id:?}"
+        );
+    }
+}
+
+#[test]
+fn a_council_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
+    // An older daemon with no council: the read is a refusal in the daemon's
+    // words, never a panic and never a silent empty council.
+    let server = always(404, r#"{"error":"no such endpoint"}"#);
+    for error in [
+        client(server.port).motions().expect_err("a 404 is a refusal"),
+        client(server.port).motion("m1").expect_err("a 404 is a refusal"),
+    ] {
+        assert_eq!(error.status(), Some(404));
+        assert_eq!(error.to_string(), "404: no such endpoint");
+    }
+}
+
 /// Reads the live hub's status surface when `APZ_DESKTOP_LIVE_HUB` names one
 /// (`host:port`), and does nothing otherwise: the suite stays runnable on a
 /// host with no hub.
@@ -1611,4 +1705,54 @@ fn a_live_daemon_reads_when_one_is_named() {
         .expect("the live daemon should answer the floor's read");
     assert_eq!(floor.board.total, posts.total);
     assert_eq!(floor.conversations.total, conversations.total);
+
+    // The council, read the same way and mutating nothing: the seats' motions,
+    // newest first, each with its votes and the tally the daemon derived. This
+    // console has no path that proposes a motion or votes on one.
+    let council = client
+        .motions()
+        .expect("the live daemon should answer its council");
+    println!(
+        "live {}: council {} motion(s) carried of {} · truncated {}",
+        endpoint.url(),
+        council.motions.len(),
+        council.total,
+        council.truncated
+    );
+    assert_eq!(
+        council.motions.len(),
+        council.total.min(council.limit),
+        "the response carries what the council holds, cut to its own limit"
+    );
+    for motion in &council.motions {
+        println!(
+            "  motion {} {} · by {} (cid {}) · state {} · tally {}–{} of {} seat(s){}",
+            motion.id,
+            motion.kind.label(),
+            motion.proposer_role,
+            motion.proposer_cid,
+            motion.state.stamp_label(),
+            motion.tally.yes,
+            motion.tally.no,
+            motion.tally.seats,
+            if motion.needs_owner { " · owner-gated" } else { "" }
+        );
+        for vote in &motion.votes {
+            println!(
+                "    seat {} · cid {} · {} · {:?}",
+                vote.seat,
+                vote.agent_cid,
+                vote.vote.label(),
+                vote.reason
+            );
+        }
+        // Every tally agrees with the votes it carries; the pane would flag one
+        // that did not, and never correct it.
+        assert!(motion.tally_is_tidy(), "{}: the tally agrees with its votes", motion.id);
+        assert_eq!(motion.tally.seats, 4, "the doctrine's four seats");
+        // Each motion is also readable on its own, which is the client's
+        // single-motion read.
+        let one = client.motion(&motion.id).expect("the motion should read");
+        assert_eq!(one, *motion, "the single-motion read is the list's own row");
+    }
 }

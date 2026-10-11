@@ -236,6 +236,15 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if effect.poll_motions {
+        // The council pane's own read: every motion, newest first, each with
+        // its votes and its tally. What the runtime does for the effect.
+        let result = client.motions();
+        model.apply(Message::Motions {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
     if let Some(cid) = effect.fetch_contacts {
         let result = client.contacts(cid);
         model.apply(Message::Contacts {
@@ -4460,6 +4469,356 @@ fn the_whole_application_follows_a_conversation_frame_between_polls() {
     assert_eq!(
         model.polls, 1,
         "only the boot tick polled the register: the talk read is its own"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+}
+
+// ---- the council pane: the motions, the votes and the owner's gate ----
+
+/// A daemon stub with the register's role fleet, the council's motions and the
+/// single motion its own read answers.
+fn council_server(motions: &'static str) -> common::Stub {
+    common::council_live(ROLE_LIST, ROLE_DETAIL, "", motions, common::MOTION_M1)
+}
+
+/// A model on the council pane, with the pane's own read already answered.
+fn council_from(port: u16) -> Model {
+    let mut model = role_model(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Council));
+    perform(effect, &mut model, &client);
+    assert!(model.council.is_some(), "the council read answered");
+    model
+}
+
+#[test]
+fn the_council_pane_draws_the_motions_the_votes_and_the_owners_gate() {
+    // The live plaza's own council shape: a 4–0 carry, a gated 4–0 law
+    // proposal and a 2–2 tie.
+    let server = council_server(common::MOTIONS);
+    let model = council_from(server.port);
+    assert_eq!(model.pane, Pane::Council);
+    let page = model.council.as_ref().expect("the pane read it");
+    assert_eq!(page.motions.len(), 3);
+    assert_eq!(page.total, 3);
+    // The strip carries the states the council is in, in the doctrine's order,
+    // and the 2–2 tie's tally agrees with the votes it carries.
+    assert_eq!(
+        model.council_states(),
+        vec![
+            agentplaza_desktop::api::MotionState::Carried,
+            agentplaza_desktop::api::MotionState::TieToOwner,
+            agentplaza_desktop::api::MotionState::AwaitingOwner,
+        ]
+    );
+    assert_eq!(
+        model.council_picked,
+        Some(agentplaza_desktop::api::MotionState::Carried)
+    );
+    for motion in &page.motions {
+        assert!(motion.tally_is_tidy(), "{}: the daemon's count agrees", motion.id);
+    }
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "Council",
+        "the seats' motions, the votes beneath them and the owner's gate",
+        // The pane's own tally: the four counts the sheet opens with.
+        "Council · 3 motion(s) carried of 3 · 0 open · 1 awaiting the owner · 1 tie(s)",
+        // The state strip, with the row the arrows are on.
+        "Filter by state",
+        "CARRIED",
+        "TIE TO THE OWNER",
+        "AWAITING THE OWNER",
+        // A motion: its number, its proposer as a seat and a CID, its kind and
+        // its prose.
+        "m3",
+        "finance · cid 105",
+        "kind priority",
+        "prioritise t2 The gable dispute needs a ruling this week",
+        // The tally in figures, beside the ruled seat bar.
+        "4 yes · 0 no · 0 abstain · 4 of 4 voted",
+        "2 yes · 2 no · 0 abstain · 4 of 4 voted",
+        // Every vote beneath it: the seat, the cid, the word toned and the
+        // reason why.
+        "Votes · 4 of 4 seat(s)",
+        "legal-agents-counsel",
+        "cid 107",
+        "YES",
+        "NO",
+        "the record supports it",
+        "the record on the east wing",
+        // The gate line, in plain words, for the gated motions.
+        "above the council's authority: carried 4–0 on a law_proposal, so the decision waits \
+         for the owner's ratification",
+        "above the council's authority: the seats split 2–2, so the tie waits for the owner's \
+         ratification",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the council sheet should show {expected:?}"
+        );
+    }
+    // Nothing on the sheet is a write: the pane says so.
+    assert!(ui.find(says("this sheet writes nothing")).is_ok());
+}
+
+#[test]
+fn an_open_motion_is_drawn_with_its_seat_bar_and_its_one_vote() {
+    let server = council_server(common::MOTIONS);
+    let mut model = council_from(server.port);
+    // A later read: one more motion was proposed and is still taking votes.
+    let after: agentplaza_desktop::api::Motions =
+        serde_json::from_str(common::MOTIONS_AFTER).expect("the fixture parses");
+    model.apply(Message::Motions {
+        at_ms: model.now_ms,
+        result: Ok(after),
+    });
+    assert_eq!(
+        model.council_states()[0],
+        agentplaza_desktop::api::MotionState::Open,
+        "the open motion leads the doctrine's order"
+    );
+
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("Council · 4 motion(s) carried of 4 · 1 open · 1 awaiting the owner · 1 tie(s)"))
+            .is_ok(),
+        "the open motion is counted in the pane's tally"
+    );
+    assert!(ui.find(says("open a second reading on the annex")).is_ok());
+    assert!(ui.find(says("1 yes · 0 no · 0 abstain · 1 of 4 voted")).is_ok());
+    assert!(
+        ui.find(says("Votes · 1 of 4 seat(s)")).is_ok(),
+        "the open motion carries the one vote cast"
+    );
+    assert!(ui.find(says("the annex is on the record")).is_ok());
+    // An open motion is not gated: it carries no gate line of its own, while
+    // the gated motions on the sheet still do.
+    assert!(
+        ui.find(says("above the council's authority")).is_ok(),
+        "the gated motions still carry their gate"
+    );
+}
+
+#[test]
+fn the_council_filter_narrows_to_one_state_over_a_real_frame() {
+    let server = council_server(common::MOTIONS);
+    let mut model = council_from(server.port);
+    // Enter narrows to the picked state — a view over the read already held,
+    // never a second call.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Inspect));
+    assert_eq!(
+        model.council_filter,
+        Some(agentplaza_desktop::api::MotionState::Carried)
+    );
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Filtered to carried · 1 motion(s)")).is_ok());
+        assert!(ui.find(says("FILTERED")).is_ok());
+        // The tie and the law proposal are no longer drawn.
+        assert!(
+            ui.find(says("prioritise the east wing over new towns this week")).is_err(),
+            "the filtered pane draws only the carried motion"
+        );
+        assert!(ui.find(says("amend S-001 so builders may read the review record")).is_err());
+    }
+    // Enter again widens back to the whole council.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Inspect));
+    assert_eq!(model.council_filter, None);
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("amend S-001 so builders may read the review record")).is_ok());
+}
+
+#[test]
+fn the_council_pane_states_the_empty_unserved_and_unreachable_cases() {
+    // A fresh daemon: no seat has proposed a motion. The empty state is not a
+    // blank sheet.
+    let empty = r#"{"motions":[],"total":0,"limit":256,"truncated":false}"#;
+    let server = council_server(empty);
+    let model = council_from(server.port);
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says(
+                "Council · 0 motion(s) carried of 0 · 0 open · 0 awaiting the owner · 0 tie(s)"
+            ))
+            .is_ok()
+        );
+        assert!(ui.find(says("the council is empty: no seat has proposed a motion yet")).is_ok());
+        assert!(ui.find(says("no state to filter by: the council holds no motion")).is_ok());
+    }
+
+    // A daemon with no council: the pane's read is the daemon's 404, and the
+    // sheet says so plainly rather than drawing an empty council.
+    let mut model = role_model(server.port);
+    let at_ms = model.now_ms;
+    model.apply(Message::Show(Pane::Council));
+    model.apply(Message::Motions {
+        at_ms,
+        result: Err(agentplaza_desktop::api::ApiError::Status {
+            status: 404,
+            message: "no such endpoint".to_string(),
+        }),
+    });
+    assert!(model.council.is_none());
+    assert!(model.council_unserved);
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("no council")).is_ok(), "the absence of a council is stated");
+        assert!(ui.find(says("this daemon serves no motions")).is_ok());
+    }
+    assert_eq!(
+        model.health(),
+        agentplaza_desktop::model::Health::Live,
+        "a daemon with no council is still a live register"
+    );
+
+    // A read that fails after a good one keeps the last council and names the
+    // failure — an unreachable daemon names its error.
+    let mut model = council_from(server.port);
+    let held = model.council.clone();
+    let at_ms = model.now_ms;
+    model.apply(Message::Motions {
+        at_ms,
+        result: Err(agentplaza_desktop::api::ApiError::Connect(
+            "connection refused".to_string(),
+        )),
+    });
+    assert_eq!(model.council, held, "the last council is kept, not blanked");
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("the council could not be read again: cannot reach connection refused")).is_ok(),
+        "the sheet names the failure beside the council it keeps"
+    );
+}
+
+#[test]
+fn the_council_key_and_its_index_entry_reach_the_sheet() {
+    let server = council_server(common::MOTIONS);
+    let mut model = role_model(server.port);
+
+    // The index offers the pane, and says it has not been read rather than
+    // claiming an empty council.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Council")).is_ok());
+        assert!(ui.find(says("not read yet")).is_ok());
+        ui.click("Council").expect("the entry is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert!(
+        messages.contains(&Message::Show(Pane::Council)),
+        "the entry asks for the council pane, got {messages:?}"
+    );
+
+    // The key sheet names the binding, from the one table the index and the
+    // help sheet share.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says("council: the motions, the votes + the owner's gate")).is_ok(),
+            "the help sheet names the council binding"
+        );
+    }
+    model.apply(Message::Help(false));
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Council));
+    assert_eq!(model.pane, Pane::Council, "the o key reaches the council pane");
+}
+
+#[test]
+fn the_council_pane_is_drawn_over_a_real_frame() {
+    let server = council_server(common::MOTIONS);
+    let model = council_from(server.port);
+
+    // The gated motions' stamps are drawn in the one hot signal: the same model
+    // with no gated motion draws strictly less of it.
+    let mut ungated = model.clone();
+    if let Some(page) = ungated.council.as_mut() {
+        for motion in page.motions.iter_mut() {
+            motion.state = agentplaza_desktop::api::MotionState::Carried;
+        }
+    }
+    assert!(
+        count_near(&frame_of(model.clone()), SIGNAL, 8) > count_near(&frame_of(ungated), SIGNAL, 8),
+        "the gated motions' stamps are drawn in the register's signal"
+    );
+
+    let frame = frame_of(model);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+    for (name, color, tolerance) in [("the page", PAPER, 2), ("the ink", INK, 8)] {
+        assert!(holds(&frame, color, tolerance), "{name} is not on the council frame");
+    }
+    assert!(distinct_colors(frame.rgba.as_ref()) > 100);
+}
+
+#[test]
+fn the_whole_application_follows_a_motion_frame_between_polls() {
+    // The council pane reads when it opens; a `motion` frame then asks the
+    // pane's own surface to be read again, between the register's polls. The
+    // frame carries no text, no votes and no tally, so the motion that arrives
+    // can only be the daemon's own row, read rather than assembled.
+    let server = common::council_growing(
+        ROLE_LIST,
+        ROLE_DETAIL,
+        "",
+        common::MOTIONS,
+        common::MOTIONS_AFTER,
+    );
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 800);
+
+    emulator.update(&program, Message::Show(Pane::Council));
+    pump(&mut emulator, 800);
+
+    // A `motion` frame for a motion the pane does not hold: the pane's own
+    // surface is read again, and the motion that arrives is the daemon's.
+    emulator.update(
+        &program,
+        Message::Event {
+            at_ms: agentplaza_desktop::epoch_ms(),
+            event: agentplaza_desktop::events::Event::Motion {
+                id: "m4".to_string(),
+                kind: agentplaza_desktop::api::MotionKind::Other,
+                state: agentplaza_desktop::api::MotionState::Open,
+            },
+        },
+    );
+    pump(&mut emulator, 800);
+
+    let (model, _) = emulator.into_state();
+    let page = model.council.as_ref().expect("the pane's read");
+    assert_eq!(page.motions.len(), 4, "the frame drove a read, and the read grew the council");
+    assert_eq!(page.motions[0].id, "m4");
+    assert_eq!(
+        page.motions[0].text, "open a second reading on the annex",
+        "the text the frame never carried is the daemon's own"
+    );
+    assert_eq!(
+        page.motions[0].votes[0].reason, "the annex is on the record",
+        "and so is the vote the frame could not describe"
+    );
+    assert_eq!(
+        model.polls, 1,
+        "only the boot tick polled the register: the council read is its own"
     );
     assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }

@@ -1280,6 +1280,283 @@ pub struct Thread {
     pub truncated: bool,
 }
 
+/// The seats the council has, as `docs/agents/council.md` pins them: the count
+/// every tally is measured against and the one the pane's arithmetic checks.
+pub const SEATS: usize = 4;
+
+/// A council motion's kind, as the wire spells it (`noded::council::Kind`).
+///
+/// The deserializer is the membership check: a word outside the contract's enum
+/// parses as [`MotionKind::Unknown`] rather than failing the row, so a newer
+/// daemon may widen it without breaking this console — exactly as an unknown
+/// run, task or call state does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionKind {
+    /// Set a fleet-wide priority.
+    Priority,
+    /// Move budget between towns (over 10% of the pool is owner-gated).
+    BudgetMove,
+    /// Propose a town (always owner-gated).
+    TownProposal,
+    /// Replace a Mayor (always owner-gated).
+    MayorReplacement,
+    /// Propose a law (always owner-gated).
+    LawProposal,
+    /// Anything else the council's majority decides.
+    Other,
+    /// A kind this console does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl MotionKind {
+    /// The name the wire and the pane use.
+    pub fn label(self) -> &'static str {
+        match self {
+            MotionKind::Priority => "priority",
+            MotionKind::BudgetMove => "budget_move",
+            MotionKind::TownProposal => "town_proposal",
+            MotionKind::MayorReplacement => "mayor_replacement",
+            MotionKind::LawProposal => "law_proposal",
+            MotionKind::Other => "other",
+            MotionKind::Unknown => "unknown",
+        }
+    }
+
+    /// Whether this kind is always owner-gated, whatever it names: the 0067
+    /// thresholds that do not depend on an amount.
+    pub fn always_owner_gated(self) -> bool {
+        matches!(
+            self,
+            MotionKind::LawProposal | MotionKind::TownProposal | MotionKind::MayorReplacement
+        )
+    }
+}
+
+/// A motion's state, as the wire spells it (0034's count).
+///
+/// The state is the daemon's own derivation from the votes and the gate; this
+/// console draws it and never recomputes it. An unknown state parses as
+/// [`MotionState::Unknown`] rather than failing the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionState {
+    /// Fewer than [`SEATS`] seats have voted.
+    Open,
+    /// A majority of yes over no, below the owner's gate.
+    Carried,
+    /// A majority of no.
+    Rejected,
+    /// An equal split (the doctrine's 2–2): the owner decides.
+    TieToOwner,
+    /// Carried, but owner-gated: the decision waits for ratification.
+    AwaitingOwner,
+    /// A state this console does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl MotionState {
+    /// Every state the doctrine's table names, in its own order: the pane's
+    /// filter strip, and the order a filter walks.
+    pub const ALL: [MotionState; 5] = [
+        MotionState::Open,
+        MotionState::Carried,
+        MotionState::Rejected,
+        MotionState::TieToOwner,
+        MotionState::AwaitingOwner,
+    ];
+
+    /// The name the API uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            MotionState::Open => "open",
+            MotionState::Carried => "carried",
+            MotionState::Rejected => "rejected",
+            MotionState::TieToOwner => "tie_to_owner",
+            MotionState::AwaitingOwner => "awaiting_owner",
+            MotionState::Unknown => "unknown",
+        }
+    }
+
+    /// The word a stamp presses into the pane, in caps and in plain words.
+    pub fn stamp_label(self) -> &'static str {
+        match self {
+            MotionState::Open => "OPEN",
+            MotionState::Carried => "CARRIED",
+            MotionState::Rejected => "REJECTED",
+            MotionState::TieToOwner => "TIE TO THE OWNER",
+            MotionState::AwaitingOwner => "AWAITING THE OWNER",
+            MotionState::Unknown => "UNKNOWN",
+        }
+    }
+
+    /// Whether the state is one the owner's gate produced — a tie sent up, or a
+    /// carry waiting for ratification. These two are the gated ones, toned
+    /// distinctly in the pane.
+    pub fn is_gated(self) -> bool {
+        matches!(self, MotionState::TieToOwner | MotionState::AwaitingOwner)
+    }
+
+    /// Whether the motion is still taking votes.
+    pub fn is_open(self) -> bool {
+        self == MotionState::Open
+    }
+}
+
+/// One vote word (`yes | no | abstain`), membership-checked the same way: an
+/// unknown word parses as [`VoteWord::Unknown`] rather than failing the vote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VoteWord {
+    /// In favour.
+    Yes,
+    /// Against.
+    No,
+    /// Present, counted as such but never toward the majority.
+    Abstain,
+    /// A word this console does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl VoteWord {
+    /// The name the API uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            VoteWord::Yes => "yes",
+            VoteWord::No => "no",
+            VoteWord::Abstain => "abstain",
+            VoteWord::Unknown => "unknown",
+        }
+    }
+
+    /// The word a stamp presses into the pane, in caps.
+    pub fn stamp_label(self) -> &'static str {
+        match self {
+            VoteWord::Yes => "YES",
+            VoteWord::No => "NO",
+            VoteWord::Abstain => "ABSTAIN",
+            VoteWord::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+/// One seat's vote, as a motion reports it (`noded::council::VoteView`).
+///
+/// Every column the daemon writes is required — none of these is nullable — so
+/// a body that omits one is an error that names it, while a column this client
+/// does not know is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Vote {
+    /// The seat that voted (its role in the roles manifest).
+    pub seat: String,
+    /// The guest CID of the agent that cast the seat's vote.
+    pub agent_cid: u64,
+    /// The word, membership-checked.
+    pub vote: VoteWord,
+    /// Why, in the voter's own words.
+    pub reason: String,
+    /// When the vote was cast, in milliseconds since the Unix epoch.
+    pub at: u64,
+}
+
+/// A motion's tally, as the daemon derives it: the votes cast against the four
+/// seats (`noded::council::TallyView`). Every column is required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Tally {
+    /// How many seats voted yes.
+    pub yes: usize,
+    /// How many voted no.
+    pub no: usize,
+    /// How many abstained.
+    pub abstain: usize,
+    /// How many seats have voted, however they voted.
+    pub voted: usize,
+    /// How many seats there are.
+    pub seats: usize,
+}
+
+/// Whether a tally agrees with the votes it was derived from: the doctrine's
+/// own four seats, one voted seat per vote row, and the three words summing to
+/// the voted count.
+///
+/// This is a **check, never a correction**: a tally that fails it is flagged in
+/// the pane rather than repaired, because the arithmetic on the wire is the
+/// daemon's and a console that rewrote it would be inventing a count. `seats`
+/// is [`SEATS`]; `votes` is the number of vote rows the motion carries.
+pub fn tally_is_tidy(tally: &Tally, votes: usize) -> bool {
+    tally.seats == SEATS
+        && tally.voted == votes
+        && tally.yes + tally.no + tally.abstain == tally.voted
+}
+
+/// One council motion, as `GET /api/v0/motions` reports it
+/// (`noded::council::MotionView`) — the contract's schema, as the daemon stores
+/// it.
+///
+/// Every column the daemon writes is required-and-named on absence, with **one
+/// exception**: a motion that names no amount **omits** `amount` rather than
+/// writing `null` (`#[serde(skip_serializing_if = "Option::is_none")]`), so it
+/// is read as a plain `Option` with a default — an absent key is `None`, not an
+/// error. Every other column is a plain field: a missing one is a parse error
+/// that names it, and a column this client does not know is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Motion {
+    /// The motion's id (`m<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent that proposed it.
+    pub proposer_cid: u64,
+    /// The proposing seat (its role).
+    pub proposer_role: String,
+    /// The kind.
+    pub kind: MotionKind,
+    /// The motion itself.
+    pub text: String,
+    /// The amount a `budget_move` names, when it names one. The daemon omits
+    /// the key rather than writing `null`, so absence reads as none.
+    #[serde(default)]
+    pub amount: Option<u64>,
+    /// Whether the decision is owner-gated, as the daemon derived it.
+    pub needs_owner: bool,
+    /// The state.
+    pub state: MotionState,
+    /// The seats' votes, in seat order (a re-vote keeps its seat's place).
+    pub votes: Vec<Vote>,
+    /// The tally.
+    pub tally: Tally,
+    /// When the motion was proposed, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+    /// When the motion last changed (its proposal, or its latest vote), in
+    /// milliseconds since the Unix epoch.
+    pub updated_at: u64,
+}
+
+impl Motion {
+    /// Whether this motion's tally agrees with the votes it carries: the
+    /// doctrine's arithmetic, checked rather than applied (see
+    /// [`tally_is_tidy`]).
+    pub fn tally_is_tidy(&self) -> bool {
+        tally_is_tidy(&self.tally, self.votes.len())
+    }
+}
+
+/// `GET /api/v0/motions`: the list endpoint's body
+/// (`noded::council::MotionsView`) — the motions, newest first, cut to the
+/// daemon's own bound.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Motions {
+    /// Up to the endpoint's limit of motions, newest first.
+    pub motions: Vec<Motion>,
+    /// How many motions the council holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the council holds more motions than the response carries.
+    pub truncated: bool,
+}
+
 /// The floor's own read: the conversations (who is talking — the adjacency)
 /// and the board (every robot's last post), read together as one read.
 ///
@@ -1862,6 +2139,20 @@ impl Client {
     /// spoken is an empty thread rather than a refusal.
     pub fn thread(&self, a: u64, b: u64) -> Result<Thread, ApiError> {
         self.json("GET", &format!("/api/v0/conversations/{a}/{b}"), None)
+    }
+
+    /// `GET /api/v0/motions`: the council's motions, newest first and bounded.
+    ///
+    /// Read-only from the console: this client has no path that proposes a
+    /// motion or votes on one — proposing and voting are seat actions the
+    /// daemon's own surface takes.
+    pub fn motions(&self) -> Result<Motions, ApiError> {
+        self.json("GET", "/api/v0/motions", None)
+    }
+
+    /// `GET /api/v0/motions/{id}`: one motion, read on its own.
+    pub fn motion(&self, id: &str) -> Result<Motion, ApiError> {
+        self.json("GET", &format!("/api/v0/motions/{}", checked_id(id)?), None)
     }
 
     /// The floor's own read: `GET /api/v0/conversations` and
@@ -3843,5 +4134,315 @@ mod tests {
                 "the error should name {named:?} for {path:?}: {error}"
             );
         }
+    }
+
+    /// A motions body as `GET /api/v0/motions` writes it, byte for byte the
+    /// shape the live plaza answered with: a priority carried 4–0, a law
+    /// proposal carried 4–0 and waiting for the owner, and a priority tied
+    /// 2–2 and sent to the owner. None names an amount, so no row carries the
+    /// key — which is exactly the shape that proves `amount` is optional.
+    const MOTIONS: &str = r#"{"motions":[
+        {"id":"m3","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+         "text":"prioritise t2 The gable dispute needs a ruling this week",
+         "needs_owner":false,"state":"carried",
+         "votes":[
+           {"seat":"finance","agent_cid":105,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706571791},
+           {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706586797},
+           {"seat":"incident","agent_cid":106,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706601806},
+           {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+            "reason":"the record: priority names open task t2","at":1791706616816}
+         ],
+         "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "created_at":1791706568274,"updated_at":1791706616816},
+        {"id":"m2","proposer_cid":107,"proposer_role":"legal-agents-counsel",
+         "kind":"law_proposal","text":"amend S-001 so builders may read the review record",
+         "needs_owner":true,"state":"awaiting_owner",
+         "votes":[
+           {"seat":"finance","agent_cid":105,"vote":"yes",
+            "reason":"the record supports it","at":1791705629367},
+           {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+            "reason":"the record supports it","at":1791705629458},
+           {"seat":"incident","agent_cid":106,"vote":"yes",
+            "reason":"the record supports it","at":1791705629412},
+           {"seat":"mayor-office","agent_cid":114,"vote":"yes",
+            "reason":"the record supports it","at":1791705629506}
+         ],
+         "tally":{"yes":4,"no":0,"abstain":0,"voted":4,"seats":4},
+         "created_at":1791705629200,"updated_at":1791705629506},
+        {"id":"m1","proposer_cid":105,"proposer_role":"finance","kind":"priority",
+         "text":"prioritise the east wing over new towns this week",
+         "needs_owner":false,"state":"tie_to_owner",
+         "votes":[
+           {"seat":"finance","agent_cid":105,"vote":"yes",
+            "reason":"the wing is the season's work","at":1791705628987},
+           {"seat":"legal-agents-counsel","agent_cid":107,"vote":"yes",
+            "reason":"the record on the east wing","at":1791705623911},
+           {"seat":"incident","agent_cid":106,"vote":"no",
+            "reason":"the record on the east wing","at":1791705623782},
+           {"seat":"mayor-office","agent_cid":114,"vote":"no",
+            "reason":"the record on the east wing","at":1791705624070}
+         ],
+         "tally":{"yes":2,"no":2,"abstain":0,"voted":4,"seats":4},
+         "created_at":1791705623593,"updated_at":1791705628987}
+        ],"total":3,"limit":256,"truncated":false}"#;
+
+    #[test]
+    fn a_motions_body_parses_every_column_the_daemon_writes() {
+        let page: Motions = from_body(MOTIONS);
+        assert_eq!(page.motions.len(), 3);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.limit, 256);
+        assert!(!page.truncated);
+
+        // The carried priority, newest first.
+        let carried = &page.motions[0];
+        assert_eq!(carried.id, "m3");
+        assert_eq!(carried.proposer_cid, 105);
+        assert_eq!(carried.proposer_role, "finance");
+        assert_eq!(carried.kind, MotionKind::Priority);
+        assert_eq!(carried.state, MotionState::Carried);
+        assert!(!carried.needs_owner);
+        assert_eq!(carried.amount, None, "a motion that names no amount omits the key");
+        assert_eq!(carried.votes.len(), 4);
+        assert_eq!(carried.votes[0].seat, "finance");
+        assert_eq!(carried.votes[0].agent_cid, 105);
+        assert_eq!(carried.votes[0].vote, VoteWord::Yes);
+        assert_eq!(carried.votes[0].reason, "the record: priority names open task t2");
+        assert_eq!(carried.votes[0].at, 1_791_706_571_791);
+        assert_eq!(
+            carried.tally,
+            Tally { yes: 4, no: 0, abstain: 0, voted: 4, seats: 4 }
+        );
+        assert_eq!(carried.created_at, 1_791_706_568_274);
+        assert_eq!(carried.updated_at, 1_791_706_616_816);
+        assert!(carried.tally_is_tidy(), "the daemon's own count agrees with its votes");
+
+        // The gated law proposal: carried, but owner-gated.
+        let gated = &page.motions[1];
+        assert_eq!(gated.kind, MotionKind::LawProposal);
+        assert!(gated.kind.always_owner_gated());
+        assert!(gated.needs_owner);
+        assert_eq!(gated.state, MotionState::AwaitingOwner);
+        assert!(gated.state.is_gated());
+
+        // The 2–2 tie.
+        let tied = &page.motions[2];
+        assert_eq!(tied.state, MotionState::TieToOwner);
+        assert!(tied.state.is_gated());
+        assert_eq!(tied.votes[2].vote, VoteWord::No);
+        assert!(tied.tally_is_tidy());
+    }
+
+    #[test]
+    fn a_motion_missing_a_column_is_an_error_that_names_it() {
+        // Every column the daemon writes is required-and-named on absence —
+        // **except `amount`**, which the daemon omits rather than nulling (see
+        // the test below). The whole body is walked so no other column is
+        // quietly optional.
+        for path in [
+            "motions",
+            "total",
+            "limit",
+            "truncated",
+            "motions/0/id",
+            "motions/0/proposer_cid",
+            "motions/0/proposer_role",
+            "motions/0/kind",
+            "motions/0/text",
+            "motions/0/needs_owner",
+            "motions/0/state",
+            "motions/0/votes",
+            "motions/0/tally",
+            "motions/0/created_at",
+            "motions/0/updated_at",
+            "motions/0/votes/0/seat",
+            "motions/0/votes/0/agent_cid",
+            "motions/0/votes/0/vote",
+            "motions/0/votes/0/reason",
+            "motions/0/votes/0/at",
+            "motions/0/tally/yes",
+            "motions/0/tally/no",
+            "motions/0/tally/abstain",
+            "motions/0/tally/voted",
+            "motions/0/tally/seats",
+        ] {
+            let error = serde_json::from_str::<Motions>(&without(MOTIONS, path))
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+        // The whole shape, and none of it missing, parses.
+        let page: Motions = from_body(MOTIONS);
+        assert_eq!(page.motions.len(), 3);
+    }
+
+    #[test]
+    fn a_motion_amount_is_optional_because_the_daemon_omits_it() {
+        // The one exempt column: `noded` writes `amount` with
+        // `skip_serializing_if = "Option::is_none"`, so a motion that names no
+        // amount **omits the key** — and absence reads as none rather than as a
+        // parse error. (This is the opposite rule to the ledger's `task_id`,
+        // which the daemon nulls.)
+        let page: Motions = from_body(MOTIONS);
+        assert_eq!(page.motions[0].amount, None, "an omitted key is none");
+        // An explicit `null` reads as none too.
+        let nulled = r#"{"id":"m5","proposer_cid":105,"proposer_role":"finance",
+            "kind":"budget_move","text":"fund the annex","amount":null,"needs_owner":false,
+            "state":"open","votes":[],"tally":{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4},
+            "created_at":1,"updated_at":1}"#;
+        assert_eq!(from_body::<Motion>(nulled).amount, None);
+        // And a `budget_move` that names one carries it.
+        let named = r#"{"id":"m5","proposer_cid":105,"proposer_role":"finance",
+            "kind":"budget_move","text":"fund the annex","amount":900,"needs_owner":false,
+            "state":"open","votes":[],"tally":{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4},
+            "created_at":1,"updated_at":1}"#;
+        let motion: Motion = from_body(named);
+        assert_eq!(motion.amount, Some(900));
+        assert_eq!(motion.kind, MotionKind::BudgetMove);
+        assert!(motion.state.is_open());
+    }
+
+    #[test]
+    fn a_motion_column_the_client_does_not_know_is_ignored() {
+        // A newer daemon may add a column at any level without breaking the
+        // console.
+        let mut body: serde_json::Value = from_body(MOTIONS);
+        body["motions"][0]["session_id"] = serde_json::json!("s1");
+        body["motions"][0]["votes"][0]["delegated_from"] = serde_json::json!(null);
+        body["motions"][0]["tally"]["quorum"] = serde_json::json!(4);
+        body["deadline_ms"] = serde_json::json!(0);
+        let page: Motions = from_body(&body.to_string());
+        assert_eq!(page.motions[0].id, "m3");
+        assert_eq!(page.motions[0].votes[0].seat, "finance");
+    }
+
+    #[test]
+    fn the_motion_kinds_states_and_vote_words_are_membership_checked_with_unknown_tolerated() {
+        // The kinds, the states and the vote words are the contract's own
+        // enums, membership-checked by the deserializer; a word outside them
+        // parses as `Unknown` rather than failing the row.
+        for (word, kind) in [
+            ("priority", MotionKind::Priority),
+            ("budget_move", MotionKind::BudgetMove),
+            ("town_proposal", MotionKind::TownProposal),
+            ("mayor_replacement", MotionKind::MayorReplacement),
+            ("law_proposal", MotionKind::LawProposal),
+            ("other", MotionKind::Other),
+            ("referendum", MotionKind::Unknown),
+        ] {
+            let body = format!(
+                r#"{{"id":"m1","proposer_cid":1,"proposer_role":"finance","kind":"{word}",
+                    "text":"t","needs_owner":false,"state":"open","votes":[],
+                    "tally":{{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4}},
+                    "created_at":1,"updated_at":1}}"#
+            );
+            let motion: Motion = from_body(&body);
+            assert_eq!(motion.kind, kind, "kind {word:?}");
+        }
+        for (word, state) in [
+            ("open", MotionState::Open),
+            ("carried", MotionState::Carried),
+            ("rejected", MotionState::Rejected),
+            ("tie_to_owner", MotionState::TieToOwner),
+            ("awaiting_owner", MotionState::AwaitingOwner),
+            ("vetoed", MotionState::Unknown),
+        ] {
+            let body = format!(
+                r#"{{"id":"m1","proposer_cid":1,"proposer_role":"finance","kind":"other",
+                    "text":"t","needs_owner":false,"state":"{word}","votes":[],
+                    "tally":{{"yes":0,"no":0,"abstain":0,"voted":0,"seats":4}},
+                    "created_at":1,"updated_at":1}}"#
+            );
+            let motion: Motion = from_body(&body);
+            assert_eq!(motion.state, state, "state {word:?}");
+        }
+        for (word, vote) in [
+            ("yes", VoteWord::Yes),
+            ("no", VoteWord::No),
+            ("abstain", VoteWord::Abstain),
+            ("present", VoteWord::Unknown),
+        ] {
+            let body = format!(
+                r#"{{"id":"m1","proposer_cid":1,"proposer_role":"finance","kind":"other",
+                    "text":"t","needs_owner":false,"state":"open",
+                    "votes":[{{"seat":"finance","agent_cid":1,"vote":"{word}","reason":"r","at":1}}],
+                    "tally":{{"yes":0,"no":0,"abstain":0,"voted":1,"seats":4}},
+                    "created_at":1,"updated_at":1}}"#
+            );
+            let motion: Motion = from_body(&body);
+            assert_eq!(motion.votes[0].vote, vote, "vote {word:?}");
+        }
+
+        // The words are the daemon's own, verbatim, and the gated states are
+        // the two the owner's gate produced.
+        for (state, label, stamp, gated) in [
+            (MotionState::Open, "open", "OPEN", false),
+            (MotionState::Carried, "carried", "CARRIED", false),
+            (MotionState::Rejected, "rejected", "REJECTED", false),
+            (MotionState::TieToOwner, "tie_to_owner", "TIE TO THE OWNER", true),
+            (MotionState::AwaitingOwner, "awaiting_owner", "AWAITING THE OWNER", true),
+            (MotionState::Unknown, "unknown", "UNKNOWN", false),
+        ] {
+            assert_eq!(state.label(), label);
+            assert_eq!(state.stamp_label(), stamp);
+            assert_eq!(state.is_gated(), gated, "{label}");
+        }
+        assert_eq!(MotionState::ALL.len(), SEATS + 1);
+        for kind in [
+            MotionKind::Priority,
+            MotionKind::BudgetMove,
+            MotionKind::Other,
+            MotionKind::Unknown,
+        ] {
+            assert!(!kind.always_owner_gated(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_tidy_arithmetic_flags_a_disagreeing_tally_and_never_corrects_it() {
+        // The predicate is a check, not a repair: a tally that agrees with the
+        // votes it was derived from is tidy.
+        let page: Motions = from_body(MOTIONS);
+        for motion in &page.motions {
+            assert!(motion.tally_is_tidy(), "{}", motion.id);
+        }
+        let tidy = Tally { yes: 2, no: 1, abstain: 1, voted: 4, seats: 4 };
+        assert!(tally_is_tidy(&tidy, 4));
+
+        // The doctrine's own four seats.
+        assert!(!tally_is_tidy(&Tally { seats: 5, ..tidy }, 4), "five seats is not the doctrine");
+        assert!(!tally_is_tidy(&Tally { seats: 3, ..tidy }, 4), "three seats is not the doctrine");
+        // `voted` is the number of vote rows the motion carries.
+        assert!(!tally_is_tidy(&tidy, 3), "a voted count off the vote rows");
+        // The three words sum to `voted`.
+        assert!(
+            !tally_is_tidy(&Tally { yes: 2, no: 1, abstain: 0, voted: 4, seats: 4 }, 4),
+            "the words do not sum to the voted count"
+        );
+        // And it never rewrites the tally it is given: the predicate reads, the
+        // pane flags, and the daemon's number stands.
+        let disagreeing = Tally { yes: 4, no: 0, abstain: 0, voted: 3, seats: 4 };
+        let motion = Motion {
+            id: "m9".to_string(),
+            proposer_cid: 1,
+            proposer_role: "finance".to_string(),
+            kind: MotionKind::Other,
+            text: "t".to_string(),
+            amount: None,
+            needs_owner: false,
+            state: MotionState::Carried,
+            votes: Vec::new(),
+            tally: disagreeing,
+            created_at: 1,
+            updated_at: 1,
+        };
+        assert!(!motion.tally_is_tidy());
+        assert_eq!(motion.tally, disagreeing, "the disagreeing tally is left exactly as it arrived");
     }
 }

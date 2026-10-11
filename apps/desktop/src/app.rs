@@ -224,6 +224,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "i" => Some(KeyAction::Floor),
             "j" => Some(KeyAction::Board),
             "k" => Some(KeyAction::Talk),
+            "o" => Some(KeyAction::Council),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -461,6 +462,18 @@ fn dispatch(
                 (epoch_ms(), result)
             },
             |(at_ms, result)| Message::Talk { at_ms, result },
+        ));
+    }
+    if effect.poll_motions {
+        // The council pane's own read: the seats' motions, newest first, each
+        // with its votes and its tally. Its own message and its own schedule.
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.motions();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Motions { at_ms, result },
         ));
     }
     if let Some(cid) = effect.fetch_contacts {
@@ -739,6 +752,7 @@ mod tests {
             (Key::Character("i".into()), KeyAction::Floor),
             (Key::Character("j".into()), KeyAction::Board),
             (Key::Character("k".into()), KeyAction::Talk),
+            (Key::Character("o".into()), KeyAction::Council),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
             (Key::Character("M".into()), KeyAction::Machine),
@@ -750,6 +764,7 @@ mod tests {
             (Key::Character("I".into()), KeyAction::Floor),
             (Key::Character("J".into()), KeyAction::Board),
             (Key::Character("K".into()), KeyAction::Talk),
+            (Key::Character("O".into()), KeyAction::Council),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
             (Key::Named(keyboard::key::Named::Enter), KeyAction::Inspect),
             (Key::Character("?".into()), KeyAction::Help),

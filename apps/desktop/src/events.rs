@@ -27,7 +27,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::api::{self, Column, Endpoint, EntryKind, Post, RunState, TaskState, VmState};
+use crate::api::{
+    self, Column, Endpoint, EntryKind, MotionKind, MotionState, Post, RunState, TaskState, VmState,
+};
 
 /// The path the stream lives at.
 pub const PATH: &str = "/api/v0/events";
@@ -177,6 +179,20 @@ pub enum Event {
         to_cid: u64,
         /// Whether the peer's session took the call.
         delivered: bool,
+    },
+    /// A council motion moved: it was proposed, or a seat voted on it.
+    ///
+    /// The frame carries the motion's id, its kind and the state it is now in,
+    /// and **nothing else** — no text, no votes and no tally. It is the
+    /// council's delta, not a motion: a console that has not read the motions
+    /// reads them rather than assembling a row from a frame.
+    Motion {
+        /// The motion's id (`m<seq>`).
+        id: String,
+        /// The kind, as the wire spells it.
+        kind: MotionKind,
+        /// The state the motion is now in.
+        state: MotionState,
     },
 }
 
@@ -331,6 +347,11 @@ impl Framer {
                     delivered: data.delivered,
                 })
             }
+            "motion" => serde_json::from_str::<MotionData>(&payload).map(|data| Event::Motion {
+                id: data.id,
+                kind: data.kind,
+                state: data.state,
+            }),
             other => {
                 out.push(Frame::Other(other.to_string()));
                 return;
@@ -489,6 +510,20 @@ struct ConversationData {
     from_cid: u64,
     to_cid: u64,
     delivered: bool,
+}
+
+/// A `motion` frame's `data`.
+///
+/// `noded` writes all three fields for every motion it publishes
+/// (`crates/noded/src/events.rs`, `Event::Motion::frame`), so an absent `kind`
+/// is not the shape the daemon sends and is refused by name — the same rule the
+/// motions endpoint's own rows are read by. The frame carries no text, so the
+/// row a pane draws is read from the node, never assembled from this.
+#[derive(Debug, Deserialize)]
+struct MotionData {
+    id: String,
+    kind: MotionKind,
+    state: MotionState,
 }
 
 /// Why one connection to the stream did not deliver events.
@@ -1323,6 +1358,70 @@ mod tests {
             matches!(&frames[0], Frame::Malformed(why) if why.contains("conversation") && why.contains("delivered")),
             "a conversation frame with no delivered is named: {:?}",
             frames[0]
+        );
+    }
+
+    #[test]
+    fn the_framer_reads_a_motion_frame_the_daemon_writes() {
+        // `crates/noded/src/events.rs`'s own frames, byte for byte: a propose
+        // (open) and the vote that carried a law proposal to the owner's gate.
+        // The frame carries no text — the row is read from the motions
+        // endpoint.
+        let mut framer = Framer::new();
+        assert_eq!(
+            framer.feed(
+                b"event: motion\ndata: {\"id\":\"m1\",\"kind\":\"budget_move\",\"state\":\"open\"}\n\n"
+            ),
+            vec![Frame::Event(Event::Motion {
+                id: "m1".to_string(),
+                kind: MotionKind::BudgetMove,
+                state: MotionState::Open,
+            })]
+        );
+        assert_eq!(
+            framer.feed(
+                b"event: motion\ndata: {\"id\":\"m2\",\"kind\":\"law_proposal\",\"state\":\"awaiting_owner\"}\n\n"
+            ),
+            vec![Frame::Event(Event::Motion {
+                id: "m2".to_string(),
+                kind: MotionKind::LawProposal,
+                state: MotionState::AwaitingOwner,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_motion_frame_with_a_word_this_console_does_not_know_parses_as_unknown() {
+        let mut framer = Framer::new();
+        assert_eq!(
+            framer.feed(b"event: motion\ndata: {\"id\":\"m7\",\"kind\":\"referendum\",\"state\":\"vetoed\"}\n\n"),
+            vec![Frame::Event(Event::Motion {
+                id: "m7".to_string(),
+                kind: MotionKind::Unknown,
+                state: MotionState::Unknown,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_motion_frame_missing_a_field_is_named_and_the_next_frame_still_reads() {
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: motion\ndata: {\"id\":\"m1\",\"state\":\"open\"}\n\n\
+              event: motion\ndata: {\"id\":\"m2\",\"kind\":\"priority\",\"state\":\"carried\"}\n\n",
+        );
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("motion") && why.contains("kind")),
+            "a motion frame with no kind is named: {:?}",
+            frames[0]
+        );
+        assert_eq!(
+            frames[1],
+            Frame::Event(Event::Motion {
+                id: "m2".to_string(),
+                kind: MotionKind::Priority,
+                state: MotionState::Carried,
+            })
         );
     }
 
