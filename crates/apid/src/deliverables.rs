@@ -222,7 +222,7 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
     let Some(raw) = req.query_param("name") else {
         return Response::error(400, "name is required");
     };
-    let name = match clean_name(raw) {
+    let name = match clean_name(&decode(raw)) {
         Ok(name) => name,
         Err(e) => return Response::error(400, &e),
     };
@@ -230,9 +230,9 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
         return Response::error(400, "the body is empty");
     }
     let upload = Upload {
-        title: optional(req.query_param("title")).unwrap_or_else(|| name.clone()),
-        description: optional(req.query_param("description")),
-        task: optional(req.query_param("task")),
+        title: query(req, "title").unwrap_or_else(|| name.clone()),
+        description: query(req, "description"),
+        task: query(req, "task"),
         content_type: optional(req.header("content-type")).unwrap_or_else(|| guess_type(&name).to_string()),
         author: app.agents.get(cid).map(|a| a.name).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
         author_cid: cid,
@@ -351,6 +351,36 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A query value, percent-decoded (`+` is a space), trimmed; `None` when absent or empty.
+fn query(req: &Request, key: &str) -> Option<String> {
+    optional(req.query_param(key).map(decode).as_deref())
+}
+
+/// Percent-decoding of a query value; malformed escapes are kept as they are.
+fn decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            // Both hex digits must be there: positions i + 1 and i + 2.
+            b'%' if i + 2 < bytes.len() => {
+                match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"), 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            other => out.push(other),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn optional(value: Option<&str>) -> Option<String> {
     value.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
 }
@@ -362,6 +392,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_values_are_percent_decoded() {
+        assert_eq!(decode("Hello%20bottle+ad"), "Hello bottle ad");
+        assert_eq!(decode("100%25"), "100%");
+        assert_eq!(decode("50%"), "50%");
+        assert_eq!(decode("%E2%9C%93"), "\u{2713}");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("apid-deliverables-{}-{name}", std::process::id()));
