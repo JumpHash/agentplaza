@@ -900,7 +900,7 @@ impl Registry {
                 role: None,
                 // Fleet VMs are long-lived keepalive agents.
                 keepalive: true,
-                balloon_usable_mib: None,
+                balloon_usable_mib: fleet.balloon_usable_mib(),
             },
             plans,
         )

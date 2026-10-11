@@ -52,6 +52,11 @@ pub const DEFAULT_AGENTS_MEMORY_MIB: u32 = 128;
 /// vCPUs per agent VM unless `--agents-vcpus` says otherwise.
 pub const DEFAULT_AGENTS_VCPUS: u32 = 1;
 
+/// MiB of each agent VM's memory usable at boot unless `--agents-balloon-mib`
+/// says otherwise; the rest of `--agents-memory-mib` is held in a balloon the VM
+/// can grow into. Zero, or no less than the VM's memory, means no balloon.
+pub const DEFAULT_AGENTS_BALLOON_MIB: u32 = 32;
+
 /// The daemon's configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -70,6 +75,8 @@ pub struct Config {
     pub agents_cid_base: u64,
     pub agents_memory_mib: u32,
     pub agents_vcpus: u32,
+    /// MiB usable per agent VM at boot; `0`, or no less than the memory: no balloon.
+    pub agents_balloon_mib: u32,
 }
 
 impl Default for Config {
@@ -85,6 +92,7 @@ impl Default for Config {
             agents_cid_base: DEFAULT_AGENTS_CID_BASE,
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
             agents_vcpus: DEFAULT_AGENTS_VCPUS,
+            agents_balloon_mib: DEFAULT_AGENTS_BALLOON_MIB,
         }
     }
 }

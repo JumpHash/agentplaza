@@ -226,6 +226,10 @@ served one with no session 409.
 keepalive?, beats?, balloon_usable_mib?}`), `GET/DELETE /v1/runs/{id}`, `POST /v1/runs/{id}/input`, `POST /v1/runs/{id}/vms/{index}/memory` (`{usable_mib}`: resize one VM's balloon; 404 unknown, 409 without a balloon or stopped),
 `GET /v1/events` (`run`, `vm`, `serial`).
 
+Agent fleet balloon: `noded --agents-balloon-mib N` (default 32) boots each agent VM with N MiB usable and a virtio balloon holding the rest of `--agents-memory-mib`, so the agent can grow to its full memory; `0`, or at least the memory, boots without one.
+
+Guest driver: `scripts/mk-initrd-x86_64.sh` puts the guest's `virtio_balloon` (with the virtio modules it needs) in the initramfs when the host kernel ships it as a module, and skips it with a message when the kernel builds it in or lacks it.
+
 ## State
 
 `apid --state-dir DIR` (default `$XDG_STATE_HOME/agentplaza`) holds

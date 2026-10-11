@@ -20,6 +20,7 @@ const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--workspace IMAGE] [--persist-dir DIR] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
+             [--agents-balloon-mib N]
 
   --port PORT      port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH    guest kernel image (default /boot/vmlinuz-linux)
@@ -40,6 +41,9 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                         (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 128)
   --agents-vcpus N      vCPUs per agent VM (default 1)
+  --agents-balloon-mib N  MiB of each agent VM's memory usable at boot; the rest
+                        of --agents-memory-mib is a balloon it grows into
+                        (default 32; 0, or at least the memory: no balloon)
   -h, --help       print this help
 
 Runs. Every VM of every run carries the agent harness (the guest's vsock
@@ -118,7 +122,8 @@ fn boot_agents(node: &noded::Node, config: &Config) -> Result<(), String> {
         config.agents_memory_mib,
         config.agents_vcpus,
     )
-    .map_err(|err| format!("--agents: {err}"))?;
+    .map_err(|err| format!("--agents: {err}"))?
+    .with_balloon(config.agents_balloon_mib);
     let run = node
         .registry()
         .create_agent_fleet(&fleet)
@@ -179,6 +184,11 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .parse()
                     .map_err(|err| format!("--agents-vcpus: {err}"))?;
             }
+            "--agents-balloon-mib" => {
+                config.agents_balloon_mib = value("--agents-balloon-mib")?
+                    .parse()
+                    .map_err(|err| format!("--agents-balloon-mib: {err}"))?;
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -220,6 +230,7 @@ mod tests {
         assert_eq!(config.agents_cid_base, 100);
         assert_eq!(config.agents_memory_mib, 128);
         assert_eq!(config.agents_vcpus, 1);
+        assert_eq!(config.agents_balloon_mib, 32);
     }
 
     #[test]
@@ -249,6 +260,13 @@ mod tests {
     }
 
     #[test]
+    fn the_balloon_flag_sets_the_agents_usable_memory() {
+        let config = parse_args(["--agents-balloon-mib", "48"].map(String::from).to_vec())
+            .expect("a well-formed flag");
+        assert_eq!(config.agents_balloon_mib, 48);
+    }
+
+    #[test]
     fn a_bad_command_line_is_refused() {
         for args in [
             vec!["--port".to_string()],
@@ -259,6 +277,7 @@ mod tests {
             vec!["--agents-cid-base".to_string(), "x".to_string()],
             vec!["--agents-memory-mib".to_string(), "x".to_string()],
             vec!["--agents-vcpus".to_string(), "x".to_string()],
+            vec!["--agents-balloon-mib".to_string(), "x".to_string()],
         ] {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }

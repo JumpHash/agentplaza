@@ -126,6 +126,27 @@ for feature in virtio_blk ext4; do
     fi
 done
 
+# The balloon driver, optional. noded boots the agent VMs with a balloon
+# (--agents-balloon-mib), so a guest that has the driver can hand its unused
+# pages back and grow later. Built in: nothing to load. A module: it joins the
+# load order with the virtio modules it stands on (the ones that are modules; a
+# built-in one needs no entry). Neither: skipped with a message, and the build
+# goes on - the balloon is then inert in the guest.
+if grep -q "/virtio_balloon\.ko\$" "$mod_root/modules.builtin" 2>/dev/null; then
+    echo "guest kernel feature: virtio_balloon is built in"
+elif grep -q "/virtio_balloon\.ko\(\.zst\)\?:" "$mod_root/modules.dep" 2>/dev/null; then
+    balloon_wanted="virtio_balloon"
+    for dep in virtio virtio_ring; do
+        if grep -q "/${dep}\.ko\(\.zst\)\?:" "$mod_root/modules.dep" 2>/dev/null; then
+            balloon_wanted="$balloon_wanted $dep"
+        fi
+    done
+    echo "guest kernel feature: virtio_balloon is a module; adding it to the load order"
+    want="$want $balloon_wanted"
+else
+    echo "mk-initrd: skipping virtio_balloon: not built in and not in $mod_root/modules.dep (the guest's balloon stays inert)"
+fi
+
 order=$(awk -v want="$want" -v dep_file="$mod_root/modules.dep" '
 function visit(m,   k, j, d) {
     if (state[m] == 2) return

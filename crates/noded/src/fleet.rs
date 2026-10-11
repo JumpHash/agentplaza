@@ -207,6 +207,8 @@ pub struct Fleet {
     memory_mib: u32,
     /// vCPUs per agent VM.
     vcpus: u8,
+    /// MiB usable per agent VM at boot, when the VMs get a balloon (`0`: none).
+    balloon_mib: u32,
 }
 
 impl Fleet {
@@ -301,6 +303,7 @@ impl Fleet {
             cid_base,
             memory_mib,
             vcpus,
+            balloon_mib: 0,
         })
     }
 
@@ -335,6 +338,19 @@ impl Fleet {
     /// vCPUs per agent VM.
     pub fn vcpus(&self) -> u8 {
         self.vcpus
+    }
+
+    /// The fleet's VMs boot with a balloon: `usable_mib` MiB usable at boot and
+    /// the rest of their memory held in the balloon. `0`, or no less than the
+    /// VMs' memory, leaves the fleet without one.
+    pub fn with_balloon(mut self, usable_mib: u32) -> Self {
+        self.balloon_mib = usable_mib;
+        self
+    }
+
+    /// The usable guest memory per agent VM at boot, when the VMs get a balloon.
+    pub fn balloon_usable_mib(&self) -> Option<u32> {
+        (self.balloon_mib > 0 && self.balloon_mib < self.memory_mib).then_some(self.balloon_mib)
     }
 }
 
@@ -435,6 +451,16 @@ mod tests {
         assert_eq!(fleet.guest_cid(2), None);
         assert_eq!(fleet.memory_mib(), MIN_MEMORY_MIB);
         assert_eq!(fleet.vcpus(), 1);
+    }
+
+    #[test]
+    fn the_balloon_is_on_only_below_the_vms_memory() {
+        let text = manifest(&["builder"]);
+        let plain = Fleet::parse(&text, 100, 128, 1).expect("a one-role fleet");
+        assert_eq!(plain.balloon_usable_mib(), None);
+        assert_eq!(plain.clone().with_balloon(32).balloon_usable_mib(), Some(32));
+        assert_eq!(plain.clone().with_balloon(0).balloon_usable_mib(), None);
+        assert_eq!(plain.with_balloon(128).balloon_usable_mib(), None);
     }
 
     #[test]
