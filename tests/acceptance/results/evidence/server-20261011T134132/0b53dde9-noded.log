@@ -1,0 +1,2 @@
+noded: initial role fleet r1: 2 agents running (roles builder, reviewer, CIDs 64..=65)
+noded: listening on http://127.0.0.1:33293 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)

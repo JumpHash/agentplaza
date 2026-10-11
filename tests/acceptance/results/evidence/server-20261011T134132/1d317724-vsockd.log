@@ -1,0 +1,35 @@
+vsockd: status on http://127.0.0.1:45687 (GET /status, GET /healthz, read-only)
+vsockd: listening on /tmp/apz-matrix-QdNj1n/fleet-restart-a-uds/vm51_5000 for guest CID 51
+vsockd: listening on /tmp/apz-matrix-QdNj1n/fleet-restart-a-uds/vm52_5000 for guest CID 52
+vsockd: accepted a connection from cid 51
+vsockd: accepted a connection from cid 52
+vsockd: accepted a connection from cid 51
+vsockd: accepted a connection from cid 52
+vsockd: accepted a connection from cid 51
+vsockd: session with cid 51 dropped: protocol violation (the guest closed before sending hello)
+vsockd: session with cid 51 dropped: protocol violation (the guest closed before sending hello)
+vsockd: session with cid 52 dropped: protocol violation (the guest closed before sending hello)
+[guest 51 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 51, "role": "builder", "keepalive": true}
+vsockd: session with cid 52 dropped: protocol violation (the guest closed before sending hello)
+vsockd: guest 51 vm 0 says hello (accepted on the socket for cid 51)
+vsockd: agent 51 role builder connected
+[<-] guest 51 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+[guest 51 vm0 ->] {"type": "tool_call", "call": 1, "name": "echo", "args": {"text": "after-restart"}}
+[<-] guest 51 vm0 {"type":"tool_result","call":1,"ok":true,"output":"after-restart"}
+vsockd: answered call 1 (echo) for agent 51
+[guest 51 vm0 ->] {"type": "bye", "calls": 1}
+vsockd: agent 51 session ended cleanly after 1 tool calls
+vsockd: accepted a connection from cid 52
+[guest 52 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 52}
+vsockd: guest 52 vm 0 says hello (accepted on the socket for cid 52)
+[<-] guest 52 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 52 vm0 ->] {"type": "tool_call", "call": 1, "name": "echo", "args": {"text": "plaza-guest-52-hello"}}
+[<-] guest 52 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-52-hello"}
+vsockd: answered call 1 (echo) for guest 52 vm 0
+[guest 52 vm0 ->] {"type": "tool_call", "call": 2, "name": "uptime", "args": {}}
+[<-] guest 52 vm0 {"type":"tool_result","call":2,"ok":true,"output":"328719.33 6970826.53"}
+vsockd: answered call 2 (uptime) for guest 52 vm 0
+[guest 52 vm0 ->] {"type": "bye", "calls": 2}
+vsockd: guest 52 vm 0 said bye after 2 tool calls
+vsockd: session with guest 52 vm 0 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

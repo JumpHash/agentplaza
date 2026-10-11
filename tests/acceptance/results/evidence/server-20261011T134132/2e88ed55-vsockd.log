@@ -1,0 +1,22 @@
+vsockd: listening on /tmp/apz-matrix-QdNj1n/social-contacts-uds/vm172_5000 for guest CID 172
+vsockd: listening on /tmp/apz-matrix-QdNj1n/social-contacts-uds/vm173_5000 for guest CID 173
+vsockd: listening on /tmp/apz-matrix-QdNj1n/social-contacts-uds/vm174_5000 for guest CID 174
+vsockd: accepted a connection from cid 174
+vsockd: accepted a connection from cid 172
+[guest 174 vm? ->] {"type":"hello","vm":2,"guest_cid":174,"role":"librarian","keepalive":true}
+vsockd: guest 174 vm 2 says hello (accepted on the socket for cid 174)
+vsockd: agent 174 role librarian connected
+[<-] guest 174 vm2 {"type":"welcome","echo":"plaza-orchestrator","role":"librarian","keepalive":true}
+[guest 172 vm? ->] {"type":"hello","vm":0,"guest_cid":172,"role":"architect","keepalive":true}
+vsockd: guest 172 vm 0 says hello (accepted on the socket for cid 172)
+vsockd: agent 172 role architect connected
+[<-] guest 172 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"architect","keepalive":true}
+vsockd: accepted a connection from cid 173
+[guest 173 vm? ->] {"type":"hello","vm":1,"guest_cid":173,"role":"builder","keepalive":true}
+vsockd: guest 173 vm 1 says hello (accepted on the socket for cid 173)
+vsockd: agent 173 role builder connected
+[<-] guest 173 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: session with cid 173 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 172 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 174 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

@@ -1,0 +1,19 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "goal": "rule on the plaza's petition",
+      "acceptance": "a ruling is filed",
+      "budget": 0,
+      "role": "legal-gov-judge",
+      "state": "open",
+      "outcome": null,
+      "assignee_id": null,
+      "verifier_id": null,
+      "agent_cid": null,
+      "note": null,
+      "created_at": 1791719926534,
+      "updated_at": 1791719926534
+    }
+  ]
+}

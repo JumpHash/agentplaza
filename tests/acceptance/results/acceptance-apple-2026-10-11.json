@@ -2,15 +2,15 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "BLOCKED",
   "machine_class": "apple",
-  "generated_at": "2026-10-11T12:50:23+0200",
+  "generated_at": "2026-10-11T13:58:53+0200",
   "wall_seconds": 0.057,
   "manifest": {
     "suite": "all",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "b1b7e4099edd2071a758b2f87854c4d1fb4b4a1f",
+      "head": "d940a5d4b88d628b9c68dc87f7ce79b9e3a2eb2d",
       "dirty": true,
-      "harness_tree_sha256": "8b166f131f551303dafc63f64e24464660d49fde888b1f5cbec0f96910f77084"
+      "harness_tree_sha256": "bdad85355ec7a7181a62902fbccb21f43096b4496d9725110fcf4a855697611a"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
@@ -35,25 +35,25 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-apple-ojmlzc83",
-    "started_at": "2026-10-11T12:50:23+0200",
+    "artifacts_dir": "/tmp/apz-apple-WF07",
+    "started_at": "2026-10-11T13:58:53+0200",
     "binaries": {
       "noded": {
-        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
-        "sha256": "f99202fb89db92337da8a7bd45a6892f504b35f3e2da253aeb4c9f5c9e12d63c"
+        "path": "/tmp/apz-pin4/noded",
+        "sha256": "d60ed1d82dc568c198c04627bd75b3b0d21cc27ff2d62b3d1ba0de79edfff855"
       },
       "vsockd": {
-        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "path": "/tmp/apz-pin4/vsockd",
         "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-apple-ojmlzc83/kernel-seccomp-audit.log",
+        "source": "/tmp/apz-apple-WF07/kernel-seccomp-audit.log",
         "bytes": 1,
         "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-        "excerpt": "tests/acceptance/results/evidence/apple-20261011T125023/01ba4719-kernel-seccomp-audit.log",
+        "excerpt": "tests/acceptance/results/evidence/apple-20261011T135853/01ba4719-kernel-seccomp-audit.log",
         "excerpt_bytes": 1
       }
     ]
@@ -73,23 +73,23 @@
   "kernel_seccomp_audit": {
     "available": true,
     "reason": null,
-    "since_epoch": 1791715823,
+    "since_epoch": 1791719933,
     "records": 0,
     "attributed": [],
     "kills": [],
-    "artifact": "/tmp/apz-acceptance-apple-ojmlzc83/kernel-seccomp-audit.log"
+    "artifact": "/tmp/apz-apple-WF07/kernel-seccomp-audit.log"
   },
   "sut_binary": {
-    "bin_dir": "/mnt/fast/AgentPlaza/target/debug",
+    "bin_dir": "/tmp/apz-pin4",
     "digests": {
-      "noded": "f99202fb89db92337da8a7bd45a6892f504b35f3e2da253aeb4c9f5c9e12d63c",
+      "noded": "d60ed1d82dc568c198c04627bd75b3b0d21cc27ff2d62b3d1ba0de79edfff855",
       "vsockd": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
     },
     "changed_mid_run": {},
     "sut_git_at_start": {
-      "head": "b1b7e4099edd2071a758b2f87854c4d1fb4b4a1f",
+      "head": "d940a5d4b88d628b9c68dc87f7ce79b9e3a2eb2d",
       "dirty": true,
-      "harness_tree_sha256": "8b166f131f551303dafc63f64e24464660d49fde888b1f5cbec0f96910f77084"
+      "harness_tree_sha256": "bdad85355ec7a7181a62902fbccb21f43096b4496d9725110fcf4a855697611a"
     }
   },
   "suites": [
@@ -104,7 +104,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -118,7 +118,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -132,12 +132,12 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
       "suite": "jail-in-the-boot-path",
-      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, and a 50-VM soak with no daemon death and no kernel refusal",
+      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, a 50-VM soak with no daemon death and no kernel refusal, the per-VM process mode's children jailed and backed by the parent-death signal, and an API-created run in process mode surviving its own request",
       "status": "BLOCKED",
       "blocked_reason": "machine class 'apple' needs a macos/aarch64 host; this host is linux/x86_64",
       "cases_passed": 0,
@@ -146,7 +146,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -160,7 +160,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -174,7 +174,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -188,7 +188,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -202,7 +202,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -216,7 +216,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     },
     {
@@ -230,7 +230,7 @@
       "data": {},
       "notes": [],
       "findings": [],
-      "started_at": "2026-10-11T12:50:23+0200",
+      "started_at": "2026-10-11T13:58:53+0200",
       "duration_s": 0.0
     }
   ],

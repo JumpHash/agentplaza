@@ -1,0 +1,199 @@
+{
+  "entries": [
+    {
+      "id": 1,
+      "kind": "mint",
+      "task_id": "t1",
+      "root_task": "t1",
+      "memo": "task budget",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888333,
+      "amount": 750,
+      "postings": [
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": -750
+        },
+        {
+          "account": 2,
+          "kind": "task_escrow",
+          "owner_ref": "t1",
+          "amount": 750
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "kind": "refund",
+      "task_id": "t1",
+      "root_task": "t1",
+      "memo": "task budget refunded",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888335,
+      "amount": 750,
+      "postings": [
+        {
+          "account": 2,
+          "kind": "task_escrow",
+          "owner_ref": "t1",
+          "amount": -750
+        },
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": 750
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "kind": "mint",
+      "task_id": "t2",
+      "root_task": "t2",
+      "memo": "task budget",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888337,
+      "amount": 300,
+      "postings": [
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": -300
+        },
+        {
+          "account": 3,
+          "kind": "task_escrow",
+          "owner_ref": "t2",
+          "amount": 300
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "kind": "refund",
+      "task_id": "t2",
+      "root_task": "t2",
+      "memo": "task budget refunded",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888337,
+      "amount": 300,
+      "postings": [
+        {
+          "account": 3,
+          "kind": "task_escrow",
+          "owner_ref": "t2",
+          "amount": -300
+        },
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": 300
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "kind": "mint",
+      "task_id": "t3",
+      "root_task": "t3",
+      "memo": "task budget",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888338,
+      "amount": 200,
+      "postings": [
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": -200
+        },
+        {
+          "account": 4,
+          "kind": "task_escrow",
+          "owner_ref": "t3",
+          "amount": 200
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "kind": "refund",
+      "task_id": "t3",
+      "root_task": "t3",
+      "memo": "task budget refunded",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888339,
+      "amount": 200,
+      "postings": [
+        {
+          "account": 4,
+          "kind": "task_escrow",
+          "owner_ref": "t3",
+          "amount": -200
+        },
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": 200
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "kind": "mint",
+      "task_id": "t4",
+      "root_task": "t4",
+      "memo": "task budget",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888340,
+      "amount": 120,
+      "postings": [
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": -120
+        },
+        {
+          "account": 5,
+          "kind": "task_escrow",
+          "owner_ref": "t4",
+          "amount": 120
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "kind": "refund",
+      "task_id": "t4",
+      "root_task": "t4",
+      "memo": "task budget refunded",
+      "posted_by": "treasury-service",
+      "created_at": 1791719888341,
+      "amount": 120,
+      "postings": [
+        {
+          "account": 5,
+          "kind": "task_escrow",
+          "owner_ref": "t4",
+          "amount": -120
+        },
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": 120
+        }
+      ]
+    }
+  ],
+  "total": 8,
+  "limit": 256,
+  "truncated": false
+}

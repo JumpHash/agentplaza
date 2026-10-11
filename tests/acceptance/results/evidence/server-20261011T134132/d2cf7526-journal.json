@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "id": 1,
+      "kind": "mint",
+      "task_id": "t1",
+      "root_task": "t1",
+      "memo": "task budget",
+      "posted_by": "treasury-service",
+      "created_at": 1791719917416,
+      "amount": 500,
+      "postings": [
+        {
+          "account": 1,
+          "kind": "mint",
+          "owner_ref": "mint",
+          "amount": -500
+        },
+        {
+          "account": 2,
+          "kind": "task_escrow",
+          "owner_ref": "t1",
+          "amount": 500
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "limit": 256,
+  "truncated": false
+}

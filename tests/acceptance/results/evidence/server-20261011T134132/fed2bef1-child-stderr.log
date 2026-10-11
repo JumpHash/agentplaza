@@ -1,0 +1,6 @@
+2549519 apz-vmm: parent-death signal armed (SIGKILL)
+2549519 vmm: VM 0 jailed in /tmp/apz-matrix-QdNj1n/jail-proc-api-uds.jail/2549519-0-0, uid_map 0 <- 1000
+2549519 apz-vmm: ready
+2549530 apz-vmm: parent-death signal armed (SIGKILL)
+2549530 vmm: VM 0 jailed in /tmp/apz-matrix-QdNj1n/jail-proc-api-uds.jail/2549530-0-0, uid_map 0 <- 1000
+2549530 apz-vmm: ready

@@ -1,0 +1,10 @@
+noded /tell unserved:      404 {"error":"no agent with guest CID 999"}
+noded /tell served-idle:   409 {"error":"agent with guest CID 151 is not connected"}
+noded /tell bad segment:   400 {"error":"guest CID 99999999999 is outside 3..=4294967294"}
+hub /tell unserved:        404 {"error":"no agent with guest CID 999"}
+hub /tell served-idle:     409 {"error":"agent with guest CID 151 is not connected"}
+hub /stop unserved:        404 {"error":"no agent with guest CID 999"}
+hub /stop served-idle:     409 {"error":"agent with guest CID 151 is not connected"}
+hub /tell past u32:        404 {"error":"no agent with guest CID 4294967296"}
+artifact unknown task:     404 {"error":"no task with id no-such-task"}
+artifact unassigned task:  409 {"error":"task t1 has no assignee yet"}
