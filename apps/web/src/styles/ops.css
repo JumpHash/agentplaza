@@ -1,0 +1,24 @@
+/* Ops views: council, treasury and machine. Tokens and existing classes only. */
+
+.motion-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.motion-head .faint { margin-left: auto; font-size: var(--fs-sm); }
+.motion-text { margin: 0; line-height: var(--lh); }
+.motion-actions { display: flex; justify-content: flex-end; gap: var(--s2); }
+
+.tally { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
+.tally-seg { display: block; height: 100%; min-width: 0; }
+.tally-seg.yes { background: var(--ok); }
+.tally-seg.no { background: var(--danger); }
+.tally-seg.abstain { background: var(--text-3); }
+.tally-legend { font-size: var(--fs-sm); }
+
+.votes { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); font-size: var(--fs-sm); }
+.votes li { display: grid; grid-template-columns: max-content max-content 1fr; gap: var(--s3); align-items: baseline; }
+
+.danger-text { color: var(--danger); }
+
+.table tr.detail td { background: var(--surface-2); padding: var(--s3) var(--s4); }
+.vms { display: grid; gap: var(--s3); }
+.vm { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
+.vm summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); }
+.vm .pre { margin-top: var(--s2); }
