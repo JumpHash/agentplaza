@@ -2,15 +2,15 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "PASS",
   "machine_class": "server",
-  "generated_at": "2026-10-11T09:35:45+0200",
-  "wall_seconds": 59.732,
+  "generated_at": "2026-10-11T14:18:34+0200",
+  "wall_seconds": 67.178,
   "manifest": {
     "suite": "jail",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "e55f9138dbe173359dbc00d220859bc6629ce021",
+      "head": "3ba5ad356de57cb2ec480baae82f3a773d0a9131",
       "dirty": true,
-      "harness_tree_sha256": "067fcdbfe6ece97c619f4b48019ff393db9a2f2a019e1834aa2c509f06f48d75"
+      "harness_tree_sha256": "bdad85355ec7a7181a62902fbccb21f43096b4496d9725110fcf4a855697611a"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
@@ -35,60 +35,123 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-server-2p488m07",
-    "started_at": "2026-10-11T09:35:45+0200",
+    "artifacts_dir": "/tmp/apz-acceptance-server-o8z7yum6",
+    "started_at": "2026-10-11T14:18:34+0200",
     "binaries": {
       "noded": {
-        "path": "/tmp/apz-head-target/debug/noded",
-        "sha256": "c048d91b1ce48d964b52bda814b44be41c596d59b18647780c440f0297669375"
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "fb6a1ea2df494d691d9dfbb9a6d3aff9210133658de97dc55676bcae076ce229"
       },
       "vsockd": {
-        "path": "/tmp/apz-head-target/debug/vsockd",
-        "sha256": "5df31e364bfb4e5907fc78de211f4d529d6d95b55516b78119afed68f4775fa7"
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-server-2p488m07/jail-armed-logs/noded.log",
-        "bytes": 414,
-        "sha256": "82ecb0aa6a91db66868072efe40c55ea5c42521dc51d179d870f50f7f20e738b",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/82ecb0aa-noded.log",
-        "excerpt_bytes": 414
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-armed-logs/noded.log",
+        "bytes": 2156,
+        "sha256": "4521a862a13db10f85075d11163cabd7983e5dc010acfe09fe466cf4adb75e00",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/4521a862-noded.log",
+        "excerpt_bytes": 2156
       },
       {
-        "source": "/tmp/apz-acceptance-server-2p488m07/jail-armed-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-armed-logs/vsockd.log",
         "bytes": 244,
-        "sha256": "ef9404096ba05bed9c7ea12846c77d3d9676983342606c81c8ba63bda4c9688e",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/ef940409-vsockd.log",
+        "sha256": "27b148f53e5614b2b0b1aea12e740316b4f7506c03a55c2ec98ab54b173855d6",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/27b148f5-vsockd.log",
         "excerpt_bytes": 244
       },
       {
-        "source": "/tmp/apz-acceptance-server-2p488m07/jail-off-logs/noded.log",
-        "bytes": 414,
-        "sha256": "34e88c0ed8ecee778eeca03da3fcd2ae437b34f29600213d13eab220caf61cd5",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/34e88c0e-noded.log",
-        "excerpt_bytes": 414
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-off-logs/noded.log",
+        "bytes": 561,
+        "sha256": "bcd64bc69066965329f90a9b13866c805971405b9cb7405fb181b99f1a8a5022",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/bcd64bc6-noded.log",
+        "excerpt_bytes": 561
       },
       {
-        "source": "/tmp/apz-acceptance-server-2p488m07/jail-off-logs/vsockd.log",
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-off-logs/vsockd.log",
         "bytes": 240,
-        "sha256": "0f1b7279b82809e21b496478a4ccb7d20983a6b9bd276d5d80ee32cf56bc5c8c",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/0f1b7279-vsockd.log",
+        "sha256": "d57dd9f3c5abe4d72f1ce2aefac6012a2afb16361d2e6cac0bb58f656cf8be4f",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/d57dd9f3-vsockd.log",
         "excerpt_bytes": 240
       },
       {
-        "source": "/tmp/apz-acceptance-server-2p488m07/jail-soak-logs/noded.log",
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-soak-logs/noded.log",
         "bytes": 404664,
-        "sha256": "22dd225a3f9b2a39c3b9920fa7f3ffb03815f7bd0de722fce7eaadc14a8b5906",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/22dd225a-noded.log",
+        "sha256": "03ce1bf22634d1646cf5336f27c2ed0a72a8a59269cab33e3d031b2ec516d225",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/03ce1bf2-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-2p488m07/kernel-seccomp-audit.log",
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-manifest/roles.json",
+        "bytes": 395,
+        "sha256": "01fea308e318bdd35f83a78dd21544df69950b42e38da8055994bf0f74181892",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/01fea308-roles.json",
+        "excerpt_bytes": 395
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-child/apz-vmm-tee.sh",
+        "bytes": 241,
+        "sha256": "0a69a57a47a6dc766435b3c6f5bf4fa5492971f00a337b84aa71b250edc3458f",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/0a69a57a-apz-vmm-tee.sh",
+        "excerpt_bytes": 241
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-childlogs/child-stderr.log",
+        "bytes": 18326,
+        "sha256": "b3d8d35fdb5c9f54a0cdb28b92fccd7985bc636265325bb80e1899e114586b1e",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/b3d8d35f-child-stderr.log",
+        "excerpt_bytes": 18326
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-logs/noded.log",
+        "bytes": 241,
+        "sha256": "b1283f709420077e671cd45db58b2f168219f6a94b453773ac6ffd9ad40f1ada",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/b1283f70-noded.log",
+        "excerpt_bytes": 241
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-logs/vsockd.log",
+        "bytes": 1538,
+        "sha256": "77b9539999ba5601e958a3a53d09535ef571a5c600e003ff4036c7cc4ffa67e5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/77b95399-vsockd.log",
+        "excerpt_bytes": 1538
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-api-child/apz-vmm-tee.sh",
+        "bytes": 245,
+        "sha256": "936eb99900c69b9b953933138b9fb7aa00c023a9ebd96b9ff816e4858f61059b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/936eb999-apz-vmm-tee.sh",
+        "excerpt_bytes": 245
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-api-childlogs/child-stderr.log",
+        "bytes": 18334,
+        "sha256": "78c61c3a6a8132bcdaa873ff66323fc42f3152044fa1d2b4629c4a49ff437ec0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/78c61c3a-child-stderr.log",
+        "excerpt_bytes": 18334
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-api-logs/noded.log",
+        "bytes": 154,
+        "sha256": "d245804127704550f37310f9e1a61ffafadc25a57dd5ef2cda44244412f42eb9",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/d2458041-noded.log",
+        "excerpt_bytes": 154
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-api-logs/vsockd.log",
+        "bytes": 1956,
+        "sha256": "e446ba1eb257eb680665e0ede0e713dad0ac22242158d46843a061b1ffbf366d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/e446ba1e-vsockd.log",
+        "excerpt_bytes": 1956
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-o8z7yum6/kernel-seccomp-audit.log",
         "bytes": 1,
         "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/01ba4719-kernel-seccomp-audit.log",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T141727/01ba4719-kernel-seccomp-audit.log",
         "excerpt_bytes": 1
       }
     ]
@@ -99,33 +162,33 @@
   "kernel_seccomp_audit": {
     "available": true,
     "reason": null,
-    "since_epoch": 1791704086,
+    "since_epoch": 1791721047,
     "records": 0,
     "attributed": [],
     "kills": [],
-    "artifact": "/tmp/apz-acceptance-server-2p488m07/kernel-seccomp-audit.log"
+    "artifact": "/tmp/apz-acceptance-server-o8z7yum6/kernel-seccomp-audit.log"
   },
   "sut_binary": {
-    "bin_dir": "/tmp/apz-head-target/debug",
+    "bin_dir": "/mnt/fast/AgentPlaza/target/debug",
     "digests": {
-      "noded": "c048d91b1ce48d964b52bda814b44be41c596d59b18647780c440f0297669375",
-      "vsockd": "5df31e364bfb4e5907fc78de211f4d529d6d95b55516b78119afed68f4775fa7"
+      "noded": "fb6a1ea2df494d691d9dfbb9a6d3aff9210133658de97dc55676bcae076ce229",
+      "vsockd": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
     },
     "changed_mid_run": {},
     "sut_git_at_start": {
-      "head": "e55f9138dbe173359dbc00d220859bc6629ce021",
+      "head": "3ba5ad356de57cb2ec480baae82f3a773d0a9131",
       "dirty": true,
-      "harness_tree_sha256": "067fcdbfe6ece97c619f4b48019ff393db9a2f2a019e1834aa2c509f06f48d75"
+      "harness_tree_sha256": "bdad85355ec7a7181a62902fbccb21f43096b4496d9725110fcf4a855697611a"
     }
   },
   "suites": [
     {
       "suite": "jail-in-the-boot-path",
-      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, and a 50-VM soak with no daemon death and no kernel refusal",
+      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, a 50-VM soak with no daemon death and no kernel refusal, the per-VM process mode's children jailed and backed by the parent-death signal, and an API-created run in process mode surviving its own request",
       "status": "PASS",
       "blocked_reason": null,
-      "cases_passed": 3,
-      "cases_total": 3,
+      "cases_passed": 5,
+      "cases_total": 5,
       "cases": [
         {
           "name": "the jail is armed on every VMM thread of a real boot (Seccomp: 2)",
@@ -140,7 +203,7 @@
             {
               "name": "the 6 VMM threads of the running VMs exist",
               "ok": true,
-              "detail": "n=6 threads=[apz_vm0_vsock:1765825=2 apz_vm0_exit:1765826=2 apz_vcpu_0:1765827=2 apz_vm1_vsock:1765830=2 apz_vm1_exit:1765831=2 apz_vcpu_0:1765832=2]"
+              "detail": "n=6 threads=[apz_vm0_vsock:2666753=2 apz_vm0_exit:2666754=2 apz_vcpu_0:2666755=2 apz_vm1_vsock:2666758=2 apz_vm1_exit:2666759=2 apz_vcpu_0:2666760=2]"
             },
             {
               "name": "all three armed thread kinds are present (vCPU, vsock, exit)",
@@ -150,7 +213,7 @@
             {
               "name": "every VMM thread is in seccomp filter mode (Seccomp: 2)",
               "ok": true,
-              "detail": "armed=6/6 threads=[apz_vm0_vsock:1765825=2 apz_vm0_exit:1765826=2 apz_vcpu_0:1765827=2 apz_vm1_vsock:1765830=2 apz_vm1_exit:1765831=2 apz_vcpu_0:1765832=2]"
+              "detail": "armed=6/6 threads=[apz_vm0_vsock:2666753=2 apz_vm0_exit:2666754=2 apz_vcpu_0:2666755=2 apz_vm1_vsock:2666758=2 apz_vm1_exit:2666759=2 apz_vcpu_0:2666760=2]"
             },
             {
               "name": "the kernel logged no seccomp refusal for the daemon during the boot",
@@ -172,12 +235,12 @@
             {
               "name": "the daemon's request loop is not confined (the per-thread boundary)",
               "ok": true,
-              "detail": "leader={'tid': 1765821, 'name': 'noded', 'seccomp': '0'}"
+              "detail": "leader={'tid': 2666742, 'name': 'noded', 'seccomp': '0'}"
             },
             {
               "name": "the daemon is the same live process while the VMs run (no SIGSYS death)",
               "ok": true,
-              "detail": "pid=1765821 alive=True"
+              "detail": "pid=2666742 alive=True"
             }
           ],
           "notes": []
@@ -195,12 +258,12 @@
             {
               "name": "the 6 VMM threads still exist (the boot path ran)",
               "ok": true,
-              "detail": "n=6 threads=[apz_vm0_vsock:1765850=0 apz_vm0_exit:1765851=0 apz_vcpu_0:1765852=0 apz_vm1_vsock:1765855=0 apz_vm1_exit:1765856=0 apz_vcpu_0:1765857=0]"
+              "detail": "n=6 threads=[apz_vm0_vsock:2666789=0 apz_vm0_exit:2666790=0 apz_vcpu_0:2666791=0 apz_vm1_vsock:2666794=0 apz_vm1_exit:2666795=0 apz_vcpu_0:2666796=0]"
             },
             {
               "name": "every VMM thread is unconfined (Seccomp: 0) under APZ_VMM_NO_JAIL=1",
               "ok": true,
-              "detail": "unconfined=6/6 threads=[apz_vm0_vsock:1765850=0 apz_vm0_exit:1765851=0 apz_vcpu_0:1765852=0 apz_vm1_vsock:1765855=0 apz_vm1_exit:1765856=0 apz_vcpu_0:1765857=0]"
+              "detail": "unconfined=6/6 threads=[apz_vm0_vsock:2666789=0 apz_vm0_exit:2666790=0 apz_vcpu_0:2666791=0 apz_vm1_vsock:2666794=0 apz_vm1_exit:2666795=0 apz_vcpu_0:2666796=0]"
             }
           ],
           "invariants": [
@@ -247,7 +310,7 @@
             {
               "name": "the daemon is the same live process after the fleet settled (no SIGSYS death)",
               "ok": true,
-              "detail": "pid=1765862 alive=True"
+              "detail": "pid=2666833 alive=True"
             },
             {
               "name": "the fleet reached done under the jail",
@@ -256,14 +319,205 @@
             }
           ],
           "notes": []
+        },
+        {
+          "name": "the per-VM process mode: the daemon's VMs are jailed apz-vmm children (APZ_VMM_SPAWN=process)",
+          "detail": "",
+          "vector": "a daemon started with APZ_VMM_SPAWN=process boots its 2-role fleet (noded --agents) as two apz-vmm children; the case reads the kernel's own view of each child: the parent linkage (/proc/<pid>/stat's PPid: a child count == the VM count), /proc/<pid>/mountinfo's `/` root = that child's own jail dir under the jail base (settled by inode identity with the host-side dir) with no /etc/hostname in /proc/<pid>/root while the host has one, Seccomp: 2 on every VMM thread of the child, the child's own stderr line 'parent-death signal armed (SIGKILL)' once per child, a /tell uptime on a real fleet agent (200, two numbers \u2014 the muxer path end to end), and the backstop: no apz-vmm child alive 10 s after the daemon is SIGKILLed",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 14,
+          "tasks_required": 14,
+          "tasks_total": 14,
+          "tasks": [
+            {
+              "name": "the daemon has exactly 2 children, one per VM, each a live apz-vmm (a child count == the VM count; /proc/<pid>/stat's PPid)",
+              "ok": true,
+              "detail": "children=[2672618, 2672630] comms={2672618: 'apz-vmm', 2672630: 'apz-vmm'}"
+            },
+            {
+              "name": "child 2672618: its `/` mount's root 2672618-0-0 is its own jail dir under the jail base (/proc/<pid>/mountinfo root=, the directory pivot_root moved the process's root to)",
+              "ok": true,
+              "detail": "mount={'root': '/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672618-0-0', 'mount_point': '/', 'fstype': 'tmpfs', 'line': '1520 307 0:47 /apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672618-0-0 / rw,nosuid,nodev - tmpfs tmpfs rw,nr_inodes=1048576,inode64,huge=advise,usrquota'} base=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail host_dir=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672618-0-0"
+            },
+            {
+              "name": "child 2672618: /proc/<pid>/root *is* that jail dir (same inode as jail-proc-uds.jail/2672618-0-0)",
+              "ok": true,
+              "detail": "child_root=(47,596223) host=(47,596223) host_dir=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672618-0-0"
+            },
+            {
+              "name": "child 2672618: /proc/<pid>/root holds no /etc/hostname while the host's does (the pivot really moved the child's root)",
+              "ok": true,
+              "detail": "host /etc/hostname=True child /proc/2672618/root/etc/hostname=False"
+            },
+            {
+              "name": "child 2672630: its `/` mount's root 2672630-0-0 is its own jail dir under the jail base (/proc/<pid>/mountinfo root=, the directory pivot_root moved the process's root to)",
+              "ok": true,
+              "detail": "mount={'root': '/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672630-0-0', 'mount_point': '/', 'fstype': 'tmpfs', 'line': '1681 336 0:47 /apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672630-0-0 / rw,nosuid,nodev - tmpfs tmpfs rw,nr_inodes=1048576,inode64,huge=advise,usrquota'} base=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail host_dir=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672630-0-0"
+            },
+            {
+              "name": "child 2672630: /proc/<pid>/root *is* that jail dir (same inode as jail-proc-uds.jail/2672630-0-0)",
+              "ok": true,
+              "detail": "child_root=(47,596242) host=(47,596242) host_dir=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail/2672630-0-0"
+            },
+            {
+              "name": "child 2672630: /proc/<pid>/root holds no /etc/hostname while the host's does (the pivot really moved the child's root)",
+              "ok": true,
+              "detail": "host /etc/hostname=True child /proc/2672630/root/etc/hostname=False"
+            },
+            {
+              "name": "the jail base holds one root per child, each named for the child's own pid (the jail dirs' pid prefixes == the children)",
+              "ok": true,
+              "detail": "jail_base=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-uds.jail entries=['2672618-0-0', '2672630-0-0'] children=[2672618, 2672630]"
+            },
+            {
+              "name": "child 2672618: every VMM thread is in seccomp filter mode (Seccomp: 2)",
+              "ok": true,
+              "detail": "armed=3/3 threads=[apz_vm0_vsock:2672622=2 apz_vm0_exit:2672623=2 apz_vcpu_0:2672624=2]"
+            },
+            {
+              "name": "child 2672618: all three armed thread kinds are present (vCPU, vsock, exit)",
+              "ok": true,
+              "detail": "kinds=['exit', 'vcpu', 'vsock']"
+            },
+            {
+              "name": "child 2672630: every VMM thread is in seccomp filter mode (Seccomp: 2)",
+              "ok": true,
+              "detail": "armed=3/3 threads=[apz_vm0_vsock:2672634=2 apz_vm0_exit:2672635=2 apz_vcpu_0:2672636=2]"
+            },
+            {
+              "name": "child 2672630: all three armed thread kinds are present (vCPU, vsock, exit)",
+              "ok": true,
+              "detail": "kinds=['exit', 'vcpu', 'vsock']"
+            },
+            {
+              "name": "the parent-death arming is observable once per child, on the child's own stderr (the stream the daemon's readiness gate reads)",
+              "ok": true,
+              "detail": "arming_lines={2672618: 1, 2672630: 1} children=[2672618, 2672630] log=/tmp/apz-acceptance-server-o8z7yum6/jail-proc-childlogs/child-stderr.log"
+            },
+            {
+              "name": "no apz-vmm child of the killed daemon is alive within 10 s (the PR_SET_PDEATHSIG(SIGKILL) backstop)",
+              "ok": true,
+              "detail": "survivors=[] waited=0.05s of 10s (pids=[2672618, 2672630]; identity re-checked by /proc/<pid>/stat's starttime)"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "the daemon booted its fleet at startup in process mode (the run under test)",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, reviewer, CIDs 64..=65)\nnoded: listening on http://127.0.0.1:35053 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)\n"
+            },
+            {
+              "name": "the run is running, one VM per role (the VM count the child count must equal)",
+              "ok": true,
+              "detail": "state=running vms=[('builder', 64), ('reviewer', 65)]"
+            },
+            {
+              "name": "child 2672618: the child's own boot thread is not confined (the per-thread boundary)",
+              "ok": true,
+              "detail": "leader={'tid': 2672618, 'name': 'apz-vmm', 'seccomp': '0'}"
+            },
+            {
+              "name": "child 2672630: the child's own boot thread is not confined (the per-thread boundary)",
+              "ok": true,
+              "detail": "leader={'tid': 2672630, 'name': 'apz-vmm', 'seccomp': '0'}"
+            },
+            {
+              "name": "a /tell uptime on a real agent of the fleet answers 200 with a plausible uptime (the muxer the child bound, end to end)",
+              "ok": true,
+              "detail": "agent_connected=True 200 {\"cid\":64,\"ok\":true,\"output\":\"3.18 3.12\"} (up=3.18 idle=3.12)"
+            },
+            {
+              "name": "every child is live with a readable identity before the kill (the orphan assertion cannot be vacuous)",
+              "ok": true,
+              "detail": "identities={2672618: '32996158', 2672630: '32996159'}"
+            },
+            {
+              "name": "the daemon is dead (SIGKILL)",
+              "ok": true,
+              "detail": "returncode=-9"
+            }
+          ],
+          "notes": [
+            "the child's log is read here through the product's own APZ_VMM_CHILD switch (with an exec wrapper that tees the child's stderr), because the daemon captures that stream into VmRuntime::process_log and surfaces it nowhere: noded.log carries no child line, and GET /api/v0/runs/{id} returns a VM's serial, not its process log. Recorded as a finding."
+          ]
+        },
+        {
+          "name": "an API-created run in process mode: the VMs a POST booted are still up after the request",
+          "detail": "",
+          "vector": "a daemon started with APZ_VMM_SPAWN=process boots a 2-VM run through POST /api/v0/runs; after a 3 s settle the run is still running, the daemon still has its 2 apz-vmm children, and the guests' console captures are non-empty \u2014 the request that created the VMs must not be able to take them down. FAILS on HEAD: apz-vmm arms PR_SET_PDEATHSIG(SIGKILL) against the thread that spawned it (the HTTP request thread, which exits when the response is written)",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 3,
+          "tasks_required": 3,
+          "tasks_total": 3,
+          "tasks": [
+            {
+              "name": "the run is still running 3 s after the POST (every VM running)",
+              "ok": true,
+              "detail": "state=running vms=[('running', 20597), ('running', 20597)]"
+            },
+            {
+              "name": "the daemon still has its 2 apz-vmm children (the VMs outlived their own boot)",
+              "ok": true,
+              "detail": "children=[2672809, 2672820]"
+            },
+            {
+              "name": "the VMs' console captures are non-empty (the children streamed their guests' serial)",
+              "ok": true,
+              "detail": "vms=[('running', 20597), ('running', 20597)]"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "the run is running when POST answers",
+              "ok": true,
+              "detail": "state=running"
+            }
+          ],
+          "notes": []
         }
       ],
       "data": {},
       "notes": [],
-      "findings": [],
-      "started_at": "2026-10-11T09:34:46+0200",
-      "duration_s": 59.676
+      "findings": [
+        {
+          "title": "the per-VM process's own boot log \u2014 the jailer's root, the parent-death arming \u2014 is captured in memory and surfaced nowhere",
+          "classification": "product-gap",
+          "severity": "low",
+          "affected_cell": "server process mode",
+          "observed": "the children's stderr carries the jailer's line and the arming line; noded.log carries neither, and no endpoint exposes VmRuntime::process_log (a run's VM rows carry serial only)",
+          "expected": "an operator can read the child's boot log for a VM (a log line or an API field)",
+          "evidence": [
+            "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-childlogs/child-stderr.log",
+            "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-logs/noded.log"
+          ],
+          "suspected_component": "crates/noded (no log line for VmRuntime::process_log) + crates/vmm/src/spawner (VmHandle::process_log has no API)"
+        }
+      ],
+      "started_at": "2026-10-11T14:17:27+0200",
+      "duration_s": 67.091
     }
   ],
-  "findings": []
+  "findings": [
+    {
+      "suite": "jail-in-the-boot-path",
+      "title": "the per-VM process's own boot log \u2014 the jailer's root, the parent-death arming \u2014 is captured in memory and surfaced nowhere",
+      "classification": "product-gap",
+      "severity": "low",
+      "affected_cell": "server process mode",
+      "observed": "the children's stderr carries the jailer's line and the arming line; noded.log carries neither, and no endpoint exposes VmRuntime::process_log (a run's VM rows carry serial only)",
+      "expected": "an operator can read the child's boot log for a VM (a log line or an API field)",
+      "evidence": [
+        "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-childlogs/child-stderr.log",
+        "/tmp/apz-acceptance-server-o8z7yum6/jail-proc-logs/noded.log"
+      ],
+      "suspected_component": "crates/noded (no log line for VmRuntime::process_log) + crates/vmm/src/spawner (VmHandle::process_log has no API)"
+    }
+  ]
 }

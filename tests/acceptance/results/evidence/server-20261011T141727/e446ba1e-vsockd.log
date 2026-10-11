@@ -1,0 +1,29 @@
+vsockd: listening on /tmp/apz-acceptance-server-o8z7yum6/jail-proc-api-uds/vm66_5000 for guest CID 66
+vsockd: listening on /tmp/apz-acceptance-server-o8z7yum6/jail-proc-api-uds/vm67_5000 for guest CID 67
+vsockd: accepted a connection from cid 66
+[guest 66 vm? ->] {"type":"hello","vm":0,"guest_cid":66}
+vsockd: guest 66 vm 0 says hello (accepted on the socket for cid 66)
+[<-] guest 66 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 66 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-66-hello"}}
+[<-] guest 66 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-66-hello"}
+vsockd: answered call 1 (echo) for guest 66 vm 0
+[guest 66 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 66 vm0 {"type":"tool_result","call":2,"ok":true,"output":"329967.69 6996739.50"}
+vsockd: answered call 2 (uptime) for guest 66 vm 0
+[guest 66 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 66 vm 0 said bye after 2 tool calls
+vsockd: session with guest 66 vm 0 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 67
+[guest 67 vm? ->] {"type":"hello","vm":1,"guest_cid":67}
+vsockd: guest 67 vm 1 says hello (accepted on the socket for cid 67)
+[<-] guest 67 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 67 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-67-hello"}}
+[<-] guest 67 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-67-hello"}
+vsockd: answered call 1 (echo) for guest 67 vm 1
+[guest 67 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 67 vm1 {"type":"tool_result","call":2,"ok":true,"output":"329967.71 6996739.78"}
+vsockd: answered call 2 (uptime) for guest 67 vm 1
+[guest 67 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 67 vm 1 said bye after 2 tool calls
+vsockd: session with guest 67 vm 1 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners
