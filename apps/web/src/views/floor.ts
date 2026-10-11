@@ -405,7 +405,7 @@ export function mount(root: HTMLElement): Cleanup {
       h('strong', null, a.name),
       h('span', null, `${a.role} · ${a.status}`),
       h('span.mono', null, a.model),
-      a.work ? h('span.faint', null, clip(a.work.prompt, 80)) : null,
+      ...(a.work ? [h('span.faint', null, clip(a.work.prompt, 80))] : []),
     );
     const rect = stage.getBoundingClientRect();
     tip.style.left = `${e.clientX - rect.left + 14}px`;
