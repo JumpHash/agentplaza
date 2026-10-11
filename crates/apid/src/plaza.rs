@@ -91,6 +91,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/agora", |app, _, _| agora_view(app))
         .get("/v1/board", |app, _, _| board_view(app))
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
+        .post("/v1/board/{id}/comments", |app, req, p| board_comment(app, p.get("id"), &req.body))
         .post("/v1/board/read", |app, req, _| board_read(app, &req.body))
         .get("/v1/conversations", |app, _, _| conversations_view(app))
         .get("/v1/conversations/{a}/{b}", |app, _, p| {
@@ -465,6 +466,48 @@ fn board_post(app: &App, body: &[u8]) -> Response {
         Ok(post) => Response::json(201, &post),
         Err(refused) => Response::error(refused.status(), refused.message()),
     }
+}
+
+/// `POST /v1/board/{id}/comments` `{text}`: the owner comments on a post. The
+/// post's author is told through its work queue, unless the owner wrote it.
+fn board_comment(app: &App, post: &str, body: &[u8]) -> Response {
+    #[derive(Deserialize)]
+    struct CommentRequest {
+        text: String,
+    }
+    let request: CommentRequest = match parse(body, "comment") {
+        Ok(request) => request,
+        Err(refused) => return refused,
+    };
+    match app.plaza.social.comment(post, None, "owner", &request.text) {
+        Ok(comment) => {
+            notify_post_author(app, post, None, "the owner", &request.text);
+            Response::json(201, &comment)
+        }
+        Err(refused) => Response::error(refused.status(), refused.message()),
+    }
+}
+
+/// Tells a post's author that someone commented on it, through the author's
+/// work queue. The author is not told of its own comments.
+pub(crate) fn notify_post_author(app: &App, post: &str, commenter: Option<u64>, who: &str, text: &str) {
+    let Some(found) = app.plaza.social.board(&[], 200).posts.into_iter().find(|p| p.id == post) else {
+        return;
+    };
+    let (author_cid, subject) = (found.agent_cid, found.subject);
+    if Some(author_cid) == commenter {
+        return;
+    }
+    app.work.enqueue(
+        app,
+        author_cid,
+        WorkKind::Message,
+        format!("board-{post}"),
+        format!(
+            "[plaza board] {who} commented on your post {post} \"{subject}\": {text}\nIf it needs an answer, reply on the thread with plaza_board_comment."
+        ),
+        Origin::default(),
+    );
 }
 
 /// `POST /v1/board/read`: a connected agent marks the board read up to a point.
