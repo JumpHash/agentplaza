@@ -175,6 +175,18 @@ pub fn rename(app: &App, cid: u64, raw: &str) -> Result<Agent, String> {
     Ok(agent)
 }
 
+/// Pushes every connected agent its current profile (tools, model), e.g. after the
+/// operator enabled a connector.
+pub fn push_profiles(app: &App) {
+    for agent in app.agents.list() {
+        if agent.status == Status::Offline {
+            continue;
+        }
+        let push = json!({"message": HostMessage::Profile { profile: profile(app, &agent) }});
+        let _ = app.hub.post(&format!("/v1/agents/{}/send", agent.cid), &push);
+    }
+}
+
 /// The human label of a role, or the raw name when it is not a known role.
 pub fn role_label(role: &str) -> &str {
     Role::parse(role).map(Role::label).unwrap_or(role)

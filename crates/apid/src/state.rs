@@ -76,6 +76,8 @@ pub struct App {
     pub bonds: apz_plaza::bonds::Bonds,
     /// The plaza's laws (JHRL), enforced on every tool call, and the violations on record.
     pub laws: crate::laws::Laws,
+    /// External-tool connectors (AP-063): settings and vaulted keys.
+    pub connectors: crate::connectors::Store,
     /// Hire bonuses, posting counts and outreach times.
     pub society: crate::society::Society,
     pub settings: settings::Store,
@@ -108,6 +110,7 @@ impl App {
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
             laws: crate::laws::Laws::load(&config.state_dir),
+            connectors: crate::connectors::Store::load(&config.state_dir)?,
             society: crate::society::Society::default(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,

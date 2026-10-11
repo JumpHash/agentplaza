@@ -92,6 +92,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
         _ => None,
     }
 }
@@ -100,7 +101,9 @@ pub fn runs(name: &str) -> Option<Runs> {
 pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
     // contract
     let granted = app.roles.tools.get(role).cloned().unwrap_or_default();
-    offered(role, &granted).iter().filter_map(|name| spec(name)).collect()
+    let mut specs: Vec<ToolSpec> = offered(role, &granted).iter().filter_map(|name| spec(name)).collect();
+    specs.extend(crate::connectors::specs_for(app, role));
+    specs
 }
 
 /// Runs host tool `name` for `agent`; `(is_error, output)`.
@@ -528,6 +531,10 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             app.work.verdict(app, task, work, pass, notes)
         }
         other if crate::society::TOOLS.contains(&other) => crate::society::run(app, agent, work, other, input),
+        other if crate::connectors::by_tool(other).is_some() => {
+            let (connector, action) = crate::connectors::by_tool(other).ok_or("unknown connector tool")?;
+            crate::connectors::call(app, &agent.role, connector.id, action.name, input)
+        }
         other => Err(format!("{other} is not implemented")),
     }
 }

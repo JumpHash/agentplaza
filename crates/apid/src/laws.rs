@@ -224,6 +224,7 @@ fn risk_class(tool: &str) -> &'static str {
         | "memory_search" | "memory_list" | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
         | "todo_write" | "checkpoint_diff" | "checkpoint_list" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
+        t if crate::connectors::risk_of(t).is_some() => crate::connectors::risk_of(t).unwrap_or("write"),
         _ => "write",
     }
 }

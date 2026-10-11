@@ -11,6 +11,7 @@
 
 mod agents;
 mod artifacts;
+mod connectors;
 mod autoscale;
 mod api;
 mod events;

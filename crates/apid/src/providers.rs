@@ -397,7 +397,7 @@ fn io_failure(e: io::Error) -> Failure {
 }
 
 /// Writes `bytes` to `path` through a temporary file created with `mode`.
-fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let _ = std::fs::remove_file(&tmp);
     let mut file = std::fs::OpenOptions::new()
