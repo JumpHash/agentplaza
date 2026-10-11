@@ -1,0 +1,114 @@
+/* Tasks: the board and the task page. Shared tokens only. */
+
+.tasks-view .task-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(220px, 1fr));
+  gap: var(--s3);
+  overflow-x: auto;
+  align-items: start;
+}
+
+.tasks-view .task-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+  padding: var(--s2);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.tasks-view .task-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--s1) var(--s2);
+}
+
+.tasks-view .task-col-head h2 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.tasks-view .task-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.tasks-view .task-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  min-width: 0;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.tasks-view .task-card:hover,
+.tasks-view .task-card:focus-visible {
+  background: var(--surface-3);
+  outline: none;
+}
+
+.tasks-view .task-top,
+.tasks-view .task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+
+.tasks-view .task-id {
+  font-family: var(--mono);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-view .task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+
+.tasks-view .task-meta a,
+.tasks-view .task-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-view .back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  text-decoration: none;
+}
+
+.tasks-view .back svg {
+  transform: rotate(180deg);
+}
+
+.tasks-view .task-detail {
+  align-items: start;
+}
+
+.tasks-view .task-detail h3 {
+  margin: 0 0 var(--s2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-3);
+}
