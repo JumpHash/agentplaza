@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
-/// A list body as `GET /api/v0/runs` sends it: one live run with two vsock
+/// A list body as `GET /v1/runs` sends it: one live run with two vsock
 /// VMs, next to one killed run without vsock.
 pub const LIST: &str = r#"{"runs":[
     {"id":"r1","state":"running","vcpus":2,"memory_mib":512,"beats":null,
@@ -27,7 +27,7 @@ pub const LIST: &str = r#"{"runs":[
      "vms":[{"id":0,"state":"killed"}]}
 ]}"#;
 
-/// A single-run body as `GET /api/v0/runs/r1` sends it, with the serial.
+/// A single-run body as `GET /v1/runs/r1` sends it, with the serial.
 pub const DETAIL: &str = r#"{"id":"r1","state":"running","vcpus":2,"memory_mib":512,
     "beats":null,"created_at":1760000000000,"ended_at":null,
     "vms":[{"id":0,"guest_cid":50,"state":"running",
@@ -53,7 +53,7 @@ pub const REPORT_DETAIL: &str = r#"{"id":"r1","state":"running","vcpus":2,"memor
            {"id":1,"guest_cid":51,"state":"running",
             "serial":"[vsock->] {\"type\":\"hello\",\"vm\":1,\"guest_cid\":51,\"keepalive\":true}\r\n[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"keepalive\":true}\r\n[vsock->] {\"type\":\"heartbeat\",\"seq\":1}\r\n[vsock<-] {\"type\":\"tool_call\",\"call\":1,\"name\":\"uptime\",\"args\":{}}\r\n[vsock->] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"1.0 2.0\"}\r\n"}]}"#;
 
-/// A machine body as `GET /api/v0/machine` sends it.
+/// A machine body as `GET /v1/machine` sends it.
 pub const MACHINE: &str = r#"{"name":"plaza-node","arch":"x86_64","backend":"kvm",
     "irqchip":"ioapic","class":"server","cpus":24,"memory_mib":128320,
     "vsock_mode":"uds-muxer","started_at_ms":1760000000000}"#;
@@ -176,7 +176,7 @@ pub fn streams(bodies: Vec<&'static str>) -> Stub {
     }))
 }
 
-/// A tasks body as `GET /api/v0/tasks` sends it, byte for byte the shape the
+/// A tasks body as `GET /v1/tasks` sends it, byte for byte the shape the
 /// live daemon answers with: a task in an agent's hands next to one nobody has
 /// taken, and one that has ended with a note.
 pub const TASKS: &str = r#"{"tasks":[
@@ -195,14 +195,14 @@ pub const TASKS: &str = r#"{"tasks":[
      "updated_at":1791671810000}
 ]}"#;
 
-/// A single-task body as `GET /api/v0/tasks/t1` sends it: the same task after
+/// A single-task body as `GET /v1/tasks/t1` sends it: the same task after
 /// its agent claimed it.
 pub const TASK: &str = r#"{"id":"t1","goal":"write the plaza handbooks",
     "acceptance":"all 21 present","budget":2000,"role":"librarian","state":"claimed",
     "outcome":null,"assignee_id":"librarian","verifier_id":null,"agent_cid":112,
     "note":null,"created_at":1791671813178,"updated_at":1791671813568}"#;
 
-/// A ledger stub: `GET /api/v0/tasks` answers `tasks`, and every other path
+/// A ledger stub: `GET /v1/tasks` answers `tasks`, and every other path
 /// answers `task` — including the claim, finish and withdraw answers, which
 /// the daemon also answers with the task they moved.
 pub fn ledger(tasks: &str, task: &str) -> Stub {
@@ -210,7 +210,7 @@ pub fn ledger(tasks: &str, task: &str) -> Stub {
     let task = task.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/tasks") => tasks.as_str(),
+            ("GET", "/v1/tasks") => tasks.as_str(),
             _ => task.as_str(),
         };
         Some(response(200, body))
@@ -218,7 +218,7 @@ pub fn ledger(tasks: &str, task: &str) -> Stub {
 }
 
 /// A whole stub daemon for the ledger pane: the register, the machine, an
-/// event stream, and the ledger's own paths — `GET /api/v0/tasks` answers
+/// event stream, and the ledger's own paths — `GET /v1/tasks` answers
 /// `tasks`, and every other non-run path answers `task`.
 pub fn ledger_live(list: &str, detail: &str, events: &str, tasks: &str, task: &str) -> Stub {
     let list = list.to_string();
@@ -228,22 +228,22 @@ pub fn ledger_live(list: &str, detail: &str, events: &str, tasks: &str, task: &s
     let task = task.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
             // The ledger's own paths: the list is the collection's GET, and
             // everything else — a create posting to it, a move on one task —
             // is answered with the task itself.
-            ("GET", "/api/v0/tasks") => tasks.as_str(),
-            (_, "/api/v0/tasks") => task.as_str(),
-            (_, target) if target.starts_with("/api/v0/tasks/") => task.as_str(),
+            ("GET", "/v1/tasks") => tasks.as_str(),
+            (_, "/v1/tasks") => task.as_str(),
+            (_, target) if target.starts_with("/v1/tasks/") => task.as_str(),
             _ => detail.as_str(),
         };
         Some(response(200, body))
     }))
 }
 
-/// A treasury body as `GET /api/v0/treasury` sends it, byte for byte the shape
+/// A treasury body as `GET /v1/treasury` sends it, byte for byte the shape
 /// the live daemon answered with after one budgeted task's cycle: the mint
 /// account and the task's escrow, both derived to zero, and the totals.
 pub const TREASURY: &str = r#"{"accounts":[
@@ -254,7 +254,7 @@ pub const TREASURY: &str = r#"{"accounts":[
     "totals":{"accounts":2,"entries":2,"credits":1500,"debits":1500,"balance":0},
     "spent":0,"note":"v0 meters no real spend; a done task refunds its whole escrow"}"#;
 
-/// A journal body as `GET /api/v0/treasury/journal` sends it: the one cycle's
+/// A journal body as `GET /v1/treasury/journal` sends it: the one cycle's
 /// two entries, each with its postings, oldest first.
 pub const TREASURY_JOURNAL: &str = r#"{"entries":[
     {"id":1,"kind":"mint","task_id":"t1","root_task":"t1","memo":"task budget",
@@ -299,8 +299,8 @@ pub const TREASURY_JOURNAL_AFTER: &str = r#"{"entries":[
     "total":3,"limit":256,"truncated":false}"#;
 
 /// A whole stub daemon for the treasury pane: the register, the machine, an
-/// event stream, and the treasury's two paths — `GET /api/v0/treasury`
-/// answers `treasury`, `GET /api/v0/treasury/journal` answers `journal`, and
+/// event stream, and the treasury's two paths — `GET /v1/treasury`
+/// answers `treasury`, `GET /v1/treasury/journal` answers `journal`, and
 /// every other read answers `detail`.
 pub fn treasury_live(
     list: &str,
@@ -316,12 +316,12 @@ pub fn treasury_live(
     let journal = journal.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
             // The treasury's two halves: the accounts and the journal.
-            ("GET", "/api/v0/treasury") => treasury.as_str(),
-            ("GET", "/api/v0/treasury/journal") => journal.as_str(),
+            ("GET", "/v1/treasury") => treasury.as_str(),
+            ("GET", "/v1/treasury/journal") => journal.as_str(),
             _ => detail.as_str(),
         };
         Some(response(200, body))
@@ -353,11 +353,11 @@ pub fn treasury_growing(
     let counter = Arc::clone(&reads);
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/treasury") => treasury.as_str(),
-            ("GET", "/api/v0/treasury/journal") => {
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/treasury") => treasury.as_str(),
+            ("GET", "/v1/treasury/journal") => {
                 // The journal the daemon holds now: the one the first read
                 // saw, and the longer one after the next entry was posted.
                 if counter.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -385,8 +385,8 @@ pub fn ledger_claim_refused(list: &str, tasks: &str, task: &str, error: &str) ->
             ("POST", target) if target.ends_with("/claim") => {
                 return Some(response(409, &error));
             }
-            ("GET", "/api/v0/runs") => list.as_str(),
-            (_, "/api/v0/tasks") => tasks.as_str(),
+            ("GET", "/v1/runs") => list.as_str(),
+            (_, "/v1/tasks") => tasks.as_str(),
             _ => task.as_str(),
         };
         Some(response(200, body))
@@ -395,7 +395,7 @@ pub fn ledger_claim_refused(list: &str, tasks: &str, task: &str, error: &str) ->
 
 /// A ledger whose artifact read answers `read` (an HTTP status and a body):
 /// the register answers `list`, the ledger `tasks`, every other read `task`,
-/// and `POST /api/v0/tasks/{id}/artifact` answers `read` — the artifact the
+/// and `POST /v1/tasks/{id}/artifact` answers `read` — the artifact the
 /// task's agent read, or the daemon's own refusal (the hub's `403`, the
 /// agent's `422`, or a `503` read-through that is switched off).
 pub fn ledger_artifact(
@@ -413,8 +413,8 @@ pub fn ledger_artifact(
             return Some(response(status, &body));
         }
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/runs") => list.as_str(),
-            (_, "/api/v0/tasks") => tasks.as_str(),
+            ("GET", "/v1/runs") => list.as_str(),
+            (_, "/v1/tasks") => tasks.as_str(),
             _ => task.as_str(),
         };
         Some(response(200, body))
@@ -431,23 +431,23 @@ pub const TASKS_ARTIFACT: &str = r#"{"tasks":[
      "created_at":1791675134319,"updated_at":1791675198671}
 ]}"#;
 
-/// An artifact as `POST /api/v0/tasks/t3/artifact` answers it: the file the
+/// An artifact as `POST /v1/tasks/t3/artifact` answers it: the file the
 /// task's agent read back, in the shape the live daemon answered with.
 pub const ARTIFACT: &str = r#"{"task":"t3","agent_cid":103,"path":"build-notes.txt",
     "content":"task t3: verify the fixed loop\nthe loop held\n","size":45,
     "truncated":false}"#;
 
 /// A whole stub daemon: the register's paths answer `list`/`detail`, the
-/// machine `MACHINE`, and `GET /api/v0/events` an event stream of `events`.
+/// machine `MACHINE`, and `GET /v1/events` an event stream of `events`.
 pub fn live(list: &str, detail: &str, events: &str) -> Stub {
     let list = list.to_string();
     let detail = detail.to_string();
     let events = stream_head(events);
     spawn(Box::new(move |request, _| {
         Some(match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => events.clone(),
-            ("GET", "/api/v0/machine") => response(200, MACHINE),
-            ("GET", "/api/v0/runs") => response(200, &list),
+            ("GET", "/v1/events") => events.clone(),
+            ("GET", "/v1/machine") => response(200, MACHINE),
+            ("GET", "/v1/runs") => response(200, &list),
             _ => response(200, &detail),
         })
     }))
@@ -516,8 +516,8 @@ pub fn admin(tell: (u16, &str), stop: (u16, &str)) -> Stub {
     let stop = (stop.0, stop.1.to_string());
     spawn(Box::new(move |request, _| {
         Some(match (request.method.as_str(), request.target.as_str()) {
-            ("POST", "/tell") => response(tell.0, &tell.1),
-            ("POST", "/stop") => response(stop.0, &stop.1),
+            ("POST", p) if p.starts_with("/v1/agents/") && p.ends_with("/tell") => response(tell.0, &tell.1),
+            ("POST", p) if p.starts_with("/v1/agents/") && p.ends_with("/stop") => response(stop.0, &stop.1),
             _ => response(404, r#"{"error":"no such endpoint"}"#),
         })
     }))
@@ -540,9 +540,9 @@ pub fn raw(head: &str) -> Stub {
 }
 
 /// A stub with the daemon's whole read path and its console write path:
-/// `GET /api/v0/runs` answers `list`, `GET /api/v0/machine` answers
+/// `GET /v1/runs` answers `list`, `GET /v1/machine` answers
 /// [`MACHINE`], and any single run answers `detail` — including the answer to
-/// `POST /api/v0/runs/{id}/input`, which the daemon also answers with the run.
+/// `POST /v1/runs/{id}/input`, which the daemon also answers with the run.
 ///
 /// Every request is recorded, so a test can assert exactly what the console
 /// put on the wire.
@@ -551,15 +551,15 @@ pub fn fleet(list: &str, detail: &str) -> Stub {
     let detail = detail.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/machine") => MACHINE,
             _ => detail.as_str(),
         };
         Some(response(200, body))
     }))
 }
 
-/// An agora body as `GET /api/v0/agora` sends it: a call the award closed —
+/// An agora body as `GET /v1/agora` sends it: a call the award closed —
 /// with two bids and the treasury entry that funded it — next to a call still
 /// open and unbidden. The live daemon's board for `t1` is this shape.
 pub const AGORA: &str = r#"{"calls":[
@@ -601,7 +601,7 @@ pub const AGORA_AFTER: &str = r#"{"calls":[
 pub const AGORA_BARE: &str = r#"{"calls":[],"total":0,"limit":256,"truncated":false}"#;
 
 /// A whole stub daemon for the market pane: the register, the machine, an
-/// event stream, and the agora — `GET /api/v0/agora` answers `board`, every
+/// event stream, and the agora — `GET /v1/agora` answers `board`, every
 /// other read answers `detail`.
 pub fn agora_live(list: &str, detail: &str, events: &str, board: &str) -> Stub {
     let list = list.to_string();
@@ -610,10 +610,10 @@ pub fn agora_live(list: &str, detail: &str, events: &str, board: &str) -> Stub {
     let board = board.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/agora") => board.as_str(),
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/agora") => board.as_str(),
             _ => detail.as_str(),
         };
         Some(response(200, body))
@@ -643,10 +643,10 @@ pub fn agora_growing(
     let counter = Arc::clone(&reads);
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/agora") => {
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/agora") => {
                 // The board the daemon holds now: the one the first read saw,
                 // and the longer one after the next bid was made.
                 if counter.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -661,7 +661,7 @@ pub fn agora_growing(
     }))
 }
 
-/// A board body as `GET /api/v0/board` sends it: a hiring note that links a
+/// A board body as `GET /v1/board` sends it: a hiring note that links a
 /// task, a plain post that links none, and every agent's unread count.
 pub const POSTS: &str = r#"{"posts":[
     {"id":"p2","agent_cid":100,"role":"builder","subject":"hiring for t1",
@@ -686,7 +686,7 @@ pub const POSTS_AFTER: &str = r#"{"posts":[
     ],"total":3,"limit":1024,"truncated":false,
     "unread":[{"agent_cid":100,"count":1},{"agent_cid":101,"count":0}]}"#;
 
-/// A conversations body as `GET /api/v0/conversations` sends it: one exchange
+/// A conversations body as `GET /v1/conversations` sends it: one exchange
 /// from the builder to the reviewer, and the pair the floor draws adjacent.
 pub const CONVERSATIONS: &str = r#"{"conversations":[
     {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
@@ -706,7 +706,7 @@ pub const CONVERSATIONS_QUIET: &str = r#"{"conversations":[
     "active_secs":120,"total":1,"limit":256,"truncated":false,
     "pairs_total":1,"pairs_truncated":false}"#;
 
-/// A contacts body as `GET /api/v0/agents/{cid}/contacts` sends it: the
+/// A contacts body as `GET /v1/agents/{cid}/contacts` sends it: the
 /// builder's link to the reviewer, recorded as a handshake (`met`).
 pub const CONTACTS: &str = r#"{"agent_cid":100,"contacts":[
     {"peer_cid":101,"role":"reviewer","since":1791673000000,"kind":"met"}
@@ -749,7 +749,7 @@ pub const CONVERSATIONS_TALK_REFUSED: &str = r#"{"conversations":[
     ],"active_secs":120,"total":2,"limit":256,"truncated":false,
     "pairs_total":2,"pairs_truncated":false}"#;
 
-/// One pair's thread as `GET /api/v0/conversations/{a}/{b}` sends it: the two
+/// One pair's thread as `GET /v1/conversations/{a}/{b}` sends it: the two
 /// exchanges between cid 103 and cid 109, oldest first.
 pub const THREAD_TALK: &str = r#"{"a":103,"b":109,"active":true,"active_secs":120,"messages":[
     {"id":"c2","from_cid":103,"to_cid":109,"from_role":"builder",
@@ -813,10 +813,10 @@ pub fn talk_growing(
     let counter = std::sync::Arc::clone(&reads);
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/conversations") => {
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/conversations") => {
                 if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                     log.as_str()
                 } else {
@@ -838,15 +838,15 @@ pub fn social_unserved(list: &str, detail: &str) -> Stub {
     let detail = detail.to_string();
     spawn(Box::new(move |request, _| {
         match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/machine") => Some(response(200, MACHINE)),
-            ("GET", "/api/v0/runs") => Some(response(200, list.as_str())),
-            ("GET", target) if target.starts_with("/api/v0/conversations") => {
+            ("GET", "/v1/machine") => Some(response(200, MACHINE)),
+            ("GET", "/v1/runs") => Some(response(200, list.as_str())),
+            ("GET", target) if target.starts_with("/v1/conversations") => {
                 Some(response(404, r#"{"error":"no such endpoint"}"#))
             }
-            ("GET", target) if target.starts_with("/api/v0/agents/") => {
+            ("GET", target) if target.starts_with("/v1/agents/") => {
                 Some(response(404, r#"{"error":"no such endpoint"}"#))
             }
-            ("GET", target) if target.starts_with("/api/v0/board") => {
+            ("GET", target) if target.starts_with("/v1/board") => {
                 Some(response(404, r#"{"error":"no such endpoint"}"#))
             }
             _ => Some(response(200, detail.as_str())),
@@ -854,7 +854,7 @@ pub fn social_unserved(list: &str, detail: &str) -> Stub {
     }))
 }
 
-/// A thread body as `GET /api/v0/conversations/{a}/{b}` sends it.
+/// A thread body as `GET /v1/conversations/{a}/{b}` sends it.
 pub const THREAD: &str = r#"{"a":100,"b":101,"active":true,"active_secs":120,"messages":[
     {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",
      "text":"can you review it?","created_at":1791675000000,"delivered":true,
@@ -864,9 +864,9 @@ pub const THREAD: &str = r#"{"a":100,"b":101,"active":true,"active_secs":120,"me
 /// A whole stub daemon for the floor and the board: the register, the machine,
 /// an event stream, and the social surfaces.
 ///
-/// `GET /api/v0/board` answers `posts`, `GET /api/v0/conversations` answers
-/// `conversations`, `GET /api/v0/agents/{cid}/contacts` answers `contacts`, and
-/// `GET /api/v0/conversations/{a}/{b}` answers `thread`. The two reads the
+/// `GET /v1/board` answers `posts`, `GET /v1/conversations` answers
+/// `conversations`, `GET /v1/agents/{cid}/contacts` answers `contacts`, and
+/// `GET /v1/conversations/{a}/{b}` answers `thread`. The two reads the
 /// floor's own `Client::floor` makes — conversations then board — are the
 /// daemon's own two GETs.
 pub fn social_live(
@@ -887,13 +887,13 @@ pub fn social_live(
     let thread = thread.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/board") => posts.as_str(),
-            ("GET", "/api/v0/conversations") => conversations.as_str(),
-            ("GET", target) if target.starts_with("/api/v0/agents/") => contacts.as_str(),
-            ("GET", target) if target.starts_with("/api/v0/conversations/") => thread.as_str(),
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/board") => posts.as_str(),
+            ("GET", "/v1/conversations") => conversations.as_str(),
+            ("GET", target) if target.starts_with("/v1/agents/") => contacts.as_str(),
+            ("GET", target) if target.starts_with("/v1/conversations/") => thread.as_str(),
             _ => detail.as_str(),
         };
         Some(response(200, body))
@@ -923,10 +923,10 @@ pub fn social_growing(
     let counter = Arc::clone(&reads);
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/board") => {
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/board") => {
                 if counter.fetch_add(1, Ordering::SeqCst) == 0 {
                     posts.as_str()
                 } else {
@@ -939,7 +939,7 @@ pub fn social_growing(
     }))
 }
 
-/// A motions body as `GET /api/v0/motions` sends it, byte for byte the shape
+/// A motions body as `GET /v1/motions` sends it, byte for byte the shape
 /// the live plaza answered with: a priority carried 4–0, a law proposal
 /// carried 4–0 and waiting for the owner, and a priority tied 2–2 and sent to
 /// the owner. No motion names an amount, so no row carries the key.
@@ -1048,7 +1048,7 @@ pub const MOTIONS_DECIDED: &str = r#"{"motions":[
      "created_at":1791705623593,"updated_at":1791706100000}
     ],"total":3,"limit":256,"truncated":false}"#;
 
-/// The `200` a `POST /api/v0/motions/m1/decide` answers with when the owner
+/// The `200` a `POST /v1/motions/m1/decide` answers with when the owner
 /// ratifies the tie: the motion, its `owner` set and its state `ratified`.
 pub const DECIDED_RATIFIED: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
     "kind":"priority","text":"prioritise the east wing over new towns this week",
@@ -1120,7 +1120,7 @@ pub const MOTIONS_RATIFIED: &str = r#"{"motions":[
      "created_at":1791705623593,"updated_at":1791706100000}
     ],"total":3,"limit":256,"truncated":false}"#;
 
-/// A single-motion body as `GET /api/v0/motions/m1` sends it: the tie of
+/// A single-motion body as `GET /v1/motions/m1` sends it: the tie of
 /// [`MOTIONS`], read on its own.
 pub const MOTION_M1: &str = r#"{"id":"m1","proposer_cid":105,"proposer_role":"finance",
     "kind":"priority","text":"prioritise the east wing over new towns this week",
@@ -1205,8 +1205,8 @@ pub const MOTIONS_AFTER: &str = r#"{"motions":[
     ],"total":4,"limit":256,"truncated":false}"#;
 
 /// A whole stub daemon for the council pane: the register, the machine, an
-/// event stream, and the council — `GET /api/v0/motions` answers `motions`,
-/// `GET /api/v0/motions/{id}` answers `motion`, and every other read answers
+/// event stream, and the council — `GET /v1/motions` answers `motions`,
+/// `GET /v1/motions/{id}` answers `motion`, and every other read answers
 /// `detail`.
 pub fn council_live(
     list: &str,
@@ -1222,11 +1222,11 @@ pub fn council_live(
     let motion = motion.to_string();
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/motions") => motions.as_str(),
-            ("GET", target) if target.starts_with("/api/v0/motions/") => motion.as_str(),
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/motions") => motions.as_str(),
+            ("GET", target) if target.starts_with("/v1/motions/") => motion.as_str(),
             _ => detail.as_str(),
         };
         Some(response(200, body))
@@ -1234,9 +1234,9 @@ pub fn council_live(
 }
 
 /// A whole stub daemon for the council pane that also holds the owner's hand:
-/// `GET /api/v0/motions` answers `motions` until the decision lands and
-/// `motions_after` from then on, `POST /api/v0/motions/{id}/decide` answers
-/// `decided`, `GET /api/v0/motions/{id}` answers `motion`, and every other read
+/// `GET /v1/motions` answers `motions` until the decision lands and
+/// `motions_after` from then on, `POST /v1/motions/{id}/decide` answers
+/// `decided`, `GET /v1/motions/{id}` answers `motion`, and every other read
 /// answers `detail`.
 ///
 /// It is how a test proves the pane's own flow: a commit posts the decision,
@@ -1262,21 +1262,21 @@ pub fn council_deciding(
     let flag = Arc::clone(&decided_yet);
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/v1/events") => return Some(events.clone()),
             ("POST", target) if target.ends_with("/decide") => {
                 flag.store(true, Ordering::SeqCst);
                 decided.as_str()
             }
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/motions") => {
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/motions") => {
                 if flag.load(Ordering::SeqCst) {
                     motions_after.as_str()
                 } else {
                     motions.as_str()
                 }
             }
-            ("GET", target) if target.starts_with("/api/v0/motions/") => motion.as_str(),
+            ("GET", target) if target.starts_with("/v1/motions/") => motion.as_str(),
             _ => detail.as_str(),
         };
         Some(response(200, body))
@@ -1306,10 +1306,10 @@ pub fn council_growing(
     let counter = Arc::clone(&reads);
     spawn(Box::new(move |request, _| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/api/v0/events") => return Some(events.clone()),
-            ("GET", "/api/v0/machine") => MACHINE,
-            ("GET", "/api/v0/runs") => list.as_str(),
-            ("GET", "/api/v0/motions") => {
+            ("GET", "/v1/events") => return Some(events.clone()),
+            ("GET", "/v1/machine") => MACHINE,
+            ("GET", "/v1/runs") => list.as_str(),
+            ("GET", "/v1/motions") => {
                 if counter.fetch_add(1, Ordering::SeqCst) == 0 {
                     motions.as_str()
                 } else {

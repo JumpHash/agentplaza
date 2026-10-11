@@ -103,7 +103,7 @@ fn anim(model: &Model) -> Subscription<Message> {
         .map(|_| Message::Anim { at_ms: epoch_ms() })
 }
 
-/// `GET /api/v0/events`, as a subscription.
+/// `GET /v1/events`, as a subscription.
 ///
 /// The endpoint is the subscription's identity, so the same daemon keeps the
 /// same stream for the register's whole life. iced does **not** restart a

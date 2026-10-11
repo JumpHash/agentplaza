@@ -873,7 +873,7 @@ fn the_console_offers_the_guests_commands_and_sends_a_line() {
         .iter()
         .find(|request| request.method == "POST")
         .expect("the console wrote to the daemon");
-    assert_eq!(written.target, "/api/v0/runs/r1/input");
+    assert_eq!(written.target, "/v1/runs/r1/input");
     assert_eq!(written.body, r#"{"data":"uname\n","vm":0}"#);
 }
 
@@ -945,7 +945,7 @@ fn a_quick_command_button_sends_that_command() {
         .iter()
         .find(|request| request.method == "POST")
         .expect("the quick button wrote to the daemon");
-    assert_eq!(written.target, "/api/v0/runs/r1/input");
+    assert_eq!(written.target, "/v1/runs/r1/input");
     assert_eq!(written.body, r#"{"data":"poweroff\n","vm":0}"#);
 }
 
@@ -969,7 +969,7 @@ fn the_machine_key_reaches_the_machine_screen_through_the_register() {
         server
             .requests()
             .iter()
-            .any(|request| request.method == "GET" && request.target == "/api/v0/machine"),
+            .any(|request| request.method == "GET" && request.target == "/v1/machine"),
         "the machine was read over a real socket"
     );
 
@@ -1073,7 +1073,7 @@ fn a_preset_click_fills_the_form_and_boot_run_sends_exactly_that_body() {
     let requests = server.requests();
     let created = requests
         .iter()
-        .find(|request| request.method == "POST" && request.target == "/api/v0/runs")
+        .find(|request| request.method == "POST" && request.target == "/v1/runs")
         .expect("the preset's form was sent");
     assert_eq!(
         created.body,
@@ -1822,7 +1822,7 @@ const STREAM_CAPTURE: &str = "login: plaza\r\n$ uname -a\r\nLinux plaza 7.2.8 x8
 /// register must show without waiting for a poll.
 const STREAM_TAIL: &str = "$ halted\n";
 
-/// The daemon's `GET /api/v0/events` frames for this test: the run ends, and
+/// The daemon's `GET /v1/events` frames for this test: the run ends, and
 /// the VM's serial arrives whole — which is also exactly what a reconnecting
 /// console sees replayed, so the merge has to be idempotent about it.
 fn stream_frames() -> String {
@@ -2678,7 +2678,7 @@ fn the_ledger_lists_every_task_the_daemon_holds() {
         // pressed.
         "File a task",
         "FILE TASK",
-        "POST /api/v0/tasks",
+        "POST /v1/tasks",
         "the role it is for (optional)",
     ] {
         assert!(

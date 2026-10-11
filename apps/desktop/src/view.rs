@@ -373,12 +373,12 @@ fn running_head(model: &Model) -> Element<'_, Message> {
             "every run the daemon holds".to_string(),
         ),
         Pane::Run(id) => (id.clone(), format!("one run · {}", model.endpoint.url())),
-        Pane::Spawn => ("New run".to_string(), "POST /api/v0/runs".to_string()),
+        Pane::Spawn => ("New run".to_string(), "POST /v1/runs".to_string()),
         Pane::Machine => (
             "Machine".to_string(),
             match &model.machine {
-                Some(machine) => format!("{} · GET /api/v0/machine", machine.model_label()),
-                None => "GET /api/v0/machine".to_string(),
+                Some(machine) => format!("{} · GET /v1/machine", machine.model_label()),
+                None => "GET /v1/machine".to_string(),
             },
         ),
         Pane::Map => (
@@ -1250,7 +1250,7 @@ fn hub_half(agent: &RosterAgent, now_ms: u64) -> Element<'static, Message> {
 /// The ledger: the plaza's tasks as an account book — one ruled row per task,
 /// the open task's detail, and the four moves the daemon accepts.
 ///
-/// The rows come from one read (`GET /api/v0/tasks`, refreshed on the poll
+/// The rows come from one read (`GET /v1/tasks`, refreshed on the poll
 /// while this sheet is up), and the task events patch them in place between
 /// the polls: an event for a task the ledger has not read asks for the ledger
 /// rather than inventing a row from a frame that carries an id, a state and an
@@ -1492,7 +1492,7 @@ fn task_detail<'a>(model: &'a Model, task: &'a Task) -> Element<'a, Message> {
 ///
 /// The paths come out of the note the dispatcher left ([`artifact_paths`]).
 /// Each row drives the task agent's `read_file` through the daemon
-/// (`POST /api/v0/tasks/{id}/artifact`), and what comes back is the agent's
+/// (`POST /v1/tasks/{id}/artifact`), and what comes back is the agent's
 /// own file, drawn as ruled text and never interpreted: it is the guest's
 /// bytes. A read is in one of three honest states when it is not in flight —
 /// the agent read it, the daemon refused it in its own words, or the daemon
@@ -1521,7 +1521,7 @@ fn task_artifact_section<'a>(model: &'a Model, task: &'a Task) -> Option<Element
             mono("Artifacts", 10.5, INK_3),
             space::horizontal(),
             mono(
-                format!("POST /api/v0/tasks/{}/artifact", task.id),
+                format!("POST /v1/tasks/{}/artifact", task.id),
                 10.0,
                 INK_3,
             ),
@@ -1787,7 +1787,7 @@ fn task_create_form(model: &Model) -> Element<'_, Message> {
                 .on_press(Message::TaskCreate)
                 .style(theme::primary_button)
                 .padding(edge(8.0, 14.0, 8.0, 14.0)),
-            mono("POST /api/v0/tasks", 10.0, INK_3),
+            mono("POST /v1/tasks", 10.0, INK_3),
         ]
         .spacing(12.0)
         .align_y(Alignment::Center)
@@ -2148,7 +2148,7 @@ fn entry_postings(entry: &crate::api::Entry) -> Element<'_, Message> {
 /// from the daemon's agora.
 ///
 /// It is **read-only**: a bid is placed and an award is made by the daemon's
-/// own surface (`POST /api/v0/tasks/{id}/bid` and `…/award`), and the console
+/// own surface (`POST /v1/tasks/{id}/bid` and `…/award`), and the console
 /// has no path that would place either — what is drawn here is what the daemon
 /// already recorded. A call's `task` is the offer's id and the ledger's own:
 /// at v0 the two are one thing. The escrow entry an award names is the
@@ -3112,7 +3112,7 @@ fn spawn_pane(model: &Model) -> Element<'_, Message> {
                 .on_press(Message::SpawnClicked)
                 .style(theme::primary_button)
                 .padding(edge(8.0, 14.0, 8.0, 14.0)),
-            mono("POST /api/v0/runs", 10.0, INK_3),
+            mono("POST /v1/runs", 10.0, INK_3),
         ]
         .spacing(12.0)
         .align_y(Alignment::Center)
@@ -3878,7 +3878,7 @@ fn last_read_age(model: &Model, last_ok_ms: Option<u64>) -> String {
 /// proposed them, every vote and its reason, and the state and tally the
 /// daemon derived. Nothing here is composed. The sheet writes exactly one
 /// thing — the owner's decision on a gated motion, through the daemon's own
-/// `POST /api/v0/motions/{id}/decide` — because the operator is the owner;
+/// `POST /v1/motions/{id}/decide` — because the operator is the owner;
 /// proposing and voting remain seat actions this console does not take.
 fn council_pane(model: &Model) -> Element<'_, Message> {
     let mut body: Vec<Element<'_, Message>> = Vec::new();
