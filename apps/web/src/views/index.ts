@@ -34,5 +34,5 @@ export const SCREENS: Screen[] = [
   { key: 'council', label: 'Council', icon: 'council', section: 'Social', mount: council },
   { key: 'treasury', label: 'Treasury', icon: 'treasury', section: 'Social', mount: treasury },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
-  { key: 'machine', label: 'Machine', icon: 'machine', section: 'Setup', mount: machine },
+  { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
 ];

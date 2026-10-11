@@ -115,6 +115,8 @@ export interface Treasury { accounts: Account[]; totals: { accounts: number; ent
 export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
+export interface Gpu { vendor: string; name: string; memory_mib: number | null }
+export interface MachineNode extends Machine { id: string; kind: 'server' | 'workstation' | 'edge' | 'apple'; gpus: Gpu[]; noded_port?: number; runs?: Run[]; agents?: number; reachable?: boolean }
 
 // ---- Endpoints -------------------------------------------------------------
 
@@ -158,6 +160,7 @@ export const api = {
   agora: () => get<{ calls: unknown[] }>('/v1/agora').then((r) => r.calls),
 
   machine: () => get<Machine>('/v1/machine'),
+  machines: () => get<MachineNode[]>('/v1/machines'),
   runs: () => get<{ runs: Run[] }>('/v1/runs').then((r) => r.runs),
   run: (id: string) => get<Run & { vms: (Vm & { serial?: string })[] }>(`/v1/runs/${id}`),
   createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),
