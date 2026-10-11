@@ -1,11 +1,12 @@
-// Setup > Tools: the connectors the plaza lends to agents, and the tools agents
+// Setup > Tools: the connectors the plaza lends to agents, the connectors agents
+// have proposed (waiting for the owner's review), and the tools agents
 // have built and packaged into the plaza's library. A key is written once
 // here, kept in the plaza's vault, and never reaches an agent's VM. Laid out like
 // Models > Providers: grouped provider cards, and a Configure modal.
 
 import '../styles/models.css';
 import '../styles/tools.css';
-import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorTest, type LibraryTool } from '../api';
+import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorProposal, type ConnectorTest, type LibraryTool } from '../api';
 import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
@@ -27,6 +28,12 @@ const LIBRARY_STATE: Record<LibraryTool['state'], [string, Tone]> = {
   private: ['Private', 'muted'],
   pending: ['Pending review', 'warn'],
   published: ['Published', 'ok'],
+  rejected: ['Rejected', 'danger'],
+};
+
+const PROPOSAL_STATE: Record<ConnectorProposal['state'], [string, Tone]> = {
+  pending: ['Pending', 'warn'],
+  approved: ['Approved', 'ok'],
   rejected: ['Rejected', 'danger'],
 };
 
@@ -66,14 +73,32 @@ function logo(c: Connector): HTMLElement {
   return h('span.logo.lg', { title: c.label }, h('span.mono-mark', null, letters));
 }
 
+/** A proposal's auth in one phrase: its kind, and the header, query or path name when it has one. */
+function authLabel(s: ConnectorProposal['spec']): string {
+  return s.auth.name ? `${s.auth.kind} ${s.auth.name}` : s.auth.kind;
+}
+
+/** An action's full URL: the proposed base with the action's path. */
+function fullUrl(baseUrl: string, path: string): string {
+  return baseUrl.replace(/\/+$/, '') + path;
+}
+
+/** The plaza's check failures, shown above a proposal whose approve is off. */
+function checksBox(p: ConnectorProposal): HTMLElement {
+  return h('div.stack', null, badge('Checks failed · approve is off', 'warn'), h('ul', null, p.checks.map((c) => h('li', null, c))));
+}
+
 export function mount(root: HTMLElement): Cleanup {
   let connectors: Connector[] = [];
   let library: LibraryTool[] = [];
+  let proposals: ConnectorProposal[] = [];
+  let showDecided = false;
   const body = h('div.prov-body', null, h('p.faint', null, 'Loading tools…'));
+  const propBody = h('div.prov-body', null);
   const libBody = h('div.prov-body', null, h('p.faint', null, 'Loading agent tools…'));
   root.append(
     h('div.view-head', null, h('h1', null, 'Tools')),
-    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body, libBody),
+    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body, propBody, libBody),
   );
 
   const refresh = async (): Promise<void> => {
@@ -250,6 +275,178 @@ export function mount(root: HTMLElement): Cleanup {
     );
   };
 
+  // ---- Proposed connectors --------------------------------------------------
+
+  const refreshProposals = async (): Promise<void> => {
+    const list = await attempt(() => api.connectorProposals());
+    if (list) proposals = list;
+    renderProposals();
+  };
+
+  /** A decision changes both the proposals and, on approval, the connector list. */
+  const refreshAfterDecision = async (): Promise<void> => {
+    await refreshProposals();
+    await refresh();
+  };
+
+  const renderProposals = (): void => {
+    const pending = proposals.filter((p) => p.state === 'pending');
+    const decided = proposals.filter((p) => p.state !== 'pending');
+    if (!pending.length && !decided.length) {
+      replace(propBody);
+      return;
+    }
+    const parts: HTMLElement[] = [h('h2.prov-group-title', null, 'Proposed connectors')];
+    if (pending.length) parts.push(h('div.prov-grid', null, pending.map(proposalCard)));
+    else parts.push(h('p.faint', null, 'Nothing waiting for your review.'));
+    if (decided.length) {
+      parts.push(
+        h(
+          'div.prov-row',
+          null,
+          button(
+            showDecided ? 'Hide decided' : `Decided (${decided.length})`,
+            () => {
+              showDecided = !showDecided;
+              renderProposals();
+            },
+            { size: 'sm', kind: 'ghost' },
+          ),
+        ),
+      );
+      if (showDecided) parts.push(h('ul.lib-files', null, decided.map(decidedRow)));
+    }
+    replace(propBody, ...parts);
+  };
+
+  const proposalCard = (p: ConnectorProposal): HTMLElement => {
+    const s = p.spec;
+    const blocked = p.checks.length > 0;
+    return h(
+      'article.prov-card',
+      null,
+      h(
+        'header.prov-head',
+        null,
+        h(
+          'div.prov-title',
+          null,
+          h('h3.truncate', null, s.label),
+          h('span.mono.faint.truncate', { title: s.id }, s.id),
+        ),
+      ),
+      h(
+        'div.prov-meta',
+        null,
+        h('span.faint', null, `proposed by ${p.proposer}`),
+        badge(s.category, 'accent'),
+        badge(authLabel(s), 'muted'),
+      ),
+      h('p.faint', { title: s.description }, s.description),
+      h('p.mono.truncate', { title: s.base_url }, s.base_url),
+      s.fields.length
+        ? h(
+            'ul.tool-actions',
+            null,
+            s.fields.map((f) =>
+              h('li', null, h('span.tool-chip', { title: `$${f.env}${f.secret ? ' · secret' : ''}${f.hint ? ` · ${f.hint}` : ''}` }, f.required ? `${f.label} *` : f.label)),
+            ),
+          )
+        : null,
+      h(
+        'ul.tool-actions',
+        null,
+        s.actions.map((a) =>
+          h(
+            'li',
+            null,
+            h(
+              'span.tool-chip',
+              { title: a.description },
+              dot(RISK[a.risk]),
+              a.name,
+              h('span.mono', null, ` ${a.method} ${a.path}`),
+            ),
+          ),
+        ),
+      ),
+      blocked ? checksBox(p) : null,
+      h('div.prov-actions', null, button('Review', () => openReview(p), { size: 'sm', kind: 'primary' })),
+    );
+  };
+
+  const decidedRow = (p: ConnectorProposal): HTMLElement => {
+    const [text, tone] = PROPOSAL_STATE[p.state];
+    return h(
+      'li',
+      null,
+      h('span.mono', null, p.spec.id),
+      ' ',
+      badge(text, tone, true),
+      h('span.faint', null, ` ${p.spec.label} · proposed by ${p.proposer}`),
+      p.note ? h('span.faint', null, ` · ${p.note}`) : null,
+    );
+  };
+
+  /** Review: the full spec, then Approve or Reject (Reject takes an optional note). */
+  const openReview = (p: ConnectorProposal): void => {
+    let close = () => {};
+    const s = p.spec;
+    const blocked = p.checks.length > 0;
+    const note = input({ autocomplete: 'off', placeholder: 'Why it is rejected (optional)' });
+
+    const decide = async (approve: boolean): Promise<void> => {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      const reason = note.value.trim() || undefined;
+      const done = await attempt(async () => {
+        await api.reviewConnectorProposal(p.id, approve, approve ? undefined : reason);
+        return true;
+      }, `${s.label} ${approve ? 'approved' : 'rejected'}`);
+      approveBtn.disabled = blocked;
+      rejectBtn.disabled = false;
+      if (!done) return;
+      close();
+      await refreshAfterDecision();
+    };
+    const approveBtn = button('Approve', () => void decide(true), { kind: 'primary' });
+    const rejectBtn = button('Reject', () => void decide(false), { kind: 'ghost' });
+    approveBtn.disabled = blocked;
+
+    close = modal(
+      `Review ${s.label}`,
+      h(
+        'div.stack',
+        null,
+        h('p.mono', null, `${s.id} · ${s.category}`),
+        h('p.faint', null, `Proposed by ${p.proposer} · auth ${authLabel(s)}`),
+        h('p.faint', null, s.description),
+        h('p.mono', null, s.base_url),
+        s.docs_url && /^https?:\/\//.test(s.docs_url) ? h('a', { href: s.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs') : null,
+        s.fields.length
+          ? h(
+              'p.faint',
+              null,
+              `Fields: ${s.fields.map((f) => `${f.label}${f.required ? ' (required)' : ''} · $${f.env}${f.secret ? ' · secret' : ''}`).join('; ')}`,
+            )
+          : null,
+        blocked ? checksBox(p) : null,
+        s.actions.map((a) =>
+          h(
+            'section.stack',
+            null,
+            h('div.prov-row', null, dot(RISK[a.risk]), h('strong', null, a.name), h('span.faint', null, a.risk)),
+            h('p.mono', null, `${a.method} ${fullUrl(s.base_url, a.path)}`),
+            h('p.faint', null, a.description),
+            h('pre.lib-file', null, JSON.stringify(a.input_schema, null, 2)),
+          ),
+        ),
+        field('Note for the proposer', note, 'Optional. Only sent when rejecting.'),
+        h('div.prov-row', null, h('span.prov-spacer'), rejectBtn, approveBtn),
+      ),
+    );
+  };
+
   // ---- Made by agents -------------------------------------------------------
 
   const refreshLibrary = async (): Promise<void> => {
@@ -402,7 +599,12 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   void refresh();
+  void refreshProposals();
   void refreshLibrary();
   const offLibrary = on('library', () => void refreshLibrary());
-  return () => offLibrary();
+  const offConnector = on('connector', () => void refreshAfterDecision());
+  return () => {
+    offLibrary();
+    offConnector();
+  };
 }
