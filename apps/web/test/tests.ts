@@ -26,12 +26,16 @@ import { parseTell, parseTellArgs, tellStateOf } from '../src/models/tell';
 import { balances, fmtSigned, parseJournal, parseTreasury, postingLabel } from '../src/models/treasury';
 import type { Award, Bid, Call, Calls } from '../src/models/agora';
 import { parseAgora, winningBid } from '../src/models/agora';
-import type { Motion, Motions, Vote } from '../src/models/council';
+import type { Motion, Motions, OwnerDecision, Vote } from '../src/models/council';
 import {
   councilTally,
+  decisionStateOf,
   gateLine,
   KIND_LABEL,
+  MAX_DECISION_NOTE,
   motionSeq,
+  ownerReading,
+  parseDecisionNote,
   parseMotion,
   parseMotions,
   SEAT_COUNT,
@@ -1444,6 +1448,7 @@ const MOTION_FIXTURE: Motion = {
     { ...VOTE_NO, seat: 'mayor-office', agent_cid: 114, at: 1791705629506 },
   ],
   tally: { yes: 2, no: 2, abstain: 0, voted: 4, seats: 4 },
+  owner: null,
   created_at: 1791705623593,
   updated_at: 1791705629506,
 };
@@ -1565,7 +1570,152 @@ eq(
 
 /* the label tables cover every kind and every state */
 eq(Object.keys(KIND_LABEL).length, 6, 'every kind has a label');
-eq(Object.keys(STATE_LABEL).length, 5, 'every state has a label');
+eq(Object.keys(STATE_LABEL).length, 7, 'every state has a label');
+
+/* ==================== the owner's decision: the always-keyed column, the two
+   new states, the reading the sheet draws, and the note's own byte cap. The
+   `owner` column is present on every motion (null until decided) and the note
+   column likewise (null when none), so a missing key is refused by name and a
+   decided motion is never read as undecided. */
+const OWNER_FIXTURE: OwnerDecision = { approve: false, note: 'the record is thin', at: 1791705630000 };
+const VETOED_FIXTURE: Motion = { ...GATED_FIXTURE, id: 'm3', state: 'vetoed', owner: OWNER_FIXTURE };
+const RATIFIED_FIXTURE: Motion = {
+  ...GATED_FIXTURE,
+  id: 'm4',
+  state: 'ratified',
+  owner: { approve: true, note: null, at: 1791705631000 },
+};
+
+eq(parseMotion(MOTION_FIXTURE), MOTION_FIXTURE, 'a null owner column reads as the owner has not decided');
+eq(parseMotion(VETOED_FIXTURE), VETOED_FIXTURE, 'a vetoed motion parses with its owner column');
+eq(parseMotion(RATIFIED_FIXTURE), RATIFIED_FIXTURE, 'a ratified motion parses with its owner column');
+eq(
+  parseMotions({ ...COUNCIL_FIXTURE, motions: [RATIFIED_FIXTURE, VETOED_FIXTURE] }).motions.map((m) => m.state),
+  ['ratified', 'vetoed'],
+  'the two states the owner’s hand produces are read from the wire',
+);
+{
+  const missing: Record<string, unknown> = { ...MOTION_FIXTURE };
+  delete missing['owner'];
+  throws(
+    () => parseMotions({ ...COUNCIL_FIXTURE, motions: [missing] }),
+    'council.motions[0].owner is missing',
+    'a missing owner column is refused by name — it is always keyed',
+  );
+}
+{
+  const missingNote: Record<string, unknown> = { approve: true, at: 5 };
+  throws(
+    () => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, owner: missingNote }] }),
+    'council.motions[0].owner.note is missing',
+    'a missing note key is refused by name — it is always keyed too',
+  );
+}
+throws(
+  () => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, owner: 'decided' }] }),
+  'council.motions[0].owner',
+  'an owner column that is not an object is refused by name',
+);
+throws(
+  () => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, owner: { ...OWNER_FIXTURE, approve: 'yes' } }] }),
+  'council.motions[0].owner.approve',
+  'a non-boolean approve names its field',
+);
+throws(
+  () => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, owner: { ...OWNER_FIXTURE, at: 1.5 } }] }),
+  'council.motions[0].owner.at',
+  'a non-integer decision stamp names its field',
+);
+throws(
+  () => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, owner: { approve: true, note: 5, at: 5 } }] }),
+  'council.motions[0].owner.note',
+  'a note that is neither a string nor null names the field',
+);
+eq(
+  parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, owner: { approve: true, note: null, at: 5 } }] }).motions[0]?.owner,
+  { approve: true, note: null, at: 5 },
+  'a decided motion with no note reads its null note as none, not a missing field',
+);
+
+/* the owner's reading, the note's byte cap, and how a decision ended */
+eq(ownerReading(MOTION_FIXTURE), null, 'no decision reads as nothing');
+eq(
+  ownerReading(VETOED_FIXTURE),
+  { approve: false, word: 'no', verb: 'vetoed', at: 1791705630000, note: 'the record is thin' },
+  'a veto reads as the owner’s no, with their note',
+);
+eq(
+  ownerReading(RATIFIED_FIXTURE),
+  { approve: true, word: 'yes', verb: 'ratified', at: 1791705631000, note: null },
+  'a ratification reads as the owner’s yes, with no note',
+);
+eq(parseDecisionNote('   '), {}, 'a blank note is the owner’s own none');
+eq(parseDecisionNote('the record decides it'), { note: 'the record decides it' }, 'a note rides as the owner wrote it');
+eq(parseDecisionNote('x'.repeat(1000)), { note: 'x'.repeat(1000) }, 'a note at the cap is accepted');
+eq(parseDecisionNote('x'.repeat(1001)), { error: 'the note is longer than 1000 bytes' }, 'a note past the cap is named at the field');
+eq(
+  parseDecisionNote('é'.repeat(501)),
+  { error: 'the note is longer than 1000 bytes' },
+  'the cap is the daemon’s bytes, not characters (é is two)',
+);
+eq(MAX_DECISION_NOTE, 1000, 'the note cap is the daemon’s own');
+eq(decisionStateOf(200), 'taken', 'a 200 is the decision taken');
+eq(decisionStateOf(409), 'refused', 'a 409 is a refusal');
+eq(decisionStateOf(400), 'refused', 'a 400 is a refusal too');
+eq(decisionStateOf(404), 'unknown', 'a 404 is no such motion');
+eq(decisionStateOf(null), 'unreachable', 'no answer is unreachable');
+
+/* the gate is spent once the owner decides, and a decided motion counts in the
+   total alone — the strip's four figures never count a decided motion as
+   waiting on the owner */
+eq(gateLine(VETOED_FIXTURE), null, 'a decided motion carries no gate line');
+eq(
+  gateLine({ ...VETOED_FIXTURE, state: 'awaiting_owner', owner: null }),
+  'above the council’s authority: a law change waits for the owner’s ratification',
+  'the same motion undecided still names its gate',
+);
+eq(
+  councilTally([VETOED_FIXTURE, RATIFIED_FIXTURE, MOTION_FIXTURE]),
+  { total: 3, open: 0, awaiting: 0, ties: 1, owner: 1 },
+  'a decided motion is in the total alone',
+);
+
+/* ==================== the decide: the node's own answer is merged, and a
+   refusal rides verbatim. The store posts only from the owner's hand; the
+   transport is stubbed here so the two paths (the motion with its `owner` set,
+   and the doctrine's 409) are asserted without a node. */
+{
+  const real = globalThis.fetch;
+  try {
+    const s = new Store();
+    s.motions = [{ ...GATED_FIXTURE }];
+    const ratified: Motion = { ...GATED_FIXTURE, state: 'ratified', owner: { approve: true, note: 'carry it', at: 1791705632000 } };
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify(ratified), { status: 200, headers: { 'content-type': 'application/json' } });
+    await s.decideMotion('m2', true, 'carry it');
+    eq(s.lastDecision?.state, 'taken', 'a 200 decision reads as taken');
+    eq(s.lastDecision?.approve, true, 'and names the hand the owner used');
+    eq(s.motions[0]?.state, 'ratified', 'the node’s own answer replaces the row the console holds');
+    eq(s.motions[0]?.owner?.note, 'carry it', 'with the owner’s note, as the node recorded it');
+
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ error: 'motion m2 is carried: the owner decides only a tie_to_owner or awaiting_owner motion — the council’s own decision stands' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      });
+    await s.decideMotion('m2', false);
+    eq(s.lastDecision?.state, 'refused', 'a 409 reads as a refusal');
+    eq(s.lastDecision?.status, 409, 'and keeps the status');
+    eq(
+      s.lastDecision?.detail,
+      'motion m2 is carried: the owner decides only a tie_to_owner or awaiting_owner motion — the council’s own decision stands',
+      'the refusal is the daemon’s own words, verbatim',
+    );
+    eq(s.motions[0]?.state, 'ratified', 'a refusal changes no row');
+  } finally {
+    globalThis.fetch = real;
+  }
+}
 
 /* a motion frame carries no text: the council is asked once, and nothing is
    invented from the frame alone */

@@ -64,6 +64,8 @@ const MOTION_STATES: Readonly<Record<string, true>> = {
   rejected: true,
   tie_to_owner: true,
   awaiting_owner: true,
+  ratified: true,
+  vetoed: true,
 };
 
 /** The frame's JSON, or null when it is not an object we can use — a

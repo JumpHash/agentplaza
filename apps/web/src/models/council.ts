@@ -13,7 +13,16 @@
    state it disagreed with would be a second count, not the register's.
 
    The motion's `text` and every vote's `reason` are prose the agents wrote
-   off the wire: rendered as text, never markup. */
+   off the wire: rendered as text, never markup.
+
+   The owner's decision sits on the same motion (`owner`): the operator — no
+   agent CID, holding no seat — ratifies or vetoes a motion the count gated to
+   them (the 2–2 tie, or a carry above the council's authority), and the daemon
+   records `{approve, note|null, at}` and moves the state to `ratified` or
+   `vetoed`. The `owner` key is always present (null until decided); the two
+   new states are the owner's own and no tally can derive them. */
+
+import { utf8ByteLength } from '../serial';
 
 /** The kinds a motion may be (the schema's enum, council::Kind). */
 export type MotionKind =
@@ -24,12 +33,22 @@ export type MotionKind =
   | 'law_proposal'
   | 'other';
 
-/** A motion's state (0034), derived by the daemon from the votes and the gate:
-    fewer than four seats voted (`open`), a majority of yes below the gate
-    (`carried`), a majority of no (`rejected`), an even 2–2 split that
-    escalates to the owner (`tie_to_owner`), or carried but owner-gated
-    (`awaiting_owner`). */
-export type MotionState = 'open' | 'carried' | 'rejected' | 'tie_to_owner' | 'awaiting_owner';
+/** A motion's state, derived by the daemon: the count's own five
+    (0034) — fewer than four seats voted (`open`), a majority of yes below the
+    gate (`carried`), a majority of no (`rejected`), an even 2–2 split that
+    escalates to the owner (`tie_to_owner`), carried but owner-gated
+    (`awaiting_owner`) — and the **owner's decision**, which no tally can
+    derive: `ratified` the owner approved a motion the count gated to them,
+    `vetoed` the owner refused it. The last two appear only after the owner's
+    hand ([`Motion.owner`]); a motion without a decision is never either. */
+export type MotionState =
+  | 'open'
+  | 'carried'
+  | 'rejected'
+  | 'tie_to_owner'
+  | 'awaiting_owner'
+  | 'ratified'
+  | 'vetoed';
 
 /** One vote word (`yes | no | abstain`). */
 export type VoteWord = 'yes' | 'no' | 'abstain';
@@ -62,6 +81,18 @@ export interface Tally {
   seats: number;
 }
 
+/** The owner's decision on a motion the count gated to them, as the API reports
+    it. */
+export interface OwnerDecision {
+  /** Whether the owner approved the motion: `true` → `ratified`, `false` →
+      `vetoed`. */
+  approve: boolean;
+  /** The note the owner left, or `null` when they left none. */
+  note: string | null;
+  /** When the owner decided, in milliseconds since the Unix epoch. */
+  at: number;
+}
+
 /** One motion as the API reports it. */
 export interface Motion {
   /** `m<seq>`, monotonic and never reused. */
@@ -85,6 +116,12 @@ export interface Motion {
       seat can never be counted twice). */
   votes: Vote[];
   tally: Tally;
+  /** The owner's decision, or `null` until the owner makes one. **The key is
+      always present on the wire** (a Column-style optional, like the desktop
+      client's `Column<T>`): `null` reads "the owner has not decided", never
+      "the field was absent" — so the console refuses a row whose `owner` key is
+      missing, by name, rather than reading a decided motion as undecided. */
+  owner: OwnerDecision | null;
   /** When the motion was proposed, in milliseconds since the Unix epoch. */
   created_at: number;
   /** When it last changed (its proposal, or its latest vote), in ms. */
@@ -132,6 +169,8 @@ const STATES: Readonly<Record<string, true>> = {
   rejected: true,
   tie_to_owner: true,
   awaiting_owner: true,
+  ratified: true,
+  vetoed: true,
 };
 const VOTES: Readonly<Record<string, true>> = { yes: true, no: true, abstain: true };
 
@@ -222,6 +261,41 @@ function readTally(t: Record<string, unknown>, path: string): Tally {
   };
 }
 
+/** The owner's decision, read through the "always keyed" rule: the `owner` key
+    is required to be PRESENT — `null` reads "the owner has not decided", and a
+    missing key is refused by name, so a decided motion is never read as
+    undecided (and vice versa). When the key is present and not null it holds
+    the three fields the daemon writes, each named on absence: `approve` (a
+    boolean), `note` (a string or `null` — the key is written either way) and
+    `at` (an integer). */
+function readOwner(o: Record<string, unknown>, path: string): OwnerDecision | null {
+  if (!('owner' in o)) {
+    throw new CouncilParseError(
+      `${path}.owner is missing: the owner column is always keyed (null until the owner decides)`,
+    );
+  }
+  const v = o['owner'];
+  if (v == null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new CouncilParseError(`${path}.owner is missing or not an object`);
+  }
+  const d = v as Record<string, unknown>;
+  if (!('note' in d)) {
+    throw new CouncilParseError(
+      `${path}.owner.note is missing: the note column is always keyed (null when the owner left none)`,
+    );
+  }
+  const note = d['note'];
+  if (note !== null && typeof note !== 'string') {
+    throw new CouncilParseError(`${path}.owner.note is missing or not a string`);
+  }
+  return {
+    approve: bool(d, 'approve', `${path}.owner`),
+    note,
+    at: int(d, 'at', `${path}.owner`),
+  };
+}
+
 function readMotion(m: Record<string, unknown>, path: string): Motion {
   const votes = m['votes'];
   if (!Array.isArray(votes)) {
@@ -242,6 +316,7 @@ function readMotion(m: Record<string, unknown>, path: string): Motion {
     state: stateOf(m, 'state', path),
     votes: votes.map((v, i) => readVote(obj(v, `${path}.votes[${i}]`), `${path}.votes[${i}]`)),
     tally: readTally(tally as Record<string, unknown>, `${path}.tally`),
+    owner: readOwner(m, path),
     created_at: int(m, 'created_at', path),
     updated_at: int(m, 'updated_at', path),
   };
@@ -294,9 +369,11 @@ export function tallyHolds(motion: Motion): boolean {
 
 /** The plain-language line a gated motion carries: what the owner's gate is
     for, from the kind the daemon derived `needs_owner` with. `null` when the
-    decision is the council's own — the console never invents a gate. */
+    decision is the council's own — the console never invents a gate — and
+    `null` once the owner has decided ([`Motion.owner`]): the gate is spent, and
+    a line that still said the decision "waits for the owner" would be false. */
 export function gateLine(motion: Motion): string | null {
-  if (!motion.needs_owner) return null;
+  if (!motion.needs_owner || motion.owner != null) return null;
   switch (motion.kind) {
     case 'law_proposal':
       return 'above the council’s authority: a law change waits for the owner’s ratification';
@@ -311,6 +388,74 @@ export function gateLine(motion: Motion): string | null {
          gate rather than guess its rule */
       return 'above the council’s authority: this decision waits for the owner’s ratification';
   }
+}
+
+/** The owner's decision as the sheet reads it: the word their hand said and
+    the verb the line spells, the stamp, and the note they left (or none).
+    `null` when the owner has not decided — never a decision the console
+    invented. */
+export interface OwnerReading {
+  /** Whether the owner approved: `true` ratified, `false` vetoed. */
+  approve: boolean;
+  /** The word the decision stamp carries: `yes` for a ratification, `no` for a
+      veto (the register's own reading of a refusal). */
+  word: 'yes' | 'no';
+  /** The verb the owner's line reads: `ratified` or `vetoed`. */
+  verb: 'ratified' | 'vetoed';
+  /** When the owner decided, in milliseconds since the Unix epoch. */
+  at: number;
+  /** The note the owner left, or `null` when they left none. */
+  note: string | null;
+}
+
+/** The owner's decision on a motion, as the sheet's own line reads it, or
+    `null` when the owner has not decided. */
+export function ownerReading(motion: Motion): OwnerReading | null {
+  const d = motion.owner;
+  if (d == null) return null;
+  return {
+    approve: d.approve,
+    word: d.approve ? 'yes' : 'no',
+    verb: d.approve ? 'ratified' : 'vetoed',
+    at: d.at,
+    note: d.note,
+  };
+}
+
+/** The most an owner's decision `note` may occupy, in bytes — the daemon's own
+    bound (`crates/noded/src/council.rs` `MAX_DECISION_NOTE`), so the console
+    refuses a note the daemon would refuse, at the field, rather than
+    round-tripping its 400. */
+export const MAX_DECISION_NOTE = 1000;
+
+/** How a decision the console took ended: `deciding` while the POST is in
+    flight, `taken` the node recorded it, `refused` the node refused it (the
+    409s — not owner-gated, or already decided — and every other contract
+    refusal), `unknown` no motion with that id, `unreachable` the node was never
+    reached. The status alone decides, so a refusal is never dressed up as a
+    decision. */
+export type DecisionState = 'deciding' | 'taken' | 'refused' | 'unknown' | 'unreachable';
+
+/** The state a decide ended in, from the status the daemon answered with — or
+    from no answer at all (`null`: the node was never reached). */
+export function decisionStateOf(status: number | null): DecisionState {
+  if (status === 200) return 'taken';
+  if (status === 404) return 'unknown';
+  if (status == null) return 'unreachable';
+  return 'refused';
+}
+
+/** Read the optional note box: an empty (or all-whitespace) box is the owner's
+    own "no note" (`{ note }` absent, which the daemon records as `null`), and a
+    note past the daemon's byte bound is named at the field. The note is
+    otherwise sent as the owner wrote it — never trimmed, since it is the
+    record of their decision. */
+export function parseDecisionNote(text: string): { note?: string } | { error: string } {
+  if (text.trim() === '') return {};
+  if (utf8ByteLength(text) > MAX_DECISION_NOTE) {
+    return { error: `the note is longer than ${MAX_DECISION_NOTE} bytes` };
+  }
+  return { note: text };
 }
 
 /** The council's own figures, as the sheet's tally strip reads them. */
@@ -359,4 +504,6 @@ export const STATE_LABEL: Readonly<Record<MotionState, string>> = {
   rejected: 'rejected',
   tie_to_owner: 'tie — to the owner',
   awaiting_owner: 'awaiting the owner',
+  ratified: 'ratified',
+  vetoed: 'vetoed',
 };

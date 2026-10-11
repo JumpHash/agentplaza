@@ -2,9 +2,11 @@
    page. One ruled row per motion — the folio in the margin, the proposer's
    seat and CID as chips, the kind as a chip, the motion as prose, the count as
    a mark, and the tally as a small ruled bar of the seats beside its figures —
-   with the seats' votes and the owner's gate hanging beneath it as sub-rows.
-   Same palette and type as the market and the talk; orange is the owner's
-   alone, and only the two states the owner's hand moves wear it. */
+   with the seats' votes and the owner's gate hanging beneath it as sub-rows,
+   and, under a gated motion, the owner's decide control (arm → confirm →
+   Ratify/Veto). Same palette and type as the market and the talk; orange is
+   the owner's alone, and only the two states the owner's hand moves wear it —
+   a decided motion keeps the ink and crit decision stamps, never orange. */
 
 /* the tally strip is also the filter: each figure is a press */
 [data-view="council"] .tally button.figure { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; text-align: left; }
@@ -59,3 +61,31 @@
   #council-table td.motiontext { min-width: 160px; }
   #council-table td.tallycell { min-width: 160px; }
 }
+
+/* the owner's hand: the decide control under a gated motion, the owner's own
+   line under a decided one, and the note under a motion the council decided
+   itself. The block is a small grid inside the spanning sub-row cell, so it
+   wraps the way the motion's prose does rather than forcing the row wide. */
+#council-table tr.sub.decide td,
+#council-table tr.sub.ownerline td,
+#council-table tr.sub.stand td { border-bottom: 1px solid var(--rule); }
+.decideblock { display: grid; gap: 8px; max-width: 72ch; }
+.decideblock > .btn, .decideblock > .m { justify-self: start; }
+.decideblock > .stopconfirm { width: 100%; }
+.decideblock > .m { color: var(--ink-3); }
+/* the note's count reads the daemon's own byte bound; past it the count turns
+   the register's crit so the field says so before the node has to */
+.notecount { font: 11.5px var(--mono); color: var(--ink-3); margin: 0; }
+.notecount.over { color: var(--crit); }
+.decideblock .actions { margin-top: 2px; }
+/* the owner's line: the decision stamp carries the word the hand said (the
+   veto's 'no' bolded), the sentence carries the stamp, the note is prose */
+#council-table tr.sub.ownerline td { color: var(--ink); }
+#council-table tr.sub.ownerline .why { font: 14px/1.45 var(--serif); color: var(--ink); }
+#council-table tr.sub.ownerline .why b { font-weight: 700; }
+#council-table tr.sub.ownerline .stamp { margin-right: 10px; }
+#council-table tr.sub.ownerline .stamp b { font-weight: 700; letter-spacing: .04em; }
+/* why the owner has no control on a motion the council decided itself: a plain
+   ruled line, never the copy's red double margin rule (that is for the
+   confirmations that commit something) */
+#council-table tr.sub.stand .whynot { display: block; padding-left: 14px; border-left: 3px dotted var(--rule); font: 13px/1.45 var(--serif); color: var(--ink-2); }

@@ -14,7 +14,7 @@ import { store } from './store';
 import { renderBoard } from './views/board';
 import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
 import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
-import { initCouncil, renderCouncil } from './views/council';
+import { initCouncil, disarmCouncil, renderCouncil } from './views/council';
 import { floorState, initFloor, syncFloor, syncFloorVisibility } from './views/floor';
 import { initKeys, keysOpen, toggleKeys } from './views/keys';
 import { initLedger, renderLedger } from './views/ledger';
@@ -49,6 +49,8 @@ function show(): void {
     }
   }
   if (route.name === 'ledger') store.taskDetailId = route.param;
+  /* leaving the council sheet disarms any decide the owner had armed there */
+  if (route.name !== 'council') disarmCouncil();
   window.scrollTo(0, 0);
   /* the first fetch of any view fires even in a hidden tab */
   store.ensurePolled();
@@ -265,6 +267,7 @@ window.__PLAZA_DIAG__ = {
   },
   get council() {
     const t = councilTally(store.motions);
+    const d = store.lastDecision;
     return {
       motions: store.motions.length,
       total: store.motionsTotal,
@@ -275,6 +278,7 @@ window.__PLAZA_DIAG__ = {
       filter: store.motionFilter,
       error: store.motionsError,
       errorStatus: store.motionsErrorStatus,
+      decision: d == null ? null : { id: d.id, state: d.state, status: d.status },
     };
   },
 };

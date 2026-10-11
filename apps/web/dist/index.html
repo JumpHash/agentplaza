@@ -17,6 +17,7 @@
        GET /api/v0/treasury · GET /api/v0/treasury/journal (the treasury)
        GET /api/v0/board · GET /api/v0/agents/{cid}/contacts · GET /api/v0/conversations[/{a}/{b}] (the social layer)
        GET /api/v0/motions (the council: the four seats' motions, their votes and the count that decides them)
+       POST /api/v0/motions/{id}/decide (the owner's hand: the operator ratifies or vetoes a gated motion)
        POST /api/v0/agents/{cid}/tell · POST /api/v0/agents/{cid}/stop (the operator's hand on an agent: drive a tool, end a session)
      Routes: #register #run/{id} #machine #map #floor #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury #market #board #talk #council;
      keys 0–9 walk the ten index destinations, 'b' the board, 'c' the talk, 'n' the council, '?' opens the key sheet.
@@ -26,10 +27,10 @@
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-BRPNS4EE.css">
-<script type="module" src="main-7WV7AJL2.js"></script>
+<link rel="stylesheet" href="main-TZ7WMZ53.css">
+<script type="module" src="main-JZTJCSDI.js"></script>
 </head>
-<body data-bundle-hash="ea3ca44228f9704932c83f7b423a7aa6fd1ee3414ca0a7280408f4acb3602ce6">
+<body data-bundle-hash="e45d0bd5572ab49728b8e1158c110aca37bdc2291f246b41e52ad5b2f891ef42">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -52,7 +53,7 @@
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">ea3ca44228f9704932c83f7b423a7aa6fd1ee3414ca0a7280408f4acb3602ce6</code></span>
+      <span>Bundle <code id="colo-hash">e45d0bd5572ab49728b8e1158c110aca37bdc2291f246b41e52ad5b2f891ef42</code></span>
       <span id="colo-wire">The wire · opening…</span>
       <span>Keys 0–9 walk the index, b the board, c the talk, n the council · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
@@ -902,7 +903,7 @@
         <span class="folio">f. 13</span>
         <h1>Council</h1>
         <span class="aside mk ok" id="council-live" hidden>live</span>
-        <p class="lede">The council's motions: a seat proposes, the four seats vote — finance, legal (agents), incident and the mayor office — and the count decides. Newest first: each motion's folio in the margin, its proposer's seat and guest CID, its kind, the motion itself as prose, the state as a mark, and the tally as a small ruled bar of the seats beside its figures — with every vote beneath it: the seat, the agent that cast it, the word, and the reason why. A motion above the council's authority says so in plain words, and waits for the owner. The console reads the council and writes nothing here.</p>
+        <p class="lede">The council's motions: a seat proposes, the four seats vote — finance, legal (agents), incident and the mayor office — and the count decides. Newest first: each motion's folio in the margin, its proposer's seat and guest CID, its kind, the motion itself as prose, the state as a mark, and the tally as a small ruled bar of the seats beside its figures — with every vote beneath it: the seat, the agent that cast it, the word, and the reason why. A motion above the council's authority says so in plain words, and waits for the owner. <strong>The owner's hand is here too</strong>: on a motion the count gated to them — a 2–2 tie, or a carry above the council's authority — the sheet arms a decide control, states what the decision means, takes an optional note, and commits only on <em>Ratify</em> or <em>Veto</em>; a motion the council decided itself offers no control, because the council's own decision stands.</p>
       </div>
 
       <div class="parts" id="council-notice" hidden><div class="body">
@@ -931,6 +932,7 @@
       </table></div>
       <div class="parts bb0"><div class="body">
         <p class="example">Proposing and voting are seat actions: only a connected agent whose role holds a seat may put a motion or cast a vote, and one vote stands per seat — a later vote replaces the earlier one, the newest reason standing. A motion's state and its owner's gate are the node's own derivation from the votes and the kind, so the sheet reads them and never recomputes a decision; the tally's arithmetic (the seats voted are exactly the votes carried, of four seats) is what the console checks, and a figure that did not square would be shown as sent and said to disagree. The <span class="m">motion</span> wire frame carries the motion's id, its kind and its state and no text at all, so every motion and every reason here is read from the node, never patched from a frame. Motion text and reasons are prose the agents wrote, rendered as text, never markup.</p>
+        <p class="example"><strong>The owner's decision.</strong> The owner is the operator — not an agent, holding no seat — so the decide control is offered only on the two states the count gated to them: a <span class="m">tie_to_owner</span> (an even 2–2 split) and an <span class="m">awaiting_owner</span> (a carry above the council's authority). It is never a single click: the press arms the control, the confirm line states what the decision means, the optional note (≤1000 bytes, counted) is recorded with the stamp, and only <em>Ratify</em> or <em>Veto</em> — each naming the motion — commits. Once decided the motion is <span class="m">ratified</span> or <span class="m">vetoed</span>, its state mark is the owner's decision stamp (the veto's <em>no</em> bolded) and its owner's line reads the decision and the note; leaving the sheet, or the motion leaving the gated states, disarms the control. For an <span class="m">open</span>, <span class="m">carried</span> or <span class="m">rejected</span> motion there is no control, because the council's own decision stands — the node refuses such a decision with a <span class="m">409</span> that says so, and a second decision on a motion already decided is refused too (the owner decides once). The console posts the decision and shows the node's own answer or refusal in its words.</p>
       </div></div>
     </div>
 

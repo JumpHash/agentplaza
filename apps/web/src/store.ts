@@ -4,13 +4,13 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getMotions, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, stopAgent as stopAgentApi, tellAgent } from './api';
+import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getMotions, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, decideMotion as decideMotionApi, stopAgent as stopAgentApi, tellAgent } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { Call } from './models/agora';
 import type { ArtifactReadState } from './models/artifact';
 import { readStateOf } from './models/artifact';
-import type { Motion, MotionState } from './models/council';
-import { motionSeq } from './models/council';
+import type { DecisionState, Motion, MotionState } from './models/council';
+import { decisionStateOf, motionSeq } from './models/council';
 import type { RunSlice } from './models/history';
 import { SessionHistory } from './models/history';
 import type { HubStatus } from './models/hub';
@@ -147,6 +147,9 @@ declare global {
         readonly filter: string | null;
         readonly error: string | null;
         readonly errorStatus: number | null;
+        /** The owner's last decision, if any: which motion, how it ended, and
+            the status. */
+        readonly decision: { readonly id: string; readonly state: string; readonly status: number | null } | null;
       };
     };
   }
@@ -232,6 +235,26 @@ export interface StopRead {
   /** The HTTP status, or null when the node never answered. */
   status: number | null;
   /** When the stop settled (or started), in the console's clock. */
+  at: number;
+}
+
+/** One owner's decision the console took on a motion — the motion it names,
+    whether the owner ratified or vetoed, and the node's own answer or refusal,
+    kept as it came. Like a driven call and a stop it is the owner's hand alone,
+    set only by a click and never by a poll. */
+export interface DecisionRead {
+  /** The motion the owner decided. */
+  id: string;
+  /** Whether the owner approved it (`true` ratified, `false` vetoed). */
+  approve: boolean;
+  /** The note the console sent ('' when the box was empty). */
+  note: string;
+  state: DecisionState;
+  /** Whoever refused, in their own words — verbatim, never paraphrased. */
+  detail: string;
+  /** The HTTP status, or null when the node never answered. */
+  status: number | null;
+  /** When the decision settled (or started), in the console's clock. */
   at: number;
 }
 
@@ -386,6 +409,10 @@ export class Store {
       the owner's hand alone, set only by a click, and the console reads its
       result from here for the agent it names (its own `cid`). */
   lastStop: StopRead | null = null;
+  /** The last owner's decision the console took on a motion, whatever motion —
+      the node's own answer or the refusal, kept as it came. The owner's hand
+      alone, set only by a click. */
+  lastDecision: DecisionRead | null = null;
   /** Every run fetched with serial, by id (map/floor poll each open run). */
   readonly details = new Map<string, Run>();
   detailError: string | null = null;
@@ -442,6 +469,10 @@ export class Store {
   private readonly tellReq = new Map<number, number>();
   /** The newest stop's serial, per agent: an older answer never overwrites it. */
   private readonly stopReq = new Map<number, number>();
+  /** The newest decision's serial, per motion: an older answer never
+      overwrites it (the owner decides a motion once, but a refusal and a fresh
+      try must not cross in flight). */
+  private readonly decisionReq = new Map<string, number>();
 
   get health(): Health {
     if (this.lastOkAt === 0) return this.lastErrAt > 0 ? 'down' : 'stale';
@@ -1150,6 +1181,68 @@ export class Store {
       void this.pollList();
       void this.pollHub();
     }, EVENT_REFRESH_MS);
+  }
+
+  /** Decide a motion the count gated to the owner, through the daemon's decide
+      endpoint. This is the owner's hand alone: it records the decision on the
+      register (the owner decides a motion once), so it is called from a click
+      and never from a poll. The node's own answer is the motion, decided, and
+      it replaces the row the console holds; the council is then asked once more
+      (coalesced) — the same refresh a `motion` frame asks for, so a frame and
+      the POST's answer converge on one read rather than racing. A refusal is
+      whoever wrote it, verbatim (the two 409s above all: not owner-gated, and
+      already decided). The newest decision per motion wins; an older answer
+      that arrives after a newer click is dropped. */
+  async decideMotion(id: string, approve: boolean, note?: string): Promise<void> {
+    const req = (this.decisionReq.get(id) ?? 0) + 1;
+    this.decisionReq.set(id, req);
+    this.lastDecision = {
+      id,
+      approve,
+      note: note ?? '',
+      state: 'deciding',
+      detail: '',
+      status: null,
+      at: Date.now(),
+    };
+    this.scheduleRender();
+    try {
+      const motion = await decideMotionApi(id, approve, note);
+      if (this.decisionReq.get(id) !== req) return;
+      this.lastDecision = {
+        id,
+        approve,
+        note: note ?? '',
+        state: decisionStateOf(200),
+        detail: '',
+        status: 200,
+        at: Date.now(),
+      };
+      /* the node's own answer is the motion with its `owner` set: replace the
+         row the console already holds (the id and its place are unchanged),
+         and let the coalesced refresh reconcile anything else */
+      this.motions = this.motions.map((m) => (m.id === id ? motion : m));
+      this.noteOk();
+    } catch (err) {
+      /* a refusal is the daemon's own words — kept verbatim; the status tells
+         them apart (404 no such motion, 409 not owner-gated or already decided,
+         400 a body outside the contract) */
+      if (this.decisionReq.get(id) !== req) return;
+      const status = err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      const message = err instanceof Error ? err.message : String(err);
+      this.lastDecision = {
+        id,
+        approve,
+        note: note ?? '',
+        state: decisionStateOf(status),
+        detail: message,
+        status,
+        at: Date.now(),
+      };
+      this.noteErr();
+    }
+    this.queueMotionsRefresh();
+    this.scheduleRender();
   }
 
   /** The CIDs the console can still drive: the register's role VMs (when the

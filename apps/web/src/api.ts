@@ -5,8 +5,8 @@ import type { Calls } from './models/agora';
 import { parseAgora } from './models/agora';
 import type { TaskArtifact } from './models/artifact';
 import { parseArtifact } from './models/artifact';
-import type { Motions } from './models/council';
-import { parseMotions } from './models/council';
+import type { Motion, Motions } from './models/council';
+import { parseMotion, parseMotions } from './models/council';
 import type { HubStatus } from './models/hub';
 import { parseHubStatus } from './models/hub';
 import type { Machine } from './models/machine';
@@ -189,6 +189,31 @@ export async function getAgora(): Promise<Calls> {
 /** The council's motions, newest first, bounded to the node's own window. */
 export async function getMotions(): Promise<Motions> {
   return parseMotions(await api<unknown>('/api/v0/motions'));
+}
+
+/** Decide a motion the count gated to the owner, through the daemon's decide
+    endpoint — the owner's hand, and the operator's whole (crates/noded
+    `motion_decide`): the body names no agent CID, because the owner is the
+    operator, who holds no seat and has no session. `approve: true` ratifies the
+    motion (`ratified`), `false` vetoes it (`vetoed`); the optional note is
+    recorded with the stamp, and the node answers the whole motion with its
+    `owner` column set.
+
+    A POST, and deliberately so: it changes the record — the owner decides a
+    motion once — so a prefetcher or a retry must not replay it; only the
+    owner's hand calls this. Every non-200 carries the daemon's own error string
+    verbatim (the `api` client keeps it in the `ApiError`), and the two 409s are
+    the doctrine itself: a motion that is not owner-gated explains that the
+    council's own decision stands, and a motion already decided explains that
+    the owner decides once. The 400s are the endpoint's own contract (`approve`
+    absent or non-boolean, an empty or over-long note), the 404 no such motion,
+    the 405 any method but POST. */
+export async function decideMotion(id: string, approve: boolean, note?: string): Promise<Motion> {
+  const body: { approve: boolean; note?: string } = { approve };
+  if (note != null && note.trim() !== '') body.note = note;
+  return parseMotion(
+    await api<unknown>(`/api/v0/motions/${encodeURIComponent(id)}/decide`, { method: 'POST', body }),
+  );
 }
 
 /* ------------------------------------------------------------ the social layer
