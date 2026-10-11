@@ -19,7 +19,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::request;
-use noded::hub::Hub;
 
 /// How long the churn run is given to finish: the guests heartbeat every five
 /// seconds and reboot after two beats.
@@ -63,7 +62,6 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         port: 0,
         kernel: PathBuf::from(noded::DEFAULT_KERNEL),
         initrd: root.join(noded::DEFAULT_INITRD),
-        console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir: uds_dir.clone(),
         workspace: None,
         // The smoke run is the churn path, not the fleet: no initial agents.
@@ -274,7 +272,6 @@ fn a_task_is_claimed_by_a_connected_agent_and_finished() {
         port: 0,
         kernel: PathBuf::from(noded::DEFAULT_KERNEL),
         initrd: root.join(noded::DEFAULT_INITRD),
-        console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir,
         workspace: None,
         // The one role's guest CID.
@@ -420,7 +417,6 @@ fn an_agora_call_is_bid_on_and_awarded_by_a_connected_agent() {
         port: 0,
         kernel: PathBuf::from(noded::DEFAULT_KERNEL),
         initrd: root.join(noded::DEFAULT_INITRD),
-        console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir,
         workspace: None,
         agents_cid_base: CID,
@@ -739,11 +735,9 @@ fn the_social_layer_is_live_over_two_connected_agents() {
         port: 0,
         kernel: PathBuf::from(noded::DEFAULT_KERNEL),
         initrd: root.join(noded::DEFAULT_INITRD),
-        console_dir: root.join(noded::DEFAULT_CONSOLE_DIR),
         uds_dir,
         workspace: None,
         // The hub is the stub above.
-        hub: Some(Hub::new(admin_port)),
         agents_cid_base: BUILDER,
         ..noded::Config::default()
     };

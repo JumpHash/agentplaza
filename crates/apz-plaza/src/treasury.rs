@@ -95,7 +95,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 
 use crate::events::{Event, EventBus};
-use crate::registry::now_ms;
+use crate::now_ms;
 
 /// The `owner_ref` of the single `mint` account: the fixed name the schema's
 /// tests give it.

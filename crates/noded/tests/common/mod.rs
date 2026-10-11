@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use noded::hub::Hub;
 use noded::{Config, Server};
 
 /// How long a test waits for a response before failing.

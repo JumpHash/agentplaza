@@ -70,7 +70,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::registry::{ConnectedAgent, now_ms};
+use crate::{ConnectedAgent, now_ms};
 use crate::treasury::{PostError, Treasury};
 
 /// The most tasks the ledger holds. v0 never removes a task (a task ends
@@ -393,7 +393,7 @@ pub struct FinishRequest {
 impl FinishRequest {
     /// Checks the request's own fields, or says why it is outside the
     /// contract.
-    pub(crate) fn checked(&self) -> Result<(), String> {
+    pub fn checked(&self) -> Result<(), String> {
         optional_text("note", &self.note, MAX_TEXT).map(|_| ())
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "apz-plaza"
+description = "The AgentPlaza domain: tasks, treasury, agora, board and conversations, council — pure state, no I/O"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

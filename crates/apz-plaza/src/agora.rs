@@ -126,7 +126,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 
 use crate::events::{Event, EventBus};
-use crate::registry::{now_ms, ConnectedAgent};
+use crate::{now_ms, ConnectedAgent};
 use crate::tasks::Task;
 
 /// The most bids one call holds. A fresh bid past the cap is refused (a 409);

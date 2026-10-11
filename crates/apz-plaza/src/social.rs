@@ -120,8 +120,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::hub::{self, Hub, TellOutcome};
-use crate::registry::{ConnectedAgent, now_ms};
+use crate::{ConnectedAgent, now_ms};
 use crate::tasks::{self, Task};
 
 /// The most posts the board holds. v0 never removes a post (a post is the
@@ -743,8 +742,9 @@ impl Social {
         self.link(agent, peer, MET)
     }
 
-    /// Records one exchange: `from` speaks `text` to `to`, and the call is
-    /// delivered to `to`'s session through the hub.
+    /// Records one exchange: `from` speaks `text` to `to`; `deliver` hands it
+    /// to `to` (apid queues it as work) and says whether it was taken and, if
+    /// not, why.
     ///
     /// The row is written **after** the delivery attempt, so it is never a
     /// placeholder: one lock checks the record's room, the delivery runs
@@ -758,7 +758,7 @@ impl Social {
         from: &ConnectedAgent,
         to: &ConnectedAgent,
         text: &str,
-        admin: Option<&Hub>,
+        deliver: &dyn Fn(&ConnectedAgent, &ConnectedAgent, &str) -> (bool, Option<String>),
     ) -> Result<ConversationView, SocialError> {
         if from.cid == to.cid {
             return Err(SocialError::Conflict(format!(
@@ -770,7 +770,7 @@ impl Social {
             let inner = self.lock();
             full(&inner)?;
         }
-        let (delivered, delivery) = deliver(from, to, text, admin);
+        let (delivered, delivery) = deliver(from, to, text);
         let mut inner = self.lock();
         // The room is re-checked under the lock the row is filed in: two
         // exchanges racing the same full record must not both land.
@@ -981,43 +981,6 @@ fn full(inner: &SocialInner) -> Result<(), SocialError> {
     Ok(())
 }
 
-/// Delivers one exchange to the peer's session as the contract's `conversation`
-/// tool call, through the hub.
-///
-/// Returns whether the peer's session took it, and — when it did not — the
-/// reason the row records: the agent's own refusal, the hub's own words with
-/// its status, an admin that could not be reached, or this daemon's statement
-/// that it has nowhere to send the call.
-fn deliver(
-    from: &ConnectedAgent,
-    to: &ConnectedAgent,
-    text: &str,
-    admin: Option<&Hub>,
-) -> (bool, Option<String>) {
-    let Some(admin) = admin else {
-        return (false, Some("hub admin is not configured".to_string()));
-    };
-    let args = serde_json::json!({
-        "from_role": from.assignee_id(),
-        "from_cid": from.cid,
-        "text": text,
-    });
-    match hub::tell(admin, to.cid, CONVERSATION_TOOL, args, hub::TELL_TIMEOUT_MS) {
-        TellOutcome::Answered { ok: true, .. } => (true, None),
-        // The agent answered and refused: its own words are the reason.
-        TellOutcome::Answered { ok: false, output } => (false, Some(output)),
-        // The hub refused (a role the manifest does not grant the tool, a CID
-        // it does not serve, a session that is not connected, a timeout): its
-        // own words, with the status it answered with.
-        TellOutcome::Refused { status, message } => {
-            (false, Some(format!("the hub refused with {status}: {message}")))
-        }
-        TellOutcome::Unreachable(reason) => {
-            (false, Some(format!("hub admin unreachable: {reason}")))
-        }
-    }
-}
-
 /// The hiring note's body: a template over the task's own fields — what the
 /// call wants, and how it will be judged. Clamped to the board's cap, because
 /// a task's goal may be as long as the ledger allows.
@@ -1106,10 +1069,7 @@ fn to_usize(count: u64) -> usize {
 mod tests {
     use super::*;
     use crate::tasks::{CreateTask, TaskLedger};
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc::Receiver;
-    use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
     /// A connected agent with a role, as the register would report one.
@@ -1612,7 +1572,7 @@ mod tests {
         let reviewer = agent(102, "reviewer");
 
         let first = social
-            .say(&builder, &librarian, "do you have the plans?", None)
+            .say(&builder, &librarian, "do you have the plans?", &|_, _, _| (true, None))
             .expect("a room in the record");
         assert_eq!(first.id, "c1");
         assert_eq!(first.from_cid, 100);
@@ -1620,16 +1580,14 @@ mod tests {
         assert_eq!(first.from_role, "builder");
         assert_eq!(first.to_role, "librarian");
         assert_eq!(first.text, "do you have the plans?");
-        // No admin surface to send the call through: the row says so rather
-        // than pretending the peer heard it.
-        assert!(!first.delivered);
-        assert_eq!(first.delivery.as_deref(), Some("hub admin is not configured"));
+        assert!(first.delivered);
+        assert_eq!(first.delivery, None);
         let second = social
-            .say(&librarian, &builder, "yes", None)
+            .say(&librarian, &builder, "yes", &|_, _, _| (true, None))
             .expect("a room in the record");
         assert_eq!(second.id, "c2");
         social
-            .say(&builder, &reviewer, "unrelated", None)
+            .say(&builder, &reviewer, "unrelated", &|_, _, _| (true, None))
             .expect("a room in the record");
 
         // The record is newest first, bounded.
@@ -1682,12 +1640,12 @@ mod tests {
                 id: "c1".to_string(),
                 from_cid: 100,
                 to_cid: 101,
-                delivered: false,
+                delivered: true,
             })
         );
         // And an agent does not speak to itself.
         assert_eq!(
-            social.say(&builder, &builder, "hello me", None).unwrap_err(),
+            social.say(&builder, &builder, "hello me", &|_, _, _| (true, None)).unwrap_err(),
             SocialError::Conflict("guest CID 100 cannot speak to itself".to_string())
         );
     }
@@ -1770,7 +1728,7 @@ mod tests {
         }
         assert_eq!(
             social
-                .say(&builder, &librarian, "one more", None)
+                .say(&builder, &librarian, "one more", &|_, _, _| (true, None))
                 .unwrap_err(),
             SocialError::Conflict(format!(
                 "the conversation record is full ({MAX_CONVERSATIONS} exchanges)"
@@ -1806,144 +1764,6 @@ mod tests {
             .checked()
             .is_ok(),
             "the cap is inclusive"
-        );
-    }
-
-    /// A stub admin surface: binds an ephemeral loopback port and answers each
-    /// of `answers` in turn, handing back the requests it read.
-    fn stub_admin(answers: Vec<String>) -> (u16, JoinHandle<Vec<String>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("the stub admin binds");
-        let port = listener.local_addr().expect("a bound address").port();
-        let handle = thread::spawn(move || {
-            let mut seen = Vec::new();
-            for raw in answers {
-                let (stream, _peer) = listener.accept().expect("the daemon connects");
-                seen.push(serve_stub(stream, &raw));
-            }
-            seen
-        });
-        (port, handle)
-    }
-
-    /// Reads one request off `stream` and answers it with `raw`.
-    fn serve_stub(mut stream: TcpStream, raw: &str) -> String {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .expect("a read timeout");
-        let mut reader = BufReader::new(stream.try_clone().expect("the stub clones its socket"));
-        let mut head = String::new();
-        let mut content_length = 0usize;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).expect("a header line") == 0 {
-                break;
-            }
-            if let Some((name, value)) = line.trim_end().split_once(':')
-                && name.eq_ignore_ascii_case("content-length")
-            {
-                content_length = value.trim().parse().unwrap_or(0);
-            }
-            let done = line == "\r\n" || line == "\n";
-            head.push_str(&line);
-            if done {
-                break;
-            }
-        }
-        let mut body = vec![0u8; content_length];
-        if content_length > 0 {
-            reader.read_exact(&mut body).expect("the request body");
-        }
-        stream.write_all(raw.as_bytes()).expect("the stub answers");
-        stream.flush().expect("the answer is flushed");
-        format!("{head}{}", String::from_utf8_lossy(&body))
-    }
-
-    /// A stub answer with its own length.
-    fn answer(status: &str, body: &str) -> String {
-        format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\n\
-             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-    }
-
-    #[test]
-    fn a_delivery_is_the_contracts_tool_call_and_its_outcome_is_the_rows() {
-        // Three answers, in the order the three exchanges are made: the peer's
-        // session takes it, the agent refuses it, the hub refuses the tool.
-        let (port, stub) = stub_admin(vec![
-            answer("200 OK", r#"{"ok":true,"output":"heard"}"#),
-            answer("200 OK", r#"{"ok":false,"output":"denied: no such tool"}"#),
-            answer(
-                "403 Forbidden",
-                r#"{"ok":false,"output":"role librarian does not grant conversation"}"#,
-            ),
-        ]);
-        let admin = Hub::new(port);
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-
-        let taken = social
-            .say(&builder, &librarian, "the plans?", Some(&admin))
-            .expect("a room in the record");
-        assert!(taken.delivered, "the peer's session answered ok");
-        assert_eq!(taken.delivery, None);
-
-        let refused = social
-            .say(&builder, &librarian, "again?", Some(&admin))
-            .expect("a room in the record");
-        assert!(!refused.delivered);
-        assert_eq!(refused.delivery.as_deref(), Some("denied: no such tool"));
-
-        let denied = social
-            .say(&builder, &librarian, "third?", Some(&admin))
-            .expect("a room in the record");
-        assert!(!denied.delivered);
-        assert_eq!(
-            denied.delivery.as_deref(),
-            Some(
-                "the hub refused with 403: \
-                 {\"ok\":false,\"output\":\"role librarian does not grant conversation\"}"
-            ),
-            "the hub's own answer, with the status it answered with"
-        );
-
-        // What the daemon asked the hub for: the contract's tool, on the
-        // peer's CID, with the speaker and the words in its arguments.
-        let seen = stub.join().expect("the stub read every request");
-        assert_eq!(seen.len(), 3);
-        for request in &seen {
-            assert!(request.starts_with("POST /v1/agents/101/tell HTTP/1.1"), "{request}");
-            assert!(
-                request.contains(r#""name":"conversation""#),
-                "the contract's tool name: {request}"
-            );
-            assert!(request.contains(r#""from_role":"builder""#), "{request}");
-            assert!(request.contains(r#""from_cid":100"#), "{request}");
-        }
-        assert!(seen[0].contains(r#""text":"the plans?""#), "{}", seen[0]);
-        assert!(seen[1].contains(r#""text":"again?""#), "{}", seen[1]);
-    }
-
-    #[test]
-    fn a_delivery_to_an_unreachable_admin_is_recorded_in_the_agents_own_words() {
-        // A port nothing is listening on: the connect is refused, and the row
-        // says the admin could not be reached rather than blaming the peer.
-        let free = TcpListener::bind("127.0.0.1:0").expect("a free port");
-        let port = free.local_addr().expect("a bound address").port();
-        drop(free);
-        let admin = Hub::new(port);
-        let (social, _notes) = lab();
-        let row = social
-            .say(&agent(100, "builder"), &agent(101, "librarian"), "hello?", Some(&admin))
-            .expect("the exchange is still recorded");
-        assert!(!row.delivered);
-        let reason = row.delivery.clone().expect("a reason");
-        assert!(reason.starts_with("hub admin unreachable: "), "{reason}");
-        assert!(
-            reason.contains(&port.to_string()),
-            "the reason names the surface it could not reach"
         );
     }
 

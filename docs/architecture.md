@@ -82,7 +82,7 @@ else the plaza default.
 | `gemini` | Gemini `generateContent` (streaming) | `x-goog-api-key` (`GEMINI_API_KEY`) |
 | `bedrock` | Bedrock Converse | SigV4 (`AWS_*`) or bearer (`AWS_BEARER_TOKEN_BEDROCK`) |
 | `vertex-anthropic`, `vertex-gemini` | Vertex AI | bearer from a command (`gcloud auth print-access-token`) |
-| `openai-compatible` | Chat Completions | bearer / none — presets: xAI (`reasoning_effort`), DeepSeek, Groq, Mistral, OpenRouter, Together, Fireworks, Perplexity, Cerebras, NVIDIA NIM, Ollama, LM Studio, vLLM, llama.cpp |
+| `openai-compatible` | Chat Completions | bearer / none — presets: xAI (`reasoning_effort`), DeepSeek (`reasoning_content` replayed — required with tools), Z.ai GLM, Moonshot Kimi, Groq, Mistral, OpenRouter, Together, Fireworks, Perplexity, Cerebras, NVIDIA NIM, Ollama, LM Studio, vLLM, llama.cpp |
 | `mock` | deterministic, offline | none — tests and demos |
 
 ### Model policy (owner's rule, enforced by `apid`)
@@ -95,14 +95,14 @@ agent that plans and delegates to all the others); every other role is the
 | tier | allowed models |
 |---|---|
 | orchestrator | `anthropic/claude-opus-5-5` (Claude Opus 5.5), `anthropic/claude-fable-5-1` (Claude Fable 5.1), `openai/gpt-6-astra` (Astra), `xai/grok-4.7` (Grok 4.7) |
-| worker | `anthropic/claude-haiku-5-5` (Haiku 5.5), `anthropic/claude-opus-5-5@low` (Opus 5.5, low effort), `openai/gpt-6-luna` (Luna), `openai/gpt-5.6-terra` (Terra), `xai/grok-4.7@low` (Grok 4.7, low effort) |
+| worker | `deepseek/deepseek-flash` (DeepSeek V4.1 Flash), `anthropic/claude-haiku-5-5` (Haiku 5.5), `anthropic/claude-opus-5-5@low` (Opus 5.5, low effort), `openai/gpt-6-luna` (Luna), `openai/gpt-5.6-terra` (Terra), `xai/grok-4.7@low` (Grok 4.7, low effort) |
 
 Defaults: orchestrator `anthropic/claude-opus-5-5`, worker
-`anthropic/claude-haiku-5-5`. Setting a model outside the tier's list (agent,
+`deepseek/deepseek-flash` (most agents run it). Setting a model outside the tier's list (agent,
 role default, plaza default) is refused with `400` naming the allowed list, and
 a model call whose resolved model is not allowed fails closed (the agent gets
 a model error; nothing is sent to a provider). The lists live in
-`settings.model_policy` and only the owner changes them. Server-side refusal
+`settings.model_policy`; only the owner changes them (the Models screen), e.g. to admit GLM, Kimi or a local model to a tier. Server-side refusal
 fallbacks are off (their fallback models would be outside the lists).
 
 `apid --dev-models` relaxes the policy for development and tests only (the

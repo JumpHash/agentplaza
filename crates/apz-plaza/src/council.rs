@@ -136,7 +136,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::registry::{now_ms, ConnectedAgent};
+use crate::{now_ms, ConnectedAgent};
 use crate::tasks::{optional_text, required_text};
 
 /// The seat the head of **Finance** holds (S-008 / 0034).

@@ -2,21 +2,17 @@
 //!
 //! ```text
 //! noded [--port 8899] [--kernel /boot/vmlinuz-linux]
-//!       [--initrd target/guest/initrd.x86_64.gz] [--hub-port 19080|off]
+//!       [--initrd target/guest/initrd.x86_64.gz]
 //! ```
 //!
-//! Binds `127.0.0.1` only and serves the `/v1` API plus the console's static
-//! files (see the crate documentation). `--hub-port` is the hub's HTTP port:
-//! `GET /v1/hub` proxies its status and `/v1/agents/{cid}/{tell,stop}`, the
-//! artifact read-through and the social delivery drive agents through it. The
-//! guest images and the console are read relative to the working directory,
+//! Binds `127.0.0.1` only and serves the `/v1` VM API (see the crate
+//! documentation). Guest images are read relative to the working directory,
 //! so the daemon is started from the repository root.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use noded::fleet::Fleet;
-use noded::hub::Hub;
 use noded::registry::Detail;
 use noded::{Config, Server};
 
@@ -24,7 +20,6 @@ const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--workspace IMAGE] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
-             [--hub-port PORT|off]
 
   --port PORT      port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH    guest kernel image (default /boot/vmlinuz-linux)
@@ -43,10 +38,6 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                         (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 128)
   --agents-vcpus N      vCPUs per agent VM (default 1)
-  --hub-port PORT  the hub's (vsockd's) HTTP port on 127.0.0.1 (default 19080):
-                   GET /v1/hub proxies its status, and the agent drive
-                   (tell, stop, artifact, say) goes through it. `off` answers
-                   those endpoints with a 503.
   -h, --help       print this help
 
 Runs. Every VM of every run carries the agent harness (the guest's vsock
@@ -62,8 +53,7 @@ guests run the keepalive agent session, role-less, so a hub that serves the
 run range (vsockd --cids) shows them as connected agents and can drive them,
 and they stay up until the run is killed or `beats` churns the guest.
 
-Serves the /v1 API (runs, tasks, treasury, agora, board, conversations,
-motions, agents, hub, events) and the web app's files from apps/web.";
+Serves the /v1 VM API (machine, runs, events); the plaza is apid's.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -100,24 +90,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
     // exits rather than serving without its agents.
     boot_agents(server.node(), &config)?;
     println!(
-        "noded: listening on http://127.0.0.1:{} (kernel {}, initrd {}, console {})",
+        "noded: listening on http://127.0.0.1:{} (kernel {}, initrd {})",
         server.port(),
         config.kernel.display(),
-        config.initrd.display(),
-        config.console_dir.display()
+        config.initrd.display()
     );
     server.wait().map_err(|err| format!("server error: {err}"))
-}
-
-/// Reads `--hub-port`: a port, or `off`.
-fn parse_hub_port(value: &str) -> Result<Option<Hub>, String> {
-    if value == "off" {
-        return Ok(None);
-    }
-    match value.parse::<u16>() {
-        Ok(port) if port != 0 => Ok(Some(Hub::new(port))),
-        _ => Err(format!("--hub-port: {value:?} is not a port")),
-    }
 }
 
 /// Boots the initial role fleet, or reports why the node cannot serve it.
@@ -198,7 +176,6 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .parse()
                     .map_err(|err| format!("--agents-vcpus: {err}"))?;
             }
-            "--hub-port" => config.hub = parse_hub_port(&value("--hub-port")?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -279,21 +256,9 @@ mod tests {
             vec!["--agents-cid-base".to_string(), "x".to_string()],
             vec!["--agents-memory-mib".to_string(), "x".to_string()],
             vec!["--agents-vcpus".to_string(), "x".to_string()],
-            vec!["--hub-port".to_string()],
-            vec!["--hub-port".to_string(), "0".to_string()],
-            vec!["--hub-port".to_string(), "127.0.0.1:19080".to_string()],
         ] {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }
     }
 
-    #[test]
-    fn the_hub_port_defaults_to_the_hubs_and_can_be_turned_off() {
-        let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(config.hub, Some(Hub::new(19080)));
-        let config = parse_args(["--hub-port", "19090"].map(String::from).to_vec()).expect("a port");
-        assert_eq!(config.hub, Some(Hub::new(19090)));
-        let config = parse_args(["--hub-port", "off"].map(String::from).to_vec()).expect("off");
-        assert_eq!(config.hub, None);
-    }
 }

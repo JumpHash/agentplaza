@@ -122,6 +122,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-plaza"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apz-proto"
 version = "0.1.0"
 dependencies = [
