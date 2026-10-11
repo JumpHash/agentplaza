@@ -423,6 +423,31 @@ fn the_pre_fix_allowlist_killed_the_muxers_write() {
     };
 }
 
+/// **The second death the live fleet and the acceptance matrix found.** A
+/// buffer growing past glibc's 128 KiB mmap threshold is reallocated with
+/// `mremap` (`syscall=25`) — the VMM's serial capture is exactly such a buffer,
+/// and the allowlist the port shipped in `6ce364b` (and `63aee0d`) did not name
+/// it: the armed `apz_vcpu_0` thread was killed by `SIGSYS`, taking the node
+/// daemon with it. The acceptance matrix observed a run lose both its VMs to it
+/// (`sig=31 code=0x80000000`, capture ~131 KiB). The pre-fix list is armed here
+/// to show the kill; the next test shows the fix.
+#[test]
+fn the_pre_fix_allowlist_killed_a_growing_buffer() {
+    let Some(()) = probe_expect("grow", "pre-fix", &[], Expect::Killed) else {
+        return;
+    };
+}
+
+/// The same growth under the shipped allowlist: `mremap` is named, so the
+/// thread that feeds the capture runs. This is the green half of the pair
+/// above, and the reason a long-running VM's console can keep growing.
+#[test]
+fn a_growing_buffer_runs_under_the_fixed_allowlist() {
+    let Some(()) = probe("grow", Expect::Allowed) else {
+        return;
+    };
+}
+
 /// The same write under the shipped allowlist.
 #[test]
 fn the_muxers_write_runs_under_the_fixed_allowlist() {
@@ -699,6 +724,20 @@ fn the_probe_child() {
         "getpid" => {
             // getpid(2): allowlisted → this returns.
             let _ = std::process::id();
+        }
+        "grow" => {
+            // A buffer that grows past glibc's 128 KiB mmap threshold — the
+            // shape of the VMM's serial capture, which starts small and keeps
+            // the guest's console. Past the threshold `realloc` remaps
+            // (`mremap`) instead of copying, so the armed thread that feeds the
+            // capture dies on an allowlist that does not name it. Eight-KiB
+            // steps so the growth passes through the boundary the way the
+            // capture does.
+            let mut buf: Vec<u8> = Vec::with_capacity(4 * 1024);
+            for _ in 0..64 {
+                buf.extend(std::iter::repeat_n(0xa5u8, 8 * 1024));
+            }
+            assert_eq!(buf.len(), 512 * 1024);
         }
         "witness" | "canary" | "arm" => {
             // Nothing else to probe: the read-back above already asserted the

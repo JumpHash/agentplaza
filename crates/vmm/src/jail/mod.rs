@@ -366,12 +366,18 @@ static ALLOWLIST: &[Group] = &[
               (`malloc/arena.c: new_heap()`). That is not a startup call: the live fleet's \
               armed vCPU threads reached it (`syscall=10`, six audit records with \
               `code=0x80000000`), and tests/jail.rs reproduces it — a thread spawned by an \
-              armed thread dies on the pre-fix allowlist's mprotect and runs on this one.",
+              armed thread dies on the pre-fix allowlist's mprotect and runs on this one. \
+              `mremap` joins them for the same reason, found the same way: any buffer that \
+              GROWS past glibc's 128 KiB mmap threshold is reallocated with mremap \
+              (`syscall=25`), which the serial capture does on a long-running VM — the \
+              acceptance matrix saw a run's VMs die on it (`comm=\\\"apz_vcpu_0\\\" sig=31 \
+              code=0x80000000`) once their captures crossed the threshold.",
         syscalls: &[
             libc::SYS_mmap,
             libc::SYS_munmap,
             libc::SYS_madvise,
             libc::SYS_mprotect,
+            libc::SYS_mremap,
             libc::SYS_brk,
         ],
     },
@@ -527,6 +533,14 @@ pub const TRACE_ADDED: &[(&str, &str)] = &[
          self-arming thread under an inherited filter repeats); observed before arming on all \
          nine armed threads of the trace.",
     ),
+    (
+        "mremap",
+        "a buffer that GROWS past glibc's 128 KiB mmap threshold: `realloc` remaps instead of \
+         copying, and the VMM's serial capture is exactly such a buffer — a long-running VM \
+         crosses the threshold and its armed vCPU thread dies. Live \
+         `comm=\"apz_vcpu_0\" sig=31 syscall=25 code=0x80000000` (the acceptance matrix's run \
+         lost both its VMs to it, capture ~131 KiB); reproduced by tests/jail.rs's growth probe.",
+    ),
 ];
 
 /// The one address family [`ALLOWLIST`]'s `socket(2)` may be called with
@@ -651,10 +665,6 @@ const FC_DROPPED: &[(&str, &str)] = &[
     (
         "tkill",
         "the vCPU kick is tgkill(2), which the allowlist has instead",
-    ),
-    (
-        "mremap",
-        "the guest-memory regions are mapped once; nothing remaps",
     ),
     ("msync", "nothing flushes guest memory to a file"),
     ("mincore", "nothing asks for page residency"),
@@ -1110,6 +1120,7 @@ const NAMED: &[(&str, libc::c_long)] = &[
     ("munmap", libc::SYS_munmap),
     ("madvise", libc::SYS_madvise),
     ("mprotect", libc::SYS_mprotect),
+    ("mremap", libc::SYS_mremap),
     ("brk", libc::SYS_brk),
     ("openat", libc::SYS_openat),
     ("close", libc::SYS_close),

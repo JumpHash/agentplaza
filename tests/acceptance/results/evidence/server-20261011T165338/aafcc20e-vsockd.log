@@ -1,0 +1,17 @@
+vsockd: status on http://127.0.0.1:44033 (GET /status, GET /healthz, read-only)
+vsockd: admin on http://127.0.0.1:36487 (POST /tell, POST /stop, GET /healthz)
+vsockd: listening on /tmp/apz-acceptance-server-14jg8dx7/jail-grow-uds/vm68_5000 for guest CID 68
+vsockd: accepted a connection from cid 68
+[guest 68 vm? ->] {"type":"hello","vm":0,"guest_cid":68}
+vsockd: guest 68 vm 0 says hello (accepted on the socket for cid 68)
+[<-] guest 68 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 68 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-68-hello"}}
+[<-] guest 68 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-68-hello"}
+vsockd: answered call 1 (echo) for guest 68 vm 0
+[guest 68 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 68 vm0 {"type":"tool_result","call":2,"ok":true,"output":"339339.60 7173945.36"}
+vsockd: answered call 2 (uptime) for guest 68 vm 0
+[guest 68 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 68 vm 0 said bye after 2 tool calls
+vsockd: session with guest 68 vm 0 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners
