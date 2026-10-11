@@ -36,13 +36,29 @@ pub struct Plaza {
     pub agora: Agora,
     pub social: Social,
     pub council: Council,
+    /// Whether the treasury came back from `treasury.json`.
+    pub restored: bool,
 }
 
 impl Plaza {
-    pub fn new() -> Self {
+    /// A plaza whose treasury is restored from `snapshot` (a `treasury.json`) when
+    /// one is given and holds to the ledger's invariants. The plaza budget is seeded
+    /// only when nothing was restored.
+    pub fn new(snapshot: Option<&str>) -> Self {
         let events = EventBus::new();
-        let tasks = TaskLedger::new(Arc::clone(&events));
-        let treasury = Arc::clone(tasks.treasury());
+        let restored = snapshot.and_then(|json| {
+            let treasury = Treasury::empty(Arc::clone(&events));
+            match treasury.restore(json) {
+                Ok(()) => Some(treasury),
+                Err(err) => {
+                    eprintln!("apid: treasury.json refused, starting a fresh treasury: {err}");
+                    None
+                }
+            }
+        });
+        let was_restored = restored.is_some();
+        let treasury = Arc::new(restored.unwrap_or_else(|| Treasury::new(Arc::clone(&events))));
+        let tasks = TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(&treasury));
         Self {
             agora: Agora::new(Arc::clone(&events)),
             social: Social::new(Arc::clone(&events)),
@@ -50,6 +66,7 @@ impl Plaza {
             tasks,
             treasury,
             events,
+            restored: was_restored,
         }
     }
 }

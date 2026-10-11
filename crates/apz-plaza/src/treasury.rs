@@ -91,9 +91,10 @@
 //! [`JOURNAL_LIMIT`] for the journal endpoint's response.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::now_ms;
@@ -146,7 +147,8 @@ pub const MAX_ACCOUNTS: usize = 4 * crate::tasks::MAX_TASKS;
 pub const JOURNAL_LIMIT: usize = 256;
 
 /// The kinds of account, the schema's `treasury.account_kind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountKind {
     /// The governance source of all credits; may go arbitrarily negative.
     Mint,
@@ -201,7 +203,8 @@ impl AccountKind {
 }
 
 /// The kinds of entry, the schema's `treasury.entry_kind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     /// Owner or council funds a task budget.
     Mint,
@@ -613,7 +616,7 @@ impl std::error::Error for PostError {}
 
 /// One account: the schema's `treasury.accounts` row, without a balance (the
 /// balance is derived from the postings).
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Account {
     id: u64,
     kind: AccountKind,
@@ -623,7 +626,7 @@ struct Account {
 }
 
 /// One posting as it is stored: which account, and the amount.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Posting {
     account_id: u64,
     amount: i64,
@@ -631,26 +634,28 @@ struct Posting {
 
 /// One entry as it is stored: the schema's `treasury.entries` row together with
 /// its postings.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     id: u64,
     kind: EntryKind,
     task_id: Option<String>,
     root_task: Option<String>,
     memo: String,
+    #[serde(skip_deserializing, default = "posted_by_default")]
     posted_by: &'static str,
     created_at: u64,
     postings: Vec<Posting>,
 }
 
 /// The accounts and the journal, behind one lock.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Inner {
     accounts: Vec<Account>,
     entries: Vec<Entry>,
     next_account: u64,
     next_entry: u64,
     /// What each agent has transferred on each UTC day, keyed by (cid, day).
+    #[serde(default, serialize_with = "ser_transferred", deserialize_with = "de_transferred")]
     transferred: BTreeMap<(u64, u64), i64>,
 }
 
@@ -727,6 +732,175 @@ impl Inner {
     }
 }
 
+/// The `posted_by` an entry read back from a snapshot carries: the service's name,
+/// which every entry is posted under.
+fn posted_by_default() -> &'static str {
+    POSTED_BY
+}
+
+/// The transfer allowances as `(cid, day, sent)` rows: a JSON object key must be a
+/// string, and these are keyed by a pair.
+fn ser_transferred<S: serde::Serializer>(
+    transferred: &BTreeMap<(u64, u64), i64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let rows: Vec<(u64, u64, i64)> = transferred
+        .iter()
+        .map(|(&(cid, day), &sent)| (cid, day, sent))
+        .collect();
+    serde::Serialize::serialize(&rows, serializer)
+}
+
+fn de_transferred<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<(u64, u64), i64>, D::Error> {
+    let rows = <Vec<(u64, u64, i64)> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(rows
+        .into_iter()
+        .map(|(cid, day, sent)| ((cid, day), sent))
+        .collect())
+}
+
+/// The invariants a snapshot must hold before it may replace a treasury: the ones
+/// [`Treasury::post`] enforces, replayed in journal order, so a snapshot the ledger
+/// could not have built is refused.
+fn check_snapshot(inner: &Inner) -> Result<(), String> {
+    if inner.entries.len() > MAX_ENTRIES {
+        return Err(format!(
+            "the journal holds {} entries, past the cap of {MAX_ENTRIES}",
+            inner.entries.len()
+        ));
+    }
+    if inner.accounts.len() > MAX_ACCOUNTS {
+        return Err(format!(
+            "the treasury holds {} accounts, past the cap of {MAX_ACCOUNTS}",
+            inner.accounts.len()
+        ));
+    }
+    for (index, account) in inner.accounts.iter().enumerate() {
+        if account.id > inner.next_account {
+            return Err(format!(
+                "account {} is past the account counter ({})",
+                account.id, inner.next_account
+            ));
+        }
+        let repeated = inner.accounts[..index].iter().any(|other| {
+            other.id == account.id
+                || (other.kind == account.kind && other.owner_ref == account.owner_ref)
+        });
+        if repeated {
+            return Err(format!(
+                "account {} {} is listed twice",
+                account.kind.as_str(),
+                account.owner_ref
+            ));
+        }
+    }
+    if inner.next_entry != u64::try_from(inner.entries.len()).unwrap_or(u64::MAX) {
+        return Err(format!(
+            "the next entry id ({}) does not follow the journal's length ({})",
+            inner.next_entry,
+            inner.entries.len()
+        ));
+    }
+    // The balances and the chain margins, replayed in journal order: each entry is
+    // checked against the state the entries before it leave behind.
+    let mut balances: BTreeMap<u64, i128> = BTreeMap::new();
+    let mut margins: BTreeMap<String, (i128, i128)> = BTreeMap::new();
+    for (index, entry) in inner.entries.iter().enumerate() {
+        let expected = u64::try_from(index).unwrap_or(u64::MAX) + 1;
+        if entry.id != expected {
+            return Err(format!(
+                "entry {} is at position {index}, expected id {expected}",
+                entry.id
+            ));
+        }
+        if entry.postings.is_empty() {
+            return Err(format!("entry {} has no postings", entry.id));
+        }
+        if entry.kind.names_a_chain() && entry.root_task.is_none() {
+            return Err(format!("entry {} must name its root task", entry.id));
+        }
+        let mut sum = 0i128;
+        for (position, posting) in entry.postings.iter().enumerate() {
+            if posting.amount == 0 {
+                return Err(format!("entry {} has a zero posting", entry.id));
+            }
+            if entry.postings[..position]
+                .iter()
+                .any(|earlier| earlier.account_id == posting.account_id)
+            {
+                return Err(format!(
+                    "entry {} posts to account {} twice",
+                    entry.id, posting.account_id
+                ));
+            }
+            let Some(account) = inner
+                .accounts
+                .iter()
+                .find(|account| account.id == posting.account_id)
+            else {
+                return Err(format!(
+                    "entry {} posts to unknown account {}",
+                    entry.id, posting.account_id
+                ));
+            };
+            let side = Side::of(posting.amount);
+            if !rule_allows(entry.kind, account.kind, side) {
+                return Err(format!(
+                    "entry {} breaks the posting rules: {} entry may not {} a {} account",
+                    entry.id,
+                    entry.kind.as_str(),
+                    side.as_str(),
+                    account.kind.as_str()
+                ));
+            }
+            sum += i128::from(posting.amount);
+            let balance = balances.entry(posting.account_id).or_insert(0);
+            *balance += i128::from(posting.amount);
+            if account.kind.is_limited() && *balance < -i128::from(account.credit_limit) {
+                return Err(format!(
+                    "entry {} overdraws account {} {}: {} is below its limit of -{}",
+                    entry.id,
+                    account.kind.as_str(),
+                    account.owner_ref,
+                    *balance,
+                    account.credit_limit
+                ));
+            }
+            if let Some(root) = entry.root_task.as_deref() {
+                let (cost, paid) = margins.entry(root.to_string()).or_insert((0, 0));
+                if entry.kind == EntryKind::Spend
+                    && account.kind == AccountKind::ExternalSpend
+                    && posting.amount > 0
+                {
+                    *cost += i128::from(posting.amount);
+                }
+                if matches!(entry.kind, EntryKind::Payment | EntryKind::Clawback)
+                    && account.kind == AccountKind::AgentEarnings
+                {
+                    *paid += i128::from(posting.amount);
+                }
+            }
+        }
+        if sum != 0 {
+            return Err(format!("entry {} does not balance (sum = {sum})", entry.id));
+        }
+        if entry.kind == EntryKind::Payment {
+            if let Some(root) = entry.root_task.as_deref() {
+                let (cost, paid) = margins.get(root).copied().unwrap_or((0, 0));
+                if paid * 100 > cost * i128::from(MARGIN_CAP_PCT) {
+                    return Err(format!(
+                        "entry {} breaks the chain margin cap: {paid} paid against {cost} real cost in chain {root}",
+                        entry.id
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The `owner_ref` of agent `cid`'s `agent_earnings` account (its wallet).
 fn agent_owner(cid: u64) -> String {
     format!("cid:{cid}")
@@ -737,17 +911,19 @@ fn agent_owner(cid: u64) -> String {
 #[derive(Debug)]
 pub struct Treasury {
     events: Arc<EventBus>,
+    /// Bumped on every change to the accounts or the journal.
+    version: AtomicU64,
     inner: Mutex<Inner>,
 }
 
 impl Treasury {
-    /// A treasury with the single `mint` account, the plaza's budget minted into
-    /// its `town_budget` (the one entry a fresh treasury holds), which publishes
-    /// every posted entry to `events`.
-    pub fn new(events: Arc<EventBus>) -> Self {
+    /// A treasury with only the single `mint` account and an empty journal, which
+    /// publishes every posted entry to `events`. [`Treasury::restore`] starts here.
+    pub fn empty(events: Arc<EventBus>) -> Self {
         let now = now_ms();
-        let treasury = Self {
+        Self {
             events,
+            version: AtomicU64::new(0),
             inner: Mutex::new(Inner {
                 accounts: vec![Account {
                     id: 1,
@@ -761,7 +937,13 @@ impl Treasury {
                 next_entry: 0,
                 transferred: BTreeMap::new(),
             }),
-        };
+        }
+    }
+
+    /// A treasury with the plaza's budget minted into it: the one entry a fresh
+    /// treasury holds.
+    pub fn new(events: Arc<EventBus>) -> Self {
+        let treasury = Self::empty(events);
         treasury
             .mint_plaza_budget(PLAZA_BUDGET)
             .expect("a fresh journal takes the plaza's first mint");
@@ -830,6 +1012,7 @@ impl Treasury {
             credit_limit,
             created_at: now_ms(),
         });
+        self.version.fetch_add(1, Ordering::SeqCst);
         Ok(id)
     }
 
@@ -1335,6 +1518,7 @@ impl Treasury {
             created_at: now,
             postings,
         });
+        self.version.fetch_add(1, Ordering::SeqCst);
         self.events.publish(Event::Treasury {
             entry: id,
             kind: spec.kind.as_str(),
@@ -1342,6 +1526,31 @@ impl Treasury {
             task: spec.task_id.clone(),
         });
         Ok(id)
+    }
+
+    /// The treasury's whole state as JSON: the accounts, the journal and the
+    /// transfer allowances. No balance is in it; restore derives them again.
+    pub fn snapshot(&self) -> String {
+        let inner = self.lock();
+        serde_json::to_string(&*inner).expect("the treasury state serializes")
+    }
+
+    /// Counts every change to the accounts or the journal (a posting, an account
+    /// opened, a restore). A saver compares it to know when there is to save.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::SeqCst)
+    }
+
+    /// Replaces the whole state with `json`, a [`Treasury::snapshot`]. The
+    /// snapshot must hold to the invariants a live post does; a refusal changes
+    /// nothing.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let restored: Inner = serde_json::from_str(json)
+            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+        check_snapshot(&restored)?;
+        *self.lock() = restored;
+        self.version.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -2420,6 +2629,49 @@ mod economy_tests {
 
     fn treasury() -> Treasury {
         Treasury::new(EventBus::new())
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_same_wallets_budget_and_journal() {
+        let original = treasury();
+        original.fund_task("t1", 300).expect("fund");
+        original.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        original.pay_agent("t1", 7, 20).expect("pay");
+        original.fine(7, 5, "late").expect("fine");
+        original.transfer(7, 8, 3, "share").expect("transfer");
+        let json = original.snapshot();
+
+        let restored = Treasury::empty(EventBus::new());
+        restored.restore(&json).expect("a snapshot of a ledger restores");
+        assert_eq!(restored.wallets(), original.wallets());
+        assert_eq!(restored.wallets(), vec![(7, 12), (8, 3)]);
+        assert_eq!(restored.plaza_budget_balance(), original.plaza_budget_balance());
+        assert_eq!(restored.journal(JOURNAL_LIMIT).total, 6);
+        assert_eq!(
+            restored.journal(JOURNAL_LIMIT).total,
+            original.journal(JOURNAL_LIMIT).total
+        );
+        assert_eq!(restored.snapshot(), json);
+        assert!(restored.verify_journal().is_ok());
+        assert_eq!(restored.view().totals.balance, 0);
+        assert_eq!(restored.version(), 1);
+    }
+
+    #[test]
+    fn a_tampered_snapshot_is_refused_and_changes_nothing() {
+        let original = treasury();
+        original.fund_task("t1", 300).expect("fund");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&original.snapshot()).expect("the snapshot is JSON");
+        // Shave one credit off the plaza's opening mint: its entry no longer balances.
+        value["entries"][0]["postings"][0]["amount"] = serde_json::json!(-99_999);
+        let fresh = Treasury::empty(EventBus::new());
+        let refused = fresh
+            .restore(&value.to_string())
+            .expect_err("an unbalanced entry is refused");
+        assert!(refused.contains("does not balance"), "{refused}");
+        assert_eq!(fresh.accounts().len(), 1, "only the mint account");
+        assert_eq!(fresh.version(), 0);
     }
 
     #[test]

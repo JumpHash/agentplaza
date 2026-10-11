@@ -696,8 +696,14 @@ impl TaskLedger {
     /// whose tasks' budgets are escrowed in a treasury that publishes to the
     /// same bus.
     pub fn new(events: Arc<EventBus>) -> Self {
+        let treasury = Arc::new(Treasury::new(Arc::clone(&events)));
+        Self::with_treasury(events, treasury)
+    }
+
+    /// A ledger over `treasury`, which may be one restored from a snapshot.
+    pub fn with_treasury(events: Arc<EventBus>, treasury: Arc<Treasury>) -> Self {
         Self {
-            treasury: Arc::new(Treasury::new(Arc::clone(&events))),
+            treasury,
             events,
             inner: Mutex::new(LedgerInner {
                 next_seq: 0,

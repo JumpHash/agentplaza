@@ -99,6 +99,7 @@ impl App {
         let env = config.env_file.as_deref().map(read_env_file).unwrap_or_default();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
+        let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
         let app = Arc::new(App {
             bus: events::Bus::default(),
             artifacts: crate::artifacts::Artifacts::default(),
@@ -113,7 +114,7 @@ impl App {
             agents: agents::Roster::default(),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
-            plaza: plaza::Plaza::new(),
+            plaza: plaza::Plaza::new(snapshot.as_deref()),
             noded: Upstream::new(config.noded_port),
             hub: Upstream::new(config.hub_port),
             token,
@@ -123,6 +124,12 @@ impl App {
         agents::spawn_reconcile(Arc::clone(&app));
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
+        // A treasury.json that was refused is kept aside, not overwritten by the next save.
+        if snapshot.is_some() && !app.plaza.restored {
+            let path = app.config.state_dir.join("treasury.json");
+            let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
+        }
+        spawn_treasury_saver(Arc::clone(&app));
         let server = apz_http::Server::bind(app.config.port)?;
         let router = api::router();
         server.spawn(move |request| router.handle(&app, request))
@@ -141,6 +148,34 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
         .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').trim_matches('\'').to_string()))
         .filter(|(k, _)| !k.is_empty())
         .collect()
+}
+
+/// Saves the treasury to `<state-dir>/treasury.json` every three seconds whenever
+/// its version has moved; the first tick always writes.
+fn spawn_treasury_saver(app: Arc<App>) {
+    std::thread::spawn(move || {
+        let path = app.config.state_dir.join("treasury.json");
+        let mut saved = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let version = app.plaza.treasury.version();
+            if saved == Some(version) {
+                continue;
+            }
+            match write_atomic(&path, &app.plaza.treasury.snapshot()) {
+                Ok(()) => saved = Some(version),
+                Err(err) => eprintln!("apid: cannot save {}: {err}", path.display()),
+            }
+        }
+    });
+}
+
+/// Writes `text` to `path` through a temporary file and a rename, so a crash
+/// mid-write leaves the previous snapshot whole.
+fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// A fresh random token in `<state-dir>/internal.token`, mode 0600.
