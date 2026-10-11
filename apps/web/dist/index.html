@@ -16,6 +16,7 @@
        POST /api/v0/tasks/{id}/bid · POST /api/v0/tasks/{id}/award · GET /api/v0/agora (the market)
        GET /api/v0/treasury · GET /api/v0/treasury/journal (the treasury)
        GET /api/v0/board · GET /api/v0/agents/{cid}/contacts · GET /api/v0/conversations[/{a}/{b}] (the social layer)
+       POST /api/v0/agents/{cid}/tell · POST /api/v0/agents/{cid}/stop (the operator's hand on an agent: drive a tool, end a session)
      Routes: #register #run/{id} #machine #map #floor #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury #market #board #talk;
      keys 0–9 walk the ten index destinations, 'b' the board, 'c' the talk, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
@@ -24,10 +25,10 @@
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-FBSCWKRB.css">
-<script type="module" src="main-L5L5IGUX.js"></script>
+<link rel="stylesheet" href="main-YN5663EJ.css">
+<script type="module" src="main-MUAPUHOW.js"></script>
 </head>
-<body data-bundle-hash="be9077ba246e08cb7e0abdacf716711d60ce854d11cc4a736d88aa880f4f4302">
+<body data-bundle-hash="becc42437da00c5b5d90f6d0d8612f767ddd8cfbf48855667bffc88b976557a8">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -49,7 +50,7 @@
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">be9077ba246e08cb7e0abdacf716711d60ce854d11cc4a736d88aa880f4f4302</code></span>
+      <span>Bundle <code id="colo-hash">becc42437da00c5b5d90f6d0d8612f767ddd8cfbf48855667bffc88b976557a8</code></span>
       <span id="colo-wire">The wire · opening…</span>
       <span>Keys 0–9 walk the index, b the board, c the talk · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
@@ -673,6 +674,37 @@
           <ul id="rc-past-list"></ul>
         </div>
         <p class="example">A refusal is the daemon's, the hub's or the agent's own words, written as they wrote them: <em>403</em> is the role policy that forbids the tool, <em>409</em> the agent is not connected, <em>504</em> it did not answer in time, <em>503</em> the node was never told where the hub's admin surface is, and <em>502</em> the hub itself is out of reach. The output is the agent's own, so it is shown as text, never as markup.</p>
+
+        <!-- the stop: the operator's hand on the agent's SESSION, two steps deep.
+             It ends the session the hub serves for this guest CID and answers
+             with the hub's own view — the guest VM stays up. -->
+        <div class="stopblock" id="rc-stop" hidden>
+          <h3>End the session <span class="m" id="rc-stop-who">—</span></h3>
+          <p class="example">Stopping ends the agent's <em>session</em> on the hub: the hub delivers its stop, the agent says bye, and the session closes. The guest VM itself stays up — that is the hub's own contract, not a guest teardown. It is never a single press: arm it, then confirm.</p>
+          <p class="example" id="rc-stop-note" hidden></p>
+          <div class="lrow">
+            <button type="button" class="btn danger" id="rc-stop-arm">Stop the session…</button>
+          </div>
+          <div class="stopconfirm" id="rc-stop-confirm" hidden>
+            <p class="confirmline" id="rc-stop-line">—</p>
+            <div class="f"><label for="rc-stop-reason">Reason · optional, ≤256 bytes, carried to the agent's transcript</label><input id="rc-stop-reason" type="text" autocomplete="off" spellcheck="false" placeholder="no reason — the hub's own default"></div>
+            <div class="lrow">
+              <button type="button" class="btn danger" id="rc-stop-go">Stop the session</button>
+              <button type="button" class="btn sm" id="rc-stop-cancel">Cancel — leave it running</button>
+              <span class="err" id="rc-stop-form-err" role="alert"></span>
+            </div>
+          </div>
+          <div class="ldartbody" id="rc-stop-result" hidden>
+            <div class="ldarthead">
+              <span class="lbl">stop</span>
+              <span class="mk" id="rc-stop-mark"></span>
+              <span class="c" id="rc-stop-meta"></span>
+            </div>
+            <p class="err" id="rc-stop-err" role="alert" hidden></p>
+            <p class="ldarttext stoptext" id="rc-stop-text" hidden></p>
+          </div>
+          <p class="example">The answer is the hub's own, written as it wrote it: <em>the session ended · N calls</em> when it ended, or its reason the session still stands. A refusal is the daemon's or the hub's: <em>404</em> a CID the hub does not serve, <em>409</em> the agent is not connected, <em>503</em> the node was never told where the hub's admin surface is, and <em>502</em> the hub itself is out of reach. An ended session reads as not connected afterwards; the guest stays up.</p>
+        </div>
       </div></div>
     </div>
 

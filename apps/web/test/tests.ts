@@ -21,6 +21,7 @@ import type { Run, Vm, VmState } from '../src/models/run';
 import { cidRange, roleOf } from '../src/models/run';
 import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq, artifactPaths } from '../src/models/task';
 import { parseArtifact, readStateOf } from '../src/models/artifact';
+import { parseStop, parseStopReason, stopStateOf } from '../src/models/stop';
 import { parseTell, parseTellArgs, tellStateOf } from '../src/models/tell';
 import { balances, fmtSigned, parseJournal, parseTreasury, postingLabel } from '../src/models/treasury';
 import type { Award, Bid, Call, Calls } from '../src/models/agora';
@@ -1085,6 +1086,78 @@ eq('error' in parseTellArgs('{oops}'), true, 'a box that is not JSON is refused 
   s.runs = [];
   s.pruneTells();
   eq(s.tells.has(301), true, 'an unreadable fleet does not erase the history it cannot confirm');
+}
+
+/* ==================== the stop: the hub's own view and the console's hand ===
+   The operator ends one agent's session through the daemon's /stop proxy. The
+   answer is the HUB's own stop view — either the session ended (with its call
+   count) or it still stands (with the hub's reason) — parsed defensively; a
+   missing `stopped`, and a verdict missing the one fact on its own side, are
+   refused by name; each refusal status is its own honest state; and the reason
+   is bounded to the hub's own 256 bytes at the field. */
+
+const STOP_ENDED = { cid: 300, stopped: true, calls: 3 };
+eq(parseStop(STOP_ENDED), { cid: 300, stopped: true, calls: 3, reason: null }, 'a session the hub ended parses with its call count');
+const STOP_STANDS = { cid: 300, stopped: false, reason: 'the agent did not say bye in time' };
+eq(
+  parseStop(STOP_STANDS),
+  { cid: 300, stopped: false, calls: null, reason: 'the agent did not say bye in time' },
+  'a session that still stands parses with the hub’s reason',
+);
+eq(parseStop({ ...STOP_ENDED, extra: 1 }), { cid: 300, stopped: true, calls: 3, reason: null }, 'unknown extra fields are tolerated and dropped');
+eq(parseStop({ cid: 0, stopped: true, calls: 0 }), { cid: 0, stopped: true, calls: 0, reason: null }, 'a session that made no calls is honest');
+throws(() => parseStop(null), 'stop is missing or not an object', 'a non-object stop is rejected by name');
+throws(() => parseStop({ ...STOP_ENDED, cid: 1.5 }), 'stop.cid', 'a non-integer cid names the field');
+throws(() => parseStop({ ...STOP_ENDED, cid: -1 }), 'stop.cid', 'a negative cid names the field');
+throws(() => parseStop({ cid: 300, calls: 3 }), 'stop.stopped', 'a missing stopped names the field');
+throws(() => parseStop({ ...STOP_ENDED, stopped: 'yes' }), 'stop.stopped', 'a non-boolean stopped names the field');
+throws(() => parseStop({ cid: 300, stopped: true }), 'stop.calls', 'an ended session without its call count is refused by name');
+throws(() => parseStop({ cid: 300, stopped: true, calls: 1.5 }), 'stop.calls', 'a non-integer call count names the field');
+throws(() => parseStop({ cid: 300, stopped: false }), 'stop.reason', 'a session that stands without the hub’s reason is refused by name');
+throws(() => parseStop({ cid: 300, stopped: false, reason: 7 }), 'stop.reason', 'a mistyped reason names the field');
+/* the fact the verdict does not name is dropped, never carried */
+eq(parseStop({ cid: 300, stopped: true, calls: 2, reason: 'stray' }), { cid: 300, stopped: true, calls: 2, reason: null }, 'a reason on an ended session is dropped');
+eq(parseStop({ cid: 300, stopped: false, reason: 'why', calls: 9 }), { cid: 300, stopped: false, calls: null, reason: 'why' }, 'a call count on a standing session is dropped');
+
+/* the status, read as the console's own state: each refusal is its own, and a
+   node that never answered is not dressed up as the hub's word */
+eq(stopStateOf(404), 'unserved', 'a CID the hub does not serve reads unserved');
+eq(stopStateOf(409), 'not-connected', 'an unconnected agent reads not connected');
+eq(stopStateOf(503), 'off', 'a daemon with no admin surface reads hub admin off');
+eq(stopStateOf(502), 'unreachable', 'a hub out of reach reads unreachable');
+eq(stopStateOf(null), 'unreachable', 'a node that never answered reads unreachable');
+eq(stopStateOf(400), 'refused', 'a body outside the contract reads refused');
+eq(stopStateOf(500), 'refused', 'any other status reads refused');
+
+/* the reason box: the hub's own 256-byte bound, named at the field */
+eq(parseStopReason(''), {}, 'an empty reason is the hub’s own default');
+eq(parseStopReason('   '), {}, 'a blank reason is the hub’s own default');
+eq(parseStopReason('  maintenance window  '), { reason: '  maintenance window  ' }, 'a reason is sent as written, never trimmed');
+eq(parseStopReason('x'.repeat(256)), { reason: 'x'.repeat(256) }, '256 bytes is the bound');
+eq('error' in parseStopReason('x'.repeat(257)), true, '257 bytes is refused before it is sent');
+eq(parseStopReason('é'.repeat(128)), { reason: 'é'.repeat(128) }, 'the bound counts bytes: 128 two-byte characters pass');
+eq('error' in parseStopReason('é'.repeat(129)), true, 'and 129 two-byte characters are refused');
+
+/* the stop is the owner's hand alone — and a console that cannot reach the
+   node records that honestly, inventing no verdict and no call count */
+{
+  const s = new Store();
+  await s.stopSession(300);
+  eq(s.lastStop?.cid, 300, 'the stop records which agent it was for');
+  eq(s.lastStop?.state, 'unreachable', 'a stop that never reached the node reads as unreachable');
+  eq(s.lastStop?.stopped, null, 'and no verdict the hub never gave');
+  eq(s.lastStop?.calls, null, 'and no call count the hub never sent');
+  eq(s.lastStop?.status, null, 'and no status the node never sent');
+  eq((s.lastStop?.detail.length ?? 0) > 0, true, 'the failure carries a reason, not silence');
+}
+
+/* a newer stop for the same agent supersedes the one still in flight */
+{
+  const s = new Store();
+  const first = s.stopSession(300, 'first');
+  const second = s.stopSession(300, 'second');
+  await Promise.all([first, second]);
+  eq(s.lastStop?.reason, 'second', 'the newer stop is the one kept');
 }
 
 /* ==================== the treasury: the accounts and the double-entry book

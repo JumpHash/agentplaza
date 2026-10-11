@@ -73,6 +73,16 @@ tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
 .rcpast .rcpastbtn { font-family: var(--mono); text-transform: none; letter-spacing: 0; text-align: left; }
 .rcpast .rcpastbtn[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
 
+/* the roster console's stop: the operator's hand on the agent's session —
+   a ruled band under the drive form, and a confirm line that states what will
+   happen (the red margin rule marks the owner's hand, as the copy's do) */
+.stopblock { display: grid; gap: 10px; padding-top: 14px; margin-top: 4px; border-top: 2px solid var(--ink); }
+.stopblock h3 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0; }
+.stopblock h3 .m { text-transform: none; letter-spacing: 0; color: var(--ink); }
+.stopconfirm { display: grid; gap: 10px; padding: 2px 0 2px 14px; border-left: 3px double var(--margin); }
+.confirmline { font: 15px/1.45 var(--serif); margin: 0; max-width: 68ch; }
+.stopblock .ldarttext.stoptext { white-space: normal; }
+
 /* the treasury: the plaza's account-book. The totals line is the one figure
    the whole double-entry book rests on (credits and debits equal, the
    balances summing to zero), and it is stamped as the decision it is; the

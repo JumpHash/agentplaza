@@ -4,7 +4,7 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, tellAgent } from './api';
+import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, stopAgent as stopAgentApi, tellAgent } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { Call } from './models/agora';
 import type { ArtifactReadState } from './models/artifact';
@@ -19,6 +19,8 @@ import type { BoardPost, Contact, Conversation, ConversationPair, UnreadCount } 
 import { ACTIVE_SECS, socialSeq } from './models/social';
 import type { Task, TaskState } from './models/task';
 import { isFinishedTask, seqOf as taskSeq } from './models/task';
+import type { StopState } from './models/stop';
+import { stopStateOf } from './models/stop';
 import type { TellState } from './models/tell';
 import { tellStateOf } from './models/tell';
 import type { JournalEntry, Treasury } from './models/treasury';
@@ -60,6 +62,9 @@ declare global {
       /** The tool console's last drive, if any: which agent, which tool, and
           how it ended. */
       readonly tell: { readonly cid: number; readonly name: string; readonly state: string; readonly status: number | null } | null;
+      /** The console's last stop, if any: which agent, how it ended, the hub's
+          own verdict (null when it never answered) and its status. */
+      readonly stop: { readonly cid: number; readonly state: string; readonly stopped: boolean | null; readonly status: number | null } | null;
       /** The treasury as the store holds it: how many accounts, how many
           journal entries, the totals line's credits, and the error when either
           half is unreadable. */
@@ -187,6 +192,30 @@ export interface TellRead {
   /** The HTTP status, or null when the node never answered. */
   status: number | null;
   /** When the call settled (or started driving), in the console's clock. */
+  at: number;
+}
+
+/** One stop the console asked for — the hub's own answer, or the refusal, kept
+    as it came. Like a driven call, a stop is the owner's hand alone: it ends a
+    real session, so it is called from a click and never from a poll, and the
+    console reads its result from here. */
+export interface StopRead {
+  /** The guest CID of the agent whose session was addressed. */
+  cid: number;
+  /** The reason the console sent ('' when it sent none — the hub's default). */
+  reason: string;
+  state: StopState;
+  /** The hub's own verdict: `true`/`false` when it answered 200; `null` when it
+      never did (the state says how the stop ended instead). */
+  stopped: boolean | null;
+  /** The ended session's call count, when the hub said the session ended. */
+  calls: number | null;
+  /** The hub's own reason a session still stands, or whoever refused, in their
+      own words — verbatim, never paraphrased. */
+  detail: string;
+  /** The HTTP status, or null when the node never answered. */
+  status: number | null;
+  /** When the stop settled (or started), in the console's clock. */
   at: number;
 }
 
@@ -319,6 +348,10 @@ export class Store {
   /** The newest drive, whatever agent — the console's own readback of the last
       call it made. */
   lastTell: TellRead | null = null;
+  /** The last stop the console asked for, whatever agent. Like a drive it is
+      the owner's hand alone, set only by a click, and the console reads its
+      result from here for the agent it names (its own `cid`). */
+  lastStop: StopRead | null = null;
   /** Every run fetched with serial, by id (map/floor poll each open run). */
   readonly details = new Map<string, Run>();
   detailError: string | null = null;
@@ -365,12 +398,15 @@ export class Store {
   private boardRefreshTimer: number | null = null;
   private conversationsRefreshTimer: number | null = null;
   private threadRefreshTimer: number | null = null;
+  private hubRefreshTimer: number | null = null;
   private readonly detailRefreshPending = new Set<string>();
   private readonly vmPushAt = new Map<string, number>();
   /** The newest artifact ask's serial: an older answer never overwrites it. */
   private artifactReq = 0;
   /** The newest drive's serial, per agent: an older answer never overwrites it. */
   private readonly tellReq = new Map<number, number>();
+  /** The newest stop's serial, per agent: an older answer never overwrites it. */
+  private readonly stopReq = new Map<number, number>();
 
   get health(): Health {
     if (this.lastOkAt === 0) return this.lastErrAt > 0 ? 'down' : 'stale';
@@ -959,6 +995,85 @@ export class Store {
     kept.unshift(entry);
     this.tells.set(entry.cid, kept.slice(0, TELL_HISTORY));
     this.lastTell = entry;
+  }
+
+  /** End the session of the agent connected as `cid`, through the daemon's
+      `/stop` proxy. This is the owner's hand alone: it ends a real session (the
+      hub delivers its stop, waits for the agent's `bye`, and answers), so it is
+      called from a click and never from a poll. The hub's verdict is kept as it
+      came — `stopped: true` with the ended session's call count, `stopped:
+      false` with the hub's own reason it stands — and a refusal is whoever
+      wrote it, verbatim. The newest stop for an agent wins; an older answer
+      that arrives after a newer click is dropped.
+
+      After any answered stop the fleet views are refreshed (coalesced) — the
+      hub's connection is exactly what a stop changes, so the roster's hub
+      column and the console itself catch up without a manual reload. */
+  async stopSession(cid: number, reason?: string): Promise<void> {
+    const req = (this.stopReq.get(cid) ?? 0) + 1;
+    this.stopReq.set(cid, req);
+    this.lastStop = {
+      cid,
+      reason: reason ?? '',
+      state: 'stopping',
+      stopped: null,
+      calls: null,
+      detail: '',
+      status: null,
+      at: Date.now(),
+    };
+    this.scheduleRender();
+    try {
+      const view = await stopAgentApi(cid, reason);
+      if (this.stopReq.get(cid) !== req) return;
+      this.lastStop = {
+        cid: view.cid,
+        reason: reason ?? '',
+        state: view.stopped ? 'ended' : 'standing',
+        stopped: view.stopped,
+        calls: view.calls,
+        detail: view.reason ?? '',
+        status: 200,
+        at: Date.now(),
+      };
+      this.noteOk();
+    } catch (err) {
+      /* a refusal is the daemon's, the hub's or the admin surface's own words —
+         kept verbatim; the status tells them apart (404 a CID the hub does not
+         serve, 409 an agent not connected, 502 a hub out of reach, 503 a node
+         never configured with the admin surface, 400 a body outside the
+         contract) */
+      if (this.stopReq.get(cid) !== req) return;
+      const status = err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      const message = err instanceof Error ? err.message : String(err);
+      this.lastStop = {
+        cid,
+        reason: reason ?? '',
+        state: stopStateOf(status),
+        stopped: null,
+        calls: null,
+        detail: message,
+        status,
+        at: Date.now(),
+      };
+      this.noteErr();
+    }
+    /* the hub's connection is what a stop acts on, so the fleet is asked once
+       (coalesced) whatever the answer — an ended session reads not-connected
+       now, and even a refusal about the hub is news about its connection */
+    this.queueFleetRefresh();
+    this.scheduleRender();
+  }
+
+  /** One coalesced register + hub GET shortly after a stop lands, so the
+      roster's hub column and connection state catch up without a reload. */
+  private queueFleetRefresh(): void {
+    if (this.hubRefreshTimer != null) return;
+    this.hubRefreshTimer = setTimeout(() => {
+      this.hubRefreshTimer = null;
+      void this.pollList();
+      void this.pollHub();
+    }, EVENT_REFRESH_MS);
   }
 
   /** The CIDs the console can still drive: the register's role VMs (when the

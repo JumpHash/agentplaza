@@ -221,6 +221,10 @@ window.__PLAZA_DIAG__ = {
     const t = store.lastTell;
     return t == null ? null : { cid: t.cid, name: t.name, state: t.state, status: t.status };
   },
+  get stop() {
+    const t = store.lastStop;
+    return t == null ? null : { cid: t.cid, state: t.state, stopped: t.stopped, status: t.status };
+  },
   get hub() {
     const readable = store.hub != null && store.hubError == null;
     return {

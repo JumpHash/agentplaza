@@ -11,6 +11,8 @@ import type { Machine } from './models/machine';
 import type { CreateRun, Run, RunsView } from './models/run';
 import type { Task } from './models/task';
 import { parseTask, parseTasksView } from './models/task';
+import type { AgentStop } from './models/stop';
+import { parseStop } from './models/stop';
 import type { AgentTell } from './models/tell';
 import { parseTell } from './models/tell';
 import type { BoardView, ContactsView, ConversationsView, ThreadView } from './models/social';
@@ -253,4 +255,24 @@ export async function tellAgent(
       body: { name, args, timeout_ms: timeoutMs },
     }),
   );
+}
+
+/** End the session of the agent connected as `cid`, through the daemon's own
+    `/stop` proxy (crates/noded `stop_agent`) — the operator's own hand on a
+    session. A POST, and deliberately so: it ends a real session (the hub
+    delivers its stop, waits for the agent to say `bye`, and answers), so a
+    prefetcher must not replay it; only the owner's hand calls this.
+
+    A 200 is the HUB's own stop view, passed through verbatim and read through
+    [`parseStop`]: `{"cid","stopped":true,"calls":K}` or
+    `{"cid","stopped":false,"reason":"..."}`. Every other status is the
+    daemon's, the hub's or the admin surface's own error message (see
+    crates/noded `stop_agent`): 400 a body or CID outside the contract, 404 a
+    CID the hub does not serve, 409 an agent not connected, 502 a hub out of
+    reach, 503 a daemon never told where the hub's admin surface is. Those ride
+    the ApiError verbatim. */
+export async function stopAgent(cid: number, reason?: string): Promise<AgentStop> {
+  const body: { reason?: string } = {};
+  if (reason != null && reason.trim() !== '') body.reason = reason;
+  return parseStop(await api<unknown>(`/api/v0/agents/${cid}/stop`, { method: 'POST', body }));
 }

@@ -21,9 +21,11 @@ import type { HubJoinRow } from '../models/hub';
 import { joinHub } from '../models/hub';
 import type { Run, Vm, VmState } from '../models/run';
 import { isOpen, roleOf, seqOf } from '../models/run';
+import type { StopState } from '../models/stop';
+import { parseStopReason } from '../models/stop';
 import type { TellState } from '../models/tell';
 import { parseTellArgs } from '../models/tell';
-import type { TellRead } from '../store';
+import type { StopRead, TellRead } from '../store';
 import { store } from '../store';
 import { roleChip, renderHubLine, vmStateMk } from './chrome';
 
@@ -148,6 +150,12 @@ let driveRefs = new Map<number, HTMLButtonElement>();
 let consoleAnnounced = '';
 let consolePastSig: string | null = null;
 let consolePastRefs: Array<{ idx: number; btn: HTMLButtonElement }> = [];
+/* The stop affordance: whether the console's stop is armed (the two-step,
+   never-a-single-click press) and the last reading announced to a screen
+   reader. Armed state is view state, and leaving the card — closing it, or
+   opening another agent — disarms it. */
+let stopArmed = false;
+let stopAnnounced = '';
 
 export function renderRoster(): void {
   const notice = byId('roster-notice');
@@ -408,10 +416,16 @@ function openConsole(cid: number): void {
   consoleCid = cid;
   consoleIdx = 0;
   consoleAnnounced = '';
+  /* opening a console is leaving the last card: a stop armed on another agent
+     is never carried over (the owner's press names one session) */
+  stopArmed = false;
+  stopAnnounced = '';
   byId('roster-console').hidden = false;
   const args = byId<HTMLTextAreaElement>('rc-args');
   if (args.value.trim() === '') args.value = '{}';
   byId('rc-form-err').textContent = '';
+  byId('rc-stop-form-err').textContent = '';
+  byId<HTMLInputElement>('rc-stop-reason').value = '';
   store.scheduleRender();
   byId<HTMLInputElement>('rc-name').focus();
 }
@@ -419,6 +433,7 @@ function openConsole(cid: number): void {
 function closeConsole(): void {
   consoleCid = null;
   consoleIdx = 0;
+  stopArmed = false; // leaving the card disarms the stop
   store.scheduleRender();
 }
 
@@ -484,6 +499,7 @@ function renderConsole(rows: readonly HubJoinRow<RoleAgent>[]): void {
   const read = consoleIdx === 0 && pending != null ? pending : (settled[consoleIdx] ?? settled[0] ?? null);
   renderConsoleResult(read);
   renderConsolePast(cid, settled);
+  renderStop(row, cid);
 }
 
 function renderConsoleResult(read: TellRead | null): void {
@@ -555,6 +571,159 @@ function renderConsolePast(cid: number, settled: readonly TellRead[]): void {
   }
 }
 
+/* ------------------------------------------------------------- the stop
+   The operator's hand on one agent's SESSION: the daemon's `/stop` proxy ends
+   the session the hub serves for that guest CID, the hub delivers its stop and
+   answers with its own view. It is never a single click — the affordance arms,
+   a confirm line states what will happen (the session ends; the guest stays
+   up, which is the hub's own contract), and the press that commits names the
+   session it stops. Leaving the card disarms it. The result is the hub's own
+   words: the ended session's call count, its reason a session still stands, or
+   whoever refused, verbatim. */
+
+/** The mark each ending wears, in the register's own language: the ok roundel
+    for a session the hub ended, amber for one that still stands (a fact, not a
+    failure), a crit mark for a refusal, amber for a node or hub that cannot
+    answer. */
+const STOP_MARK: Readonly<Record<StopState, { cls: string; label: string }>> = {
+  stopping: { cls: 'mk warn', label: 'stopping' },
+  ended: { cls: 'mk ok', label: 'the session ended' },
+  standing: { cls: 'mk warn', label: 'the session still stands' },
+  unserved: { cls: 'mk crit', label: 'no such agent' },
+  'not-connected': { cls: 'mk crit', label: 'not connected' },
+  off: { cls: 'mk warn', label: 'hub admin off' },
+  unreachable: { cls: 'mk warn', label: 'unreachable' },
+  refused: { cls: 'mk crit', label: 'refused' },
+};
+
+/** A stop's own line: the agent, then the hub's verdict or the status that
+    names the refusal. */
+function stopReading(read: StopRead): string {
+  if (read.state === 'stopping') return `cid ${read.cid} · ending the session …`;
+  if (read.state === 'ended') return `cid ${read.cid} · the hub ended the session`;
+  if (read.state === 'standing') return `cid ${read.cid} · the hub could not end it`;
+  return read.status == null ? `cid ${read.cid} · the node did not answer` : `cid ${read.cid} · HTTP ${read.status}`;
+}
+
+/** Render the stop affordance and its result for the console's agent. The arm
+    control is offered only while the hub lists the agent as connected — the
+    session to end is exactly that connection, and a CID the hub does not list
+    can only answer 409; the row says so rather than offering a button that
+    cannot work. */
+function renderStop(row: HubJoinRow<RoleAgent>, cid: number): void {
+  const block = byId('rc-stop');
+  block.hidden = false;
+  byId('rc-stop-who').textContent = `cid ${cid}`;
+  const connected = row.connected != null;
+  if (!connected) stopArmed = false; // no session to end; an armed press is meaningless
+
+  const arm = byId<HTMLButtonElement>('rc-stop-arm');
+  const note = byId('rc-stop-note');
+  const confirm = byId('rc-stop-confirm');
+  arm.hidden = !connected;
+  note.hidden = connected;
+  note.textContent = connected
+    ? ''
+    : 'The hub does not list this agent as connected, so there is no session to end — a stop would answer 409.';
+  const armed = connected && stopArmed;
+  confirm.hidden = !armed;
+  if (armed) {
+    const go = byId<HTMLButtonElement>('rc-stop-go');
+    /* the confirm line states what will happen; the button names the session
+       it stops, never a bare "OK" */
+    byId('rc-stop-line').textContent =
+      `Ending the session on cid ${cid}: the agent says bye and the hub closes the session. ` +
+      `The guest VM itself stays up — that is the hub's own contract, not a guest teardown.`;
+    go.textContent = `Stop the session on cid ${cid}`;
+    go.setAttribute(
+      'aria-label',
+      `Stop the session on cid ${cid} — this ends the session; the guest stays up`,
+    );
+  }
+  renderStopResult(cid);
+}
+
+/** The stop's result box: the hub's own answer, kept as it came. */
+function renderStopResult(cid: number): void {
+  const read = store.lastStop;
+  const body = byId('rc-stop-result');
+  if (read == null || read.cid !== cid) {
+    body.hidden = true;
+    return;
+  }
+  body.hidden = false;
+  const mk = STOP_MARK[read.state];
+  const mark = byId('rc-stop-mark');
+  mark.className = mk.cls;
+  mark.textContent = mk.label;
+  byId('rc-stop-meta').textContent = stopReading(read);
+
+  /* the hub's own reason a session still stands, or whoever refused — shown
+     verbatim; an ended session carries no reason to show */
+  const err = byId('rc-stop-err');
+  const ended = read.state === 'ended';
+  err.hidden = ended || read.state === 'stopping';
+  err.textContent = ended || read.state === 'stopping' ? '' : read.detail;
+
+  /* the ended reading: the hub's own verdict, in the register's words — the
+     session ended, and the call count it ended with */
+  const text = byId<HTMLElement>('rc-stop-text');
+  text.hidden = !ended;
+  text.textContent = ended
+    ? `the session ended · ${fmtNum(read.calls ?? 0)} ${read.calls === 1 ? 'call' : 'calls'}`
+    : '';
+
+  /* a screen reader hears each stop once, and only settled ones — the pending
+     state is the press it already made */
+  if (read.state !== 'stopping') {
+    const key = `${read.cid}\u0000${read.at}\u0000${read.state}`;
+    if (key !== stopAnnounced) {
+      stopAnnounced = key;
+      announce(
+        read.state === 'ended'
+          ? `The session on the agent at cid ${read.cid} ended after ${fmtNum(read.calls ?? 0)} calls.`
+          : read.state === 'standing'
+            ? `The hub could not end the session on the agent at cid ${read.cid}: ${read.detail}`
+            : `The stop on the agent at cid ${read.cid} was ${mk.label}: ${read.detail}`,
+      );
+    }
+  }
+}
+
+/** Arm the stop: reveal the confirm line and move focus to the press that
+    commits, so a keyboard owner is never left on a press that did nothing. */
+function armStop(): void {
+  const reason = byId<HTMLInputElement>('rc-stop-reason');
+  if (reason.value !== '') reason.value = ''; // a fresh arm starts from an empty reason
+  byId('rc-stop-form-err').textContent = '';
+  stopArmed = true;
+  store.scheduleRender();
+  queueMicrotask(() => byId<HTMLButtonElement>('rc-stop-go').focus());
+}
+
+/** Disarm the stop: leave the session as it stands. */
+function disarmStop(): void {
+  stopArmed = false;
+  store.scheduleRender();
+  queueMicrotask(() => byId<HTMLButtonElement>('rc-stop-arm').focus());
+}
+
+/** Commit the armed stop: the reason is read from the box (named at the field
+    when it is past the hub's byte bound), then posted. */
+function sendStop(): void {
+  const cid = consoleCid;
+  if (cid == null) return;
+  const parsed = parseStopReason(byId<HTMLInputElement>('rc-stop-reason').value);
+  if ('error' in parsed) {
+    byId('rc-stop-form-err').textContent = parsed.error;
+    return;
+  }
+  byId('rc-stop-form-err').textContent = '';
+  stopArmed = false;
+  stopAnnounced = '';
+  void store.stopSession(cid, parsed.reason);
+}
+
 /** The roster's own wiring: a row opens its run's entry, the register's rule;
     a row's Drive button opens the tool console on that agent. A hub-only row
     has no entry to open, so it stays inert but is still drivable. */
@@ -577,4 +746,7 @@ export function initRoster(): void {
   });
   byId<HTMLFormElement>('rc-form').addEventListener('submit', sendConsole);
   byId('rc-close').addEventListener('click', closeConsole);
+  byId('rc-stop-arm').addEventListener('click', armStop);
+  byId('rc-stop-cancel').addEventListener('click', disarmStop);
+  byId('rc-stop-go').addEventListener('click', sendStop);
 }
