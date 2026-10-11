@@ -1,0 +1,203 @@
+//! Operator-spawned agents and every agent's model override, kept at
+//! `<state-dir>/spawned.json` (written atomically). A restart respawns each
+//! spawned agent under its old CID, so its name, wallet and workspace line up.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::agents::Status;
+use crate::state::App;
+
+/// One agent the operator spawned. `cid` is its identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub cid: u64,
+    pub role: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// The file: the spawned agents, and the model overrides keyed by CID.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Registry {
+    #[serde(default)]
+    pub spawned: Vec<Entry>,
+    #[serde(default)]
+    pub models: BTreeMap<u64, String>,
+}
+
+/// The registry and its file, plus the spawns still waiting for their hello.
+pub struct Store {
+    path: PathBuf,
+    registry: Mutex<Registry>,
+    /// `(role, model)` per spawned run, matched by role in arrival order.
+    pending: Mutex<VecDeque<(String, Option<String>)>>,
+}
+
+impl Store {
+    /// Loads the file; a missing or unreadable file starts empty.
+    pub fn load(path: PathBuf) -> Self {
+        let registry = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        Self { path, registry: Mutex::new(registry), pending: Mutex::new(VecDeque::new()) }
+    }
+
+    /// Every spawned agent, in the order they were spawned.
+    pub fn entries(&self) -> Vec<Entry> {
+        self.guard().spawned.clone()
+    }
+
+    /// The model override of `cid`, if any.
+    pub fn model_for(&self, cid: u64) -> Option<String> {
+        self.guard().models.get(&cid).cloned()
+    }
+
+    /// The operator asked noded for one more run of `role`; its first hello of that role is it.
+    pub fn expect(&self, role: &str, model: Option<String>) {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner).push_back((role.to_owned(), model));
+    }
+
+    /// A session said hello. A first hello of a pending spawn is recorded; returns the
+    /// model override to apply to the agent.
+    pub fn hello(&self, cid: u64, role: &str) -> Option<String> {
+        let known = self.guard().spawned.iter().any(|entry| entry.cid == cid);
+        if !known {
+            let claimed = {
+                let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                let index = pending.iter().position(|(wanted, _)| wanted.as_str() == role);
+                index.and_then(|i| pending.remove(i))
+            };
+            if let Some((_, model)) = claimed {
+                let entry = Entry { cid, role: role.to_owned(), model: model.clone(), name: String::new() };
+                let saved = self.mutate(|registry| {
+                    registry.spawned.push(entry);
+                    if let Some(model) = &model {
+                        registry.models.insert(cid, model.clone());
+                    }
+                });
+                if let Err(e) = saved {
+                    eprintln!("apid: spawned.json not saved: {e}");
+                }
+            }
+        }
+        self.model_for(cid)
+    }
+
+    /// Sets (or clears) the model override of `cid`, and its spawned entry's model.
+    pub fn set_model(&self, cid: u64, model: Option<&str>) -> std::io::Result<()> {
+        self.mutate(|registry| {
+            match model {
+                Some(model) => registry.models.insert(cid, model.to_owned()),
+                None => registry.models.remove(&cid),
+            };
+            for entry in registry.spawned.iter_mut().filter(|entry| entry.cid == cid) {
+                entry.model = model.map(str::to_owned);
+            }
+        })
+    }
+
+    /// Sets the name of spawned agent `cid`.
+    pub fn set_name(&self, cid: u64, name: &str) -> std::io::Result<()> {
+        self.mutate(|registry| {
+            for entry in registry.spawned.iter_mut().filter(|entry| entry.cid == cid) {
+                entry.name = name.to_owned();
+            }
+        })
+    }
+
+    /// Forgets agent `cid` (it was deleted): no respawn, no override.
+    pub fn forget(&self, cid: u64) -> std::io::Result<()> {
+        self.mutate(|registry| {
+            registry.spawned.retain(|entry| entry.cid != cid);
+            registry.models.remove(&cid);
+        })
+    }
+
+    /// Applies `change` to a copy, writes the copy atomically, then keeps it.
+    fn mutate(&self, change: impl FnOnce(&mut Registry)) -> std::io::Result<()> {
+        let mut current = self.guard();
+        let mut next = current.clone();
+        change(&mut next);
+        let text = serde_json::to_string_pretty(&next).map_err(std::io::Error::other)?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &self.path)?;
+        *current = next;
+        Ok(())
+    }
+
+    fn guard(&self) -> MutexGuard<'_, Registry> {
+        self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Once noded answers, waits 15 s for the sessions to reconnect, then respawns
+/// each persisted agent that has no live session, pinned to its old CID. The
+/// model override comes back at the agent's hello.
+pub fn spawn_respawn(app: Arc<App>) {
+    std::thread::spawn(move || {
+        if app.spawned.entries().is_empty() {
+            return;
+        }
+        while !matches!(app.noded.get("/v1/machine"), Ok((200, _))) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        std::thread::sleep(Duration::from_secs(15));
+        for entry in app.spawned.entries() {
+            if app.agents.get(entry.cid).is_some_and(|agent| agent.status != Status::Offline) {
+                continue;
+            }
+            let payload = json!({"n": 1, "role": entry.role, "vsock_cid": entry.cid, "vcpus": 1, "memory_mib": 256});
+            let model = entry.model.as_deref().unwrap_or("role default");
+            match app.noded.post("/v1/runs", &payload) {
+                Ok((status, _)) if status < 300 => eprintln!(
+                    "apid: respawned {} as cid {} (model {model}, HTTP {status})",
+                    entry.role, entry.cid
+                ),
+                Ok((status, _)) => eprintln!("apid: respawn of cid {} refused: HTTP {status}", entry.cid),
+                Err(e) => eprintln!("apid: respawn of cid {} failed: {e}", entry.cid),
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_survives_a_round_trip() {
+        let dir = std::env::temp_dir().join(format!("apid-spawned-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("spawned.json");
+        let _ = std::fs::remove_file(&path);
+
+        let store = Store::load(path.clone());
+        store.expect("worker", Some("model-a".into()));
+        assert_eq!(store.hello(42, "worker").as_deref(), Some("model-a"));
+        store.set_name(42, "Ada").unwrap();
+        store.set_model(7, Some("model-b")).unwrap();
+
+        let reloaded = Store::load(path.clone());
+        assert_eq!(
+            reloaded.entries(),
+            vec![Entry { cid: 42, role: "worker".into(), model: Some("model-a".into()), name: "Ada".into() }]
+        );
+        assert_eq!(reloaded.model_for(7).as_deref(), Some("model-b"));
+
+        reloaded.forget(42).unwrap();
+        let after = Store::load(path);
+        assert!(after.entries().is_empty());
+        assert_eq!(after.model_for(42), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

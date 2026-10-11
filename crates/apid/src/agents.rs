@@ -303,11 +303,12 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     // contract
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);
+    let registered = app.spawned.hello(cid, role);
     let agent = Agent {
         cid,
         name: app.names.get(cid).unwrap_or_default(),
         role: role.to_owned(),
-        model_override: previous.as_ref().and_then(|old| old.model_override.clone()),
+        model_override: previous.as_ref().and_then(|old| old.model_override.clone()).or(registered),
         status: Status::Idle,
         connected_at_ms: now,
         last_seen_ms: now,
@@ -506,8 +507,8 @@ fn list(app: &App) -> Response {
 }
 
 /// Spawns `count` runs of `role` via noded. `model` is validated against the
-/// tier policy but not carried into the spawned agent's `hello`, and an
-/// unknown `name` field is ignored: set both with `PATCH` once connected.
+/// tier policy and applied at each spawned agent's first `hello`; an unknown
+/// `name` field is ignored: set it with `PATCH` once connected.
 fn spawn(app: &App, req: &Request) -> Response {
     let b: SpawnBody = match body(req) {
         Ok(b) => b,
@@ -527,7 +528,14 @@ fn spawn(app: &App, req: &Request) -> Response {
     }
     let payload = json!({"n": count, "role": b.role, "vcpus": 1, "memory_mib": 256});
     match app.noded.post("/v1/runs", &payload) {
-        Ok((status, value)) => Response::json(status, &value),
+        Ok((status, value)) => {
+            if status < 300 {
+                for _ in 0..count {
+                    app.spawned.expect(&b.role, b.model.clone());
+                }
+            }
+            Response::json(status, &value)
+        }
         Err(e) => Response::error(502, &format!("noded: {e}")),
     }
 }
@@ -562,6 +570,14 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
         },
         Some(_) => return Response::error(400, "name must be a string"),
     };
+    if let Some(m) = &model {
+        if let Err(e) = app.spawned.set_model(agent.cid, m.as_deref()) {
+            eprintln!("apid: model override not saved: {e}");
+        }
+    }
+    if let Some(n) = &name {
+        let _ = app.spawned.set_name(agent.cid, n);
+    }
     app.agents.update(agent.cid, |a| {
         if let Some(m) = model {
             a.model_override = m;
@@ -590,6 +606,9 @@ fn delete(app: &App, params: &Params<'_>) -> Response {
         Err(resp) => return resp,
     };
     let _ = app.hub.post(&format!("/v1/agents/{}/stop", agent.cid), &json!({}));
+    if let Err(e) = app.spawned.forget(agent.cid) {
+        eprintln!("apid: spawned.json not saved: {e}");
+    }
     let run_status = agent.run.as_ref().and_then(|run| {
         app.noded.call("DELETE", &format!("/v1/runs/{run}"), None).map(|(status, _)| status).ok()
     });
