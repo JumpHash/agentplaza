@@ -45,9 +45,11 @@ pub const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
 /// says otherwise; role `i` (alphabetical) gets `DEFAULT_AGENTS_CID_BASE + i`.
 pub const DEFAULT_AGENTS_CID_BASE: u64 = 100;
 
-/// Guest memory per agent VM unless `--agents-memory-mib` says otherwise: the
-/// validated per-VM scale figure the plaza runs its agents at.
-pub const DEFAULT_AGENTS_MEMORY_MIB: u32 = 128;
+/// Guest memory ceiling per agent VM unless `--agents-memory-mib` says
+/// otherwise. A VM boots with only its `--agents-balloon-mib` share usable (32 MiB
+/// by default); the rest sits in a balloon, and the autoscaler grows the VM into
+/// it as its work asks. An idle VM therefore costs nothing for the ceiling.
+pub const DEFAULT_AGENTS_MEMORY_MIB: u32 = 1024;
 
 /// vCPUs per agent VM unless `--agents-vcpus` says otherwise.
 pub const DEFAULT_AGENTS_VCPUS: u32 = 1;

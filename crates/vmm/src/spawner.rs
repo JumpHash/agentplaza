@@ -1075,6 +1075,165 @@ pub enum WorkspaceError {
     },
 }
 
+/// The chunk [`copy_sparse`] moves through memory at a time.
+#[cfg(unix)]
+const COPY_CHUNK: usize = 1 << 20;
+
+/// The granule of [`copy_sparse`]'s fallback: a block this size that is all
+/// zero is skipped, so the copy keeps a hole there.
+#[cfg(unix)]
+const ZERO_BLOCK: usize = 64 << 10;
+
+/// Copies `from` to `to` like `std::fs::copy`, but keeps the holes of a sparse
+/// source as holes, so the copy costs only the blocks that hold data. Returns
+/// the file's length, which is what `std::fs::copy` returns for the bytes it
+/// copied.
+///
+/// The destination is created (truncating any file there), sized to the source
+/// and given its permissions. On Linux the data extents come from
+/// `SEEK_DATA`/`SEEK_HOLE`; a filesystem that cannot report holes (`EINVAL`),
+/// and every other Unix, gets a fallback that reads the whole source but writes
+/// only the 64 KiB blocks holding a non-zero byte.
+#[cfg(unix)]
+pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
+    let src = std::fs::File::open(from)?;
+    let meta = src.metadata()?;
+    let len = meta.len();
+    let dst = std::fs::File::create(to)?;
+    dst.set_len(len)?;
+    dst.set_permissions(meta.permissions())?;
+    let mut buf = vec![0u8; COPY_CHUNK];
+    #[cfg(target_os = "linux")]
+    {
+        if copy_data_extents(&src, &dst, len, &mut buf)? {
+            return Ok(len);
+        }
+    }
+    copy_skipping_zero_blocks(&src, &dst, len, &mut buf)?;
+    Ok(len)
+}
+
+/// Copies the data extents of `src` into `dst`, found with `SEEK_DATA` and
+/// `SEEK_HOLE`. `Ok(false)` means the filesystem cannot report holes (`EINVAL`):
+/// the caller falls back and rewrites what was copied, identically.
+#[cfg(target_os = "linux")]
+fn copy_data_extents(
+    src: &std::fs::File,
+    dst: &std::fs::File,
+    len: u64,
+    buf: &mut [u8],
+) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let fd = src.as_raw_fd();
+    let mut at = 0u64;
+    while at < len {
+        let start = match seek_extent(fd, at, libc::SEEK_DATA) {
+            Ok(Some(start)) => start,
+            Ok(None) => break,
+            Err(err) if err.raw_os_error() == Some(libc::EINVAL) => return Ok(false),
+            Err(err) => return Err(err),
+        };
+        let end = seek_extent(fd, start, libc::SEEK_HOLE)?
+            .unwrap_or(len)
+            .min(len);
+        if end <= start {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "SEEK_HOLE did not move past the data it followed",
+            ));
+        }
+        copy_range(src, dst, start, end, buf)?;
+        at = end;
+    }
+    Ok(true)
+}
+
+/// `lseek` to the next data or hole at or after `at`. `Ok(None)` is `ENXIO`:
+/// no data lies at or after `at`.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)] // the one syscall std does not expose: lseek with SEEK_DATA/SEEK_HOLE
+fn seek_extent(
+    fd: std::os::unix::io::RawFd,
+    at: u64,
+    whence: libc::c_int,
+) -> std::io::Result<Option<u64>> {
+    // SAFETY: lseek only moves the descriptor's file offset; `fd` is the live
+    // descriptor of the caller's `File`, and the copy reads by offset (pread).
+    let off = unsafe { libc::lseek(fd, at as libc::off_t, whence) };
+    if off >= 0 {
+        return Ok(Some(off as u64));
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ENXIO) {
+        Ok(None)
+    } else {
+        Err(err)
+    }
+}
+
+/// Copies `[start, end)` of `src` to the same offsets of `dst`, a buffer at a time.
+#[cfg(target_os = "linux")]
+fn copy_range(
+    src: &std::fs::File,
+    dst: &std::fs::File,
+    start: u64,
+    end: u64,
+    buf: &mut [u8],
+) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let mut at = start;
+    while at < end {
+        let n = buf.len().min((end - at) as usize);
+        src.read_exact_at(&mut buf[..n], at)?;
+        write_fully_at(dst, &buf[..n], at)?;
+        at += n as u64;
+    }
+    Ok(())
+}
+
+/// The fallback: reads all of `src` and writes only the `ZERO_BLOCK`s that hold
+/// a non-zero byte. `dst` is a fresh file of the source's length, so a skipped
+/// block already reads as zero.
+#[cfg(unix)]
+fn copy_skipping_zero_blocks(
+    src: &std::fs::File,
+    dst: &std::fs::File,
+    len: u64,
+    buf: &mut [u8],
+) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let mut at = 0u64;
+    while at < len {
+        let n = buf.len().min((len - at) as usize);
+        src.read_exact_at(&mut buf[..n], at)?;
+        for (i, block) in buf[..n].chunks(ZERO_BLOCK).enumerate() {
+            if block.iter().any(|&b| b != 0) {
+                write_fully_at(dst, block, at + (i * ZERO_BLOCK) as u64)?;
+            }
+        }
+        at += n as u64;
+    }
+    Ok(())
+}
+
+/// Writes all of `data` to `dst` at `at`, looping over short writes.
+#[cfg(unix)]
+fn write_fully_at(dst: &std::fs::File, mut data: &[u8], mut at: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    while !data.is_empty() {
+        let n = dst.write_at(data, at)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "the copy wrote no bytes",
+            ));
+        }
+        data = &data[n..];
+        at += n as u64;
+    }
+    Ok(())
+}
+
 /// Copies `base` into `dir` as `workspace-{0..n}.ext4`: one private workspace
 /// image per VM of an `n`-VM run.
 ///
@@ -1083,9 +1242,8 @@ pub enum WorkspaceError {
 /// hands each VM its path through [`VmSpec::workspace`]. The directory is
 /// created `0700` (see [`create_uds_dir`]): an agent's workspace is its private
 /// data, and under the default `/tmp` prefix a wider mode would let any local
-/// user read or rewrite it. `std::fs::copy` reads and writes the bytes, which
-/// is the only copy this port can ask of a plain file (no reflink through
-/// `std`); the images are a few MiB and the copies happen once per run, before
+/// user read or rewrite it. [`copy_sparse`] keeps the base's holes as holes, so a copy costs the blocks
+/// its VM writes, not the image's length. The copies happen once per run, before
 /// its VMs boot.
 #[cfg(unix)]
 pub fn materialize_workspaces(
@@ -1100,7 +1258,7 @@ pub fn materialize_workspaces(
     (0..n)
         .map(|id| {
             let copy = dir.join(format!("workspace-{id}.ext4"));
-            std::fs::copy(base, &copy).map_err(|source| WorkspaceError::Copy {
+            copy_sparse(base, &copy).map_err(|source| WorkspaceError::Copy {
                 base: base.to_path_buf(),
                 copy: copy.clone(),
                 source,
@@ -1233,6 +1391,43 @@ mod tests {
             !run_dir.join("workspace-0.ext4").exists(),
             "a failed copy leaves no image behind"
         );
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A sparse image copies without its holes: a 64 MiB file with 1 MiB of data
+    /// at 32 MiB copies to the same bytes, and the copy allocates the data's
+    /// blocks, not the file's length. The zero-block fallback makes the same copy.
+    #[cfg(unix)]
+    #[test]
+    fn a_sparse_image_keeps_its_holes_in_the_copy() {
+        use std::io::{Seek, SeekFrom, Write};
+        use std::os::unix::fs::MetadataExt;
+        let dir = scratch("sparse");
+        let base = dir.join("sparse.ext4");
+        {
+            let mut file = std::fs::File::create(&base).expect("the sparse base");
+            file.set_len(64 << 20).expect("64 MiB, mostly holes");
+            file.seek(SeekFrom::Start(32 << 20)).expect("seek to 32 MiB");
+            let data = vec![0xA5u8; 1 << 20];
+            file.write_all(&data).expect("1 MiB of data at 32 MiB");
+        }
+        let want = std::fs::read(&base).expect("the base");
+
+        let copy = dir.join("copy.ext4");
+        assert_eq!(copy_sparse(&base, &copy).expect("a sparse copy"), 64 << 20);
+        assert_eq!(std::fs::read(&copy).expect("the copy"), want);
+        let allocated = std::fs::metadata(&copy).expect("the copy's metadata").blocks() * 512;
+        assert!(allocated < 4 << 20, "the copy allocated {allocated} bytes");
+
+        let fallback = dir.join("fallback.ext4");
+        let src = std::fs::File::open(&base).expect("the base");
+        let dst = std::fs::File::create(&fallback).expect("the fallback copy");
+        dst.set_len(64 << 20).expect("the fallback's length");
+        copy_skipping_zero_blocks(&src, &dst, 64 << 20, &mut vec![0u8; COPY_CHUNK])
+            .expect("the fallback");
+        drop(dst);
+        assert_eq!(std::fs::read(&fallback).expect("the fallback copy"), want);
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }

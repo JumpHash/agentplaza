@@ -39,7 +39,7 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    one run (default: no fleet)
   --agents-cid-base N   first guest CID of the fleet: role i gets N + i
                         (default 100)
-  --agents-memory-mib N guest memory per agent VM, in MiB (default 128)
+  --agents-memory-mib N guest memory per agent VM, in MiB (default 1024)
   --agents-vcpus N      vCPUs per agent VM (default 1)
   --agents-balloon-mib N  MiB of each agent VM's memory usable at boot; the rest
                         of --agents-memory-mib is a balloon it grows into
@@ -228,7 +228,7 @@ mod tests {
         let config = parse_args(Vec::new()).expect("no arguments is the default");
         assert_eq!(config.agents, None);
         assert_eq!(config.agents_cid_base, 100);
-        assert_eq!(config.agents_memory_mib, 128);
+        assert_eq!(config.agents_memory_mib, 1024);
         assert_eq!(config.agents_vcpus, 1);
         assert_eq!(config.agents_balloon_mib, 32);
     }

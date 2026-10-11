@@ -12,9 +12,13 @@
 # mounts the volume at /workspace and `wspace <text>` appends to
 # /workspace/notes.txt there.
 #
-# 16 MiB is deliberately small: the point is a workspace that boots in
-# milliseconds per VM, and the plaza's volumes are notes and build output, not
-# datasets. Override with APZ_WORKSPACE_MIB.
+# 4 GiB, and sparse. The volume is big enough to hold the toolchains an agent
+# installs on its workspace (Python, Go, Node), but `truncate` makes the file
+# sparse: the host pays only for the blocks written, and the per-VM copies a run
+# makes (`vmm::spawner::copy_sparse`) keep those holes. The mkfs flags
+# lazy_itable_init and lazy_journal_init defer zeroing the inode tables and the
+# journal, so building the image does not write its full length. Override with
+# APZ_WORKSPACE_MIB.
 #
 # The image keeps its ext4 journal: a VM can be killed at any moment (the host
 # reaps it, and a guest that crashes leaves the filesystem dirty), and a
@@ -25,13 +29,13 @@
 #         initrd; mkfs.ext4 is the only tool needed, from e2fsprogs)
 #
 # Env overrides:
-#   APZ_WORKSPACE_MIB=32       the image's size in MiB (default 16)
+#   APZ_WORKSPACE_MIB=32       the image's size in MiB (default 4096)
 #   APZ_WORKSPACE_IMAGE=/path  the image's path (default target/guest/workspace.ext4)
 set -eu
 
 out_dir="target/guest"
 image="${APZ_WORKSPACE_IMAGE:-$out_dir/workspace.ext4}"
-size_mib="${APZ_WORKSPACE_MIB:-16}"
+size_mib="${APZ_WORKSPACE_MIB:-4096}"
 label="plaza-workspace"
 # A pinned filesystem UUID, label and superblock timestamp (the last through
 # SOURCE_DATE_EPOCH, which mke2fs honours): the image's *identity* is stable
@@ -74,7 +78,7 @@ truncate -s "${size_mib}M" "$image"
 : "${SOURCE_DATE_EPOCH:=0}"
 export SOURCE_DATE_EPOCH
 
-mkfs.ext4 -q -F -L "$label" -U "$uuid" -m 0 "$image"
+mkfs.ext4 -q -F -E lazy_itable_init=1,lazy_journal_init=1 -L "$label" -U "$uuid" -m 0 "$image"
 
 # Read-only check of what was just written: a failed build must not look like a
 # built image.
