@@ -136,6 +136,11 @@ FLEET_DEADLINE_S = 300.0
 #: How long the whole runner waits for a daemon to print its bound port.
 START_DEADLINE_S = 20.0
 
+#: Slack when attributing a run's workspace directory to a lab by mtime: a
+#: daemon creates `run-{id}-{epoch_ms}` well after the lab records its start,
+#: so this only absorbs filesystem-timestamp jitter.
+RUN_DIR_CLOCK_SLACK_S = 1.0
+
 
 # ------------------------------------------------------------------ small utils
 
@@ -338,8 +343,12 @@ class Lab:
         uds_dir: Path | None = None,
         workspace: Path | None = None,
         status_port: int | None = None,
+        admin_port: int | None = None,
+        roles: Path | None = None,
         agents: Path | None = None,
+        agents_cid_base: int | None = None,
         hub_status: str | None = None,
+        hub_admin: str | None = None,
     ):
         self.ctx = ctx
         self.tag = tag
@@ -361,19 +370,39 @@ class Lab:
         # parsed from the daemon's log line (`self.status_bound`).
         self.status_port = status_port
         self.status_bound: int | None = None
+        # The hub's admin surface (`vsockd --admin-port`), when the caller asks
+        # for it: `0` binds an ephemeral port, whose real number is parsed from
+        # the daemon's log line (`self.admin_bound`).
+        self.admin_port = admin_port
+        self.admin_bound: int | None = None
+        # The roles manifest the hub enforces the codex's tool grants from
+        # (`vsockd --roles`), or `None` for a daemon with no policy.
+        self.roles = Path(roles) if roles is not None else None
         # The roles manifest the daemon boots its initial fleet from
         # (`noded --agents`), or `None` for a daemon with no fleet.
         self.agents = Path(agents) if agents is not None else None
+        # The first guest CID of that fleet (`noded --agents-cid-base`); role
+        # `i` (alphabetical) gets `agents_cid_base + i`.
+        self.agents_cid_base = agents_cid_base
         # Where `noded` proxies the hub's status surface (`--hub-status`):
         # the literal `HOST:PORT`, the sentinel `"self"` for this lab's own
         # vsockd status port, or `None` to leave the flag off.
         self.hub_status = hub_status
+        # Where `noded` drives the hub's admin surface (`--hub-admin`): the
+        # literal `HOST:PORT`, the sentinel `"self"` for this lab's own vsockd
+        # admin port, or `None` to leave the flag off.
+        self.hub_admin = hub_admin
         self.noded: subprocess.Popen | None = None
         self.vsockd: subprocess.Popen | None = None
         self.port: int = 0
         self.noded_log = self.log_dir / "noded.log"
         self.vsockd_log = self.log_dir / "vsockd.log"
         self.started_at = iso_now()
+        # The lab's own lifetime, as wall-clock bounds: a run's workspace
+        # directory is attributed to the daemon that created it by its mtime
+        # (see `run_dir`), which matters when two daemons share one UDS root.
+        self.started_wall = time.time()
+        self.stopped_wall: float | None = None
         ctx.register_artifact(self.noded_log)
         ctx.register_artifact(self.vsockd_log)
     # -- lifecycle ---------------------------------------------------------
@@ -411,6 +440,14 @@ class Lab:
                 # The read-only registry surface, on an ephemeral port by
                 # default (`--status-port 0`).
                 argv_vsockd += ["--status-port", str(self.status_port)]
+            if self.admin_port is not None:
+                # The control plane's admin surface (`POST /tell`,
+                # `POST /stop`), ephemeral by default (`--admin-port 0`).
+                argv_vsockd += ["--admin-port", str(self.admin_port)]
+            if self.roles is not None:
+                # The codex's per-role tool grants, enforced on every
+                # `/tell` the admin surface accepts.
+                argv_vsockd += ["--roles", str(self.roles)]
             self.vsockd = self._spawn("vsockd", argv_vsockd, self.vsockd_log)
             self._await_line(self.vsockd_log, "listening on")
             # The daemon binds its listeners one CID at a time, so wait for
@@ -419,10 +456,16 @@ class Lab:
             self._await_listeners()
             if self.status_port is not None:
                 self._await_status_port()
+            if self.admin_port is not None:
+                self._await_admin_port()
         if self.agents is not None:
             # The daemon boots its initial role fleet from this manifest before
             # it serves, one long-lived keepalive VM per role.
             argv_noded += ["--agents", str(self.agents)]
+            if self.agents_cid_base is not None:
+                # Role i (alphabetical) gets this base + i, so the caller knows
+                # which CID a role's guest connects as.
+                argv_noded += ["--agents-cid-base", str(self.agents_cid_base)]
         if self.hub_status is not None:
             # `noded --hub-status` points the daemon's `/api/v0/hub` proxy at
             # the hub's status surface: the sentinel `"self"` resolves to this
@@ -434,6 +477,18 @@ class Lab:
                 argv_noded += ["--hub-status", f"127.0.0.1:{self.status_bound}"]
             else:
                 argv_noded += ["--hub-status", str(self.hub_status)]
+        if self.hub_admin is not None:
+            # `noded --hub-admin` points the daemon's
+            # `/api/v0/agents/{cid}/tell` and `/api/v0/tasks/{id}/artifact` at
+            # the hub's admin surface. The sentinel `"self"` resolves to this
+            # lab's own vsockd admin port; anything else is passed through
+            # (`off`, or a literal HOST:PORT).
+            if self.hub_admin == "self":
+                if self.admin_bound is None:
+                    raise LabError("hub_admin='self' needs the lab's own admin_port")
+                argv_noded += ["--hub-admin", f"127.0.0.1:{self.admin_bound}"]
+            else:
+                argv_noded += ["--hub-admin", str(self.hub_admin)]
         self.noded = self._spawn("noded", argv_noded, self.noded_log)
         line = self._await_line(self.noded_log, "listening on")
         match = re.search(r"127\.0\.0\.1:(\d+)", line)
@@ -458,6 +513,11 @@ class Lab:
                     except (ProcessLookupError, PermissionError):
                         pass
         self.noded = self.vsockd = None
+        # The lab's lifetime closes here: after this, a run directory it
+        # created is still *its* (a finished run's copies are kept), but a
+        # later lab's are not.
+        if self.stopped_wall is None:
+            self.stopped_wall = time.time()
     def _spawn(self, name: str, argv: list[str], log: Path) -> subprocess.Popen:
         handle = open(log, "ab", buffering=0)
         try:
@@ -497,6 +557,18 @@ class Lab:
             raise LabError(f"vsockd did not report a status port: {line!r}")
         self.status_bound = int(match.group(1))
 
+    def _await_admin_port(self) -> None:
+        """Wait for the daemon's admin line and record the port it bound.
+
+        ``--admin-port 0`` binds an ephemeral port, so the real number is only
+        known once the daemon prints it (``vsockd: admin on http://...``).
+        """
+        line = self._await_line(self.vsockd_log, "admin on http")
+        match = re.search(r"127\.0\.0\.1:(\d+)", line)
+        if not match:
+            raise LabError(f"vsockd did not report an admin port: {line!r}")
+        self.admin_bound = int(match.group(1))
+
     def _await_line(self, log: Path, needle: str) -> str:
         deadline = now() + START_DEADLINE_S
         while now() < deadline:
@@ -526,9 +598,49 @@ class Lab:
             return Result(err.code, err.read().decode(), now() - started)
     def machine(self) -> dict:
         return self._request("GET", "/api/v0/machine").json
+    def api_request(self, method: str, path: str, body: dict | None = None, timeout: float = 300.0) -> "Result":
+        """One request to ``noded``'s own HTTP API (the raw reply)."""
+        return self._request(method, path, body, timeout)
     def api_get(self, path: str) -> "Result":
         """``GET`` a path on ``noded``'s own HTTP API (the raw reply)."""
-        return self._request("GET", path)
+        return self.api_request("GET", path)
+    def api_post(self, path: str, body: dict | None = None, timeout: float = 300.0) -> "Result":
+        """``POST`` a JSON body to ``noded``'s own HTTP API (the raw reply)."""
+        return self.api_request("POST", path, body, timeout)
+    def api_delete(self, path: str) -> "Result":
+        """``DELETE`` a path on ``noded``'s own HTTP API (the raw reply)."""
+        return self.api_request("DELETE", path)
+    # -- the hub's admin surface -------------------------------------------
+    def admin_request(self, method: str, path: str, body: dict | None = None, timeout: float = 20.0) -> "Result":
+        """One request to the hub's admin surface (``POST /tell``, ``POST /stop``)."""
+        if self.admin_bound is None:
+            raise LabError("this lab has no admin surface (start it with admin_port=...)")
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.admin_bound}{path}", method=method, data=data
+        )
+        if data is not None:
+            request.add_header("Content-Type", "application/json")
+        started = now()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as reply:
+                return Result(reply.status, reply.read().decode(), now() - started)
+        except urllib.error.HTTPError as err:
+            return Result(err.code, err.read().decode(), now() - started)
+    def admin_tell(self, cid: int, name: str, args: dict | None = None, timeout_ms: int | None = None) -> "Result":
+        """``POST /tell``: drive one tool call on the agent connected as ``cid``."""
+        body: dict = {"cid": cid, "name": name}
+        if args is not None:
+            body["args"] = args
+        if timeout_ms is not None:
+            body["timeout_ms"] = timeout_ms
+        return self.admin_request("POST", "/tell", body)
+    def admin_stop(self, cid: int, reason: str | None = None) -> "Result":
+        """``POST /stop``: ask the agent connected as ``cid`` to end its session."""
+        body: dict = {"cid": cid}
+        if reason is not None:
+            body["reason"] = reason
+        return self.admin_request("POST", "/stop", body)
     # -- the hub's read-only status surface --------------------------------
     def status(self) -> dict:
         """``GET /status`` — the hub's registry, from its read-only surface."""
@@ -622,14 +734,30 @@ class Lab:
         """The path ``vsockd`` listens on for guest ``cid`` (``{uds}_{port}``)."""
         return self.uds_dir / f"vm{cid}_{port}"
     def run_dir(self, run_id: str) -> Path:
-        """A run's private directory under the UDS root (``{uds}/run-{id}``).
+        """A run's private directory under the UDS root.
 
-        ``noded`` lays the run's per-VM workspace copies out here before its
-        VMs boot and keeps the directory when the run ends (it holds the
-        guests' work), so an operator addresses a finished run's volumes by
-        this deterministic path.
+        ``noded`` names it ``{uds}/run-{id}-{epoch_ms}``: the daemon's start
+        stamp is part of the name so a new ``r1`` can never overwrite a
+        previous daemon's retained copies (the fix for the ``--workspace``
+        sweep's finding, commit ``d275921``). An older daemon named it a bare
+        ``run-{id}``, which is the fallback. When a restarted daemon shares the
+        UDS root the same run id has two directories, so this returns the one
+        *this* lab's daemon created — the candidate whose mtime falls inside
+        the lab's own lifetime — and the other lab's stays addressable through
+        its own handle. ``noded`` keeps a finished run's directory (it holds
+        the guests' work), so an operator still addresses it after the run.
         """
-        return self.uds_dir / f"run-{run_id}"
+        bare = self.uds_dir / f"run-{run_id}"
+        candidates = sorted(self.uds_dir.glob(f"run-{run_id}-*"))
+        if not candidates:
+            return bare
+        def inside_lifetime(path: Path) -> bool:
+            mtime = path.stat().st_mtime
+            return mtime >= self.started_wall - RUN_DIR_CLOCK_SLACK_S and (
+                self.stopped_wall is None or mtime <= self.stopped_wall
+            )
+        own = [path for path in candidates if inside_lifetime(path)]
+        return own[-1] if own else candidates[-1]
 
     def workspace_copies(self, run_id: str) -> list[Path]:
         """A run's workspace copies, in VM order (``workspace-{i}.ext4``)."""

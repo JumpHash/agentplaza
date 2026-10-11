@@ -1,0 +1,607 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-11T04:20:46+0200",
+  "wall_seconds": 14.693,
+  "manifest": {
+    "suite": "treasury",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "5c8c3027a3361d488db254db6676067aafc69e98",
+      "dirty": true,
+      "harness_tree_sha256": "567b357244dbe6d2fb5c06b2a3949ab0059021d6ce11e1255ad88451e009dd42"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/tmp/apz-treasury-pin/initrd.x86_64.gz",
+      "initrd_sha256": "2e23d3fd0577d7e39c7c736b12d676e5bf0b78bf291e494dce71976223a70da9",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-treasury-final",
+    "started_at": "2026-10-11T04:20:46+0200",
+    "binaries": {
+      "noded": {
+        "path": "/tmp/apz-treasury-pin/noded",
+        "sha256": "3fbb07737274710c26f31179b907f375e92dd4aba70057864e19eb995caec75f"
+      },
+      "vsockd": {
+        "path": "/tmp/apz-treasury-pin/vsockd",
+        "sha256": "8d736714bc92d5b6e3b483daa1283fdcb5b63811c0d6395a222008275897b902"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-treasury-final/treasury-manifest-cycle/roles.json",
+        "bytes": 393,
+        "sha256": "65237ef46f3ec8b250cff4689f0d91f1d6d8a4e262764653601bf0f31564e5bc",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/65237ef4-roles.json",
+        "excerpt_bytes": 393
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-cycle-logs/noded.log",
+        "bytes": 8306,
+        "sha256": "b9058dee0ff00540995d11ea2eec8d1010121ab2454e1d4a8c14048db2822cb0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/b9058dee-noded.log",
+        "excerpt_bytes": 8306
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-cycle-logs/vsockd.log",
+        "bytes": 692,
+        "sha256": "3217604cab11008d2b76c6fb61ccf0034349022196bb97cf2806cfea638f1ea4",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/3217604c-vsockd.log",
+        "excerpt_bytes": 692
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-cycle/treasury.json",
+        "bytes": 1026,
+        "sha256": "4bb7a5c4bd16760c17a75c03e127213bb4602bad9218f7787f4d6d83c6b8d341",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/4bb7a5c4-treasury.json",
+        "excerpt_bytes": 1026
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-cycle/journal.json",
+        "bytes": 4174,
+        "sha256": "f91982f14f999acb2e3d02b67bbf320e1551467685011d84601a2aba9aad1d10",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/f91982f1-journal.json",
+        "excerpt_bytes": 4174
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-rules-logs/noded.log",
+        "bytes": 142,
+        "sha256": "42ae5d7f5c6216bfbe675412c23d316b53c04321ec540d33a4f0110f24b10e7c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/42ae5d7f-noded.log",
+        "excerpt_bytes": 142
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-manifest-operator/roles.json",
+        "bytes": 714,
+        "sha256": "8fd9d965ab43f534155044b5233223f631404771b79923a8471cfc1001959ede",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/8fd9d965-roles.json",
+        "excerpt_bytes": 714
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-operator-logs/noded.log",
+        "bytes": 16402,
+        "sha256": "9d589a91819c2c77e70557d56187258bf818b2283e16ec61ad9aa8f59ba1e8b2",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/9d589a91-noded.log",
+        "excerpt_bytes": 16402
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-operator-logs/vsockd.log",
+        "bytes": 3851,
+        "sha256": "c48058b96609d676b1eac4d207d0c5e4d2cb8234e77d95bc769d33ebfe1c6497",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/c48058b9-vsockd.log",
+        "excerpt_bytes": 3851
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/artifact-content.txt",
+        "bytes": 59,
+        "sha256": "3f247230cf50f0bf86ac05f42f5e5049c6a442500cef00930fefc03e5062dc25",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/3f247230-artifact-content.txt",
+        "excerpt_bytes": 59
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/artifact-read.json",
+        "bytes": 154,
+        "sha256": "4f831e4c29a0599b4a2297a11a8bea6c10789a1f66408d123a15d1b8412e1b05",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/4f831e4c-artifact-read.json",
+        "excerpt_bytes": 154
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/tell-403-noded.txt",
+        "bytes": 87,
+        "sha256": "aa0fece4f8d68aeccb6c161e3e957d536fe2550abefceab0bee470feeeb1d527",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/aa0fece4-tell-403-noded.txt",
+        "excerpt_bytes": 87
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/tell-403-hub.txt",
+        "bytes": 69,
+        "sha256": "ee0bab26cfb848a220917995d14f8909c2dc964dc5d92483d2e539354246a852",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/ee0bab26-tell-403-hub.txt",
+        "excerpt_bytes": 69
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/stop.json",
+        "bytes": 37,
+        "sha256": "392f495c4381d1d82e94dc64f11d478fda5e5b54aac9af62e8facb02a58d7ba5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/392f495c-stop.json",
+        "excerpt_bytes": 37
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/builder-transcript.txt",
+        "bytes": 2118,
+        "sha256": "6daae24ebae32a5965a79ad02550465e1a5ea2807073c822d0e93a66b078b51a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/6daae24e-builder-transcript.txt",
+        "excerpt_bytes": 2118
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-operator/librarian-transcript.txt",
+        "bytes": 1178,
+        "sha256": "ef889f108d2e07224288adc1d3e59bde814c4aeb0f408dc37719aff47ee78656",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/ef889f10-librarian-transcript.txt",
+        "excerpt_bytes": 1178
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-unknown-logs/noded.log",
+        "bytes": 142,
+        "sha256": "cb34048f608d8083cf178a0fd12eacda9b91d995db55fae98be6ff85aa137f7d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/cb34048f-noded.log",
+        "excerpt_bytes": 142
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-unknown-logs/vsockd.log",
+        "bytes": 315,
+        "sha256": "e79a2d671cba2b380e7708afc11ee97db9904654d947f7f8f8fb5f7d974978ab",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/e79a2d67-vsockd.log",
+        "excerpt_bytes": 315
+      },
+      {
+        "source": "/tmp/apz-treasury-final/treasury-evidence-unknown-cid/refusals.txt",
+        "bytes": 780,
+        "sha256": "4aa4d05ded52337bc38eca8cb5f7eda2bb30923f088f56f9dfe384b517441fec",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T042031/4aa4d05d-refusals.txt",
+        "excerpt_bytes": 780
+      }
+    ]
+  },
+  "suites_run": [
+    "treasury"
+  ],
+  "suites": [
+    {
+      "suite": "treasury",
+      "pass_bar": "every case passes; a case whose required flag/binary is absent is BLOCKED with the reason (never a pass)",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 4,
+      "cases_total": 4,
+      "cases": [
+        {
+          "name": "the mint/refund cycle over the real API (a budgeted task, a real agent, done/failed/withdrawn, and the unbudgeted no-op)",
+          "detail": "",
+          "vector": "noded --agents <1 role builder>: a budgeted create mints its escrow (mint -B, task_escrow t1 +B, credits==debits==B) -> a real fleet agent claims it -> finish done -> both accounts 0, the totals doubled, the journal [1] mint [2] refund each balancing to zero with task_id/memo/posted_by; a failed and a withdrawn task refund too; an unbudgeted task posts nothing",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "noded booted the initial role fleet at startup",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 1 agents running (roles builder, CIDs 130..=130)\nnoded: listening on http://127.0.0.1:33073 (kernel /boot/vmlinuz-linux, initrd /tmp/apz-treasury-pin/initrd.x86_64.gz, console apps/web/dist)\n"
+            },
+            {
+              "name": "the fleet's builder VM runs as the CID the manifest gives it",
+              "ok": true,
+              "detail": "roles={'builder': 130}"
+            },
+            {
+              "name": "the real builder guest connected to the hub",
+              "ok": true,
+              "detail": "nal/treasury-cycle-uds/vm130_5000 for guest CID 130\nvsockd: accepted a connection from cid 130\n[guest 130 vm? ->] {\"type\":\"hello\",\"vm\":0,\"guest_cid\":130,\"role\":\"builder\",\"keepalive\":true}\nvsockd: guest 130 vm 0 says hello (accepted on the socket for cid 130)\nvsockd: agent 130 role builder connected\n[<-] guest 130 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n"
+            },
+            {
+              "name": "a budgeted create is a 201 whose task records the budget and is claimable",
+              "ok": true,
+              "detail": "201 {\"id\":\"t1\",\"goal\":\"the paid work\",\"acceptance\":null,\"budget\":750,\"role\":\"builder\",\"state\":\"open\",\"outcome\":null,\"assignee_id\":null,\"verifier_id\":null,\"agent_cid\":null,\"note\":null,\"created_at\":17916852"
+            },
+            {
+              "name": "the mint is debited and the task's escrow credited, as derived from the journal",
+              "ok": true,
+              "detail": "accounts=[{'id': 1, 'kind': 'mint', 'owner_ref': 'mint', 'credit_limit': 0, 'balance': -750, 'created_at': 1791685231897}, {'id': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'credit_limit': 0, 'balance': 750, 'created_at': 1791685234259}]"
+            },
+            {
+              "name": "the totals balance: credits == debits == the budget, and the sum of every balance is zero",
+              "ok": true,
+              "detail": "totals={'accounts': 2, 'entries': 1, 'credits': 750, 'debits': 750, 'balance': 0}"
+            },
+            {
+              "name": "v0 states its own spend honestly (nothing is metered)",
+              "ok": true,
+              "detail": "spent=0 note='v0 meters no real spend; a done task refunds its whole escrow'"
+            },
+            {
+              "name": "the journal's first entry is the mint: it balances to zero and carries task_id/root_task/memo/posted_by",
+              "ok": true,
+              "detail": "entry={'id': 1, 'kind': 'mint', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234259, 'amount': 750, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -750}, {'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': 750}]}"
+            },
+            {
+              "name": "a real fleet agent claims the task (its accepted role is its identity)",
+              "ok": true,
+              "detail": "200 {\"id\":\"t1\",\"goal\":\"the paid work\",\"acceptance\":null,\"budget\":750,\"role\":\"builder\",\"state\":\"claimed\",\"outcome\":null,\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":130,\"note\":null,\"created_at\":1"
+            },
+            {
+              "name": "the agent's finish ends the task as done/accepted",
+              "ok": true,
+              "detail": "200 {\"id\":\"t1\",\"goal\":\"the paid work\",\"acceptance\":null,\"budget\":750,\"role\":\"builder\",\"state\":\"done\",\"outcome\":\"accepted\",\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":130,\"note\":\"the work is don"
+            },
+            {
+              "name": "the refund empties both accounts and doubles the totals",
+              "ok": true,
+              "detail": "accounts=[{'id': 1, 'kind': 'mint', 'owner_ref': 'mint', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685231897}, {'id': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685234259}] totals={'accounts': 2, 'entries': 2, 'credits': 1500, 'debits': 1500, 'balance': 0}"
+            },
+            {
+              "name": "the journal is [1] mint [2] refund, ids in order, each balancing to zero and carrying task_id/memo/posted_by",
+              "ok": true,
+              "detail": "entries=[{'id': 1, 'kind': 'mint', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234259, 'amount': 750, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -750}, {'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': 750}]}, {'id': 2, 'kind': 'refund', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget refunded', 'posted_by': 'treasury-service', 'created_at': 1791685234261, 'amount': 750, 'postings': [{'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': -750}, {'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': 750}]}]"
+            },
+            {
+              "name": "a claimed task that fails ends as failed/failed and refunds its escrow",
+              "ok": true,
+              "detail": "200 {\"id\":\"t2\",\"goal\":\"the failed work\",\"acceptance\":null,\"budget\":300,\"role\":\"builder\",\"state\":\"failed\",\"outcome\":\"failed\",\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":130,\"note\":\"gave up\",\"cre"
+            },
+            {
+              "name": "a claimed task withdrawn mid-flight ends as withdrawn/cancelled and refunds",
+              "ok": true,
+              "detail": "200 {\"id\":\"t3\",\"goal\":\"the withdrawn work\",\"acceptance\":null,\"budget\":200,\"role\":\"builder\",\"state\":\"withdrawn\",\"outcome\":\"cancelled\",\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":130,\"note\":null,"
+            },
+            {
+              "name": "an unclaimed task withdrawn refunds its whole escrow",
+              "ok": true,
+              "detail": "200 {\"id\":\"t4\",\"goal\":\"never started\",\"acceptance\":null,\"budget\":120,\"role\":\"builder\",\"state\":\"withdrawn\",\"outcome\":\"cancelled\",\"assignee_id\":null,\"verifier_id\":null,\"agent_cid\":null,\"note\":null,\"created_"
+            },
+            {
+              "name": "an unbudgeted create opens no escrow and posts no entry",
+              "ok": true,
+              "detail": "create={\"id\":\"t5\",\"goal\":\"free work\",\"acceptance\":null,\"budget\":0,\"role\":null,\"state\":\"open\",\"outcome\":null,\"assignee_id\":null,\"verifier_id\":null,\"agent_cid\":null,\"not entries=8"
+            },
+            {
+              "name": "an unbudgeted task that runs and ends still posts nothing",
+              "ok": true,
+              "detail": "entries=8"
+            },
+            {
+              "name": "every entry balances to zero and the journal's ids are exactly 1..=n, in order",
+              "ok": true,
+              "detail": "entries=[{'id': 1, 'kind': 'mint', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234259, 'amount': 750, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -750}, {'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': 750}]}, {'id': 2, 'kind': 'refund', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget refunded', 'posted_by': 'treasury-service', 'created_at': 1791685234261, 'amount': 750, 'postings': [{'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': -750}, {'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': 750}]}, {'id': 3, 'kind': 'mint', 'task_id': 't2', 'root_task': 't2', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234263, 'amount': 300, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -300}, {'account': 3, 'kind': 'task_escrow', 'owner_ref': 't2', 'amount': 300}]}, {'id': 4, 'kind': 'refund', 'task_id': 't2', 'root_task': 't2', 'memo': 'task budget refunded', 'posted_by': 'treasury-service', 'created_at': 1791685234264, 'amount': 300, 'postings': [{'account': 3, 'kind': 'task_escrow', 'owner_ref': 't2', 'amount': -300}, {'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': 300}]}, {'id': 5, 'kind': 'mint', 'task_id': 't3', 'root_task': 't3', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234264, 'amount': 200, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -200}, {'account': 4, 'kind': 'task_escrow', 'owner_ref': 't3', 'amount': 200}]}, {'id': 6, 'kind': 'refund', 'task_id': 't3', 'root_task': 't3', 'memo': 'task budget refunded', 'posted_by': 'treasury-service', 'created_at': 1791685234265, 'amount': 200, 'postings': [{'account': 4, 'kind': 'task_escrow', 'owner_ref': 't3', 'amount': -200}, {'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': 200}]}, {'id': 7, 'kind': 'mint', 'task_id': 't4', 'root_task': 't4', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234266, 'amount': 120, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -120}, {'account': 5, 'kind': 'task_escrow', 'owner_ref': 't4', 'amount': 120}]}, {'id': 8, 'kind': 'refund', 'task_id': 't4', 'root_task': 't4', 'memo': 'task budget refunded', 'posted_by': 'treasury-service', 'created_at': 1791685234266, 'amount': 120, 'postings': [{'account': 5, 'kind': 'task_escrow', 'owner_ref': 't4', 'amount': -120}, {'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': 120}]}]"
+            },
+            {
+              "name": "the journal balances as a whole and every account is back to zero",
+              "ok": true,
+              "detail": "totals={'accounts': 5, 'entries': 8, 'credits': 2740, 'debits': 2740, 'balance': 0} accounts=[{'id': 1, 'kind': 'mint', 'owner_ref': 'mint', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685231897}, {'id': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685234259}, {'id': 3, 'kind': 'task_escrow', 'owner_ref': 't2', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685234263}, {'id': 4, 'kind': 'task_escrow', 'owner_ref': 't3', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685234264}, {'id': 5, 'kind': 'task_escrow', 'owner_ref': 't4', 'credit_limit': 0, 'balance': 0, 'created_at': 1791685234266}]"
+            },
+            {
+              "name": "each mint is matched by a refund of the same amount for the same task (the cycle is closed)",
+              "ok": true,
+              "detail": "mints={'t1': 750, 't2': 300, 't3': 200, 't4': 120} refunds={'t1': 750, 't2': 300, 't3': 200, 't4': 120}"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "the posting rules over the API: the read contracts, the refusals the API states, and one escrow per task",
+          "detail": "",
+          "vector": "a noded with no fleet: GET /api/v0/treasury[/journal] and their read-only-ness (405/404); a nonsense budget refused 400 with the ledger unchanged; each create its own task and its own escrow (the same create twice is two tasks, never one id reused); the claim/state-machine refusals; and the rule set itself recorded as covered by the crate's own tests (the API has no write-entry endpoint)",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "the treasury starts as the mint alone: one account, no entries, a zero sum",
+              "ok": true,
+              "detail": "200 {\"accounts\":[{\"id\":1,\"kind\":\"mint\",\"owner_ref\":\"mint\",\"credit_limit\":0,\"balance\":0,\"created_at\":1791685234469}],\"totals\":{\"accounts\":1,\"entries\":0,\"credits\":0,\"debits\":0,\"balance\":0},\"spent\":0,\"note\":"
+            },
+            {
+              "name": "v0 states its own spend honestly (nothing is metered)",
+              "ok": true,
+              "detail": "spent=0 note='v0 meters no real spend; a done task refunds its whole escrow'"
+            },
+            {
+              "name": "the journal starts empty and untruncated",
+              "ok": true,
+              "detail": "200 {\"entries\":[],\"total\":0,\"limit\":256,\"truncated\":false}"
+            },
+            {
+              "name": "the treasury endpoints accept GET only (a write method is a 405 on both)",
+              "ok": true,
+              "detail": "{'POST /api/v0/treasury': 405, 'POST /api/v0/treasury/journal': 405, 'PUT /api/v0/treasury': 405, 'PUT /api/v0/treasury/journal': 405, 'DELETE /api/v0/treasury': 405, 'DELETE /api/v0/treasury/journal': 405}"
+            },
+            {
+              "name": "a path under the treasury that is not the journal is a 404",
+              "ok": true,
+              "detail": "nope=404 extra=404"
+            },
+            {
+              "name": "a budget past i64::MAX is refused 400 in the ledger's own words",
+              "ok": true,
+              "detail": "400 {\"error\":\"budget must be at most 9223372036854775807\"}"
+            },
+            {
+              "name": "a create outside the contract is refused 400 (an empty goal, a non-integer budget)",
+              "ok": true,
+              "detail": "{\"{'goal': ''}\": 400, \"{'goal': '   '}\": 400, \"{'goal': 'x', 'budget': -5}\": 400, \"{'goal': 'x', 'budget': 'lots'}\": 400, \"{'goal': 'x', 'budget': 1.5}\": 400}"
+            },
+            {
+              "name": "a refused create leaves the ledger and the journal exactly as they were (no id consumed)",
+              "ok": true,
+              "detail": "tasks={\"tasks\":[]} totals={'accounts': 1, 'entries': 0, 'credits': 0, 'debits': 0, 'balance': 0}"
+            },
+            {
+              "name": "each create is its own task: the id is handed out in order and never reused",
+              "ok": true,
+              "detail": "first={\"id\":\"t1\",\"goal\":\"the first\",\"acceptance\":null,\"budget\":100,\"role\":null,\"state\":\"open\",\"outcome\":null,\"assignee_id\":nul second={\"id\":\"t2\",\"goal\":\"the first\",\"acceptance\":null,\"budget\":100,\"role\":null,\"state\":\"open\",\"outcome\":null,\"assignee_id\":nul"
+            },
+            {
+              "name": "each create opens its own escrow, minted by its own entry (no shared or double-posted escrow)",
+              "ok": true,
+              "detail": "accounts=[{'id': 1, 'kind': 'mint', 'owner_ref': 'mint', 'credit_limit': 0, 'balance': -200, 'created_at': 1791685234469}, {'id': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'credit_limit': 0, 'balance': 100, 'created_at': 1791685234528}, {'id': 3, 'kind': 'task_escrow', 'owner_ref': 't2', 'credit_limit': 0, 'balance': 100, 'created_at': 1791685234528}] totals={'accounts': 3, 'entries': 2, 'credits': 200, 'debits': 200, 'balance': 0}"
+            },
+            {
+              "name": "each mint names its own task (the journal has one mint per create, in create order)",
+              "ok": true,
+              "detail": "entries=[{'id': 1, 'kind': 'mint', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234528, 'amount': 100, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -100}, {'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': 100}]}, {'id': 2, 'kind': 'mint', 'task_id': 't2', 'root_task': 't2', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791685234528, 'amount': 100, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -100}, {'account': 3, 'kind': 'task_escrow', 'owner_ref': 't2', 'amount': 100}]}]"
+            },
+            {
+              "name": "a claim from an agent this node has no live session for is a 409",
+              "ok": true,
+              "detail": "{\"error\":\"no live agent has guest CID 999\"}"
+            },
+            {
+              "name": "finishing an open task is a 409 (the ledger's state machine)",
+              "ok": true,
+              "detail": "{\"error\":\"a task may not go from open to done\"}"
+            }
+          ],
+          "notes": [
+            "the posting rules themselves are NOT exercised through the API, and this case does not invent an entry it cannot post: the daemon serves NO write-entry endpoint (the treasury surfaces are GET-only, asserted above), so a posting that breaks a rule of the schema's table is unreachable from here. The rule set is transcribed verbatim in crates/noded/src/treasury.rs (POSTING_RULES, the schema's treasury.posting_rules) and covered there by its own tests (the rule matrix, check_entry's order, the balance/overdraw/margin checks, and the mutant-killing suite), plus crates/noded/tests/treasury.rs for the API-reachable half (the mint/refund wiring, the views, the SSE frames). That is where the rest is covered; this case asserts only what this API can reach."
+          ]
+        },
+        {
+          "name": "the operator surfaces end to end: /tell (granted + the 403), /stop, and the artifact read-through",
+          "detail": "",
+          "vector": "a 2-role fleet (builder + librarian) on the suite's own vsockd --admin-port --roles and noded --agents --hub-admin: uptime driven through noded and through the hub directly; write_file granted on the builder and 403 (role librarian does not grant write_file) on the librarian, with the guest's transcript proving the call never reached it; POST /stop ends the session (the transcript shows stop -> bye -> staying up), the registry drains, the VM stays running; and the artifact read-through returns the builder's file byte-exact, with an escaping path the agent's own 422",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "noded booted the initial role fleet at startup",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, librarian, CIDs 140..=141)\nnoded: listening on http://127.0.0.1:40883 (kernel /boot/vmlinuz-linux, initrd /tmp/apz-treasury-pin/initrd.x86_64.gz, console apps/web/dist)\n"
+            },
+            {
+              "name": "the two-role fleet boots one VM per role, in alphabetical order, at the CIDs the base gives them",
+              "ok": true,
+              "detail": "roles={'builder': 140, 'librarian': 141}"
+            },
+            {
+              "name": "both role guests connected to the hub",
+              "ok": true,
+              "detail": "connected=['vsockd: agent 140 role builder connected', 'vsockd: agent 141 role librarian connected']"
+            },
+            {
+              "name": "each guest mounted its writable /workspace volume (noded --workspace)",
+              "ok": true,
+              "detail": "builder= {\"type\":\"hello\",\"vm\":0,\"guest_cid\":140,\"role\":\"builder\",\"keepalive\":true}[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}agent-harness: role builder accepted"
+            },
+            {
+              "name": "the operator drives uptime through noded and gets the agent's own answer",
+              "ok": true,
+              "detail": "200 {\"cid\":140,\"ok\":true,\"output\":\"1.20 1.04\"}"
+            },
+            {
+              "name": "the hub's admin surface answers the same /tell directly (the operator's own path to it)",
+              "ok": true,
+              "detail": "200 {\"ok\":true,\"output\":\"2.22 2.07\"}"
+            },
+            {
+              "name": "a write tool the role grants is driven and the agent answers (builder grants write_file)",
+              "ok": true,
+              "detail": "200 {\"cid\":140,\"ok\":true,\"output\":\"{\\\"bytes\\\":59,\\\"created\\\":true,\\\"path\\\":\\\"artifact.txt\\\"}\"}"
+            },
+            {
+              "name": "a write tool on a role without the grant is the hub's own 403 (role librarian does not grant write_file)",
+              "ok": true,
+              "detail": "noded=403 {\"error\":\"{\\\"ok\\\":false,\\\"output\\\":\\\"role librarian does not grant write_file\\\"}\"} hub=403 {\"ok\":false,\"output\":\"role librarian does not grant write_file\"}"
+            },
+            {
+              "name": "noded carries the hub's refusal verbatim (its whole body becomes the daemon's message)",
+              "ok": true,
+              "detail": "noded's error='{\"ok\":false,\"output\":\"role librarian does not grant write_file\"}' hub's body='{\"ok\":false,\"output\":\"role librarian does not grant write_file\"}'"
+            },
+            {
+              "name": "the refusal was decided before dispatch: the guest never saw the call",
+              "ok": true,
+              "detail": "e\":\"hello\",\"vm\":1,\"guest_cid\":141,\"role\":\"librarian\",\"keepalive\":true}[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"librarian\",\"keepalive\":true}agent-harness: role librarian accepted"
+            },
+            {
+              "name": "the operator can claim a task for the connected builder",
+              "ok": true,
+              "detail": "200 {\"id\":\"t1\",\"goal\":\"the operator's artifact read\",\"acceptance\":null,\"budget\":400,\"role\":\"builder\",\"state\":\"claimed\",\"outcome\":null,\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":140,\"note\":null"
+            },
+            {
+              "name": "the read-through drives the agent's read_file and returns the file byte-exact",
+              "ok": true,
+              "detail": "200 {\"task\":\"t1\",\"agent_cid\":140,\"path\":\"artifact.txt\",\"content\":\"acceptance-treasury artifact apz-acceptance-v1\\nsecond line\\n\",\"size\":59,\"truncated\":false}"
+            },
+            {
+              "name": "an escaping path is refused by the agent itself (422, its own words)",
+              "ok": true,
+              "detail": "422 {\"error\":\"denied: path \\\"../escape.txt\\\" contains \\\"..\\\"; every path is inside the workspace\"}"
+            },
+            {
+              "name": "the librarian answers a diagnostic before the stop (its session is live)",
+              "ok": true,
+              "detail": "200 {\"cid\":141,\"ok\":true,\"output\":\"5.16 5.00\"}"
+            },
+            {
+              "name": "POST /stop ends the session, answering the guest's own call count",
+              "ok": true,
+              "detail": "200 {\"calls\":1,\"cid\":141,\"stopped\":true}"
+            },
+            {
+              "name": "the hub's registry drains the stopped session",
+              "ok": true,
+              "detail": "row=None status={'node': {'cids': [140, 141, 142], 'port': 5000, 'uptime_s': 6, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 140, 'role': 'builder', 'connected_at_ms': 1791685234933, 'last_heartbeat_ms': 1791685239935, 'calls': 5}], 'sessions_active': 1}"
+            },
+            {
+              "name": "the guest's own transcript shows the operator's stop, its bye, and that it stays up",
+              "ok": true,
+              "detail": "put\":\"5.16 5.00\"}[vsock<-] {\"type\":\"stop\",\"reason\":\"acceptance: the operator stopped this session\"}agent-harness: the hub stopped the agent (acceptance: the operator stopped this session)[vsock->] {\"type\":\"bye\",\"calls\":1}agent-harness: the hub stopped the agent after 1 tool call(s); the guest stays upplaza guest: agent harness stopped by the hub; staying upplaza guest alive: heartbeat 3 uptime~10s"
+            },
+            {
+              "name": "the VM stays running (the register still shows the librarian's VM up)",
+              "ok": true,
+              "detail": "vms=[{'id': 0, 'guest_cid': 140, 'role': 'builder', 'state': 'running', 'serial': '[    0.000000] Linux version 7.2.8-arch1-2 (linux@archlinux) (gcc (GCC) 16.2.1 20260810, GNU ld (GNU Binutils) 2.47) #1 SMP PREEMPT_DYNAMIC Thu, 01 Oct 2026 17:24:20 +0000\\r\\n[    0.000000] Command line: console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=0 pci=off loglevel=7 reboot=acpi virtio_mmio.device=0x1000@0xc0001000:5 virtio_mmio.device=0x1000@0xc0002000:6\\r\\n[    0.000000] BIOS-provided physical RAM map:\\r\\n[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff]  System RAM\\r\\n[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x00000000000dffff]  device reserved\\r\\n[    0.000000] BIOS-e820: [gap 0x00000000000e0000-0x00000000000fffff]\\r\\n[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x0000000007ffffff]  System RAM\\r\\n[    0.000000] BIOS-e820: [gap 0x0000000008000000-0x00000000eebfffff]\\r\\n[    0.000000] BIOS-e820: [mem 0x00000000eec00000-0x00000000febfffff]  device reserved\\r\\n[    0.000000] NX (Execute Disable) protection: active\\r\\n[    0.000000] APIC: Static calls initialized\\r\\n[    0.000000] DMI: not present or invalid.\\r\\n[    0.000000] Hypervisor detected: KVM\\r\\n[    0.000000] last_pfn = 0x8000 max_arch_pfn = 0x400000000\\r\\n[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00\\r\\n[    0.000001] kvm-clock: using sched offset of 94167544 cycles\\r\\n[    0.000003] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns\\r\\n[    0.000005] tsc: Detected 3187.200 MHz processor\\r\\n[    0.000017] last_pfn = 0x8000 max_arch_pfn = 0x400000000\\r\\n[    0.000038] MTRR map: 0 entries (0 fixed + 0 variable; max 16), built from 8 variable MTRRs\\r\\n[    0.000040] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  \\r\\n[    0.000079] found SMP MP-table at [mem 0x0009fc00-0x0009fc0f]\\r\\n[    0.000092] Using GB pages for direct mapping\\r\\n[    0.000093] Incomplete global flushes, disabling PCID\\r\\n[    0.000160] RAMDISK: [mem 0x07ee3000-0x07ffffff]\\r\\n[    0.000166] ACPI: Early table checksum verification disabled\\r\\n[    0.000169] ACPI: RSDP 0x00000000000E0000 000024 (v02 FIRECK)\\r\\n[    0.000172] ACPI: XSDT 0x000000000009FF30 000034 (v01 FIRECK FCMVXSDT 00000000 FCAT 20240119)\\r\\n[    0.000175] ACPI: FACP 0x000000000009FDE8 000114 (v06 FIRECK FCVMFADT 00000000 FCAT 20240119)\\r\\n[    0.000178] ACPI: DSDT 0x000000000009FD30 0000B8 (v02 FIRECK FCVMDSDT 00000000 FCAT 20240119)\\r\\n[    0.000180] ACPI: APIC 0x000000000009FEFC 000034 (v06 FIRECK FCVMMADT 00000000 FCAT 20240119)\\r\\n[    0.000181] ACPI: Reserving FACP table memory at [mem 0x9fde8-0x9fefb]\\r\\n[    0.000181] ACPI: Reserving DSDT table memory at [mem 0x9fd30-0x9fde7]\\r\\n[    0.000182] ACPI: Reserving APIC table memory at [mem 0x9fefc-0x9ff2f]\\r\\n[    0.000208] No NUMA configuration found\\r\\n[    0.000208] Faking a node at [mem 0x0000000000000000-0x0000000007ffffff]\\r\\n[    0.000212] NODE_DATA(0) allocated [mem 0x07eb7f80-0x07ee2fff]\\r\\n[    0.000316] ACPI: No IOAPIC entries present\\r\\n[    0.000316] ACPI: Using ACPI for processor (LAPIC) configuration information\\r\\n[    0.000318] Intel MultiProcessor Specification v1.4\\r\\n[    0.000319] MPTABLE: OEM ID: FC      \\r\\n[    0.000319] MPTABLE: Product ID: 000000000000\\r\\n[    0.000319] MPTABLE: APIC at: 0xFEE00000\\r\\n[    0.000345] IOAPIC[0]: apic_id 2, version 17, address 0xfec00000, GSI 0-23\\r\\n[    0.000346] TSC deadline timer available\\r\\n[    0.000348] CPU topo: Max. logical packages:   1\\r\\n[    0.000348] CPU topo: Max. logical nodes:      1\\r\\n[    0.000349] CPU topo: Num. nodes per package:  1\\r\\n[    0.000350] CPU topo: Max. logical dies:       1\\r\\n[    0.000350] CPU topo: Max. dies per package:   1\\r\\n[    0.000352] CPU topo: Max. threads per core:   1\\r\\n[    0.000352] CPU topo: Num. cores per package:     1\\r\\n[    0.000352] CPU topo: Num. threads per package:   1\\r\\n[    0.000352] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs\\r\\n[    0.000364] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()\\r\\n[    0.000379] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]\\r\\n[    0.000380] PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]\\r\\n[    0.000381] [gap 0x08000000-0xeebfffff] available for PCI devices\\r\\n[    0.000382] Booting paravirtualized kernel on KVM\\r\\n[    0.000383] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1910969940391419 ns\\r\\n[    0.004980] Zone ranges:\\r\\n[    0.004983]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]\\r\\n[    0.004986]   DMA32    [mem 0x0000000001000000-0x0000000007ffffff]\\r\\n[    0.004987]   Normal   empty\\r\\n[    0.004988]   Device   empty\\r\\n[    0.004989] Movable zone start for each node\\r\\n[    0.004990] Early memory node ranges\\r\\n[    0.004990]   node   0: [mem 0x0000000000001000-0x000000000009efff]\\r\\n[    0.004991]   node   0: [mem 0x0000000000100000-0x0000000007ffffff]\\r\\n[    0.004993] Initmem setup node 0 [mem 0x0000000000001000-0x0000000007ffffff]\\r\\n[    0.005141] On node 0, zone DMA: 1 pages in unavailable ranges\\r\\n[    0.005160] On node 0, zone DMA: 97 pages in unavailable ranges\\r\\n[    0.005238] setup_percpu: NR_CPUS:8192 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1\\r\\n[    0.005452] percpu: Embedded 63 pages/cpu s221184 r8192 d28672 u2097152\\r\\n[    0.005482] kvm-guest: PV spinlocks disabled, single CPU\\r\\n[    0.005484] Kernel command line: console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=0 pci=off loglevel=7 reboot=acpi virtio_mmio.device=0x1000@0xc0001000:5 virtio_mmio.device=0x1000@0xc0002000:6\\r\\n[    0.005562] random: crng init done\\r\\n[    0.005562] printk: log buffer data + meta data: 131072 + 557056 = 688128 bytes\\r\\n[    0.005569] Dentry cache hash table entries: 16384 (order: 5, 131072 bytes, linear)\\r\\n[    0.005573] Inode-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)\\r\\n[    0.005605] Fallback order for Node 0: 0 \\r\\n[    0.005607] Built 1 zonelists, mobility grouping on.  Total pages: 32670\\r\\n[    0.005608] Policy zone: DMA32\\r\\n[    0.005784] mem auto-init: stack:all(zero), heap alloc:on, heap free:off\\r\\n[    0.006076] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1\\r\\n[    0.014700] ftrace: allocating 58748 entries in 232 pages\\r\\n[    0.014705] ftrace: allocated 232 pages with 4 groups\\r\\n[    0.014776] Dynamic Preempt: full\\r\\n[    0.014796] rcu: Preemptible hierarchical RCU implementation.\\r\\n[    0.014796] rcu: \\tRCU restricting CPUs from NR_CPUS=8192 to nr_cpu_ids=1.\\r\\n[    0.014797] rcu: \\tRCU priority boosting: priority 1 delay 500 ms.\\r\\n[    0.014798] \\tTrampoline variant of Tasks RCU enabled.\\r\\n[    0.014798] \\tRude variant of Tasks RCU enabled.\\r\\n[    0.014799] \\tTracing variant of Tasks RCU enabled.\\r\\n[    0.014799] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.\\r\\n[    0.014800] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1\\r\\n[    0.014804] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.\\r\\n[    0.014805] RCU Tasks Rude: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.\\r\\n[    0.018062] NR_IRQS: 524544, nr_irqs: 256, preallocated irqs: 0\\r\\n[    0.018095] rcu: srcu_init: Setting srcu_struct sizes based on contention.\\r\\n[    0.018106] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns\\r\\n[    0.018206] kfence: initialized - using 2097152 bytes for 255 objects at 0x(____ptrval____)-0x(____ptrval____)\\r\\n[    0.018242] Console: colour dummy device 160x50\\r\\n[    0.018295] printk: legacy console [ttyS0] enabled\\r\\n[    0.066520] ACPI: Core revision 20260408\\r\\n[    0.066850] ACPI: setting ELCR to 0001 (from 0000)\\r\\n[    0.067213] APIC: Switch to symmetric I/O mode setup\\r\\n[    0.067705] x2apic enabled\\r\\n[    0.068058] APIC: Switched APIC routing to: physical x2apic\\r\\n[    0.068538] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x2df10e7656b, max_idle_ns: 440795364873 ns\\r\\n[    0.069312] Calibrating delay loop (skipped) preset value.. 6374.40 BogoMIPS (lpj=3187200)\\r\\n[    0.070047] x86/cpu: User Mode Instruction Prevention (UMIP) activated\\r\\n[    0.070310] CET detected: Indirect Branch Tracking enabled\\r\\n[    0.070310] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0\\r\\n[    0.070310] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0\\r\\n[    0.070310] mitigations: Enabled attack vectors: user_kernel, user_user, guest_host, guest_guest, SMT mitigations: auto\\r\\n[    0.070310] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl\\r\\n[    0.070310] Spectre V2 : Mitigation: Enhanced / Automatic IBRS\\r\\n[    0.070310] Register File Data Sampling: Mitigation: Clear Register File\\r\\n[    0.070310] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization\\r\\n[    0.070310] Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT\\r\\n[    0.070310] Spectre V2 : Enabling IBPB for BPF\\r\\n[    0.070310] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier\\r\\n[    0.070310] x86/fpu: Supporting XSAVE feature 0x001: \\'x87 floating point registers\\'\\r\\n[    0.070310] x86/fpu: Supporting XSAVE feature 0x002: \\'SSE registers\\'\\r\\n[    0.070310] x86/fpu: Supporting XSAVE feature 0x004: \\'AVX registers\\'\\r\\n[    0.070310] x86/fpu: Supporting XSAVE feature 0x200: \\'Protection Keys User registers\\'\\r\\n[    0.070310] x86/fpu: Supporting XSAVE feature 0x800: \\'Control-flow User registers\\'\\r\\n[    0.070310] x86/fpu: Supporting XSAVE feature 0x1000: \\'Control-flow Kernel registers (KVM only)\\'\\r\\n[    0.070310] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256\\r\\n[    0.070310] x86/fpu: xstate_offset[9]:  832, xstate_sizes[9]:    8\\r\\n[    0.070310] x86/fpu: xstate_offset[11]:  840, xstate_sizes[11]:   16\\r\\n[    0.070310] x86/fpu: xstate_offset[12]:  856, xstate_sizes[12]:   24\\r\\n[    0.070310] x86/fpu: Enabled xstate features 0x1a07, context size is 880 bytes, using \\'compacted\\' format.\\r\\n[    0.070310] pid_max: default: 32768 minimum: 301\\r\\n[    0.070310] landlock: Up and running.\\r\\n[    0.070310] Yama: becoming mindful.\\r\\n[    0.070310] LSM support for eBPF active\\r\\n[    0.070310] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)\\r\\n[    0.070310] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)\\r\\n[    0.070310] VFS: Finished mounting rootfs on nullfs\\r\\n[    0.070310] smpboot: CPU0: Intel 06/97 (family: 0x6, model: 0x97, stepping: 0x2)\\r\\n[    0.070310] Performance Events: unsupported CPU family 6 model 151 no PMU driver, software events only.\\r\\n[    0.070324] signal: max sigframe size: 3632\\r\\n[    0.070642] rcu: Hierarchical SRCU implementation.\\r\\n[    0.070981] rcu: \\tMax phase no-delay instances is 400.\\r\\n[    0.071483] NMI watchdog: Perf NMI watchdog permanently disabled\\r\\n[    0.071924] smp: Bringing up secondary CPUs ...\\r\\n[    0.072243] smp: Brought up 1 node, 1 CPU\\r\\n[    0.072315] smpboot: Total of 1 processors activated (6374.40 BogoMIPS)\\r\\n[    0.072819] Memory: 60504K/130680K available (22217K kernel code, 3070K rwdata, 17584K rodata, 4944K init, 5004K bss, 66280K reserved, 0K cma-reserved)\\r\\n[    0.073373] devtmpfs: initialized\\r\\n[    0.073631] x86/mm: Memory block size: 128MB\\r\\n[    0.074079] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)\\r\\n[    0.074316] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).\\r\\n[    0.074959] xor: automatically using best checksumming function   avx       \\r\\n[    0.075451] PM: RTC time: 00:00:00, date: 2000-00-00\\r\\n[    0.076062] NET: Registered PF_NETLINK/PF_ROUTE protocol family\\r\\n[    0.076528] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations\\r\\n[    0.077076] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations\\r\\n[    0.077316] audit: initializing netlink subsys (disabled)\\r\\n[    0.077722] audit: type=2000 audit(1791685234.715:1): state=initialized audit_enabled=0 res=1\\r\\n[    0.085305] thermal_sys: Registered thermal governor \\'fair_share\\'\\r\\n[    0.085307] thermal_sys: Registered thermal governor \\'bang_bang\\'\\r\\n[    0.085311] thermal_sys: Registered thermal governor \\'step_wise\\'\\r\\n[    0.085729] thermal_sys: Registered thermal governor \\'user_space\\'\\r\\n[    0.086148] thermal_sys: Registered thermal governor \\'power_allocator\\'\\r\\n[    0.086322] cpuidle: using governor ladder\\r\\n[    0.087068] cpuidle: using governor menu\\r\\n[    0.087364] Freeing SMP alternatives memory: 60K\\r\\n[    0.087721] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5\\r\\n[    0.088209] PCI: Fatal: No config space access function found\\r\\n[    0.088339] virt/tdx: TDX not supported by the host platform\\r\\n[    0.088770] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.\\r\\n[    0.091319] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages\\r\\n[    0.091807] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page\\r\\n[    0.092265] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages\\r\\n[    0.094311] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page\\r\\n[    0.097764] raid6: using avx2x2 recovery algorithm\\r\\n[    0.098113] raid6: skipped pq benchmark and selected avx2x4\\r\\n[    0.098370] ACPI: Added _OSI(Module Device)\\r\\n[    0.098667] ACPI: Added _OSI(Processor Device)\\r\\n[    0.098989] ACPI: Added _OSI(Processor Aggregator Device)\\r\\n[    0.103344] ACPI: 1 ACPI AML tables successfully acquired and loaded\\r\\n[    0.103860] ACPI: \\\\_SB_: platform _OSC: OS support mask [006e7eff]\\r\\n[    0.104308] ACPI: Interpreter enabled\\r\\n[    0.104315] ACPI: PM: (supports S0 S5)\\r\\n[    0.104581] ACPI: Using PIC for interrupt routing\\r\\n[    0.104938] PCI: Using host bridge windows from ACPI; if necessary, use \"pci=nocrs\" and report a bug\\r\\n[    0.109311] PCI: Using E820 reservations for host bridge windows\\r\\n[    0.111313] iommu: Default domain type: Translated\\r\\n[    0.111660] iommu: DMA domain TLB invalidation policy: lazy mode\\r\\n[    0.113382] SCSI subsystem initialized\\r\\n[    0.113674] ACPI: bus type USB registered\\r\\n[    0.113966] usbcore: registered new interface driver usbfs\\r\\n[    0.114314] usbcore: registered new interface driver hub\\r\\n[    0.114685] usbcore: registered new device driver usb\\r\\n[    0.115058] EDAC MC: Ver: 3.0.0\\r\\n[    0.119455] NetLabel: Initializing\\r\\n[    0.119711] NetLabel:  domain hash size = 128\\r\\n[    0.120031] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO\\r\\n[    0.122319] NetLabel:  unlabeled traffic allowed by default\\r\\n[    0.122711] mctp: management component transport protocol core\\r\\n[    0.123119] NET: Registered PF_MCTP protocol family\\r\\n[    0.125317] PCI: Using ACPI for IRQ routing\\r\\n[    0.125618] PCI: System does not support PCI\\r\\n[    0.128316] vgaarb: loaded\\r\\n[    0.128639] clocksource: Switched to clocksource kvm-clock\\r\\n[    0.129118] VFS: Disk quotas dquot_6.6.0\\r\\n[    0.129389] VFS: Dquot-cache hash table entries: 512 (4096 bytes)\\r\\n[    0.130597] pnp: PnP ACPI init\\r\\n[    0.130881] pnp: PnP ACPI: found 2 devices\\r\\n[    0.132600] NET: Registered PF_INET protocol family\\r\\n[    0.132969] IP idents hash table entries: 2048 (order: 2, 16384 bytes, linear)\\r\\n[    0.135287] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)\\r\\n[    0.136606] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)\\r\\n[    0.137152] TCP established hash table entries: 1024 (order: 1, 8192 bytes, linear)\\r\\n[    0.138287] TCP bind hash table entries: 1024 (order: 3, 32768 bytes, linear)\\r\\n[    0.138785] TCP: Hash tables configured (established 1024 bind 1024)\\r\\n[    0.139254] MPTCP token hash table entries: 256 (order: 1, 6144 bytes, linear)\\r\\n[    0.139763] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)\\r\\n[    0.140239] NET: Registered PF_UNIX/PF_LOCAL protocol family\\r\\n[    0.140638] NET: Registered PF_XDP protocol family\\r\\n[    0.141019] PCI: CLS 0 bytes, default 64\\r\\n[    0.141356] Trying to unpack rootfs image as initramfs...\\r\\n[    0.142075] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x2df10e7656b, max_idle_ns: 440795364873 ns\\r\\n[    0.144245] clocksource: Switched to clocksource tsc\\r\\n[    0.144638] platform rtc_cmos: registered fallback platform RTC device\\r\\n[    0.146235] Initialise system trusted keyrings\\r\\n[    0.146573] Key type blacklist registered\\r\\n[    0.147562] workingset: timestamp_bits=36 (anon: 31) max_order=14 bucket_order=0 (anon: 0)\\r\\n[    0.149830] fuse: init (API version 7.45)\\r\\n[    0.150196] integrity: Platform Keyring initialized\\r\\n[    0.150558] integrity: Machine keyring initialized\\r\\n[    0.159948] Key type asymmetric registered\\r\\n[    0.160285] Asymmetric key parser \\'x509\\' registered\\r\\n[    0.161393] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 245)\\r\\n[    0.162180] Freeing initrd memory: 1140K\\r\\n[    0.162498] io scheduler mq-deadline registered\\r\\n[    0.162824] io scheduler kyber registered\\r\\n[    0.163123] io scheduler bfq registered\\r\\n[    0.163472] ledtrig-cpu: registered to indicate activity on CPUs\\r\\n[    0.164029] Serial: 8250/16550 driver, 32 ports, IRQ sharing enabled\\r\\n[    0.164811] 00:00: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A\\r\\n[    0.165977] Non-volatile memory driver v1.3\\r\\n[    0.166323] ACPI: bus type drm_connector registered\\r\\n[    0.166830] usbcore: registered new interface driver usbserial_generic\\r\\n[    0.167327] usbserial: USB Serial support registered for generic\\r\\n[    0.167770] i8042: PNP: PS/2 Controller [PNP0303:PS2] at 0x60,0x64 irq 1\\r\\n[    0.168251] i8042: PNP: PS/2 appears to have AUX port disabled, if this is incorrect please boot with i8042.nopnp\\r\\n[    0.169137] serio: i8042 KBD port at 0x60,0x64 irq 1\\r\\n[    0.169660] rtc_cmos rtc_cmos: only 24-hr supported\\r\\n[    0.170037] intel_pstate: HWP-disabled hybrid CPU is not supported\\r\\n[    0.170499] hid: raw HID events driver (C) Jiri Kosina\\r\\n[    0.170880] usbcore: registered new interface driver usbhid\\r\\n[    0.171300] usbhid: USB HID core driver\\r\\n[    0.171605] drop_monitor: Initializing network drop monitor service\\r\\n[    0.172112] NET: Registered PF_INET6 protocol family\\r\\n[    0.172720] Segment Routing with IPv6\\r\\n[    0.172993] RPL Segment Routing with IPv6\\r\\n[    0.173294] In-situ OAM (IOAM) with IPv6\\r\\n[    0.173595] NET: Registered PF_PACKET protocol family\\r\\n[    0.174085] IPI shorthand broadcast: enabled\\r\\n[    0.175419] sched_clock: Marking stable (124000556, 51204119)->(210750660, -35545985)\\r\\n[    0.176064] registered taskstats version 1\\r\\n[    0.176527] Loading compiled-in X.509 certificates\\r\\n[    0.178179] Loaded X.509 cert \\'Build time autogenerated kernel key: ffcb078186814deeed2ab618045f0684bc684706\\'\\r\\n[    0.179923] zswap: loaded using pool zstd\\r\\n[    0.180254] Demotion targets for Node 0: null\\r\\n[    0.180637] Key type .fscrypt registered\\r\\n[    0.180920] Key type fscrypt-provisioning registered\\r\\n[    0.181415] Btrfs loaded, zoned=yes, fsverity=yes\\r\\n[    0.181769] Key type big_key registered\\r\\n[    0.182168] PM:   Magic number: 0:110:269243\\r\\n[    0.182537] RAS: Correctable Errors collector initialized.\\r\\n[    0.183038] clk: Disabling unused clocks\\r\\n[    0.183333] PM: genpd: Disabling unused power domains\\r\\n[    0.188164] Freeing unused decrypted memory: 2028K\\r\\n[    0.188853] Freeing unused kernel image (initmem) memory: 4944K\\r\\n[    0.189116] Write protecting the kernel read-only data: 40960k\\r\\n[    0.189445] Freeing unused kernel image (text/rodata gap) memory: 308K\\r\\n[    0.189838] Freeing unused kernel image (rodata/data gap) memory: 848K\\r\\n[    0.195112] x86/mm: Checked W+X mappings: passed, no W+X pages found.\\r\\n[    0.195408] rodata_test: all tests were successful\\r\\n[    0.195619] Run /init as init process\\r\\nplaza guest: plaza.harness=1: loading the vsock modules\\r\\n[    0.198032] virtio-mmio: Registering device virtio-mmio.0 at 0xc0001000-0xc0001fff, IRQ 5.\\r\\n[    0.198402] virtio-mmio: Registering device virtio-mmio.1 at 0xc0002000-0xc0002fff, IRQ 6.\\r\\n[    0.198896] virtio_blk virtio1: 1/0/0 default/read/poll queues\\r\\n[    0.199260] virtio_blk virtio1: [vda] 32768 512-byte logical blocks (16.8 MB/16.0 MiB)\\r\\n[    0.201849] NET: Registered PF_VSOCK protocol family\\r\\nplaza guest: virtio_mmio took 2 command-line parameter(s)\\r\\n[    0.206917] EXT4-fs (vda): mounted filesystem 0f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b r/w with ordered data mode. Quota mode: none.\\r\\nplaza guest: /workspace mounted (ext4, 13 MiB)\\r\\nplaza guest: agent harness running as pid 60\\r\\nplaza guest alive: heartbeat 1 uptime~0s\\r\\nagent-harness: vm 0 -> host CID 2 port 5000\\r\\nagent-harness: the vsock device assigned guest CID 140\\r\\n[vsock->] {\"type\":\"hello\",\"vm\":0,\"guest_cid\":140,\"role\":\"builder\",\"keepalive\":true}\\r\\n[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\\r\\nagent-harness: role builder accepted\\r\\n[    0.670425] input: AT Raw Set 2 keyboard as /devices/platform/i8042/serio0/input/input0\\r\\n[vsock<-] {\"type\":\"tool_call\",\"call\":1,\"name\":\"uptime\",\"args\":{}}\\r\\n[vsock->] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"1.20 1.04\"}\\r\\n[vsock<-] {\"type\":\"tool_call\",\"call\":2,\"name\":\"uptime\",\"args\":{}}\\r\\n[vsock->] {\"type\":\"tool_result\",\"call\":2,\"ok\":true,\"output\":\"2.22 2.07\"}\\r\\n[vsock<-] {\"type\":\"tool_call\",\"call\":3,\"name\":\"write_file\",\"args\":{\"content\":\"acceptance-treasury artifact apz-acceptance-v1\\\\nsecond line\\\\n\",\"path\":\"artifact.txt\"}}\\r\\n[vsock->] {\"type\":\"tool_result\",\"call\":3,\"ok\":true,\"output\":\"{\\\\\"bytes\\\\\":59,\\\\\"created\\\\\":true,\\\\\"path\\\\\":\\\\\"artifact.txt\\\\\"}\"}\\r\\n[vsock<-] {\"type\":\"tool_call\",\"call\":4,\"name\":\"read_file\",\"args\":{\"path\":\"artifact.txt\"}}\\r\\n[vsock->] {\"type\":\"tool_result\",\"call\":4,\"ok\":true,\"output\":\"{\\\\\"bytes\\\\\":59,\\\\\"content\\\\\":\\\\\"acceptance-treasury artifact apz-acceptance-v1\\\\\\\\nsecond line\\\\\\\\n\\\\\",\\\\\"path\\\\\":\\\\\"artifact.txt\\\\\",\\\\\"size\\\\\":59,\\\\\"truncated\\\\\":false}\"}\\r\\n[vsock->] {\"type\":\"heartbeat\",\"seq\":1}\\r\\nagent-harness: heartbeat 1\\r\\nplaza guest alive: heartbeat 2 uptime~5s\\r\\n[vsock<-] {\"type\":\"tool_call\",\"call\":5,\"name\":\"read_file\",\"args\":{\"path\":\"../escape.txt\"}}\\r\\nagent-harness: tool read_file call 5 refused: denied: path \"../escape.txt\" contains \"..\"; every path is inside the workspace\\r\\n[vsock->] {\"type\":\"tool_result\",\"call\":5,\"ok\":false,\"output\":\"denied: path \\\\\"../escape.txt\\\\\" contains \\\\\"..\\\\\"; every path is inside the workspace\"}\\r\\nplaza guest alive: heartbeat 3 uptime~10s\\r\\n[vsock->] {\"type\":\"heartbeat\",\"seq\":2}\\r\\nagent-harness: heartbeat 2\\r\\n'}, {'id': 1, 'guest_cid': 141, 'role': 'librarian', 'state': 'running', 'serial': '[    0.000000] Linux version 7.2.8-arch1-2 (linux@archlinux) (gcc (GCC) 16.2.1 20260810, GNU ld (GNU Binutils) 2.47) #1 SMP PREEMPT_DYNAMIC Thu, 01 Oct 2026 17:24:20 +0000\\r\\n[    0.000000] Command line: console=ttyS0 plaza.role=librarian plaza.keepalive=1 plaza.vm=1 pci=off loglevel=7 reboot=acpi virtio_mmio.device=0x1000@0xc0001000:5 virtio_mmio.device=0x1000@0xc0002000:6\\r\\n[    0.000000] BIOS-provided physical RAM map:\\r\\n[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff]  System RAM\\r\\n[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x00000000000dffff]  device reserved\\r\\n[    0.000000] BIOS-e820: [gap 0x00000000000e0000-0x00000000000fffff]\\r\\n[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x0000000007ffffff]  System RAM\\r\\n[    0.000000] BIOS-e820: [gap 0x0000000008000000-0x00000000eebfffff]\\r\\n[    0.000000] BIOS-e820: [mem 0x00000000eec00000-0x00000000febfffff]  device reserved\\r\\n[    0.000000] NX (Execute Disable) protection: active\\r\\n[    0.000000] APIC: Static calls initialized\\r\\n[    0.000000] DMI: not present or invalid.\\r\\n[    0.000000] Hypervisor detected: KVM\\r\\n[    0.000000] last_pfn = 0x8000 max_arch_pfn = 0x400000000\\r\\n[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00\\r\\n[    0.000001] kvm-clock: using sched offset of 93110017 cycles\\r\\n[    0.000003] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns\\r\\n[    0.000006] tsc: Detected 3187.200 MHz processor\\r\\n[    0.000019] last_pfn = 0x8000 max_arch_pfn = 0x400000000\\r\\n[    0.000040] MTRR map: 0 entries (0 fixed + 0 variable; max 16), built from 8 variable MTRRs\\r\\n[    0.000043] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  \\r\\n[    0.000084] found SMP MP-table at [mem 0x0009fc00-0x0009fc0f]\\r\\n[    0.000096] Using GB pages for direct mapping\\r\\n[    0.000096] Incomplete global flushes, disabling PCID\\r\\n[    0.000160] RAMDISK: [mem 0x07ee3000-0x07ffffff]\\r\\n[    0.000166] ACPI: Early table checksum verification disabled\\r\\n[    0.000169] ACPI: RSDP 0x00000000000E0000 000024 (v02 FIRECK)\\r\\n[    0.000171] ACPI: XSDT 0x000000000009FF30 000034 (v01 FIRECK FCMVXSDT 00000000 FCAT 20240119)\\r\\n[    0.000175] ACPI: FACP 0x000000000009FDE8 000114 (v06 FIRECK FCVMFADT 00000000 FCAT 20240119)\\r\\n[    0.000178] ACPI: DSDT 0x000000000009FD30 0000B8 (v02 FIRECK FCVMDSDT 00000000 FCAT 20240119)\\r\\n[    0.000180] ACPI: APIC 0x000000000009FEFC 000034 (v06 FIRECK FCVMMADT 00000000 FCAT 20240119)\\r\\n[    0.000181] ACPI: Reserving FACP table memory at [mem 0x9fde8-0x9fefb]\\r\\n[    0.000181] ACPI: Reserving DSDT table memory at [mem 0x9fd30-0x9fde7]\\r\\n[    0.000182] ACPI: Reserving APIC table memory at [mem 0x9fefc-0x9ff2f]\\r\\n[    0.000209] No NUMA configuration found\\r\\n[    0.000210] Faking a node at [mem 0x0000000000000000-0x0000000007ffffff]\\r\\n[    0.000213] NODE_DATA(0) allocated [mem 0x07eb7f80-0x07ee2fff]\\r\\n[    0.000324] ACPI: No IOAPIC entries present\\r\\n[    0.000324] ACPI: Using ACPI for processor (LAPIC) configuration information\\r\\n[    0.000325] Intel MultiProcessor Specification v1.4\\r\\n[    0.000327] MPTABLE: OEM ID: FC      \\r\\n[    0.000327] MPTABLE: Product ID: 000000000000\\r\\n[    0.000327] MPTABLE: APIC at: 0xFEE00000\\r\\n[    0.000345] IOAPIC[0]: apic_id 2, version 17, address 0xfec00000, GSI 0-23\\r\\n[    0.000347] TSC deadline timer available\\r\\n[    0.000349] CPU topo: Max. logical packages:   1\\r\\n[    0.000349] CPU topo: Max. logical nodes:      1\\r\\n[    0.000350] CPU topo: Num. nodes per package:  1\\r\\n[    0.000351] CPU topo: Max. logical dies:       1\\r\\n[    0.000351] CPU topo: Max. dies per package:   1\\r\\n[    0.000353] CPU topo: Max. threads per core:   1\\r\\n[    0.000353] CPU topo: Num. cores per package:     1\\r\\n[    0.000354] CPU topo: Num. threads per package:   1\\r\\n[    0.000354] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs\\r\\n[    0.000367] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()\\r\\n[    0.000383] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]\\r\\n[    0.000384] PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]\\r\\n[    0.000385] [gap 0x08000000-0xeebfffff] available for PCI devices\\r\\n[    0.000386] Booting paravirtualized kernel on KVM\\r\\n[    0.000388] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1910969940391419 ns\\r\\n[    0.004991] Zone ranges:\\r\\n[    0.004993]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]\\r\\n[    0.004995]   DMA32    [mem 0x0000000001000000-0x0000000007ffffff]\\r\\n[    0.004996]   Normal   empty\\r\\n[    0.004997]   Device   empty\\r\\n[    0.004997] Movable zone start for each node\\r\\n[    0.004998] Early memory node ranges\\r\\n[    0.004998]   node   0: [mem 0x0000000000001000-0x000000000009efff]\\r\\n[    0.004999]   node   0: [mem 0x0000000000100000-0x0000000007ffffff]\\r\\n[    0.005000] Initmem setup node 0 [mem 0x0000000000001000-0x0000000007ffffff]\\r\\n[    0.005101] On node 0, zone DMA: 1 pages in unavailable ranges\\r\\n[    0.005122] On node 0, zone DMA: 97 pages in unavailable ranges\\r\\n[    0.005205] setup_percpu: NR_CPUS:8192 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1\\r\\n[    0.005443] percpu: Embedded 63 pages/cpu s221184 r8192 d28672 u2097152\\r\\n[    0.005470] kvm-guest: PV spinlocks disabled, single CPU\\r\\n[    0.005472] Kernel command line: console=ttyS0 plaza.role=librarian plaza.keepalive=1 plaza.vm=1 pci=off loglevel=7 reboot=acpi virtio_mmio.device=0x1000@0xc0001000:5 virtio_mmio.device=0x1000@0xc0002000:6\\r\\n[    0.005544] random: crng init done\\r\\n[    0.005545] printk: log buffer data + meta data: 131072 + 557056 = 688128 bytes\\r\\n[    0.005555] Dentry cache hash table entries: 16384 (order: 5, 131072 bytes, linear)\\r\\n[    0.005561] Inode-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)\\r\\n[    0.005591] Fallback order for Node 0: 0 \\r\\n[    0.005593] Built 1 zonelists, mobility grouping on.  Total pages: 32670\\r\\n[    0.005593] Policy zone: DMA32\\r\\n[    0.005810] mem auto-init: stack:all(zero), heap alloc:on, heap free:off\\r\\n[    0.006089] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1\\r\\n[    0.014116] ftrace: allocating 58748 entries in 232 pages\\r\\n[    0.014118] ftrace: allocated 232 pages with 4 groups\\r\\n[    0.014177] Dynamic Preempt: full\\r\\n[    0.014195] rcu: Preemptible hierarchical RCU implementation.\\r\\n[    0.014196] rcu: \\tRCU restricting CPUs from NR_CPUS=8192 to nr_cpu_ids=1.\\r\\n[    0.014197] rcu: \\tRCU priority boosting: priority 1 delay 500 ms.\\r\\n[    0.014198] \\tTrampoline variant of Tasks RCU enabled.\\r\\n[    0.014198] \\tRude variant of Tasks RCU enabled.\\r\\n[    0.014198] \\tTracing variant of Tasks RCU enabled.\\r\\n[    0.014199] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.\\r\\n[    0.014200] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1\\r\\n[    0.014203] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.\\r\\n[    0.014204] RCU Tasks Rude: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.\\r\\n[    0.017324] NR_IRQS: 524544, nr_irqs: 256, preallocated irqs: 0\\r\\n[    0.017347] rcu: srcu_init: Setting srcu_struct sizes based on contention.\\r\\n[    0.017354] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns\\r\\n[    0.017432] kfence: initialized - using 2097152 bytes for 255 objects at 0x(____ptrval____)-0x(____ptrval____)\\r\\n[    0.017463] Console: colour dummy device 160x50\\r\\n[    0.017501] printk: legacy console [ttyS0] enabled\\r\\n[    0.065496] ACPI: Core revision 20260408\\r\\n[    0.065820] ACPI: setting ELCR to 0001 (from 0000)\\r\\n[    0.066187] APIC: Switch to symmetric I/O mode setup\\r\\n[    0.066672] x2apic enabled\\r\\n[    0.067016] APIC: Switched APIC routing to: physical x2apic\\r\\n[    0.067492] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x2df10e7656b, max_idle_ns: 440795364873 ns\\r\\n[    0.068265] Calibrating delay loop (skipped) preset value.. 6374.40 BogoMIPS (lpj=3187200)\\r\\n[    0.068968] x86/cpu: User Mode Instruction Prevention (UMIP) activated\\r\\n[    0.069263] CET detected: Indirect Branch Tracking enabled\\r\\n[    0.069263] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0\\r\\n[    0.069263] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0\\r\\n[    0.069263] mitigations: Enabled attack vectors: user_kernel, user_user, guest_host, guest_guest, SMT mitigations: auto\\r\\n[    0.069263] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl\\r\\n[    0.069263] Spectre V2 : Mitigation: Enhanced / Automatic IBRS\\r\\n[    0.069263] Register File Data Sampling: Mitigation: Clear Register File\\r\\n[    0.069263] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization\\r\\n[    0.069263] Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT\\r\\n[    0.069263] Spectre V2 : Enabling IBPB for BPF\\r\\n[    0.069263] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier\\r\\n[    0.069263] x86/fpu: Supporting XSAVE feature 0x001: \\'x87 floating point registers\\'\\r\\n[    0.069263] x86/fpu: Supporting XSAVE feature 0x002: \\'SSE registers\\'\\r\\n[    0.069263] x86/fpu: Supporting XSAVE feature 0x004: \\'AVX registers\\'\\r\\n[    0.069263] x86/fpu: Supporting XSAVE feature 0x200: \\'Protection Keys User registers\\'\\r\\n[    0.069263] x86/fpu: Supporting XSAVE feature 0x800: \\'Control-flow User registers\\'\\r\\n[    0.069263] x86/fpu: Supporting XSAVE feature 0x1000: \\'Control-flow Kernel registers (KVM only)\\'\\r\\n[    0.069263] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256\\r\\n[    0.069263] x86/fpu: xstate_offset[9]:  832, xstate_sizes[9]:    8\\r\\n[    0.069263] x86/fpu: xstate_offset[11]:  840, xstate_sizes[11]:   16\\r\\n[    0.069263] x86/fpu: xstate_offset[12]:  856, xstate_sizes[12]:   24\\r\\n[    0.069263] x86/fpu: Enabled xstate features 0x1a07, context size is 880 bytes, using \\'compacted\\' format.\\r\\n[    0.069263] pid_max: default: 32768 minimum: 301\\r\\n[    0.069263] landlock: Up and running.\\r\\n[    0.069263] Yama: becoming mindful.\\r\\n[    0.069263] LSM support for eBPF active\\r\\n[    0.069263] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)\\r\\n[    0.069263] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)\\r\\n[    0.069263] VFS: Finished mounting rootfs on nullfs\\r\\n[    0.069263] smpboot: CPU0: Intel 06/97 (family: 0x6, model: 0x97, stepping: 0x2)\\r\\n[    0.069263] Performance Events: unsupported CPU family 6 model 151 no PMU driver, software events only.\\r\\n[    0.069279] signal: max sigframe size: 3632\\r\\n[    0.069628] rcu: Hierarchical SRCU implementation.\\r\\n[    0.069965] rcu: \\tMax phase no-delay instances is 400.\\r\\n[    0.070441] NMI watchdog: Perf NMI watchdog permanently disabled\\r\\n[    0.070876] smp: Bringing up secondary CPUs ...\\r\\n[    0.071202] smp: Brought up 1 node, 1 CPU\\r\\n[    0.071271] smpboot: Total of 1 processors activated (6374.40 BogoMIPS)\\r\\n[    0.071797] Memory: 60504K/130680K available (22217K kernel code, 3070K rwdata, 17584K rodata, 4944K init, 5004K bss, 66280K reserved, 0K cma-reserved)\\r\\n[    0.072366] devtmpfs: initialized\\r\\n[    0.072654] x86/mm: Memory block size: 128MB\\r\\n[    0.073131] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)\\r\\n[    0.073273] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).\\r\\n[    0.073943] xor: automatically using best checksumming function   avx       \\r\\n[    0.074422] PM: RTC time: 00:00:00, date: 2000-00-00\\r\\n[    0.075069] NET: Registered PF_NETLINK/PF_ROUTE protocol family\\r\\n[    0.075521] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations\\r\\n[    0.076096] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations\\r\\n[    0.076269] audit: initializing netlink subsys (disabled)\\r\\n[    0.076702] audit: type=2000 audit(1791685234.720:1): state=initialized audit_enabled=0 res=1\\r\\n[    0.084510] thermal_sys: Registered thermal governor \\'fair_share\\'\\r\\n[    0.084512] thermal_sys: Registered thermal governor \\'bang_bang\\'\\r\\n[    0.084948] thermal_sys: Registered thermal governor \\'step_wise\\'\\r\\n[    0.085264] thermal_sys: Registered thermal governor \\'user_space\\'\\r\\n[    0.085682] thermal_sys: Registered thermal governor \\'power_allocator\\'\\r\\n[    0.086135] cpuidle: using governor ladder\\r\\n[    0.086558] cpuidle: using governor menu\\r\\n[    0.086919] Freeing SMP alternatives memory: 60K\\r\\n[    0.087287] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5\\r\\n[    0.087807] PCI: Fatal: No config space access function found\\r\\n[    0.088254] virt/tdx: TDX not supported by the host platform\\r\\n[    0.088305] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.\\r\\n[    0.090382] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages\\r\\n[    0.090863] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page\\r\\n[    0.093265] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages\\r\\n[    0.093759] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page\\r\\n[    0.099322] raid6: using avx2x2 recovery algorithm\\r\\n[    0.099701] raid6: skipped pq benchmark and selected avx2x4\\r\\n[    0.100174] ACPI: Added _OSI(Module Device)\\r\\n[    0.101268] ACPI: Added _OSI(Processor Device)\\r\\n[    0.101582] ACPI: Added _OSI(Processor Aggregator Device)\\r\\n[    0.101987] ACPI: 1 ACPI AML tables successfully acquired and loaded\\r\\n[    0.104289] ACPI: \\\\_SB_: platform _OSC: OS support mask [006e7eff]\\r\\n[    0.104770] ACPI: Interpreter enabled\\r\\n[    0.105040] ACPI: PM: (supports S0 S5)\\r\\n[    0.107266] ACPI: Using PIC for interrupt routing\\r\\n[    0.107648] PCI: Using host bridge windows from ACPI; if necessary, use \"pci=nocrs\" and report a bug\\r\\n[    0.110265] PCI: Using E820 reservations for host bridge windows\\r\\n[    0.112268] iommu: Default domain type: Translated\\r\\n[    0.112618] iommu: DMA domain TLB invalidation policy: lazy mode\\r\\n[    0.114345] SCSI subsystem initialized\\r\\n[    0.116278] ACPI: bus type USB registered\\r\\n[    0.116583] usbcore: registered new interface driver usbfs\\r\\n[    0.116991] usbcore: registered new interface driver hub\\r\\n[    0.119271] usbcore: registered new device driver usb\\r\\n[    0.119660] EDAC MC: Ver: 3.0.0\\r\\n[    0.122411] NetLabel: Initializing\\r\\n[    0.122688] NetLabel:  domain hash size = 128\\r\\n[    0.123026] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO\\r\\n[    0.125278] NetLabel:  unlabeled traffic allowed by default\\r\\n[    0.125711] mctp: management component transport protocol core\\r\\n[    0.126122] NET: Registered PF_MCTP protocol family\\r\\n[    0.128276] PCI: Using ACPI for IRQ routing\\r\\n[    0.128580] PCI: System does not support PCI\\r\\n[    0.128944] vgaarb: loaded\\r\\n[    0.129723] clocksource: Switched to clocksource kvm-clock\\r\\n[    0.131336] VFS: Disk quotas dquot_6.6.0\\r\\n[    0.131654] VFS: Dquot-cache hash table entries: 512 (4096 bytes)\\r\\n[    0.133996] pnp: PnP ACPI init\\r\\n[    0.134274] pnp: PnP ACPI: found 2 devices\\r\\n[    0.135921] NET: Registered PF_INET protocol family\\r\\n[    0.136351] IP idents hash table entries: 2048 (order: 2, 16384 bytes, linear)\\r\\n[    0.137683] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)\\r\\n[    0.138287] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)\\r\\n[    0.139604] TCP established hash table entries: 1024 (order: 1, 8192 bytes, linear)\\r\\n[    0.140161] TCP bind hash table entries: 1024 (order: 3, 32768 bytes, linear)\\r\\n[    0.140706] TCP: Hash tables configured (established 1024 bind 1024)\\r\\n[    0.141194] MPTCP token hash table entries: 256 (order: 1, 6144 bytes, linear)\\r\\n[    0.141781] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)\\r\\n[    0.142291] NET: Registered PF_UNIX/PF_LOCAL protocol family\\r\\n[    0.142706] NET: Registered PF_XDP protocol family\\r\\n[    0.143050] PCI: CLS 0 bytes, default 64\\r\\n[    0.143381] Trying to unpack rootfs image as initramfs...\\r\\n[    0.143955] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x2df10e7656b, max_idle_ns: 440795364873 ns\\r\\n[    0.145944] clocksource: Switched to clocksource tsc\\r\\n[    0.146348] platform rtc_cmos: registered fallback platform RTC device\\r\\n[    0.147867] Initialise system trusted keyrings\\r\\n[    0.148945] Key type blacklist registered\\r\\n[    0.149595] workingset: timestamp_bits=36 (anon: 31) max_order=14 bucket_order=0 (anon: 0)\\r\\n[    0.151357] fuse: init (API version 7.45)\\r\\n[    0.152445] integrity: Platform Keyring initialized\\r\\n[    0.153260] integrity: Machine keyring initialized\\r\\n[    0.162780] Freeing initrd memory: 1140K\\r\\n[    0.163459] Key type asymmetric registered\\r\\n[    0.163752] Asymmetric key parser \\'x509\\' registered\\r\\n[    0.164145] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 245)\\r\\n[    0.164753] io scheduler mq-deadline registered\\r\\n[    0.165094] io scheduler kyber registered\\r\\n[    0.165397] io scheduler bfq registered\\r\\n[    0.165740] ledtrig-cpu: registered to indicate activity on CPUs\\r\\n[    0.166335] Serial: 8250/16550 driver, 32 ports, IRQ sharing enabled\\r\\n[    0.167127] 00:00: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A\\r\\n[    0.168353] Non-volatile memory driver v1.3\\r\\n[    0.168674] ACPI: bus type drm_connector registered\\r\\n[    0.169192] usbcore: registered new interface driver usbserial_generic\\r\\n[    0.169708] usbserial: USB Serial support registered for generic\\r\\n[    0.170142] i8042: PNP: PS/2 Controller [PNP0303:PS2] at 0x60,0x64 irq 1\\r\\n[    0.170633] i8042: PNP: PS/2 appears to have AUX port disabled, if this is incorrect please boot with i8042.nopnp\\r\\n[    0.171571] serio: i8042 KBD port at 0x60,0x64 irq 1\\r\\n[    0.172118] rtc_cmos rtc_cmos: only 24-hr supported\\r\\n[    0.172500] intel_pstate: HWP-disabled hybrid CPU is not supported\\r\\n[    0.172952] hid: raw HID events driver (C) Jiri Kosina\\r\\n[    0.173351] usbcore: registered new interface driver usbhid\\r\\n[    0.173762] usbhid: USB HID core driver\\r\\n[    0.174074] drop_monitor: Initializing network drop monitor service\\r\\n[    0.174599] NET: Registered PF_INET6 protocol family\\r\\n[    0.175213] Segment Routing with IPv6\\r\\n[    0.175499] RPL Segment Routing with IPv6\\r\\n[    0.175791] In-situ OAM (IOAM) with IPv6\\r\\n[    0.176102] NET: Registered PF_PACKET protocol family\\r\\n[    0.176578] IPI shorthand broadcast: enabled\\r\\n[    0.177862] sched_clock: Marking stable (126000929, 50909137)->(213751619, -36841553)\\r\\n[    0.178525] registered taskstats version 1\\r\\n[    0.179020] Loading compiled-in X.509 certificates\\r\\n[    0.180746] Loaded X.509 cert \\'Build time autogenerated kernel key: ffcb078186814deeed2ab618045f0684bc684706\\'\\r\\n[    0.182614] zswap: loaded using pool zstd\\r\\n[    0.182955] Demotion targets for Node 0: null\\r\\n[    0.183347] Key type .fscrypt registered\\r\\n[    0.183639] Key type fscrypt-provisioning registered\\r\\n[    0.184146] Btrfs loaded, zoned=yes, fsverity=yes\\r\\n[    0.184508] Key type big_key registered\\r\\n[    0.184905] PM:   Magic number: 0:110:269243\\r\\n[    0.185266] RAS: Correctable Errors collector initialized.\\r\\n[    0.185790] clk: Disabling unused clocks\\r\\n[    0.186115] PM: genpd: Disabling unused power domains\\r\\n[    0.191209] Freeing unused decrypted memory: 2028K\\r\\n[    0.191970] Freeing unused kernel image (initmem) memory: 4944K\\r\\n[    0.192229] Write protecting the kernel read-only data: 40960k\\r\\n[    0.192564] Freeing unused kernel image (text/rodata gap) memory: 308K\\r\\n[    0.192947] Freeing unused kernel image (rodata/data gap) memory: 848K\\r\\n[    0.198513] x86/mm: Checked W+X mappings: passed, no W+X pages found.\\r\\n[    0.198803] rodata_test: all tests were successful\\r\\n[    0.199010] Run /init as init process\\r\\nplaza guest: plaza.harness=1: loading the vsock modules\\r\\n[    0.201451] virtio-mmio: Registering device virtio-mmio.0 at 0xc0001000-0xc0001fff, IRQ 5.\\r\\n[    0.201804] virtio-mmio: Registering device virtio-mmio.1 at 0xc0002000-0xc0002fff, IRQ 6.\\r\\n[    0.202309] virtio_blk virtio1: 1/0/0 default/read/poll queues\\r\\n[    0.202682] virtio_blk virtio1: [vda] 32768 512-byte logical blocks (16.8 MB/16.0 MiB)\\r\\n[    0.205331] NET: Registered PF_VSOCK protocol family\\r\\nplaza guest: virtio_mmio took 2 command-line parameter(s)\\r\\n[    0.210846] EXT4-fs (vda): mounted filesystem 0f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b r/w with ordered data mode. Quota mode: none.\\r\\nplaza guest: /workspace mounted (ext4, 13 MiB)\\r\\nplaza guest: agent harness running as pid 60\\r\\nplaza guest alive: heartbeat 1 uptime~0s\\r\\nagent-harness: vm 1 -> host CID 2 port 5000\\r\\nagent-harness: the vsock device assigned guest CID 141\\r\\n[vsock->] {\"type\":\"hello\",\"vm\":1,\"guest_cid\":141,\"role\":\"librarian\",\"keepalive\":true}\\r\\n[vsock<-] {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"librarian\",\"keepalive\":true}\\r\\nagent-harness: role librarian accepted\\r\\n[    0.677133] input: AT Raw Set 2 keyboard as /devices/platform/i8042/serio0/input/input0\\r\\nplaza guest alive: heartbeat 2 uptime~5s\\r\\n[vsock->] {\"type\":\"heartbeat\",\"seq\":1}\\r\\nagent-harness: heartbeat 1\\r\\n[vsock<-] {\"type\":\"tool_call\",\"call\":1,\"name\":\"uptime\",\"args\":{}}\\r\\n[vsock->] {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"5.16 5.00\"}\\r\\n[vsock<-] {\"type\":\"stop\",\"reason\":\"acceptance: the operator stopped this session\"}\\r\\nagent-harness: the hub stopped the agent (acceptance: the operator stopped this session)\\r\\n[vsock->] {\"type\":\"bye\",\"calls\":1}\\r\\nagent-harness: the hub stopped the agent after 1 tool call(s); the guest stays up\\r\\nplaza guest: agent harness stopped by the hub; staying up\\r\\nplaza guest alive: heartbeat 3 uptime~10s\\r\\n'}]"
+            },
+            {
+              "name": "the builder's session is untouched by the librarian's stop",
+              "ok": true,
+              "detail": "builder row={'cid': 140, 'role': 'builder', 'connected_at_ms': 1791685234933, 'last_heartbeat_ms': 1791685244940, 'calls': 6}"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "an unknown or not-connected CID on every surface (the hub's 404 and 409, and the daemon's own refusals)",
+          "detail": "",
+          "vector": "vsockd serves a CID no guest uses and one it does not serve at all, and noded --hub-admin points at it: noded /tell and the hub's own /tell and /stop all answer 404 for the unserved CID and 409 for the served-but-unconnected one; the artifact read-through answers 404 for an unknown task and 409 for an unassigned one; the segment and method refusals sit in front of them",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "noded /tell: a CID the hub does not serve is the hub's 404",
+              "ok": true,
+              "detail": "404 {\"error\":\"no agent with guest CID 999\"}"
+            },
+            {
+              "name": "noded /tell: a served CID with no live session is the hub's 409",
+              "ok": true,
+              "detail": "409 {\"error\":\"agent with guest CID 151 is not connected\"}"
+            },
+            {
+              "name": "noded /tell: a CID segment outside the transport's range is refused 400 before the hub",
+              "ok": true,
+              "detail": "400 {\"error\":\"guest CID 99999999999 is outside 3..=4294967294\"}"
+            },
+            {
+              "name": "noded /tell: a non-numeric CID segment is refused 400",
+              "ok": true,
+              "detail": "400 {\"error\":\"\\\"not-a-cid\\\" is not a guest CID\"}"
+            },
+            {
+              "name": "noded /tell is POST-only (driving a tool is never advertised as a GET)",
+              "ok": true,
+              "detail": "405"
+            },
+            {
+              "name": "the hub's /tell: a CID it does not serve is a 404",
+              "ok": true,
+              "detail": "404 {\"error\":\"no agent with guest CID 999\"}"
+            },
+            {
+              "name": "the hub's /tell: a served CID with no live session is a 409",
+              "ok": true,
+              "detail": "409 {\"error\":\"agent with guest CID 151 is not connected\"}"
+            },
+            {
+              "name": "the hub's /stop: a CID it does not serve is a 404",
+              "ok": true,
+              "detail": "404 {\"error\":\"no agent with guest CID 999\"}"
+            },
+            {
+              "name": "the hub's /stop: a served CID with no live session is a 409 (and nothing is torn down)",
+              "ok": true,
+              "detail": "409 {\"error\":\"agent with guest CID 151 is not connected\"}"
+            },
+            {
+              "name": "the hub's /tell: a CID past u32 is still an unknown (a 404, never a panic)",
+              "ok": true,
+              "detail": "404 {\"error\":\"no agent with guest CID 4294967296\"}"
+            },
+            {
+              "name": "the hub's admin surface accepts the POSTs only, and an unknown path is a 404",
+              "ok": true,
+              "detail": "get_tell=405 get_stop=405 post_nope=404"
+            },
+            {
+              "name": "the artifact read-through: an unknown task is a 404",
+              "ok": true,
+              "detail": "404 {\"error\":\"no task with id no-such-task\"}"
+            },
+            {
+              "name": "the artifact read-through: an unassigned task is a 409 (nothing to read it back from)",
+              "ok": true,
+              "detail": "409 {\"error\":\"task t1 has no assignee yet\"}"
+            },
+            {
+              "name": "the artifact read-through is POST-only",
+              "ok": true,
+              "detail": "405"
+            }
+          ],
+          "notes": []
+        }
+      ],
+      "data": {
+        "workspace_image": {
+          "path": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+          "bytes": 16777216,
+          "sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+        }
+      },
+      "notes": [
+        "noded --agents: present",
+        "vsockd --admin-port: present",
+        "vsockd --roles: present",
+        "noded --hub-admin: present"
+      ],
+      "findings": [],
+      "started_at": "2026-10-11T04:20:31+0200",
+      "duration_s": 14.692
+    }
+  ],
+  "findings": []
+}

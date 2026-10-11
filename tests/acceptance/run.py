@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""AgentPlaza acceptance runner — the four fixed suites plus the fleet suite.
+"""AgentPlaza acceptance runner — the four fixed suites plus the fleet and
+treasury suites.
 
 ```text
-tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|all] [options]
+tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|treasury|all] [options]
 ```
 
 Design (the stated choice):
@@ -51,6 +52,7 @@ import suite_demo
 import suite_fleet
 import suite_killresume
 import suite_redteam
+import suite_treasury
 
 SUITES = {
     "demo": suite_demo,
@@ -58,6 +60,7 @@ SUITES = {
     "killresume": suite_killresume,
     "budgets": suite_budgets,
     "fleet": suite_fleet,
+    "treasury": suite_treasury,
 }
 
 
@@ -124,8 +127,13 @@ def print_suite(suite: apz.Suite) -> None:
         print(f"         note: {note}")
     for case in suite.cases:
         if case.blocked_reason:
+            # A blocked case is not a failed one: it never ran, and its tasks
+            # are empty by construction, so there is nothing to report as a
+            # failure. (A blocked case is still not a pass; the suite's status
+            # makes that explicit.)
             print(f"         case BLOCKED: {case.name}")
             print(f"           reason: {case.blocked_reason}")
+            continue
         if case.ok:
             continue
         print(f"         case FAILED: {case.name}")

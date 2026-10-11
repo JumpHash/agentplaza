@@ -2,23 +2,23 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "PASS",
   "machine_class": "server",
-  "generated_at": "2026-10-11T00:46:13+0200",
-  "wall_seconds": 549.363,
+  "generated_at": "2026-10-11T04:04:25+0200",
+  "wall_seconds": 408.873,
   "manifest": {
     "suite": "budgets",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "592e1286251d52023abc6d38cf41bc25ec18d858",
+      "head": "5c8c3027a3361d488db254db6676067aafc69e98",
       "dirty": true,
-      "harness_tree_sha256": "bd8571ece7cc29d7a4df545e8b629a1b2c42c7503f1652ec85c7169da799caab"
+      "harness_tree_sha256": "567b357244dbe6d2fb5c06b2a3949ab0059021d6ce11e1255ad88451e009dd42"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
       "kernel": "/boot/vmlinuz-linux",
       "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
-      "initrd": "/tmp/apz-pinned-fff1222/initrd.x86_64.gz",
-      "initrd_sha256": "d022899f3a21b8bd4c5132f5a5f1d45f34ce0c90cd6d710201d8ed45b399e014",
-      "workspace": "/tmp/apz-pinned-fff1222/workspace.ext4",
+      "initrd": "/tmp/apz-treasury-pin/initrd.x86_64.gz",
+      "initrd_sha256": "2e23d3fd0577d7e39c7c736b12d676e5bf0b78bf291e494dce71976223a70da9",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
       "workspace_bytes": 16777216,
       "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
     },
@@ -35,131 +35,131 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-server-f67i2kr0",
-    "started_at": "2026-10-11T00:46:13+0200",
+    "artifacts_dir": "/tmp/apz-budgets-artifacts",
+    "started_at": "2026-10-11T04:04:25+0200",
     "binaries": {
       "noded": {
-        "path": "/tmp/apz-pinned-fff1222/noded",
-        "sha256": "7e16364a6058f905ebe7279c5fd0ef17398ce34b5acfdecf98a44bdbb8beeba4"
+        "path": "/tmp/apz-treasury-pin/noded",
+        "sha256": "3fbb07737274710c26f31179b907f375e92dd4aba70057864e19eb995caec75f"
       },
       "vsockd": {
-        "path": "/tmp/apz-pinned-fff1222/vsockd",
-        "sha256": "bc8757d28a936a0d6bd5a34801a4f2a3d06392275c08c3af8253b005a90adf07"
+        "path": "/tmp/apz-treasury-pin/vsockd",
+        "sha256": "8d736714bc92d5b6e3b483daa1283fdcb5b63811c0d6395a222008275897b902"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-boot-logs/noded.log",
-        "bytes": 4062574,
-        "sha256": "796c3fca3d866e739b2034a78ae6defb371fa85ff164675119ca70a97ed96c1c",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/796c3fca-noded.log",
+        "source": "/tmp/apz-budgets-artifacts/budgets-boot-logs/noded.log",
+        "bytes": 4054990,
+        "sha256": "007036a5cdd7b49adbcf4865fe11cc6cb8669c4ed5efe2e45f4dc229be24856d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/007036a5-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-lifecycle-logs/noded.log",
-        "bytes": 1576719,
-        "sha256": "16d69624c27bf1945d25addc0e6b19cfaab7c526d7e52c3269e02d3a515b5b98",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/16d69624-noded.log",
+        "source": "/tmp/apz-budgets-artifacts/budgets-lifecycle-logs/noded.log",
+        "bytes": 1576717,
+        "sha256": "c0da65f4f5ffe0f7fb2ad288c58adb364bcdac471dbfbaf7a8985ac18a92acb4",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/c0da65f4-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-footprint-logs/noded.log",
-        "bytes": 420564,
-        "sha256": "9ff1410ac02e4b9e01edb12d906700179e2193b5f7d3a08dfc41c970e865de8d",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/9ff1410a-noded.log",
+        "source": "/tmp/apz-budgets-artifacts/budgets-footprint-logs/noded.log",
+        "bytes": 420562,
+        "sha256": "6bf7bc5b2876021d5a3b40c1422e12dc8e7f5729615f4398ab7e0e64c2c52d3a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/6bf7bc5b-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-a-logs/noded.log",
-        "bytes": 16314,
-        "sha256": "7e73045d880bbbcd74fd47f31b4ccb243efcd4f27b7f2dd02f847a2cfd57ae97",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/7e73045d-noded.log",
-        "excerpt_bytes": 16314
+        "source": "/tmp/apz-budgets-artifacts/budgets-restore-a-logs/noded.log",
+        "bytes": 16312,
+        "sha256": "1bde329ce9466fc8cb7696584e0a4bad2bb4bf1656ca819e82373ac8a055bb8a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/1bde329c-noded.log",
+        "excerpt_bytes": 16312
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-a-logs/vsockd.log",
-        "bytes": 470,
-        "sha256": "2dab05689f4cba689a5cddbf88babdbbb5e245b430efacb92f054825a07119b3",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/2dab0568-vsockd.log",
-        "excerpt_bytes": 470
+        "source": "/tmp/apz-budgets-artifacts/budgets-restore-a-logs/vsockd.log",
+        "bytes": 434,
+        "sha256": "8b8951983a553834c655cc2e2046570c5e51aa56d5e31e34e504267ef507081c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/8b895198-vsockd.log",
+        "excerpt_bytes": 434
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-b-logs/noded.log",
-        "bytes": 16371,
-        "sha256": "193a9725a029b6e424ad7c2dd4a9679095c9a460d08e6e31592b6baeae9c834f",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/193a9725-noded.log",
-        "excerpt_bytes": 16371
+        "source": "/tmp/apz-budgets-artifacts/budgets-restore-b-logs/noded.log",
+        "bytes": 16369,
+        "sha256": "472259630c73086fc47ada946fae598d0d3fa470939a3e79cd45c43dcbb05afe",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/47225963-noded.log",
+        "excerpt_bytes": 16369
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-restore-b-logs/vsockd.log",
-        "bytes": 2176,
-        "sha256": "61f709bab27cf139bf1b925824d4b34dba0172adcb58017d88b65b326c76df71",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/61f709ba-vsockd.log",
-        "excerpt_bytes": 2176
+        "source": "/tmp/apz-budgets-artifacts/budgets-restore-b-logs/vsockd.log",
+        "bytes": 2140,
+        "sha256": "d9ecdbd26bf6bf63bdcee2805ebd2a573e0f1a28fc736cfd38e18906687e4006",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/d9ecdbd2-vsockd.log",
+        "excerpt_bytes": 2140
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-logs/noded.log",
-        "bytes": 8153439,
-        "sha256": "5b2757a98259ce3cd7ea0c581558899671ad14af1870b425ec9ac19493efc905",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/5b2757a9-noded.log",
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-boot-logs/noded.log",
+        "bytes": 8169226,
+        "sha256": "b4d82cd7f0927615ef74546387d6bfbf31c95249ab84af8e0deb2ecc3aa6687d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/b4d82cd7-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-lifecycle-logs/noded.log",
-        "bytes": 1576719,
-        "sha256": "6aa7c7a30f253d309fe0929bea7449e2e303d019fef115ed9c0cd639fc64ad36",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/6aa7c7a3-noded.log",
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-lifecycle-logs/noded.log",
+        "bytes": 1576717,
+        "sha256": "9d9bb0efa731a92170fba8bfa089dbe2960d0c8df1c2cbf1823186417c8fab64",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/9d9bb0ef-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-footprint-logs/noded.log",
-        "bytes": 404394,
-        "sha256": "c7dcb3e4b7856c4ada599e4e9b0eed34e169268fa9a1470fc45d7347798c2c24",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/c7dcb3e4-noded.log",
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-footprint-logs/noded.log",
+        "bytes": 404392,
+        "sha256": "feb79fb8d83b44849c433334a3dbf6113b9bcc4b83010b20a3030665b82415b5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/feb79fb8-noded.log",
         "excerpt_bytes": 65536
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-logs/noded.log",
-        "bytes": 8229,
-        "sha256": "e41e9321d1e8b8f7bd5031391518e23dcedc0c4bd70b45feb3f3673facfc70e6",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/e41e9321-noded.log",
-        "excerpt_bytes": 8229
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-persist-a-logs/noded.log",
+        "bytes": 8227,
+        "sha256": "15bae93babbec46ed79f9eb343d513fd0329f948ebfacb973e72358846222d2a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/15bae93b-noded.log",
+        "excerpt_bytes": 8227
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persistence/budgets-workspace-persist-a-console.txt",
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-persistence/budgets-workspace-persist-a-console.txt",
         "bytes": 258,
-        "sha256": "71b2dab492f84d3ad9aea77f6ffbf19e7bae828eac6812a3140e99d55115a690",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/71b2dab4-budgets-workspace-persist-a-console.txt",
+        "sha256": "9d7efe328e8dce0bab9b3a25001ff940bb4f050909c9e1a8491333f71ba4cd78",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/9d7efe32-budgets-workspace-persist-a-console.txt",
         "excerpt_bytes": 258
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-b-logs/noded.log",
-        "bytes": 8229,
-        "sha256": "5457389c8b3881d1858ff81e764fba44ca21e51c1cf9a873514d89a103b094d7",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/5457389c-noded.log",
-        "excerpt_bytes": 8229
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-persist-b-logs/noded.log",
+        "bytes": 8227,
+        "sha256": "c584f7a1909b8e5ce8c28a71a6153cc27aabc4d5925ecab8f9e6bc8fde9012c9",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/c584f7a1-noded.log",
+        "excerpt_bytes": 8227
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persistence/budgets-workspace-persist-b-console.txt",
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-persistence/budgets-workspace-persist-b-console.txt",
         "bytes": 175,
-        "sha256": "bfee5a3d52809f53960a8c919bb211de614884e72c4db248a9995b47c3d770f5",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/bfee5a3d-budgets-workspace-persist-b-console.txt",
+        "sha256": "b0f1eeaec4d0c8af5cf6d5bdc401d77e631c46beeda34984177be353dfc5a15d",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/b0f1eeae-budgets-workspace-persist-b-console.txt",
         "excerpt_bytes": 175
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-logs/noded.log",
-        "bytes": 8229,
-        "sha256": "6643e474d3c516fb7969cd42d870e613811b861214996524df102d2b88b21c92",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/6643e474-noded.log",
-        "excerpt_bytes": 8229
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-restore-a-logs/noded.log",
+        "bytes": 8227,
+        "sha256": "e3712d7b28c264b05b98fc6957d5e69a701e4df2494687c08e8163a5c89c6d05",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/e3712d7b-noded.log",
+        "excerpt_bytes": 8227
       },
       {
-        "source": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-b-logs/noded.log",
-        "bytes": 144,
-        "sha256": "8192ce97846a9c35ae26e914f8fbd9ad5426d2cc6bdcce46a13c8339b5cc6bcb",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T003703/8192ce97-noded.log",
-        "excerpt_bytes": 144
+        "source": "/tmp/apz-budgets-artifacts/budgets-workspace-restore-b-logs/noded.log",
+        "bytes": 142,
+        "sha256": "406e5acaafcb67a1c8032b3a8a64ae961558be2547330d98a55c000489762d82",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T035737/406e5aca-noded.log",
+        "excerpt_bytes": 142
       }
     ]
   },
@@ -199,7 +199,7 @@
             {
               "name": "1-VM boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=0.018 p95=0.032 p99=0.038"
+              "detail": "p50=0.007 p95=0.008 p99=0.012"
             },
             {
               "name": "every one of the 20 8-VM boots came up (no VM failed)",
@@ -214,7 +214,7 @@
             {
               "name": "8-VM boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=0.211 p95=0.248 p99=0.264"
+              "detail": "p50=0.066 p95=0.080 p99=0.107"
             },
             {
               "name": "every one of the 10 50-VM boots came up (no VM failed)",
@@ -229,13 +229,13 @@
             {
               "name": "50-VM boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=2.232 p95=2.496 p99=2.496"
+              "detail": "p50=1.098 p95=1.150 p99=1.150"
             }
           ],
           "notes": [
-            "1-VM boot: n=20 p50=18ms p95=32ms p99=38ms max=38ms",
-            "8-VM boot: n=20 p50=211ms p95=248ms p99=264ms max=264ms",
-            "50-VM boot: n=10 p50=2232ms p95=2496ms p99=2496ms max=2496ms",
+            "1-VM boot: n=20 p50=7ms p95=8ms p99=12ms max=12ms",
+            "8-VM boot: n=20 p50=66ms p95=80ms p99=107ms max=107ms",
+            "50-VM boot: n=10 p50=1098ms p95=1150ms p99=1150ms max=1150ms",
             "the sweep boots a long-lived guest (beats unset) so 'every VM came up running' is a stable contract; a self-rebooting guest can have already finished its beats when the POST reply is read, which is churn rather than a boot failure, and the console line that would tell the two apart races the guest reset it precedes",
             "no boot-time threshold is configured in this repository (no in-repo boot budget exists), so these are measurements; pass --boot-p95-ms to enforce a bar"
           ]
@@ -283,9 +283,9 @@
             }
           ],
           "notes": [
-            "1-VM lifecycle: n=5 p50=7.63s p95=7.73s p99=7.73s (guest beats every 5s)",
-            "8-VM lifecycle: n=5 p50=8.46s p95=8.56s p99=8.56s (guest beats every 5s)",
-            "50-VM lifecycle: n=3 p50=11.49s p95=11.55s p99=11.55s (guest beats every 5s)"
+            "1-VM lifecycle: n=5 p50=7.41s p95=7.46s p99=7.46s (guest beats every 5s)",
+            "8-VM lifecycle: n=5 p50=7.64s p95=7.66s p99=7.66s (guest beats every 5s)",
+            "50-VM lifecycle: n=3 p50=8.88s p95=8.95s p99=8.95s (guest beats every 5s)"
           ]
         },
         {
@@ -307,12 +307,12 @@
             {
               "name": "whole-fleet RSS under the 8 GiB budget",
               "ok": true,
-              "detail": "peak=5.57 GiB samples=[5707, 5707, 5707] MiB"
+              "detail": "peak=5.58 GiB samples=[5709, 5709, 5709] MiB"
             },
             {
               "name": "steady-state CPU under 5.0% of one core",
               "ok": true,
-              "detail": "peak=2.500% samples=[2.5, 2.25, 2.25]"
+              "detail": "peak=2.250% samples=[2.25, 2.0, 2.25]"
             },
             {
               "name": "the fleet self-terminates cleanly (beats=12)",
@@ -321,9 +321,9 @@
             }
           ],
           "notes": [
-            "50-VM boot (POST -> running): 2297ms",
-            "fleet 50: RSS baseline 4 MiB peak 5707 MiB; CPU [2.5, 2.25, 2.25]% of one core",
-            "CPU at n=2: 0.250% of one core (per-VM scaling evidence)"
+            "50-VM boot (POST -> running): 1137ms",
+            "fleet 50: RSS baseline 4 MiB peak 5709 MiB; CPU [2.25, 2.0, 2.25]% of one core",
+            "CPU at n=2: 0.000% of one core (per-VM scaling evidence)"
           ]
         },
         {
@@ -355,7 +355,7 @@
             {
               "name": "a new run is a different run (new id sequence, new created_at)",
               "ok": true,
-              "detail": "id=r1 created_at=1791672077942 vs 1791672075692"
+              "detail": "id=r1 created_at=1791684061298 vs 1791684059053"
             },
             {
               "name": "the SSE stream carries the new run's identity",
@@ -386,7 +386,7 @@
             {
               "name": "the 1-VM run laid out one workspace copy per VM, each the base image's size (16 MiB)",
               "ok": true,
-              "detail": "copies=1 expected=1 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-uds/run-r1"
+              "detail": "copies=1 expected=1 at /tmp/apz-budgets-artifacts/budgets-workspace-boot-uds/run-r1-1791684068923"
             },
             {
               "name": "every VM of the 1-VM run mounted its /workspace volume",
@@ -406,12 +406,12 @@
             {
               "name": "1-VM --workspace boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=0.019 p95=0.037 p99=0.040"
+              "detail": "p50=0.011 p95=0.012 p99=0.012"
             },
             {
               "name": "the 8-VM run laid out one workspace copy per VM, each the base image's size (16 MiB)",
               "ok": true,
-              "detail": "copies=8 expected=8 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-uds/run-r21"
+              "detail": "copies=8 expected=8 at /tmp/apz-budgets-artifacts/budgets-workspace-boot-uds/run-r21-1791684068923"
             },
             {
               "name": "every VM of the 8-VM run mounted its /workspace volume",
@@ -431,12 +431,12 @@
             {
               "name": "8-VM --workspace boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=0.241 p95=0.289 p99=0.314"
+              "detail": "p50=0.095 p95=0.114 p99=0.157"
             },
             {
               "name": "the 50-VM run laid out one workspace copy per VM, each the base image's size (16 MiB)",
               "ok": true,
-              "detail": "copies=50 expected=50 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-boot-uds/run-r41"
+              "detail": "copies=50 expected=50 at /tmp/apz-budgets-artifacts/budgets-workspace-boot-uds/run-r41-1791684068923"
             },
             {
               "name": "every VM of the 50-VM run mounted its /workspace volume",
@@ -456,13 +456,13 @@
             {
               "name": "50-VM --workspace boot percentiles are ordered",
               "ok": true,
-              "detail": "p50=2.521 p95=3.082 p99=3.779"
+              "detail": "p50=1.317 p95=1.380 p99=1.395"
             }
           ],
           "notes": [
-            "1-VM --workspace boot: n=20 p50=19ms p95=37ms p99=40ms; delta vs this run's without-workspace numbers: p50=+1ms p95=+5ms",
-            "8-VM --workspace boot: n=20 p50=241ms p95=289ms p99=314ms; delta vs this run's without-workspace numbers: p50=+29ms p95=+40ms",
-            "50-VM --workspace boot: n=20 p50=2521ms p95=3082ms p99=3779ms; delta vs this run's without-workspace numbers: p50=+289ms p95=+586ms",
+            "1-VM --workspace boot: n=20 p50=11ms p95=12ms p99=12ms; delta vs this run's without-workspace numbers: p50=+4ms p95=+4ms",
+            "8-VM --workspace boot: n=20 p50=95ms p95=114ms p99=157ms; delta vs this run's without-workspace numbers: p50=+29ms p95=+34ms",
+            "50-VM --workspace boot: n=20 p50=1317ms p95=1380ms p99=1395ms; delta vs this run's without-workspace numbers: p50=+219ms p95=+229ms",
             "the sweep boots a long-lived guest (beats unset), as the without-workspace sweep does, so 'every VM came up running' is a stable contract for both sets of numbers",
             "no boot-time threshold is configured in this repository, so these are measurements; pass --boot-p95-ms to enforce a bar (it is applied to the workspace boot too)"
           ]
@@ -525,11 +525,11 @@
             }
           ],
           "notes": [
-            "1-VM --workspace lifecycle: n=5 p50=5.81s p95=6.21s p99=6.21s; delta vs this run's without-workspace p95: -1.52s",
+            "1-VM --workspace lifecycle: n=5 p50=5.41s p95=5.41s p99=5.41s; delta vs this run's without-workspace p95: -2.05s",
             "a lifecycle run is dominated by the guest's fixed 2-beat schedule (two 5 s windows) plus the guest's own boot, so this delta is indicative only and a negative one is host noise rather than an improvement; the boot cell's per-VM copy + mount cost is the block device's own contribution to a boot",
-            "8-VM --workspace lifecycle: n=5 p50=6.57s p95=6.70s p99=6.70s; delta vs this run's without-workspace p95: -1.86s",
+            "8-VM --workspace lifecycle: n=5 p50=5.63s p95=5.63s p99=5.63s; delta vs this run's without-workspace p95: -2.03s",
             "a lifecycle run is dominated by the guest's fixed 2-beat schedule (two 5 s windows) plus the guest's own boot, so this delta is indicative only and a negative one is host noise rather than an improvement; the boot cell's per-VM copy + mount cost is the block device's own contribution to a boot",
-            "50-VM --workspace lifecycle: n=3 p50=9.19s p95=10.63s p99=10.63s; delta vs this run's without-workspace p95: -0.92s",
+            "50-VM --workspace lifecycle: n=3 p50=7.13s p95=7.15s p99=7.15s; delta vs this run's without-workspace p95: -1.80s",
             "a lifecycle run is dominated by the guest's fixed 2-beat schedule (two 5 s windows) plus the guest's own boot, so this delta is indicative only and a negative one is host noise rather than an improvement; the boot cell's per-VM copy + mount cost is the block device's own contribution to a boot"
           ]
         },
@@ -552,7 +552,7 @@
             {
               "name": "the fleet holds one workspace copy per VM (50 x 16 MiB of image)",
               "ok": true,
-              "detail": "copies=50 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-footprint-uds/run-r1"
+              "detail": "copies=50 at /tmp/apz-budgets-artifacts/budgets-workspace-footprint-uds/run-r1-1791684205769"
             },
             {
               "name": "whole-fleet RSS under the 8 GiB budget with a workspace volume",
@@ -562,7 +562,7 @@
             {
               "name": "steady-state CPU under 5.0% of one core with a workspace volume",
               "ok": true,
-              "detail": "peak=2.500% samples=[2.25, 2.5, 2.25]"
+              "detail": "peak=2.250% samples=[2.25, 2.25, 1.75]"
             },
             {
               "name": "the --workspace fleet self-terminates cleanly (beats=12)",
@@ -576,10 +576,10 @@
             }
           ],
           "notes": [
-            "50-VM --workspace boot (POST -> running): 3180ms",
-            "fleet 50 with workspace: RSS baseline 4 MiB peak 5880 MiB; CPU [2.25, 2.5, 2.25]% of one core",
-            "the 800 MiB of copies are host memory, not guest RSS: this host's harness work directory is under /tmp (tmpfs), so their pages are charged to Shmem \u2014 which went 4974 -> 5779 MiB (4 MiB off the copies' 800 MiB) while the fleet ran. Host-wide Cached (44039 -> 44869 MiB) moved for the whole host's reasons and is not attributed to the fleet. noded's RSS is what the 8 GiB criterion measures and does not carry the copies, so a fleet's true host cost is that RSS plus them \u2014 recorded here so it is not understated",
-            "steady-state CPU with the volume attached is 2.500% of one core versus 2.4999586269339846% without it in this run: the guest's ext4 journal adds no measurable steady-state cost here (the case without a workspace carries the 0.03%-baseline finding)"
+            "50-VM --workspace boot (POST -> running): 1365ms",
+            "fleet 50 with workspace: RSS baseline 4 MiB peak 5880 MiB; CPU [2.25, 2.25, 1.75]% of one core",
+            "the 800 MiB of copies are host memory, not guest RSS: this host's harness work directory is under /tmp (tmpfs), so their pages are charged to Shmem \u2014 which went 7187 -> 8000 MiB (12 MiB off the copies' 800 MiB) while the fleet ran. Host-wide Cached (45792 -> 46284 MiB) moved for the whole host's reasons and is not attributed to the fleet. noded's RSS is what the 8 GiB criterion measures and does not carry the copies, so a fleet's true host cost is that RSS plus them \u2014 recorded here so it is not understated",
+            "steady-state CPU with the volume attached is 2.250% of one core versus 2.2499645478585073% without it in this run: the guest's ext4 journal adds no measurable steady-state cost here (the case without a workspace carries the 0.03%-baseline finding)"
           ]
         },
         {
@@ -616,22 +616,22 @@
             {
               "name": "the run's workspace directory is private (0700) and holds one copy per VM",
               "ok": true,
-              "detail": "mode=700 copies=['workspace-0.ext4'] at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1"
+              "detail": "mode=700 copies=['workspace-0.ext4'] at /tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r1-1791684263019"
             },
             {
               "name": "the token is in the run's own image copy on the host while the guest still runs",
               "ok": true,
-              "detail": "debugfs cat /notes.txt -> 'apz-workspace-073d6dd38474'"
+              "detail": "debugfs cat /notes.txt -> 'apz-workspace-904e1d022900'"
             },
             {
               "name": "a new run gets fresh copies, never the old run's",
               "ok": true,
-              "detail": "new=['/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r2/workspace-0.ext4'] leaked=False"
+              "detail": "new=['/tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r2-1791684263019/workspace-0.ext4'] leaked=False"
             },
             {
               "name": "the new run left the earlier run's copy and its data alone",
               "ok": true,
-              "detail": "copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4"
+              "detail": "copy=/tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r1-1791684263019/workspace-0.ext4"
             },
             {
               "name": "the guest powered off (S5) and the run reported done with its VM exited",
@@ -641,12 +641,12 @@
             {
               "name": "the finished run's workspace copy is still there after the run ended",
               "ok": true,
-              "detail": "copies=['/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4']"
+              "detail": "copies=['/tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r1-1791684263019/workspace-0.ext4']"
             },
             {
               "name": "the run's workspace copy and its data survive the daemon being killed",
               "ok": true,
-              "detail": "debugfs cat /notes.txt -> 'apz-workspace-073d6dd38474' path=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4"
+              "detail": "debugfs cat /notes.txt -> 'apz-workspace-904e1d022900' path=/tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r1-1791684263019/workspace-0.ext4"
             },
             {
               "name": "a second boot built from the retained copy mounted its filesystem",
@@ -661,17 +661,17 @@
             {
               "name": "the guest reads the previous boot's token back from /workspace",
               "ok": true,
-              "detail": "token=present in 175 bytes; plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0swspaceapz-workspace-073d6dd38474"
+              "detail": "token=present in 175 bytes; plaza guest: virtio_mmio took 1 command-line parameter(s)plaza guest: /workspace mounted (ext4, 13 MiB)plaza guest alive: heartbeat 1 uptime~0swspaceapz-workspace-904e1d022900"
             },
             {
               "name": "the second boot's image is derived from the retained copy, not the pristine base image",
               "ok": true,
-              "detail": "copy=['/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-b-uds/run-r1/workspace-0.ext4'] base_sha=a6d7281595cd"
+              "detail": "copy=['/tmp/apz-budgets-artifacts/budgets-workspace-persist-b-uds/run-r1-1791684263951/workspace-0.ext4'] base_sha=a6d7281595cd"
             }
           ],
           "notes": [
-            "poweroff -> done in 0.16s",
-            "the second boot's base image is the retained copy at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4 (deterministic: {uds_dir}/run-r1/workspace-0.ext4, sha256 de910579a0f2); noded copies it for the new run, so the guest mounts those bytes, not the base image's"
+            "poweroff -> done in 0.21s",
+            "the second boot's base image is the retained copy at /tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r1-1791684263019/workspace-0.ext4 (deterministic: {uds_dir}/run-r1/workspace-0.ext4, sha256 272c4e89642e); noded copies it for the new run, so the guest mounts those bytes, not the base image's"
           ]
         },
         {
@@ -698,7 +698,7 @@
             {
               "name": "the running run's workspace copy is on disk",
               "ok": true,
-              "detail": "copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4 sha256=05a3e86874eb"
+              "detail": "copy=/tmp/apz-budgets-artifacts/budgets-workspace-restore-a-uds/run-r1-1791684264603/workspace-0.ext4 sha256=d51cad5aa0aa"
             },
             {
               "name": "the daemon was killed mid-run",
@@ -708,7 +708,7 @@
             {
               "name": "the killed daemon's run directory and copy survive it",
               "ok": true,
-              "detail": "copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4"
+              "detail": "copy=/tmp/apz-budgets-artifacts/budgets-workspace-restore-a-uds/run-r1-1791684264603/workspace-0.ext4"
             },
             {
               "name": "the restarted workspace daemon serves the machine view",
@@ -723,7 +723,7 @@
             {
               "name": "the killed run's copy survives the restart, with its data",
               "ok": true,
-              "detail": "debugfs cat /notes.txt -> 'apz-workspace-073d6dd38474' copy=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4"
+              "detail": "debugfs cat /notes.txt -> 'apz-workspace-904e1d022900' copy=/tmp/apz-budgets-artifacts/budgets-workspace-restore-a-uds/run-r1-1791684264603/workspace-0.ext4"
             },
             {
               "name": "a fresh run is running on the restarted daemon",
@@ -733,11 +733,11 @@
             {
               "name": "the fresh run gets fresh copies, never the old run's",
               "ok": true,
-              "detail": "dir=/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 copies=['workspace-0.ext4'] leaked=False"
+              "detail": "dir=/tmp/apz-budgets-artifacts/budgets-workspace-restore-a-uds/run-r1-1791684265821 copies=['workspace-0.ext4'] leaked=False"
             }
           ],
           "notes": [
-            "the fresh run is r1 in /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1; the killed daemon's copies were at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1"
+            "the fresh run is r1 in /tmp/apz-budgets-artifacts/budgets-workspace-restore-a-uds/run-r1-1791684265821; the killed daemon's copies were at /tmp/apz-budgets-artifacts/budgets-workspace-restore-a-uds/run-r1-1791684264603"
           ]
         }
       ],
@@ -745,90 +745,90 @@
         "boot_ms": {
           "1": {
             "n": 20,
-            "min": 0.008823032025247812,
-            "p50": 0.017514140985440463,
-            "p95": 0.03243416897021234,
-            "p99": 0.03817557299043983,
-            "max": 0.03817557299043983,
-            "mean": 0.020419182602199725
+            "min": 0.005855590978171676,
+            "p50": 0.00681043800432235,
+            "p95": 0.007852666021790355,
+            "p99": 0.011539375002030283,
+            "max": 0.011539375002030283,
+            "mean": 0.007023580439272337
           },
           "8": {
             "n": 20,
-            "min": 0.16078106896020472,
-            "p50": 0.21149340900592506,
-            "p95": 0.24838069395627826,
-            "p99": 0.26372661598725244,
-            "max": 0.26372661598725244,
-            "mean": 0.20886572330782655
+            "min": 0.06028325197985396,
+            "p50": 0.06619054096518084,
+            "p95": 0.08030176197644323,
+            "p99": 0.10660425300011411,
+            "max": 0.10660425300011411,
+            "mean": 0.06885315393446945
           },
           "50": {
             "n": 10,
-            "min": 1.9514091120217927,
-            "p50": 2.2316909109940752,
-            "p95": 2.4957946100039408,
-            "p99": 2.4957946100039408,
-            "max": 2.4957946100039408,
-            "mean": 2.2016229711065534
+            "min": 1.0842547370120883,
+            "p50": 1.0980852009961382,
+            "p95": 1.1503151379874907,
+            "p99": 1.1503151379874907,
+            "max": 1.1503151379874907,
+            "mean": 1.1097312500991392
           }
         },
         "boot_guest": "beats=None (long-lived fleet: every VM must be running at the POST reply)",
         "lifecycle_s": {
           "1": {
             "n": 5,
-            "min": 7.62236361700343,
-            "p50": 7.628163603018038,
-            "p95": 7.729818403953686,
-            "p99": 7.729818403953686,
-            "max": 7.729818403953686,
-            "mean": 7.657602466794197
+            "min": 7.404479262011591,
+            "p50": 7.4074646849767305,
+            "p95": 7.459453743998893,
+            "p99": 7.459453743998893,
+            "max": 7.459453743998893,
+            "mean": 7.41756105099339
           },
           "8": {
             "n": 5,
-            "min": 8.379276957013644,
-            "p50": 8.455912982986774,
-            "p95": 8.557328838040121,
-            "p99": 8.557328838040121,
-            "max": 8.557328838040121,
-            "mean": 8.460514055611565
+            "min": 7.6177063480135985,
+            "p50": 7.638381934026256,
+            "p95": 7.6581516390433535,
+            "p99": 7.6581516390433535,
+            "max": 7.6581516390433535,
+            "mean": 7.640812028222717
           },
           "50": {
             "n": 3,
-            "min": 10.904672241013031,
-            "p50": 11.488160487962887,
-            "p95": 11.55022461595945,
-            "p99": 11.55022461595945,
-            "max": 11.55022461595945,
-            "mean": 11.314352448311789
+            "min": 8.680096803000197,
+            "p50": 8.884698702953756,
+            "p95": 8.949239588982891,
+            "p99": 8.949239588982891,
+            "max": 8.949239588982891,
+            "mean": 8.83801169831228
           }
         },
         "footprint": {
           "n": 50,
           "beats": 12,
-          "rss_baseline_bytes": 4718592,
+          "rss_baseline_bytes": 4804608,
           "rss_samples_bytes": [
-            5984735232,
-            5984739328,
-            5984739328
+            5986930688,
+            5986930688,
+            5986930688
           ],
-          "rss_peak_bytes": 5984739328,
+          "rss_peak_bytes": 5986930688,
           "rss_budget_bytes": 8589934592,
-          "rss_after_bytes": 11358208,
+          "rss_after_bytes": 11612160,
           "cpu_samples_pct": [
-            2.4999586269339846,
-            2.249513480279659,
-            2.2499643476159297
+            2.2499621624007298,
+            1.999965557577685,
+            2.2499645478585073
           ],
-          "cpu_peak_pct": 2.4999586269339846,
+          "cpu_peak_pct": 2.2499645478585073,
           "cpu_budget_pct": 5.0,
           "recorded_cpu_baseline_pct": 0.03,
           "scale_cpu": {
             "n": 2,
-            "cpu_pct": 0.2499608307631828
+            "cpu_pct": 0.0
           }
         },
         "workspace": {
           "image": {
-            "path": "/tmp/apz-pinned-fff1222/workspace.ext4",
+            "path": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
             "bytes": 16777216,
             "sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031",
             "provenance": "built by scripts/mk-workspace-image.sh: a 16 MiB ext4 with a pinned label, UUID and superblock time. Identity is stable across builds; the bytes are not reproducible (mke2fs randomises the journal UUID and this e2fsprogs has no -J uuid=), which is the block slice's own note"
@@ -836,87 +836,87 @@
           "boot_ms": {
             "1": {
               "n": 20,
-              "min": 0.011464690032880753,
-              "p50": 0.018689567979890853,
-              "p95": 0.03696565900463611,
-              "p99": 0.039672987011726946,
-              "max": 0.039672987011726946,
-              "mean": 0.022143922102986834
+              "min": 0.010154122021049261,
+              "p50": 0.01097345002926886,
+              "p95": 0.012237242015544325,
+              "p99": 0.012274365988560021,
+              "max": 0.012274365988560021,
+              "mean": 0.011320070302463136
             },
             "8": {
               "n": 20,
-              "min": 0.19382535998011008,
-              "p50": 0.24067261902382597,
-              "p95": 0.2888448599842377,
-              "p99": 0.31400623795343563,
-              "max": 0.31400623795343563,
-              "mean": 0.24395286209473852
+              "min": 0.08898072800366208,
+              "p50": 0.09540277201449499,
+              "p95": 0.11386402999050915,
+              "p99": 0.15713524498278275,
+              "max": 0.15713524498278275,
+              "mean": 0.09998081584635657
             },
             "50": {
               "n": 20,
-              "min": 2.25409009604482,
-              "p50": 2.5206056630122475,
-              "p95": 3.081805693975184,
-              "p99": 3.779298006033059,
-              "max": 3.779298006033059,
-              "mean": 2.5828470482607373
+              "min": 1.2225457190070301,
+              "p50": 1.3171271549654193,
+              "p95": 1.3797741460148245,
+              "p99": 1.3953284259769134,
+              "max": 1.3953284259769134,
+              "mean": 1.3222123060520972
             }
           },
           "boot_delta_ms": {
             "1": {
-              "p50_ms": 1.1754269944503903,
-              "p95_ms": 4.5314900344237685
+              "p50_ms": 4.163012024946511,
+              "p95_ms": 4.38457599375397
             },
             "8": {
-              "p50_ms": 29.179210017900914,
-              "p95_ms": 40.464166027959436
+              "p50_ms": 29.21223104931414,
+              "p95_ms": 33.56226801406592
             },
             "50": {
-              "p50_ms": 288.9147520181723,
-              "p95_ms": 586.0110839712434
+              "p50_ms": 219.04195396928117,
+              "p95_ms": 229.45900802733377
             }
           },
           "lifecycle_s": {
             "1": {
               "n": 5,
-              "min": 5.605239181022625,
-              "p50": 5.814764189999551,
-              "p95": 6.209904653020203,
-              "p99": 6.209904653020203,
-              "max": 6.209904653020203,
-              "mean": 5.866572549403645
+              "min": 5.4002600950188935,
+              "p50": 5.406923494010698,
+              "p95": 5.4126040959963575,
+              "p99": 5.4126040959963575,
+              "max": 5.4126040959963575,
+              "mean": 5.406819157605059
             },
             "8": {
               "n": 5,
-              "min": 6.411425427009817,
-              "p50": 6.566926826955751,
-              "p95": 6.700277060037479,
-              "p99": 6.700277060037479,
-              "max": 6.700277060037479,
-              "mean": 6.565319144004024
+              "min": 5.621614568983205,
+              "p50": 5.627249153971206,
+              "p95": 5.630826027947478,
+              "p99": 5.630826027947478,
+              "max": 5.630826027947478,
+              "mean": 5.627071404573508
             },
             "50": {
               "n": 3,
-              "min": 9.0096585029969,
-              "p50": 9.186522634990979,
-              "p95": 10.633172334986739,
-              "p99": 10.633172334986739,
-              "max": 10.633172334986739,
-              "mean": 9.609784490991538
+              "min": 7.1078920509899035,
+              "p50": 7.128779883962125,
+              "p95": 7.153040210017934,
+              "p99": 7.153040210017934,
+              "max": 7.153040210017934,
+              "mean": 7.129904048323321
             }
           },
           "lifecycle_delta_s": {
             "1": {
-              "p50_s": -1.8133994130184874,
-              "p95_s": -1.5199137509334832
+              "p50_s": -2.0005411909660324,
+              "p95_s": -2.046849648002535
             },
             "8": {
-              "p50_s": -1.8889861560310237,
-              "p95_s": -1.857051778002642
+              "p50_s": -2.01113278005505,
+              "p95_s": -2.0273256110958755
             },
             "50": {
-              "p50_s": -2.3016378529719077,
-              "p95_s": -0.9170522809727117
+              "p50_s": -1.7559188189916313,
+              "p95_s": -1.7961993789649568
             }
           },
           "boot_reaped_run_dirs": 60,
@@ -925,45 +925,45 @@
             "beats": 12,
             "workspace_image_bytes": 16777216,
             "workspace_copies_bytes": 838860800,
-            "rss_baseline_bytes": 4329472,
+            "rss_baseline_bytes": 4681728,
             "rss_samples_bytes": [
-              6165934080,
-              6165934080,
-              6165934080
+              6166474752,
+              6166487040,
+              6166491136
             ],
-            "rss_peak_bytes": 6165934080,
+            "rss_peak_bytes": 6166491136,
             "rss_budget_bytes": 8589934592,
-            "rss_after_bytes": 56455168,
+            "rss_after_bytes": 58884096,
             "cpu_samples_pct": [
-              2.2495352392726655,
-              2.499856127018785,
-              2.2498695351225315
+              2.24988534078581,
+              2.24989245739922,
+              1.7499069115008181
             ],
-            "cpu_peak_pct": 2.499856127018785,
+            "cpu_peak_pct": 2.24989245739922,
             "cpu_budget_pct": 5.0,
             "host_cached_bytes": {
-              "before": 46178938880,
-              "busy": 47048564736,
-              "after_done": 47068368896
+              "before": 48017256448,
+              "busy": 48532422656,
+              "after_done": 48534007808
             },
             "host_shmem_bytes": {
-              "before": 5216169984,
-              "busy": 6059798528,
-              "after_done": 6073495552
+              "before": 7536857088,
+              "busy": 8389206016,
+              "after_done": 8388861952
             },
             "reaped_run_dirs": 1
           },
           "persistence": {
-            "token": "apz-workspace-073d6dd38474",
+            "token": "apz-workspace-904e1d022900",
             "first_run": {
               "run": "r1",
-              "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-a-uds/run-r1/workspace-0.ext4",
-              "sha256": "de910579a0f2e04c030634e6ad4c60c8426fc7d01568c2dbe40a6804349f4a92"
+              "copy": "/tmp/apz-budgets-artifacts/budgets-workspace-persist-a-uds/run-r1-1791684263019/workspace-0.ext4",
+              "sha256": "272c4e89642eb385d465b914ed65c9386252bc7f16f21938076844f04476d001"
             },
             "second_run": {
               "run": "r1",
-              "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-persist-b-uds/run-r1/workspace-0.ext4",
-              "sha256": "36f84828ccc264a67635ca998252ce2ff651be28267d8205315887ecfa7326bb"
+              "copy": "/tmp/apz-budgets-artifacts/budgets-workspace-persist-b-uds/run-r1-1791684263951/workspace-0.ext4",
+              "sha256": "56060d8ba1246115dd7c5d42d65104a6b95a2fa8628d7c563735192aa73687d1"
             },
             "base_image_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
           }
@@ -971,42 +971,23 @@
       },
       "notes": [
         "boot budget: measured only \u2014 no configured threshold exists in-repo",
-        "budget regression check: comparing against acceptance-server-budgets-2026-10-11.json",
-        "budget regression check: the boot sweeps' guest configuration changed since acceptance-server-budgets-2026-10-11.json (was None, now 'beats=None (long-lived fleet: every VM must be running at the POST reply)'), so the boot p95s are not compared against it (a different guest is a different measurement)"
+        "budget regression check: comparing against acceptance-server-budgets-2026-10-11.json"
       ],
       "findings": [
         {
           "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
           "classification": "baseline-discrepancy",
-          "detail": "measured peak 2.500% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.250%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
-          "measured_cpu_pct": 2.4999586269339846,
+          "detail": "measured peak 2.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.000%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+          "measured_cpu_pct": 2.2499645478585073,
           "measured_cpu_pct_at_scale": {
-            "n2": 0.2499608307631828
+            "n2": 0.0
           },
           "recorded_baseline_pct": 0.03,
           "budget_pct": 5.0
-        },
-        {
-          "title": "a restarted daemon reuses run-r1 and overwrites the previous instance's workspace copy",
-          "classification": "product-defect",
-          "severity": "medium",
-          "affected_cell": "budgets: restore with --workspace (run-directory retention)",
-          "detail": "noded's run ids restart with the daemon (`Registry::new` sets `next_seq = 0`), so the first run after a restart is `r1` again and its workspace directory is /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 \u2014 the very directory the killed daemon's run r1 was using. `materialize_workspaces` copies the base image onto that path with `std::fs::copy`, which truncates the existing copy in place, so the previous instance's retained volume (sha256 05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285) is replaced (sha256 a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031) and its /workspace/notes.txt marker is gone. The block slice's contract that a run's copies stay after the run (they hold the agent's work) therefore holds only within one daemon lifetime: restarting on the same --uds-dir destroys the retained volumes of the runs whose ids the new daemon re-issues. Both behaviours are deliberate on their own (run ids are per-daemon; copies are kept), which is the conflict this cell records.",
-          "observed": "run r1 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 overwrote /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
-          "expected": "the retained copy of a finished/killed run keeps its bytes across a daemon restart (or the new run is given a path that cannot collide with one)",
-          "reproducer": "noded --workspace IMG --uds-dir D; POST {n:1,beats:40}; console `wspace TOKEN`; `sync`; SIGTERM noded; noded --workspace IMG --uds-dir D; POST {n:1} -> the new run is r1 and D/run-r1/workspace-0.ext4 no longer contains TOKEN",
-          "suspected_component": "crates/noded/src/registry.rs (reserve_run_id / boot_run run-dir path) + crates/vmm/src/spawner.rs (materialize_workspaces copies in place)",
-          "artifacts": {
-            "uds_dir": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds",
-            "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
-            "before_sha256": "05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285",
-            "after_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031",
-            "noded_log": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-b-logs/noded.log"
-          }
         }
       ],
-      "started_at": "2026-10-11T00:37:03+0200",
-      "duration_s": 549.333
+      "started_at": "2026-10-11T03:57:37+0200",
+      "duration_s": 408.859
     }
   ],
   "findings": [
@@ -1014,32 +995,13 @@
       "suite": "boot-restore-footprint-budgets",
       "title": "steady-state CPU does not reproduce the recorded 0.03% baseline",
       "classification": "baseline-discrepancy",
-      "detail": "measured peak 2.500% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.250%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
-      "measured_cpu_pct": 2.4999586269339846,
+      "detail": "measured peak 2.250% of one core for 50 guests with the fleet's own beats configuration versus the 0.03% recorded in PORT_STATUS slice 16. The configured bar (5.0%) still passes, with a thin margin. At n=2 the same configuration measures 0.000%. The recorded figure was sampled with the guests 'parked in HLT', which measures no heartbeat writes and no console polling; noded never boots a parked guest (its cmdline builder has no halt option), and every guest it does boot writes a heartbeat every 5 s and polls its console every second, plus the run watcher's 5 ms poll pass. Those wakeups are the measured cost. A like-for-like baseline is needed: either re-sample the recorded figure with the same guest configuration, or expose a parked-guest option through noded so both states can be measured.",
+      "measured_cpu_pct": 2.2499645478585073,
       "measured_cpu_pct_at_scale": {
-        "n2": 0.2499608307631828
+        "n2": 0.0
       },
       "recorded_baseline_pct": 0.03,
       "budget_pct": 5.0
-    },
-    {
-      "suite": "boot-restore-footprint-budgets",
-      "title": "a restarted daemon reuses run-r1 and overwrites the previous instance's workspace copy",
-      "classification": "product-defect",
-      "severity": "medium",
-      "affected_cell": "budgets: restore with --workspace (run-directory retention)",
-      "detail": "noded's run ids restart with the daemon (`Registry::new` sets `next_seq = 0`), so the first run after a restart is `r1` again and its workspace directory is /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 \u2014 the very directory the killed daemon's run r1 was using. `materialize_workspaces` copies the base image onto that path with `std::fs::copy`, which truncates the existing copy in place, so the previous instance's retained volume (sha256 05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285) is replaced (sha256 a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031) and its /workspace/notes.txt marker is gone. The block slice's contract that a run's copies stay after the run (they hold the agent's work) therefore holds only within one daemon lifetime: restarting on the same --uds-dir destroys the retained volumes of the runs whose ids the new daemon re-issues. Both behaviours are deliberate on their own (run ids are per-daemon; copies are kept), which is the conflict this cell records.",
-      "observed": "run r1 at /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1 overwrote /tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
-      "expected": "the retained copy of a finished/killed run keeps its bytes across a daemon restart (or the new run is given a path that cannot collide with one)",
-      "reproducer": "noded --workspace IMG --uds-dir D; POST {n:1,beats:40}; console `wspace TOKEN`; `sync`; SIGTERM noded; noded --workspace IMG --uds-dir D; POST {n:1} -> the new run is r1 and D/run-r1/workspace-0.ext4 no longer contains TOKEN",
-      "suspected_component": "crates/noded/src/registry.rs (reserve_run_id / boot_run run-dir path) + crates/vmm/src/spawner.rs (materialize_workspaces copies in place)",
-      "artifacts": {
-        "uds_dir": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds",
-        "copy": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-a-uds/run-r1/workspace-0.ext4",
-        "before_sha256": "05a3e86874eb74e64d7ed822e4d54eb0caf14ee70a38c478b54c6f4c18cf7285",
-        "after_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031",
-        "noded_log": "/tmp/apz-acceptance-server-f67i2kr0/budgets-workspace-restore-b-logs/noded.log"
-      }
     }
   ]
 }

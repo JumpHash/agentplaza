@@ -1,0 +1,11 @@
+vsockd: status on http://127.0.0.1:39395 (GET /status, GET /healthz, read-only)
+vsockd: listening on /tmp/apz-all-final/fleet-proxy-uds/vm56_5000 for guest CID 56
+vsockd: accepted a connection from cid 56
+[guest 56 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 56, "role": "architect", "keepalive": true}
+vsockd: guest 56 vm 0 says hello (accepted on the socket for cid 56)
+vsockd: agent 56 role architect connected
+[<-] guest 56 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"architect","keepalive":true}
+[guest 56 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 56 heartbeat 1
+vsockd: session with cid 56 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners
