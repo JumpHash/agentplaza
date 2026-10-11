@@ -1,17 +1,20 @@
 //! The council's HTTP API, exercised over a real socket on an ephemeral port:
 //! the motions board, the propose and vote rules a body can reach without a
-//! live agent, and the seat matrix the doctrine pins against the fleet's own
-//! roles manifest.
+//! live agent, the owner's decision surface, and the seat matrix the doctrine
+//! pins against the fleet's own roles manifest.
 //!
 //! The daemon here boots no VMs, so no agent is connected: what the refusals at
 //! this surface prove is the ones that come *first* — a body outside the
-//! contract (400), a proposer the register does not show (409). What needs a
-//! connected agent — the accepted propose, the seat rule (403), the count, the
-//! re-vote that replaces, the `motion` frames — is covered by the council's own
-//! unit tests (`crates/noded/src/council.rs`, where a `ConnectedAgent` is built
-//! directly, exactly as the claim and the bid rules are) and by the gated live
-//! test in this file, which stands up a real five-role seat fleet over this same
-//! HTTP surface.
+//! contract (400), a proposer the register does not show (409), and a decide
+//! body outside its own contract (400) or naming no motion (404), which the
+//! **owner** reaches with no agent at all (the owner is the operator, not an
+//! agent). What needs a connected agent — the accepted propose, the seat rule
+//! (403), the count, the re-vote that replaces, the `motion` frames — is covered
+//! by the council's own unit tests (`crates/noded/src/council.rs`, where a
+//! `ConnectedAgent` is built directly, exactly as the claim and the bid rules
+//! are) and by the gated live test in this file, which stands up a real
+//! five-role seat fleet over this same HTTP surface and drives the owner's
+//! decision through it.
 
 mod common;
 
@@ -339,12 +342,78 @@ fn unknown_motions_are_404_and_wrong_methods_are_405() {
         assert_eq!(reply.status, 405, "{method}: {}", reply.body);
         let reply = request(port, method, "/api/v0/motions/m1/vote", None);
         assert_eq!(reply.status, 405, "{method}: {}", reply.body);
+        let reply = request(port, method, "/api/v0/motions/m1/decide", None);
+        assert_eq!(reply.status, 405, "{method}: {}", reply.body);
     }
+}
+
+/// The owner's decision surface: the body's own contract (400), the store's
+/// refusals that need no motion (404), and the method (405) — everything the
+/// decide endpoint can answer without a live gated motion. **The owner is the
+/// operator**: the body names no agent CID, so no register check stands between
+/// a well-formed body and the council's own rules — a body outside the contract
+/// is a 400, and a motion the daemon does not hold is a 404, both reached with
+/// no agent connected.
+#[test]
+fn a_decide_request_is_the_owners_and_is_checked_at_the_edge() {
+    let server = common::start(console_dir("decide"));
+    let port = server.port();
+
+    // `approve` is required and typed: absent or non-boolean never deserializes.
+    for body in [
+        r#"{}"#,
+        r#"{"note":"a note"}"#,
+        r#"{"approve":"yes"}"#,
+        r#"{"approve":1}"#,
+        "not json at all",
+        "",
+    ] {
+        let reply = request(port, "POST", "/api/v0/motions/m1/decide", Some(body));
+        assert_eq!(reply.status, 400, "{body}: {}", reply.body);
+        assert!(reply.json()["error"].is_string(), "{body}: {}", reply.body);
+    }
+
+    // The note is optional but capped, and blank is refused in the shared rule's
+    // words.
+    let blank = request(
+        port,
+        "POST",
+        "/api/v0/motions/m1/decide",
+        Some(r#"{"approve":true,"note":"   "}"#),
+    );
+    assert_eq!(blank.status, 400, "{}", blank.body);
+    assert_eq!(blank.json()["error"], "note must not be empty");
+    let long = "x".repeat(1001);
+    let over = request(
+        port,
+        "POST",
+        "/api/v0/motions/m1/decide",
+        Some(&format!(r#"{{"approve":true,"note":"{long}"}}"#)),
+    );
+    assert_eq!(over.status, 400, "{}", over.body);
+    assert_eq!(over.json()["error"], "note must be at most 1000 bytes");
+
+    // A well-formed body reaches the council: no motion with that id is a 404,
+    // not a register refusal (there are no agents at this surface at all).
+    let reply = request(
+        port,
+        "POST",
+        "/api/v0/motions/m7/decide",
+        Some(r#"{"approve":true}"#),
+    );
+    assert_eq!(reply.status, 404, "{}", reply.body);
+    assert_eq!(reply.json()["error"], "no motion with id m7");
+
+    // Nothing was recorded by any of those refusals.
+    assert_eq!(board(port)["total"], 0);
 }
 
 /// The council live: a real five-role fleet — the four seats and one agent that
 /// holds no seat — proposed to, voted on and counted over the real HTTP API,
-/// with the `motion` frames its events stream carries while it happens.
+/// with the `motion` frames its events stream carries while it happens, and the
+/// **owner's decision** driven through the same surface (a tie ratified, a gated
+/// law vetoed, the council's own carried majority refused, a second decision
+/// refused).
 ///
 /// Gated on `APZ_NODED_SMOKE=1`, like `smoke.rs`: it needs a hypervisor and the
 /// guest images.
@@ -618,9 +687,83 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
         gated.json()["needs_owner"]
     );
 
+    // A priority the council's majority decides and carries 4-0: the owner is
+    // not the decider of it — a majority is not theirs to re-decide.
+    let plain = request(
+        port,
+        "POST",
+        "/api/v0/motions",
+        Some(&format!(
+            r#"{{"proposer_cid":{incident},"kind":"priority","text":"an ordinary priority"}}"#
+        )),
+    );
+    assert_eq!(plain.status, 201, "{}", plain.body);
+    assert_eq!(plain.json()["id"], "m4");
+    for (cid, reason) in [
+        (finance, "affordable"),
+        (counsel, "lawful"),
+        (incident, "operationally fine"),
+        (mayor_office, "the towns agree"),
+    ] {
+        vote("m4", cid, "yes", reason);
+    }
+    let carried = request(port, "GET", "/api/v0/motions/m4", None);
+    assert_eq!(carried.status, 200, "{}", carried.body);
+    assert_eq!(carried.json()["state"], "carried", "{}", carried.body);
+
+    // **The owner's decision, over this same HTTP surface.** The owner is the
+    // operator: the body carries no agent CID, and no agent holds their hand.
+    let decide = |id: &str, approve: bool, note: Option<&str>| {
+        let body = match note {
+            Some(note) => format!(r#"{{"approve":{approve},"note":"{note}"}}"#),
+            None => format!(r#"{{"approve":{approve}}}"#),
+        };
+        let reply = request(port, "POST", &format!("/api/v0/motions/{id}/decide"), Some(&body));
+        (reply.status, reply.json())
+    };
+
+    // The 2-2 tie (m1) is ratified, with a note and a stamp.
+    let (status, view) = decide("m1", true, Some("the owner carries it"));
+    assert_eq!(status, 200, "{view}");
+    assert_eq!(view["state"], "ratified", "{view}");
+    assert_eq!(view["owner"]["approve"], true, "{view}");
+    assert_eq!(view["owner"]["note"], "the owner carries it", "{view}");
+    assert!(view["owner"]["at"].is_u64(), "the stamp: {view}");
+    eprintln!("smoke: the owner ratified the tied m1: state {}", view["state"]);
+
+    // The gated law (m2, awaiting_owner) is vetoed.
+    let (status, view) = decide("m2", false, None);
+    assert_eq!(status, 200, "{view}");
+    assert_eq!(view["state"], "vetoed", "{view}");
+    assert_eq!(view["owner"]["approve"], false, "{view}");
+    assert!(view["owner"]["note"].is_null(), "an absent note: {view}");
+    eprintln!("smoke: the owner vetoed the gated m2: state {}", view["state"]);
+
+    // The council's own carried majority (m4) is refused: the council's own
+    // decision stands.
+    let (status, view) = decide("m4", true, None);
+    assert_eq!(status, 409, "{view}");
+    assert_eq!(
+        view["error"],
+        "motion m4 is carried: the owner decides only a tie_to_owner or awaiting_owner motion \
+         — the council's own decision stands",
+        "{view}"
+    );
+    eprintln!("smoke: the council's carried m4 was refused: {}", view["error"]);
+
+    // And a second decision is refused: the owner decides a motion once.
+    let (status, view) = decide("m1", false, None);
+    assert_eq!(status, 409, "{view}");
+    assert_eq!(
+        view["error"],
+        "motion m1 is already decided (ratified): the owner decides a motion once",
+        "{view}"
+    );
+    eprintln!("smoke: a second decision on m1 was refused: {}", view["error"]);
+
     // The motions board is newest first and carries the whole session.
     let listed = board(port);
-    assert_eq!(listed["total"], 3, "{listed}");
+    assert_eq!(listed["total"], 4, "{listed}");
     assert_eq!(listed["truncated"], false);
     let ids: Vec<&str> = listed["motions"]
         .as_array()
@@ -628,7 +771,7 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
         .iter()
         .map(|motion| motion["id"].as_str().expect("an id"))
         .collect();
-    assert_eq!(ids, vec!["m3", "m2", "m1"], "newest first");
+    assert_eq!(ids, vec!["m4", "m3", "m2", "m1"], "newest first");
 
     // And the stream carried the `motion` frames: one on propose, one per vote,
     // carrying the id, the kind and the state — and no text.
@@ -654,8 +797,12 @@ fn the_council_decides_a_motion_with_a_seated_fleet() {
     assert!(frames.contains("\"state\":\"tie_to_owner\""), "{frames}");
     assert!(frames.contains("\"id\":\"m2\",\"kind\":\"law_proposal\",\"state\":\"awaiting_owner\""), "{frames}");
     assert!(frames.contains("\"id\":\"m3\",\"kind\":\"budget_move\""), "{frames}");
+    // The owner's decision fires the same frame, carrying the new state word:
+    // no new frame kind, and still no text.
+    assert!(frames.contains("\"id\":\"m1\",\"kind\":\"priority\",\"state\":\"ratified\""), "{frames}");
+    assert!(frames.contains("\"id\":\"m2\",\"kind\":\"law_proposal\",\"state\":\"vetoed\""), "{frames}");
     assert!(
-        !frames.contains("observability pass"),
+        !frames.contains("observability pass") && !frames.contains("the owner carries it"),
         "a motion frame carries no text:\n{frames}"
     );
     eprintln!(

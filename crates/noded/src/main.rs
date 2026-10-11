@@ -75,7 +75,8 @@ GET/DELETE /api/v0/tasks/{id}, POST /api/v0/tasks/{id}/claim,
 /api/v0/tasks/{id}/award and /api/v0/tasks/{id}/artifact,
 GET /api/v0/treasury and /api/v0/treasury/journal, GET /api/v0/agora,
 POST /api/v0/agents/{cid}/tell, GET/POST /api/v0/motions,
-GET /api/v0/motions/{id}, POST /api/v0/motions/{id}/vote, GET /api/v0/hub[/healthz]
+GET /api/v0/motions/{id}, POST /api/v0/motions/{id}/vote,
+POST /api/v0/motions/{id}/decide (the owner's), GET /api/v0/hub[/healthz]
 and the web app's files from apps/web.";
 
 fn main() -> ExitCode {

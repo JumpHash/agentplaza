@@ -43,6 +43,7 @@
 //! * `POST   /api/v0/motions`          - propose a motion as a seated connected agent
 //! * `GET    /api/v0/motions/{id}`     - one motion
 //! * `POST   /api/v0/motions/{id}/vote`- a seated connected agent votes on an open motion
+//! * `POST   /api/v0/motions/{id}/decide`- the owner (the operator: no agent CID) ratifies or vetoes a gated motion
 //! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
 //! * `POST   /api/v0/agents/{cid}/stop`- end one connected agent's session (the hub's own stop view, verbatim)
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
@@ -84,7 +85,10 @@ use serde::{Deserialize, Serialize};
 use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
 
 use crate::agora::Agora;
-use crate::council::{CheckedProposal, CheckedVote, Council, ProposeRequest, VoteRequest};
+use crate::council::{
+    CheckedDecision, CheckedProposal, CheckedVote, Council, DecideRequest, ProposeRequest,
+    VoteRequest,
+};
 use crate::http::Response;
 use crate::hub::{HubAdmin, HubStatus, StopOutcome, TellOutcome};
 use crate::registry::{ConnectedAgent, CreateRun, Detail, Registry, VmImages};
@@ -1399,10 +1403,49 @@ fn motion_vote(node: &Node, id: &str, body: &[u8]) -> Response {
     }
 }
 
+/// `POST /api/v0/motions/{id}/decide`: the **owner** decides a motion the count
+/// gated to them.
+///
+/// **The owner is the operator, not an agent.** This body names no agent CID
+/// and none is looked up: the operator holds no seat, has no role and is not on
+/// the register, so the seat checks that gate the propose and the vote do not
+/// apply here — the operator's act *is* the owner's, the same modelling choice
+/// the agora's award makes for the employer that drives it. What the owner may
+/// decide is the council's rule ([`Council::decide`]): a motion in an
+/// owner-gated state (`tie_to_owner`, the 2–2 escalation; `awaiting_owner`, a
+/// carry above the 0067 thresholds) takes the decision — `approve` true is
+/// `ratified`, false is `vetoed` — and the optional `note` (≤ its cap) is
+/// recorded with the stamp. A motion in any other state (`open`, `carried`,
+/// `rejected`) is refused with the state named and the council's own decision
+/// left standing, and a motion already decided is refused too: the owner
+/// decides once.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the decision is recorded: the motion, `owner` set and `state` `ratified` / `vetoed` |
+/// | 400 | the body is outside this endpoint's contract (`approve` absent or non-boolean, an empty or over-long note) |
+/// | 404 | no motion with that id |
+/// | 405 | any method but `POST` |
+/// | 409 | the motion is not owner-gated, or is already decided (the state is named) |
+fn motion_decide(node: &Node, id: &str, body: &[u8]) -> Response {
+    let request: DecideRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid decide request: {err}")),
+    };
+    let decision: CheckedDecision = match request.checked() {
+        Ok(decision) => decision,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    match node.council().decide(id, decision) {
+        Ok(motion) => json_response(200, &motion),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+    }
+}
+
 /// Routes a request under `/api/v0/motions/`.
 ///
-/// Two surfaces, each named by the segment after the motion's id: the vote
-/// (`/vote`), and the motion itself.
+/// Three surfaces, each named by the segment after the motion's id: the vote
+/// (`/vote`), the owner's decision (`/decide`), and the motion itself.
 fn motion_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
     if let Some(id) = rest.strip_suffix("/vote") {
         if id.is_empty() || id.contains('/') {
@@ -1415,6 +1458,17 @@ fn motion_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response
             return method_not_allowed("POST");
         }
         return motion_vote(node, id, request.body());
+    }
+    if let Some(id) = rest.strip_suffix("/decide") {
+        if id.is_empty() || id.contains('/') {
+            return no_such_endpoint();
+        }
+        // The owner's decision is a POST, for the vote's reason: it changes the
+        // record and must not be advertised as safe to replay.
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return motion_decide(node, id, request.body());
     }
     if rest.is_empty() || rest.contains('/') {
         return no_such_endpoint();

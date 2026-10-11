@@ -63,10 +63,10 @@
 //! Voting on a motion that is no longer `open` is refused with the state named
 //! (a 409).
 //!
-//! # The count (0034)
+//! # The count (0034), and the owner's decision
 //!
-//! The state is a function of the tally and the gate, in one table
-//! ([`state_of`]):
+//! The count's state is a function of the tally and the gate, in one table
+//! ([`state_of`]); the owner's decision, once made, is the state:
 //!
 //! | state | when |
 //! |---|---|
@@ -75,12 +75,37 @@
 //! | `rejected` | a majority of no |
 //! | `tie_to_owner` | an equal split (the doctrine's 2–2) — the owner decides |
 //! | `awaiting_owner` | carried, but `needs_owner` — the decision waits for ratification |
+//! | `ratified` | the owner approved a motion the count gated to them |
+//! | `vetoed` | the owner refused a motion the count gated to them |
 //!
 //! `abstain` counts toward the four seats having voted and never toward the
 //! majority. The doctrine names the tie `2–2`; an equal yes/no split with
 //! abstentions (say 1–1 with two abstentions) is the same no-majority and the
 //! same escalation, which is how this daemon reads it. [`TallyView`] carries
 //! `{yes, no, abstain, voted, seats}`.
+//!
+//! # The owner's decision
+//!
+//! `POST /api/v0/motions/{id}/decide {approve, note?}` is the owner's hand
+//! ([`Council::decide`]). **The owner is the operator, not an agent**: the
+//! request names no agent CID and none is looked up — the owner has no seat,
+//! no role and no session, so the seat checks that gate proposing and voting do
+//! not apply to them. That is the same modelling choice the agora's award makes
+//! for the operator (the caller that knows is the employer, not a connected
+//! agent): the operator's act *is* the owner's, recorded as it.
+//!
+//! The owner decides a motion **once**, and only one the count gated to them
+//! ([`State::owner_decides`]: `tie_to_owner` and `awaiting_owner`). A motion in
+//! any other state — `open` (the council has not decided), `carried` or
+//! `rejected` (the council has, and a majority is not the owner's to re-decide)
+//! — is refused with the state named and the council's own decision left
+//! standing (a 409); a motion already decided by the owner is refused too (a
+//! 409, decided once). A gated motion takes the decision: `approve` true is
+//! `ratified`, false is `vetoed`, and the optional `note` (≤
+//! [`MAX_DECISION_NOTE`] bytes; absent, or present and non-empty) is recorded
+//! with the stamp in [`OwnerDecisionView`] — the `owner` field every view
+//! carries, `null` until the owner acts and a Column-style optional thereafter:
+//! `null` reads as "the owner has not decided", never as a decision.
 //!
 //! # Bounds (each stated, none silent)
 //!
@@ -89,6 +114,7 @@
 //! | motions the council holds | [`MAX_MOTIONS`] (256) — a fresh motion past it is refused, 409 |
 //! | a motion's `text` | [`MAX_MOTION_TEXT`] (4000 bytes, the schema's `maxLength`) — 400 |
 //! | a vote's `reason` | [`MAX_REASON`] (2000 bytes) — 400 |
+//! | an owner's decision `note` | [`MAX_DECISION_NOTE`] (1000 bytes) — 400 |
 //! | a motions response | [`MOTIONS_LIMIT`] (256) newest motions, `truncated` says so |
 //!
 //! # What v0 narrows (stated, not hidden)
@@ -97,11 +123,10 @@
 //!   and the social layer, the motions live in memory and are lost with the
 //!   daemon; the schema's tables are a later slice. The views are derived from
 //!   that store, never a second copy of a fact held elsewhere.
-//! * **No quorum or session windows, no deadlines, no owner ratification
-//!   surface, no per-case grants (0079) and no law signing (0049).** Any seat
-//!   may vote while a motion is `open`, and `awaiting_owner` says what the
-//!   motion waits for rather than pretending the owner acted. Each is its own
-//!   slice, exactly as the contract states.
+//! * **No quorum or session windows, no deadlines, no per-case grants (0079)
+//!   and no law signing (0049).** Any seat may vote while a motion is `open`.
+//!   The owner's decision is here ([`Council::decide`]); grants and law signing
+//!   are each their own slice, exactly as the contract states.
 //! * **The drivers are not here.** The dispatcher's driving of votes for the
 //!   seats is `dispatchd`'s, the way the social pass is: this module is the
 //!   state and the view the drivers act on.
@@ -112,7 +137,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::registry::{now_ms, ConnectedAgent};
-use crate::tasks::required_text;
+use crate::tasks::{optional_text, required_text};
 
 /// The seat the head of **Finance** holds (S-008 / 0034).
 pub const FINANCE: &str = "finance";
@@ -182,6 +207,11 @@ pub const MAX_MOTION_TEXT: usize = 4000;
 
 /// The most a vote's `reason` may occupy, in bytes.
 pub const MAX_REASON: usize = 2000;
+
+/// The most an owner's decision `note` may occupy, in bytes. The note is
+/// optional, but when it is there it is held to the same "not blank" rule as a
+/// motion's `text` and a vote's `reason` — a bare note is no note.
+pub const MAX_DECISION_NOTE: usize = 1000;
 
 /// The threshold a `budget_move` is owner-gated at, as a percentage of the
 /// minted budget total (0067: "budget moves over 10% of a town's monthly
@@ -274,6 +304,10 @@ pub enum State {
     TieToOwner,
     /// Carried, but `needs_owner`: the decision waits for ratification.
     AwaitingOwner,
+    /// The owner approved a motion the count gated to them.
+    Ratified,
+    /// The owner refused a motion the count gated to them.
+    Vetoed,
 }
 
 impl State {
@@ -285,7 +319,18 @@ impl State {
             State::Rejected => "rejected",
             State::TieToOwner => "tie_to_owner",
             State::AwaitingOwner => "awaiting_owner",
+            State::Ratified => "ratified",
+            State::Vetoed => "vetoed",
         }
+    }
+
+    /// Whether a motion in this state is the owner's to decide: the two the
+    /// count gates to them — the 2–2 tie ([`State::TieToOwner`]) and a carry
+    /// above the 0067 thresholds ([`State::AwaitingOwner`]). Every other state
+    /// is the council's own (a decided motion is not re-decided; a majority is
+    /// not routed around).
+    pub fn owner_decides(self) -> bool {
+        matches!(self, State::TieToOwner | State::AwaitingOwner)
     }
 }
 
@@ -298,7 +343,8 @@ impl State {
 /// nothing the daemon holds ([`Unknown`](CouncilError::Unknown), a 404). A
 /// request outside the endpoint's contract is a 400 before this code runs, from
 /// the request's own checks ([`ProposeRequest::checked`],
-/// [`VoteRequest::checked`]), exactly as the board's and the ledger's are. The
+/// [`VoteRequest::checked`], [`DecideRequest::checked`]), exactly as the
+/// board's and the ledger's are. The
 /// message is written where the rule lives, so a refusal names the rule it
 /// broke rather than a code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,6 +497,55 @@ impl VoteRequest {
     }
 }
 
+/// The `POST /api/v0/motions/{id}/decide` body: the owner's decision.
+///
+/// **The owner is the operator, not an agent**, so this body names no agent
+/// CID and none is looked up: the operator is not on the register, holds no
+/// seat and has no session, and the seat checks that gate proposing and voting
+/// do not apply to them. That is the agora's modelling choice for the operator
+/// ([`crate::agora`]'s award takes the employer from the caller that knows it,
+/// not from a connected agent): the operator's act *is* the owner's.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DecideRequest {
+    /// Whether the owner approves the motion: `true` ratifies it (`ratified`),
+    /// `false` vetoes it (`vetoed`). Required, and never defaulted — an
+    /// absent or non-boolean `approve` is outside this endpoint's contract.
+    pub approve: bool,
+    /// Why the owner decided as they did. Optional; absent is `null`
+    /// ([`OwnerDecisionView`]), and when present it must be non-empty and at
+    /// most [`MAX_DECISION_NOTE`] bytes.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// An owner's decision, checked (the note held to its cap).
+///
+/// Built only by [`DecideRequest::checked`], so the note's cap holds for every
+/// decision the council takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedDecision {
+    /// Whether the owner approved the motion.
+    pub approve: bool,
+    /// The owner's note, held to [`MAX_DECISION_NOTE`] bytes, or `None`.
+    pub note: Option<String>,
+}
+
+impl DecideRequest {
+    /// Checks the request against the owner's decision caps, or says why the
+    /// request is outside the endpoint's contract.
+    ///
+    /// `approve` is typed — an absent or non-boolean field never deserializes,
+    /// so this is the 400 the endpoint's own contract raises before the store
+    /// is reached. The note is optional; when present it is held to the same
+    /// non-blank rule a vote's `reason` and a motion's `text` are.
+    pub fn checked(&self) -> Result<CheckedDecision, String> {
+        Ok(CheckedDecision {
+            approve: self.approve,
+            note: optional_text("note", &self.note, MAX_DECISION_NOTE)?,
+        })
+    }
+}
+
 /// Whether a motion of `kind`, naming `amount`, is owner-gated per 0067 against
 /// a minted budget total of `minted_total`.
 ///
@@ -530,6 +625,24 @@ pub struct TallyView {
     pub seats: usize,
 }
 
+/// An owner's decision as the API reports it: whether the owner approved the
+/// motion, the note they left (or `null`), and when.
+///
+/// **The owner is the operator**, so this names no agent: it is the record of
+/// the operator's act, the way an [`crate::agora::AwardView`] records the
+/// employer's. The stamp is the moment the decision was taken, in milliseconds
+/// since the Unix epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OwnerDecisionView {
+    /// Whether the owner approved the motion (`true` → `ratified`, `false` →
+    /// `vetoed`).
+    pub approve: bool,
+    /// The owner's note, or `null` when they left none.
+    pub note: Option<String>,
+    /// When the owner decided, in milliseconds since the Unix epoch.
+    pub at: u64,
+}
+
 /// One motion as the API reports it: the contract's schema, as this daemon
 /// stores it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -557,6 +670,12 @@ pub struct MotionView {
     pub votes: Vec<VoteView>,
     /// The tally.
     pub tally: TallyView,
+    /// The owner's decision, or `null` until the owner makes one. This is a
+    /// **Column-style optional** (like the desktop client's `Column<T>`): the
+    /// key is always present and reads `null` for "the owner has not decided",
+    /// so a caller that distinguishes absent from null is never misled, and a
+    /// decided motion carries `{approve, note|null, at}`.
+    pub owner: Option<OwnerDecisionView>,
     /// When the motion was proposed, in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// When the motion last changed (its proposal, or its latest vote), in
@@ -588,8 +707,18 @@ struct Cast {
     at: u64,
 }
 
-/// One motion, as the store holds it: the votes keyed by seat, and the gate the
-/// daemon derived when it was proposed.
+/// One owner's decision, as the store holds it: whether the owner approved,
+/// the note they left (or none), and when.
+#[derive(Debug, Clone)]
+struct Decision {
+    approve: bool,
+    note: Option<String>,
+    at: u64,
+}
+
+/// One motion, as the store holds it: the votes keyed by seat, the gate the
+/// daemon derived when it was proposed, and the owner's decision once they made
+/// one.
 #[derive(Debug, Clone)]
 struct Motion {
     id: String,
@@ -602,6 +731,9 @@ struct Motion {
     /// One slot per seat of [`SEATS`]; a re-vote replaces its slot, so a seat
     /// can never be counted twice.
     votes: [Option<Cast>; SEAT_COUNT],
+    /// The owner's decision, or `None` while the owner has not made one. Once
+    /// set it is never changed: the owner decides a motion once.
+    decision: Option<Decision>,
     created_at: u64,
     updated_at: u64,
 }
@@ -628,9 +760,20 @@ impl Motion {
         }
     }
 
-    /// The motion's state, derived from its tally and its gate.
+    /// The motion's state: the owner's decision when they have made one
+    /// ([`State::Ratified`] or [`State::Vetoed`]), else the count's own state
+    /// derived from its tally and its gate.
     fn state(&self) -> State {
-        state_of(self.tally(), self.needs_owner)
+        match &self.decision {
+            Some(decision) => {
+                if decision.approve {
+                    State::Ratified
+                } else {
+                    State::Vetoed
+                }
+            }
+            None => state_of(self.tally(), self.needs_owner),
+        }
     }
 
     /// The motion as the API reports it.
@@ -660,6 +803,11 @@ impl Motion {
             state: self.state().as_str(),
             votes,
             tally: self.tally(),
+            owner: self.decision.as_ref().map(|decision| OwnerDecisionView {
+                approve: decision.approve,
+                note: decision.note.clone(),
+                at: decision.at,
+            }),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -673,6 +821,10 @@ impl Motion {
 /// majority of yes over no carries it — to [`State::AwaitingOwner`] when the
 /// gate says the owner must ratify, else [`State::Carried`] — a majority of no
 /// rejects it, and an equal split is [`State::TieToOwner`]: the owner decides.
+///
+/// [`State::Ratified`] and [`State::Vetoed`] are never produced here: they are
+/// the owner's decision ([`Motion::state`]), which no tally can derive. This
+/// function is the count, and the count alone.
 pub fn state_of(tally: TallyView, needs_owner: bool) -> State {
     if tally.voted < SEAT_COUNT {
         return State::Open;
@@ -784,6 +936,7 @@ impl Council {
             amount: proposal.amount,
             needs_owner: proposal.needs_owner,
             votes: std::array::from_fn(|_| None),
+            decision: None,
             created_at: at,
             updated_at: at,
         };
@@ -828,6 +981,66 @@ impl Council {
             agent_cid: voter.cid,
             vote: cast.vote,
             reason: cast.reason,
+            at,
+        });
+        motion.updated_at = at;
+        let view = motion.view();
+        self.publish(&view);
+        Ok(view)
+    }
+
+    /// Records the **owner's** decision on motion `id`, or refuses it.
+    ///
+    /// **The owner is the operator, not an agent**: this takes no
+    /// [`ConnectedAgent`] and makes no seat check, because the operator holds
+    /// no seat, has no role and is not on the register. The caller (the HTTP
+    /// edge) has already checked the request's own contract
+    /// ([`DecideRequest::checked`]) — `approve` is typed, the note is bounded —
+    /// so what is left is the council's own, in order:
+    ///
+    /// * the motion must exist ([`CouncilError::Unknown`], 404);
+    /// * it must be one the count gated to the owner — [`State::owner_decides`]
+    ///   (`tie_to_owner` or `awaiting_owner`). A motion in any other state is
+    ///   refused with the state named and the council's own decision left
+    ///   standing ([`CouncilError::Conflict`], 409): a majority is not the
+    ///   owner's to re-decide, and an `open` motion has not been decided at
+    ///   all;
+    /// * it must not already carry the owner's decision — the owner decides a
+    ///   motion **once** ([`CouncilError::Conflict`], 409).
+    ///
+    /// A decision the store takes is recorded whole: `approve` true is
+    /// [`State::Ratified`], false is [`State::Vetoed`], and the optional note
+    /// is stored with the stamp. The decision is never changed afterwards and
+    /// no later vote touches it (a decided motion takes no further vote, and
+    /// such a vote is refused before any decision is consulted).
+    pub fn decide(
+        &self,
+        id: &str,
+        decision: CheckedDecision,
+    ) -> Result<MotionView, CouncilError> {
+        let mut inner = self.lock();
+        let Some(index) = inner.motions.iter().position(|motion| motion.id == id) else {
+            return Err(CouncilError::Unknown(format!("no motion with id {id}")));
+        };
+        let at = now_ms();
+        let motion = &mut inner.motions[index];
+        if motion.decision.is_some() {
+            return Err(CouncilError::Conflict(format!(
+                "motion {id} is already decided ({}): the owner decides a motion once",
+                motion.state().as_str()
+            )));
+        }
+        let state = motion.state();
+        if !state.owner_decides() {
+            return Err(CouncilError::Conflict(format!(
+                "motion {id} is {}: the owner decides only a tie_to_owner or awaiting_owner \
+                 motion — the council's own decision stands",
+                state.as_str()
+            )));
+        }
+        motion.decision = Some(Decision {
+            approve: decision.approve,
+            note: decision.note,
             at,
         });
         motion.updated_at = at;
@@ -919,6 +1132,39 @@ mod tests {
             vote: word,
             reason: reason.to_string(),
         }
+    }
+
+    /// The CID the seat at `seat` acts through: the cast the existing tests
+    /// use, in [`SEATS`] order.
+    const SEAT_CIDS: [u64; SEAT_COUNT] = [100, 103, 102, 104];
+
+    /// Casts one vote per seat, in seat order, and answers the final view — the
+    /// shortest way a test reaches a counted motion.
+    fn vote_all(council: &Council, id: &str, words: [Vote; SEAT_COUNT]) -> MotionView {
+        let mut view = council.motion(id).expect("the motion");
+        for (seat, word) in words.iter().enumerate() {
+            view = council
+                .vote(
+                    id,
+                    &agent(SEAT_CIDS[seat], SEATS[seat]),
+                    CheckedVote {
+                        vote: *word,
+                        reason: format!("the {} seat's reason", SEATS[seat]),
+                    },
+                )
+                .expect("a vote");
+        }
+        view
+    }
+
+    /// The owner's decision a test varies, checked.
+    fn decision(approve: bool, note: Option<&str>) -> CheckedDecision {
+        DecideRequest {
+            approve,
+            note: note.map(String::from),
+        }
+        .checked()
+        .expect("a decision inside the contract")
     }
 
     #[test]
@@ -1408,5 +1654,307 @@ mod tests {
             format!("the council holds its cap of {MAX_MOTIONS} motions")
         );
         assert_eq!(council.motions(MOTIONS_LIMIT).total, MAX_MOTIONS);
+    }
+
+    #[test]
+    fn the_owner_decides_the_gated_states_and_ratifies_or_vetoes() {
+        let (council, _notes) = lab();
+
+        // A 2-2 tie escalates to the owner; their `approve` ratifies it.
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        let tied = vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        assert_eq!(tied.state, "tie_to_owner");
+        assert_eq!(tied.owner, None, "the owner has not decided");
+        let ratified = council
+            .decide("m1", decision(true, Some("carry it")))
+            .expect("the owner decides");
+        assert_eq!(ratified.state, "ratified");
+        let owner = ratified.owner.clone().expect("the recorded decision");
+        assert!(owner.approve);
+        assert_eq!(owner.note.as_deref(), Some("carry it"));
+        assert!(owner.at >= ratified.created_at, "the stamp is the decision's own moment");
+        assert_eq!(ratified.tally, tied.tally, "the decision touches no tally");
+        assert_eq!(ratified.votes, tied.votes, "and no vote");
+        assert!(ratified.updated_at >= tied.updated_at);
+
+        // A second tie, vetoed.
+        propose(&council, 100, FINANCE, Kind::Priority, "another agenda", 0);
+        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::No, Vote::Yes]);
+        let vetoed = council
+            .decide("m2", decision(false, None))
+            .expect("the owner decides");
+        assert_eq!(vetoed.state, "vetoed");
+        let owner = vetoed.owner.clone().expect("the recorded decision");
+        assert!(!owner.approve);
+        assert_eq!(owner.note, None, "an absent note is null");
+
+        // A gated carry (`awaiting_owner`) is the owner's too: both ways.
+        propose(&council, 100, FINANCE, Kind::LawProposal, "a new law", 0);
+        let waited = vote_all(&council, "m3", [Vote::Yes, Vote::Yes, Vote::Yes, Vote::No]);
+        assert_eq!(waited.state, "awaiting_owner");
+        assert!(waited.needs_owner);
+        let ratified = council
+            .decide("m3", decision(true, None))
+            .expect("the owner ratifies");
+        assert_eq!(ratified.state, "ratified");
+        assert!(ratified.owner.as_ref().expect("the decision").approve);
+
+        propose(&council, 100, FINANCE, Kind::LawProposal, "another law", 0);
+        vote_all(&council, "m4", [Vote::Yes, Vote::Yes, Vote::No, Vote::Yes]);
+        let vetoed = council
+            .decide("m4", decision(false, Some("not yet")))
+            .expect("the owner vetoes");
+        assert_eq!(vetoed.state, "vetoed");
+        assert_eq!(
+            vetoed.owner.as_ref().expect("the decision").note.as_deref(),
+            Some("not yet")
+        );
+    }
+
+    #[test]
+    fn the_owner_decides_only_a_gated_motion() {
+        let (council, _notes) = lab();
+
+        // `open`: the council has not decided — nothing for the owner to take.
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        let refused = council.decide("m1", decision(true, None)).unwrap_err();
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "motion m1 is open: the owner decides only a tie_to_owner or awaiting_owner motion — \
+             the council's own decision stands"
+        );
+
+        // `carried`: the council's majority decided it; a majority is not the
+        // owner's to re-decide.
+        vote_all(&council, "m1", [Vote::Yes, Vote::Yes, Vote::Yes, Vote::No]);
+        let carried = council.motion("m1").expect("the motion");
+        assert_eq!(carried.state, "carried");
+        let refused = council.decide("m1", decision(true, None)).unwrap_err();
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "motion m1 is carried: the owner decides only a tie_to_owner or awaiting_owner motion \
+             — the council's own decision stands"
+        );
+
+        // `rejected`: the same, the other way.
+        propose(&council, 100, FINANCE, Kind::Priority, "a second agenda", 0);
+        vote_all(&council, "m2", [Vote::No, Vote::No, Vote::Yes, Vote::No]);
+        assert_eq!(council.motion("m2").expect("the motion").state, "rejected");
+        let refused = council.decide("m2", decision(false, None)).unwrap_err();
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "motion m2 is rejected: the owner decides only a tie_to_owner or awaiting_owner motion \
+             — the council's own decision stands"
+        );
+
+        // Nothing the owner was refused recorded a decision.
+        assert_eq!(council.motion("m1").expect("the motion").owner, None);
+        assert_eq!(council.motion("m2").expect("the motion").owner, None);
+
+        // An unknown id names nothing.
+        let unknown = council.decide("m9", decision(true, None)).unwrap_err();
+        assert_eq!(unknown.status(), 404);
+        assert_eq!(unknown.to_string(), "no motion with id m9");
+    }
+
+    #[test]
+    fn the_owner_decides_a_motion_once() {
+        let (council, _notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        council
+            .decide("m1", decision(true, Some("carry it")))
+            .expect("the owner decides");
+
+        // A second decision is refused, and the first stands untouched.
+        let refused = council.decide("m1", decision(false, Some("changed my mind"))).unwrap_err();
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "motion m1 is already decided (ratified): the owner decides a motion once"
+        );
+        let after = council.motion("m1").expect("the motion");
+        assert_eq!(after.state, "ratified");
+        let owner = after.owner.expect("the first decision stands");
+        assert!(owner.approve);
+        assert_eq!(owner.note.as_deref(), Some("carry it"));
+    }
+
+    #[test]
+    fn a_decided_motion_takes_no_further_vote() {
+        let (council, _notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        council
+            .decide("m1", decision(false, None))
+            .expect("the owner vetoes");
+
+        // The vote path's guard now reads `vetoed`: a decided motion takes no
+        // further vote, the state named.
+        let refused = council
+            .vote(
+                "m1",
+                &agent(100, FINANCE),
+                CheckedVote {
+                    vote: Vote::Yes,
+                    reason: "again".to_string(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "motion m1 is vetoed, not open: a decided motion takes no further vote"
+        );
+        let after = council.motion("m1").expect("the motion");
+        assert_eq!(after.state, "vetoed");
+        assert_eq!(after.tally.voted, SEAT_COUNT, "the tally is untouched");
+    }
+
+    #[test]
+    fn a_decide_body_needs_a_boolean_approve_and_a_bounded_note() {
+        // `approve` is required and typed: absent, non-boolean and wrong-typed
+        // never deserialize (the 400's first enforcement point).
+        for body in [
+            r#"{}"#,
+            r#"{"note":"a note"}"#,
+            r#"{"approve":"yes"}"#,
+            r#"{"approve":1}"#,
+            r#"{"approve":null}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<DecideRequest>(body).is_err(),
+                "{body} is outside the contract"
+            );
+        }
+        let bare: DecideRequest = serde_json::from_str(r#"{"approve":true}"#).expect("a bare approve");
+        assert!(bare.approve);
+        assert_eq!(bare.note, None);
+
+        // The note is optional; absent is `null` and inside the contract.
+        assert_eq!(decision(true, None).note, None);
+
+        // Blank is refused in the shared text rule's words.
+        assert_eq!(
+            DecideRequest { approve: false, note: Some("   ".to_string()) }
+                .checked()
+                .unwrap_err(),
+            "note must not be empty"
+        );
+
+        // The cap is the contract's 1000 bytes, pinned as a literal so widening
+        // the constant does not silently re-baseline the test.
+        assert_eq!(MAX_DECISION_NOTE, 1000);
+        let long = "x".repeat(1001);
+        assert_eq!(
+            DecideRequest { approve: true, note: Some(long) }.checked().unwrap_err(),
+            "note must be at most 1000 bytes".to_string()
+        );
+        let at_cap = "y".repeat(1000);
+        let accepted = DecideRequest { approve: true, note: Some(at_cap.clone()) }
+            .checked()
+            .expect("at the cap is inside the contract");
+        assert_eq!(accepted.note.as_deref(), Some(at_cap.as_str()));
+    }
+
+    #[test]
+    fn the_owner_field_is_a_column_style_optional() {
+        let (council, _notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+
+        // The key is always present, and reads `null` until the owner decides —
+        // never absent, so a caller that distinguishes absent from null is not
+        // misled.
+        let before =
+            serde_json::to_value(council.motion("m1").expect("the motion")).expect("a view");
+        assert!(before.get("owner").is_some(), "the owner key is always present: {before}");
+        assert!(before["owner"].is_null(), "and null until decided: {before}");
+
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        assert_eq!(
+            council.motion("m1").expect("the motion").owner,
+            None,
+            "a gated motion the owner has not decided carries no decision"
+        );
+
+        let decided = council
+            .decide("m1", decision(true, Some("carry it")))
+            .expect("the owner decides");
+        let at = decided.owner.as_ref().expect("the decision").at;
+        let after = serde_json::to_value(&decided).expect("a view");
+        assert_eq!(
+            after["owner"],
+            serde_json::json!({"approve": true, "note": "carry it", "at": at}),
+            "{after}"
+        );
+        // An absent note is `null` in the object, not an omitted key.
+        propose(&council, 100, FINANCE, Kind::LawProposal, "a law", 0);
+        vote_all(&council, "m2", [Vote::Yes, Vote::Yes, Vote::Yes, Vote::Yes]);
+        let decided = council
+            .decide("m2", decision(false, None))
+            .expect("the owner vetoes");
+        let after = serde_json::to_value(&decided).expect("a view");
+        assert_eq!(after["state"], "vetoed");
+        assert!(after["owner"].get("note").is_some(), "{after}");
+        assert!(after["owner"]["note"].is_null(), "{after}");
+    }
+
+    #[test]
+    fn the_owners_decision_publishes_the_motion_frame() {
+        let (council, notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        // The propose and vote frames are not what is under test here.
+        while notes.try_recv().is_ok() {}
+
+        council
+            .decide("m1", decision(true, Some("carry it")))
+            .expect("the owner decides");
+        let frame = notes.try_recv().expect("the decision's frame");
+        assert_eq!(
+            frame,
+            Event::Motion {
+                id: "m1".to_string(),
+                kind: "priority",
+                state: "ratified"
+            }
+        );
+        // The existing frame, byte for byte — and no text.
+        assert_eq!(
+            frame.frame(),
+            "event: motion\ndata: {\"id\":\"m1\",\"kind\":\"priority\",\"state\":\"ratified\"}\n\n"
+        );
+        assert!(notes.try_recv().is_err(), "exactly one frame on the decision");
+
+        // A veto publishes the same frame, carrying `vetoed`.
+        propose(&council, 100, FINANCE, Kind::Priority, "another agenda", 0);
+        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::No, Vote::Yes]);
+        while notes.try_recv().is_ok() {}
+        council
+            .decide("m2", decision(false, None))
+            .expect("the owner vetoes");
+        let frame = notes.try_recv().expect("the veto's frame");
+        assert_eq!(
+            frame.frame(),
+            "event: motion\ndata: {\"id\":\"m2\",\"kind\":\"priority\",\"state\":\"vetoed\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn the_decide_refusals_record_nothing() {
+        let (council, notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        while notes.try_recv().is_ok() {}
+
+        // An `open` refusal, an unknown id: neither touches the store nor the bus.
+        assert!(council.decide("m1", decision(true, None)).is_err());
+        assert!(council.decide("m9", decision(true, None)).is_err());
+        assert!(notes.try_recv().is_err(), "a refusal publishes no frame");
+        let after = council.motion("m1").expect("the motion");
+        assert_eq!(after.state, "open");
+        assert_eq!(after.owner, None);
     }
 }
