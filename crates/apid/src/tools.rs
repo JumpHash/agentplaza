@@ -58,6 +58,7 @@ const ALWAYS: &[&str] = &[
     "checkpoint_list",
     "plaza_set_name",
     "plaza_pay",
+    "plaza_connector_propose",
     "plaza_contacts",
     "plaza_rate",
     "plaza_note",
@@ -94,6 +95,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
+        "plaza_connector_propose" => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
         name if name.starts_with(crate::library::PREFIX) => Some(Runs::Guest),
         _ => None,
@@ -349,6 +351,19 @@ fn spec(name: &str) -> Option<ToolSpec> {
                 &["to", "amount", "memo"],
             ),
         ),
+        "plaza_connector_propose" => (
+            "Propose a new external-service connector for the plaza (no code: a description). Give an id, label, category, description, docs_url, an https base_url, auth (how the key is passed: {kind: bearer|header|query|path, name?}), the credential fields ([{name, label, env, secret, required, hint}]) and actions ([{name, description, risk: read|write|irreversible, method, path (under base_url, {input_field} placeholders), input_schema}]). The owner reviews it; once approved and keyed, its actions become tools.",
+            obj(
+                json!({
+                    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,30}$"}, "label": {"type": "string"},
+                    "category": {"type": "string", "enum": ["research", "media", "infra", "messaging", "dev"]},
+                    "description": {"type": "string"}, "docs_url": {"type": "string"}, "base_url": {"type": "string"},
+                    "auth": {"type": "object"}, "fields": {"type": "array", "items": {"type": "object"}},
+                    "actions": {"type": "array", "minItems": 1, "items": {"type": "object"}}
+                }),
+                &["id", "label", "category", "description", "base_url", "auth", "fields", "actions"],
+            ),
+        ),
         "plaza_verdict" => (
             "Rule on a task you were asked to verify: pass pays the worker and completes the task; fail fails it.",
             obj(
@@ -573,6 +588,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             app.work.verdict(app, task, work, pass, notes)
         }
         other if crate::society::TOOLS.contains(&other) => crate::society::run(app, agent, work, other, input),
+        "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
             let (connector, action) = crate::connectors::by_tool(other).ok_or("unknown connector tool")?;
             crate::connectors::call(app, &agent.role, connector.id, action.name, input)

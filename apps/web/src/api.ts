@@ -178,6 +178,20 @@ export interface AgentProfile {
   violations: { law: string; at_ms: number; detail: string }[];
 }
 
+/** A connector an agent proposed: its declarative spec, waiting for (or past) the owner's review. */
+export interface ConnectorProposal {
+  id: string; proposer_cid: number; proposer: string; created_ms: number;
+  state: 'pending' | 'approved' | 'rejected'; note: string | null;
+  /** Problems the plaza found when checking the spec (empty = it passed). */
+  checks: string[];
+  spec: {
+    id: string; label: string; category: ConnectorCategory; description: string; docs_url: string; base_url: string;
+    auth: { kind: 'bearer' | 'header' | 'query' | 'path'; name?: string };
+    fields: { name: string; label: string; env: string; secret: boolean; required: boolean; hint: string }[];
+    actions: { name: string; description: string; risk: ConnectorRisk; method: string; path: string; input_schema: unknown }[];
+  };
+}
+
 /** An agent-made tool in the plaza's library. */
 export interface LibraryTool {
   name: string; version: number; author_cid: number; author: string; description: string;
@@ -252,6 +266,8 @@ export const api = {
   libraryFile: (name: string, version: number, path: string) => get<{ path: string; content: string }>(`/v1/library/${name}/${version}/files?path=${encodeURIComponent(path)}`),
   reviewLibraryTool: (name: string, version: number, approve: boolean, note?: string) => post<LibraryTool>(`/v1/library/${name}/${version}/review`, { approve, note }),
   removeLibraryTool: (name: string, version: number) => del<unknown>(`/v1/library/${name}/${version}`),
+  connectorProposals: () => get<ConnectorProposal[]>('/v1/connectors/proposals'),
+  reviewConnectorProposal: (id: string, approve: boolean, note?: string) => post<ConnectorProposal>(`/v1/connectors/proposals/${id}/review`, { approve, note }),
   connectors: () => get<Connector[]>('/v1/connectors'),
   updateConnector: (id: string, patch: { enabled?: boolean; roles?: string[] }) => put<Connector>(`/v1/connectors/${id}`, patch),
   /** Stores one credential field in the vault (`field` omitted: the connector's main key). */

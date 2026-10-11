@@ -1334,3 +1334,10 @@ pub fn specs_for(app: &App, role: &str) -> Vec<apz_proto::chat::ToolSpec> {
         })
         .collect()
 }
+
+// ---- Connectors proposed by agents ---------------------------------------------------------------
+
+/// `plaza_connector_propose`: an agent proposes a connector (a declarative spec) for the owner's review.
+pub fn propose(_app: &App, _agent: &crate::agents::Agent, _input: &Value) -> Result<String, String> {
+    Err("proposing connectors is not available yet".to_string())
+}
