@@ -3,9 +3,9 @@
 //! Listens on one Unix socket per guest CID (`{uds-dir}/vm{cid}_{port}`, the
 //! path the VMM's vsock muxer dials when its guest connects to CID 2), serves
 //! a session per connection ([`serve`]), keeps the registry of keepalive agents
-//! ([`hub`]), and serves the HTTP surface on loopback ([`http`]). `--roles`
-//! makes the roles manifest the ceiling on the tools `/tell` may drive
-//! ([`roles`]). Runs until `SIGTERM`/`SIGINT`.
+//! ([`hub`]), and serves the HTTP surface on loopback ([`http`]). The agent
+//! loop's v3 lines and hellos go to `apid` ([`apid`]) when `--internal-token-file`
+//! names its token. Runs until `SIGTERM`/`SIGINT`.
 //!
 //! AF_VSOCK's muxer backend is Linux-only; elsewhere the binary refuses to run.
 
@@ -13,11 +13,11 @@
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
+mod apid;
+#[cfg(target_os = "linux")]
 mod http;
 #[cfg(target_os = "linux")]
 mod hub;
-#[cfg(target_os = "linux")]
-mod roles;
 #[cfg(target_os = "linux")]
 mod serve;
 #[cfg(target_os = "linux")]
@@ -115,16 +115,19 @@ impl Drop for SessionGuard {
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--roles MANIFEST]
+usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
+              [--internal-token-file PATH]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock)
   --cids LIST       comma-separated guest CIDs to serve, one listener each (default 3)
   --port P          vsock port each CID's listener answers (default 5000)
   --http-port P     the HTTP surface on 127.0.0.1 (default 19080): GET /v1/status,
                     GET /healthz, POST /v1/agents/{cid}/{send,tell,stop}
-  --roles MANIFEST  drive only the tools each agent's role grants
-                    (docs/agents/initial-roles.json); a manifest that cannot be
-                    read stops the daemon
+  --apid URL        apid's internal surface, http://127.0.0.1:PORT (default
+                    http://127.0.0.1:7700)
+  --internal-token-file PATH
+                    the token apid's internal surface requires (re-read on every
+                    call); without it the v3 agent loop is not forwarded
   -h, --help        print this help
 
 Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
@@ -161,7 +164,8 @@ struct Config {
     cids: Vec<u32>,
     port: u32,
     http_port: u16,
-    roles: Option<PathBuf>,
+    apid: String,
+    internal_token_file: Option<PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
@@ -172,7 +176,8 @@ impl Default for Config {
             cids: vec![3],
             port: DEFAULT_PORT,
             http_port: DEFAULT_HTTP_PORT,
-            roles: None,
+            apid: apid::DEFAULT_APID.to_string(),
+            internal_token_file: None,
         }
     }
 }
@@ -185,7 +190,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         let value = args.next().ok_or_else(|| format!("missing value for {flag}"));
         match flag.as_str() {
             "--uds-dir" => config.uds_dir = PathBuf::from(value?),
-            "--roles" => config.roles = Some(PathBuf::from(value?)),
+            "--apid" => config.apid = value?,
+            "--internal-token-file" => config.internal_token_file = Some(PathBuf::from(value?)),
             "--cids" => {
                 config.cids = value?
                     .split(',')
@@ -217,22 +223,15 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 /// Serves until a signal asks the daemon to stop.
 #[cfg(target_os = "linux")]
 fn run(config: Config) -> Result<(), String> {
-    // The policy is read before anything is bound: a daemon that cannot
-    // enforce the manifest it was given does not serve at all.
-    let roles = config
-        .roles
-        .as_ref()
-        .map(|path| roles::Manifest::load(path))
-        .transpose()
-        .map_err(|err| format!("--roles: {err}"))?
-        .map(Arc::new);
-    if let (Some(path), Some(manifest)) = (&config.roles, &roles) {
-        println!("vsockd: role tool grants enforced from {} ({} roles)", path.display(), manifest.len());
+    // Checked before anything is bound: a daemon with an unusable apid address does not serve.
+    let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone()).map_err(|err| format!("--apid: {err}"))?;
+    if apid.enabled() {
+        println!("vsockd: v3 agent loop forwarded to {}", config.apid);
     }
     sys::install_signal_handlers();
     create_uds_dir(&config.uds_dir)
         .map_err(|err| format!("cannot create the socket directory {}: {err}", config.uds_dir.display()))?;
-    let hub = Arc::new(Hub::new(Arc::new(StdoutLog), roles));
+    let hub = Arc::new(Hub::new(Arc::new(StdoutLog), apid));
     let facts = http::NodeFacts {
         cids: config.cids.clone(),
         port: config.port,
@@ -401,31 +400,31 @@ mod tests {
         assert_eq!(args(&[]).unwrap(), Config::default());
         assert_eq!(Config::default().http_port, 19080);
         let config = args(&[
-            "--uds-dir", "/tmp/x", "--cids", "3,4,5", "--port", "6000", "--http-port", "0", "--roles", "r.json",
+            "--uds-dir", "/tmp/x", "--cids", "3,4,5", "--port", "6000", "--http-port", "0",
+            "--apid", "http://127.0.0.1:9", "--internal-token-file", "t.token",
         ])
         .unwrap();
-        let expected =
-            Config { uds_dir: "/tmp/x".into(), cids: vec![3, 4, 5], port: 6000, http_port: 0, roles: Some("r.json".into()) };
+        let expected = Config {
+            uds_dir: "/tmp/x".into(),
+            cids: vec![3, 4, 5],
+            port: 6000,
+            http_port: 0,
+            apid: "http://127.0.0.1:9".into(),
+            internal_token_file: Some("t.token".into()),
+        };
         assert_eq!(config, expected);
-        for bad in [&["--port"][..], &["--port", "x"], &["--cids", ""], &["--http-port", "70000"], &["--status-port", "1"]] {
+        for bad in [&["--port"][..], &["--port", "x"], &["--cids", ""], &["--http-port", "70000"], &["--roles", "r.json"]] {
             assert!(args(bad).is_err(), "{bad:?}");
         }
     }
 
     #[test]
-    fn a_manifest_that_cannot_be_read_stops_the_daemon_before_it_binds() {
-        let dir = scratch("roles");
-        std::fs::create_dir_all(&dir).unwrap();
-        let never = dir.join("never-created");
-        let manifest = dir.join("roles.json");
-        std::fs::write(&manifest, r#"{"roles": {"builder": {"role": "builder"}}}"#).unwrap();
-        for (roles, expected) in [(dir.join("absent.json"), "--roles: cannot read"), (manifest, "declares no tools")] {
-            let config = Config { uds_dir: never.clone(), roles: Some(roles), http_port: 0, ..Config::default() };
-            let err = run(config).expect_err("a bad manifest stops the daemon");
-            assert!(err.contains(expected), "{err}");
-            assert!(!never.exists(), "nothing was created: {err}");
-        }
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn an_apid_address_that_is_not_loopback_stops_the_daemon_before_it_binds() {
+        let never = scratch("apid").join("never-created");
+        let config = Config { uds_dir: never.clone(), apid: "http://10.0.0.5:7700".into(), http_port: 0, ..Config::default() };
+        let err = run(config).expect_err("a routable apid stops the daemon");
+        assert!(err.starts_with("--apid:") && err.contains("loopback"), "{err}");
+        assert!(!never.exists(), "nothing was created: {err}");
     }
 
     #[test]

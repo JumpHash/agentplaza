@@ -4,8 +4,8 @@
 //! The HTTP surface ([`crate::http`]) reaches a session only through here:
 //! [`Hub::tell`] (one tool call, answered back to the caller), [`Hub::send`]
 //! (one raw host line) and [`Hub::stop`] (waits for the session to end). Tool
-//! calls pass [`Hub::admit`] first, the roles manifest's ceiling. Locks guard
-//! only the maps, and log lines are written after they are released.
+//! carries apid's client ([`Hub::apid`]). Locks guard only the maps, and log
+//! lines are written after they are released.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use apz_proto::wire::HostMessage;
 use serde::Serialize;
 
-use crate::roles::{Decision, Manifest};
+use crate::apid::Apid;
 use crate::serve::SessionLog;
 
 /// One heartbeat line is logged per this many beats (and the first).
@@ -85,15 +85,6 @@ pub enum Command {
 pub struct ToolReply {
     pub ok: bool,
     pub output: String,
-}
-
-/// Whether a tool may be driven on an agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Admission {
-    NoSession,
-    Allowed,
-    /// The agent's role does not grant the tool; nothing was dispatched.
-    Refused { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,30 +159,30 @@ pub struct Hub {
     epoch: AtomicU64,
     /// `Instant`s are reported as this wall-clock anchor plus their offset.
     anchor: (Instant, u64),
-    /// The tool-grant ceiling, when `--roles` named a manifest.
-    roles: Option<Arc<Manifest>>,
+    /// The client for apid's internal surface; sessions forward through it.
+    apid: Arc<Apid>,
     log: Arc<dyn SessionLog + Send + Sync>,
 }
 
 impl Hub {
-    pub fn new(log: Arc<dyn SessionLog + Send + Sync>, roles: Option<Arc<Manifest>>) -> Self {
-        Self::started_at(log, roles, Instant::now(), epoch_ms_now())
+    pub fn new(log: Arc<dyn SessionLog + Send + Sync>, apid: Apid) -> Self {
+        Self::started_at(log, apid, Instant::now(), epoch_ms_now())
     }
 
-    pub(crate) fn started_at(
-        log: Arc<dyn SessionLog + Send + Sync>,
-        roles: Option<Arc<Manifest>>,
-        at: Instant,
-        epoch_ms: u64,
-    ) -> Self {
+    pub(crate) fn started_at(log: Arc<dyn SessionLog + Send + Sync>, apid: Apid, at: Instant, epoch_ms: u64) -> Self {
         Self {
             registry: Mutex::new(Registry::default()),
             steering: Mutex::new(HashMap::new()),
             epoch: AtomicU64::new(0),
             anchor: (at, epoch_ms),
-            roles,
+            apid: Arc::new(apid),
             log,
         }
+    }
+
+    /// The client for apid's internal surface.
+    pub fn apid(&self) -> Arc<Apid> {
+        Arc::clone(&self.apid)
     }
 
     /// Poison-proof: a panicking session must not take the other agents down.
@@ -285,25 +276,6 @@ impl Hub {
 
     fn live(&self, cid: u32) -> Option<Live> {
         self.steering().get(&cid).cloned()
-    }
-
-    /// Whether `tool` may be driven on `cid`: any tool without a manifest,
-    /// otherwise what the agent's accepted role grants. Refusals are logged.
-    pub fn admit(&self, cid: u32, tool: &str) -> Admission {
-        let Some(role) = self.registry().agents.get(&cid).map(|agent| agent.role.clone()) else {
-            return Admission::NoSession;
-        };
-        let Some(manifest) = &self.roles else {
-            return Admission::Allowed;
-        };
-        let reason = match manifest.decide(&role, tool) {
-            Decision::Allow => return Admission::Allowed,
-            Decision::NoRole => format!("no role was accepted for cid {cid}"),
-            Decision::UnknownRole => format!("role {role} is not in the manifest"),
-            Decision::Ungranted => format!("role {role} does not grant {tool}"),
-        };
-        self.log.line(&format!("vsockd: refused a call to agent {cid}: {reason}"));
-        Admission::Refused { reason }
     }
 
     /// Runs one tool call on `cid` and waits up to `wait` for its answer. The
@@ -411,18 +383,10 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn hub_with(roles: Option<Manifest>) -> (Arc<Recording>, Hub) {
+    /// A hub whose apid client is `apid` (forwarding off when `None`).
+    pub(crate) fn hub_with(apid: Option<Apid>) -> (Arc<Recording>, Hub) {
         let log = Arc::new(Recording::default());
-        (Arc::clone(&log), Hub::new(log, roles.map(Arc::new)))
-    }
-
-    /// A manifest from a role → tools table.
-    pub(crate) fn manifest(roles: &[(&str, &[&str])]) -> Manifest {
-        let roles: serde_json::Map<String, serde_json::Value> = roles
-            .iter()
-            .map(|(role, tools)| (role.to_string(), serde_json::json!({ "role": role, "tools": tools })))
-            .collect();
-        Manifest::parse(&serde_json::json!({ "roles": roles }).to_string()).expect("a well-formed manifest")
+        (Arc::clone(&log), Hub::new(log, apid.unwrap_or_else(Apid::off)))
     }
 
     #[test]
@@ -510,7 +474,7 @@ pub(crate) mod tests {
     #[test]
     fn the_snapshot_is_ordered_by_cid_in_epoch_milliseconds() {
         let anchor = Instant::now();
-        let hub = Hub::started_at(Arc::new(Recording::default()), None, anchor, 1_700_000_000_000);
+        let hub = Hub::started_at(Arc::new(Recording::default()), Apid::off(), anchor, 1_700_000_000_000);
         hub.connect(11, "builder", anchor + Duration::from_millis(250));
         hub.connect(10, "reviewer", anchor + Duration::from_millis(500));
         hub.note_calls(10, 4);
@@ -526,23 +490,4 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn a_manifest_gates_each_session_by_its_accepted_role() {
-        let (log, hub) = hub_with(Some(manifest(&[("builder", &["write_file"]), ("librarian", &["search"])])));
-        assert_eq!(hub.admit(300, "write_file"), Admission::NoSession);
-        for (cid, role) in [(300, "builder"), (310, "librarian"), (320, ""), (330, "intruder")] {
-            hub.connect(cid, role, Instant::now());
-        }
-        assert_eq!(hub.admit(300, "write_file"), Admission::Allowed);
-        assert_eq!(hub.admit(310, "conversation"), Admission::Allowed, "basis tools are never gated");
-        let refused = |reason: &str| Admission::Refused { reason: reason.to_string() };
-        assert_eq!(hub.admit(310, "write_file"), refused("role librarian does not grant write_file"));
-        assert_eq!(hub.admit(320, "echo"), refused("no role was accepted for cid 320"));
-        assert_eq!(hub.admit(330, "echo"), refused("role intruder is not in the manifest"));
-        assert!(log.text().contains("vsockd: refused a call to agent 310: role librarian does not grant write_file"));
-
-        let (_log, open) = hub_with(None);
-        open.connect(10, "", Instant::now());
-        assert_eq!(open.admit(10, "anything"), Admission::Allowed, "no manifest, no ceiling");
-    }
 }

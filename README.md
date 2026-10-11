@@ -20,7 +20,7 @@ consoles, the acceptance harness).
 | `crates/vmm` | The trimmed Firecracker-derived VMM: x86_64 + aarch64 KVM (+ a Hypervisor.framework path that builds on macOS), GICv2/v3, FDT, ACPI poweroff, virtio-mmio vsock + block, the userspace vsock muxer, the **seccomp jail** (a trace-derived allowlist, per-VMM-thread) and the **jailer** (user+mount namespace, a per-VM root via `pivot_root`, no_new_privs) |
 | `crates/vmm/src/bin/apz-vmm.rs` | One VM, one jailed process: the per-VM process mode the daemon boots VMs with (`APZ_VMM_SPAWN=process`), with `PR_SET_PDEATHSIG(SIGKILL)` armed from a long-lived supervisor thread |
 | `crates/noded` | The node daemon (`:8899`): the run registry and fleet, the guest serial captures, SSE events, the task ledger, the treasury (double-entry journal + posting rules), the agora (calls/bids/awards), the social layer (board + read cursors, contacts, conversations), the council (seats, motions, votes, the owner's decision), and same-origin proxies for the hub's status/admin surfaces. `#![forbid(unsafe_code)]` |
-| `crates/vsockd` | The hub (`:19080` status, `:19081` admin, `:5000` device ports): per-CID listeners, protocol v2 sessions (roles + keepalive), heartbeats, tool calls, `/tell`, `/stop`, the role-tool policy (`--roles docs/agents/initial-roles.json`) |
+| `crates/vsockd` | The hub (`:19080` status, `:19081` admin, `:5000` device ports): per-CID listeners, protocol v2 sessions (roles + keepalive), heartbeats, tool calls, `/tell`, `/stop`, the v3 agent loop forwarded to apid (`--internal-token-file`) |
 | `crates/agent-harness` | The in-guest agent: the reconnect loop, heartbeats, and the tool table (echo/uptime diagnostics, `conversation`, read/write/edit/append/list/search over `/workspace`, all with path discipline and caps) |
 | `crates/dispatchd` | The dispatcher: polls the ledger, claims roled tasks for connected agents, drives per-role workflows, finishes with artifact notes, runs the **social pass** (board read + interest notes), the **talk step** (the finisher tells its awarder) and the **council pass** (one seat votes per pass, on the motion's own facts) |
 | `crates/vmctl`, `crates/acpi_tables` | The single-VM CLI and the ACPI table builder |
@@ -63,7 +63,7 @@ python3 -I tests/acceptance/run.py all
 ./target/debug/vsockd --uds-dir /tmp/plaza-vsock \
   --cids 10,11,12,13,14,15,20,...,99,100,...,120 \
   --port 5000 --http-port 19080 \
-  --roles docs/agents/initial-roles.json
+  --internal-token-file ~/.local/state/agentplaza/internal.token
 
 # The node daemon: the 21-role fleet boots at startup, each VM its own jailed
 # process; the console is served from apps/web/dist
