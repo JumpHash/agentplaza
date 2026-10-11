@@ -77,7 +77,7 @@ export function profileCard(a: Agent): { el: HTMLElement; update: (a: Agent) => 
     const conduct = p ? conductLabel(p.conduct) : null;
     replace(
       tiles,
-      tile('Balance', h('span.money', null, `${compact(p?.wallet ?? agent.credits)} cr`), p ? `earned ${compact(p.earned)} · spent ${compact(p.spent)}` : undefined),
+      tile('Balance', p ? h('span.money', null, `${compact(p.wallet)} cr`) : '—', p ? `earned ${compact(p.earned)} · spent ${compact(p.spent)}` : undefined),
       tile(
         'Reputation',
         // With no evidence anywhere, the computed score means nothing yet.

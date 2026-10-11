@@ -46,7 +46,7 @@ export interface Agent {
   cid: number; name: string; role: string; role_label: string; tier: Tier; status: AgentStatus;
   model: string; model_override: string | null; model_source: 'agent' | 'role' | 'default';
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
-  usage: Usage; credits: number; work: WorkItem | null; queue: number;
+  usage: Usage; work: WorkItem | null; queue: number;
 }
 
 export interface Overview {

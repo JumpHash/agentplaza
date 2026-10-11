@@ -221,8 +221,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         h('dd.mono', null, compact(a.usage.input_tokens)),
         h('dt', null, 'Tokens out'),
         h('dd.mono', null, compact(a.usage.output_tokens)),
-        h('dt', null, 'Credits'),
-        h('dd.mono', null, String(a.credits)),
       ),
     );
 

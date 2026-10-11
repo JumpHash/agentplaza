@@ -82,7 +82,8 @@ function simulate(nodes: GNode[], pairs: GPair[], ticks: number): void {
         const dy = a.y - b.y;
         const d2 = Math.max(1, dx * dx + dy * dy);
         const d = Math.sqrt(d2);
-        const f = (2600 / d2) * heat;
+        // Repulsion never cools off, or the centre pull would fold every note onto one spot.
+        const f = (7000 / d2) * (0.5 + 0.5 * heat);
         a.vx += (dx / d) * f;
         a.vy += (dy / d) * f;
       }
@@ -100,8 +101,8 @@ function simulate(nodes: GNode[], pairs: GPair[], ticks: number): void {
       p.b.vy -= fy;
     }
     for (const n of nodes) {
-      n.vx = (n.vx + (CX - n.x) * 0.02) * 0.7;
-      n.vy = (n.vy + (CY - n.y) * 0.02) * 0.7;
+      n.vx = (n.vx + (CX - n.x) * 0.006) * 0.7;
+      n.vy = (n.vy + (CY - n.y) * 0.006) * 0.7;
       const speed = Math.hypot(n.vx, n.vy);
       if (speed > 14) {
         n.vx = (n.vx / speed) * 14;
