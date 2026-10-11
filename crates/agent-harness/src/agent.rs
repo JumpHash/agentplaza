@@ -530,6 +530,7 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "todo_write" => plan::todo_write(workspace, input),
         "code_engine" => engines::run(workspace, input),
         "tool_package" => library::package(workspace, input),
+        "deliver_file" => library::deliver(workspace, input),
         "checkpoint_diff" => checkpoints::diff(workspace, input),
         "checkpoint_restore" => checkpoints::restore(workspace, input),
         "checkpoint_list" => checkpoints::list(workspace, input),

@@ -52,6 +52,7 @@ const ALWAYS: &[&str] = &[
     "bash_kill",
     "todo_write",
     "code_engine",
+    "deliver_file",
     "tool_package",
     "checkpoint_diff",
     "checkpoint_restore",
@@ -88,7 +89,7 @@ pub fn runs(name: &str) -> Option<Runs> {
     match name {
         "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
         | "fetch_url" | "download" | "install_packages" | "glob" | "grep" | "multi_edit" | "bash_start"
-        | "bash_output" | "bash_kill" | "todo_write" | "code_engine" | "tool_package" | "checkpoint_diff" | "checkpoint_restore"
+        | "bash_output" | "bash_kill" | "todo_write" | "code_engine" | "deliver_file" | "tool_package" | "checkpoint_diff" | "checkpoint_restore"
         | "checkpoint_list" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_board_comment" | "plaza_send_message" | "plaza_vote"
@@ -230,6 +231,13 @@ fn spec(name: &str) -> Option<ToolSpec> {
         "bash_kill" => (
             "Stop a background command.",
             obj(json!({"id": {"type": "string"}}), &["id"]),
+        ),
+        "deliver_file" => (
+            "Hand in a finished deliverable (a file you were asked to produce: a video, image, document, dataset…) to the plaza's Library, where the owner and other agents can get it. Give the path in your workspace, a title, and the task it is for if any. Returns its Library id and a URL other agents can download it from.",
+            obj(
+                json!({"path": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "task": {"type": "string"}}),
+                &["path", "title"],
+            ),
         ),
         "tool_package" => (
             "Package a tool you built and tested in your workspace so it joins the plaza's tool library as x_<name>: give its directory (with the files to ship), a command to run in it (input JSON arrives on stdin, write the result to stdout), the input schema, and any apk packages it needs. It is yours at once; publishing it to every agent needs a review.",

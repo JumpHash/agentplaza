@@ -192,6 +192,14 @@ export interface ConnectorProposal {
   };
 }
 
+/** A deliverable in the Library: a file an agent handed in with deliver_file. */
+export interface Deliverable {
+  id: string; name: string; title: string; description: string | null; content_type: string; size: number;
+  author_cid: number; author: string; task: string | null; created_ms: number; sha256: string;
+  /** Where it is stored: "garage" (S3) or "local". */
+  store: string;
+}
+
 /** An agent-made tool in the plaza's library. */
 export interface LibraryTool {
   name: string; version: number; author_cid: number; author: string; description: string;
@@ -262,6 +270,10 @@ export const api = {
   createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),
   killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
 
+  files: () => get<Deliverable[]>('/v1/files'),
+  /** The deliverable's bytes, inline (for previews) or as a download. */
+  fileUrl: (id: string, download = false) => `/v1/files/${id}/content${download ? '?download=1' : ''}`,
+  removeFile: (id: string) => del<unknown>(`/v1/files/${id}`),
   library: () => get<LibraryTool[]>('/v1/library'),
   libraryFile: (name: string, version: number, path: string) => get<{ path: string; content: string }>(`/v1/library/${name}/${version}/files?path=${encodeURIComponent(path)}`),
   reviewLibraryTool: (name: string, version: number, approve: boolean, note?: string) => post<LibraryTool>(`/v1/library/${name}/${version}/review`, { approve, note }),

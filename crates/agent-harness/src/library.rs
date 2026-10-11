@@ -54,6 +54,12 @@ struct Collected {
     executable: bool,
 }
 
+/// `deliver_file`: uploads a workspace file to the plaza's Library (through the egress
+/// proxy to plaza.gateway, which the hub relays to apid) and returns its id and URL.
+pub fn deliver(_workspace: &Workspace, _input: &Value) -> Result<String, String> {
+    Err("deliver_file is not available yet".to_string())
+}
+
 /// `tool_package`: reads the tool's directory and returns its bundle as JSON (apid files it
 /// in the library when the call is reported).
 ///
