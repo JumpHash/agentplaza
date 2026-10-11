@@ -13,10 +13,12 @@
 //! `noded --hub-admin <host:port>` names the hub's *admin* surface (its
 //! `--admin-port`, 19081 on the live stack) - the one loopback endpoint that
 //! drives a connected agent - and this module is also the daemon's one path to
-//! it. [`tell`] sends the `POST /tell` the read-through needs
-//! (`POST /api/v0/tasks/{id}/artifact`, in [`crate`]): the console asks this
-//! daemon to read a file a task's agent wrote, and the daemon asks the hub to
-//! drive the agent's `read_file`.
+//! it. [`tell`] sends the `POST /tell` that two endpoints need:
+//! `POST /api/v0/tasks/{id}/artifact`, where the daemon reads a file a task's
+//! agent wrote by driving that agent's `read_file`, and
+//! `POST /api/v0/agents/{cid}/tell`, where the operator's console drives a tool
+//! of its own choosing on an agent (both in [`crate`]). One client, one
+//! translation of the hub's answer, for both.
 //!
 //! Both surfaces are loopback-only, and so is this client: exactly `127.0.0.1`
 //! or `localhost` is accepted ([`HubStatus::parse`], [`HubAdmin::parse`], one

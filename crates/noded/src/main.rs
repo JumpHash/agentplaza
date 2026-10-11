@@ -12,9 +12,11 @@
 //! read the fleet through this daemon despite its `connect-src 'self'` policy,
 //! and `--hub-admin` names the hub's admin surface that
 //! `POST /api/v0/tasks/{id}/artifact` drives a task's agent through, so the
-//! console can read a task's artifact from the same origin. The guest images
-//! and the console directory are read relative to the working directory, so the
-//! daemon is started from the repository root.
+//! console can read a task's artifact from the same origin, and that
+//! `POST /api/v0/agents/{cid}/tell` drives one tool call through, so the
+//! operator's console can drive the fleet from the same origin. The guest
+//! images and the console directory are read relative to the working
+//! directory, so the daemon is started from the repository root.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -56,18 +58,22 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    report an empty registry.
   --hub-admin HOST:PORT  where the hub (vsockd)'s admin surface is, driven by
                    POST /api/v0/tasks/{id}/artifact so the console can read a
-                   claimed task's artifact (the file its agent wrote) from this
+                   claimed task's artifact (the file its agent wrote), and by
+                   POST /api/v0/agents/{cid}/tell so the operator's console can
+                   drive one tool call on a connected agent - both from this
                    daemon's origin. Loopback only: exactly 127.0.0.1 or
-                   localhost (default 127.0.0.1:19081). `off` serves that
-                   endpoint with a 503: a daemon not told where the admin
-                   surface is cannot ask any agent to read anything.
+                   localhost (default 127.0.0.1:19081). `off` serves those
+                   endpoints with a 503: a daemon not told where the admin
+                   surface is cannot ask any agent to read anything, or to run
+                   anything.
   -h, --help       print this help
 
 Serves GET/POST /api/v0/runs, GET/DELETE /api/v0/runs/{id},
 POST /api/v0/runs/{id}/input, GET/POST /api/v0/tasks,
 GET/DELETE /api/v0/tasks/{id}, POST /api/v0/tasks/{id}/claim,
 /api/v0/tasks/{id}/finish and /api/v0/tasks/{id}/artifact,
-GET /api/v0/hub[/healthz] and the web app's files from apps/web.";
+POST /api/v0/agents/{cid}/tell, GET /api/v0/hub[/healthz] and the web app's
+files from apps/web.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

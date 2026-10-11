@@ -24,6 +24,7 @@
 //! * `POST   /api/v0/tasks/{id}/finish`- end a claimed task (`done`/`failed`)
 //! * `POST   /api/v0/tasks/{id}/artifact` - read a file the task's agent wrote
 //! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends
+//! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
 //! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
 //! * `GET    /` and `GET /<file>`      - the console's static files
@@ -52,6 +53,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
 
 use crate::http::Response;
 use crate::hub::{HubAdmin, HubStatus, TellOutcome};
@@ -522,11 +524,15 @@ fn route(request: &http::Request, node: &Node) -> Response {
             Some(rest) => run_endpoint(rest, request, node),
             None => match path.strip_prefix("/api/v0/tasks/") {
                 Some(rest) => task_endpoint(rest, request, node),
-                None => match request.method() {
-                    "GET" => {
-                        static_files::serve(node.console_dir(), path.strip_prefix('/').unwrap_or(path))
-                    }
-                    _ => method_not_allowed("GET"),
+                None => match path.strip_prefix("/api/v0/agents/") {
+                    Some(rest) => agent_endpoint(rest, request, node),
+                    None => match request.method() {
+                        "GET" => static_files::serve(
+                            node.console_dir(),
+                            path.strip_prefix('/').unwrap_or(path),
+                        ),
+                        _ => method_not_allowed("GET"),
+                    },
                 },
             },
         },
@@ -584,6 +590,26 @@ fn run_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
         "DELETE" => delete_run(node, rest),
         _ => method_not_allowed("GET, DELETE"),
     }
+}
+
+/// Routes a request under `/api/v0/agents/`.
+fn agent_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
+    let Some(cid) = rest.strip_suffix("/tell") else {
+        return no_such_endpoint();
+    };
+    if cid.is_empty() || cid.contains('/') {
+        return no_such_endpoint();
+    }
+    // Driving an agent is a POST, not a GET, and deliberately so - for the same
+    // reason `POST /api/v0/tasks/{id}/artifact` is: it runs a real tool in the
+    // agent's session (a call with a cost, a refusal mode and an effect on the
+    // agent's turn), so a request that can be replayed by a prefetch, a retry
+    // or a crawler must not be advertised as safe to repeat. The console posts
+    // it.
+    if request.method() != "POST" {
+        return method_not_allowed("POST");
+    }
+    tell_agent(node, cid, request.body())
 }
 
 /// `GET /api/v0/hub` and `GET /api/v0/hub/healthz`: the hub's status surface,
@@ -907,6 +933,150 @@ struct ArtifactView<'a> {
     /// Whether the agent's read cap, rather than the end of the file, ended
     /// the content.
     truncated: bool,
+}
+
+/// The `POST /api/v0/agents/{cid}/tell` body: the tool to drive and its
+/// arguments, read the way the hub's own `/tell` body reads them (minus the
+/// CID, which the path names).
+#[derive(Debug, Deserialize)]
+struct TellRequest {
+    /// The tool to drive on the agent.
+    name: String,
+    /// The tool's arguments, a JSON object; an empty one when absent.
+    #[serde(default = "empty_args")]
+    args: serde_json::Value,
+    /// How long to wait for the agent's answer, in ms; the hub's own bound
+    /// when absent.
+    timeout_ms: Option<u64>,
+}
+
+/// The default `args` an omitted field gets: an empty object, which is what a
+/// tool that takes no arguments expects (the hub's own default).
+fn empty_args() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// The most a tool name may occupy, in bytes - the hub's own bound
+/// (`vsockd::admin::MAX_TOOL_NAME`), kept here so the two surfaces refuse the
+/// same names.
+const MAX_TOOL_NAME: usize = 256;
+
+/// The longest, and the default, a `/tell` may wait for its agent: the hub's
+/// own maximum (`vsockd`'s `MAX_TELL_TIMEOUT_MS`), so a caller is never cut
+/// off before the hub itself would have given up.
+const MAX_TELL_TIMEOUT_MS: u64 = hub::TELL_TIMEOUT_MS;
+
+/// A `/tell` as the API reports it: the agent it was driven on, and that
+/// agent's own answer.
+#[derive(Debug, Serialize)]
+struct TellView<'a> {
+    /// The guest CID of the agent the call was driven on.
+    cid: u64,
+    /// The agent's own `ok`: `false` is the tool refusing, which is still an
+    /// answer (its reason is `output`), never a transport failure.
+    ok: bool,
+    /// The agent's own `output`: the tool's result, or its refusal's reason.
+    output: &'a str,
+}
+
+/// `POST /api/v0/agents/{cid}/tell`: drives one tool call on the agent
+/// connected as `cid`, through the hub's admin surface - the operator's own
+/// hand on the fleet, and the console's one-origin path to it.
+///
+/// This is the operator's console *driving a real agent*: the named tool runs
+/// in that agent's session, with a real cost and a real effect on its turn. It
+/// is a POST, not a GET, and deliberately so - for the same reason
+/// [`read_artifact`] is: a request that can be replayed by a prefetch, a retry
+/// or a crawler must not be advertised as safe to repeat. The console posts it.
+///
+/// The status mapping, in one place:
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the agent answered: `{"cid","ok","output"}` - the tool's result, or its own refusal, in its own words |
+/// | 400 | the body or the CID path segment is outside this endpoint's contract |
+/// | 403 | the hub's own role policy refuses the tool (its own status and body, verbatim) |
+/// | 404 | the hub does not serve the agent's CID |
+/// | 409 | the hub's agent is not connected |
+/// | 504 | the agent did not answer within `timeout_ms` |
+/// | 502 | the hub could not be reached, or answered something unreadable |
+/// | 503 | `--hub-admin off`: the daemon was never told where the admin surface is |
+///
+/// The request is validated exactly as the hub's own `/tell` validates it - a
+/// non-empty tool name of at most [`MAX_TOOL_NAME`] bytes, an `args` object,
+/// and a `timeout_ms` of 1..=[`MAX_TELL_TIMEOUT_MS`] - so this daemon refuses
+/// nothing the hub would accept and invents no rule of its own.
+/// **What an agent may run is the hub's policy, not this daemon's**: the tool
+/// name and its arguments are forwarded as written, and a role the policy
+/// forbids the tool comes back as the hub's own 403, verbatim - this daemon
+/// keeps no allow-list. Which CID is served, and connected, is the hub's to say
+/// too, in its own 404 and 409, rather than a check made here and raced against
+/// its own answer.
+fn tell_agent(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
+    let Some(admin) = node.hub_admin() else {
+        return Response::error(503, "hub admin is not configured");
+    };
+    let cid = match checked_guest_cid(cid_segment) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let request: TellRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid tell request: {err}")),
+    };
+    if request.name.is_empty() {
+        return Response::error(400, "a tell needs a tool name");
+    }
+    if request.name.len() > MAX_TOOL_NAME {
+        return Response::error(
+            400,
+            &format!("the tool name is longer than {MAX_TOOL_NAME} bytes"),
+        );
+    }
+    if !request.args.is_object() {
+        return Response::error(400, "args must be a JSON object");
+    }
+    let timeout_ms = request.timeout_ms.unwrap_or(MAX_TELL_TIMEOUT_MS);
+    if timeout_ms == 0 || timeout_ms > MAX_TELL_TIMEOUT_MS {
+        return Response::error(
+            400,
+            &format!("timeout_ms must be 1..={MAX_TELL_TIMEOUT_MS}"),
+        );
+    }
+    match hub::tell(admin, cid, &request.name, request.args, timeout_ms) {
+        TellOutcome::Answered { ok, output } => json_response(
+            200,
+            &TellView {
+                cid,
+                ok,
+                output: &output,
+            },
+        ),
+        // The hub's own words and its own status: a role policy (403), an
+        // unserved CID (404), an unconnected CID (409) or a timeout (504).
+        TellOutcome::Refused { status, message } => Response::error(status, &message),
+        TellOutcome::Unreachable(reason) => {
+            Response::error(502, &format!("hub admin unreachable: {reason}"))
+        }
+    }
+}
+
+/// The guest CID a `/tell` addresses, read from the path segment: a decimal
+/// number inside the transport's guest CID range ([`MIN_GUEST_CID`]..=
+/// [`MAX_GUEST_CID`]), so a segment that could never name an agent of this node
+/// is refused before the hub is contacted. Whether that CID is one the hub
+/// serves, and whether it is connected, is the hub's to say - and it says it in
+/// its own 404 and 409 (see [`tell_agent`]).
+fn checked_guest_cid(segment: &str) -> Result<u64, String> {
+    let cid: u64 = segment
+        .parse()
+        .map_err(|_| format!("{segment:?} is not a guest CID"))?;
+    if !(MIN_GUEST_CID..=MAX_GUEST_CID).contains(&cid) {
+        return Err(format!(
+            "guest CID {cid} is outside {MIN_GUEST_CID}..={MAX_GUEST_CID}"
+        ));
+    }
+    Ok(cid)
 }
 
 /// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended.
