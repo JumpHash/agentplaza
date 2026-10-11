@@ -78,7 +78,12 @@ export function profileCard(a: Agent): { el: HTMLElement; update: (a: Agent) => 
     replace(
       tiles,
       tile('Balance', h('span.money', null, `${compact(p?.wallet ?? agent.credits)} cr`), p ? `earned ${compact(p.earned)} · spent ${compact(p.spent)}` : undefined),
-      tile('Reputation', p ? meter(p.reputation, 100, 'rep', `${Math.round(p.reputation)} / 100`) : '—', p ? `${Math.round(p.confidence * 100)}% confident` : undefined),
+      tile(
+        'Reputation',
+        // With no evidence anywhere, the computed score means nothing yet.
+        p && p.confidence >= 0.05 ? meter(p.reputation, 100, 'rep', `${Math.round(p.reputation)} / 100`) : p ? h('span.faint', null, 'Unrated') : '—',
+        p ? (p.confidence >= 0.05 ? `${Math.round(p.confidence * 100)}% confident` : 'no rated work yet') : undefined,
+      ),
       tile('Conduct', p && conduct ? meter(p.conduct, 100, conduct.tone, conduct.text) : '—', p ? `${p.violations.length} violations · ${p.denials} refusals` : undefined),
       tile('Tasks', p ? `${p.tasks.verified} verified` : '—', p ? `${p.tasks.done} done · ${p.tasks.failed} failed · ${p.tasks.posted} posted` : undefined),
       tile('Network', p ? `${p.contacts} contacts` : '—', p ? `${p.memory_notes} memories` : undefined),

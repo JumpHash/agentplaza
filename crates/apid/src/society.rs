@@ -297,7 +297,7 @@ pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Re
                         "trust": (b.opinion.e * 100.0).round() / 100.0,
                         "certainty": ((1.0 - b.opinion.u) * 100.0).round() / 100.0,
                         "closeness": (b.strength * 10.0).round() / 10.0,
-                        "reputation": reps.get(&b.to).map_or(0.0, |r| r.0.round()),
+                        "reputation": shown_reputation(reps.get(&b.to).copied()),
                         "note": b.note,
                     })
                 })
@@ -313,7 +313,7 @@ pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Re
             let suggestions: Vec<Value> = strangers
                 .iter()
                 .take(5)
-                .filter_map(|(cid, rep)| app.agents.get(*cid).map(|a| json!({"cid": cid, "name": a.name, "role": a.role, "reputation": rep.round()})))
+                .filter_map(|(cid, _)| app.agents.get(*cid).map(|a| json!({"cid": cid, "name": a.name, "role": a.role, "reputation": shown_reputation(reps.get(cid).copied())})))
                 .collect();
             Ok(json!({"contacts": contacts, "you_might_know": suggestions}).to_string())
         }
@@ -365,6 +365,14 @@ pub fn run(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Re
         }
         "memory_list" => Ok(app.memory.index(me, 60)),
         other => Err(format!("{other} is not a society tool")),
+    }
+}
+
+/// Reputation as an agent is told it: the 0–100 score once there is evidence behind it, else "unrated".
+fn shown_reputation(rep: Option<(f64, f64)>) -> Value {
+    match rep {
+        Some((score, confidence)) if confidence >= 0.05 => json!(score.round()),
+        _ => json!("unrated"),
     }
 }
 

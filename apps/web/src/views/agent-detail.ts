@@ -1,4 +1,3 @@
-import { agentName, roleLabel } from '../roles';
 // Agent detail: one agent's transcript, its composer, and its model, details and queue.
 
 import '../styles/agent.css';
@@ -9,6 +8,7 @@ import { ago, attempt, badge, button, card, clip, compact, empty, field, tabs, t
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountMemory } from './memory';
+import { profileCard } from './agent-profile';
 
 const NEAR_BOTTOM_PX = 80;
 
@@ -57,6 +57,10 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const live = new Map<string, LiveTurn>();
   const pending: (() => void)[] = [];
   let agent: Agent | undefined;
+  // The profile card (portrait, money, standing, conduct), made once the agent is known.
+  const profileHost = h('div');
+  let profile: ReturnType<typeof profileCard> | null = null;
+  const profileTimer = window.setInterval(() => void profile?.refresh(), 15_000);
   let alive = true;
   let loaded = false;
   let sending = false;
@@ -170,20 +174,15 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const renderAgent = (): void => {
     const a = agent;
     if (!a) return;
+    if (!profile) {
+      profile = profileCard(a);
+      profileHost.replaceChildren(profile.el);
+    } else profile.update(a);
     const offline = a.status === 'offline';
-    const label = a.status === 'working' ? 'Working' : a.status === 'idle' ? 'Idle' : 'Offline';
-    const tone = a.status === 'working' ? 'info' : a.status === 'idle' ? 'ok' : 'muted';
     replace(
       head,
       h('a.back', { href: href('agents') }, 'Agents'),
-      h(
-        'div.agent-title',
-        null,
-        h('h1', null, agentName(a)),
-        badge(label, tone, true),
-        badge(a.tier === 'orchestrator' ? 'Orchestrator' : 'Worker', a.tier === 'orchestrator' ? 'accent' : 'muted'),
-        h('span.muted', null, roleLabel(a.role)),
-      ),
+      h('div.agent-title', null),
       h(
         'div.row.agent-actions',
         null,
@@ -287,6 +286,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       'div.agent-view',
       null,
       head,
+      profileHost,
       h(
         'div.agent-grid',
         null,
@@ -331,6 +331,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
 
   return () => {
     alive = false;
+    window.clearInterval(profileTimer);
     offs.forEach((off) => off());
     live.clear();
     unmountMemory?.();
