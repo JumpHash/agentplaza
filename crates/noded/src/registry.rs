@@ -129,6 +129,12 @@ pub struct CreateRun {
     /// keepalive, so `false` is refused for one.
     #[serde(default)]
     pub keepalive: Option<bool>,
+    /// The guest's usable memory per VM, in MiB, at boot. A VM given one boots
+    /// with a balloon, and its usable memory can be resized later
+    /// (`POST /v1/runs/{id}/vms/{index}/memory`). `None` boots every VM without
+    /// a balloon.
+    #[serde(default)]
+    pub balloon_usable_mib: Option<u32>,
 }
 
 /// The longest role name a run may carry.
@@ -174,6 +180,14 @@ impl CreateRun {
         // before a run id, a CID or a workspace copy is spent on it.
         spawner_vcpus(self.vcpus)?;
         spawner_memory_mib(self.memory_mib)?;
+        if let Some(usable) = self.balloon_usable_mib {
+            if usable == 0 || usable > self.memory_mib {
+                return Err(format!(
+                    "balloon_usable_mib must be between 1 and memory_mib ({})",
+                    self.memory_mib
+                ));
+            }
+        }
         if let Some(role) = &self.role {
             checked_role(role)?;
             if self.keepalive == Some(false) {
@@ -391,6 +405,8 @@ struct RunMeta {
     /// Whether the run's guests are keepalive agents: their workspace images
     /// persist when `--persist-dir` is set.
     keepalive: bool,
+    /// The usable guest memory per VM at boot, when the VMs get a balloon.
+    balloon_usable_mib: Option<u32>,
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
@@ -627,7 +643,83 @@ pub struct VmView {
     /// The VM's serial capture; present only in a single-run GET.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
+    /// The VM's guest memory as its balloon reports it, or `null` for a VM with
+    /// no balloon (or one whose handle is taken while it is being killed).
+    pub memory: Option<MemoryView>,
 }
+
+/// A VM's guest memory as the API reports it (see `vmm::spawner::MemoryStats`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MemoryView {
+    /// The VM's whole memory, in MiB.
+    pub max_mib: u32,
+    /// What the guest may use now, in MiB (the host's target).
+    pub usable_mib: u32,
+    /// What the balloon holds, in MiB (the guest's acknowledged size).
+    pub held_mib: u64,
+    /// Free memory inside the guest, in MiB, once it has reported it.
+    pub free_mib: Option<u64>,
+    /// Memory available without swapping inside the guest, in MiB, once reported.
+    pub available_mib: Option<u64>,
+}
+
+impl From<vmm::spawner::MemoryStats> for MemoryView {
+    fn from(stats: vmm::spawner::MemoryStats) -> Self {
+        Self {
+            max_mib: stats.max_mib,
+            usable_mib: stats.usable_mib,
+            held_mib: stats.held_mib,
+            free_mib: stats.free_mib,
+            available_mib: stats.available_mib,
+        }
+    }
+}
+
+/// Why a VM's memory could not be resized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryError {
+    /// The node has no run with that id.
+    UnknownRun,
+    /// The run has no VM with that index.
+    UnknownVm(u32),
+    /// The VM was booted without a balloon, so its memory cannot be resized.
+    NoBalloon(u32),
+    /// The VM is not running, so there is no balloon to resize.
+    Stopped(u32),
+    /// The VM's memory control refused the resize.
+    Refused(String),
+}
+
+impl MemoryError {
+    /// The HTTP status this error is reported as: 404 for a run or VM the node
+    /// does not have, 409 for one whose memory cannot be resized now, 502 when
+    /// the VM's own memory control failed.
+    pub fn status(&self) -> u16 {
+        match self {
+            MemoryError::UnknownRun | MemoryError::UnknownVm(_) => 404,
+            MemoryError::NoBalloon(_) | MemoryError::Stopped(_) => 409,
+            MemoryError::Refused(_) => 502,
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryError::UnknownRun => write!(formatter, "no run with that id"),
+            MemoryError::UnknownVm(vm) => write!(formatter, "the run has no VM {vm}"),
+            MemoryError::NoBalloon(vm) => {
+                write!(formatter, "VM {vm} has no balloon, so its memory cannot be resized")
+            }
+            MemoryError::Stopped(vm) => write!(formatter, "VM {vm} is not running"),
+            MemoryError::Refused(reason) => {
+                write!(formatter, "VM memory control refused the resize: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MemoryError {}
 
 /// The list endpoint's body: `{"runs": [...]}`.
 #[derive(Debug, Serialize)]
@@ -772,6 +864,7 @@ impl Registry {
                 beats: request.beats,
                 role: request.role.clone(),
                 keepalive,
+                balloon_usable_mib: request.balloon_usable_mib,
             },
             plans,
         )
@@ -807,6 +900,7 @@ impl Registry {
                 role: None,
                 // Fleet VMs are long-lived keepalive agents.
                 keepalive: true,
+                balloon_usable_mib: None,
             },
             plans,
         )
@@ -883,6 +977,8 @@ impl Registry {
             }
             (None, _) => None,
         };
+        // Every VM of the run gets the same balloon, at the same usable size.
+        let balloon = meta.balloon_usable_mib;
         let run = self.insert(id, meta);
         let boot = spawner::spawn_each(vms, |i| {
             // `spawn_each` calls this exactly `vms` times with the ids
@@ -906,7 +1002,7 @@ impl Registry {
                     .as_ref()
                     .and_then(|images| images.get(i as usize))
                     .cloned(),
-                balloon: None,
+                balloon,
             }
         });
         match boot {
@@ -993,6 +1089,12 @@ impl Registry {
         &self.events
     }
 
+
+    /// Resizes VM `vm` of run `run` to `usable_mib` (see [`Run::set_memory`]).
+    pub fn set_vm_memory(&self, run: &str, vm: u32, usable_mib: u32) -> Result<MemoryView, MemoryError> {
+        let run = self.find(run).ok_or(MemoryError::UnknownRun)?;
+        run.set_memory(vm, usable_mib)
+    }
 
     /// The run with that id, if there is one.
     pub fn find(&self, id: &str) -> Option<Arc<Run>> {
@@ -1160,6 +1262,7 @@ impl Run {
                     guest_cid: slot.guest_cid,
                     role: slot.role.clone(),
                     state: slot.state.as_str(),
+                    memory: slot.handle.as_ref().and_then(VmHandle::memory_stats).map(MemoryView::from),
                     serial: match detail {
                         Detail::Summary => None,
                         Detail::Full => Some(serial_of(&slot.runtime)),
@@ -1188,6 +1291,35 @@ impl Run {
                 vm,
                 reason: console_reason(err),
             })
+    }
+
+    /// Resizes one of the run's VMs' balloon to `usable_mib` and reports the
+    /// VM's memory as the balloon now reads it.
+    ///
+    /// A VM with no balloon, or one that is no longer running (its handle is
+    /// absent or it has stopped), is a conflict with its state, not a bad
+    /// request.
+    pub fn set_memory(&self, vm: u32, usable_mib: u32) -> Result<MemoryView, MemoryError> {
+        let inner = self.lock();
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(MemoryError::UnknownVm(vm))?;
+        let handle = match (slot.state, slot.handle.as_ref()) {
+            (VmState::Running, Some(handle)) => handle,
+            _ => return Err(MemoryError::Stopped(vm)),
+        };
+        handle
+            .set_usable_memory_mib(usable_mib)
+            .map_err(|err| match err {
+                SpawnError::NoBalloon => MemoryError::NoBalloon(vm),
+                other => MemoryError::Refused(other.to_string()),
+            })?;
+        handle
+            .memory_stats()
+            .map(MemoryView::from)
+            .ok_or(MemoryError::NoBalloon(vm))
     }
 
     /// Kills every VM of the run and marks it `killed`.
@@ -1497,6 +1629,7 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                balloon_usable_mib: None,
             })
             .expect("the run exists even when its VMs cannot boot");
 
@@ -1660,6 +1793,7 @@ mod tests {
             vsock_cid: None,
             role: role.map(str::to_string),
             keepalive: None,
+            balloon_usable_mib: None,
         };
         assert_eq!(request(None, None).vm_cmdline(0, false), "console=ttyS0 plaza.harness=1 plaza.vm=0");
         assert_eq!(
@@ -1699,6 +1833,7 @@ mod tests {
             vsock_cid: None,
             role: None,
             keepalive: None,
+            balloon_usable_mib: None,
         };
 
         let (vms, named) = request(2, 2, 512)
@@ -1737,6 +1872,7 @@ mod tests {
             vsock_cid,
             role: None,
             keepalive: None,
+            balloon_usable_mib: None,
         };
 
         // A CID inside the valid range is accepted, base + n - 1 included.
@@ -1862,6 +1998,7 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                balloon_usable_mib: None,
             })
             .err()
             .expect("the workspace copies cannot be prepared");
@@ -1909,6 +2046,7 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                balloon_usable_mib: None,
             })
             .err()
             .expect("the run range is full");
@@ -1937,6 +2075,7 @@ mod tests {
                 vsock_cid: Some(crate::DEFAULT_AGENTS_CID_BASE),
                 role: None,
                 keepalive: None,
+                balloon_usable_mib: None,
             })
             .expect("a pinned run does not need the run range");
 
@@ -1959,6 +2098,7 @@ mod tests {
                     vsock_cid: None,
                     role: None,
                     keepalive: None,
+                    balloon_usable_mib: None,
                 })
                 .expect("the run exists even when its VMs cannot boot");
             assert_eq!(run.view(Detail::Summary).state, "failed");
@@ -2089,6 +2229,33 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A memory resize names a run and a VM the node has, and a VM it cannot
+    /// reach is a conflict, not a success. None of this boots a VM.
+    #[test]
+    fn a_memory_resize_of_an_unknown_or_unballooned_vm_is_refused() {
+        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new());
+        let unknown = registry
+            .set_vm_memory("r9", 0, 256)
+            .expect_err("there is no run r9");
+        assert_eq!(unknown, MemoryError::UnknownRun);
+        assert_eq!(unknown.status(), 404);
+
+        // A running run with one VM that has no handle to resize through.
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Running,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        let missing = run.set_memory(3, 256).expect_err("the run has no VM 3");
+        assert_eq!(missing, MemoryError::UnknownVm(3));
+        assert_eq!(missing.status(), 404);
+        let stopped = run.set_memory(0, 256).expect_err("the VM has no handle");
+        assert_eq!(stopped, MemoryError::Stopped(0));
+        assert_eq!(stopped.status(), 409);
     }
 }
 
