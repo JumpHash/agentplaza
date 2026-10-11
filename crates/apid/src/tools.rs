@@ -341,6 +341,7 @@ fn host_call(app: &App, agent: &Agent, _work: u64, name: &str, input: &Value) ->
                     role,
                 })
                 .map_err(|e| format!("{e:?}"))?;
+            app.work.note_poster(task.id(), agent.cid);
             match input.get("assignee").and_then(Value::as_u64) {
                 Some(cid) => {
                     assign(app, &task, cid)?;

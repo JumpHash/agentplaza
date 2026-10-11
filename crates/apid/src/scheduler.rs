@@ -125,11 +125,13 @@ impl Lanes {
 pub struct Queues {
     lanes: Mutex<Lanes>,
     next_id: AtomicU64,
+    /// task id → the agent that posted it (the orchestrator), told when it ends.
+    posters: Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl Default for Queues {
     fn default() -> Self {
-        Self { lanes: Mutex::new(Lanes::default()), next_id: AtomicU64::new(1) }
+        Self { lanes: Mutex::new(Lanes::default()), next_id: AtomicU64::new(1), posters: Mutex::default() }
     }
 }
 
@@ -182,9 +184,28 @@ impl Queues {
         app.bus.publish("work", &json!({ "cid": cid, "work": work, "state": "ended", "status": state }));
         if let Some(task) = item.origin.task.as_deref() {
             settle_task(app, task, status, summary);
+            self.tell_poster(app, task, cid, state, summary);
         }
         app.agents.update(cid, |a| a.status = Status::Idle);
         self.dispatch(app, cid);
+    }
+
+    /// Records that `cid` posted `task`, so it hears when the task ends.
+    pub fn note_poster(&self, task: &str, cid: u64) {
+        self.posters.lock().unwrap_or_else(|p| p.into_inner()).insert(task.to_string(), cid);
+    }
+
+    /// Tells a task's poster (the orchestrator) that it ended, continuing the
+    /// poster's conversation with the operator so it keeps its plan.
+    fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
+        let poster = self.posters.lock().unwrap_or_else(|p| p.into_inner()).remove(task);
+        let Some(poster) = poster.filter(|&p| p != worker) else { return };
+        let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
+        let prompt = format!(
+            "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
+             Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
+        );
+        self.enqueue(app, poster, WorkKind::Chat, format!("op-{poster}"), prompt, Origin::default());
     }
 
     /// The operator cancels the current item (sends `cancel`).
