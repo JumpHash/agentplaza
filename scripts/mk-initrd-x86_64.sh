@@ -64,8 +64,15 @@
 # sees it, init mounts it (ext4) at /workspace and says so on the console; the
 # `wspace <text>` serial command appends a line to /workspace/notes.txt and
 # prints the file back, which is the guest-side proof that the volume is
-# writable and survives the VM. A guest with no such device just has no
-# /workspace, and `wspace` says so.
+# writable and survives the VM. A guest with no such device has an empty
+# /workspace directory (not a volume), and `wspace` says so.
+#
+# The agent's shell: busybox (the host's /usr/lib/initcpio/busybox, dynamically
+# linked, so its ELF interpreter and libraries are copied in at their absolute
+# paths) with applet symlinks in /bin, /bin/sh among them. The harness runs
+# `/bin/sh -c` as uid/gid 1000 in /workspace: init chowns /workspace to that
+# uid, whether or not a volume is mounted there. /etc/passwd and /etc/group name
+# root and agent (1000, home /workspace); /tmp is mode 1777.
 #
 # Without flags the guest heartbeats and serves commands forever
 # (console=ttyS0 gives PID 1 stdin/stdout on the serial line).
@@ -75,11 +82,13 @@
 #          and handed to the VMM with --workspace)
 #
 # Env overrides: APZ_HARNESS_BIN=/path/to/agent-harness  skip the cargo build.
+#                APZ_KERNEL_RELEASE=7.2.9-arch1-1  take the guest's modules from
+#                /lib/modules/<release> (default: the running kernel, uname -r).
 set -eu
 
 out_dir="target/guest"
 root="$out_dir/initroot"
-kernel_release="$(uname -r)"
+kernel_release="${APZ_KERNEL_RELEASE:-$(uname -r)}"
 mod_root="/lib/modules/$kernel_release"
 
 rm -rf "$root"
@@ -225,6 +234,50 @@ if command -v strip >/dev/null 2>&1; then
     strip "$root/agent-harness" 2>/dev/null || true
 fi
 echo "agent harness: $harness -> /agent-harness"
+
+# ---------------------------------------------------------------------------
+# The agent's shell: the host's busybox, dynamically linked, so its ELF
+# interpreter and every library ldd lists go in at their absolute paths (the
+# interpreter is /lib64/ld-linux-x86-64.so.2; the image has no ld.so.cache, so
+# ld.so searches its default directories, /usr/lib among them). Applets are
+# symlinks to busybox, and only names `busybox --list` prints are linked.
+# /workspace is made by init (own_workspace), not here.
+# ---------------------------------------------------------------------------
+bb="/usr/lib/initcpio/busybox"
+if [ ! -x "$bb" ]; then
+    echo "mk-initrd: no busybox at $bb (the agent's shell needs it)" >&2
+    exit 1
+fi
+mkdir -p "$root/bin" "$root/etc" "$root/tmp"
+cp "$bb" "$root/bin/busybox"
+chmod 755 "$root/bin/busybox"
+libs="$(ldd "$bb" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' | sort -u)"
+for lib in $libs; do
+    mkdir -p "$root$(dirname "$lib")"
+    cp -L "$lib" "$root$lib"
+done
+applets="$("$bb" --list)"
+for applet in sh ash cat ls cp mv rm mkdir rmdir touch echo printf grep sed awk \
+    head tail wc sort uniq cut tr find xargs diff tee date sleep env pwd \
+    basename dirname stat chmod test '[' true false gzip tar md5sum sha256sum \
+    which seq expr; do
+    if printf '%s\n' "$applets" | grep -Fxq "$applet"; then
+        ln -sf busybox "$root/bin/$applet"
+    else
+        echo "mk-initrd: busybox has no $applet applet; not linked" >&2
+    fi
+done
+if [ ! -e "$root/bin/sh" ]; then
+    echo "mk-initrd: busybox links no sh; the agent's shell cannot run" >&2
+    exit 1
+fi
+# The guest's users (the harness runs commands as agent, uid/gid 1000) and a
+# world-writable /tmp with the sticky bit.
+printf '%s\n' 'root:x:0:0:root:/root:/bin/sh' \
+    'agent:x:1000:1000:agent:/workspace:/bin/sh' > "$root/etc/passwd"
+printf '%s\n' 'root:x:0:' 'agent:x:1000:' > "$root/etc/group"
+chmod 1777 "$root/tmp"
+echo "agent shell: $bb -> /bin/busybox, $(ls "$root/bin" | wc -l) entries in /bin"
 
 # ---------------------------------------------------------------------------
 # PID 1
@@ -594,6 +647,9 @@ static void load_guest_modules(int verbose)
 // but a short poll costs nothing and covers a deferred probe. A VM with no
 // block device (no `virtio_mmio.device=` for one) simply has no /workspace:
 // the guest is still a valid guest, so a missing device is not an error.
+// Set once the volume is mounted at /workspace (workspace_ready reads it).
+static int workspace_mounted;
+
 static void mount_workspace(void)
 {
     int fd = -1;
@@ -621,6 +677,7 @@ static void mount_workspace(void)
         write(1, msg, (size_t)len);
         return;
     }
+    workspace_mounted = 1;
     struct statvfs vfs;
     unsigned long mib = 0;
     if (statvfs("/workspace", &vfs) == 0 && vfs.f_frsize)
@@ -630,10 +687,28 @@ static void mount_workspace(void)
     write(1, msg, (size_t)len);
 }
 
+// The agent's shell runs as uid 1000 in /workspace, so that directory must
+// belong to uid 1000. Called after mount_workspace(): with a volume mounted the
+// chown lands on its root directory, without one on the empty mount point.
+static void own_workspace(void)
+{
+    if (mkdir("/workspace", 0755) < 0 && errno != EEXIST) {
+        put("plaza guest: cannot create /workspace: ");
+        put(strerror(errno));
+        put("\n");
+        return;
+    }
+    if (chown("/workspace", 1000, 1000) < 0) {
+        put("plaza guest: cannot chown /workspace: ");
+        put(strerror(errno));
+        put("\n");
+    }
+}
+
 // Whether the VM has a mounted workspace volume.
 static int workspace_ready(void)
 {
-    return access("/workspace/notes.txt", F_OK) == 0 || access("/workspace", F_OK) == 0;
+    return workspace_mounted;
 }
 
 // Prints /workspace/notes.txt (bounded: it is the guest's own data).
@@ -779,6 +854,7 @@ int main(void)
     // the harness does, so its sessions (and the serial `wspace` command) can
     // use it.
     mount_workspace();
+    own_workspace();
     if (harness)
         harness_pid = start_harness();
 
