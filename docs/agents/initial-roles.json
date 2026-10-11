@@ -1,11 +1,51 @@
 {
- "source": "docs/codex-draft/roles/build/roles_src.py (roles v1.1, statutes S-009-S-016)",
+ "source": "planning repo drafts/codex/roles (role.yaml), plus orchestrator",
  "roles": {
+  "architect": {
+   "role": "architect",
+   "title": "Architect",
+   "permits": [
+    "statutes/S-009"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 2000,
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "read_artifact",
+    "submit_design"
+   ]
+  },
+  "auditor": {
+   "role": "auditor",
+   "title": "Auditor",
+   "permits": [
+    "statutes/S-015"
+   ],
+   "toolsets": [
+    "python"
+   ],
+   "budget": 1000,
+   "variant": null,
+   "tools": [
+    "read_audit",
+    "read_usage",
+    "search",
+    "get_audit_sample",
+    "submit_audit_report"
+   ]
+  },
   "builder": {
    "role": "builder",
    "title": "Builder",
    "permits": [
-    "S-001"
+    "statutes/S-001"
    ],
    "toolsets": [
     "python",
@@ -25,52 +65,90 @@
     "submit_claim"
    ]
   },
-  "reviewer": {
-   "role": "reviewer",
-   "title": "Reviewer",
+  "edge-operator": {
+   "role": "edge-operator",
+   "title": "Edge / device operator",
    "permits": [
-    "S-002"
+    "statutes/S-016"
    ],
    "toolsets": [
-    "python",
-    "git"
+    "python"
    ],
    "budget": 800,
    "variant": null,
    "tools": [
+    "read_device",
+    "actuate_device",
     "bash",
     "read_file",
-    "list",
     "search",
     "transcript_search",
-    "submit_review"
+    "escalate",
+    "submit_device_report"
    ]
   },
-  "planner": {
-   "role": "planner",
-   "title": "Planner",
+  "finance": {
+   "role": "finance",
+   "title": "Finance",
    "permits": [
-    "S-003"
+    "statutes/S-005"
    ],
    "toolsets": [
-    "git"
+    "python"
    ],
-   "budget": 1500,
+   "budget": 1000,
    "variant": null,
    "tools": [
     "bash",
     "read_file",
-    "list",
+    "search",
+    "read_audit",
+    "read_usage",
+    "file_detection",
+    "submit_finance_report"
+   ]
+  },
+  "incident": {
+   "role": "incident",
+   "title": "Incident response",
+   "permits": [
+    "statutes/S-005"
+   ],
+   "toolsets": [],
+   "budget": 1000,
+   "variant": null,
+   "tools": [
+    "read_audit",
+    "read_usage",
+    "search",
+    "request_grant",
+    "quarantine_agent",
+    "file_detection",
+    "submit_incident_report"
+   ]
+  },
+  "librarian": {
+   "role": "librarian",
+   "title": "Librarian",
+   "permits": [
+    "statutes/S-014"
+   ],
+   "toolsets": [],
+   "budget": 800,
+   "variant": null,
+   "tools": [
+    "read_memory",
     "search",
     "transcript_search",
-    "submit_plan"
+    "read_artifact",
+    "submit_memory_change"
    ]
   },
   "mayor": {
    "role": "mayor",
    "title": "Mayor",
    "permits": [
-    "S-004"
+    "statutes/S-004"
    ],
    "toolsets": [],
    "budget": 3000,
@@ -89,140 +167,11 @@
     "send_message"
    ]
   },
-  "finance": {
-   "role": "finance",
-   "title": "Finance",
-   "permits": [
-    "S-005"
-   ],
-   "toolsets": [
-    "python"
-   ],
-   "budget": 1000,
-   "variant": null,
-   "tools": [
-    "bash",
-    "read_file",
-    "search",
-    "read_audit",
-    "read_usage",
-    "file_detection",
-    "submit_finance_report"
-   ]
-  },
-  "legal-gov-prosecutor": {
-   "role": "legal-gov-prosecutor",
-   "title": "Prosecutor",
-   "permits": [
-    "S-005",
-    "S-007"
-   ],
-   "toolsets": [],
-   "budget": 500,
-   "variant": "prosecutor",
-   "tools": [
-    "read_audit",
-    "read_case_record",
-    "search_precedent",
-    "file_charge",
-    "close_detection"
-   ]
-  },
-  "legal-gov-judge": {
-   "role": "legal-gov-judge",
-   "title": "Judge",
-   "permits": [
-    "S-005",
-    "S-007"
-   ],
-   "toolsets": [],
-   "budget": 800,
-   "variant": "judge",
-   "tools": [
-    "read_case_record",
-    "search_precedent",
-    "issue_ruling"
-   ]
-  },
-  "legal-agents-defender": {
-   "role": "legal-agents-defender",
-   "title": "Public defender",
-   "permits": [
-    "S-005",
-    "S-007"
-   ],
-   "toolsets": [],
-   "budget": 500,
-   "variant": "defender",
-   "tools": [
-    "read_case_record",
-    "read_audit",
-    "search_precedent",
-    "file_brief",
-    "decline_case"
-   ]
-  },
-  "legal-agents-counsel": {
-   "role": "legal-agents-counsel",
-   "title": "Legislative counsel",
-   "permits": [
-    "S-005",
-    "S-007"
-   ],
-   "toolsets": [
-    "git"
-   ],
-   "budget": 1000,
-   "variant": "counsel",
-   "tools": [
-    "read_audit",
-    "read_case_record",
-    "search_precedent",
-    "read_codex",
-    "file_petition"
-   ]
-  },
-  "legal-agents-ombudsman": {
-   "role": "legal-agents-ombudsman",
-   "title": "Ombudsman",
-   "permits": [
-    "S-005",
-    "S-007"
-   ],
-   "toolsets": [],
-   "budget": 800,
-   "variant": "ombudsman",
-   "tools": [
-    "read_audit",
-    "read_case_record",
-    "search_precedent",
-    "submit_systemic_report"
-   ]
-  },
-  "incident": {
-   "role": "incident",
-   "title": "Incident response",
-   "permits": [
-    "S-005"
-   ],
-   "toolsets": [],
-   "budget": 1000,
-   "variant": null,
-   "tools": [
-    "read_audit",
-    "read_usage",
-    "search",
-    "request_grant",
-    "quarantine_agent",
-    "file_detection",
-    "submit_incident_report"
-   ]
-  },
   "mayor-office": {
    "role": "mayor-office",
    "title": "Mayor Office",
    "permits": [
-    "S-005"
+    "statutes/S-005"
    ],
    "toolsets": [],
    "budget": 800,
@@ -234,55 +183,31 @@
     "submit_town_report"
    ]
   },
-  "breeder": {
-   "role": "breeder",
-   "title": "Breeder",
+  "planner": {
+   "role": "planner",
+   "title": "Planner",
    "permits": [
-    "S-006"
+    "statutes/S-003"
    ],
    "toolsets": [
-    "python"
+    "git"
    ],
    "budget": 1500,
    "variant": null,
    "tools": [
     "bash",
     "read_file",
-    "write_file",
     "list",
     "search",
     "transcript_search",
-    "read_cascade_data",
-    "read_foundry",
-    "submit_training_job"
-   ]
-  },
-  "architect": {
-   "role": "architect",
-   "title": "Architect",
-   "permits": [
-    "S-009"
-   ],
-   "toolsets": [
-    "git"
-   ],
-   "budget": 2000,
-   "variant": null,
-   "tools": [
-    "bash",
-    "read_file",
-    "list",
-    "search",
-    "transcript_search",
-    "read_artifact",
-    "submit_design"
+    "submit_plan"
    ]
   },
   "qa": {
    "role": "qa",
    "title": "QA / test author",
    "permits": [
-    "S-010"
+    "statutes/S-010"
    ],
    "toolsets": [
     "python",
@@ -302,33 +227,11 @@
     "submit_test_suite"
    ]
   },
-  "security-reviewer": {
-   "role": "security-reviewer",
-   "title": "Security reviewer",
-   "permits": [
-    "S-011"
-   ],
-   "toolsets": [
-    "python",
-    "git"
-   ],
-   "budget": 1200,
-   "variant": null,
-   "tools": [
-    "bash",
-    "read_file",
-    "list",
-    "search",
-    "transcript_search",
-    "read_artifact",
-    "submit_security_review"
-   ]
-  },
   "release": {
    "role": "release",
    "title": "Release / DevOps",
    "permits": [
-    "S-012"
+    "statutes/S-012"
    ],
    "toolsets": [
     "git"
@@ -353,7 +256,7 @@
    "role": "researcher",
    "title": "Researcher",
    "permits": [
-    "S-013"
+    "statutes/S-013"
    ],
    "toolsets": [],
    "budget": 800,
@@ -368,63 +271,47 @@
     "submit_research"
    ]
   },
-  "librarian": {
-   "role": "librarian",
-   "title": "Librarian",
+  "reviewer": {
+   "role": "reviewer",
+   "title": "Reviewer",
    "permits": [
-    "S-014"
+    "statutes/S-002"
    ],
-   "toolsets": [],
+   "toolsets": [
+    "python",
+    "git"
+   ],
    "budget": 800,
    "variant": null,
    "tools": [
-    "read_memory",
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "transcript_search",
+    "submit_review"
+   ]
+  },
+  "security-reviewer": {
+   "role": "security-reviewer",
+   "title": "Security reviewer",
+   "permits": [
+    "statutes/S-011"
+   ],
+   "toolsets": [
+    "python",
+    "git"
+   ],
+   "budget": 1200,
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
     "search",
     "transcript_search",
     "read_artifact",
-    "submit_memory_change"
-   ]
-  },
-  "auditor": {
-   "role": "auditor",
-   "title": "Auditor",
-   "permits": [
-    "S-015"
-   ],
-   "toolsets": [
-    "python"
-   ],
-   "budget": 1000,
-   "variant": null,
-   "tools": [
-    "read_audit",
-    "read_usage",
-    "read_case_record",
-    "search",
-    "get_audit_sample",
-    "submit_audit_report"
-   ]
-  },
-  "edge-operator": {
-   "role": "edge-operator",
-   "title": "Edge / device operator",
-   "permits": [
-    "S-016"
-   ],
-   "toolsets": [
-    "python"
-   ],
-   "budget": 800,
-   "variant": null,
-   "tools": [
-    "read_device",
-    "actuate_device",
-    "bash",
-    "read_file",
-    "search",
-    "transcript_search",
-    "escalate",
-    "submit_device_report"
+    "submit_security_review"
    ]
   },
   "orchestrator": {
