@@ -68,6 +68,11 @@ impl Apid {
         self.post(&format!("/internal/v1/agents/{cid}/gone"), &body, GONE_TIMEOUT).map(drop)
     }
 
+    /// Sends one egress audit record (`record`, its JSON) for the agent at `cid`.
+    pub fn egress(&self, cid: u32, record: &str) -> Result<(), String> {
+        self.post(&format!("/internal/v1/agents/{cid}/egress"), record, Duration::from_secs(2)).map(drop)
+    }
+
     /// One authenticated POST whose answer must be 200 and JSON.
     fn post(&self, path: &str, body: &str, timeout: Duration) -> Result<serde_json::Value, String> {
         let token = self.token()?;
