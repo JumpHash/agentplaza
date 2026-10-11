@@ -3,7 +3,7 @@
    per role of docs/agents/initial-roles.json — grouped by role and read from
    the same store as every other view: the state and guest CID are the
    register's, the line count is the same serial cache the run entry reads,
-   and lines/s is the same activity tracker the map and 3D view pulse from.
+   and lines/s is the same activity tracker the map and the floor draw from.
    A VM the register gives no role is not a roster row, and a register that
    names no roles gets the honest hint, never a placeholder fleet.
 

@@ -2,7 +2,7 @@
    harness logs every protocol line it sends ([vsock->]) and receives
    ([vsock<-]) to the serial console — the only place a session is observable
    from outside the guest. This module is the one pure derivation of "where
-   the session stands": the 3D district's live arcs and the run report's
+   the session stands": the run report's session summary is derived from it, and
    session summary both read it, so they can never disagree.
    The transcript is untrusted: every payload is JSON.parsed inside a guard
    and must match the frozen shapes (crates/agent-harness proto.rs); anything

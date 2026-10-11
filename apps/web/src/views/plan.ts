@@ -1,5 +1,5 @@
 /* The surveyor's-plan pen: the theme palette and mono fonts the canvases
-   (map, telemetry) and the 3D scene read. Colours come from the CSS custom
+   (map, telemetry) and the floor's scene read. Colours come from the CSS custom
    properties, re-read at every render, so a theme switch mid-session repaints
    every surface on the next store render — nothing is cached per theme. */
 

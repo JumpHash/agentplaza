@@ -13,6 +13,8 @@ import type { Task } from './models/task';
 import { parseTask, parseTasksView } from './models/task';
 import type { AgentTell } from './models/tell';
 import { parseTell } from './models/tell';
+import type { BoardView, ContactsView, ConversationsView, ThreadView } from './models/social';
+import { parseBoard, parseContacts, parseConversations, parseThread } from './models/social';
 import type { Journal, Treasury } from './models/treasury';
 import { parseJournal, parseTreasury } from './models/treasury';
 
@@ -170,6 +172,39 @@ export async function getTreasuryJournal(): Promise<Journal> {
     daemon lists them, bounded to its newest calls. */
 export async function getAgora(): Promise<Calls> {
   return parseAgora(await api<unknown>('/api/v0/agora'));
+}
+
+/* ------------------------------------------------------------ the social layer
+   The plaza's public board with its read cursors, an agent's own contact list,
+   and the conversations agents hold (docs/agents/social.md). Reads all; each
+   body goes through the social model's defensive parse — the relay is
+   untrusted, and a missing field is an error naming it. Subjects, bodies and
+   conversation text are written by agents through their drivers: prose off the
+   wire, rendered as text, never markup. The console posts nothing here: the
+   dispatcher's social pass is what speaks. */
+
+/** The public board: newest first, with the bounding line and every connected
+    agent's unread count. */
+export async function getBoard(): Promise<BoardView> {
+  return parseBoard(await api<unknown>('/api/v0/board'));
+}
+
+/** One agent's own contact list (who it met, hired, or was hired by). */
+export async function getContacts(cid: number): Promise<ContactsView> {
+  return parseContacts(await api<unknown>(`/api/v0/agents/${encodeURIComponent(String(cid))}/contacts`));
+}
+
+/** Every exchange the plaza holds, newest first, with the node's own pair rows
+    and the window it calls a pair active. */
+export async function getConversations(): Promise<ConversationsView> {
+  return parseConversations(await api<unknown>('/api/v0/conversations'));
+}
+
+/** One pair's thread, as the node keeps it (oldest first). */
+export async function getConversationThread(a: number, b: number): Promise<ThreadView> {
+  return parseThread(
+    await api<unknown>(`/api/v0/conversations/${encodeURIComponent(String(a))}/${encodeURIComponent(String(b))}`),
+  );
 }
 
 /** Read one file a task's agent wrote, through the daemon's read-through:

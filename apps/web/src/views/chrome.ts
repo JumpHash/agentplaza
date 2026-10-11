@@ -11,7 +11,7 @@ import { isOpenTask } from '../models/task';
 import { store } from '../store';
 
 /* The register's marks: one filled colour (the owner's orange); every other
-   state is ink or an outlined shape. The shapes pair with the map and 3D. */
+   state is ink or an outlined shape. The shapes pair with the map and the floor. */
 const RUN_MARK: Record<RunState, string> = {
   starting: 'mk warn',
   running: 'mk ok',
@@ -107,10 +107,10 @@ const HEALTH_MARK: Record<string, string> = { live: 'mk ok', stale: 'mk warn', d
    carried, kept honest about being transport — daemon health is the polls'. */
 function renderWire(): void {
   const w = store.wire;
-  const total = w.run + w.vm + w.serial + w.task + w.treasury + w.agora;
+  const total = w.run + w.vm + w.serial + w.task + w.treasury + w.agora + w.board + w.conversation;
   byId('colo-wire').textContent =
     store.stream === 'live'
-      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task · ${fmtNum(w.treasury)} treasury · ${fmtNum(w.agora)} agora)`
+      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task · ${fmtNum(w.treasury)} treasury · ${fmtNum(w.agora)} agora · ${fmtNum(w.board)} board · ${fmtNum(w.conversation)} talk)`
       : store.stream === 'reconnecting'
         ? 'The wire · down — reconnecting; the polls carry the register'
         : 'The wire · opening…';
@@ -123,7 +123,24 @@ export function renderChrome(): void {
   byId('nav-machine').textContent = store.machine?.class ?? '—';
   const vms = store.runs.reduce((n, r) => n + r.vms.length, 0);
   byId('nav-map').textContent = store.runsError != null ? '—' : fmtNum(vms);
-  byId('nav-3d').textContent = byId('nav-map').textContent;
+  /* the floor answers one question — how many agents stand on it (the
+     register's role VMs, joined to the hub's connected agents by CID, the
+     same join the floor draws) */
+  const connectedCids = store.hubError == null && store.hub != null ? new Set(store.hub.agents.map((a) => a.cid)) : null;
+  let onFloor = 0;
+  const seenCids = new Set<number>();
+  for (const run of store.runs) {
+    for (const vm of run.vms) {
+      if (roleOf(vm) == null) continue;
+      if (vm.guest_cid != null) {
+        if (seenCids.has(vm.guest_cid)) continue;
+        seenCids.add(vm.guest_cid);
+      }
+      onFloor++;
+    }
+  }
+  if (connectedCids != null) for (const cid of connectedCids) if (!seenCids.has(cid)) onFloor++;
+  byId('nav-floor').textContent = store.runsError != null && store.hubError != null ? '—' : fmtNum(onFloor);
   /* the roster answers one question — how many role agents are running now */
   let roleAgents = 0;
   let roleRunning = 0;
@@ -147,6 +164,9 @@ export function renderChrome(): void {
      task whose offer stands, no award yet); an unreadable board reads '—' */
   byId('nav-market').textContent =
     store.callsError != null ? '—' : fmtNum(store.calls.filter((c) => c.state === 'open').length);
+  /* the board answers one question — how many posts the public board holds; a
+     board this node does not serve reads '—' */
+  byId('nav-board').textContent = store.boardError != null ? '—' : fmtNum(store.boardTotal);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 

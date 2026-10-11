@@ -1,5 +1,5 @@
 /* Per-VM serial activity: lines-per-second from poll deltas.
-   The map and the 3D view read this to pulse running VMs; the run page
+   The map and the floor read this to pulse the fleet; the run page
    shows it as a number. Fed by the store on every detail merge. */
 
 const EMA_ALPHA = 0.4;

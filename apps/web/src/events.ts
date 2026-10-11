@@ -45,6 +45,9 @@ const TASK_STATES: Readonly<Record<string, true>> = {
 /* The two things an agora frame can say a call did: a bid landed, or the call
    was awarded. A frame that names neither is dropped whole. */
 const AGORA_KINDS: Readonly<Record<string, true>> = { bid: true, award: true };
+/* A static membership table for the board's own frames: a post written, or a
+   read cursor advanced. A hostile kind is refused whole. */
+const BOARD_KINDS: Readonly<Record<string, true>> = { post: true, read: true };
 
 /** The frame's JSON, or null when it is not an object we can use — a
     malformed frame (a hostile or broken relay) is dropped, never fatal. */
@@ -150,5 +153,42 @@ export function startEvents(): void {
        row: not the bids list, not the award's contractor or escrow entry. The
        store asks the board once (coalesced) and invents no bid or award. */
     store.applyAgoraEvent();
+  });
+  source.addEventListener('board', (e) => {
+    const data = frame(e);
+    const kind = data?.['kind'];
+    const agent = data?.['agent_cid'];
+    if (
+      !data ||
+      typeof kind !== 'string' ||
+      BOARD_KINDS[kind] !== true ||
+      typeof agent !== 'number' ||
+      !Number.isInteger(agent)
+    ) {
+      return;
+    }
+    /* a post written, or an agent's read cursor advanced. The frame carries
+       one post (or one cursor) but not the board's totals, its bounding line
+       or the other agents' unread counts: the store asks the board once and
+       invents neither a post nor a read. */
+    store.applyBoardEvent();
+  });
+  source.addEventListener('conversation', (e) => {
+    const data = frame(e);
+    const from = data?.['from_cid'];
+    const to = data?.['to_cid'];
+    if (
+      !data ||
+      typeof from !== 'number' ||
+      !Number.isInteger(from) ||
+      typeof to !== 'number' ||
+      !Number.isInteger(to)
+    ) {
+      return;
+    }
+    /* one exchange. Whether the pair is now active is the node's own answer on
+       the conversations GET, so the store asks for that rather than deciding
+       it here from a single frame. */
+    store.applyConversationEvent(from, to);
   });
 }

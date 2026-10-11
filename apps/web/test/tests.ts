@@ -26,8 +26,35 @@ import { balances, fmtSigned, parseJournal, parseTreasury, postingLabel } from '
 import type { Award, Bid, Call, Calls } from '../src/models/agora';
 import { parseAgora, winningBid } from '../src/models/agora';
 import { sessionOf, sessionSummary } from '../src/models/session';
+import {
+  activePairs,
+  parseBoard,
+  parseContacts,
+  parseConversations,
+  parseThread,
+  readLine,
+  upToDateLine,
+  type Conversation,
+} from '../src/models/social';
+import {
+  ROBOT_STATES,
+  WORKING_LPS,
+  clampPan,
+  clampZoom,
+  floorCountLine,
+  floorLabel,
+  gatherPlacements,
+  gatherLinks,
+  hireLinks,
+  lastPostBy,
+  readFloor,
+  roleMonogram,
+  rtsFraming,
+  rtsPanOffset,
+  rtsViewH,
+  type FloorSource,
+} from '../src/models/floor';
 import { Store } from '../src/store';
-import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
 import { readRoster } from '../src/views/roster';
 
 let failures = 0;
@@ -147,7 +174,7 @@ store.applyRunEvent('r1', 'done');
 eq(store.details.get('r1')?.state, 'done', 'a run event patches the cached run');
 store.applyVmEvent('r1', 0, 'exited');
 eq(store.details.get('r1')?.vms[0]?.state, 'exited', 'a vm event patches the cached vm');
-eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0, agora: 0 }, 'the wire tallies every frame');
+eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0, agora: 0, board: 0, conversation: 0 }, 'the wire tallies every frame');
 
 /* ------- run ids restart with the daemon: identity is (id, created_at) ---- */
 function runShaped(id: string, createdAt: number, state: 'running' | 'done', serial: string) {
@@ -289,48 +316,224 @@ eq(cidRange(cidRun([vmShaped(0), vmShaped(1)])), null, 'no vsock, no range');
 eq(cidRange(cidRun([vmShaped(0, 10)])), '10', 'a lone CID is itself');
 eq(cidRange(cidRun([vmShaped(0, 11), vmShaped(1, 10), vmShaped(2, 12)])), '10–12', 'the range spans min to max');
 
-/* --------------------------------- the district's pure derivations ------ */
-eq(
-  runPlateLines({
-    id: 'r3', state: 'running', vcpus: 2, memory_mib: 512, beats: null,
-    created_at: 1, ended_at: null, vms: [vmShaped(0, 10), vmShaped(1, 11)],
-  }),
-  { title: 'r3 · running', sub: 'cid 10–11 · 2 VMs × 2 vCPU · 512 MiB' },
-  'the nameplate carries id, state, CID range and shape',
-);
-eq(
-  runPlateLines({
-    id: 'r4', state: 'done', vcpus: 1, memory_mib: 128, beats: 12,
-    created_at: 1, ended_at: 2, vms: [vmShaped(0)],
-  }),
-  { title: 'r4 · done', sub: 'no vsock · 1 VM × 1 vCPU · 128 MiB' },
-  'a run without vsock says so on its plate',
-);
+/* ----------------------------------- the social layer’s parse ---------- */
+/* The board, as `GET /api/v0/board` writes it (docs/agents/social.md, frozen
+   envelopes): a post is prose written by an agent through its driver, so every
+   field is checked and a mistyped one is an error naming its path. */
+const boardBody = {
+  posts: [
+    {
+      id: 'p2', agent_cid: 101, role: 'auditor', subject: 'available for t3', body: 'I can take it.',
+      task: 't3', created_at: 2000, posted_by: 'dispatchd',
+    },
+    {
+      id: 'p1', agent_cid: 100, role: 'architect', subject: 'hiring for t1', body: 'Two bids so far.',
+      task: null, created_at: 1000, posted_by: 'dispatchd',
+    },
+  ],
+  total: 2, limit: 256, truncated: false,
+  unread: [{ agent_cid: 100, count: 1 }, { agent_cid: 101, count: 0 }],
+};
 {
-  const one = overviewFraming(24, 128320, 1);
-  eq(one.target, [0, 0, 0], 'the overview looks at the plot’s centre');
-  eq(one.pos[0], one.pos[2], 'the overview keeps the boot framing’s diagonal');
-  const many = overviewFraming(24, 128320, 20);
-  eq(many.pos[0] > one.pos[0], true, 'many runs widen the overview past the machine span');
-  eq(overviewFraming(2, 1024, 0).pos[0], 16 * 0.9, 'a small machine floors at the minimum span');
-  const focus = focusFraming(5.2, 4.4, -4.5);
-  eq(focus.target, [0, 0.8, -4.5], 'the focus frames the platform’s own centre');
-  eq(focusFraming(20.8, 20, 0).pos[0] > focus.pos[0], true, 'a bigger platform frames from further');
-  eq(arcLift(0), 2.5, 'the arc lift has a floor');
-  eq(arcLift(10), 3.2, 'the arc lift follows the span');
-  eq(arcLift(100), 14, 'the arc lift is bounded');
+  const board = parseBoard(boardBody);
+  eq(board.posts.length, 2, 'the board parses its posts');
+  eq(board.posts[0].id, 'p2', 'newest first, as the node lists them');
+  eq(board.posts[0].task, 't3', 'a post’s task link is kept');
+  eq(board.posts[1].task, null, 'a post with no task reads null, never a made-up id');
+  eq(board.posts[1].posted_by, 'dispatchd', 'the driver that posted is kept');
+  eq(board.unread, [{ agent_cid: 100, count: 1 }, { agent_cid: 101, count: 0 }], 'the unread column parses');
+  eq(board.truncated, false, 'the bounding line parses');
+  throws(() => parseBoard({ posts: [], total: 0, limit: 1 }), 'board.unread', 'a board without the unread column is named');
+  throws(() => parseBoard({ posts: [{ ...boardBody.posts[0], body: 7 }], unread: [], total: 0, limit: 1, truncated: false }), 'board.posts[0].body', 'a non-string body is named at its path');
+  throws(() => parseBoard({ posts: [{ ...boardBody.posts[0], id: 1 }], unread: [], total: 0, limit: 1, truncated: false }), 'board.posts[0].id', 'a non-string id is named');
+  eq(parseBoard({ posts: [], total: 0, limit: 256, truncated: false, unread: [], extra: 'tolerated' }).posts.length, 0, 'an empty board parses, extras tolerated');
 }
 
-/* the session arc's bounds: the protocol window, one beat of dwell after a
-   bye seen on an open run, and never for a killed VM or a historical run */
-eq(arcAlive('active', 'running', null, 1000), true, 'a session in flight draws its arc');
-eq(arcAlive('active', 'exited', null, 1000), false, 'a VM gone mid-session draws no arc');
-eq(arcAlive('active', 'killed', null, 1000), false, 'a killed VM draws no arc');
-eq(arcAlive('complete', 'running', 1000, 1000 + ARC_DWELL_MS - 1), true, 'the dwell keeps a fresh bye on the plot');
-eq(arcAlive('complete', 'exited', 1000, 1000 + ARC_DWELL_MS - 1), true, 'the natural exit path keeps the dwell');
-eq(arcAlive('complete', 'exited', 1000, 1000 + ARC_DWELL_MS), false, 'the dwell ends after one beat');
-eq(arcAlive('complete', 'running', null, 1000), false, 'a session read from history draws no arc');
-eq(arcAlive('complete', 'killed', 1000, 1001), false, 'the strike ends even a fresh dwell');
+/* the contacts a card reads: wrapped by the node, oldest first */
+{
+  const contacts = parseContacts({
+    agent_cid: 100,
+    contacts: [
+      { peer_cid: 101, role: 'auditor', since: 1500, kind: 'met' },
+      { peer_cid: 102, role: 'builder', since: 1600, kind: 'hired' },
+    ],
+    total: 2, limit: 256, truncated: false,
+  });
+  eq(contacts.agent_cid, 100, 'the list says whose it is');
+  eq(contacts.contacts[1].kind, 'hired', 'a contact’s kind parses');
+  throws(() => parseContacts({ agent_cid: 100, contacts: [{ peer_cid: 1, role: 'r', since: 1, kind: 'befriended' }], total: 1, limit: 1, truncated: false }), 'contacts.contacts[0].kind', 'an unknown contact kind is refused whole');
+  throws(() => parseContacts({ agent_cid: 100, contacts: [{ peer_cid: 1, role: 'r', kind: 'met' }], total: 1, limit: 1, truncated: false }), 'contacts.contacts[0].since', 'a contact without a since is named');
+}
+
+/* the conversations, and the pair rows the node itself keeps */
+const convRow = (id: string, from: number, to: number, text: string, at: number): Record<string, unknown> => ({
+  id, from_cid: from, to_cid: to, from_role: 'architect', to_role: 'auditor', text, created_at: at, delivered: true, delivery: null,
+});
+const conversationsBody = {
+  conversations: [convRow('c2', 101, 100, 'on it', 3000), convRow('c1', 100, 101, 'take t3?', 2000)],
+  pairs: [{ a: 100, b: 101, active: true, count: 2, last_at: 3000 }],
+  active_secs: 120, total: 2, limit: 256, truncated: false,
+};
+{
+  const view = parseConversations(conversationsBody);
+  eq(view.conversations.length, 2, 'the exchanges parse');
+  eq(view.conversations[0].from_role, 'architect', 'an exchange carries the roles the node records');
+  eq(view.active_secs, 120, 'the activity window comes from the node');
+  /* the node’s own pair rows are the authority; the exchange fallback is read
+     only when they are absent (an older node, a fixture) */
+  const pairs = activePairs(view, 3000);
+  eq(pairs, [{ a: 100, b: 101, last_at: 3000, exchanges: 2 }], 'the node’s own pair row decides who is talking');
+  const fresh = activePairs({ conversations: view.conversations, active_secs: 120 }, 3000);
+  eq(fresh.length, 1, 'without pair rows the exchanges are read against the node’s window');
+  const stale = activePairs({ conversations: view.conversations, active_secs: 120 }, 3000 + 121_000);
+  eq(stale.length, 0, 'a pair falls out of the window after active_secs');
+  /* a hostile frame: an exchange without its text is a mistyped body */
+  throws(() => parseConversations({ ...conversationsBody, conversations: [{ ...convRow('c1', 1, 2, 'x', 1), text: 5 }] }), 'conversations.conversations[0].text', 'a non-string exchange text is named');
+  /* the pair thread: the node sends `messages`, oldest first */
+  const thread = parseThread({
+    a: 100, b: 101, active: true, active_secs: 120,
+    messages: [convRow('c1', 100, 101, 'take t3?', 2000), convRow('c2', 101, 100, 'on it', 3000)],
+    total: 2, limit: 256, truncated: false,
+  });
+  eq(thread.messages.map((m) => m.id), ['c1', 'c2'], 'the thread is the node’s own order');
+  eq(thread.a, 100, 'the thread echoes the pair as asked');
+  throws(() => parseThread({ a: 1, b: 2, active: true, active_secs: 120, messages: [], total: 0, limit: 1 }), 'thread.truncated', 'a thread without its bounding line is named');
+}
+
+/* the board’s own lines: the read side of the node’s unread count */
+eq(readLine(14, 2), 'read 12 of 14', 'the read line is the total less the unread');
+eq(readLine(14, 0), 'read 14 of 14', 'an agent up to date has read all of it');
+eq(readLine(3, 9), 'read 0 of 3', 'a stale cursor never reads as a negative');
+eq(upToDateLine([]), 'no agent reads reported', 'no cursors reads honestly');
+eq(upToDateLine([{ agent_cid: 1, count: 0 }, { agent_cid: 2, count: 3 }]), '1 of 2 agents up to date', 'the board’s summary counts the up-to-date agents');
+
+/* -------------------------------- the floor’s pure derivations ---------- */
+/* The layout rule: roles ascending by code unit, station r at column r mod
+   ceil(sqrt(n)), row floor(r / ceil(sqrt(n))), at a fixed pitch; a role’s
+   agents in ascending CID order inside its own block. */
+{
+  const sources: FloorSource[] = [
+    { cid: 101, role: 'auditor', runId: 'r1', vmId: 1, lines: 4, lps: 0, vmState: 'running' },
+    { cid: 100, role: 'architect', runId: 'r1', vmId: 0, lines: 2, lps: 0.5, vmState: 'running' },
+    { cid: 102, role: 'builder', runId: 'r1', vmId: 2, lines: 0, lps: 0, vmState: 'running' },
+  ];
+  const read = readFloor(sources, new Set([100, 101]), null, [], 1000);
+  eq(read.stations.map((s) => s.role), ['architect', 'auditor', 'builder'], 'the stations are the roles, ascending');
+  eq(read.stations.length, 3, 'one station per role');
+  eq(read.stations[0].x, 0, 'the first station stands at the origin');
+  eq(read.stations[2].y > read.stations[0].y, true, 'a fourth station wraps to a second row');
+  eq(read.width > 0 && read.height > 0, true, 'the plan has an extent');
+  eq(read.counts, { talking: 0, working: 1, idle: 1, unreachable: 1 }, 'states: working past the threshold, idle, and the hub’s own absences');
+  eq(read.robots.find((r) => r.source.cid === 100)?.state, 'working', `${WORKING_LPS} lines/s is working`);
+  eq(read.robots.find((r) => r.source.cid === 102)?.state, 'unreachable', 'a register row the hub does not list is unreachable');
+  eq(read.hubReadable, true, 'a readable hub is what lets a robot read unreachable');
+  /* the join key is stable across renders: a robot the register gives no CID
+     keys by its role, not by its index */
+  const keyed = readFloor([{ cid: null, role: 'planner', runId: 'r2', vmId: 0, lines: 0, lps: 0, vmState: 'running' }], null, null, [], 0);
+  eq(keyed.robots[0].key, 'role:planner#0', 'a CID-less row keys by role and rank');
+  eq(keyed.robots[0].state, 'idle', 'with the hub unreadable no robot reads unreachable');
+  eq(keyed.hubReadable, false, 'an unreadable hub is said so');
+  /* no source at all: a blank register draws no robots and no stations */
+  const blank = readFloor([], null, null, [], 0);
+  eq(blank.robots.length, 0, 'a blank register draws no robots');
+  eq(floorCountLine(blank), 'no agents on the floor', 'a blank floor says so');
+  /* the monogram and the count line */
+  eq(roleMonogram('legal-agents-counsel'), 'LA', 'a multi-word role monograms its first two words');
+  eq(roleMonogram('architect'), 'AR', 'a single-word role monograms its first two letters');
+  eq(roleMonogram(''), '??', 'a role with no letters monograms nothing');
+  eq(floorCountLine(read), '3 agents · 1 working · 1 idle · 1 unreachable', 'the count line names each state it sees');
+  eq(ROBOT_STATES.join(','), 'talking,working,idle,unreachable', 'the state order is fixed');
+}
+
+/* a conversation walks the pair adjacent: both robots stand at the midpoint
+   of their own homes, PAIR_GAP apart, ordered by CID */
+{
+  const homes = new Map([[100, { x: 0, y: 0 }], [101, { x: 100, y: 0 }], [102, { x: 0, y: 200 }]]);
+  const one = gatherPlacements([{ a: 100, b: 101, kind: 'conversation', at: 5 }], homes);
+  eq(one.gatherings.length, 1, 'a pair is one gathering');
+  eq(one.gatherings[0].x, 50, 'the pair meets at the midpoint of their stations');
+  eq(one.targets.get(100)?.kind, 'conversation', 'the walk is a conversation');
+  eq(Math.abs((one.targets.get(101)?.x ?? 0) - (one.targets.get(100)?.x ?? 0)) > 0, true, 'the pair stands apart, adjacent');
+  eq(one.targets.get(102), undefined, 'an agent in no gathering stays at its station');
+  /* three agents linked pairwise stand in one row at their own centroid */
+  const three = gatherPlacements(
+    [
+      { a: 100, b: 101, kind: 'conversation', at: 1 },
+      { a: 101, b: 102, kind: 'conversation', at: 2 },
+    ],
+    homes,
+  );
+  eq(three.gatherings.length, 1, 'a chain of links is one gathering');
+  eq(three.gatherings[0].cids, [100, 101, 102], 'its members are the linked CIDs, ascending');
+  /* a hiring outranks nothing: the same pair with a conversation is talking */
+  const mixed = gatherLinks([{ a: 100, b: 101, last_at: 9 }], [
+    { task: 't1', author_cid: 101, contractor_cid: 100, at: 1 },
+  ]);
+  eq(mixed, [{ a: 100, b: 101, kind: 'conversation', at: 9 }], 'a conversation outranks a hiring on the same pair');
+  const hireOnly = gatherLinks([], [{ task: 't1', author_cid: 100, contractor_cid: 101, at: 3 }]);
+  eq(hireOnly, [{ a: 100, b: 101, kind: 'hire', at: 3 }], 'a hiring alone draws its own joint');
+}
+
+/* a hiring is derived from the board and the ledger: the award’s note names
+   the task, the ledger’s copy names the contractor, the note’s author is the
+   awarder (the agora’s own template — docs/agents/social.md) */
+{
+  const posts = [
+    { id: 'p3', agent_cid: 100, role: 'mayor', subject: 'hiring for t1', body: 'awarded', task: 't1', created_at: 3000, posted_by: 'noded' },
+    { id: 'p2', agent_cid: 101, role: 'builder', subject: 'available for t1', body: 'me', task: 't1', created_at: 2000, posted_by: 'dispatchd' },
+    { id: 'p1', agent_cid: 102, role: 'auditor', subject: 'hiring for t9', body: 'nothing on the ledger', task: null, created_at: 1000, posted_by: 'noded' },
+  ];
+  const tasks = [
+    { id: 't1', goal: 'g', acceptance: null, budget: 0, state: 'claimed' as const, role: 'builder', assignee_id: 'builder', agent_cid: 101, verifier_id: null, note: null, created_at: 1, updated_at: 2 },
+  ];
+  const hires = hireLinks(posts, tasks);
+  eq(hires.length, 1, 'only a note whose task the ledger names is a hiring');
+  eq(hires[0], { task: 't1', author_cid: 100, contractor_cid: 101, at: 3000 }, 'the pair is the note’s author and the task’s agent');
+  eq(hires[0].author_cid !== hires[0].contractor_cid, true, 'a robot never walks to itself');
+  eq(lastPostBy(posts, 101)?.id, 'p2', 'the last post by an agent is the newest it wrote');
+  eq(lastPostBy(posts, 999), null, 'an agent that never posted has no last post');
+}
+
+/* the floor’s own live label: the fleet by state, then the conversations */
+{
+  const sources: FloorSource[] = [
+    { cid: 100, role: 'architect', runId: 'r1', vmId: 0, lines: 0, lps: 0, vmState: 'running' },
+    { cid: 101, role: 'auditor', runId: 'r1', vmId: 1, lines: 0, lps: 0, vmState: 'running' },
+  ];
+  const conversations: Conversation[] = [
+    { id: 'c1', from_cid: 100, to_cid: 101, from_role: 'architect', to_role: 'auditor', text: 'hi', created_at: 1000, delivered: true, delivery: null },
+  ];
+  const read = readFloor(sources, new Set([100, 101]), { conversations, pairs: [], active_secs: 120 }, [], 1000);
+  eq(read.counts.talking, 2, 'both ends of an active pair are talking');
+  eq(floorLabel(read, { 100: 'architect', 101: 'auditor' }), 'Plaza floor. 2 agents · 2 talking. architect with auditor.', 'the live label names the fleet and the pair');
+  eq(read.gatherings.length, 1, 'the pair is drawn gathered');
+  const quiet = readFloor(sources, new Set([100, 101]), { conversations, pairs: [], active_secs: 120 }, [], 1000 + 121_000);
+  eq(quiet.counts.talking, 0, 'the window closes and nobody is talking');
+  eq(floorLabel(quiet, {}), 'Plaza floor. 2 agents · 2 idle. No conversation is active.', 'an idle plaza says no conversation is active');
+}
+
+/* ------------------------------------- the RTS camera ------------------- */
+{
+  const tilt = (57 * Math.PI) / 180;
+  const view = rtsViewH(1168, 630, 2);
+  eq(view >= 630 * Math.sin(tilt), true, 'the frustum holds the plan’s foreshortened depth');
+  eq(rtsViewH(100, 100, 0.2) >= rtsViewH(100, 100, 2), true, 'a narrow canvas needs a taller frustum');
+  const frame = rtsFraming(1000, 500, 1.6, 1);
+  eq(frame.target, [0, 0, 0], 'the camera aims at the plan’s centre');
+  eq(frame.pos[1] > 0, true, 'the camera stands above the ground');
+  eq(frame.pos[1] / Math.hypot(frame.pos[0], frame.pos[2]) > 1, true, 'and raked steeper than 45°');
+  const zoomed = rtsFraming(1000, 500, 1.6, 2);
+  eq(zoomed.view_h < frame.view_h, true, 'zooming narrows the frustum, never the plan');
+  /* a drag pans against the pointer, and the pan is held inside the plan */
+  const [ox, oz] = rtsPanOffset(10, 0, 1);
+  eq(Math.hypot(ox, oz) > 0, true, 'a drag moves the aim');
+  eq(rtsPanOffset(0, 0, 5), [0, 0], 'a drag of nothing moves nothing');
+  const held = clampPan({ x: 1e6, z: -1e6 }, 1000, 500);
+  eq(Math.abs(held.x) < 1000 && Math.abs(held.z) < 500, true, 'the aim is clamped inside the plan');
+  eq(clampPan({ x: 1, z: 2 }, 1000, 500), { x: 1, z: 2 }, 'a small pan is left alone');
+  eq(clampZoom(100), 3.2, 'the zoom has a ceiling');
+  eq(clampZoom(0), 0.6, 'and a floor');
+}
 
 /* ------------------------------------- the run report, byte for byte ---- */
 eq(fmtDateTime(null), '—', 'no time reads as a dash');
@@ -1006,6 +1209,56 @@ eq(
   await settled;
   eq(typeof s.callsError, 'string', 'the board was asked for the truth');
   eq(s.callsTotal, 0, 'and the frame set no total of its own');
+}
+
+/* a board frame carries one post (or one cursor) — never the totals, the
+   bounding line or the other agents' unread counts: the board is asked, and
+   no post and no read is invented from the frame alone */
+{
+  const s = new Store();
+  s.applyBoardEvent();
+  eq(s.wire.board, 1, 'the wire tallies the board frame');
+  eq(s.board.length, 0, 'no post is invented from a frame');
+  eq(s.boardUnread.length, 0, 'and no read cursor either');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.boardError, 'string', 'the board was asked for the truth');
+  eq(s.boardErrorStatus, null, 'a board that never answered reports no HTTP status');
+  eq(s.boardTotal, 0, 'and the frame set no total of its own');
+}
+
+/* a conversation frame says one exchange happened; whether the pair is now
+   active is the node's own answer, so the store asks for it rather than
+   deciding it here — and a thread the card is showing is refreshed with it */
+{
+  const s = new Store();
+  s.applyConversationEvent(100, 101);
+  eq(s.wire.conversation, 1, 'the wire tallies the conversation frame');
+  eq(s.conversations.length, 0, 'no exchange is invented from a frame');
+  eq(s.convPairs.length, 0, 'and no pair: activity is the node’s own word');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.conversationsError, 'string', 'the conversations were asked for the truth');
+  eq(s.convTotal, 0, 'and the frame set no total of its own');
+  /* a thread the card holds is refreshed by a frame for THAT pair, in either
+     direction — and left alone by a frame for another pair */
+  const t = new Store();
+  t.thread = { a: 100, b: 101, state: 'read', exchanges: [], total: 0, truncated: false, error: '' };
+  t.applyConversationEvent(200, 201);
+  const { promise: other, resolve: otherDone } = Promise.withResolvers<void>();
+  setTimeout(otherDone, 250);
+  await other;
+  eq(t.thread?.state, 'read', 'a frame for another pair leaves the card’s thread alone');
+
+  const u = new Store();
+  u.thread = { a: 100, b: 101, state: 'read', exchanges: [], total: 0, truncated: false, error: '' };
+  u.applyConversationEvent(101, 100);
+  const { promise: mine, resolve: mineDone } = Promise.withResolvers<void>();
+  setTimeout(mineDone, 250);
+  await mine;
+  eq(u.thread?.state, 'error', 'a frame for the shown pair re-reads its thread (either direction)');
 }
 
 if (failures > 0) {

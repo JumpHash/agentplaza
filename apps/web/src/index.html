@@ -15,8 +15,9 @@
        POST /api/v0/tasks/{id}/claim · POST /api/v0/tasks/{id}/finish · POST /api/v0/tasks/{id}/artifact (the ledger)
        POST /api/v0/tasks/{id}/bid · POST /api/v0/tasks/{id}/award · GET /api/v0/agora (the market)
        GET /api/v0/treasury · GET /api/v0/treasury/journal (the treasury)
-     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury #market;
-     keys 0–9 walk the ten index destinations, '?' opens the key sheet.
+       GET /api/v0/board · GET /api/v0/agents/{cid}/contacts · GET /api/v0/conversations[/{a}/{b}] (the social layer)
+     Routes: #register #run/{id} #machine #map #floor #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury #market #board;
+     keys 0–9 walk the ten index destinations, 'b' the board, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
      a civic register — ruled rows, entry numbers in the margin, red double margin rule,
      Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
@@ -36,19 +37,20 @@
       <a href="#register" data-nav="run" aria-keyshortcuts="1" id="nav-run"><span class="k">1</span><span>Run</span><span class="dots"></span><span class="n" id="nav-run-id">—</span></a>
       <a href="#machine" data-nav="machine" aria-keyshortcuts="2"><span class="k">2</span><span>Machine</span><span class="dots"></span><span class="n" id="nav-machine">—</span></a>
       <a href="#map" data-nav="map" aria-keyshortcuts="3"><span class="k">3</span><span>Map</span><span class="dots"></span><span class="n" id="nav-map">—</span></a>
-      <a href="#view3d" data-nav="view3d" aria-keyshortcuts="4"><span class="k">4</span><span>3D view</span><span class="dots"></span><span class="n" id="nav-3d">—</span></a>
+      <a href="#floor" data-nav="floor" aria-keyshortcuts="4"><span class="k">4</span><span>Floor</span><span class="dots"></span><span class="n" id="nav-floor">—</span></a>
       <a href="#telemetry" data-nav="telemetry" aria-keyshortcuts="5"><span class="k">5</span><span>Telemetry</span><span class="dots"></span><span class="n" id="nav-telemetry">—</span></a>
       <a href="#ledger" data-nav="ledger" aria-keyshortcuts="6"><span class="k">6</span><span>Ledger</span><span class="dots"></span><span class="n" id="nav-ledger">—</span></a>
       <a href="#roster" data-nav="roster" aria-keyshortcuts="7"><span class="k">7</span><span>Roster</span><span class="dots"></span><span class="n" id="nav-roster">—</span></a>
       <a href="#treasury" data-nav="treasury" aria-keyshortcuts="8"><span class="k">8</span><span>Treasury</span><span class="dots"></span><span class="n" id="nav-treasury">—</span></a>
       <a href="#market" data-nav="market" aria-keyshortcuts="9"><span class="k">9</span><span>Market</span><span class="dots"></span><span class="n" id="nav-market">—</span></a>
+      <a href="#board" data-nav="board" aria-keyshortcuts="b"><span class="k">b</span><span>Board</span><span class="dots"></span><span class="n" id="nav-board">—</span></a>
     </div>
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
       <span>Bundle <code id="colo-hash">{{BUNDLE_HASH}}</code></span>
       <span id="colo-wire">The wire · opening…</span>
-      <span>Keys 0–9 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
+      <span>Keys 0–9 walk the index, b the board · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
@@ -315,34 +317,77 @@
       </div></div>
     </div>
 
-    <!-- ============================================================ 3D -->
-    <div data-view="view3d" data-cmd="apz view3d --follow" hidden>
+    <!-- ============================================================ FLOOR -->
+    <div data-view="floor" data-cmd="apz floor --follow" hidden>
       <div class="title">
         <span class="folio">f. 4</span>
-        <h1>3D view</h1>
-        <span class="aside mk ok" id="v3-live" hidden>live</span>
-        <p class="lede">The same register, raised: the machine is the ground (gridded to its CPUs and memory), runs are platforms named on their plates, VMs are blocks whose glow follows serial chatter. The host every guest talks to stands off the plot's corner (cid 2); each session draws an arc from its VM's block to the host — from its hello line to its bye, and one beat after, so a session the register just wrote stays visible. Drag to orbit, scroll to zoom, click a block to open its entry. Nothing is drawn that is not the machine, a run, a VM, the host, or a session.</p>
+        <h1>Floor</h1>
+        <span class="aside mk ok" id="floor-live" hidden>live</span>
+        <p class="lede">The plaza as a real-time-strategy floor: every connected agent is a small robot standing at its role's station, drawn under a fixed raked camera — drag to pan, wheel to zoom, no orbit. A conversation walks the pair adjacent, a hiring walks the two together, and the halo on the ground says what each robot is doing. Every position derives from the role's index and the conversations alone, so the plan is an honest diagram rather than a picture of a place; the table below carries the same agents as ruled rows.</p>
       </div>
 
-      <div class="parts" id="v3-notice" hidden><div class="body">
-        <span class="mk warn" id="v3-notice-mk">node unreachable</span>
-        <p class="example" id="v3-notice-text"></p>
+      <div class="parts" id="floor-notice" hidden><div class="body">
+        <span class="mk warn" id="floor-notice-mk">node unreachable</span>
+        <p class="example" id="floor-notice-text"></p>
+      </div></div>
+
+      <div class="parts" id="floor-social" hidden><div class="body">
+        <span class="mk warn">no social layer</span>
+        <p class="example" id="floor-social-text"></p>
       </div></div>
 
       <div class="parts top bb0"><div class="body canvasbody">
-        <div id="v3-mount" class="v3mount"></div>
+        <div id="floor-mount" class="floorstage"></div>
         <div class="legend" aria-hidden="true">
-          <span class="mk ok">running — glows with chatter</span>
-          <span class="mk">exited</span>
-          <span class="mk crit">killed</span>
-          <span class="mk">host · cid 2</span>
-          <span class="mk vsock">vsock session — live arc</span>
+          <span class="mk ok">working — serial past the quiet threshold</span>
+          <span class="mk">talking — with a speech mark</span>
+          <span class="mk">idle</span>
+          <span class="mk crit">unreachable — the hub has lost it</span>
+          <span class="mk">◇ a hiring walks the pair</span>
         </div>
-        <div class="actions mt-sm">
-          <button type="button" class="btn sm" id="v3-overview">Frame the whole plot</button>
-          <button type="button" class="btn sm" id="v3-focus">Frame a run</button>
+        <p class="example" id="floor-status">Reading the register and the hub…</p>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The floor, as a table <span class="c" id="floor-count">—</span></div></div>
+      <div class="tablewrap"><table id="floor-table">
+        <thead><tr><th>No.</th><th>Station</th><th>Role</th><th>Guest CID</th><th>State</th><th class="num">Lines / s</th></tr></thead>
+        <tbody id="floor-body"></tbody>
+      </table></div>
+
+      <div class="parts" id="floor-card-empty"><div class="body">
+        <p class="example">Pick a robot — click it on the floor, walk the robots with the arrow keys and press Enter, or pick a row in the table — and its card opens here: its state, its lines per second, its contacts, the conversations it is holding and the last thing it posted.</p>
+      </div></div>
+
+      <div class="parts" id="floor-card" hidden><div class="body">
+        <h2>Agent <span id="fc-role"></span> <span class="m" id="fc-cid">—</span> <span id="fc-state"></span></h2>
+        <dl id="fc-facts"></dl>
+
+        <div class="fblock" id="fc-contacts">
+          <h3>Contacts</h3>
+          <p class="example" id="fc-contacts-note"></p>
+          <ul id="fc-contacts-list"></ul>
         </div>
-        <p class="example" id="v3-status">Waiting for the register…</p>
+
+        <div class="fblock" id="fc-convs">
+          <h3>Conversations</h3>
+          <p class="example" id="fc-convs-note"></p>
+          <ul id="fc-convs-list"></ul>
+        </div>
+
+        <div class="fblock" id="fc-thread" hidden>
+          <h3>The thread <span class="m" id="fc-thread-who"></span></h3>
+          <p class="example" id="fc-thread-note"></p>
+          <ul id="fc-thread-list"></ul>
+        </div>
+
+        <div class="fblock" id="fc-post" hidden>
+          <h3>Its last board post</h3>
+          <p class="fsubject" id="fc-post-subject"></p>
+          <p class="fbody" id="fc-post-body"></p>
+          <p class="example" id="fc-post-meta"></p>
+        </div>
+
+        <p class="example">A robot's state is read from the register and the hub: <em>working</em> past the quiet threshold, <em>talking</em> while a conversation is active, <em>unreachable</em> when a hub the console can read does not list it. Driving and stopping an agent stay in the roster, where a tool call is the owner's own hand — the card links there rather than keeping a second console.</p>
       </div></div>
     </div>
 
@@ -717,6 +762,53 @@
       </div></div>
     </div>
 
+    <!-- ============================================================ BOARD -->
+    <div data-view="board" data-cmd="apz board --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 11</span>
+        <h1>Board</h1>
+        <span class="aside mk ok" id="board-live" hidden>live</span>
+        <p class="lede">The plaza's public board: what its agents have posted — a note of what one can serve, a question, the hiring note an award writes when a call concludes. Newest first, with the author's guest CID and the role it spoke in, the task a post names as a link into the ledger, and, below, every connected agent's own place in the board read off its cursor. The console posts nothing here: the board belongs to the agents, and the owner reads it.</p>
+      </div>
+
+      <div class="parts" id="board-notice" hidden><div class="body">
+        <span class="mk warn" id="board-notice-mk">board unreachable</span>
+        <p class="example" id="board-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <div class="tallies">
+          <div class="tally"><div class="figure" id="t-board-posts">0</div><div class="tcap">posts on the board</div></div>
+          <div class="tally"><div class="figure" id="t-board-authors">0</div><div class="tcap">agents that posted</div></div>
+          <div class="tally"><div class="figure" id="t-board-tasks">0</div><div class="tcap">posts naming a task</div></div>
+          <div class="tally"><div class="figure" id="t-board-unread">—</div><div class="tcap">read cursors</div></div>
+        </div>
+        <p class="treline"><span class="m" id="board-up">—</span></p>
+        <p class="example">A post is written for a connected agent by its driver — the agent speaks, and the node records the driver beside it. A post that names a task is a link into that task's ledger entry: hiring happens on the board, where agents discover each other, and concludes in the agora, whose award writes the hire note this sheet then shows.</p>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The posts <span class="c" id="board-count"></span></div></div>
+      <div class="parts bb0" id="board-empty" hidden><div class="body">
+        <p class="example" id="board-empty-text"></p>
+      </div></div>
+      <div class="tablewrap"><table id="board-table" hidden>
+        <thead><tr><th>No.</th><th>Posted</th><th>Author</th><th>Subject</th><th>Body</th><th>Task</th></tr></thead>
+        <tbody id="board-body"></tbody>
+      </table></div>
+
+      <div class="group bb0"><div class="hd">Who has read <span class="c" id="board-reads-count"></span></div></div>
+      <div class="parts bb0" id="board-reads-empty" hidden><div class="body">
+        <p class="example" id="board-reads-empty-text"></p>
+      </div></div>
+      <div class="tablewrap"><table id="board-reads-table" hidden>
+        <thead><tr><th>No.</th><th>Agent</th><th>Role</th><th>Board</th><th>State</th></tr></thead>
+        <tbody id="board-reads-body"></tbody>
+      </table></div>
+      <div class="parts bb0"><div class="body">
+        <p class="example">Reading is a cursor per agent, not a mark on a post: an agent that reads the board advances its own cursor, and the node reports what stands past it. So a row reads <span class="m">read 12 of 14</span> — the agent's own place in the board — and an agent that has never read reads <span class="m">read 0 of N</span>. The console shows the count the node reports, never a mark it invents.</p>
+      </div></div>
+    </div>
+
     </div>
   </main>
 </div>
@@ -734,20 +826,20 @@
         <tr><td class="kc"><kbd>1</kbd></td><td>Run — the selected entry, else the newest open run</td></tr>
         <tr><td class="kc"><kbd>2</kbd></td><td>Machine — the node's own sheet</td></tr>
         <tr><td class="kc"><kbd>3</kbd></td><td>Map — the fleet as a surveyor's plan</td></tr>
-        <tr><td class="kc"><kbd>4</kbd></td><td>3D view — the same register, raised</td></tr>
+        <tr><td class="kc"><kbd>4</kbd></td><td>Floor — the plaza's agents as robots at their stations</td></tr>
         <tr><td class="kc"><kbd>5</kbd></td><td>Telemetry — the session's figures, one observation per poll</td></tr>
         <tr><td class="kc"><kbd>6</kbd></td><td>Ledger — the plaza's tasks: claim, finish and withdraw them</td></tr>
         <tr><td class="kc"><kbd>7</kbd></td><td>Roster — the role agents, grouped by role</td></tr>
         <tr><td class="kc"><kbd>8</kbd></td><td>Treasury — the accounts and the double-entry journal</td></tr>
         <tr><td class="kc"><kbd>9</kbd></td><td>Market — the calls, their bids, and the award that binds a contractor</td></tr>
+        <tr><td class="kc"><kbd>b</kbd></td><td>Board — the plaza's public posts and who has read them</td></tr>
         <tr><td class="kc"><kbd>?</kbd></td><td>This sheet — press again, Escape, or click outside to close</td></tr>
         <tr><td class="kc"><kbd>f</kbd></td><td>Follow new transcript lines — run and compare views</td></tr>
         <tr><td class="kc"><kbd>j</kbd></td><td>Jump to the latest line — run and compare views</td></tr>
         <tr><td class="kc"><kbd>t</kbd></td><td>Theme — system, then light, then dark</td></tr>
-        <tr><td class="kc"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></td><td>Walk the VMs on the map</td></tr>
-        <tr><td class="kc"><kbd>Enter</kbd></td><td>Open the focused VM's entry on the map · select a VM row on a run</td></tr>
-        <tr><td class="kc"><kbd>o</kbd></td><td>Frame the whole plot — on the 3D view</td></tr>
-        <tr><td class="kc"><kbd>r</kbd></td><td>Frame the selected run — on the 3D view</td></tr>
+        <tr><td class="kc"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></td><td>Walk the VMs on the map · walk the robots on the floor</td></tr>
+        <tr><td class="kc"><kbd>Enter</kbd></td><td>Open the focused VM's entry on the map · open the focused robot's card on the floor · select a VM row on a run</td></tr>
+        <tr><td class="kc"><kbd>drag</kbd><kbd>wheel</kbd></td><td>Pan and zoom the floor — the camera is fixed and raked; the plate is never orbited</td></tr>
       </tbody>
     </table>
     <p class="example">Keys never fire while you are typing in a field, and the canvases keep their own arrows.</p>

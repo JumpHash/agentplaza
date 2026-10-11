@@ -3,12 +3,15 @@
 
 import './styles/base.css';
 import './styles/views.css';
+import './styles/floor.css';
 
 import { startEvents } from './events';
 import { KEY_ROUTES, NAV_OF, parseRoute } from './router';
 import { store } from './store';
+import { renderBoard } from './views/board';
 import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
 import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
+import { floorState, initFloor, syncFloor, syncFloorVisibility } from './views/floor';
 import { initKeys, keysOpen, toggleKeys } from './views/keys';
 import { initLedger, renderLedger } from './views/ledger';
 import { renderMarket } from './views/market';
@@ -19,7 +22,6 @@ import { renderMap, syncMapVisibility } from './views/map2d';
 import { initRoster, renderRoster } from './views/roster';
 import { initTelemetry, renderTelemetry } from './views/telemetry';
 import { renderTreasury } from './views/treasury';
-import { cameraPreset, cameraState, districtState, initView3d, sync3d } from './views/view3d';
 
 /* ------------------------------------------------------------ routing */
 function show(): void {
@@ -47,6 +49,7 @@ function show(): void {
   store.ensurePolled();
   store.scheduleRender();
   syncMapVisibility();
+  syncFloorVisibility();
 }
 
 function go(hash: string): void {
@@ -120,11 +123,6 @@ document.addEventListener('keydown', (e) => {
     else if (store.route.name === 'compare') (on ? cmpFollowKey : cmpJumpKey)();
     return;
   }
-  /* the 3D view's camera keys (the canvas itself handles them when focused) */
-  if ((e.key === 'o' || e.key === 'r') && store.route.name === 'view3d') {
-    cameraPreset(e.key === 'o' ? 'overview' : 'focus');
-    return;
-  }
   if (e.key === 'Enter' && t instanceof HTMLElement && t.matches('tr[data-sel-vm]')) {
     selectVm(Number(t.getAttribute('data-sel-vm')));
     return;
@@ -150,7 +148,7 @@ initRun();
 initCompare();
 initKeys();
 initTelemetry();
-initView3d();
+initFloor();
 initRoster();
 initLedger();
 
@@ -161,13 +159,14 @@ store.onRender(() => {
     case 'run': renderRun(); break;
     case 'machine': renderMachine(); break;
     case 'map': renderMap(); break;
-    case 'view3d': sync3d(); break;
+    case 'floor': syncFloor(); break;
     case 'compare': renderCompare(); break;
     case 'telemetry': renderTelemetry(); break;
     case 'roster': renderRoster(); break;
     case 'ledger': renderLedger(); break;
     case 'treasury': renderTreasury(); break;
     case 'market': renderMarket(); break;
+    case 'board': renderBoard(); break;
   }
 });
 
@@ -227,6 +226,27 @@ window.__PLAZA_DIAG__ = {
       error: store.hubError,
     };
   },
-  get camera3d() { return cameraState(); },
-  get district3d() { return districtState(); },
+  get floor() { return floorState(); },
+  get board() {
+    return {
+      posts: store.board.length,
+      total: store.boardTotal,
+      truncated: store.boardTruncated,
+      unread: store.boardUnread.length,
+      error: store.boardError,
+      errorStatus: store.boardErrorStatus,
+    };
+  },
+  get social() {
+    return {
+      conversations: store.conversations.length,
+      pairs: store.convPairs.length,
+      active: store.convPairs.filter((p) => p.active).length,
+      activeSecs: store.convActiveSecs,
+      contacts: [...store.contacts.keys()],
+      thread: store.thread == null ? null : { a: store.thread.a, b: store.thread.b, state: store.thread.state },
+      error: store.conversationsError,
+      errorStatus: store.conversationsErrorStatus,
+    };
+  },
 };

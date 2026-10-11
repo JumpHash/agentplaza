@@ -4,7 +4,7 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getAgora, getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, tellAgent } from './api';
+import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, tellAgent } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { Call } from './models/agora';
 import type { ArtifactReadState } from './models/artifact';
@@ -15,6 +15,8 @@ import type { HubStatus } from './models/hub';
 import type { Machine } from './models/machine';
 import type { Run, RunState, VmState } from './models/run';
 import { isOpen, seqOf } from './models/run';
+import type { BoardPost, Contact, Conversation, ConversationPair, UnreadCount } from './models/social';
+import { ACTIVE_SECS, socialSeq } from './models/social';
 import type { Task, TaskState } from './models/task';
 import { isFinishedTask, seqOf as taskSeq } from './models/task';
 import type { TellState } from './models/tell';
@@ -24,7 +26,7 @@ import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'view3d' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'floor' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market' | 'board';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 /** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
@@ -80,18 +82,50 @@ declare global {
         readonly total: number;
         readonly error: string | null;
       };
-      /** The 3D camera's position and target, when the scene has booted. */
-      readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
-      /** What the 3D plot holds — platforms, blocks, live arcs — and the
-          words drawn on the first run's plate and first block. */
-      readonly district3d: {
-        readonly runs: number;
-        readonly vms: number;
-        readonly arcs: number;
-        readonly sessions: number;
-        readonly plate: string | null;
+      /** The floor as the scene holds it: the robots on the plan, the
+          stations, the gatherings being walked, the states they wear, the
+          walks in flight and the fixed camera's own frame. */
+      readonly floor: {
+        readonly robots: number;
+        readonly stations: number;
+        readonly gatherings: number;
+        readonly states: Record<string, number>;
+        readonly selected: number | null;
+        readonly walks: number;
+        readonly positions: ReadonlyArray<{
+          readonly cid: number | null;
+          readonly x: number;
+          readonly z: number;
+          readonly gathering: string | null;
+        }>;
+        readonly tint_cycle: number;
+        readonly camera: { readonly zoom: number; readonly pan: readonly number[]; readonly view_h: number };
+        readonly plan: { readonly width: number; readonly height: number };
         readonly label: string | null;
       } | null;
+      /** The public board as the store holds it: how many posts the console
+          carries, the board's own total, the read cursors it reports, and the
+          error (with its status) when the board is unreadable. */
+      readonly board: {
+        readonly posts: number;
+        readonly total: number;
+        readonly truncated: boolean;
+        readonly unread: number;
+        readonly error: string | null;
+        readonly errorStatus: number | null;
+      };
+      /** The social layer: the conversations, the node's own pair rows, the
+          contacts the console has read, and the thread it is showing. */
+      readonly social: {
+        readonly conversations: number;
+        readonly pairs: number;
+        readonly active: number;
+        readonly activeSecs: number;
+        readonly contacts: readonly number[];
+        readonly thread: { readonly a: number; readonly b: number; readonly state: string } | null;
+        readonly error: string | null;
+        readonly errorStatus: number | null;
+      };
     };
   }
 }
@@ -155,6 +189,33 @@ export interface TellRead {
   at: number;
 }
 
+/** One agent's contact list as the console last read it. Asked for when a
+    card opens and never polled: the list is the agent's own, and the node
+    emits no frame when it changes (docs/agents/social.md). */
+export interface ContactsRead {
+  cid: number;
+  state: 'loading' | 'read' | 'error';
+  contacts: Contact[];
+  /** How many entries the agent's list holds (may exceed the bounded copy). */
+  total: number;
+  truncated: boolean;
+  /** The refusal, in whoever wrote it — verbatim, never paraphrased. */
+  error: string;
+}
+
+/** One pair's thread as the console last read it, newest first (the node
+    sends it oldest first; the card reads the way the register reads). Only
+    ever set by the owner's own click — a thread is asked for, not prefetched. */
+export interface ThreadRead {
+  a: number;
+  b: number;
+  state: 'loading' | 'read' | 'error';
+  exchanges: Conversation[];
+  total: number;
+  truncated: boolean;
+  error: string;
+}
+
 const TICK_MS =
   typeof window !== 'undefined' && typeof window.__PLAZA_TICK_MS__ === 'number' && window.__PLAZA_TICK_MS__ > 0
     ? window.__PLAZA_TICK_MS__
@@ -164,6 +225,8 @@ const HUB_EVERY = 15; // ticks between hub polls (the hub's status is frozen and
 const TASKS_EVERY = 2; // ticks between task-ledger polls (the ledger is small and changes fast)
 const TREASURY_EVERY = 2; // ticks between treasury polls (accounts + journal ride the task cadence)
 const AGORA_EVERY = 2; // ticks between agora polls (the board is small and changes fast — bids land in bursts)
+const BOARD_EVERY = 2; // ticks between public-board polls (posts land in bursts; the cursor column moves with them)
+const CONVERSATIONS_EVERY = 2; // ticks between conversation polls (the floor's proximity derives from them)
 const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
 const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
 const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
@@ -208,6 +271,36 @@ export class Store {
   /** Whether the daemon's response was cut to its own limit. */
   callsTruncated = false;
   callsError: string | null = null;
+  /** The public board, newest first (the daemon lists posts newest first; the
+      console reads them the way the register reads runs). The `board` SSE
+      frames ask for it, exactly as the task events ask for the ledger. */
+  board: BoardPost[] = []; // newest first
+  /** How many posts the board holds (may exceed the bounded copy). */
+  boardTotal = 0;
+  boardLimit = 0;
+  boardTruncated = false;
+  /** Every connected agent's unread count — how "who has read what" is read. */
+  boardUnread: UnreadCount[] = [];
+  boardError: string | null = null;
+  /** The status behind `boardError`, so a node without the social layer is
+      told apart from a node that is merely unreachable (a 404). */
+  boardErrorStatus: number | null = null;
+  /** The conversations the plaza is holding, newest first, with the node's own
+      pair rows and the window it calls a pair active. The floor's proximity
+      derives from these; the `conversation` SSE frames ask for them. */
+  conversations: Conversation[] = []; // newest first
+  convPairs: ConversationPair[] = [];
+  /** The window the node itself calls a pair active, in seconds. */
+  convActiveSecs = ACTIVE_SECS;
+  convTotal = 0;
+  convLimit = 0;
+  convTruncated = false;
+  conversationsError: string | null = null;
+  conversationsErrorStatus: number | null = null;
+  /** Per-agent contact lists, by CID — read on demand, never polled. */
+  readonly contacts = new Map<number, ContactsRead>();
+  /** The one pair's thread the card is reading, or null. */
+  thread: ThreadRead | null = null;
   /** The task the ledger sheet is pinned to (`#ledger/{id}`), or null. */
   taskDetailId: string | null = null;
   /** The artifact the ledger's sheet last asked for — the one read in flight,
@@ -222,7 +315,7 @@ export class Store {
   /** The newest drive, whatever agent — the console's own readback of the last
       call it made. */
   lastTell: TellRead | null = null;
-  /** Every run fetched with serial, by id (map/3D poll each open run). */
+  /** Every run fetched with serial, by id (map/floor poll each open run). */
   readonly details = new Map<string, Run>();
   detailError: string | null = null;
 
@@ -247,7 +340,7 @@ export class Store {
   /* the live wire (GET /api/v0/events): its own liveness and tallies —
      informational only; daemon health stays with the polls */
   stream: StreamState = 'connecting';
-  readonly wire = { run: 0, vm: 0, serial: 0, task: 0, treasury: 0, agora: 0 };
+  readonly wire = { run: 0, vm: 0, serial: 0, task: 0, treasury: 0, agora: 0, board: 0, conversation: 0 };
   /** Render passes flushed; the harness asserts a burst cannot storm the paint path. */
   renders = 0;
 
@@ -265,6 +358,9 @@ export class Store {
   private tasksRefreshTimer: number | null = null;
   private treasuryRefreshTimer: number | null = null;
   private callsRefreshTimer: number | null = null;
+  private boardRefreshTimer: number | null = null;
+  private conversationsRefreshTimer: number | null = null;
+  private threadRefreshTimer: number | null = null;
   private readonly detailRefreshPending = new Set<string>();
   private readonly vmPushAt = new Map<string, number>();
   /** The newest artifact ask's serial: an older answer never overwrites it. */
@@ -357,6 +453,12 @@ export class Store {
     const wantCalls =
       first || this.ticks % AGORA_EVERY === 0 || this.callsError != null || this.calls.length === 0;
     if (wantCalls) jobs.push(this.pollCalls());
+    const wantBoard =
+      first || this.ticks % BOARD_EVERY === 0 || this.boardError != null || this.board.length === 0;
+    if (wantBoard) jobs.push(this.pollBoard());
+    const wantConversations =
+      first || this.ticks % CONVERSATIONS_EVERY === 0 || this.conversationsError != null || this.conversations.length === 0;
+    if (wantConversations) jobs.push(this.pollConversations());
     if (first || this.ticks % MACHINE_EVERY === 0 || route.name === 'machine') jobs.push(this.pollMachine());
     if (first || this.ticks % HUB_EVERY === 0) jobs.push(this.pollHub());
 
@@ -372,9 +474,9 @@ export class Store {
       jobs.push(this.pollDetail(route.compare.a, true));
       if (route.compare.b !== route.compare.a) jobs.push(this.pollDetail(route.compare.b, true));
     } else if (
-      route.name === 'map' || route.name === 'view3d' || route.name === 'telemetry' || route.name === 'roster'
+      route.name === 'floor' || route.name === 'map' || route.name === 'telemetry' || route.name === 'roster'
     ) {
-      /* The map, 3D view, telemetry and the roster read serial activity,
+      /* The floor, the map, telemetry and the roster read serial activity,
          which only the single-run GET carries: poll every open run's detail. */
       for (const run of this.runs) {
         if (run.state === 'starting' || run.state === 'running') jobs.push(this.pollDetail(run.id, true));
@@ -520,6 +622,173 @@ export class Store {
       this.noteErr();
     }
     this.scheduleRender();
+  }
+
+  /** Poll the public board. The daemon lists posts newest first and bounds
+      them to its own window; the copy keeps that order and the total says what
+      the bound left behind. The unread column rides the same response, so
+      "who has read what" moves with the posts. */
+  private async pollBoard(): Promise<void> {
+    try {
+      const view = await getBoard();
+      this.board = view.posts.slice();
+      this.boardTotal = view.total;
+      this.boardLimit = view.limit;
+      this.boardTruncated = view.truncated;
+      this.boardUnread = view.unread.slice();
+      this.boardError = null;
+      this.boardErrorStatus = null;
+      this.noteOk();
+    } catch (err) {
+      this.boardError = err instanceof Error ? err.message : String(err);
+      this.boardErrorStatus = err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Poll the plaza's conversations. The daemon lists the exchanges newest
+      first and hands back its own pair rows with the activity window: the
+      floor's proximity derives from exactly those, never from a guess. */
+  private async pollConversations(): Promise<void> {
+    try {
+      const view = await getConversations();
+      const exchanges = view.conversations.slice();
+      exchanges.sort((a, b) => socialSeq(b.id) - socialSeq(a.id)); // newest first
+      this.conversations = exchanges;
+      this.convPairs = view.pairs.slice();
+      this.convActiveSecs = view.active_secs;
+      this.convTotal = view.total;
+      this.convLimit = view.limit;
+      this.convTruncated = view.truncated;
+      this.conversationsError = null;
+      this.conversationsErrorStatus = null;
+      this.noteOk();
+    } catch (err) {
+      this.conversationsError = err instanceof Error ? err.message : String(err);
+      this.conversationsErrorStatus =
+        err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Read one agent's own contact list. A read, asked for when its card opens
+      (the node emits no frame when a contact is added), so it is never polled
+      — and an answer for an agent whose card has closed is still kept: the
+      list is the agent's, not the card's. */
+  async loadContacts(cid: number): Promise<void> {
+    const held = this.contacts.get(cid);
+    if (held != null && held.state === 'loading') return;
+    this.contacts.set(cid, { cid, state: 'loading', contacts: [], total: 0, truncated: false, error: '' });
+    this.scheduleRender();
+    try {
+      const view = await getContacts(cid);
+      this.contacts.set(cid, {
+        cid,
+        state: 'read',
+        contacts: view.contacts.slice(),
+        total: view.total,
+        truncated: view.truncated,
+        error: '',
+      });
+      this.noteOk();
+    } catch (err) {
+      this.contacts.set(cid, {
+        cid,
+        state: 'error',
+        contacts: [],
+        total: 0,
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** Read one pair's thread. Asked for by the owner's own click (the card's
+      "read the thread"), so it is never prefetched; the newest ask wins, and
+      the node's oldest-first answer is turned round for the card's tail. */
+  async loadThread(a: number, b: number): Promise<void> {
+    this.thread = { a, b, state: 'loading', exchanges: [], total: 0, truncated: false, error: '' };
+    this.scheduleRender();
+    try {
+      const view = await getConversationThread(a, b);
+      const exchanges = view.messages.slice().reverse();
+      this.thread = {
+        a: view.a,
+        b: view.b,
+        state: 'read',
+        exchanges,
+        total: view.total,
+        truncated: view.truncated,
+        error: '',
+      };
+      this.noteOk();
+    } catch (err) {
+      this.thread = {
+        a,
+        b,
+        state: 'error',
+        exchanges: [],
+        total: 0,
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
+  /** A board frame landed: a post was written, or an agent's read cursor
+      advanced. The frame carries the post (or the cursor it moved to) but not
+      the board's totals, its bounding line or the other agents' unread counts,
+      so the board is asked once — no row and no count is invented from a
+      frame. */
+  applyBoardEvent(): void {
+    this.wire.board++;
+    this.queueBoardRefresh();
+  }
+
+  /** A conversation frame landed: an agent spoke. The pair's own activity (and
+      therefore the floor's walk) comes from the conversations GET; a thread the
+      card is showing for that pair is refreshed with it. */
+  applyConversationEvent(from: number, to: number): void {
+    this.wire.conversation++;
+    this.queueConversationsRefresh();
+    const thread = this.thread;
+    if (thread != null && thread.state === 'read') {
+      const same = (thread.a === from && thread.b === to) || (thread.a === to && thread.b === from);
+      if (same) this.queueThreadRefresh(from, to);
+    }
+  }
+
+  /** One board GET shortly after board frames land; a burst collapses into it. */
+  private queueBoardRefresh(): void {
+    if (this.boardRefreshTimer != null) return;
+    this.boardRefreshTimer = setTimeout(() => {
+      this.boardRefreshTimer = null;
+      void this.pollBoard();
+    }, EVENT_REFRESH_MS);
+  }
+
+  /** One conversations GET shortly after an exchange lands. */
+  private queueConversationsRefresh(): void {
+    if (this.conversationsRefreshTimer != null) return;
+    this.conversationsRefreshTimer = setTimeout(() => {
+      this.conversationsRefreshTimer = null;
+      void this.pollConversations();
+    }, EVENT_REFRESH_MS);
+  }
+
+  /** One thread GET, for the pair the card is reading. */
+  private queueThreadRefresh(a: number, b: number): void {
+    if (this.threadRefreshTimer != null) return;
+    this.threadRefreshTimer = setTimeout(() => {
+      this.threadRefreshTimer = null;
+      void this.loadThread(a, b);
+    }, EVENT_REFRESH_MS);
   }
 
   /** Fetch one task by id and merge it into the ledger's copy. A pinned task
@@ -747,7 +1016,7 @@ export class Store {
     return detail && detail.created_at === run.created_at ? detail : run;
   }
 
-  /** Fetch one run with serial. `quiet` polls (map/3D) skip the 404 redirect. */
+  /** Fetch one run with serial. `quiet` polls (map/floor) skip the 404 redirect. */
   async pollDetail(id: string, quiet = false): Promise<void> {
     try {
       const run = await getRun(id);
@@ -857,7 +1126,7 @@ export class Store {
       clip a re-delivery, and let a detail GET reconcile a gap (a missed
       frame or poll; rare by construction). The delta feeds the line cache
       and the activity EMA exactly as a poll merge does, so the transcript,
-      the lines/s figures, the map's pulse and the 3D glow all go live
+      the lines/s figures, the map's pulse and the floor's halo all go live
       between polls. */
   applySerialEvent(runId: string, vmId: number, offset: number, text: string): void {
     this.wire.serial++;

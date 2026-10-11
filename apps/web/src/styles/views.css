@@ -1,12 +1,11 @@
-/* The map and 3D screens: a surveyor's plan, same palette and type as the register. */
+/* The map screen: a surveyor's plan, same palette and type as the register. The
+   floor's own sheet is floor.css. */
 
 .canvasbody { position: relative; }
 canvas#map-canvas { display: block; width: 100%; height: 420px; border: 1px solid var(--rule); background: var(--paper); box-sizing: border-box; }
 /* the legend under a canvas: the marks the drawing uses, in the register's
-   own mark language (map and 3D share the one class) */
+   own mark language) */
 .legend { display: flex; gap: 18px; flex-wrap: wrap; padding-top: 4px; }
-.v3mount { position: relative; width: 100%; height: 460px; border: 1px solid var(--rule); background: var(--paper); box-sizing: border-box; overflow: hidden; }
-.v3mount canvas { display: block; width: 100%; height: 100%; outline-offset: -2px; }
 
 /* telemetry: the session's figures, ruled like the sample console's charts —
    transparent ground so the sheet's own paper shows through, as with the SVG
@@ -108,7 +107,6 @@ tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
 
 @media (max-width: 760px) {
   canvas#map-canvas { height: 320px; }
-  .v3mount { height: 340px; }
   canvas.tchart { height: 120px; }
   .ldarttext { max-height: 200px; }
 }
