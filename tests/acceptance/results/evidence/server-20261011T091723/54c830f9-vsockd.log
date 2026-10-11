@@ -1,0 +1,10 @@
+vsockd: status on http://127.0.0.1:43919 (GET /status, GET /healthz, read-only)
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/fleet-restart-a-uds/vm51_5000 for guest CID 51
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/fleet-restart-a-uds/vm52_5000 for guest CID 52
+vsockd: accepted a connection from cid 51
+[guest 51 vm? ->] {"type": "hello", "vm": 0, "guest_cid": 51, "role": "builder", "keepalive": true}
+vsockd: guest 51 vm 0 says hello (accepted on the socket for cid 51)
+vsockd: agent 51 role builder connected
+[<-] guest 51 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+[guest 51 vm0 ->] {"type": "heartbeat", "seq": 1}
+vsockd: agent 51 heartbeat 1

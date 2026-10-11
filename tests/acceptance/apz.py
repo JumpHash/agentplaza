@@ -244,6 +244,150 @@ def child_processes(pid: int) -> list[int]:
     return children
 
 
+# ------------------------------------------------------------- the jail's view
+#
+# The seccomp jail (``crates/vmm/src/jail``) is armed *per VMM thread*, not
+# once for the daemon: ``noded`` runs each VM's vCPU, vsock muxer and exit
+# watcher as threads of its own process, and each arms ``SECCOMP_MODE_FILTER``
+# on itself just before its loop. The three thread kinds are named at spawn
+# (``apz_vcpu_{n}``, ``apz_vm{id}_vsock``, ``apz_vm{id}_exit``), so the kernel's
+# own per-thread ``Seccomp:`` field is what proves the filter is on — no
+# daemon's word is needed, and none is trusted.
+
+#: The thread-name prefixes ``crates/vmm`` gives the threads it arms. Anything
+#: else in the daemon (its request loop, a KVM-created helper) is not one of
+#: the armed kinds.
+VMM_THREAD_PREFIXES = ("apz_vcpu_", "apz_vm")
+
+#: The kernel's ``Seccomp:`` field values (``/proc/<tid>/status``, ``linux/sched.h``).
+SECCOMP_DISABLED = "0"
+SECCOMP_FILTER = "2"
+
+
+def thread_status(pid: int) -> list[dict]:
+    """Every thread of ``pid``, with the kernel's own view of its filter.
+
+    ``Seccomp`` is the field ``/proc/<tid>/status`` reports: ``0`` none, ``1``
+    strict, ``2`` filter — the kernel's record of the filter installed on that
+    *thread*, which is the only honest way to say the jail is on. Reading a
+    daemon's ``/proc/<pid>/status`` would report only its leader thread (the
+    request loop), which is deliberately *not* armed, so a per-thread scan is
+    required rather than convenient.
+    """
+    threads: list[dict] = []
+    try:
+        entries = list(Path(f"/proc/{pid}/task").iterdir())
+    except OSError:
+        return threads
+    for entry in entries:
+        name = seccomp = "?"
+        try:
+            for line in (entry / "status").read_text(errors="replace").splitlines():
+                if line.startswith("Name:"):
+                    name = line.split(":", 1)[1].strip()
+                elif line.startswith("Seccomp:"):
+                    seccomp = line.split(":", 1)[1].strip()
+        except OSError:
+            continue
+        threads.append({"tid": int(entry.name), "name": name, "seccomp": seccomp})
+    return sorted(threads, key=lambda item: item["tid"])
+
+
+def vmm_threads(pid: int) -> list[dict]:
+    """The threads of ``pid`` the jail arms — the ``apz_*`` VMM threads."""
+    return [thread for thread in thread_status(pid) if thread["name"].startswith(VMM_THREAD_PREFIXES)]
+
+
+def await_vmm_threads(pid: int, expect: int, timeout: float = 10.0) -> list[dict]:
+    """Wait until at least ``expect`` VMM threads are up (their filter armed)."""
+    deadline = now() + timeout
+    threads = vmm_threads(pid)
+    while len(threads) < expect and now() < deadline:
+        time.sleep(0.05)
+        threads = vmm_threads(pid)
+    return threads
+
+
+def kernel_seccomp_audit(since_epoch: float) -> dict:
+    """The kernel's seccomp audit records (``type=1326``) since ``since_epoch``.
+
+    A ``SECCOMP_RET_KILL_PROCESS`` refusal is an ``audit: type=1326`` record
+    with ``code=0x80000000``; the ``log`` arm's allowed refusal is
+    ``code=0x7ffc0000`` (see ``crates/vmm/src/jail``). The kernel writes them to
+    the audit trail, which ``journalctl -k`` reads on this host. The raw lines
+    are returned, so the evidence is the kernel's own and not a paraphrase.
+    """
+    command = ["journalctl", "-k", "--since", f"@{int(since_epoch)}", "--no-pager", "-o", "short-iso"]
+    try:
+        out = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError) as err:
+        return {"available": False, "reason": f"{type(err).__name__}: {err}", "lines": [], "kills": []}
+    if out.returncode != 0:
+        reason = out.stderr.strip() or f"journalctl exited {out.returncode}"
+        return {"available": False, "reason": reason, "lines": [], "kills": []}
+    lines = [line for line in out.stdout.splitlines() if "type=1326" in line]
+    kills = [line for line in lines if "code=0x80000000" in line]
+    return {"available": True, "since_epoch": int(since_epoch), "lines": lines, "kills": kills}
+
+
+def vmm_audit_attribution(line: str) -> str | None:
+    """Why a ``type=1326`` line is this repository's VMM, or ``None``.
+
+    ``crates/vmm/tests/jail.rs`` makes ``the_probe_child`` records *on purpose*
+    (it arms the pre-fix allowlist to show what it refused), so those are not
+    attributed. Everything else the kernel names as a VMM thread
+    (``comm="apz_*"``), a KVM-created thread that inherited an armed parent's
+    filter (``comm="kvm-nx-lpage-re"``), or one of the daemon binaries is: that
+    is a syscall one of this port's VMM threads reached that the allowlist did
+    not cover.
+    """
+    comm = re.search(r'comm="([^"]*)"', line)
+    exe = re.search(r'exe="([^"]*)"', line)
+    name = comm.group(1) if comm else ""
+    binary = Path(exe.group(1)).name if exe else ""
+    if name.startswith("apz_") or name == "kvm-nx-lpage-re":
+        return f"comm={name}"
+    if binary in ("noded", "vsockd", "vmctl"):
+        return f"exe={binary}"
+    return None
+
+
+# ------------------------------------------------------- the SUT's own binary
+#
+# Every suite spawns its daemons from ``bin_dir`` lazily, one lab at a time, so
+# the binaries must not change *while* the matrix runs: a `cargo build` that
+# relinks `target/debug/noded` mid-run hands the later suites a different SUT
+# than the earlier ones, and the run's verdict is then about no single build.
+
+#: The binaries a suite spawns: the node daemon and the hub.
+HARNESS_BINARIES = ("noded", "vsockd")
+
+
+def binary_digests(bin_dir: Path) -> dict[str, str]:
+    """The sha256 of every harness binary in ``bin_dir``, keyed by name."""
+    return {
+        name: sha256_file(bin_dir / name) for name in HARNESS_BINARIES if (bin_dir / name).exists()
+    }
+
+
+def binary_digest_changes(before: dict[str, str], after: dict[str, str]) -> dict[str, tuple]:
+    """``{name: (before, after)}`` for every binary whose bytes changed.
+
+    Found on 2026-10-11: a sibling's `cargo build --workspace` relinked the
+    shared ``target/debug/noded`` at 08:52:43 during a full matrix, so the tail
+    suites ran a binary built from uncommitted ``crates/vmm`` work while the
+    head suites ran the committed one — and the manifest, computed at the end,
+    recorded only the *last* build. Such a run is not a result about one SUT:
+    it is reported as a FAILURE with both digests, never averaged into a
+    verdict. ``--bin-dir`` on a pinned copy makes a run hermetic.
+    """
+    return {
+        name: (before.get(name), after.get(name))
+        for name in sorted(set(before) | set(after))
+        if before.get(name) != after.get(name)
+    }
+
+
 # ------------------------------------------------------------ credential scan
 #: Credential-shaped patterns the leak scan hunts for on every surface. None of
 #: these can legitimately appear in an MVP transcript: there are no credentials
@@ -385,6 +529,7 @@ class Lab:
         tag: str,
         *,
         canary_env: dict[str, str] | None = None,
+        env: dict[str, str] | None = None,
         uds_dir: Path | None = None,
         workspace: Path | None = None,
         status_port: int | None = None,
@@ -407,6 +552,12 @@ class Lab:
         self.log_dir = ctx.new_dir(f"{tag}-logs")
         self.cids = list(cids)
         self.canary_env = dict(canary_env or {})
+        # Extra environment for the daemons this lab spawns, merged over
+        # ``os.environ`` (and over the canaries): how a case configures a
+        # daemon's own switch — the jail suite's ``APZ_VMM_NO_JAIL=1`` arm is
+        # the reason it exists, and it keeps that switch out of the *process*
+        # environment, where it would leak into every later lab.
+        self.extra_env = dict(env or {})
         # The base image of every run's writable workspace volume, or `None`
         # for a daemon that boots no block device (`noded --workspace`).
         self.workspace = Path(workspace) if workspace is not None else None
@@ -572,7 +723,7 @@ class Lab:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
-                env={**os.environ, **self.canary_env},
+                env={**os.environ, **self.canary_env, **self.extra_env},
             )
         except OSError as err:
             raise LabError(f"cannot start {name}: {err}") from err

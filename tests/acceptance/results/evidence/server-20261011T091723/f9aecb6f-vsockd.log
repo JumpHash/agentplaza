@@ -1,0 +1,61 @@
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm20_5000 for guest CID 20
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm21_5000 for guest CID 21
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm22_5000 for guest CID 22
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm23_5000 for guest CID 23
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm24_5000 for guest CID 24
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm25_5000 for guest CID 25
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm26_5000 for guest CID 26
+vsockd: listening on /tmp/apz-acceptance-server-t3v5hl88/kill-sigterm-uds/vm27_5000 for guest CID 27
+vsockd: accepted a connection from cid 20
+vsockd: accepted a connection from cid 21
+[guest 20 vm? ->] {"type":"hello","vm":0,"guest_cid":20}
+vsockd: guest 20 vm 0 says hello (accepted on the socket for cid 20)
+[<-] guest 20 vm0 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 21 vm? ->] {"type":"hello","vm":1,"guest_cid":21}
+vsockd: guest 21 vm 1 says hello (accepted on the socket for cid 21)
+[<-] guest 21 vm1 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 20 vm0 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-20-hello"}}
+[<-] guest 20 vm0 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-20-hello"}
+vsockd: answered call 1 (echo) for guest 20 vm 0
+[guest 20 vm0 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 20 vm0 {"type":"tool_result","call":2,"ok":true,"output":"312354.17 6631122.04"}
+vsockd: answered call 2 (uptime) for guest 20 vm 0
+[guest 21 vm1 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-21-hello"}}
+[<-] guest 21 vm1 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-21-hello"}
+vsockd: answered call 1 (echo) for guest 21 vm 1
+[guest 21 vm1 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 21 vm1 {"type":"tool_result","call":2,"ok":true,"output":"312354.18 6631122.07"}
+vsockd: answered call 2 (uptime) for guest 21 vm 1
+[guest 20 vm0 ->] {"type":"bye","calls":2}
+vsockd: guest 20 vm 0 said bye after 2 tool calls
+vsockd: session with guest 20 vm 0 ended cleanly after 2 tool calls
+[guest 21 vm1 ->] {"type":"bye","calls":2}
+vsockd: guest 21 vm 1 said bye after 2 tool calls
+vsockd: session with guest 21 vm 1 ended cleanly after 2 tool calls
+vsockd: accepted a connection from cid 22
+[guest 22 vm? ->] {"type":"hello","vm":2,"guest_cid":22}
+vsockd: guest 22 vm 2 says hello (accepted on the socket for cid 22)
+[<-] guest 22 vm2 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 22 vm2 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-22-hello"}}
+[<-] guest 22 vm2 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-22-hello"}
+vsockd: answered call 1 (echo) for guest 22 vm 2
+[guest 22 vm2 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 22 vm2 {"type":"tool_result","call":2,"ok":true,"output":"312354.19 6631122.28"}
+vsockd: answered call 2 (uptime) for guest 22 vm 2
+vsockd: accepted a connection from cid 23
+[guest 23 vm? ->] {"type":"hello","vm":3,"guest_cid":23}
+vsockd: guest 23 vm 3 says hello (accepted on the socket for cid 23)
+[<-] guest 23 vm3 {"type":"welcome","echo":"plaza-orchestrator"}
+[guest 22 vm2 ->] {"type":"bye","calls":2}
+vsockd: guest 22 vm 2 said bye after 2 tool calls
+vsockd: session with guest 22 vm 2 ended cleanly after 2 tool calls
+[guest 23 vm3 ->] {"type":"tool_call","call":1,"name":"echo","args":{"text":"plaza-guest-23-hello"}}
+[<-] guest 23 vm3 {"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-23-hello"}
+vsockd: answered call 1 (echo) for guest 23 vm 3
+[guest 23 vm3 ->] {"type":"tool_call","call":2,"name":"uptime","args":{}}
+[<-] guest 23 vm3 {"type":"tool_result","call":2,"ok":true,"output":"312354.19 6631122.35"}
+vsockd: answered call 2 (uptime) for guest 23 vm 3
+[guest 23 vm3 ->] {"type":"bye","calls":2}
+vsockd: guest 23 vm 3 said bye after 2 tool calls
+vsockd: session with guest 23 vm 3 ended cleanly after 2 tool calls
+vsockd: stop requested, closing the listeners

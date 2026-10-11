@@ -1,0 +1,269 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-11T09:35:45+0200",
+  "wall_seconds": 59.732,
+  "manifest": {
+    "suite": "jail",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "e55f9138dbe173359dbc00d220859bc6629ce021",
+      "dirty": true,
+      "harness_tree_sha256": "067fcdbfe6ece97c619f4b48019ff393db9a2f2a019e1834aa2c509f06f48d75"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "bc4dd19fd0d5eef3fd98b8a36453573881dbfd2f19304c694a32f89306a491b2",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-server-2p488m07",
+    "started_at": "2026-10-11T09:35:45+0200",
+    "binaries": {
+      "noded": {
+        "path": "/tmp/apz-head-target/debug/noded",
+        "sha256": "c048d91b1ce48d964b52bda814b44be41c596d59b18647780c440f0297669375"
+      },
+      "vsockd": {
+        "path": "/tmp/apz-head-target/debug/vsockd",
+        "sha256": "5df31e364bfb4e5907fc78de211f4d529d6d95b55516b78119afed68f4775fa7"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-acceptance-server-2p488m07/jail-armed-logs/noded.log",
+        "bytes": 414,
+        "sha256": "82ecb0aa6a91db66868072efe40c55ea5c42521dc51d179d870f50f7f20e738b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/82ecb0aa-noded.log",
+        "excerpt_bytes": 414
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-2p488m07/jail-armed-logs/vsockd.log",
+        "bytes": 244,
+        "sha256": "ef9404096ba05bed9c7ea12846c77d3d9676983342606c81c8ba63bda4c9688e",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/ef940409-vsockd.log",
+        "excerpt_bytes": 244
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-2p488m07/jail-off-logs/noded.log",
+        "bytes": 414,
+        "sha256": "34e88c0ed8ecee778eeca03da3fcd2ae437b34f29600213d13eab220caf61cd5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/34e88c0e-noded.log",
+        "excerpt_bytes": 414
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-2p488m07/jail-off-logs/vsockd.log",
+        "bytes": 240,
+        "sha256": "0f1b7279b82809e21b496478a4ccb7d20983a6b9bd276d5d80ee32cf56bc5c8c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/0f1b7279-vsockd.log",
+        "excerpt_bytes": 240
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-2p488m07/jail-soak-logs/noded.log",
+        "bytes": 404664,
+        "sha256": "22dd225a3f9b2a39c3b9920fa7f3ffb03815f7bd0de722fce7eaadc14a8b5906",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/22dd225a-noded.log",
+        "excerpt_bytes": 65536
+      },
+      {
+        "source": "/tmp/apz-acceptance-server-2p488m07/kernel-seccomp-audit.log",
+        "bytes": 1,
+        "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T093446/01ba4719-kernel-seccomp-audit.log",
+        "excerpt_bytes": 1
+      }
+    ]
+  },
+  "suites_run": [
+    "jail"
+  ],
+  "kernel_seccomp_audit": {
+    "available": true,
+    "reason": null,
+    "since_epoch": 1791704086,
+    "records": 0,
+    "attributed": [],
+    "kills": [],
+    "artifact": "/tmp/apz-acceptance-server-2p488m07/kernel-seccomp-audit.log"
+  },
+  "sut_binary": {
+    "bin_dir": "/tmp/apz-head-target/debug",
+    "digests": {
+      "noded": "c048d91b1ce48d964b52bda814b44be41c596d59b18647780c440f0297669375",
+      "vsockd": "5df31e364bfb4e5907fc78de211f4d529d6d95b55516b78119afed68f4775fa7"
+    },
+    "changed_mid_run": {},
+    "sut_git_at_start": {
+      "head": "e55f9138dbe173359dbc00d220859bc6629ce021",
+      "dirty": true,
+      "harness_tree_sha256": "067fcdbfe6ece97c619f4b48019ff393db9a2f2a019e1834aa2c509f06f48d75"
+    }
+  },
+  "suites": [
+    {
+      "suite": "jail-in-the-boot-path",
+      "pass_bar": "every case passes: the jail armed on every VMM thread of a real boot, the escape hatch unconfined, and a 50-VM soak with no daemon death and no kernel refusal",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 3,
+      "cases_total": 3,
+      "cases": [
+        {
+          "name": "the jail is armed on every VMM thread of a real boot (Seccomp: 2)",
+          "detail": "",
+          "vector": "noded boots a 2-VM run through the runner's normal path; while the VMs run, every apz_vcpu_*/apz_vm*_vsock/apz_vm*_exit thread of the daemon reads Seccomp: 2 in /proc/<noded-pid>/task/<tid>/status, the request loop reads Seccomp: 0, and the kernel logged no type=1326 refusal for the daemon during the boot",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 4,
+          "tasks_required": 4,
+          "tasks_total": 4,
+          "tasks": [
+            {
+              "name": "the 6 VMM threads of the running VMs exist",
+              "ok": true,
+              "detail": "n=6 threads=[apz_vm0_vsock:1765825=2 apz_vm0_exit:1765826=2 apz_vcpu_0:1765827=2 apz_vm1_vsock:1765830=2 apz_vm1_exit:1765831=2 apz_vcpu_0:1765832=2]"
+            },
+            {
+              "name": "all three armed thread kinds are present (vCPU, vsock, exit)",
+              "ok": true,
+              "detail": "kinds=['exit', 'vcpu', 'vsock']"
+            },
+            {
+              "name": "every VMM thread is in seccomp filter mode (Seccomp: 2)",
+              "ok": true,
+              "detail": "armed=6/6 threads=[apz_vm0_vsock:1765825=2 apz_vm0_exit:1765826=2 apz_vcpu_0:1765827=2 apz_vm1_vsock:1765830=2 apz_vm1_exit:1765831=2 apz_vcpu_0:1765832=2]"
+            },
+            {
+              "name": "the kernel logged no seccomp refusal for the daemon during the boot",
+              "ok": true,
+              "detail": "scanned 0 type=1326 record(s), none ours"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "the run is running when POST answers",
+              "ok": true,
+              "detail": "state=running"
+            },
+            {
+              "name": "the daemon's request loop is not confined (the per-thread boundary)",
+              "ok": true,
+              "detail": "leader={'tid': 1765821, 'name': 'noded', 'seccomp': '0'}"
+            },
+            {
+              "name": "the daemon is the same live process while the VMs run (no SIGSYS death)",
+              "ok": true,
+              "detail": "pid=1765821 alive=True"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "the escape hatch: APZ_VMM_NO_JAIL=1 boots with the VMM threads unconfined (Seccomp: 0)",
+          "detail": "",
+          "vector": "the same 2-VM boot with APZ_VMM_NO_JAIL=1 in the daemon's own environment; every apz_* VMM thread reads Seccomp: 0 in /proc/<noded-pid>/task/<tid>/status and the VMs still boot and run",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 2,
+          "tasks_required": 2,
+          "tasks_total": 2,
+          "tasks": [
+            {
+              "name": "the 6 VMM threads still exist (the boot path ran)",
+              "ok": true,
+              "detail": "n=6 threads=[apz_vm0_vsock:1765850=0 apz_vm0_exit:1765851=0 apz_vcpu_0:1765852=0 apz_vm1_vsock:1765855=0 apz_vm1_exit:1765856=0 apz_vcpu_0:1765857=0]"
+            },
+            {
+              "name": "every VMM thread is unconfined (Seccomp: 0) under APZ_VMM_NO_JAIL=1",
+              "ok": true,
+              "detail": "unconfined=6/6 threads=[apz_vm0_vsock:1765850=0 apz_vm0_exit:1765851=0 apz_vcpu_0:1765852=0 apz_vm1_vsock:1765855=0 apz_vm1_exit:1765856=0 apz_vcpu_0:1765857=0]"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "POST accepted the run (201)",
+              "ok": true,
+              "detail": "status=201"
+            },
+            {
+              "name": "the VM still booted and is running (the escape hatch is a real boot, not a no-op)",
+              "ok": true,
+              "detail": "state=running"
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "jail soak: a 50-VM fleet under the armed jail \u2014 the daemon survives, the kernel logs no refusal",
+          "detail": "",
+          "vector": "noded boots n=50 vcpus=1 128MiB beats=12 under the armed jail; all 150 VMM threads read Seccomp: 2 while the fleet runs, the daemon is the same live process at the end (no SIGSYS death), the fleet reaches done, and journalctl -k holds no type=1326 record for the daemon",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 2,
+          "tasks_required": 2,
+          "tasks_total": 2,
+          "tasks": [
+            {
+              "name": "all 150 VMM threads are in seccomp filter mode (Seccomp: 2)",
+              "ok": true,
+              "detail": "armed=150/150"
+            },
+            {
+              "name": "the kernel logged no seccomp refusal for the daemon during the soak",
+              "ok": true,
+              "detail": "scanned 0 type=1326 record(s), none ours"
+            }
+          ],
+          "invariants": [
+            {
+              "name": "the 50-VM fleet came up (every VM running)",
+              "ok": true,
+              "detail": "status=201 state=running vms=50"
+            },
+            {
+              "name": "the daemon is the same live process after the fleet settled (no SIGSYS death)",
+              "ok": true,
+              "detail": "pid=1765862 alive=True"
+            },
+            {
+              "name": "the fleet reached done under the jail",
+              "ok": true,
+              "detail": "state=done"
+            }
+          ],
+          "notes": []
+        }
+      ],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T09:34:46+0200",
+      "duration_s": 59.676
+    }
+  ],
+  "findings": []
+}

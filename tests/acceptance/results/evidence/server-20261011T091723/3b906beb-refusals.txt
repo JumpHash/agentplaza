@@ -1,0 +1,11 @@
+bid, wrong role:      409 {"error":"the agent on guest CID 183 is role librarian, not builder"}
+bid, above ceiling:   409 {"error":"bid price 600 exceeds max_price 500"}
+bid, unconnected:     409 {"error":"no live agent has guest CID 999"}
+bid, not a call:      409 {"error":"task t2 names no role, so it is not a call"}
+award, no bid:        409 {"error":"award to guest CID 182 matches no bid on call t1"}
+award, not a call:    409 {"error":"task t2 names no role, so it is not a call"}
+award, unconnected awarder: 409 {"error":"no live agent has guest CID 999"}
+bid, unknown task:    404 {"error":"no task with id t404"}
+bid, malformed body:  400 {"error":"invalid bid request: invalid type: string \"not a cid\", expected u64 at line 1 column 25"}
+second award:         409 {"error":"call t1 is already awarded to builder"}
+bid on a closed call: 409 {"error":"call t1 is claimed, not open"}

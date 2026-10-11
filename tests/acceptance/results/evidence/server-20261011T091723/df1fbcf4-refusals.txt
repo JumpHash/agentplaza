@@ -1,0 +1,4 @@
+unknown CID list:        404 {"error":"no agent with guest CID 999"}
+self-contact:            409 {"error":"guest CID 173 cannot be its own contact"}
+unconnected peer:        409 {"error":"no live agent has guest CID 999"}
+award:                   200 {"id":"t1","goal":"the hired work","acceptance":"the note is filed","budget":500,"role":"builder","state":"claimed","outcome":null,"assignee_id":"builder","verifier_id":null,"agent_cid":173,"note":null,"created_at":1791704052089,"updated_at":1791704052091}

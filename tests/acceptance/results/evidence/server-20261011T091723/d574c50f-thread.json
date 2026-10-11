@@ -1,0 +1,44 @@
+{
+  "a": 175,
+  "b": 176,
+  "active": true,
+  "active_secs": 120,
+  "messages": [
+    {
+      "id": "c1",
+      "from_cid": 176,
+      "to_cid": 175,
+      "from_role": "librarian",
+      "to_role": "builder",
+      "text": "the plaza says hello apz-acceptance-v1",
+      "created_at": 1791704053720,
+      "delivered": true,
+      "delivery": null
+    },
+    {
+      "id": "c2",
+      "from_cid": 175,
+      "to_cid": 176,
+      "from_role": "builder",
+      "to_role": "librarian",
+      "text": "on my way apz-acceptance-v1",
+      "created_at": 1791704055764,
+      "delivered": true,
+      "delivery": null
+    },
+    {
+      "id": "c3",
+      "from_cid": 175,
+      "to_cid": 176,
+      "from_role": "builder",
+      "to_role": "librarian",
+      "text": "the undeliverable one apz-acceptance-v1",
+      "created_at": 1791704057704,
+      "delivered": false,
+      "delivery": "the hub refused with 409: agent with guest CID 176 is not connected"
+    }
+  ],
+  "total": 3,
+  "limit": 256,
+  "truncated": false
+}

@@ -51,6 +51,7 @@ import suite_agora
 import suite_budgets
 import suite_demo
 import suite_fleet
+import suite_jail
 import suite_killresume
 import suite_redteam
 import suite_social
@@ -60,6 +61,7 @@ SUITES = {
     "demo": suite_demo,
     "redteam": suite_redteam,
     "killresume": suite_killresume,
+    "jail": suite_jail,
     "budgets": suite_budgets,
     "fleet": suite_fleet,
     "treasury": suite_treasury,
@@ -209,6 +211,20 @@ def main(argv: list[str]) -> int:
     print(f"== AgentPlaza acceptance — machine class {ctx.machine_class} "
           f"({ctx.host_os}/{ctx.host_arch}) on {ctx.artifacts_dir} ==")
     overall_started = time.monotonic()
+    # The wall-clock instant the matrix began, for the kernel's own seccomp
+    # audit window (`journalctl -k --since`): the soak below reads it back.
+    run_started_epoch = time.time()
+    # The binary the suites spawn their daemons from, before any of them runs:
+    # compared against the same digests afterwards, so a `cargo build` that
+    # rewrites the shared target while the matrix runs cannot quietly hand the
+    # tail suites a different SUT (see `apz.binary_digest_changes`).
+    bins_before = apz.binary_digests(ctx.bin_dir)
+    # The SUT revision at the start, alongside the end one the manifest
+    # records: a sibling's commit landing mid-run moves HEAD under a run whose
+    # binaries were built from the earlier revision, and the two must not be
+    # confused. The *binary digest* is the authoritative SUT identity; this is
+    # context for it.
+    sut_at_start = apz.git_revision()
     for name in names:
         module = SUITES[name]
         started = time.monotonic()
@@ -220,6 +236,51 @@ def main(argv: list[str]) -> int:
         ctx.suites.append(suite)
         print_suite(suite)
 
+    # The matrix is itself a jail soak: every suite above booted its VMs with
+    # the jail armed (the shipped default), so the kernel's audit trail for this
+    # window is the soak's evidence. A `type=1326` record for one of this port's
+    # VMM threads is a daemon that reached a syscall its allowlist did not
+    # cover; under the shipped `kill` arm that is a *death*, and the run's
+    # verdict is FAIL whatever the suites' cases said — a jail that kills the
+    # daemon is the defect to fix, never a flake.
+    audit = apz.kernel_seccomp_audit(run_started_epoch)
+    audit_path = ctx.artifacts_dir / "kernel-seccomp-audit.log"
+    if audit["available"]:
+        audit_path.write_text("\n".join(audit["lines"]) + "\n")
+        ctx.register_artifact(audit_path)
+    attributed = [line for line in audit.get("lines", []) if apz.vmm_audit_attribution(line)]
+    kills = [line for line in attributed if "code=0x80000000" in line]
+    if kills:
+        ctx.findings.append(
+            {
+                "suite": "(matrix soak)",
+                "title": (
+                    "a VMM thread hit a syscall the jail's allowlist does not cover "
+                    "(SECCOMP_RET_KILL_PROCESS)"
+                ),
+                "classification": "product-defect",
+                "detail": "; ".join(kills),
+                "evidence": str(audit_path),
+                "suspected_component": "crates/vmm/src/jail (the allowlist)",
+            }
+        )
+
+    # A binary rewritten while the matrix ran means the suites did not all test
+    # the same SUT: the run is a FAILURE with both digests, never a verdict
+    # about "the build".
+    bins_after = apz.binary_digests(ctx.bin_dir)
+    bin_changes = apz.binary_digest_changes(bins_before, bins_after)
+    if bin_changes:
+        ctx.findings.append(
+            {
+                "suite": "(matrix)",
+                "title": "the SUT binary changed while the matrix ran (the run tested two builds)",
+                "classification": "infrastructure-defect",
+                "detail": "; ".join(f"{name}: {old} -> {new}" for name, (old, new) in bin_changes.items()),
+                "suspected_component": "a concurrent `cargo build` of the shared bin dir",
+            }
+        )
+
     stamp = f"{ctx.machine_class}-{ctx.stamp}"
     evidence = [] if args.no_evidence else gather_evidence(ctx, stamp)
     verdict = "PASS"
@@ -227,6 +288,8 @@ def main(argv: list[str]) -> int:
         verdict = "FAIL"
     elif any(suite.status == "BLOCKED" for suite in ctx.suites):
         verdict = "BLOCKED"
+    if kills or bin_changes:
+        verdict = "FAIL"
 
     document = {
         "acceptance": "AgentPlaza MVP",
@@ -236,6 +299,21 @@ def main(argv: list[str]) -> int:
         "wall_seconds": round(time.monotonic() - overall_started, 3),
         "manifest": ctx.manifest(args.suite, canary_planted=ctx.planted_canaries(), evidence=evidence),
         "suites_run": names,
+        "kernel_seccomp_audit": {
+            "available": audit["available"],
+            "reason": audit.get("reason"),
+            "since_epoch": audit.get("since_epoch"),
+            "records": len(audit.get("lines", [])),
+            "attributed": attributed,
+            "kills": kills,
+            "artifact": str(audit_path) if audit["available"] else None,
+        },
+        "sut_binary": {
+            "bin_dir": str(ctx.bin_dir),
+            "digests": bins_before,
+            "changed_mid_run": bin_changes,
+            "sut_git_at_start": sut_at_start,
+        },
         "suites": [suite.view() for suite in ctx.suites],
         "findings": ctx.findings,
     }
@@ -244,6 +322,16 @@ def main(argv: list[str]) -> int:
     out.write_text(json.dumps(document, indent=2) + "\n")
 
     print()
+    if bin_changes:
+        print(f"WARNING: the SUT binary changed while the matrix ran: {bin_changes}")
+    if sut_at_start["head"] != apz.git_revision()["head"]:
+        print(
+            "NOTE: the repository HEAD moved during the run "
+            f"({sut_at_start['head'][:12]} -> {apz.git_revision()['head'][:12]}); the binaries "
+            f"under test came from before the move (see sut_binary.digests)"
+        )
+    if kills:
+        print(f"WARNING: the kernel logged {len(kills)} seccomp refusal(s) for this port's VMM: {kills[0]}")
     for suite in ctx.suites:
         print(f"{suite.status}\t{suite.name}")
     print(f"verdict: {verdict}")
