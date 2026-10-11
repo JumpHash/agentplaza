@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use apz_plaza::council::is_seated;
 use apz_plaza::tasks::FinishOutcome;
+use apz_plaza::treasury::{PostError, MARGIN_CAP_PCT};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
 use serde::Serialize;
 use serde_json::json;
@@ -23,6 +24,9 @@ use crate::state::App;
 
 /// How many council motions the scheduler looks at per tick.
 const MOTION_SCAN_LIMIT: usize = 50;
+
+/// The role that verifies done tasks before they pay.
+pub const REVIEWER_ROLE: &str = "reviewer";
 
 /// What a work item is about, beyond its prompt.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -122,16 +126,34 @@ impl Lanes {
 }
 
 /// The work queues: one lane per agent, one item in flight per lane.
+/// A done task awaiting its reviewer's verdict.
+struct Review {
+    /// The worker whose done is being verified (paid on a pass).
+    worker: u64,
+    /// The reviewer's work item: only its verdict, or its end, settles the task.
+    work: u64,
+}
+
 pub struct Queues {
     lanes: Mutex<Lanes>,
     next_id: AtomicU64,
     /// task id → the agent that posted it (the orchestrator), told when it ends.
     posters: Mutex<std::collections::HashMap<String, u64>>,
+    /// task id → the review awaiting a verdict.
+    reviews: Mutex<std::collections::HashMap<String, Review>>,
+    /// task id → credits metered against it so far (its real cost).
+    spend: Mutex<std::collections::HashMap<String, i64>>,
 }
 
 impl Default for Queues {
     fn default() -> Self {
-        Self { lanes: Mutex::new(Lanes::default()), next_id: AtomicU64::new(1), posters: Mutex::default() }
+        Self {
+            lanes: Mutex::new(Lanes::default()),
+            next_id: AtomicU64::new(1),
+            posters: Mutex::default(),
+            reviews: Mutex::default(),
+            spend: Mutex::default(),
+        }
     }
 }
 
@@ -183,9 +205,16 @@ impl Queues {
         app.transcripts.record(&app.bus, cid, work, "work_end", json!({ "status": state, "summary": summary }));
         app.bus.publish("work", &json!({ "cid": cid, "work": work, "state": "ended", "status": state }));
         if let Some(task) = item.origin.task.as_deref() {
-            settle_task(app, task, status, summary);
-            self.tell_poster(app, task, cid, state, summary);
+            // A worker's done is a claim: an idle reviewer rules on it first.
+            let reviewed = matches!(status, WorkStatus::Done)
+                && matches!(item.kind, WorkKind::Task)
+                && self.start_review(app, task, cid, summary);
+            if !reviewed {
+                settle_task(app, task, status, summary);
+                self.tell_poster(app, task, cid, state, summary);
+            }
         }
+        self.review_lost(app, item.id, "reviewer ended without a verdict");
         app.agents.update(cid, |a| a.status = Status::Idle);
         self.dispatch(app, cid);
     }
@@ -237,8 +266,113 @@ impl Queues {
             if let Some(task) = item.origin.task.as_deref() {
                 settle_task(app, task, WorkStatus::Failed, "agent went offline");
             }
+            self.review_lost(app, item.id, "reviewer went offline");
         }
         app.agents.update(cid, |a| a.status = Status::Offline);
+    }
+
+    /// Adds metered `credits` to `task`'s real cost.
+    pub fn add_spend(&self, task: &str, credits: i64) {
+        // contract
+        let mut spend = self.spend.lock().unwrap_or_else(|p| p.into_inner());
+        *spend.entry(task.to_string()).or_insert(0) += credits;
+    }
+
+    /// The credits metered against `task` so far.
+    fn spent(&self, task: &str) -> i64 {
+        self.spend.lock().unwrap_or_else(|p| p.into_inner()).get(task).copied().unwrap_or(0)
+    }
+
+    /// Hands a done task to an idle reviewer; false when none is connected.
+    fn start_review(&self, app: &App, task: &str, worker: u64, summary: &str) -> bool {
+        let Some(record) = app.plaza.tasks.find(task) else {
+            return false;
+        };
+        let Some(reviewer) = app
+            .agents
+            .list()
+            .into_iter()
+            .find(|a| a.cid != worker && a.role == REVIEWER_ROLE && a.status == Status::Idle)
+        else {
+            return false;
+        };
+        let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
+        let acceptance = record.acceptance().map_or_else(|| "none stated".to_string(), |a| a.to_string());
+        let prompt = format!(
+            "Verify task {task}: {goal}\nAcceptance: {acceptance}\nThe worker ({worker_name}) reported: {summary}\n\
+             Check it (use plaza_get_file for shared files) and call plaza_verdict with pass true/false and short notes.",
+            goal = record.goal(),
+        );
+        let work = self.enqueue(app, reviewer.cid, WorkKind::Task, format!("review-{task}"), prompt, Origin::default());
+        self.reviews.lock().unwrap_or_else(|p| p.into_inner()).insert(task.to_string(), Review { worker, work });
+        true
+    }
+
+    /// The reviewer's verdict on `task`, from review work `work`. Pass pays the
+    /// worker its margin-capped share and completes the task; fail fails it (the
+    /// escrow goes back to the plaza's budget).
+    pub fn verdict(&self, app: &App, task: &str, work: u64, pass: bool, notes: &str) -> Result<String, String> {
+        // contract
+        let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
+        if !reviews.get(task).is_some_and(|r| r.work == work) {
+            return Err(format!("no verdict is pending on task {task} from this review"));
+        }
+        let review = reviews.remove(task).ok_or_else(|| format!("no verdict is pending on task {task}"))?;
+        drop(reviews);
+        let paid = if pass { self.pay_worker(app, task, review.worker, work) } else { 0 };
+        let status = if pass { WorkStatus::Done } else { WorkStatus::Failed };
+        settle_task(app, task, status, notes);
+        self.tell_poster(app, task, review.worker, if pass { "done" } else { "failed" }, notes);
+        Ok(format!("verdict {}: paid {paid}", if pass { "pass" } else { "fail" }))
+    }
+
+    /// Ends a review whose reviewer ended, or went offline, without a verdict: the task fails.
+    fn review_lost(&self, app: &App, work: u64, reason: &str) {
+        let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
+        let found = reviews.iter().find(|(_, r)| r.work == work).map(|(task, _)| task.clone());
+        let Some(task) = found else {
+            return;
+        };
+        let Some(review) = reviews.remove(&task) else {
+            return;
+        };
+        drop(reviews);
+        settle_task(app, &task, WorkStatus::Failed, reason);
+        self.tell_poster(app, &task, review.worker, "failed", reason);
+    }
+
+    /// Pays `worker` 20% of `task`'s real cost, capped by the chain's margin
+    /// cap; returns the amount paid.
+    fn pay_worker(&self, app: &App, task: &str, worker: u64, work: u64) -> i64 {
+        let spent = self.spent(task);
+        let treasury = &app.plaza.treasury;
+        let cap = spent * MARGIN_CAP_PCT / 100;
+        let paid = if cap <= 0 {
+            0
+        } else {
+            match treasury.pay_agent(task, worker, cap) {
+                Ok(_) => cap,
+                // The margin cap refused: pay what it still allows, or nothing.
+                Err(PostError::MarginCap { paid_to_agents, real_cost, .. }) => {
+                    let allowance = real_cost * i128::from(MARGIN_CAP_PCT) / 100 - paid_to_agents;
+                    match i64::try_from(allowance) {
+                        Ok(allowance) if allowance > 0 && treasury.pay_agent(task, worker, allowance).is_ok() => {
+                            allowance
+                        }
+                        _ => 0,
+                    }
+                }
+                Err(_) => 0,
+            }
+        };
+        app.transcripts.record(
+            &app.bus,
+            worker,
+            work,
+            "payment",
+            json!({ "task": task, "amount": paid, "spent": spent }),
+        );
+        paid
     }
 
     /// Sends the next waiting item to `cid` if it is reachable and idle.

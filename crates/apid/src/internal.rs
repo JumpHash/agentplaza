@@ -137,6 +137,8 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             Some(tool_request(app, cid, &agent, work, call, &name, &input))
         }
         GuestMessage::ToolReport { work, call, ok, output } => {
+            // One credit per tool report; task work is cancelled if its escrow runs out.
+            let _ = meter(app, cid, work, 1, "tool report");
             let shared = pending().lock().unwrap_or_else(PoisonError::into_inner).remove(&(cid, call.clone()));
             if let (Some((_, path)), true) = (shared, ok) {
                 app.artifacts.add(&app.bus, cid, work, &path, output.clone());
@@ -197,7 +199,7 @@ fn model_call(
         Ok(resp) => {
             let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
             app.transcripts.record(&app.bus, cid, work, "model_response", full);
-            let cost = settings
+            let tokens = settings
                 .prices
                 .get(&model)
                 .map(|p| {
@@ -205,16 +207,41 @@ fn model_call(
                         / 1_000_000.0
                 })
                 .unwrap_or(0.0);
-            app.agents.update(cid, |a| {
-                a.usage.add(&resp.usage);
-                a.credits += cost;
-            });
+            // One credit per model call on top of the tokens, rounded up to whole credits.
+            let credits = (tokens + 1.0).ceil() as i64;
+            app.agents.update(cid, |a| a.usage.add(&resp.usage));
+            if let Err(message) = meter(app, cid, work, credits, &format!("model {model}")) {
+                return HostMessage::ModelResult { req, ok: false, response: None, error: Some(message) };
+            }
             HostMessage::ModelResult { req, ok: true, response: Some(resp), error: None }
         }
         Err(e) => {
             let message = e.to_string();
             app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": message }));
             HostMessage::ModelResult { req, ok: false, response: None, error: Some(message) }
+        }
+    }
+}
+
+/// Charges `credits` of metered spend to the work's task (or to the plaza budget
+/// when the work has no task). An exhausted escrow is recorded, and task work is
+/// cancelled.
+fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(), String> {
+    let task = app.work.current(cid).and_then(|item| item.origin.task);
+    match app.plaza.treasury.charge_spend(task.as_deref(), credits, memo) {
+        Ok(_) => {
+            if let Some(task) = task.as_deref() {
+                app.work.add_spend(task, credits);
+            }
+            Ok(())
+        }
+        Err(_) => {
+            let message = "budget exhausted";
+            app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": message }));
+            if task.is_some() {
+                app.work.cancel(app, cid, message);
+            }
+            Err(message.to_string())
         }
     }
 }
