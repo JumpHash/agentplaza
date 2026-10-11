@@ -22,3 +22,108 @@
 .vm { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
 .vm summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); }
 .vm .pre { margin-top: var(--s2); }
+
+/* ---- Machines: the control plane, its machines, the edges between them ---- */
+
+.mach-graph {
+  position: relative;
+  min-height: 420px;
+  margin-bottom: 16px;
+}
+.mach-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+.mach-edge {
+  fill: none;
+  stroke: var(--line, #3a4252);
+  stroke-width: 2;
+}
+.mach-edge.live {
+  stroke: var(--accent, #6aa9ff);
+  stroke-dasharray: 6 6;
+  animation: mach-dash 0.8s linear infinite;
+}
+@keyframes mach-dash {
+  to { stroke-dashoffset: -12; }
+}
+.mach-nodes {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) 1fr;
+  gap: 48px;
+  align-items: center;
+  min-height: 420px;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.mach-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  justify-content: center;
+}
+.mach-plane,
+.mach-node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--line, #3a4252);
+  border-radius: 12px;
+  background: var(--panel, #161a22);
+  box-sizing: border-box;
+}
+.mach-node {
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.mach-node:hover,
+.mach-node:focus-visible,
+.mach-node.selected {
+  border-color: var(--accent, #6aa9ff);
+}
+.mach-node.selected {
+  box-shadow: inset 0 0 0 1px var(--accent, #6aa9ff);
+}
+.mach-title { font-weight: 600; }
+.mach-head { display: flex; align-items: center; gap: 12px; }
+.mach-dev { width: 72px; height: 54px; flex: none; }
+.mach-name { font-weight: 600; }
+.mach-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mach-chip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #3a4252);
+}
+.mach-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.mach-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel, #161a22);
+  border: 1px solid var(--line, #3a4252);
+}
+.mach-detail { display: flex; flex-direction: column; gap: 16px; }
+.mach-gpus .row { display: flex; gap: 12px; align-items: baseline; }
+@media (max-width: 720px) {
+  .mach-nodes { grid-template-columns: 130px 1fr; gap: 24px; padding: 12px 8px; }
+  .mach-dev { width: 56px; height: 42px; }
+}
