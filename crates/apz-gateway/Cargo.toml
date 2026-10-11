@@ -1,0 +1,16 @@
+[package]
+name = "apz-gateway"
+description = "AgentPlaza model gateway: one blocking client for every model provider API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+hmac.workspace = true
