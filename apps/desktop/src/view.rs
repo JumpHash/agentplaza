@@ -11,7 +11,9 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Padding};
 
-use crate::api::{FinishOutcome, Run, RunState, Task, TaskArtifact, TaskState, Vm, VmState};
+use crate::api::{
+    CallState, FinishOutcome, Run, RunState, Task, TaskArtifact, TaskState, Vm, VmState,
+};
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
 use crate::form::{Field, Preset};
@@ -21,9 +23,10 @@ use crate::mapview::{self, FleetMap};
 use crate::model::{
     ARTIFACT_TAIL_LINES, ArtifactState, ConsoleField, DriveState, Health, HistoryStep, Message,
     Model, Notice, NoticeKind, Pane, RosterAgent, RosterConsole, SERIAL_TAIL_LINES, StopState,
-    duration_label, entry_task, hub_facts, hub_line, instant_label, journal_tally, memory_label,
-    money_label, posting_account, preset_footprint, roster_line, roster_tally, serial_tail,
-    tally_line, task_line, task_state_line, task_tally, totals_line, transcript_span, treasury_line,
+    award_line, board_tally, duration_label, entry_task, hub_facts, hub_line, instant_label,
+    journal_tally, market_line, memory_label, money_label, posting_account, preset_footprint,
+    roster_line, roster_tally, serial_tail, tally_line, task_line, task_state_line, task_tally,
+    totals_line, transcript_span, treasury_line,
 };
 use crate::telemetryview::{self, ChartKind};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SERIF, Tone, WARN};
@@ -113,6 +116,13 @@ fn index(model: &Model) -> Container<'_, Message> {
             "Treasury",
             treasury_line(model),
             Pane::Treasury,
+        ),
+        index_entry(
+            model,
+            "7",
+            "Market",
+            market_line(model),
+            Pane::Market,
         ),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
@@ -226,11 +236,12 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("r", "register"),
     ("w", "roster: running + connected, by role"),
     ("l", "ledger: the plaza's tasks"),
     ("y", "treasury: the accounts + the journal"),
+    ("u", "market: the calls, their bids + awards"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
@@ -341,6 +352,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Roster => body.push(roster_pane(model)),
         Pane::Ledger => body.push(ledger_pane(model)),
         Pane::Treasury => body.push(treasury_pane(model)),
+        Pane::Market => body.push(market_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -389,6 +401,12 @@ fn running_head(model: &Model) -> Element<'_, Message> {
         Pane::Treasury => (
             "Treasury".to_string(),
             "the plaza's accounts and its journal · GET /api/v0/treasury".to_string(),
+        ),
+        Pane::Market => (
+            "Market".to_string(),
+            "the plaza's calls, the bids on them and the award that closed each · \
+             GET /api/v0/agora"
+                .to_string(),
         ),
         Pane::Telemetry => (
             "Telemetry".to_string(),
@@ -2187,6 +2205,305 @@ fn entry_postings(entry: &crate::api::Entry) -> Element<'_, Message> {
         .into()
 }
 
+/// The market (`u`): the plaza's calls — the offers its roled tasks make —
+/// each with the bids it holds and the award that closed it, read straight
+/// from the daemon's agora.
+///
+/// It is **read-only**: a bid is placed and an award is made by the daemon's
+/// own surface (`POST /api/v0/tasks/{id}/bid` and `…/award`), and the console
+/// has no path that would place either — what is drawn here is what the daemon
+/// already recorded. A call's `task` is the offer's id and the ledger's own:
+/// at v0 the two are one thing. The escrow entry an award names is the
+/// treasury's own funding entry; the market does not jump to the treasury
+/// sheet to draw it — the `y` sheet carries it.
+fn market_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "The plaza's market: the calls its roled tasks offer, the bids on them and the award \
+             that closed each, read straight from the daemon's agora. A bid is placed and an \
+             award is made by the daemon's own surface — this console reads the board and can \
+             write nothing here. An award's escrow entry is the treasury's own funding entry; \
+             this sheet names it and does not jump to the treasury sheet to draw it.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    ];
+
+    match &model.agora {
+        Some(board) => body.push(board_sheet(model, board)),
+        None => {
+            // A board nobody has read is not an empty board, and one that could
+            // not be read says so rather than drawing nothing.
+            let message = match &model.agora_error {
+                Some(error) => format!("the market could not be read: {error}"),
+                None => "waiting for the market's first read…".to_string(),
+            };
+            body.push(
+                container(serif(message, 12.5, INK_2))
+                    .style(theme::boxed)
+                    .width(Length::Fill)
+                    .padding(edge(16.0, 14.0, 16.0, 14.0))
+                    .into(),
+            );
+        }
+    }
+
+    // A read that failed after a good one keeps the last board on the sheet —
+    // a bid the daemon recorded is a fact, so it is incomplete, not wrong —
+    // and says how old it is and why it has not moved.
+    if model.agora.is_some() {
+        if let Some(error) = &model.agora_error {
+            let age = model
+                .agora_last_ok_ms
+                .map(|at| {
+                    format!(
+                        " (last read {} ago)",
+                        duration_label(model.now_ms.saturating_sub(at))
+                    )
+                })
+                .unwrap_or_default();
+            body.push(
+                container(serif(
+                    format!("the market could not be read since{age}: {error}"),
+                    11.5,
+                    theme::WARN,
+                ))
+                .style(theme::boxed)
+                .width(Length::Fill)
+                .padding(edge(12.0, 10.0, 12.0, 10.0))
+                .into(),
+            );
+        }
+    }
+
+    // The board is as long as the daemon's own cap allows, so the sheet
+    // scrolls rather than silently hiding the tail.
+    scrollable(Column::with_children(body).spacing(8.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// The call row's column widths: one place for the heads and the cells.
+const CALL_COL_TASK: f32 = 44.0;
+const CALL_COL_CAPABILITY: f32 = 120.0;
+const CALL_COL_MAX_PRICE: f32 = 170.0;
+const CALL_COL_STATE: f32 = 96.0;
+const CALL_COL_OPENED: f32 = 96.0;
+
+/// A call's bid rows' column widths, matched to the cells below them.
+const BID_COL_BIDDER: f32 = 150.0;
+const BID_COL_CID: f32 = 60.0;
+const BID_COL_PRICE: f32 = 150.0;
+const BID_COL_AT: f32 = 96.0;
+const BID_COL_MARK: f32 = 88.0;
+
+/// How far a call's bids and its award are indented: under the call's id
+/// column, so a call and the movement on it read as one block.
+const MARKET_INDENT: f32 = 6.0;
+
+/// The board: one row per call, its bids ruled beneath it, and its award when
+/// one closed it.
+fn board_sheet<'a>(model: &'a Model, board: &'a crate::api::Board) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![
+        mono(format!("Board · {}", board_tally(board)), 11.5, INK).into(),
+    ];
+
+    if board.calls.is_empty() {
+        body.push(
+            container(serif(
+                "the board is empty: no roled task offers a call yet",
+                12.0,
+                INK_3,
+            ))
+            .style(theme::boxed)
+            .width(Length::Fill)
+            .padding(edge(12.0, 12.0, 12.0, 12.0))
+            .into(),
+        );
+        return Column::with_children(body).spacing(4.0).into();
+    }
+
+    body.push(
+        Row::with_children(vec![
+            mono("call", 10.0, INK_3).width(Length::Fixed(CALL_COL_TASK)).into(),
+            mono("capability", 10.0, INK_3)
+                .width(Length::Fixed(CALL_COL_CAPABILITY))
+                .into(),
+            mono("max price", 10.0, INK_3)
+                .width(Length::Fixed(CALL_COL_MAX_PRICE))
+                .into(),
+            mono("state", 10.0, INK_3)
+                .width(Length::Fixed(CALL_COL_STATE))
+                .into(),
+            mono("opened", 10.0, INK_3)
+                .width(Length::Fixed(CALL_COL_OPENED))
+                .into(),
+        ])
+        .spacing(COL_SPACING)
+        .into(),
+    );
+    body.push(rule_heading());
+
+    for call in &board.calls {
+        body.push(call_row(model, call));
+        // The call's acceptance, when the task named one: what the work will
+        // be judged by, under the call's own row.
+        if let Some(spec) = call.spec_ref.get() {
+            body.push(
+                container(mono(format!("spec · {spec}"), 10.0, INK_3))
+                    .padding(edge(0.0, 0.0, 0.0, MARKET_INDENT))
+                    .into(),
+            );
+        }
+        body.push(call_bids(model, call));
+        if let Some(award) = call.award.get() {
+            body.push(call_award(award));
+        }
+        body.push(vertical(6.0));
+    }
+
+    Column::with_children(body).spacing(2.0).into()
+}
+
+/// One call's row: its id, what is needed, the ceiling in credits and the
+/// dollars they stand for, the state as a stamp, and when it opened under the
+/// register's day-tier rule.
+fn call_row<'a>(model: &'a Model, call: &'a crate::api::Call) -> Element<'a, Message> {
+    Row::with_children(vec![
+        mono(call.task.as_str(), 11.0, INK)
+            .width(Length::Fixed(CALL_COL_TASK))
+            .into(),
+        mono(call.capability.as_str(), 10.5, INK)
+            .width(Length::Fixed(CALL_COL_CAPABILITY))
+            .wrapping(Wrapping::None)
+            .into(),
+        mono(money_label(i128::from(call.max_price)), 10.5, INK_2)
+            .width(Length::Fixed(CALL_COL_MAX_PRICE))
+            .into(),
+        stamp(call.state.stamp_label(), tone_for_call(call.state))
+            .width(Length::Fixed(CALL_COL_STATE))
+            .into(),
+        // A call opened on another day reads as its day rather than as a bare
+        // time of day that would read as today's, the register's own rule.
+        mono(instant_label(call.created_at, model.now_ms), 10.5, INK_2)
+            .width(Length::Fixed(CALL_COL_OPENED))
+            .into(),
+    ])
+    .spacing(COL_SPACING)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// One call's bids, ruled beneath it: the bidder, the guest CID, the price
+/// (with the winning bid marked) and when it was made.
+fn call_bids<'a>(model: &'a Model, call: &'a crate::api::Call) -> Element<'a, Message> {
+    let mut rows: Vec<Element<'a, Message>> = vec![
+        Row::with_children(vec![
+            mono("bidder", 9.5, INK_3)
+                .width(Length::Fixed(BID_COL_BIDDER))
+                .into(),
+            mono("cid", 9.5, INK_3)
+                .width(Length::Fixed(BID_COL_CID))
+                .into(),
+            mono("price", 9.5, INK_3)
+                .width(Length::Fixed(BID_COL_PRICE))
+                .into(),
+            mono("bid at", 9.5, INK_3)
+                .width(Length::Fixed(BID_COL_AT))
+                .into(),
+            mono("", 9.5, INK_3)
+                .width(Length::Fixed(BID_COL_MARK))
+                .into(),
+        ])
+        .spacing(COL_SPACING)
+        .into(),
+        rule::horizontal(1.0).style(theme::rule).into(),
+    ];
+
+    if call.bids.is_empty() {
+        rows.push(
+            mono("no bid yet", 10.5, INK_3)
+                .width(Length::Fixed(BID_COL_BIDDER))
+                .into(),
+        );
+    }
+
+    for bid in &call.bids {
+        // The bid the award was made on is the one the call's state and its
+        // award already name: the same agent, at the same price.
+        let winning = call.awarded_bid(bid);
+        rows.push(
+            Row::with_children(vec![
+                mono(bid.bidder.as_str(), 10.5, INK_2)
+                    .width(Length::Fixed(BID_COL_BIDDER))
+                    .wrapping(Wrapping::None)
+                    .into(),
+                mono(bid.agent_cid.to_string(), 10.5, INK_2)
+                    .width(Length::Fixed(BID_COL_CID))
+                    .into(),
+                mono(
+                    money_label(i128::from(bid.price)),
+                    10.5,
+                    if winning { INK } else { INK_2 },
+                )
+                .width(Length::Fixed(BID_COL_PRICE))
+                .into(),
+                mono(instant_label(bid.created_at, model.now_ms), 10.5, INK_2)
+                    .width(Length::Fixed(BID_COL_AT))
+                    .into(),
+                if winning {
+                    stamp("AWARD BID", Tone::Ok)
+                        .width(Length::Fixed(BID_COL_MARK))
+                        .into()
+                } else {
+                    mono("", 10.5, INK_3)
+                        .width(Length::Fixed(BID_COL_MARK))
+                        .into()
+                },
+            ])
+            .spacing(COL_SPACING)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+
+    container(Column::with_children(rows).spacing(2.0))
+        .padding(edge(2.0, 0.0, 2.0, MARKET_INDENT))
+        .into()
+}
+
+/// One call's award: the stamp, then who took the call, at what price, and the
+/// treasury entry that funded it.
+fn call_award(award: &crate::api::Award) -> Element<'_, Message> {
+    container(
+        Row::with_children(vec![
+            stamp("AWARD", Tone::Ok).into(),
+            mono(award_line(award), 10.5, INK).into(),
+        ])
+        .spacing(8.0)
+        .align_y(Alignment::Center),
+    )
+    .padding(edge(2.0, 0.0, 2.0, MARKET_INDENT))
+    .into()
+}
+
+/// A call's state as a stamp is toned: an offer waits (neutral ink), an award
+/// closed it (green), and the rest follow the task's own tones — in hand is
+/// the signal, done is green, failed is red, withdrawn is amber. A state the
+/// console does not know is drawn in neutral ink rather than guessed at.
+fn tone_for_call(state: CallState) -> Tone {
+    match state {
+        CallState::Open => Tone::Neutral,
+        CallState::Claimed => Tone::Signal,
+        CallState::Done => Tone::Ok,
+        CallState::Awarded => Tone::Ok,
+        CallState::Failed => Tone::Crit,
+        CallState::Withdrawn => Tone::Warn,
+        CallState::Unknown => Tone::Neutral,
+    }
+}
+
 /// The session's figures: what the register observed, one observation per
 /// poll, as three charts and the tally of the window.
 fn telemetry_pane(model: &Model) -> Element<'_, Message> {
@@ -3102,6 +3419,25 @@ mod tests {
             assert!(!state.stamp_label().is_empty());
             assert_eq!(tone_for_task(state), tone);
         }
+        // A call's states, plus the unknown one: every one has a stamp and a
+        // tone, and an open call reads as the offer it is.
+        for (state, tone) in [
+            (CallState::Open, Tone::Neutral),
+            (CallState::Claimed, Tone::Signal),
+            (CallState::Done, Tone::Ok),
+            (CallState::Failed, Tone::Crit),
+            (CallState::Withdrawn, Tone::Warn),
+            (CallState::Awarded, Tone::Ok),
+            (CallState::Unknown, Tone::Neutral),
+        ] {
+            assert!(!state.stamp_label().is_empty());
+            assert_eq!(tone_for_call(state), tone);
+        }
+        assert_eq!(CallState::Open.stamp_label(), "OFFERED");
+        assert_eq!(CallState::Awarded.stamp_label(), "AWARDED");
+        assert!(CallState::Awarded.is_awarded());
+        assert!(CallState::Open.is_offer());
+        assert!(!CallState::Open.is_awarded());
     }
 
     /// The ledger's columns, summed: what its table occupies before spacing.
@@ -3157,6 +3493,7 @@ mod tests {
             Pane::Roster,
             Pane::Ledger,
             Pane::Treasury,
+            Pane::Market,
             Pane::Telemetry,
         ] {
             model.pane = pane;
@@ -3312,7 +3649,7 @@ mod tests {
     #[test]
     fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
         let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
-        for bound in ["r", "w", "l", "y", "m", "f", "t", "?", "esc", "↑ ↓"] {
+        for bound in ["r", "w", "l", "y", "u", "m", "f", "t", "?", "esc", "↑ ↓"] {
             assert!(keys.contains(&bound), "the register binds {bound:?}");
         }
         for (_, what) in KEYS {

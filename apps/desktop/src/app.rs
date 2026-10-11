@@ -193,7 +193,7 @@ fn keys() -> Subscription<Message> {
 }
 
 /// The action a key names, if the register binds it: `r`, `m`, `f`, `w`, `l`,
-/// `y` and `t` in either case, `?`, Escape, and the console's arrows.
+/// `y`, `u` and `t` in either case, `?`, Escape, and the console's arrows.
 pub fn shortcut(key: &Key) -> Option<KeyAction> {
     match key.as_ref() {
         Key::Character(character) => match character.to_ascii_lowercase().as_str() {
@@ -203,6 +203,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "w" => Some(KeyAction::Roster),
             "l" => Some(KeyAction::Ledger),
             "y" => Some(KeyAction::Treasury),
+            "u" => Some(KeyAction::Market),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -391,6 +392,19 @@ fn dispatch(
                 (epoch_ms(), result)
             },
             |(at_ms, result)| Message::Treasury { at_ms, result },
+        ));
+    }
+    if effect.poll_agora {
+        // The market's own read: the whole board, every call with its bids and
+        // its award. Its own message and its own schedule, so a daemon that
+        // serves the register but not the agora never marks the register down.
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.agora();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Agora { at_ms, result },
         ));
     }
     if let Some(id) = effect.fetch_task {

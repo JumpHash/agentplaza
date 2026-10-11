@@ -126,6 +126,24 @@ pub enum Event {
         /// The task the entry belongs to, or `None` when it belongs to none.
         task: Option<String>,
     },
+    /// A call's market moved: a bid was made (or replaced) or an award was
+    /// made.
+    ///
+    /// The frame carries the call's task id, whether it was a bid or an award,
+    /// the agent's guest CID and the price, and **nothing else** — no bidder,
+    /// no escrow entry and no clock. It is the board's delta, not a bid or a
+    /// call: a console that has not read the board reads it rather than
+    /// assembling a row from a frame.
+    Agora {
+        /// The call's task id.
+        task: String,
+        /// Whether a bid or an award moved the call.
+        kind: AgoraKind,
+        /// The bidding or winning agent's guest CID.
+        agent_cid: u64,
+        /// The price bid, or the price the award was made at.
+        price: u64,
+    },
 }
 
 /// What one frame of the stream turned out to be.
@@ -258,6 +276,12 @@ impl Framer {
                     task: data.task.into_option(),
                 }
             }),
+            "agora" => serde_json::from_str::<AgoraData>(&payload).map(|data| Event::Agora {
+                task: data.task,
+                kind: data.kind,
+                agent_cid: data.agent_cid,
+                price: data.price,
+            }),
             other => {
                 out.push(Frame::Other(other.to_string()));
                 return;
@@ -319,6 +343,46 @@ struct TreasuryData {
     kind: EntryKind,
     amount: i128,
     task: Column<String>,
+}
+
+/// What moved a call on the market: a bid, or the award that closed it
+/// (`noded::agora`'s frame kinds). A kind this console does not know parses as
+/// [`AgoraKind::Unknown`] rather than failing the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgoraKind {
+    /// A bid was made, or a bidder replaced its own.
+    Bid,
+    /// The award that closed the call.
+    Award,
+    /// A kind this dashboard does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl AgoraKind {
+    /// The name the daemon's frame uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            AgoraKind::Bid => "bid",
+            AgoraKind::Award => "award",
+            AgoraKind::Unknown => "unknown",
+        }
+    }
+}
+
+/// An `agora` frame's `data`.
+///
+/// `noded` writes all four fields for every bid and award it publishes
+/// (`crates/noded/src/events.rs`, `Event::Agora::frame`), so an absent
+/// `agent_cid` is not the shape the daemon sends and is refused by name — the
+/// same rule the board's own rows are read by.
+#[derive(Debug, Deserialize)]
+struct AgoraData {
+    task: String,
+    kind: AgoraKind,
+    agent_cid: u64,
+    price: u64,
 }
 
 /// Why one connection to the stream did not deliver events.
@@ -926,6 +990,82 @@ mod tests {
             let error = open(&endpoint(port)).expect_err(why);
             assert!(matches!(error, StreamError::Head(_)), "{why}: {error:?}");
         }
+    }
+
+    #[test]
+    fn the_framer_reads_an_agora_frame_the_daemon_writes() {
+        // `crates/noded/src/events.rs`'s own frames, byte for byte: a bid and
+        // the award that closed the call.
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: agora\ndata: {\"task\":\"t1\",\"kind\":\"bid\",\"agent_cid\":100,\"price\":400}\n\n\
+              event: agora\ndata: {\"task\":\"t1\",\"kind\":\"award\",\"agent_cid\":100,\"price\":300}\n\n",
+        );
+        assert_eq!(
+            frames,
+            vec![
+                Frame::Event(Event::Agora {
+                    task: "t1".to_string(),
+                    kind: AgoraKind::Bid,
+                    agent_cid: 100,
+                    price: 400,
+                }),
+                Frame::Event(Event::Agora {
+                    task: "t1".to_string(),
+                    kind: AgoraKind::Award,
+                    agent_cid: 100,
+                    price: 300,
+                }),
+            ]
+        );
+        assert_eq!(AgoraKind::Bid.label(), "bid");
+        assert_eq!(AgoraKind::Award.label(), "award");
+    }
+
+    #[test]
+    fn an_agora_frame_with_a_kind_this_console_does_not_know_parses_as_unknown() {
+        let mut framer = Framer::new();
+        assert_eq!(
+            framer.feed(
+                b"event: agora\ndata: {\"task\":\"t1\",\"kind\":\"rebid\",\"agent_cid\":1,\"price\":2}\n\n"
+            ),
+            vec![Frame::Event(Event::Agora {
+                task: "t1".to_string(),
+                kind: AgoraKind::Unknown,
+                agent_cid: 1,
+                price: 2,
+            })]
+        );
+        assert_eq!(AgoraKind::Unknown.label(), "unknown");
+    }
+
+    #[test]
+    fn an_agora_frame_missing_a_field_is_named_and_the_next_frame_still_reads() {
+        let mut framer = Framer::new();
+        let frames = framer.feed(
+            b"event: agora\ndata: {\"task\":\"t1\",\"kind\":\"bid\",\"price\":5}\n\n\
+              event: agora\ndata: {\"task\":\"t1\",\"kind\":\"bid\",\"agent_cid\":1}\n\n\
+              event: run\ndata: {\"id\":\"r1\",\"state\":\"done\"}\n\n",
+        );
+        assert_eq!(frames.len(), 3);
+        assert!(
+            matches!(&frames[0], Frame::Malformed(why) if why.contains("agora") && why.contains("agent_cid")),
+            "an agora frame with no agent_cid is named: {:?}",
+            frames[0]
+        );
+        assert!(
+            matches!(&frames[1], Frame::Malformed(why) if why.contains("agora") && why.contains("price")),
+            "an agora frame with no price is named: {:?}",
+            frames[1]
+        );
+        assert_eq!(
+            frames[2],
+            Frame::Event(Event::Run {
+                id: "r1".to_string(),
+                state: RunState::Done,
+            }),
+            "one bad agora frame never ends the stream"
+        );
     }
 
     #[test]

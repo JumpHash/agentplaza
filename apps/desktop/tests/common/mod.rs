@@ -559,6 +559,108 @@ pub fn fleet(list: &str, detail: &str) -> Stub {
     }))
 }
 
+/// An agora body as `GET /api/v0/agora` sends it: a call the award closed —
+/// with two bids and the treasury entry that funded it — next to a call still
+/// open and unbidden. The live daemon's board for `t1` is this shape.
+pub const AGORA: &str = r#"{"calls":[
+    {"task":"t1","capability":"librarian","spec_ref":"all 21 handbooks present",
+     "max_price":2000,"state":"awarded","created_at":1791671813178,
+     "bids":[
+        {"task":"t1","agent_cid":112,"bidder":"librarian","price":1800,
+         "created_at":1791671820000},
+        {"task":"t1","agent_cid":118,"bidder":"librarian","price":1900,
+         "created_at":1791671821000}],
+     "award":{"task":"t1","contractor":"librarian","agent_cid":112,"price":1800,
+              "escrow_entry":1,"created_at":1791671825000}},
+    {"task":"t2","capability":"builder","spec_ref":null,"max_price":500,
+     "state":"open","created_at":1791671900000,"bids":[],"award":null}
+    ],"total":2,"limit":256,"truncated":false}"#;
+
+/// The board of [`AGORA`] once the open call took a bid: what a later read
+/// answers with. The bid carries a bidder and a clock a frame cannot — a
+/// console that draws it drew it from a read.
+pub const AGORA_AFTER: &str = r#"{"calls":[
+    {"task":"t1","capability":"librarian","spec_ref":"all 21 handbooks present",
+     "max_price":2000,"state":"awarded","created_at":1791671813178,
+     "bids":[
+        {"task":"t1","agent_cid":112,"bidder":"librarian","price":1800,
+         "created_at":1791671820000},
+        {"task":"t1","agent_cid":118,"bidder":"librarian","price":1900,
+         "created_at":1791671821000}],
+     "award":{"task":"t1","contractor":"librarian","agent_cid":112,"price":1800,
+              "escrow_entry":1,"created_at":1791671825000}},
+    {"task":"t2","capability":"builder","spec_ref":null,"max_price":500,
+     "state":"open","created_at":1791671900000,
+     "bids":[{"task":"t2","agent_cid":100,"bidder":"builder","price":420,
+              "created_at":1791672000000}],
+     "award":null}
+    ],"total":2,"limit":256,"truncated":false}"#;
+
+/// An empty board: the daemon's own answer before any roled task offers a
+/// call, or after every offer is over.
+pub const AGORA_BARE: &str = r#"{"calls":[],"total":0,"limit":256,"truncated":false}"#;
+
+/// A whole stub daemon for the market pane: the register, the machine, an
+/// event stream, and the agora — `GET /api/v0/agora` answers `board`, every
+/// other read answers `detail`.
+pub fn agora_live(list: &str, detail: &str, events: &str, board: &str) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let board = board.to_string();
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/agora") => board.as_str(),
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon whose board grows between reads: the first read answers
+/// `board`, and every later read answers `board_after` — the daemon's own
+/// answer once one more bid was made.
+///
+/// It is how a test proves an `agora` frame asks the pane's own surface for a
+/// read rather than assembling a bid from the frame: the bid the frame never
+/// described is the daemon's words, and it arrives only through a read.
+pub fn agora_growing(
+    list: &str,
+    detail: &str,
+    events: &str,
+    board: &str,
+    board_after: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let board = board.to_string();
+    let board_after = board_after.to_string();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&reads);
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/agora") => {
+                // The board the daemon holds now: the one the first read saw,
+                // and the longer one after the next bid was made.
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    board.as_str()
+                } else {
+                    board_after.as_str()
+                }
+            }
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
 /// How a stub answers: the bytes to send for a request, or `None` to send
 /// nothing at all (which is what a malformed answer looks like).
 type Answer = Box<dyn FnMut(&Request, &mut BufReader<TcpStream>) -> Option<Vec<u8>> + Send>;

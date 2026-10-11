@@ -4,8 +4,10 @@ An iced + wgpu (WebGPU) desktop dashboard for the node daemon's fleet API: the
 fleet as a register — an index of runs on the left, a ruled sheet on the right,
 stamps for every state the daemon reports — and, beside it, the plaza's own
 **ledger**: the tasks the daemon holds, and the claims, finishes and
-withdrawals it accepts on them, and its **treasury**: the accounts, their
-totals and the double-entry journal that moved them, read only. With
+withdrawals it accepts on them, its **treasury**: the accounts, their
+totals and the double-entry journal that moved them, read only, and its
+**market**: the calls its roled tasks offer, the bids on them and the award
+that closed each, read only. With
 `--hub-url` it also reads the
 hub's read-only status surface, so the **roster** (`w`) can show not only who
 the register says is running but who is actually **connected to the
@@ -51,6 +53,7 @@ agentplaza-desktop [--url <url>] [--hub-url <host:port>]
 | `w` | the roster: who is running right now, and — with `--hub-url` — who is connected |
 | `l` | the ledger: the plaza's tasks, with the claim, finish and withdrawal the daemon accepts on them |
 | `y` | the treasury: the accounts, their totals and the journal, read only |
+| `u` | the market: the calls the plaza's roled tasks offer, the bids on them and their awards, read only |
 | `t` | the telemetry: the session's own figures, one observation per poll |
 | `?` | the help sheet, which lists every binding (`Escape` or `?` closes it) |
 | `Escape` | back to the register |
@@ -312,6 +315,43 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
   that fails keeps the last one on the sheet (the journal is append-only, so
   it is incomplete rather than wrong) and says how old it is and why it has
   not moved;
+* the **market** (`u`): the plaza's calls — the offers its roled tasks make —
+  each with the bids it holds and the award that closed it, read straight from
+  the daemon's agora (`GET /api/v0/agora`) and **read-only from this console**:
+  a bid is placed and an award is made by the daemon's own surface
+  (`POST /api/v0/tasks/{id}/bid` and `POST /api/v0/tasks/{id}/award`), and
+  nothing here can place either. One read covers the whole board, on **its own
+  schedule** with **its own failure count**, exactly as the treasury's and the
+  hub's do: a daemon that serves the register but not the agora — an older
+  daemon — never marks the register down, and a console that never opened the
+  sheet never reads the board at all. The sheet draws the **board**: one row
+  per call (its id and capability, its ceiling in *max price* — whole credits
+  *and* the dollars they stand for, the register's own money idiom — its
+  **state as a stamp** (`OFFERED` for an offer, `AWARDED` once an award closed
+  it), and the day it opened, the register's day-tier stamp), the acceptance a
+  task named under its call (`spec · …`), and beneath each call its **bids**
+  (the bidder, its guest CID, the price and when it was made), with the bid
+  the award was made on **marked** — the award binds the price the agent bid,
+  so the call's award names its winning bid by the bidder's CID and that
+  price, and a higher losing bid is drawn but not marked. The **award** is
+  drawn under its call: the contractor, the CID, the price and the **treasury
+  entry that funded the call**, labelled as the treasury's own funding entry
+  (the market names it and does **not** jump to the treasury sheet to draw it —
+  the `y` sheet carries it). A call that is still open with no bid reads `no
+  bid yet` rather than a blank row; a call's `task` is the offer's id and the
+  ledger's own, one thing at v0. The board is bounded and **scrollable**, and
+  the index's entry carries the daemon's own counts (`5 call(s) · 3 bid(s)`)
+  once the pane has read it, saying `not read yet` before that: a board nobody
+  read is not an empty board. An `agora` event arrives on the event stream when
+  a bid or an award moves a call (`event: agora` carries the task id, `bid` or
+  `award`, the agent's CID and the price): a frame the board already reflects
+  (a bid it holds from that agent at that price, or the award it holds) is a
+  duplicate and changes nothing, while anything else means the board moved
+  past what the pane saw, and the pane reads the board again — **once** for a
+  burst of bids, and never growing a call or a bid from a frame that carries no
+  bidder, no escrow entry and no clock. A read that fails keeps the last one on
+  the sheet (a bid the daemon recorded is a fact, so it is incomplete rather
+  than wrong) and says how old it is and why it has not moved;
 * every failure is a notice line and an error in the index — no request path
   panics, and nothing is swallowed.
 
@@ -363,7 +403,7 @@ APZ_DESKTOP_HUB=127.0.0.1:19080 cargo run
 ## Tests
 
 ```
-cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
+cargo test          # 380 lib + 48 client + 67 render = 495, 0 failed
 ```
 
 * `src/**` — unit tests: the API's JSON against fixture bodies (including the
@@ -391,7 +431,7 @@ cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
   believed; a result stamped on the call it names; a fresh hello restarting the
   reading), the help sheet's toggling, the poll
   schedule and backoff at more than one cadence, the serial tail (with the byte
-  each row starts at), the key bindings (`w`, `l` and `y` among them), the CLI.
+  each row starts at), the key bindings (`w`, `l`, `y` and `u` among them), the CLI.
 * the ledger, in the same unit tests: the `Task` model's whole parse matrix — a
   body as the daemon writes it read field for field, **every** column required
   (the nullable ones included: `null` and "absent" are not the same fact, and a
@@ -438,15 +478,42 @@ cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
   (whole credits and the dollars they stand for, a debit's sign kept on both),
   the totals line, the journal's tally and its truncation, and the postings'
   account labels.
+* the market, in the same unit tests: the `Board`, `Call`, `Bid` and `Award`
+  parse matrices — a board as the daemon writes it read field for field (an
+  awarded call with two bids and its escrow entry, an open call with no bid,
+  and a call whose award names no escrow entry), **every** column required at
+  every level with the error naming it (`null` and "absent" are not the same
+  fact for the three nullable columns — a call's `spec_ref` and `award`, an
+  award's `escrow_entry` — and a bid's own five are all required), an unknown
+  call state (`awarded` and the task's own words are carried; anything else is
+  `Unknown`) and an unknown column tolerated at every level, a board cut to its
+  limit parsed as exactly that, and the winning-bid rule (the award's own
+  contractor and price mark the bid it was made on, not a higher losing one);
+  the pane's own schedule — the sheet's key reading the board once, a tick
+  while the sheet is up reading it on **its** cadence and never before it, the
+  register polled either way, and nothing read at all off the sheet; its
+  failures being its own (a market read that fails leaves the register's
+  failures, error and health untouched, backs off on its own count, and clears
+  when it comes back) and its answer keeping the last read beside the failure;
+  the `agora` frame's reducer paths — a frame the board already reflects (a bid
+  it holds from that agent at that price, or the award it holds) as a no-op
+  that invents no call, a frame past what the board holds asking for the board
+  **once** for a whole burst of bids, a re-bid at another price a fresh read, a
+  frame off the sheet asking for nothing; and the market's lines (the index's
+  counts, the board's tally and its truncation, the offer and award stamps, and
+  the award line naming the treasury's own funding entry — or the honest `none`
+  for a call whose task named no budget).
 * the stream: the frame parser's whole matrix (the daemon's frames, a frame
   split mid-line across reads, a heartbeat, CRLF frames, a leading blank line,
   an unknown event kind, a data line with no kind, a malformed frame followed
   by a good one, a state this console does not know, a serial frame's escaped
   bytes, and a `task` frame from the daemon's own bytes — with a state this
   console does not know, and with a field missing, which is named while the next
-  frame still reads; and a `treasury` frame from the daemon's own bytes — the
+  frame still reads; a `treasury` frame from the daemon's own bytes — the
   task named and null, a kind this console does not know, and a missing field
-  named while the next frame still reads), the head that confirms the subscription (a real socket, and three
+  named while the next frame still reads; and an `agora` frame from the
+  daemon's own bytes — a bid and an award, a kind this console does not know,
+  and a missing field named while the next frame still reads), the head that confirms the subscription (a real socket, and three
   heads that are not a stream), the reconnect ladder's bounds (`250 ms` doubling
   to `30 s`, reset by any event), the offset merge's whole matrix (append,
   clip, replay, gap, a clip that would split a character, per-VM independence,
@@ -489,7 +556,12 @@ cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
   body), the mint and the escrow parsed with their derived balances and the
   journal's postings with the sign that is their side, a treasury the daemon
   does not serve carried as its own `404`, and a journal half that cannot be
-  read failing the whole read rather than half of it.
+  read failing the whole read rather than half of it. The market is read the
+  same way, off its own stub: one `GET /api/v0/agora` for the whole board, the
+  awarded call's bids and its award parsed field for field with the winning bid
+  marked and the higher losing bid not, an open call with no bid and no award
+  parsed with its `null` columns as none, and a market the daemon does not
+  serve carried as its own `404`.
 * `tests/render.rs` — headless rendering with iced's own harness: the register
   drawn with the stub's runs, a click on a run fetching it and rendering the
   guest's serial, a click on `New run` opening the form, the presets row and a
@@ -568,7 +640,21 @@ cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
   register still `LIVE`; and the **whole application following a `treasury`
   frame** between polls — the frame driving one read of the pane's own surface,
   the entry that arrives the daemon's own row with the postings a frame could
-  not describe, and no register poll), and a full
+  not describe, and no register poll), the **market** (the board over the
+  stub's real board: the call rows with their capability, ceiling in credits
+  and dollars (`2000 cr · $2.00`) and state stamps (`OFFERED`, `AWARDED`), the
+  acceptance a task named under its call, each call's bid rows with the winning
+  bid marked `AWARD BID` and a higher losing bid unmarked, the award drawn with
+  its contractor, CID and **the treasury entry that funded the call** labelled
+  as the treasury's own funding entry, and an open call with no bid reading `no
+  bid yet`; the index entry and the `u` key reaching the sheet, the entry
+  saying `not read yet` before the pane has read it; a fresh daemon's **empty
+  board** drawn as an empty board rather than a blank sheet; a read that fails
+  after a good one keeping the last read and naming the failure beside it with
+  the register still `LIVE`; and the **whole application following an `agora`
+  frame** between polls — the frame driving one read of the pane's own surface,
+  the bid that arrives the daemon's own row with the bidder and clock a frame
+  could not describe, and no register poll), and a full
   application frame
   written to
   `target/tmp/fleet-frame.rgba` (and the map's to `target/tmp/fleet-map-frame.rgba`,
@@ -578,8 +664,10 @@ cargo test          # 364 lib + 46 client + 62 render = 472, 0 failed
 Set `APZ_DESKTOP_LIVE=http://127.0.0.1:8899` to have `tests/client.rs` also
 read a running daemon (read-only: it reads the machine, lists runs, reads
 each one with its serial and exit kind, reads the ledger — every task, and
-each task by its own id — and reads the treasury, both halves at once, checking
-every entry balances; it mutates nothing; it also reads each task's artifact
+each task by its own id — reads the treasury, both halves at once, checking
+every entry balances, and reads the market's board, every call with its bids
+and its award and the treasury entry that funded it; it mutates nothing; it
+also reads each task's artifact
 back through that task's agent, the one POST of the walk, which drives the
 agent's `read_file` and touches nothing but the file it reports). Set
 `APZ_DESKTOP_LIVE_HUB=host:port`

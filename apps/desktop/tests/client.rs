@@ -15,8 +15,8 @@ use std::time::Duration;
 use common::{DETAIL, LIST, MACHINE, always, raw, replies, streams};
 
 use agentplaza_desktop::api::{
-    AccountKind, ApiError, Client, CreateRun, CreateTask, Endpoint, EntryKind, FinishOutcome,
-    RunState, StopOutcome, TaskOutcome, TaskState, VmState,
+    AccountKind, ApiError, CallState, Client, CreateRun, CreateTask, Endpoint, EntryKind,
+    FinishOutcome, RunState, StopOutcome, TaskOutcome, TaskState, VmState,
 };
 use agentplaza_desktop::events;
 use agentplaza_desktop::exit::{ExitKind, exit_kind};
@@ -1013,6 +1013,60 @@ fn a_journal_half_that_cannot_be_read_fails_the_whole_read() {
     assert_eq!(error.to_string(), "500: the journal could not be read");
 }
 
+// ---- the market: the calls, their bids and their awards ----
+
+#[test]
+fn reading_the_market_reads_the_whole_board_at_once() {
+    let server = common::agora_live(LIST, DETAIL, "", common::AGORA);
+    let board = client(server.port).agora().expect("the board should parse");
+
+    assert_eq!(board.calls.len(), 2);
+    assert_eq!(board.total, 2);
+    assert_eq!(board.limit, 256);
+    assert!(!board.truncated);
+
+    let awarded = &board.calls[0];
+    assert_eq!(awarded.task, "t1");
+    assert_eq!(awarded.capability, "librarian");
+    assert_eq!(awarded.state, CallState::Awarded);
+    assert_eq!(awarded.max_price, 2_000);
+    assert_eq!(awarded.bids.len(), 2);
+    let award = awarded.award.get().expect("the award");
+    assert_eq!(award.contractor, "librarian");
+    assert_eq!(award.agent_cid, 112);
+    assert_eq!(award.price, 1_800);
+    assert_eq!(award.escrow_entry.copied(), Some(1));
+    assert!(
+        awarded.awarded_bid(&awarded.bids[0]),
+        "the bid the award was made on"
+    );
+    assert!(!awarded.awarded_bid(&awarded.bids[1]));
+
+    let open = &board.calls[1];
+    assert_eq!(open.state, CallState::Open);
+    assert!(open.bids.is_empty());
+    assert_eq!(open.award.get(), None, "a living call has no award");
+
+    // Exactly one read, a GET with no body.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "the board is one read");
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/agora");
+    assert_eq!(requests[0].body, "");
+}
+
+#[test]
+fn a_market_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
+    // An older daemon with no agora endpoint: the pane's read is a refusal in
+    // the daemon's words, never a panic and never a silent empty board.
+    let server = always(404, r#"{"error":"no such endpoint"}"#);
+    let error = client(server.port)
+        .agora()
+        .expect_err("a 404 is a refusal");
+    assert_eq!(error.status(), Some(404));
+    assert_eq!(error.to_string(), "404: no such endpoint");
+}
+
 /// Reads the live hub's status surface when `APZ_DESKTOP_LIVE_HUB` names one
 /// (`host:port`), and does nothing otherwise: the suite stays runnable on a
 /// host with no hub.
@@ -1217,5 +1271,55 @@ fn a_live_daemon_reads_when_one_is_named() {
             net += posting.amount;
         }
         assert_eq!(net, 0, "every entry balances to zero");
+    }
+
+    // The market, read the same way and mutating nothing — the board's own
+    // read, one GET. Every call with its bids and its award: the award names
+    // the treasury entry that funded the call, which is the treasury the walk
+    // above just read.
+    let board = client
+        .agora()
+        .expect("the live daemon should answer its market");
+    println!(
+        "live {}: market {} call(s) carried of {} · truncated {}",
+        endpoint.url(),
+        board.calls.len(),
+        board.total,
+        board.truncated
+    );
+    assert_eq!(
+        board.calls.len(),
+        board.total.min(board.limit),
+        "the response carries what the board holds, cut to its own limit"
+    );
+    for call in &board.calls {
+        println!(
+            "  call {} {} · capability {:?} · max {} · state {} · opened {}",
+            call.task,
+            call.state.label(),
+            call.capability,
+            call.max_price,
+            call.state.stamp_label(),
+            call.created_at
+        );
+        for bid in &call.bids {
+            println!(
+                "    bid by {} · cid {} · price {}{}",
+                bid.bidder,
+                bid.agent_cid,
+                bid.price,
+                if call.awarded_bid(bid) { " · award" } else { "" }
+            );
+        }
+        match call.award.get() {
+            Some(award) => println!(
+                "    award: contractor {} · cid {} · price {} · escrow entry {:?}",
+                award.contractor,
+                award.agent_cid,
+                award.price,
+                award.escrow_entry.copied()
+            ),
+            None => println!("    award: none (the offer stands)"),
+        }
     }
 }

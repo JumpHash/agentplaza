@@ -926,6 +926,181 @@ pub struct TreasuryRead {
     pub journal: Journal,
 }
 
+/// How a call stands on the board, as `GET /api/v0/agora` reports it.
+///
+/// The daemon derives a call from a roled task, so its `state` is `awarded`
+/// once an award closed it and the task's own state otherwise
+/// (`noded::agora::CallView`). The type carries both sets of words and parses
+/// a state this console does not know as [`CallState::Unknown`] rather than
+/// failing the call, exactly as an unknown task or run state does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CallState {
+    /// The offer stands: a roled open task nothing has closed yet.
+    Open,
+    /// The task is in an agent's hands (a call that gathered bids and was
+    /// claimed).
+    Claimed,
+    /// The task ended `done`.
+    Done,
+    /// The task ended `failed`.
+    Failed,
+    /// The task was withdrawn.
+    Withdrawn,
+    /// The award closed the call.
+    Awarded,
+    /// A state this dashboard does not know; rendered as-is, never a parse
+    /// error.
+    #[serde(other)]
+    Unknown,
+}
+
+impl CallState {
+    /// The name the API uses, the daemon's own spelling.
+    pub fn label(self) -> &'static str {
+        match self {
+            CallState::Open => "open",
+            CallState::Claimed => "claimed",
+            CallState::Done => "done",
+            CallState::Failed => "failed",
+            CallState::Withdrawn => "withdrawn",
+            CallState::Awarded => "awarded",
+            CallState::Unknown => "unknown",
+        }
+    }
+
+    /// The word a stamp presses into the board, in caps: an open call is the
+    /// offer it is, and `awarded` is the award that closed it.
+    pub fn stamp_label(self) -> &'static str {
+        match self {
+            CallState::Open => "OFFERED",
+            CallState::Claimed => "CLAIMED",
+            CallState::Done => "DONE",
+            CallState::Failed => "FAILED",
+            CallState::Withdrawn => "WITHDRAWN",
+            CallState::Awarded => "AWARDED",
+            CallState::Unknown => "UNKNOWN",
+        }
+    }
+
+    /// Whether an award closed the call.
+    pub fn is_awarded(self) -> bool {
+        self == CallState::Awarded
+    }
+
+    /// Whether the offer still stands.
+    pub fn is_offer(self) -> bool {
+        self == CallState::Open
+    }
+}
+
+/// One bid, as `GET /api/v0/agora` reports it (`noded::agora::BidView`).
+///
+/// Every column the daemon writes is required — none of these is nullable — so
+/// a body that omits one is an error that names it, while a column this client
+/// does not know is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Bid {
+    /// The call this bid is on (its task's id).
+    pub task: String,
+    /// The bidding agent's guest CID: the identity a re-bid replaces, and the
+    /// one the award matches.
+    pub agent_cid: u64,
+    /// The schema's `bidder`: the agent's role, or `cid:<n>` for a VM the node
+    /// booted without one.
+    pub bidder: String,
+    /// The price the agent asks, in credits.
+    pub price: u64,
+    /// When the bid was made, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+}
+
+/// One award, as `GET /api/v0/agora` reports it (`noded::agora::AwardView`).
+///
+/// `escrow_entry` is the one nullable column — `null` for a call whose task
+/// named no budget — so it is a [`Column`], while every other column is
+/// required.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Award {
+    /// The call this award closed (its task's id).
+    pub task: String,
+    /// The schema's `contractor`: the winning agent's identity, from the bid.
+    pub contractor: String,
+    /// The winning agent's guest CID, from the bid.
+    pub agent_cid: u64,
+    /// The price the award was made at: always the price the agent bid, never
+    /// a price the caller named.
+    pub price: u64,
+    /// The schema's `escrow_entry`: the treasury entry that funded the call's
+    /// escrow, or `null` for a task with no budget.
+    pub escrow_entry: Column<u64>,
+    /// When the award was made, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+}
+
+/// One call, as `GET /api/v0/agora` reports it (`noded::agora::CallView`): the
+/// offer a roled task makes, with the bids it holds and the award that closed
+/// it.
+///
+/// `spec_ref` and `award` are the two nullable columns — a task that named no
+/// acceptance, and a call still open — so they are [`Column`]s, while every
+/// other column is required. A call's `task` is the offer's id *and* the
+/// task's: at v0 the offer and the ledger's row are one thing.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Call {
+    /// The call's id: the task's id.
+    pub task: String,
+    /// The schema's `capability`: what is needed (the task's role).
+    pub capability: String,
+    /// The schema's `spec_ref`: how the work will be judged complete (the
+    /// task's acceptance), or `null`.
+    pub spec_ref: Column<String>,
+    /// The schema's `max_price`: the ceiling a bid may not exceed (the task's
+    /// budget).
+    pub max_price: u64,
+    /// The call's state: `awarded` once an award closed it, the task's own
+    /// state otherwise.
+    pub state: CallState,
+    /// When the call opened (the task's creation), in milliseconds since the
+    /// Unix epoch.
+    pub created_at: u64,
+    /// The bids the call holds, in bid order (a re-bid keeps its place).
+    pub bids: Vec<Bid>,
+    /// The award that closed the call, or `null` while it is open.
+    pub award: Column<Award>,
+}
+
+impl Call {
+    /// Whether `bid` is the one the award was made on: the winning bid, marked
+    /// on the board.
+    ///
+    /// The award is made at the price the agent bid (`agora.award`), so the
+    /// call's own award names its bid by the bidder's CID and that price.
+    pub fn awarded_bid(&self, bid: &Bid) -> bool {
+        self.award
+            .get()
+            .is_some_and(|award| award.agent_cid == bid.agent_cid && award.price == bid.price)
+    }
+}
+
+/// `GET /api/v0/agora`: the board
+/// (`noded::agora::CallsView`) — the calls with their bids and awards.
+///
+/// The daemon derives the calls from the ledger (oldest first) and bounds its
+/// answer to [`Board::limit`], so `truncated` is how a caller tells a board
+/// read whole from one that was cut to its bound.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Board {
+    /// The calls the response carries, oldest first within the window.
+    pub calls: Vec<Call>,
+    /// How many calls the board holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the board holds more calls than the response carries.
+    pub truncated: bool,
+}
+
 /// `POST /api/v0/tasks`: the body sends exactly the fields `noded` accepts
 /// (`noded::tasks::CreateTask`); a field it does not name is absent rather
 /// than null, and the daemon fills its own default.
@@ -1446,6 +1621,19 @@ impl Client {
         let treasury: Treasury = self.json("GET", "/api/v0/treasury", None)?;
         let journal: Journal = self.json("GET", "/api/v0/treasury/journal", None)?;
         Ok(TreasuryRead { treasury, journal })
+    }
+
+    /// `GET /api/v0/agora`: the market's board — the calls the node's roled
+    /// tasks offer, each with the bids it holds and the award that closed it.
+    ///
+    /// It is one GET, so it is one read: the daemon derives the calls from its
+    /// ledger and answers them whole, oldest first within its own limit.
+    /// Nothing here writes: a bid is made and an award is made by the daemon's
+    /// own surface (`POST /api/v0/tasks/{id}/bid` and `…/award`), and this
+    /// client has no path that would place one — the market, like the
+    /// treasury, is read-only from the console.
+    pub fn agora(&self) -> Result<Board, ApiError> {
+        self.json("GET", "/api/v0/agora", None)
     }
 
     /// `GET /api/v0/runs/{id}`, with every VM's serial capture.
@@ -2813,5 +3001,260 @@ mod tests {
         };
         assert_eq!(read.treasury.totals.entries, read.journal.total);
         assert_eq!(read.treasury.spent, 0);
+    }
+
+    /// A board body as `GET /api/v0/agora` sends it: a call the award closed,
+    /// a call still open with no bid, and a call whose award names no escrow
+    /// entry (its task named no budget).
+    const BOARD: &str = r#"{"calls":[
+        {"task":"t1","capability":"librarian","spec_ref":"all 21 handbooks present",
+         "max_price":2000,"state":"awarded","created_at":1791671813178,
+         "bids":[
+            {"task":"t1","agent_cid":112,"bidder":"librarian","price":1800,
+             "created_at":1791671820000},
+            {"task":"t1","agent_cid":118,"bidder":"librarian","price":1900,
+             "created_at":1791671821000}],
+         "award":{"task":"t1","contractor":"librarian","agent_cid":112,"price":1800,
+                  "escrow_entry":1,"created_at":1791671825000}},
+        {"task":"t2","capability":"builder","spec_ref":null,"max_price":500,
+         "state":"open","created_at":1791671900000,"bids":[],"award":null},
+        {"task":"t3","capability":"reviewer","spec_ref":"the suite is green",
+         "max_price":0,"state":"claimed","created_at":1791671950000,
+         "bids":[{"task":"t3","agent_cid":201,"bidder":"cid:201","price":0,
+                  "created_at":1791671960000}],
+         "award":{"task":"t3","contractor":"cid:201","agent_cid":201,"price":0,
+                  "escrow_entry":null,"created_at":1791671970000}}
+        ],"total":3,"limit":256,"truncated":false}"#;
+
+    #[test]
+    fn a_board_body_parses_every_column_the_daemon_writes() {
+        let board: Board = from_body(BOARD);
+        assert_eq!(board.calls.len(), 3);
+        assert_eq!(board.total, 3);
+        assert_eq!(board.limit, 256);
+        assert!(!board.truncated);
+
+        // The awarded call: every column of the call, its bids and its award.
+        let awarded = &board.calls[0];
+        assert_eq!(awarded.task, "t1");
+        assert_eq!(awarded.capability, "librarian");
+        assert_eq!(awarded.spec_ref.as_deref(), Some("all 21 handbooks present"));
+        assert_eq!(awarded.max_price, 2_000);
+        assert_eq!(awarded.state, CallState::Awarded);
+        assert_eq!(awarded.state.label(), "awarded");
+        assert!(awarded.state.is_awarded());
+        assert!(!awarded.state.is_offer());
+        assert_eq!(awarded.created_at, 1_791_671_813_178);
+
+        assert_eq!(awarded.bids.len(), 2);
+        let first = &awarded.bids[0];
+        assert_eq!(first.task, "t1");
+        assert_eq!(first.agent_cid, 112);
+        assert_eq!(first.bidder, "librarian");
+        assert_eq!(first.price, 1_800);
+        assert_eq!(first.created_at, 1_791_671_820_000);
+        let second = &awarded.bids[1];
+        assert_eq!(second.agent_cid, 118);
+        assert_eq!(second.price, 1_900);
+
+        // The award — always at the price the agent bid — and the rule that
+        // marks the winning bid.
+        let award = awarded.award.get().expect("the award");
+        assert_eq!(award.task, "t1");
+        assert_eq!(award.contractor, "librarian");
+        assert_eq!(award.agent_cid, 112);
+        assert_eq!(award.price, 1_800);
+        assert_eq!(award.escrow_entry.copied(), Some(1));
+        assert_eq!(award.created_at, 1_791_671_825_000);
+        assert!(awarded.awarded_bid(first), "the bid the award was made on");
+        assert!(
+            !awarded.awarded_bid(second),
+            "a bid the award did not take, even at a higher price"
+        );
+
+        // The open call: no bids, no award, and an explicitly null spec.
+        let open = &board.calls[1];
+        assert_eq!(open.state, CallState::Open);
+        assert_eq!(open.state.stamp_label(), "OFFERED");
+        assert_eq!(open.spec_ref.get(), None, "a null column is none");
+        assert!(open.bids.is_empty());
+        assert_eq!(open.award.get(), None, "a living call has no award");
+        assert!(!open.awarded_bid(&first));
+
+        // A call whose award names no escrow entry: the other nullable column,
+        // null rather than absent.
+        let unfunded = &board.calls[2];
+        assert_eq!(unfunded.state, CallState::Claimed);
+        let award = unfunded.award.get().expect("the award");
+        assert_eq!(award.escrow_entry.get(), None);
+        assert_eq!(award.contractor, "cid:201");
+        assert!(unfunded.awarded_bid(&unfunded.bids[0]));
+    }
+
+    /// The whole board body as JSON, with the named path removed: a path with
+    /// no `/` is a top-level column, `calls/0/task` a call's,
+    /// `calls/0/bids/0/price` a bid's, and `calls/0/award/escrow_entry` an
+    /// award's.
+    fn board_without(path: &str) -> String {
+        let mut body: serde_json::Value = from_body(BOARD);
+        let (parent, key) = path.rsplit_once('/').unwrap_or(("", path));
+        let node = if parent.is_empty() {
+            &mut body
+        } else {
+            body.pointer_mut(&format!("/{parent}"))
+                .unwrap_or_else(|| panic!("the fixture has no path {path:?}"))
+        };
+        node.as_object_mut()
+            .expect("the path's parent is an object")
+            .remove(key);
+        body.to_string()
+    }
+
+    #[test]
+    fn a_board_missing_a_column_is_an_error_that_names_it() {
+        // Every column the daemon writes is required, at every level — the
+        // nullable ones included: `null` and "absent" are not the same fact.
+        // The whole body is walked so no column is quietly optional.
+        for path in [
+            "calls",
+            "total",
+            "limit",
+            "truncated",
+            // A call's own columns.
+            "calls/0/task",
+            "calls/0/capability",
+            "calls/0/spec_ref",
+            "calls/0/max_price",
+            "calls/0/state",
+            "calls/0/created_at",
+            "calls/0/bids",
+            "calls/0/award",
+            // A bid's.
+            "calls/0/bids/0/task",
+            "calls/0/bids/0/agent_cid",
+            "calls/0/bids/0/bidder",
+            "calls/0/bids/0/price",
+            "calls/0/bids/0/created_at",
+            // An award's.
+            "calls/0/award/task",
+            "calls/0/award/contractor",
+            "calls/0/award/agent_cid",
+            "calls/0/award/price",
+            "calls/0/award/escrow_entry",
+            "calls/0/award/created_at",
+        ] {
+            let body = board_without(path);
+            let error = serde_json::from_str::<Board>(&body)
+                .expect_err("a body missing a column must be refused");
+            let named = path.rsplit('/').next().expect("a field name");
+            assert!(
+                error.to_string().contains(named),
+                "the error should name {named:?} for {path:?}: {error}"
+            );
+        }
+        // The whole shape, and none of it missing, parses.
+        let board: Board = from_body(BOARD);
+        assert_eq!(board.calls.len(), 3);
+        assert_eq!(board.total, 3);
+    }
+
+    #[test]
+    fn a_call_column_award_and_spec_ref_are_nullable_but_never_absent() {
+        // A call that named no acceptance writes `spec_ref: null`, and an open
+        // call writes `award: null`: both read as none rather than as errors.
+        let board: Board = from_body(BOARD);
+        assert_eq!(board.calls[1].spec_ref.get(), None);
+        assert_eq!(board.calls[1].award.get(), None);
+
+        // Absent is a different fact from null, and each is named.
+        for (path, named) in [
+            ("calls/1/spec_ref", "spec_ref"),
+            ("calls/1/award", "award"),
+            ("calls/2/award/escrow_entry", "escrow_entry"),
+        ] {
+            let error = serde_json::from_str::<Board>(&board_without(path))
+                .expect_err("an absent column is not a null one");
+            assert!(error.to_string().contains(named), "{path}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_call_state_the_client_does_not_know_parses_as_unknown() {
+        let mut body: serde_json::Value = from_body(BOARD);
+        body["calls"][0]["state"] = serde_json::json!("reworked");
+        let board: Board = from_body(&body.to_string());
+        assert_eq!(board.calls[0].state, CallState::Unknown);
+        assert_eq!(board.calls[0].state.label(), "unknown");
+        assert!(!board.calls[0].state.is_awarded());
+        assert!(!board.calls[0].state.is_offer());
+    }
+
+    #[test]
+    fn a_board_column_the_client_does_not_know_is_ignored() {
+        // A newer daemon may add a column at any level without breaking the
+        // console.
+        let mut body: serde_json::Value = from_body(BOARD);
+        body["calls"][0]["town"] = serde_json::json!("plaza");
+        body["calls"][0]["bids"][0]["confidence"] = serde_json::json!(0.9);
+        body["calls"][0]["award"]["warranty_until"] = serde_json::json!(0);
+        body["calls"][0]["award"]["outcome"] = serde_json::json!("accepted");
+        body["unsealed_total"] = serde_json::json!(0);
+        let board: Board = from_body(&body.to_string());
+        assert_eq!(board.calls[0].task, "t1");
+        assert_eq!(board.calls[0].bids[0].price, 1_800);
+        assert_eq!(board.calls[0].award.get().expect("the award").price, 1_800);
+    }
+
+    #[test]
+    fn a_board_that_was_cut_to_its_limit_says_so() {
+        let mut body: serde_json::Value = from_body(BOARD);
+        body["total"] = serde_json::json!(900);
+        body["truncated"] = serde_json::json!(true);
+        let board: Board = from_body(&body.to_string());
+        assert_eq!(board.calls.len(), 3, "the response carries what it carries");
+        assert_eq!(board.total, 900);
+        assert!(board.truncated);
+    }
+
+    #[test]
+    fn the_call_states_are_the_daemons_own_words() {
+        for (state, label, stamp) in [
+            (CallState::Open, "open", "OFFERED"),
+            (CallState::Claimed, "claimed", "CLAIMED"),
+            (CallState::Done, "done", "DONE"),
+            (CallState::Failed, "failed", "FAILED"),
+            (CallState::Withdrawn, "withdrawn", "WITHDRAWN"),
+            (CallState::Awarded, "awarded", "AWARDED"),
+            (CallState::Unknown, "unknown", "UNKNOWN"),
+        ] {
+            assert_eq!(state.label(), label);
+            assert_eq!(state.stamp_label(), stamp);
+        }
+    }
+
+    #[test]
+    fn the_award_marks_the_bid_at_the_price_it_was_made_at() {
+        // A board read the pane may hold while the daemon has moved on: the
+        // same agent's bid at an older price, beside an award made at a
+        // different one. The award binds the price the agent bid, so its own
+        // mark falls on the bid at that price — never on a bid merely by the
+        // same agent.
+        let board: Board = from_body(
+            r#"{"calls":[
+                {"task":"t1","capability":"builder","spec_ref":null,"max_price":500,
+                 "state":"awarded","created_at":1,
+                 "bids":[
+                    {"task":"t1","agent_cid":100,"bidder":"builder","price":250,
+                     "created_at":2},
+                    {"task":"t1","agent_cid":100,"bidder":"builder","price":300,
+                     "created_at":3}],
+                 "award":{"task":"t1","contractor":"builder","agent_cid":100,"price":300,
+                          "escrow_entry":null,"created_at":4}}
+                ],"total":1,"limit":256,"truncated":false}"#,
+        );
+        let call = &board.calls[0];
+        assert_eq!(call.bids.len(), 2);
+        assert!(!call.awarded_bid(&call.bids[0]), "the same agent, an older price");
+        assert!(call.awarded_bid(&call.bids[1]), "the price the award was made at");
     }
 }

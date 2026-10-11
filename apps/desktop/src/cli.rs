@@ -137,6 +137,8 @@ KEYS:
                            finish and withdrawal the daemon accepts on them
     y                      the treasury: the accounts, their totals and the
                            double-entry journal — read-only
+    u                      the market: the calls the plaza's roled tasks
+                           offer, their bids and their awards — read-only
     t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
     Escape                 back to the register
@@ -162,6 +164,14 @@ real spend, and every journal entry with its postings ruled as the debit and
 credit sides. It writes nothing — every entry is the daemon's own. A treasury
 event for an entry past the newest the pane holds reads the journal again
 rather than assembling an entry from a frame.
+The market pane (read-only) reads GET /api/v0/agora while it is up, on its own
+schedule: every call a roled task offers, with its capability, its ceiling in
+credits and the dollars they stand for, its state stamp, the bids on it and
+the award that closed it (the contractor, the price and the treasury entry
+that funded the call). It writes nothing — a bid and an award are made by the
+daemon's own surface (POST /api/v0/tasks/{id}/bid and .../award). An agora
+event for a bid or an award the board does not hold reads the board again
+rather than assembling a call from a frame.
 When --hub-url names a status surface, GET /status is read at the same
 cadence and the roster joins it to the register by guest CID: an agent the
 register reports and the hub does not is drawn 'registered, not connected',
@@ -385,6 +395,9 @@ mod tests {
         // The ledger's and the treasury's own keys.
         assert!(HELP.contains("l                      the ledger"));
         assert!(HELP.contains("y                      the treasury"));
+        // The market's key, and that it is read-only and reads the board.
+        assert!(HELP.contains("u                      the market"));
+        assert!(HELP.contains("GET /api/v0/agora"));
         // The treasury pane is read-only and reads both halves at once.
         assert!(HELP.contains("GET /api/v0/treasury/journal"));
         assert!(HELP.contains("read-only"));

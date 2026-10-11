@@ -7,11 +7,11 @@
 //! nothing more.
 
 use crate::api::{
-    ApiError, Column, CreateRun, CreateTask, Endpoint, Entry, FinishOutcome, HubAgent, HubStatus,
-    Journal, Machine, Posting, Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState,
-    TasksPage, TellAnswer, Totals, TreasuryRead, VmState,
+    ApiError, Award, Board, Column, CreateRun, CreateTask, Endpoint, Entry, FinishOutcome,
+    HubAgent, HubStatus, Journal, Machine, Posting, Run, RunState, RunsPage, StopOutcome, Task,
+    TaskArtifact, TaskState, TasksPage, TellAnswer, Totals, TreasuryRead, VmState,
 };
-use crate::events::Event;
+use crate::events::{AgoraKind, Event};
 use crate::export::{
     self, CsvCall, CsvExport, Export, ExportCall, ExportTarget, run_report, run_transcript,
     vm_transcript,
@@ -73,6 +73,10 @@ pub enum Pane {
     /// The plaza's treasury: the accounts, the totals and the double-entry
     /// journal. Read-only — every entry is the daemon's own.
     Treasury,
+    /// The plaza's market: the calls its roled tasks offer, the bids on them
+    /// and the award that closed each. Read-only — a bid and an award are made
+    /// by the daemon's own surface.
+    Market,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -111,6 +115,8 @@ pub enum KeyAction {
     Ledger,
     /// `y`: the treasury — the accounts and the journal.
     Treasury,
+    /// `u`: the market — the calls, their bids and their awards.
+    Market,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
@@ -731,6 +737,8 @@ pub struct Effect {
     /// `GET /api/v0/treasury/journal` at once, on the treasury's own
     /// schedule.
     pub poll_treasury: bool,
+    /// Read the market: `GET /api/v0/agora`, on the market's own schedule.
+    pub poll_agora: bool,
     /// `POST /api/v0/tasks` with this body.
     pub create_task: Option<CreateTask>,
     /// `POST /api/v0/tasks/{id}/claim` as this agent.
@@ -838,6 +846,15 @@ impl Effect {
     pub fn treasury() -> Self {
         Self {
             poll_treasury: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read the market: the board of calls, with each call's bids and its
+    /// award.
+    pub fn agora() -> Self {
+        Self {
+            poll_agora: true,
             ..Self::default()
         }
     }
@@ -1080,6 +1097,14 @@ pub enum Message {
         /// The answer, or why the read did not happen.
         result: Result<TreasuryRead, ApiError>,
     },
+    /// The market answered: the board of calls, with each call's bids and its
+    /// award.
+    Agora {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<Board, ApiError>,
+    },
     /// `GET /api/v0/tasks/{id}` answered: one task, read again.
     Task {
         /// When the answer arrived.
@@ -1202,6 +1227,7 @@ impl Message {
             | Message::CsvExported { at_ms, .. }
             | Message::Tasks { at_ms, .. }
             | Message::Treasury { at_ms, .. }
+            | Message::Agora { at_ms, .. }
             | Message::Task { at_ms, .. }
             | Message::TaskCreated { at_ms, .. }
             | Message::TaskClaimed { at_ms, .. }
@@ -1361,6 +1387,27 @@ pub struct Model {
     /// Whether a treasury frame has already asked for the read and the answer
     /// has not landed: a burst of entries is one read, not one per entry.
     pub treasury_asked: bool,
+    /// The plaza's market: the calls with their bids and their awards, as the
+    /// daemon's board reported them. `None` until the pane's first read
+    /// answers — a board nobody has read is not an empty board.
+    ///
+    /// The last read is kept when a later read fails: a bid the daemon already
+    /// recorded is a fact, so an older board is incomplete rather than wrong,
+    /// and the pane says which it is.
+    pub agora: Option<Board>,
+    /// Why the market's last read failed, if it did.
+    pub agora_error: Option<String>,
+    /// When the market last answered, in milliseconds since the Unix epoch.
+    pub agora_last_ok_ms: Option<u64>,
+    /// When the market should be read next.
+    pub agora_next_at_ms: u64,
+    /// How many market reads have failed in a row: the market's own backoff,
+    /// so a daemon that serves the register but not the agora never marks the
+    /// register down.
+    pub agora_failures: u32,
+    /// Whether an agora frame has already asked for the read and the answer
+    /// has not landed: a burst of bids is one read, not one per bid.
+    pub agora_asked: bool,
     /// How often a healthy daemon is polled, in milliseconds.
     pub refresh_ms: u64,
     /// The spawn form's raw input.
@@ -1437,6 +1484,12 @@ impl Default for Model {
             treasury_next_at_ms: 0,
             treasury_failures: 0,
             treasury_asked: false,
+            agora: None,
+            agora_error: None,
+            agora_last_ok_ms: None,
+            agora_next_at_ms: 0,
+            agora_failures: 0,
+            agora_asked: false,
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
             errors: Vec::new(),
@@ -2063,6 +2116,7 @@ impl Model {
                 self.task_withdrawn(at_ms, &id, result)
             }
             Message::Treasury { at_ms, result } => self.treasury_answer(at_ms, result),
+            Message::Agora { at_ms, result } => self.agora_answer(at_ms, result),
             Message::TaskArtifactRead(path) => self.task_artifact_read(path),
             Message::TaskArtifact {
                 at_ms,
@@ -2087,6 +2141,8 @@ impl Model {
         // The treasury's own schedule, like the hub's: it ticks here, but
         // independently of the register's cadence and failures.
         effect.poll_treasury = self.treasury_tick(at_ms);
+        // And the market's, the same way: its own read, its own failures.
+        effect.poll_agora = self.agora_tick(at_ms);
         if at_ms < self.next_poll_at_ms {
             return effect;
         }
@@ -2389,6 +2445,95 @@ impl Model {
         Effect::treasury()
     }
 
+    /// The market's own schedule: read the board only while it is showing.
+    ///
+    /// Like the treasury's, this is independent of the register's cadence and
+    /// failures — it returns `false` off the sheet, and backs off on the
+    /// market's own failures — so a daemon that serves the register but not
+    /// the agora never reads the register down, and a console that never
+    /// opened the sheet never reads the board at all.
+    fn agora_tick(&mut self, at_ms: u64) -> bool {
+        if self.pane != Pane::Market || at_ms < self.agora_next_at_ms {
+            return false;
+        }
+        self.agora_next_at_ms = at_ms
+            .saturating_add(poll_interval_ms(self.refresh_ms, self.agora_failures));
+        true
+    }
+
+    /// The market answered — or could not be read.
+    ///
+    /// The read is kept when a later one fails: a bid the daemon has already
+    /// recorded is a fact, so what the console holds stays true, and the
+    /// failure is recorded beside it rather than pretending the board is
+    /// empty. Its health is its own: a second surface, like the hub's and the
+    /// treasury's, that never moves the register's.
+    fn agora_answer(&mut self, at_ms: u64, result: Result<Board, ApiError>) -> Effect {
+        self.agora_asked = false;
+        match result {
+            Ok(board) => {
+                self.agora = Some(board);
+                self.agora_error = None;
+                self.agora_last_ok_ms = Some(at_ms);
+                self.agora_failures = 0;
+                self.agora_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+            }
+            Err(error) => {
+                self.agora_error = Some(error.to_string());
+                self.agora_failures = self.agora_failures.saturating_add(1);
+                self.agora_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.agora_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// Applies one market event: the board's own delta between its reads.
+    ///
+    /// A frame announces that a call's market moved and names the call, what
+    /// moved it, the agent and the price — and nothing else. It carries no
+    /// bidder, no escrow entry and no clock, so the console never assembles a
+    /// bid or a call from one: a frame the board already reflects (a bid the
+    /// call holds from that agent at that price, or the award it already
+    /// holds) is a duplicate and a no-op, while anything else means the board
+    /// moved past what the pane saw, and it reads the board again — once,
+    /// however many bids arrive at once.
+    fn agora_event(&mut self, task: &str, kind: AgoraKind, agent_cid: u64, price: u64) -> Effect {
+        // Only a pane that is showing is refreshed: nothing else draws the
+        // board, and the sheet reads it when it opens.
+        if self.pane != Pane::Market {
+            return Effect::none();
+        }
+        // A frame the pane already holds is one it has read: nothing moved.
+        if let Some(board) = &self.agora {
+            if let Some(call) = board.calls.iter().find(|call| call.task == task) {
+                let seen = match kind {
+                    AgoraKind::Bid => call
+                        .bids
+                        .iter()
+                        .any(|bid| bid.agent_cid == agent_cid && bid.price == price),
+                    AgoraKind::Award => call.award.get().is_some_and(|award| {
+                        award.agent_cid == agent_cid && award.price == price
+                    }),
+                    AgoraKind::Unknown => false,
+                };
+                if seen {
+                    return Effect::none();
+                }
+            }
+        }
+        self.ask_for_the_market()
+    }
+
+    /// Asks for the market, at most once per outstanding answer.
+    fn ask_for_the_market(&mut self) -> Effect {
+        if self.agora_asked {
+            return Effect::none();
+        }
+        self.agora_asked = true;
+        Effect::agora()
+    }
+
     /// Every run in the register, by id: what the map's pulse is fed from.
     fn run_ids(&self) -> Vec<String> {
         self.runs.iter().map(|run| run.id.clone()).collect()
@@ -2458,6 +2603,12 @@ impl Model {
                 assignee,
             } => self.task_event(&id, state, assignee),
             Event::Treasury { entry, .. } => self.treasury_event(entry),
+            Event::Agora {
+                task,
+                kind,
+                agent_cid,
+                price,
+            } => self.agora_event(&task, kind, agent_cid, price),
         }
     }
 
@@ -3088,6 +3239,16 @@ impl Model {
                     self.now_ms.saturating_add(self.refresh_ms);
                 Effect::treasury()
             }
+            Pane::Market => {
+                self.pane = Pane::Market;
+                self.detail = None;
+                // The market is one read as well: the whole board, every call
+                // with its bids and its award. Opening the sheet is a reason to
+                // want it now, and the schedule then runs from this read so the
+                // next tick does not read again on top of it.
+                self.agora_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
+                Effect::agora()
+            }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
                 self.detail = None;
@@ -3238,6 +3399,7 @@ impl Model {
             KeyAction::Roster => self.show(Pane::Roster),
             KeyAction::Ledger => self.show(Pane::Ledger),
             KeyAction::Treasury => self.show(Pane::Treasury),
+            KeyAction::Market => self.show(Pane::Market),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
@@ -3796,6 +3958,7 @@ pub fn title(model: &Model) -> String {
         Pane::Roster => "AgentPlaza register — roster".to_string(),
         Pane::Ledger => "AgentPlaza register — ledger".to_string(),
         Pane::Treasury => "AgentPlaza register — treasury".to_string(),
+        Pane::Market => "AgentPlaza register — market".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -3957,6 +4120,58 @@ pub fn journal_tally(journal: &Journal) -> String {
         line.push_str(&format!(" · cut to the newest {}", journal.limit));
     }
     line
+}
+
+/// The market as the index column writes it: the calls and the bids once the
+/// pane has read the board, and the honest nothing before that.
+///
+/// A board nobody has read is not an empty board: the entry the operator reads
+/// first says which of the two it is rather than claiming a count nobody took
+/// — the ledger's and the treasury's own rule.
+pub fn market_line(model: &Model) -> String {
+    match &model.agora {
+        Some(board) => format!("{} call(s) · {} bid(s)", board.total, bid_count(board)),
+        None => "not read yet".to_string(),
+    }
+}
+
+/// How many bids the board's calls hold.
+fn bid_count(board: &Board) -> usize {
+    board.calls.iter().map(|call| call.bids.len()).sum()
+}
+
+/// How the market stands, as the sheet's tally writes it: the calls the
+/// response carries, the board's own total, how many bids they hold, how many
+/// closed with an award, and whether the read was cut to the daemon's limit.
+pub fn board_tally(board: &Board) -> String {
+    let awarded = board.calls.iter().filter(|call| call.award.get().is_some()).count();
+    let mut line = format!(
+        "{} call(s) carried of {} · {} bid(s) · {awarded} awarded",
+        board.calls.len(),
+        board.total,
+        bid_count(board),
+    );
+    if board.truncated {
+        line.push_str(&format!(" · cut to the newest {}", board.limit));
+    }
+    line
+}
+
+/// An award as its row writes it: who took the call, at what price, and the
+/// treasury entry that funded it — labelled as the treasury's own funding
+/// entry, because the market does not jump to that sheet to draw it.
+pub fn award_line(award: &Award) -> String {
+    let price = money_label(i128::from(award.price));
+    match award.escrow_entry.copied() {
+        Some(entry) => format!(
+            "awarded to {} · cid {} · {} · escrow entry {entry} (the treasury's funding entry)",
+            award.contractor, award.agent_cid, price
+        ),
+        None => format!(
+            "awarded to {} · cid {} · {} · escrow entry none (a call whose task named no budget)",
+            award.contractor, award.agent_cid, price
+        ),
+    }
 }
 
 /// Guest memory as the register writes it: MiB below a gibibyte (where a
@@ -8360,5 +8575,313 @@ mod tests {
             read.treasury.note,
             "v0 meters no real spend; a done task refunds its whole escrow"
         );
+    }
+
+    /// The board the daemon answers with after one call's bid-and-award cycle
+    /// and one call still open: the calls, in the shape `GET /api/v0/agora`
+    /// writes them.
+    fn market_calls() -> serde_json::Value {
+        serde_json::json!([
+            {"task":"t1","capability":"builder","spec_ref":"the suite is green",
+             "max_price":500,"state":"awarded","created_at":1_000,
+             "bids":[
+                {"task":"t1","agent_cid":100,"bidder":"builder","price":300,
+                 "created_at":1_010},
+                {"task":"t1","agent_cid":101,"bidder":"builder","price":250,
+                 "created_at":1_020}],
+             "award":{"task":"t1","contractor":"builder","agent_cid":100,"price":300,
+                      "escrow_entry":1,"created_at":1_030}},
+            {"task":"t2","capability":"reviewer","spec_ref":null,"max_price":90,
+             "state":"open","created_at":1_100,"bids":[],"award":null},
+        ])
+    }
+
+    /// A board read as the daemon answers one.
+    fn board_of(calls: serde_json::Value) -> Board {
+        let count = calls.as_array().map_or(0, Vec::len);
+        serde_json::from_value(serde_json::json!({
+            "calls": calls,
+            "total": count,
+            "limit": 256,
+            "truncated": false,
+        }))
+        .expect("the fixture is the shape the daemon writes")
+    }
+
+    /// A model showing the market, with one read already answered.
+    fn with_market(board: Board) -> Model {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Market));
+        model.apply(Message::Agora {
+            at_ms: 10_000,
+            result: Ok(board),
+        });
+        model
+    }
+
+    #[test]
+    fn showing_the_market_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::Key(KeyAction::Market));
+        assert_eq!(model.pane, Pane::Market);
+        assert_eq!(
+            effect,
+            Effect::agora(),
+            "the sheet asks for the whole board at once"
+        );
+
+        model.apply(Message::Agora {
+            at_ms: 10_000,
+            result: Ok(board_of(market_calls())),
+        });
+        assert!(model.agora.is_some());
+        assert_eq!(model.agora_error, None);
+        assert_eq!(model.agora_last_ok_ms, Some(10_000));
+        assert_eq!(
+            model.agora_next_at_ms, 12_000,
+            "the market's cadence measures from its own answer"
+        );
+
+        // Not before the market's own schedule says so...
+        assert!(!model.apply(Message::Tick { at_ms: 11_000 }).poll_agora);
+        // ...and the register is polled either way.
+        let effect = model.apply(Message::Tick { at_ms: 13_000 });
+        assert!(effect.poll_agora, "the market is read on the tick");
+        assert!(effect.poll_list, "and so is the register");
+
+        // Off the sheet, the market is not read at all.
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 20_000 }).poll_agora);
+    }
+
+    #[test]
+    fn the_market_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        let mut model = Model::new();
+        // A console that never opened the sheet never reads the board.
+        assert!(!model.apply(Message::Tick { at_ms: 1_000 }).poll_agora);
+
+        model.apply(Message::Show(Pane::Market));
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        assert_eq!(model.health(), Health::Live);
+        assert_eq!(model.failures, 0);
+
+        // A market read fails: the failure is the market's own, so the
+        // register stays live and un-backoff'd — an older daemon that serves
+        // the register but not the agora does not read down.
+        model.apply(Message::Agora {
+            at_ms: 3_300,
+            result: Err(ApiError::Status {
+                status: 404,
+                message: "no such endpoint".to_string(),
+            }),
+        });
+        assert_eq!(model.agora_failures, 1);
+        assert!(model.agora_error.is_some());
+        assert_eq!(model.agora, None, "nothing was read, so nothing is claimed");
+        assert_eq!(
+            model.failures, 0,
+            "the register's failures are not the market's"
+        );
+        assert_eq!(model.last_error, None);
+        assert_eq!(model.health(), Health::Live);
+        assert_eq!(
+            model.agora_next_at_ms,
+            3_300 + poll_interval_ms(DEFAULT_REFRESH_MS, 1),
+            "the market backs off on its own failures"
+        );
+
+        // It comes back: the error clears and the board is drawn.
+        let effect = model.apply(Message::Tick { at_ms: 7_300 });
+        assert!(effect.poll_agora);
+        model.apply(Message::Agora {
+            at_ms: 7_400,
+            result: Ok(board_of(market_calls())),
+        });
+        assert_eq!(model.agora_error, None);
+        assert_eq!(model.agora_failures, 0);
+        assert!(model.agora.is_some());
+        assert_eq!(
+            model.agora_next_at_ms, 9_400,
+            "the cadence measures from the answer"
+        );
+    }
+
+    #[test]
+    fn the_market_keeps_its_last_read_when_a_later_read_fails() {
+        let mut model = with_market(board_of(market_calls()));
+        let held = model.agora.clone();
+        assert!(held.is_some());
+
+        model.apply(Message::Agora {
+            at_ms: 12_000,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        assert_eq!(
+            model.agora, held,
+            "a bid the daemon recorded is a fact: what was read stays true"
+        );
+        assert_eq!(model.agora_last_ok_ms, Some(10_000), "the read's own age is kept");
+        assert!(model.agora_error.is_some(), "and the pane says it has not moved");
+    }
+
+    #[test]
+    fn an_agora_event_asks_for_the_board_once_and_never_invents_a_call() {
+        let mut model = with_market(board_of(market_calls()));
+        let before = model.agora.clone();
+
+        // A frame the board already reflects is one it has read: a bid the
+        // call holds from that agent at that price, and the award it holds.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_000,
+                event: Event::Agora {
+                    task: "t1".to_string(),
+                    kind: AgoraKind::Bid,
+                    agent_cid: 100,
+                    price: 300,
+                },
+            }),
+            Effect::none()
+        );
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_050,
+                event: Event::Agora {
+                    task: "t1".to_string(),
+                    kind: AgoraKind::Award,
+                    agent_cid: 100,
+                    price: 300,
+                },
+            }),
+            Effect::none()
+        );
+        assert_eq!(model.agora, before, "no call or bid was invented from a frame");
+
+        // A bid the board does not hold (a new bidder on t2): the board is
+        // read again — once, however many frames arrive at once.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_100,
+                event: Event::Agora {
+                    task: "t2".to_string(),
+                    kind: AgoraKind::Bid,
+                    agent_cid: 7,
+                    price: 5,
+                },
+            }),
+            Effect::agora()
+        );
+        assert!(model.agora_asked);
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_200,
+                event: Event::Agora {
+                    task: "t2".to_string(),
+                    kind: AgoraKind::Bid,
+                    agent_cid: 8,
+                    price: 6,
+                },
+            }),
+            Effect::none(),
+            "a burst of bids is one read"
+        );
+
+        // The answer lands and the ask is over; a re-bid at a price the board
+        // does not hold is a fresh read.
+        model.apply(Message::Agora {
+            at_ms: 13_300,
+            result: Ok(board_of(market_calls())),
+        });
+        assert!(!model.agora_asked);
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 13_400,
+                event: Event::Agora {
+                    task: "t1".to_string(),
+                    kind: AgoraKind::Bid,
+                    agent_cid: 100,
+                    price: 250,
+                },
+            }),
+            Effect::agora(),
+            "a re-bid at another price moved the board"
+        );
+
+        // Off the sheet there is nothing to refresh: the sheet reads the board
+        // when it opens.
+        model.apply(Message::Show(Pane::Fleet));
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 14_000,
+                event: Event::Agora {
+                    task: "t9".to_string(),
+                    kind: AgoraKind::Award,
+                    agent_cid: 1,
+                    price: 1,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn the_market_lines_name_what_the_sheet_draws() {
+        let mut model = Model::new();
+        assert_eq!(
+            market_line(&model),
+            "not read yet",
+            "a board nobody read is not an empty board"
+        );
+        let board = board_of(market_calls());
+        model.apply(Message::Agora {
+            at_ms: 10_000,
+            result: Ok(board.clone()),
+        });
+        assert_eq!(market_line(&model), "2 call(s) · 2 bid(s)");
+        assert_eq!(
+            board_tally(&board),
+            "2 call(s) carried of 2 · 2 bid(s) · 1 awarded"
+        );
+        // A board cut to the daemon's limit says so rather than reading as the
+        // whole board.
+        let mut cut = board.clone();
+        cut.total = 900;
+        cut.truncated = true;
+        assert_eq!(
+            board_tally(&cut),
+            "2 call(s) carried of 900 · 2 bid(s) · 1 awarded · cut to the newest 256"
+        );
+
+        // An award names the treasury entry that funded it, labelled as the
+        // treasury's own funding entry.
+        let award = board.calls[0].award.get().expect("the award");
+        assert_eq!(
+            award_line(award),
+            "awarded to builder · cid 100 · 300 cr · $0.30 · escrow entry 1 (the treasury's \
+             funding entry)"
+        );
+        // A call whose task named no budget has no escrow entry, and says so.
+        let unfunded = board_of(serde_json::json!([
+            {"task":"t3","capability":"reviewer","spec_ref":null,"max_price":0,
+             "state":"awarded","created_at":1,
+             "bids":[{"task":"t3","agent_cid":201,"bidder":"cid:201","price":0,
+                      "created_at":2}],
+             "award":{"task":"t3","contractor":"cid:201","agent_cid":201,"price":0,
+                      "escrow_entry":null,"created_at":3}}
+        ]));
+        assert_eq!(
+            award_line(unfunded.calls[0].award.get().expect("the award")),
+            "awarded to cid:201 · cid 201 · 0 cr · $0.00 · escrow entry none (a call whose task \
+             named no budget)"
+        );
+        // The winning bid is the one the award names, not the higher one.
+        let call = &board.calls[0];
+        assert!(call.awarded_bid(&call.bids[0]));
+        assert!(!call.awarded_bid(&call.bids[1]));
+        // The open call's offer stamp is its own word.
+        assert_eq!(board.calls[1].state.stamp_label(), "OFFERED");
     }
 }

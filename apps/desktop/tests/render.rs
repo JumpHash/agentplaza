@@ -202,6 +202,15 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if effect.poll_agora {
+        // The market's own read: the whole board. What the runtime does for
+        // the effect, done synchronously.
+        let result = client.agora();
+        model.apply(Message::Agora {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
     if let Some(id) = effect.fetch_task {
         let result = client.task(&id);
         model.apply(Message::Task {
@@ -3408,6 +3417,255 @@ fn the_whole_application_follows_a_treasury_frame_between_polls() {
     assert_eq!(
         model.polls, 1,
         "only the boot tick polled the register: the treasury read is its own"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+}
+
+// ---- the market: the calls, the bids and the awards ----
+
+/// A daemon stub with the register, the market and its board.
+fn market_server(list: &'static str, detail: &'static str, board: &'static str) -> common::Stub {
+    common::agora_live(list, detail, "", board)
+}
+
+/// A model that has read the register and opened the market, the way the
+/// runtime does: the pane's own key, then the answer to its one read.
+fn market_from(port: u16) -> Model {
+    let mut model = model_from(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Market));
+    perform(effect, &mut model, &client);
+    model
+}
+
+#[test]
+fn the_market_pane_draws_the_board_the_bids_and_the_award() {
+    let server = market_server(LIST, DETAIL, common::AGORA);
+    let model = market_from(server.port);
+    assert_eq!(model.pane, Pane::Market);
+    let board = model.agora.as_ref().expect("the pane read it");
+    assert_eq!(board.calls.len(), board.total);
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        // The running head and the lede, which says the sheet is read-only and
+        // that the escrow entry is the treasury's own.
+        "Market",
+        "the plaza's calls, the bids on them and the award that closed each",
+        "can write nothing here",
+        "the treasury's own funding entry",
+        // The board's tally and its columns.
+        "Board · 2 call(s) carried of 2 · 2 bid(s) · 1 awarded",
+        "capability",
+        "max price",
+        "state",
+        "opened",
+        "librarian",
+        "builder",
+        // The call's ceiling in credits and the dollars it stands for.
+        "2000 cr · $2.00",
+        "500 cr · $0.50",
+        // The offered call's own stamp, and the awarded call's.
+        "OFFERED",
+        "AWARDED",
+        // The acceptance a task named, under its call.
+        "spec · all 21 handbooks present",
+        // The bid rows: the columns and each bid's facts.
+        "bidder",
+        "cid",
+        "price",
+        "bid at",
+        "1800 cr · $1.80",
+        "1900 cr · $1.90",
+        // The winning bid is marked; the higher one is not the award's.
+        "AWARD BID",
+        // The award itself: contractor, price and the treasury entry that
+        // funded the call, labelled as the treasury's.
+        "awarded to librarian · cid 112 · 1800 cr · $1.80 · escrow entry 1 (the treasury's \
+         funding entry)",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the market sheet should show {expected:?}"
+        );
+    }
+    // The open call has no bid, and the sheet says so rather than drawing a
+    // blank row.
+    assert!(
+        ui.find(says("no bid yet")).is_ok(),
+        "an open call with no bid is drawn as such"
+    );
+
+    // The times are the register's day tier: the fixture's calls and bids were
+    // made on another UTC day than this console's clock, so they read as their
+    // date rather than as a bare time of day.
+    assert!(
+        ui.find(says("2026-10-10")).is_ok(),
+        "a call opened on another day is stamped with its day"
+    );
+}
+
+#[test]
+fn the_market_key_and_its_index_entry_reach_the_sheet() {
+    let server = market_server(LIST, DETAIL, common::AGORA);
+    let mut model = model_from(server.port);
+
+    // The index entry is offered, and says it has not read the board rather
+    // than claiming an empty one.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Market")).is_ok());
+        assert!(ui.find(says("not read yet")).is_ok());
+        ui.click("Market").expect("the entry is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert!(
+        messages.contains(&Message::Show(Pane::Market)),
+        "the entry asks for the market, got {messages:?}"
+    );
+    for message in messages {
+        model.apply(message);
+    }
+    assert_eq!(model.pane, Pane::Market);
+
+    // The key sheet names it too, from the one table the index and the help
+    // sheet share.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("market: the calls, their bids + awards")).is_ok());
+    }
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Market));
+    assert_eq!(model.pane, Pane::Market, "the key reaches it too");
+}
+
+#[test]
+fn a_market_with_an_empty_board_says_so_over_a_real_frame() {
+    // A fresh daemon: no roled task offers a call yet. The empty state is not
+    // a blank sheet.
+    let server = market_server(LIST, DETAIL, common::AGORA_BARE);
+    let model = market_from(server.port);
+    let board = model.agora.as_ref().expect("the pane read it");
+    assert_eq!(board.calls.len(), 0);
+    assert_eq!(board.total, 0);
+
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Board · 0 call(s) carried of 0 · 0 bid(s) · 0 awarded")).is_ok());
+    assert!(
+        ui.find(says("the board is empty: no roled task offers a call yet")).is_ok(),
+        "an empty board is drawn as an empty board"
+    );
+}
+
+#[test]
+fn a_market_that_cannot_be_read_says_so_and_keeps_the_last_read() {
+    // A daemon whose agora endpoint is gone: the pane's own read fails, and
+    // the sheet says which failure it is rather than drawing an empty board.
+    // The register's own health is untouched.
+    let server = market_server(LIST, DETAIL, common::AGORA);
+    let mut model = market_from(server.port);
+    let held = model.agora.clone();
+    assert!(held.is_some());
+
+    let at_ms = model.now_ms;
+    model.apply(Message::Agora {
+        at_ms,
+        result: Err(agentplaza_desktop::api::ApiError::Status {
+            status: 404,
+            message: "no such endpoint".to_string(),
+        }),
+    });
+    assert_eq!(model.agora, held, "the last read is kept, not blanked");
+    assert_eq!(
+        model.health(),
+        agentplaza_desktop::model::Health::Live,
+        "the market's failure is not the register's"
+    );
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("the market could not be read since")).is_ok(),
+        "the sheet names the failure beside the read it keeps"
+    );
+    assert!(ui.find(says("404: no such endpoint")).is_ok());
+}
+
+#[test]
+fn the_whole_application_follows_an_agora_frame_between_polls() {
+    // The pane reads the board when it opens; an `agora` frame then asks the
+    // pane's own surface to be read again, between the register's polls. The
+    // frame carries no bidder and no clock, so the bid that arrives is the
+    // daemon's own row — never one assembled from a frame.
+    let server = common::agora_growing(
+        LIST,
+        DETAIL,
+        "",
+        common::AGORA,
+        common::AGORA_AFTER,
+    );
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 800);
+
+    // Opening the sheet is the pane's own read: the two-call board, t2 with no
+    // bid. The next read is the one the frame asks for, and it answers with
+    // the board as the daemon holds it now.
+    emulator.update(&program, Message::Show(Pane::Market));
+    pump(&mut emulator, 800);
+
+    // An `agora` frame for a bid the pane does not hold: the pane's own
+    // surface is read again, and the bid that arrives is the daemon's.
+    emulator.update(
+        &program,
+        Message::Event {
+            at_ms: agentplaza_desktop::epoch_ms(),
+            event: agentplaza_desktop::events::Event::Agora {
+                task: "t2".to_string(),
+                kind: agentplaza_desktop::events::AgoraKind::Bid,
+                agent_cid: 100,
+                price: 420,
+            },
+        },
+    );
+    pump(&mut emulator, 800);
+
+    let (model, _) = emulator.into_state();
+    let board = model.agora.as_ref().expect("the pane's read");
+    let t2 = board
+        .calls
+        .iter()
+        .find(|call| call.task == "t2")
+        .expect("the call the frame named");
+    assert_eq!(
+        t2.bids.len(),
+        1,
+        "the frame drove a read of the board, and the read grew it"
+    );
+    let bid = &t2.bids[0];
+    assert_eq!(bid.agent_cid, 100);
+    assert_eq!(
+        bid.bidder, "builder",
+        "the bidder the frame never carried is the daemon's own row"
+    );
+    assert_eq!(bid.price, 420);
+    assert_eq!(
+        model.polls, 1,
+        "only the boot tick polled the register: the market read is its own"
     );
     assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }
