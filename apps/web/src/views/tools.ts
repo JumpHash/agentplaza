@@ -1,12 +1,14 @@
-// Setup > Tools: the connectors the plaza lends to agents. A key is written once
+// Setup > Tools: the connectors the plaza lends to agents, and the tools agents
+// have built and packaged into the plaza's library. A key is written once
 // here, kept in the plaza's vault, and never reaches an agent's VM. Laid out like
 // Models > Providers: grouped provider cards, and a Configure modal.
 
 import '../styles/models.css';
 import '../styles/tools.css';
-import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorTest } from '../api';
+import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorTest, type LibraryTool } from '../api';
 import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { on } from '../store';
 import type { Cleanup } from './index';
 
 type Section = 'Enabled' | 'Configured' | 'Needs a key' | 'Coming soon';
@@ -20,6 +22,13 @@ const STATUS: Record<Section, [string, Tone]> = {
 };
 
 const RISK: Record<ConnectorAction['risk'], Tone> = { read: 'ok', write: 'info', irreversible: 'danger' };
+
+const LIBRARY_STATE: Record<LibraryTool['state'], [string, Tone]> = {
+  private: ['Private', 'muted'],
+  pending: ['Pending review', 'warn'],
+  published: ['Published', 'ok'],
+  rejected: ['Rejected', 'danger'],
+};
 
 /** A required field with no value anywhere: neither in the vault nor in the environment. */
 function missingRequired(c: Connector): boolean {
@@ -59,10 +68,12 @@ function logo(c: Connector): HTMLElement {
 
 export function mount(root: HTMLElement): Cleanup {
   let connectors: Connector[] = [];
+  let library: LibraryTool[] = [];
   const body = h('div.prov-body', null, h('p.faint', null, 'Loading tools…'));
+  const libBody = h('div.prov-body', null, h('p.faint', null, 'Loading agent tools…'));
   root.append(
     h('div.view-head', null, h('h1', null, 'Tools')),
-    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body),
+    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body, libBody),
   );
 
   const refresh = async (): Promise<void> => {
@@ -239,6 +250,159 @@ export function mount(root: HTMLElement): Cleanup {
     );
   };
 
+  // ---- Made by agents -------------------------------------------------------
+
+  const refreshLibrary = async (): Promise<void> => {
+    const list = await attempt(() => api.library());
+    if (list) library = list;
+    renderLibrary();
+  };
+
+  const renderLibrary = (): void => {
+    const heading = h('h2.prov-group-title', null, 'Made by agents');
+    if (!library.length) {
+      replace(libBody, heading, empty('models', 'Agents can build tools in their VM and package them with tool_package; they show up here.'));
+      return;
+    }
+    const pending = library.filter((t) => t.state === 'pending');
+    const rest = library.filter((t) => t.state !== 'pending');
+    const groups: HTMLElement[] = [];
+    if (pending.length) {
+      groups.push(h('section.prov-group', null, h('h2.prov-group-title', null, 'Waiting for your review'), h('div.prov-grid', null, pending.map(libCard))));
+    }
+    if (rest.length) {
+      groups.push(h('section.prov-group', null, h('h2.prov-group-title', null, 'Library'), h('div.prov-grid', null, rest.map(libCard))));
+    }
+    replace(libBody, heading, ...groups);
+  };
+
+  const libCard = (t: LibraryTool): HTMLElement => {
+    const [text, tone] = LIBRARY_STATE[t.state];
+    const actions: HTMLElement[] = [button('Files', () => openFiles(t), { size: 'sm' })];
+    if (t.state === 'pending') {
+      actions.push(
+        button('Publish', () => void publish(t), { size: 'sm', kind: 'primary' }),
+        button('Reject', () => openReject(t), { size: 'sm', kind: 'ghost' }),
+      );
+    }
+    actions.push(button('Remove', () => openRemove(t), { size: 'sm', kind: 'ghost' }));
+
+    return h(
+      'article.prov-card',
+      null,
+      h(
+        'header.prov-head',
+        null,
+        h(
+          'div.prov-title',
+          null,
+          h('h3.mono.truncate', null, `x_${t.name}`),
+          h('span.faint.truncate', { title: t.description }, t.description),
+        ),
+      ),
+      h(
+        'div.prov-meta',
+        null,
+        h('span.faint', null, `by ${t.author} · v${t.version}`),
+        badge(text, tone, true),
+        h('span.faint', null, `${t.calls} ${t.calls === 1 ? 'call' : 'calls'}`),
+      ),
+      h('p.lib-command', { title: 'Command' }, t.command.join(' ')),
+      t.requires.length
+        ? h('ul.tool-actions', null, t.requires.map((p) => h('li', null, h('span.tool-chip', null, p))))
+        : null,
+      t.review_note ? h('p.faint', null, `Note: ${t.review_note}`) : null,
+      h('div.prov-actions', null, ...actions),
+    );
+  };
+
+  const openFiles = (t: LibraryTool): void => {
+    const view = h('pre.lib-file', null, 'Pick a file to see its content.');
+    const list = t.files.length
+      ? h(
+          'ul.lib-files',
+          null,
+          t.files.map((f) =>
+            h('li', null, button(`${f.path} · ${f.size} B`, () => void showFile(t, f.path, view), { size: 'sm', kind: 'ghost' })),
+          ),
+        )
+      : h('p.faint', null, 'No files.');
+    modal(`x_${t.name} · v${t.version}`, h('div.stack', null, list, view));
+  };
+
+  const showFile = async (t: LibraryTool, path: string, view: HTMLElement): Promise<void> => {
+    view.textContent = 'Loading…';
+    const file = await attempt(() => api.libraryFile(t.name, t.version, path));
+    view.textContent = file ? file.content : 'Could not read this file.';
+  };
+
+  const publish = async (t: LibraryTool): Promise<void> => {
+    const done = await attempt(async () => {
+      await api.reviewLibraryTool(t.name, t.version, true);
+      return true;
+    }, `x_${t.name} published`);
+    if (done) await refreshLibrary();
+  };
+
+  const openReject = (t: LibraryTool): void => {
+    let close = () => {};
+    const note = input({ autocomplete: 'off', placeholder: 'Why it is rejected (short)' });
+    const reject = button(
+      'Reject',
+      async () => {
+        reject.disabled = true;
+        const done = await attempt(async () => {
+          await api.reviewLibraryTool(t.name, t.version, false, note.value.trim() || undefined);
+          return true;
+        }, `x_${t.name} rejected`);
+        reject.disabled = false;
+        if (!done) return;
+        close();
+        await refreshLibrary();
+      },
+      { kind: 'primary' },
+    );
+    close = modal(
+      `Reject x_${t.name}`,
+      h(
+        'div.stack',
+        null,
+        field('Note for the author', note, 'Optional. The author sees it.'),
+        h('div.prov-row', null, h('span.prov-spacer'), reject),
+      ),
+    );
+  };
+
+  const openRemove = (t: LibraryTool): void => {
+    let close = () => {};
+    const remove = button(
+      'Remove',
+      async () => {
+        remove.disabled = true;
+        const done = await attempt(async () => {
+          await api.removeLibraryTool(t.name, t.version);
+          return true;
+        }, `x_${t.name} removed`);
+        remove.disabled = false;
+        if (!done) return;
+        close();
+        await refreshLibrary();
+      },
+      { kind: 'primary' },
+    );
+    close = modal(
+      `Remove x_${t.name}?`,
+      h(
+        'div.stack',
+        null,
+        h('p.faint', null, `Removes v${t.version} and its files from the library. This cannot be undone.`),
+        h('div.prov-row', null, h('span.prov-spacer'), button('Cancel', () => close(), { kind: 'ghost' }), remove),
+      ),
+    );
+  };
+
   void refresh();
-  return () => undefined;
+  void refreshLibrary();
+  const offLibrary = on('library', () => void refreshLibrary());
+  return () => offLibrary();
 }

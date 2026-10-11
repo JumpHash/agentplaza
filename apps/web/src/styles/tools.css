@@ -35,3 +35,34 @@
   height: 16px;
   margin: 0;
 }
+
+/* Made by agents: a library tool's command, and its file viewer in the modal. */
+.lib-command {
+  margin: 0;
+  font: 11px/1.4 var(--mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.lib-files {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lib-file {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 10px 12px;
+  font: 12px/1.5 var(--mono);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
