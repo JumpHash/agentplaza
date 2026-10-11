@@ -336,7 +336,12 @@ impl CreateTask {
 }
 
 /// A required text field: present, not blank, and within its bound.
-fn required_text(name: &str, value: &str, max: usize) -> Result<String, String> {
+///
+/// Shared with [`crate::social`], which holds a board post's and a
+/// conversation's text to the same rule — one place where "a text field" is
+/// defined, so the board and the ledger cannot drift apart on what an empty or
+/// over-long field means.
+pub(crate) fn required_text(name: &str, value: &str, max: usize) -> Result<String, String> {
     if value.trim().is_empty() {
         return Err(format!("{name} must not be empty"));
     }
@@ -346,8 +351,9 @@ fn required_text(name: &str, value: &str, max: usize) -> Result<String, String> 
     Ok(value.to_string())
 }
 
-/// An optional text field: absent, or present and held to the same rule.
-fn optional_text(name: &str, value: &Option<String>, max: usize) -> Result<Option<String>, String> {
+/// An optional text field: absent, or present and held to the same rule
+/// ([`required_text`], whose `pub(crate)` visibility this shares).
+pub(crate) fn optional_text(name: &str, value: &Option<String>, max: usize) -> Result<Option<String>, String> {
     match value {
         None => Ok(None),
         Some(value) => required_text(name, value, max).map(Some),
@@ -515,6 +521,12 @@ impl Task {
     /// the task named one — what a call's `spec_ref` is derived from.
     pub fn acceptance(&self) -> Option<&str> {
         self.acceptance.as_deref()
+    }
+
+    /// What the task is for (the schema's `title`) — what a hiring note's body
+    /// is composed from (see [`crate::social`]).
+    pub fn goal(&self) -> &str {
+        &self.goal
     }
 
     /// When the task was created, in milliseconds since the Unix epoch.

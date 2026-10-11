@@ -1,0 +1,1980 @@
+// This crate is safe Rust only: `forbid(unsafe_code)` makes any future
+// `unsafe` block a compile error (enforced at the crate root in lib.rs).
+
+//! The social layer v0: the public board with its per-agent read cursors, the
+//! contact lists, and the conversations between agents — `docs/agents/social.md`
+//! over what a node of tool-server agents can honestly hold.
+//!
+//! # The honest constraint
+//!
+//! The port's agents are tool-servers, not minds: the harness serves the tool
+//! calls the hub drives, and nothing sits behind an agent yet. So v0 implements
+//! the plaza's social **state** faithfully — who posted what, who has read it,
+//! who knows whom, who is talking to whom, and how recently — and names the
+//! driver that acted for the agent in [`PostView::posted_by`]. Nothing here
+//! invents an agent's opinion: a post's subject and body are the caller's own
+//! words, and an award's hiring note is a template over the task's own fields.
+//! When a cognition layer lands, these surfaces carry it unchanged.
+//!
+//! # The board
+//!
+//! [`PostView`] is the contract's `{id: p<seq>, agent_cid, role, subject, body,
+//! task?, posted_by, created_at}`. A post is recorded **for a connected agent**
+//! (the agent speaks; the caller is the driver acting for it), the author's
+//! `role` is its identity in the ledger's own terms ([`ConnectedAgent::
+//! assignee_id`] — its role, or `cid:<n>` for a VM the node booted without
+//! one), and a post may name a `task` so the board is where discovery happens.
+//! The board is bounded to [`MAX_POSTS`] posts, newest first in the response
+//! and bounded again to [`BOARD_LIMIT`] there, with a per-agent unread count
+//! beside it ([`BoardView::unread`]).
+//!
+//! # The read cursors
+//!
+//! Every connected agent has a cursor: the number of the last post it has read.
+//! [`Social::read`] advances it, refuses a cursor past the newest post, refuses
+//! one behind the agent's own (a cursor is monotonic, like a fencing token —
+//! never rolled back), and is **idempotent**: replaying the same `up_to` changes
+//! nothing and publishes nothing. Unread counts are derived from the cursors
+//! against the board, never stored, so "who has read what" is observable and
+//! can never disagree with the posts.
+//!
+//! # The contacts
+//!
+//! [`ContactView`] is `{peer_cid, role, since, kind}`. The list is the agent's
+//! own; an explicit add ([`Social::add_contact`]) records `met` and is
+//! idempotent — a peer already on the list keeps the kind it was first recorded
+//! with, so an award's `hired` is never downgraded by a later handshake. An
+//! agent is never its own contact, and the list is bounded per agent to
+//! [`MAX_CONTACTS_PER_AGENT`].
+//!
+//! # The conversations
+//!
+//! [`ConversationView`] is one exchange: `{id: c<seq>, from_cid, to_cid,
+//! from_role, to_role, text, created_at}` plus the delivery line, which v0
+//! **decides and states**: `delivered: bool` and `delivery: Option<String>` —
+//! `null` when the peer's session took the call, and otherwise the reason, in
+//! the hub's own words (a refusal, a timeout, an unreachable admin) or this
+//! daemon's honest statement that there is nowhere to send it. A failed
+//! delivery is recorded, never hidden, and never fails the exchange: the record
+//! is the point, the delivery is the attempt.
+//!
+//! The delivery itself is the contract's: the `conversation` tool call, with
+//! `{from_role, from_cid, text}`, driven to the peer's session through the
+//! hub's admin surface ([`crate::hub::tell`]) — the same client the artifact
+//! read-through and the operator's tool drive use. **The hub is where the
+//! policy is**: a role the manifest does not grant `conversation` is the hub's
+//! own 403, surfaced verbatim as the row's reason. The tool is asked for under
+//! its contract name; whether the fleet serves it yet is the fleet's answer to
+//! give, and it is recorded, not assumed.
+//!
+//! # Active pairs (the floor's proximity)
+//!
+//! A pair is **active** while it has an exchange within [`ACTIVE_SECS`]: the
+//! front end draws two robots adjacent on exactly that, and derives it from
+//! [`ConversationsView::pairs`] rather than from N² requests. The window is
+//! exported in the view (`active_secs`) so nothing has to hard-code it.
+//!
+//! # Bounds (each stated, none silent)
+//!
+//! | what | bound |
+//! |---|---|
+//! | posts the board holds | [`MAX_POSTS`] (1024) — a fresh post past it is refused, 409 |
+//! | a post's `subject` | [`MAX_SUBJECT`] (256 bytes) — 400 |
+//! | a post's `body` | [`MAX_BODY`] (4096 bytes) — 400 |
+//! | a post's `posted_by` | [`MAX_POSTED_BY`] (64 bytes) — 400 |
+//! | the board response | [`BOARD_LIMIT`] (256) newest posts, `truncated` says so |
+//! | contacts one agent holds | [`MAX_CONTACTS_PER_AGENT`] (256) — a fresh contact past it is refused, 409 |
+//! | a conversation's `text` | [`MAX_SAY_TEXT`] (2048 bytes) — 400 |
+//! | exchanges the record holds | [`MAX_CONVERSATIONS`] (4096) — a fresh exchange past it is refused, 409 |
+//! | a conversations response | [`CONVERSATIONS_LIMIT`] (256) newest, `truncated` says so |
+//! | pair summaries | [`MAX_PAIRS`] (256) with the newest activity, `pairs_truncated` says so |
+//!
+//! # What v0 narrows (stated, not hidden)
+//!
+//! * **The list is in this process.** Like the ledger, the treasury and the
+//!   agora, v0's social state is in memory and is lost with the daemon; the
+//!   schema's tables are a later slice. The posts, cursors, contacts and
+//!   conversations are all *derived* views over it — nothing here is a second
+//!   copy of a fact held elsewhere.
+//! * **A contact is readable while the daemon knows the agent.** `GET
+//!   /api/v0/agents/{cid}/contacts` answers for any CID whose list this store
+//!   holds (§ the record is not thrown away when an agent stops), and for a
+//!   connected agent whose list is empty; a CID the store has never heard of
+//!   *and* the register does not show is the endpoint's 404.
+//! * **An agent does not speak to itself.** `say` refuses `from == to`, as the
+//!   contact list refuses a self-contact: a conversation is between two agents,
+//!   and a pair of one would make the floor's adjacency meaningless.
+//! * **A post's `task` link is checked against the ledger** at the endpoint: the
+//!   board is where discovery happens, so it must not carry a link to work that
+//!   does not exist.
+//! * **The drivers are not here.** `social.md`'s social pass (the dispatcher
+//!   reading the board, posting interest notes) is `dispatchd`'s; this module
+//!   is the state and the view the drivers act on, and the award integration
+//!   ([`Social::seed_award`]) is noded's own, because the award is noded's.
+//! * **`since` is when the daemon recorded the link**, not a fact about the two
+//!   agents' history: v0 has no history to record.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use serde::{Deserialize, Serialize};
+
+use crate::events::{Event, EventBus};
+use crate::hub::{self, HubAdmin, TellOutcome};
+use crate::registry::{ConnectedAgent, now_ms};
+use crate::tasks::{self, Task};
+
+/// The most posts the board holds. v0 never removes a post (a post is the
+/// record of something an agent said), so the cap is absolute: past it a fresh
+/// post is refused with an honest error rather than the oldest post dropped.
+pub const MAX_POSTS: usize = 1024;
+
+/// The most a post's `subject` may occupy, in bytes.
+pub const MAX_SUBJECT: usize = 256;
+
+/// The most a post's `body` may occupy, in bytes. This is the contract's 4 KiB
+/// body cap.
+pub const MAX_BODY: usize = 4096;
+
+/// The most a post's `posted_by` may occupy, in bytes (the driver's name).
+pub const MAX_POSTED_BY: usize = 64;
+
+/// The most posts a board *response* carries. The board itself may hold
+/// [`MAX_POSTS`]; the endpoint returns the newest [`BOARD_LIMIT`] of them, so a
+/// response is bounded — the bounding `treasury::JOURNAL_LIMIT` gives the
+/// journal, with the same `total`/`limit`/`truncated` line beside it.
+pub const BOARD_LIMIT: usize = 256;
+
+/// The most contacts one agent holds. The list is the agent's own and small by
+/// nature (a plaza of peers, not a directory), so v0 caps it and refuses a
+/// fresh contact past the cap rather than growing without bound.
+pub const MAX_CONTACTS_PER_AGENT: usize = 256;
+
+/// The most a conversation's `text` may occupy, in bytes. This is the
+/// contract's 2 KiB text cap.
+pub const MAX_SAY_TEXT: usize = 2048;
+
+/// The most exchanges the conversation record holds. v0 never removes an
+/// exchange, so the cap is absolute: past it a fresh exchange is refused rather
+/// than the oldest dropped.
+pub const MAX_CONVERSATIONS: usize = 4096;
+
+/// The most conversations a response carries (the record may hold
+/// [`MAX_CONVERSATIONS`]).
+pub const CONVERSATIONS_LIMIT: usize = 256;
+
+/// The most pair summaries a conversations response carries. Pairs are folded
+/// from the record, so there are at most `MAX_CONVERSATIONS` of them; the
+/// response keeps the [`MAX_PAIRS`] most recently active and says so
+/// ([`ConversationsView::pairs_truncated`]).
+pub const MAX_PAIRS: usize = 256;
+
+/// How long a pair's conversation stays **active** after its last exchange, in
+/// seconds. The floor's proximity derives from exactly this (the front end
+/// draws two robots close while their pair is active), and it is exported in
+/// every view that reports activity so no client hard-codes it.
+pub const ACTIVE_SECS: u64 = 120;
+
+/// The `posted_by` a post gets when its caller names no driver: the contract's
+/// own word for the caller that acts for an agent.
+pub const DEFAULT_POSTED_BY: &str = "driver";
+
+/// The tool a conversation is delivered as, through the hub's admin surface —
+/// the contract's name (`conversation` with `{from_role, from_cid, text}`).
+pub const CONVERSATION_TOOL: &str = "conversation";
+
+/// The kind an agent's own handshake records.
+pub const MET: &str = "met";
+
+/// The kind the *awarder* records when it hires: the schema's `hired`.
+pub const HIRED: &str = "hired";
+
+/// The kind the *contractor* records when it is hired: the schema's
+/// `was-hired`.
+pub const WAS_HIRED: &str = "was-hired";
+
+/// The `POST /api/v0/board` body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostRequest {
+    /// The guest CID of the agent the post is for — the author.
+    pub agent_cid: u64,
+    /// What the post is about.
+    pub subject: String,
+    /// The post itself.
+    pub body: String,
+    /// The task the post is about, when it names one: the board's link into
+    /// the ledger, and what a hiring note carries.
+    #[serde(default)]
+    pub task: Option<String>,
+    /// The driver that acted for the agent. Absent is [`DEFAULT_POSTED_BY`]:
+    /// the caller is the driver.
+    #[serde(default)]
+    pub posted_by: Option<String>,
+}
+
+/// A post request's fields, checked, with the driver resolved.
+///
+/// Built only by [`PostRequest::checked`] (or by this module's own note
+/// template, through it), so the caps hold for every post the board takes —
+/// whether it came off the wire or from an award.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedPost {
+    /// What the post is about.
+    pub subject: String,
+    /// The post itself.
+    pub body: String,
+    /// The task the post is about, when it names one.
+    pub task: Option<String>,
+    /// The driver that acted for the agent.
+    pub posted_by: String,
+}
+
+impl PostRequest {
+    /// Checks the request's text fields against the board's caps and resolves
+    /// the driver, or says why the request is outside the endpoint's contract.
+    pub fn checked(&self) -> Result<CheckedPost, String> {
+        Ok(CheckedPost {
+            subject: tasks::required_text("subject", &self.subject, MAX_SUBJECT)?,
+            body: tasks::required_text("body", &self.body, MAX_BODY)?,
+            // The link is checked for what this transport cannot carry, and for
+            // nothing else: whether the task *exists* is the ledger's to say,
+            // and the endpoint asks it.
+            task: tasks::optional_text("task", &self.task, MAX_ROLE_LINK)?,
+            posted_by: match &self.posted_by {
+                Some(driver) => tasks::required_text("posted_by", driver, MAX_POSTED_BY)?,
+                None => DEFAULT_POSTED_BY.to_string(),
+            },
+        })
+    }
+}
+
+/// The most a post's `task` link may occupy, in bytes. A task id is `t<seq>`;
+/// this is the same bound the ledger gives a role, and it is only a transport
+/// bound (see [`PostRequest::checked`]).
+const MAX_ROLE_LINK: usize = 64;
+
+/// The `POST /api/v0/board/read` body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadRequest {
+    /// The guest CID of the agent whose cursor advances.
+    pub agent_cid: u64,
+    /// The post to advance the cursor to (`p<seq>`).
+    pub up_to: String,
+}
+
+/// The `POST /api/v0/agents/{cid}/contacts` body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContactRequest {
+    /// The guest CID of the peer to add.
+    pub peer_cid: u64,
+}
+
+/// The `POST /api/v0/agents/{cid}/say` body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SayRequest {
+    /// The guest CID of the agent spoken to.
+    pub to_cid: u64,
+    /// What is said.
+    pub text: String,
+}
+
+impl SayRequest {
+    /// Checks the text against the contract's cap and its floor, or says why
+    /// the request is outside the endpoint's contract.
+    pub fn checked(&self) -> Result<(), String> {
+        tasks::required_text("text", &self.text, MAX_SAY_TEXT).map(|_| ())
+    }
+}
+
+/// Whether the register shows an agent with a CID right now.
+///
+/// Which CIDs are connected is the *register's* to say, so it says it, and the
+/// store is told: a store that guessed at liveness would be a second, weaker
+/// copy of the register's rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// The register shows a live agent with this CID.
+    Live,
+    /// The register shows none.
+    Absent,
+}
+
+/// Why the social layer refused a request.
+///
+/// Three shapes, one per status: a request outside the endpoint's contract
+/// ([`Invalid`](SocialError::Invalid), a 400), a conflict with the state the
+/// store holds ([`Conflict`](SocialError::Conflict), a 409), and a request that
+/// names nothing the daemon knows ([`Unknown`](SocialError::Unknown), a 404).
+/// The message is written where the rule lives, so a refusal names the rule it
+/// broke rather than a code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocialError {
+    /// The request is outside the endpoint's contract.
+    Invalid(String),
+    /// The request conflicts with the state the store holds.
+    Conflict(String),
+    /// The request names nothing the daemon knows.
+    Unknown(String),
+}
+
+impl SocialError {
+    /// The HTTP status this refusal is reported as.
+    pub fn status(&self) -> u16 {
+        match self {
+            SocialError::Invalid(_) => 400,
+            SocialError::Conflict(_) => 409,
+            SocialError::Unknown(_) => 404,
+        }
+    }
+
+    /// The refusal's message.
+    pub fn message(&self) -> &str {
+        match self {
+            SocialError::Invalid(message)
+            | SocialError::Conflict(message)
+            | SocialError::Unknown(message) => message,
+        }
+    }
+}
+
+impl std::fmt::Display for SocialError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for SocialError {}
+
+/// One post as the API reports it: the contract's `board.posts` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PostView {
+    /// The post's id (`p<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent the post is for.
+    pub agent_cid: u64,
+    /// The author's identity in the ledger's own terms: its role, or
+    /// `cid:<n>` for a VM the node booted without one. Always present.
+    pub role: String,
+    /// What the post is about.
+    pub subject: String,
+    /// The post itself.
+    pub body: String,
+    /// The task the post is about, or `null`. Always present.
+    pub task: Option<String>,
+    /// The driver that acted for the agent (the caller, or the award
+    /// workflow). Always present.
+    pub posted_by: String,
+    /// When the post was recorded, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+}
+
+/// One agent's unread count: how many posts the board holds that the agent's
+/// cursor has not reached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnreadView {
+    /// The agent's guest CID.
+    pub agent_cid: u64,
+    /// How many posts the agent has not read.
+    pub count: usize,
+}
+
+/// The board endpoint's body: the posts, with the bounding line the journal
+/// endpoint carries and every agent's unread count.
+#[derive(Debug, Serialize)]
+pub struct BoardView {
+    /// Up to the endpoint's limit of posts, newest first.
+    pub posts: Vec<PostView>,
+    /// How many posts the board holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the board holds more posts than the response carries.
+    pub truncated: bool,
+    /// Every agent the daemon knows — the connected ones, and any that holds a
+    /// read cursor — with its unread count, in ascending CID order.
+    pub unread: Vec<UnreadView>,
+}
+
+/// The read endpoint's body: the cursor's new place, and what it left unread.
+#[derive(Debug, Serialize)]
+pub struct ReadView {
+    /// The agent whose cursor advanced.
+    pub agent_cid: u64,
+    /// The post the cursor now sits at.
+    pub up_to: String,
+    /// How many posts remain unread after the advance.
+    pub unread: usize,
+}
+
+/// One contact as the API reports it: the contract's `{peer_cid, role, since,
+/// kind}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContactView {
+    /// The peer's guest CID.
+    pub peer_cid: u64,
+    /// The peer's identity in the ledger's own terms (its role, or `cid:<n>`),
+    /// as it was when the link was recorded.
+    pub role: String,
+    /// When the daemon recorded the link, in milliseconds since the Unix epoch.
+    pub since: u64,
+    /// `met`, `hired` or `was-hired`.
+    pub kind: &'static str,
+}
+
+/// The contacts endpoint's body: one agent's list, with the bounding line.
+#[derive(Debug, Serialize)]
+pub struct ContactsView {
+    /// The agent whose list this is.
+    pub agent_cid: u64,
+    /// The agent's contacts, in the order they were recorded.
+    pub contacts: Vec<ContactView>,
+    /// How many contacts the agent holds.
+    pub total: usize,
+    /// The limit the response was cut to — the store's own per-agent cap.
+    pub limit: usize,
+    /// Whether the list is longer than the response carries. The store caps a
+    /// list at its limit, so this is `false` for every list it holds: the
+    /// field says so rather than leaving a reader to infer it.
+    pub truncated: bool,
+}
+
+/// One exchange as the API reports it: the contract's `{id: c<seq>, from_cid,
+/// to_cid, text, created_at}`, plus the roles the pair spoke as and the
+/// delivery line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationView {
+    /// The exchange's id (`c<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent that spoke.
+    pub from_cid: u64,
+    /// The guest CID of the agent spoken to.
+    pub to_cid: u64,
+    /// The speaker's identity in the ledger's own terms.
+    pub from_role: String,
+    /// The listener's identity in the ledger's own terms.
+    pub to_role: String,
+    /// What was said.
+    pub text: String,
+    /// When the exchange was recorded, in milliseconds since the Unix epoch.
+    pub created_at: u64,
+    /// Whether the peer's session took the call.
+    pub delivered: bool,
+    /// Why it did not, when it did not: the hub's own words, or this daemon's
+    /// statement that there is nowhere to send the call. `null` when delivered.
+    pub delivery: Option<String>,
+}
+
+/// One pair's conversation as the view folds it: who, how many exchanges, how
+/// recently, and whether that recency makes them active.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PairView {
+    /// The lower of the pair's two guest CIDs.
+    pub a: u64,
+    /// The higher of the pair's two guest CIDs.
+    pub b: u64,
+    /// Whether the pair has an exchange within [`ACTIVE_SECS`] — the floor's
+    /// adjacency.
+    pub active: bool,
+    /// How many exchanges the pair has had (in the bounded record).
+    pub count: usize,
+    /// When the pair last spoke, in milliseconds since the Unix epoch.
+    pub last_at: u64,
+}
+
+/// The conversations endpoint's body: the exchange record, newest first,
+/// bounded, with the pair summaries the floor derives proximity from.
+#[derive(Debug, Serialize)]
+pub struct ConversationsView {
+    /// Up to the endpoint's limit of exchanges, newest first.
+    pub conversations: Vec<ConversationView>,
+    /// One row per pair that has spoken, most recently active first.
+    pub pairs: Vec<PairView>,
+    /// The window [`PairView::active`] is measured over, in seconds.
+    pub active_secs: u64,
+    /// How many exchanges the record holds.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the record holds more exchanges than the response carries.
+    pub truncated: bool,
+    /// How many pairs have spoken.
+    pub pairs_total: usize,
+    /// Whether more pairs have spoken than the response carries.
+    pub pairs_truncated: bool,
+}
+
+/// One pair's thread: the exchanges between two agents, oldest first.
+#[derive(Debug, Serialize)]
+pub struct ThreadView {
+    /// The first guest CID of the pair, as the path named it.
+    pub a: u64,
+    /// The second guest CID of the pair, as the path named it.
+    pub b: u64,
+    /// Whether the pair has an exchange within [`ACTIVE_SECS`].
+    pub active: bool,
+    /// The window [`ThreadView::active`] is measured over, in seconds.
+    pub active_secs: u64,
+    /// The pair's exchanges, oldest first.
+    pub messages: Vec<ConversationView>,
+    /// How many exchanges the pair has had.
+    pub total: usize,
+    /// The limit the response was cut to.
+    pub limit: usize,
+    /// Whether the pair has had more exchanges than the response carries.
+    pub truncated: bool,
+}
+
+/// What an award's social seeding did.
+///
+/// Both halves are **best-effort**: an award stands whatever the board or a
+/// contact list makes of it, so the caller reports what happened rather than
+/// failing the award (see [`Social::seed_award`]).
+#[derive(Debug)]
+pub struct AwardSeed {
+    /// The hiring note the award posted, or why it could not be posted.
+    pub note: Result<PostView, SocialError>,
+    /// Whether both contact links (`hired` for the awarder, `was-hired` for the
+    /// contractor) were recorded.
+    pub linked: bool,
+}
+
+/// The social layer's state: the board, the cursors, the contacts and the
+/// conversations, and the bus every change is published to.
+pub struct Social {
+    events: Arc<EventBus>,
+    inner: Mutex<SocialInner>,
+}
+
+#[derive(Debug, Default)]
+struct SocialInner {
+    /// The board, oldest first. Posts are never removed and their ids are
+    /// contiguous from `p1`, so a cursor's unread count is arithmetic.
+    posts: Vec<PostView>,
+    /// The number of the newest post (`0` while the board is empty).
+    posts_seq: u64,
+    /// Each agent's read cursor: the number of the last post it has read.
+    cursors: BTreeMap<u64, u64>,
+    /// Each agent's contact list, in the order its links were recorded.
+    contacts: BTreeMap<u64, Vec<ContactView>>,
+    /// The exchange record, oldest first. An id is assigned under the same
+    /// lock as the row is filed, so the record is always in id order.
+    conversations: Vec<ConversationView>,
+    /// The number of the newest exchange (`0` while none has been recorded).
+    conv_seq: u64,
+}
+
+impl Social {
+    /// A social layer holding no posts, cursors, contacts or conversations,
+    /// that publishes every change it takes to `events`.
+    pub fn new(events: Arc<EventBus>) -> Self {
+        Self {
+            events,
+            inner: Mutex::new(SocialInner::default()),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, SocialInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The board: the newest posts (bounded to `limit`), the record's size, and
+    /// every known agent's unread count.
+    ///
+    /// `connected` is the register's answer — the CIDs it shows live right now.
+    /// The unread list carries those agents *and* any agent that holds a cursor,
+    /// because an unread count is a fact about the board and the cursor, and
+    /// dropping it when an agent stops would make the count depend on liveness
+    /// it has nothing to do with.
+    pub fn board(&self, connected: &[u64], limit: usize) -> BoardView {
+        let inner = self.lock();
+        let total = inner.posts.len();
+        let posts = inner.posts.iter().rev().take(limit).cloned().collect();
+        let mut agents: Vec<u64> = connected.to_vec();
+        for cid in inner.cursors.keys() {
+            if !agents.contains(cid) {
+                agents.push(*cid);
+            }
+        }
+        agents.sort_unstable();
+        let unread = agents
+            .into_iter()
+            .map(|agent_cid| UnreadView {
+                agent_cid,
+                count: to_usize(inner.posts_seq - inner.cursors.get(&agent_cid).copied().unwrap_or(0)),
+            })
+            .collect();
+        BoardView {
+            posts,
+            total,
+            limit,
+            truncated: total > limit,
+            unread,
+        }
+    }
+
+    /// Records `post` for `author` on the board, or refuses it when the board
+    /// is full.
+    ///
+    /// The author's connectedness is the caller's to have established — the
+    /// HTTP edge checks the register before it gets here, exactly as the claim
+    /// and the bid do — and the post's own caps were checked when it was built
+    /// ([`PostRequest::checked`]).
+    pub fn post(
+        &self,
+        author: &ConnectedAgent,
+        post: CheckedPost,
+    ) -> Result<PostView, SocialError> {
+        let mut inner = self.lock();
+        if inner.posts.len() >= MAX_POSTS {
+            return Err(SocialError::Conflict(format!(
+                "the board is full ({MAX_POSTS} posts)"
+            )));
+        }
+        inner.posts_seq += 1;
+        let post = PostView {
+            id: format!("p{}", inner.posts_seq),
+            agent_cid: author.cid,
+            role: author.assignee_id(),
+            subject: post.subject,
+            body: post.body,
+            task: post.task,
+            posted_by: post.posted_by,
+            created_at: now_ms(),
+        };
+        inner.posts.push(post.clone());
+        // Published under the lock, so a stream sees the board in post order —
+        // the ledger and the agora publish their transitions the same way.
+        self.publish_board("post", Some(&post), author, None);
+        Ok(post)
+    }
+
+    /// Advances `agent`'s read cursor to `up_to`, or says why it will not.
+    ///
+    /// The rules, each with its own refusal: `up_to` must name a post
+    /// ([`SocialError::Invalid`]); it must be at or before the newest post on
+    /// the board, and at or after the agent's own cursor — a cursor is
+    /// monotonic, so it never rolls back ([`SocialError::Conflict`]). Replaying
+    /// the cursor it already sits at is **idempotent**: the answer is the same
+    /// and nothing is published, because nothing changed.
+    pub fn read(&self, agent: &ConnectedAgent, up_to: &str) -> Result<ReadView, SocialError> {
+        let seq = post_seq(up_to).ok_or_else(|| {
+            SocialError::Invalid(format!("up_to must name a post (p<seq>), not {up_to}"))
+        })?;
+        if seq == 0 {
+            return Err(SocialError::Invalid(
+                "up_to must name a post: the first post is p1".to_string(),
+            ));
+        }
+        let mut inner = self.lock();
+        if inner.posts_seq == 0 {
+            return Err(SocialError::Conflict(
+                "the board is empty: there is no post to read up to".to_string(),
+            ));
+        }
+        if seq > inner.posts_seq {
+            return Err(SocialError::Conflict(format!(
+                "up_to {up_to} is past the newest post p{}",
+                inner.posts_seq
+            )));
+        }
+        let held = inner.cursors.get(&agent.cid).copied().unwrap_or(0);
+        if seq < held {
+            return Err(SocialError::Conflict(format!(
+                "up_to {up_to} is behind the agent's read cursor p{held}"
+            )));
+        }
+        if seq > held {
+            inner.cursors.insert(agent.cid, seq);
+            self.publish_board("read", None, agent, Some(up_to));
+        }
+        Ok(ReadView {
+            agent_cid: agent.cid,
+            up_to: up_to.to_string(),
+            unread: to_usize(inner.posts_seq - seq),
+        })
+    }
+
+    /// `agent`'s contact list, or the refusal that this daemon knows no such
+    /// agent.
+    ///
+    /// A list this store holds is answered whatever the agent's liveness — the
+    /// record is not thrown away when a VM stops — and a connected agent with
+    /// no contacts yet is answered with an empty list. Only a CID the store has
+    /// never heard of *and* the register does not show is unknown.
+    pub fn contacts(&self, cid: u64, presence: Presence) -> Result<ContactsView, SocialError> {
+        let inner = self.lock();
+        let Some(contacts) = inner.contacts.get(&cid) else {
+            if presence == Presence::Live {
+                return Ok(ContactsView {
+                    agent_cid: cid,
+                    contacts: Vec::new(),
+                    total: 0,
+                    limit: MAX_CONTACTS_PER_AGENT,
+                    truncated: false,
+                });
+            }
+            return Err(SocialError::Unknown(format!(
+                "no agent with guest CID {cid}"
+            )));
+        };
+        Ok(ContactsView {
+            agent_cid: cid,
+            contacts: contacts.clone(),
+            total: contacts.len(),
+            limit: MAX_CONTACTS_PER_AGENT,
+            truncated: contacts.len() > MAX_CONTACTS_PER_AGENT,
+        })
+    }
+
+    /// Adds `peer` to `agent`'s contacts as a handshake ([`MET`]), or returns
+    /// the link the pair already has.
+    ///
+    /// Idempotent, and deliberately conservative: the *kind* a link was first
+    /// recorded with is kept, so an award's `hired` survives a later handshake,
+    /// and a second identical add is not a second link. An agent is never its
+    /// own contact, and a list at its cap refuses a fresh contact.
+    pub fn add_contact(
+        &self,
+        agent: &ConnectedAgent,
+        peer: &ConnectedAgent,
+    ) -> Result<ContactView, SocialError> {
+        self.link(agent, peer, MET)
+    }
+
+    /// Records one exchange: `from` speaks `text` to `to`, and the call is
+    /// delivered to `to`'s session through the hub's admin surface.
+    ///
+    /// The row is written **after** the delivery attempt, so it is never a
+    /// placeholder: one lock checks the record's room, the delivery runs
+    /// outside the lock (a hub that answers slowly must not hold the board for
+    /// every other reader), and a second lock files the row with its outcome.
+    /// A refused delivery is a recorded fact, not an error: the exchange is the
+    /// record of what an agent said, and it exists whether or not the peer's
+    /// session was there to hear it.
+    pub fn say(
+        &self,
+        from: &ConnectedAgent,
+        to: &ConnectedAgent,
+        text: &str,
+        admin: Option<&HubAdmin>,
+    ) -> Result<ConversationView, SocialError> {
+        if from.cid == to.cid {
+            return Err(SocialError::Conflict(format!(
+                "guest CID {} cannot speak to itself",
+                from.cid
+            )));
+        }
+        {
+            let inner = self.lock();
+            full(&inner)?;
+        }
+        let (delivered, delivery) = deliver(from, to, text, admin);
+        let mut inner = self.lock();
+        // The room is re-checked under the lock the row is filed in: two
+        // exchanges racing the same full record must not both land.
+        full(&inner)?;
+        inner.conv_seq += 1;
+        let row = ConversationView {
+            id: format!("c{}", inner.conv_seq),
+            from_cid: from.cid,
+            to_cid: to.cid,
+            from_role: from.assignee_id(),
+            to_role: to.assignee_id(),
+            text: text.to_string(),
+            created_at: now_ms(),
+            delivered,
+            delivery,
+        };
+        inner.conversations.push(row.clone());
+        self.events.publish(Event::Conversation {
+            id: row.id.clone(),
+            from_cid: row.from_cid,
+            to_cid: row.to_cid,
+            delivered: row.delivered,
+        });
+        Ok(row)
+    }
+
+    /// The exchange record, newest first and bounded, with the pair summaries
+    /// the floor derives proximity from.
+    pub fn conversations(&self, limit: usize) -> ConversationsView {
+        let inner = self.lock();
+        let total = inner.conversations.len();
+        let conversations = inner.conversations.iter().rev().take(limit).cloned().collect();
+        let (pairs, pairs_total) = pairs_of(&inner.conversations, now_ms());
+        ConversationsView {
+            conversations,
+            pairs,
+            active_secs: ACTIVE_SECS,
+            total,
+            limit,
+            truncated: total > limit,
+            pairs_total,
+            pairs_truncated: pairs_total > MAX_PAIRS,
+        }
+    }
+
+    /// One pair's thread: every exchange between the two CIDs, oldest first and
+    /// bounded to the newest `limit` of them.
+    ///
+    /// The pair is derived from the record, never stored: `a` and `b` are read
+    /// as the unordered pair the path named, so a thread is the same whichever
+    /// order it is asked in, and a pair that has never spoken is an empty
+    /// thread rather than a refusal.
+    pub fn thread(&self, a: u64, b: u64, limit: usize) -> ThreadView {
+        let inner = self.lock();
+        let now = now_ms();
+        let matching: Vec<&ConversationView> = inner
+            .conversations
+            .iter()
+            .filter(|row| {
+                (row.from_cid == a && row.to_cid == b) || (row.from_cid == b && row.to_cid == a)
+            })
+            .collect();
+        let total = matching.len();
+        let messages = matching[total.saturating_sub(limit)..]
+            .iter()
+            .map(|row| (*row).clone())
+            .collect();
+        let active = matching
+            .last()
+            .is_some_and(|row| is_active(row.created_at, now));
+        ThreadView {
+            a,
+            b,
+            active,
+            active_secs: ACTIVE_SECS,
+            messages,
+            total,
+            limit,
+            truncated: total > limit,
+        }
+    }
+
+    /// An award's social seeding: the hiring note the award posts, and the two
+    /// contact links it records.
+    ///
+    /// This is `social.md`'s integration — "an award posts the hiring note
+    /// automatically, so the board is where discovery happens and the agora is
+    /// where it concludes" — and it is deliberately **incapable of failing the
+    /// award**: both halves are best-effort and reported ([`AwardSeed`]), so an
+    /// award binds its task whether or not the board had room for a note. An
+    /// award an agent makes to itself posts the note and links nothing, because
+    /// an agent is never its own contact.
+    pub fn seed_award(
+        &self,
+        task: &Task,
+        awarder: &ConnectedAgent,
+        contractor: &ConnectedAgent,
+    ) -> AwardSeed {
+        let note = PostRequest {
+            agent_cid: awarder.cid,
+            subject: clamp(&format!("hiring for {}", task.id()), MAX_SUBJECT),
+            body: note_body(task),
+            task: Some(task.id().to_string()),
+            posted_by: Some(clamp(&awarder.assignee_id(), MAX_POSTED_BY)),
+        }
+        .checked()
+        .map_err(SocialError::Invalid)
+        .and_then(|post| self.post(awarder, post));
+        if let Err(refused) = &note {
+            eprintln!("noded: the award on {} posted no hiring note: {refused}", task.id());
+        }
+        let mut linked = true;
+        if awarder.cid == contractor.cid {
+            eprintln!(
+                "noded: the award on {} is to guest CID {} itself; contacts not linked",
+                task.id(),
+                awarder.cid
+            );
+            linked = false;
+        } else {
+            for (one, other, kind) in [
+                (awarder, contractor, HIRED),
+                (contractor, awarder, WAS_HIRED),
+            ] {
+                if let Err(refused) = self.link(one, other, kind) {
+                    eprintln!("noded: the award on {} recorded no {kind} contact: {refused}", task.id());
+                    linked = false;
+                }
+            }
+        }
+        AwardSeed { note, linked }
+    }
+
+    /// Records `peer` on `agent`'s list with `kind`, or returns the link the
+    /// pair already has (whatever kind it was recorded with).
+    fn link(
+        &self,
+        agent: &ConnectedAgent,
+        peer: &ConnectedAgent,
+        kind: &'static str,
+    ) -> Result<ContactView, SocialError> {
+        if agent.cid == peer.cid {
+            return Err(SocialError::Conflict(format!(
+                "guest CID {} cannot be its own contact",
+                agent.cid
+            )));
+        }
+        let mut inner = self.lock();
+        if let Some(held) = inner
+            .contacts
+            .get(&agent.cid)
+            .and_then(|list| list.iter().find(|contact| contact.peer_cid == peer.cid))
+        {
+            return Ok(held.clone());
+        }
+        let held = inner.contacts.get(&agent.cid).map_or(0, Vec::len);
+        if held >= MAX_CONTACTS_PER_AGENT {
+            return Err(SocialError::Conflict(format!(
+                "agent {} holds its cap of {MAX_CONTACTS_PER_AGENT} contacts",
+                agent.cid
+            )));
+        }
+        let contact = ContactView {
+            peer_cid: peer.cid,
+            role: peer.assignee_id(),
+            since: now_ms(),
+            kind,
+        };
+        inner
+            .contacts
+            .entry(agent.cid)
+            .or_default()
+            .push(contact.clone());
+        Ok(contact)
+    }
+
+    /// Publishes one `board` event: a post, or a cursor's advance. The post is
+    /// carried as the JSON object the board endpoint writes it as, so a frame
+    /// and a poll never disagree about a post's shape.
+    fn publish_board(
+        &self,
+        kind: &'static str,
+        post: Option<&PostView>,
+        agent: &ConnectedAgent,
+        read_up_to: Option<&str>,
+    ) {
+        // A post is plain JSON scalars and strings, so this cannot fail; the
+        // `null` fallback is the shape a frame carries when it somehow could,
+        // and is not a panic on a request path.
+        let encoded = post.and_then(|post| serde_json::to_string(post).ok());
+        self.events.publish(Event::Board {
+            kind,
+            post: encoded,
+            agent_cid: agent.cid,
+            role: agent.assignee_id(),
+            read_up_to: read_up_to.map(str::to_string),
+        });
+    }
+}
+
+/// Refuses an exchange when the record is full.
+fn full(inner: &SocialInner) -> Result<(), SocialError> {
+    if inner.conversations.len() >= MAX_CONVERSATIONS {
+        return Err(SocialError::Conflict(format!(
+            "the conversation record is full ({MAX_CONVERSATIONS} exchanges)"
+        )));
+    }
+    Ok(())
+}
+
+/// Delivers one exchange to the peer's session as the contract's `conversation`
+/// tool call, through the hub's admin surface.
+///
+/// Returns whether the peer's session took it, and — when it did not — the
+/// reason the row records: the agent's own refusal, the hub's own words with
+/// its status, an admin that could not be reached, or this daemon's statement
+/// that it has nowhere to send the call.
+fn deliver(
+    from: &ConnectedAgent,
+    to: &ConnectedAgent,
+    text: &str,
+    admin: Option<&HubAdmin>,
+) -> (bool, Option<String>) {
+    let Some(admin) = admin else {
+        return (false, Some("hub admin is not configured".to_string()));
+    };
+    let args = serde_json::json!({
+        "from_role": from.assignee_id(),
+        "from_cid": from.cid,
+        "text": text,
+    });
+    match hub::tell(admin, to.cid, CONVERSATION_TOOL, args, hub::TELL_TIMEOUT_MS) {
+        TellOutcome::Answered { ok: true, .. } => (true, None),
+        // The agent answered and refused: its own words are the reason.
+        TellOutcome::Answered { ok: false, output } => (false, Some(output)),
+        // The hub refused (a role the manifest does not grant the tool, a CID
+        // it does not serve, a session that is not connected, a timeout): its
+        // own words, with the status it answered with.
+        TellOutcome::Refused { status, message } => {
+            (false, Some(format!("the hub refused with {status}: {message}")))
+        }
+        TellOutcome::Unreachable(reason) => {
+            (false, Some(format!("hub admin unreachable: {reason}")))
+        }
+    }
+}
+
+/// The hiring note's body: a template over the task's own fields — what the
+/// call wants, and how it will be judged. Clamped to the board's cap, because
+/// a task's goal may be as long as the ledger allows.
+fn note_body(task: &Task) -> String {
+    let mut body = format!("{} — {}", task.role().unwrap_or("any role"), task.goal());
+    if let Some(acceptance) = task.acceptance() {
+        body.push_str(&format!(" (acceptance: {acceptance})"));
+    }
+    clamp(&body, MAX_BODY)
+}
+
+/// `value`, cut to at most `max` bytes on a character boundary. Only ever
+/// shrinks a template this module composes (see [`note_body`]).
+fn clamp(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+/// Whether a pair's last exchange at `last_at` is recent enough at `now` for
+/// the pair to be active: an exchange within [`ACTIVE_SECS`], inclusive of the
+/// boundary.
+fn is_active(last_at: u64, now: u64) -> bool {
+    now.saturating_sub(last_at) <= ACTIVE_SECS * 1000
+}
+
+/// The pair summaries over `rows`: one row per pair that has spoken, most
+/// recently active first, bounded to [`MAX_PAIRS`]. Returns the rows and how
+/// many pairs the record holds, so a reader can see a window was taken.
+fn pairs_of(rows: &[ConversationView], now: u64) -> (Vec<PairView>, usize) {
+    let mut folded: BTreeMap<(u64, u64), (usize, u64)> = BTreeMap::new();
+    for row in rows {
+        let key = if row.from_cid <= row.to_cid {
+            (row.from_cid, row.to_cid)
+        } else {
+            (row.to_cid, row.from_cid)
+        };
+        let entry = folded.entry(key).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 = entry.1.max(row.created_at);
+    }
+    let total = folded.len();
+    let mut pairs: Vec<PairView> = folded
+        .into_iter()
+        .map(|((a, b), (count, last_at))| PairView {
+            a,
+            b,
+            active: is_active(last_at, now),
+            count,
+            last_at,
+        })
+        .collect();
+    // Newest activity first, and the pair's own CIDs break a tie so the order
+    // is stable across reads of an unchanged record.
+    pairs.sort_by(|one, other| {
+        other
+            .last_at
+            .cmp(&one.last_at)
+            .then_with(|| (one.a, one.b).cmp(&(other.a, other.b)))
+    });
+    pairs.truncate(MAX_PAIRS);
+    (pairs, total)
+}
+
+/// The post number an id names, or `None` when the id is not `p<seq>`.
+fn post_seq(id: &str) -> Option<u64> {
+    id.strip_prefix('p')?.parse().ok()
+}
+
+/// A count as a `usize`: the record's own sizes are far inside it, so this can
+/// only saturate on a bound the store itself refuses to reach.
+fn to_usize(count: u64) -> usize {
+    usize::try_from(count).unwrap_or(usize::MAX)
+}
+
+/// The stub admin surface the delivery tests use is a plain `TcpListener`, the
+/// same shape `tests/agent_tell.rs` drives the daemon against: the delivery is
+/// asserted from both ends — what the daemon asked for, and what the row says
+/// came back.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::{CreateTask, TaskLedger};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc::Receiver;
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+
+    /// A connected agent with a role, as the register would report one.
+    fn agent(cid: u64, role: &str) -> ConnectedAgent {
+        ConnectedAgent {
+            cid,
+            role: Some(role.to_string()),
+            run: "r1".to_string(),
+            vm: 0,
+        }
+    }
+
+    /// A social layer and the receiver its bus publishes to.
+    fn lab() -> (Social, Receiver<Event>) {
+        let events = EventBus::new();
+        let notes = events.subscribe();
+        (Social::new(events), notes)
+    }
+
+    /// A post request for `cid`, with the fields a test varies.
+    fn post(cid: u64, subject: &str, body: &str) -> PostRequest {
+        PostRequest {
+            agent_cid: cid,
+            subject: subject.to_string(),
+            body: body.to_string(),
+            task: None,
+            posted_by: None,
+        }
+    }
+
+    /// Posts `subject` for `auth` and returns the row.
+    fn posted(social: &Social, auth: &ConnectedAgent, subject: &str) -> PostView {
+        let request = post(auth.cid, subject, "the body");
+        social
+            .post(auth, request.checked().expect("a post inside the caps"))
+            .expect("room on the board")
+    }
+
+    #[test]
+    fn a_post_carries_the_caps_the_driver_and_the_authors_role() {
+        // Every field is checked where the request is read, so a refusal names
+        // the field: none of these reaches the board.
+        assert_eq!(
+            post(100, "   ", "body").checked().unwrap_err(),
+            "subject must not be empty"
+        );
+        assert_eq!(
+            post(100, "subject", "").checked().unwrap_err(),
+            "body must not be empty"
+        );
+        assert_eq!(
+            post(100, &"x".repeat(MAX_SUBJECT + 1), "body")
+                .checked()
+                .unwrap_err(),
+            format!("subject must be at most {MAX_SUBJECT} bytes")
+        );
+        assert_eq!(
+            post(100, "subject", &"x".repeat(MAX_BODY + 1))
+                .checked()
+                .unwrap_err(),
+            format!("body must be at most {MAX_BODY} bytes")
+        );
+        let mut named = post(100, "subject", "body");
+        named.posted_by = Some("x".repeat(MAX_POSTED_BY + 1));
+        assert_eq!(
+            named.checked().unwrap_err(),
+            format!("posted_by must be at most {MAX_POSTED_BY} bytes")
+        );
+        // The caps are inclusive, not exclusive.
+        assert!(
+            post(100, &"x".repeat(MAX_SUBJECT), &"x".repeat(MAX_BODY))
+                .checked()
+                .is_ok()
+        );
+
+        let (social, notes) = lab();
+        let auth = agent(100, "builder");
+        let row = posted(&social, &auth, "hiring?");
+        assert_eq!(row.id, "p1");
+        assert_eq!(row.agent_cid, 100);
+        assert_eq!(row.role, "builder");
+        assert_eq!(row.subject, "hiring?");
+        assert_eq!(row.task, None);
+        assert_eq!(row.posted_by, DEFAULT_POSTED_BY);
+        // A roleless VM is named by its CID, the ledger's own spelling.
+        let roleless = ConnectedAgent {
+            cid: 101,
+            role: None,
+            run: "r1".to_string(),
+            vm: 1,
+        };
+        assert_eq!(posted(&social, &roleless, "hi").role, "cid:101");
+
+        // Every post on the bus: the frame names the post, its author and its
+        // role, and reads are not what this one is.
+        assert_eq!(
+            notes.recv_timeout(Duration::from_secs(1)),
+            Ok(Event::Board {
+                kind: "post",
+                post: Some(serde_json::to_string(&row).expect("a serializable post")),
+                agent_cid: 100,
+                role: "builder".to_string(),
+                read_up_to: None,
+            })
+        );
+    }
+
+    #[test]
+    fn the_board_is_newest_first_bounded_and_refuses_a_post_past_its_cap() {
+        let (social, _notes) = lab();
+        let auth = agent(100, "builder");
+        for index in 1..=3 {
+            posted(&social, &auth, &format!("post {index}"));
+        }
+        let board = social.board(&[100], BOARD_LIMIT);
+        assert_eq!(board.total, 3);
+        assert_eq!(board.limit, BOARD_LIMIT);
+        assert!(!board.truncated);
+        assert_eq!(
+            board.posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(),
+            ["p3", "p2", "p1"]
+        );
+
+        // The window is the newest posts, and says it cut the rest.
+        let window = social.board(&[100], 2);
+        assert_eq!(
+            window.posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(),
+            ["p3", "p2"]
+        );
+        assert!(window.truncated, "the window dropped p1");
+        assert_eq!(window.total, 3);
+    }
+
+    #[test]
+    fn an_unread_count_follows_the_agents_cursor() {
+        let (social, _notes) = lab();
+        let builder = agent(100, "builder");
+        let librarian = agent(101, "librarian");
+        for index in 1..=3 {
+            posted(&social, &builder, &format!("post {index}"));
+        }
+        // Nobody has read: both connected agents are three posts behind, and a
+        // cursor-holder that has since stopped is still reported.
+        let board = social.board(&[101, 100], BOARD_LIMIT);
+        assert_eq!(
+            board.unread,
+            vec![
+                UnreadView { agent_cid: 100, count: 3 },
+                UnreadView { agent_cid: 101, count: 3 },
+            ],
+            "ascending CID order, one row each"
+        );
+
+        let read = social.read(&librarian, "p2").expect("a cursor on the board");
+        assert_eq!(read.unread, 1);
+        assert_eq!(read.agent_cid, 101);
+        assert_eq!(read.up_to, "p2");
+        assert_eq!(
+            social.board(&[100, 101], BOARD_LIMIT).unread,
+            vec![
+                UnreadView { agent_cid: 100, count: 3 },
+                UnreadView { agent_cid: 101, count: 1 },
+            ]
+        );
+        // The count follows the cursor, not the reader: a newer post is unread
+        // again, and the agent that never read stays where it was.
+        posted(&social, &builder, "post 4");
+        assert_eq!(
+            social.board(&[100, 101], BOARD_LIMIT).unread,
+            vec![
+                UnreadView { agent_cid: 100, count: 4 },
+                UnreadView { agent_cid: 101, count: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_read_cursor_is_idempotent_monotonic_and_refuses_the_future() {
+        let (social, notes) = lab();
+        let builder = agent(100, "builder");
+        let librarian = agent(101, "librarian");
+        for index in 1..=2 {
+            posted(&social, &builder, &format!("post {index}"));
+        }
+        while notes.try_recv().is_ok() {}
+
+        // Past the newest post: refused, with the newest named.
+        assert_eq!(
+            social.read(&librarian, "p3").unwrap_err(),
+            SocialError::Conflict("up_to p3 is past the newest post p2".to_string())
+        );
+        // A cursor is monotonic: once at p2, p1 is behind it.
+        assert_eq!(social.read(&librarian, "p2").expect("on the board").unread, 0);
+        assert_eq!(
+            social.read(&librarian, "p1").unwrap_err(),
+            SocialError::Conflict("up_to p1 is behind the agent's read cursor p2".to_string())
+        );
+        // Idempotent: the cursor it already sits at is the same answer, and
+        // nothing is published because nothing changed.
+        while notes.try_recv().is_ok() {}
+        assert_eq!(social.read(&librarian, "p2").expect("the same cursor").unread, 0);
+        assert!(
+            notes.try_recv().is_err(),
+            "a replay publishes nothing: the bus is quiet"
+        );
+
+        // And the refusal shapes that are not a cursor at all.
+        assert_eq!(
+            social.read(&librarian, "post-2").unwrap_err(),
+            SocialError::Invalid("up_to must name a post (p<seq>), not post-2".to_string())
+        );
+        assert_eq!(
+            social.read(&librarian, "p0").unwrap_err(),
+            SocialError::Invalid("up_to must name a post: the first post is p1".to_string())
+        );
+
+        // An advance publishes the read frame, naming the reader and its role.
+        let advanced = agent(102, "reviewer");
+        let row = social.read(&advanced, "p1").expect("a cursor on the board");
+        assert_eq!(row.unread, 1);
+        match notes.recv_timeout(Duration::from_secs(1)) {
+            Ok(Event::Board {
+                kind,
+                post,
+                agent_cid,
+                role,
+                read_up_to,
+            }) => {
+                assert_eq!(kind, "read");
+                assert_eq!(post, None, "a read carries no post");
+                assert_eq!(agent_cid, 102);
+                assert_eq!(role, "reviewer");
+                assert_eq!(read_up_to.as_deref(), Some("p1"));
+            }
+            other => panic!("expected a read frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_board_refuses_a_cursor_before_one_post_exists() {
+        let (social, _notes) = lab();
+        assert_eq!(
+            social.read(&agent(100, "builder"), "p1").unwrap_err(),
+            SocialError::Conflict("the board is empty: there is no post to read up to".to_string())
+        );
+    }
+
+    #[test]
+    fn the_board_cap_refuses_a_post_it_cannot_hold() {
+        // The cap is the contract's; the refusal is checked without filling the
+        // board by testing the rule where it lives.
+        let (social, _notes) = lab();
+        let auth = agent(100, "builder");
+        posted(&social, &auth, "the one post");
+        {
+            let mut inner = social.lock();
+            assert_eq!(inner.posts_seq, 1);
+            // Pretend the board is full: the guard is the length, not the seq.
+            inner.posts = vec![inner.posts[0].clone(); MAX_POSTS];
+        }
+        assert_eq!(
+            social
+                .post(&auth, post(100, "one more", "body").checked().expect("checked"))
+                .unwrap_err(),
+            SocialError::Conflict(format!("the board is full ({MAX_POSTS} posts)"))
+        );
+    }
+
+    #[test]
+    fn a_contact_is_one_way_idempotent_and_never_itself() {
+        let (social, _notes) = lab();
+        let builder = agent(100, "builder");
+        let librarian = agent(101, "librarian");
+
+        let added = social.add_contact(&builder, &librarian).expect("a peer");
+        assert_eq!(added.peer_cid, 101);
+        assert_eq!(added.role, "librarian");
+        assert_eq!(added.kind, MET);
+        assert!(added.since > 0);
+
+        // The list is the agent's own: the peer's side is untouched.
+        let peer_side = social.contacts(101, Presence::Live).expect("a known agent");
+        assert_eq!(peer_side.total, 0);
+        let mine = social.contacts(100, Presence::Live).expect("a known agent");
+        assert_eq!(mine.total, 1);
+        assert_eq!(mine.limit, MAX_CONTACTS_PER_AGENT);
+        assert!(!mine.truncated);
+        assert_eq!(mine.contacts, vec![added.clone()]);
+
+        // Idempotent: the same add returns the same link, and the list does not
+        // grow.
+        assert_eq!(social.add_contact(&builder, &librarian), Ok(added.clone()));
+        assert_eq!(
+            social.contacts(100, Presence::Live).expect("known").total,
+            1
+        );
+        // The kind a link was first recorded with is kept, whatever a later
+        // handshake says: `hired` is not downgraded to `met`.
+        let hired = social
+            .link(&builder, &librarian, HIRED)
+            .expect("the link already held");
+        assert_eq!(hired.kind, MET, "the first kind stands");
+        social
+            .link(&builder, &librarian, HIRED)
+            .expect("the held link");
+
+        // An agent is never its own contact.
+        assert_eq!(
+            social.add_contact(&builder, &builder).unwrap_err(),
+            SocialError::Conflict("guest CID 100 cannot be its own contact".to_string())
+        );
+
+        // An unknown CID is the endpoint's 404, and a live one with no list is
+        // an empty list rather than not-found.
+        assert_eq!(
+            social.contacts(999, Presence::Absent).unwrap_err(),
+            SocialError::Unknown("no agent with guest CID 999".to_string())
+        );
+        assert_eq!(
+            social.contacts(999, Presence::Live).expect("a live agent").total,
+            0
+        );
+        // A list this store holds outlives the agent's liveness: the record is
+        // not thrown away when a VM stops.
+        assert_eq!(social.contacts(100, Presence::Absent).expect("held").total, 1);
+    }
+
+    #[test]
+    fn a_contact_list_refuses_a_contact_past_its_cap() {
+        let (social, _notes) = lab();
+        let builder = agent(100, "builder");
+        {
+            let mut inner = social.lock();
+            // A list at its cap: the guard is the length, so this is the rule
+            // itself and not a loop of 256 adds.
+            inner.contacts.insert(
+                100,
+                (0..MAX_CONTACTS_PER_AGENT)
+                    .map(|index| ContactView {
+                        peer_cid: 1000 + index as u64,
+                        role: "peer".to_string(),
+                        since: 1,
+                        kind: MET,
+                    })
+                    .collect(),
+            );
+        }
+        assert_eq!(
+            social.add_contact(&builder, &agent(101, "librarian")).unwrap_err(),
+            SocialError::Conflict(format!(
+                "agent 100 holds its cap of {MAX_CONTACTS_PER_AGENT} contacts"
+            ))
+        );
+        // A peer already on the list still answers with its link at the cap:
+        // the cap refuses a *fresh* contact, not a read of a held one.
+        assert_eq!(
+            social
+                .add_contact(&builder, &agent(1000, "peer"))
+                .expect("the held link")
+                .peer_cid,
+            1000
+        );
+    }
+
+    #[test]
+    fn an_award_posts_the_hiring_note_and_links_both_ways() {
+        let events = EventBus::new();
+        let notes = events.subscribe();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        let social = Social::new(Arc::clone(&events));
+        let task = ledger
+            .create(&CreateTask {
+                goal: "ship the social layer".to_string(),
+                acceptance: Some("the board shows the note".to_string()),
+                budget: Some(500),
+                role: Some("builder".to_string()),
+            })
+            .expect("a roled task inside the contract");
+        let mayor = agent(100, "mayor");
+        let builder = agent(101, "builder");
+
+        let seed = social.seed_award(&task, &mayor, &builder);
+        let note = seed.note.expect("the board had room");
+        assert!(seed.linked);
+        assert_eq!(note.subject, "hiring for t1");
+        assert_eq!(note.task.as_deref(), Some("t1"));
+        assert_eq!(note.agent_cid, 100, "the awarder authors the note");
+        assert_eq!(note.role, "mayor");
+        assert_eq!(note.posted_by, "mayor");
+        assert_eq!(
+            note.body,
+            "builder — ship the social layer (acceptance: the board shows the note)",
+            "the body is a template over the task's own fields"
+        );
+
+        // The links are both ways, with each side's own kind.
+        let awarder = social.contacts(100, Presence::Live).expect("known");
+        assert_eq!(awarder.contacts.len(), 1);
+        assert_eq!(awarder.contacts[0].peer_cid, 101);
+        assert_eq!(awarder.contacts[0].kind, HIRED);
+        let contractor = social.contacts(101, Presence::Live).expect("known");
+        assert_eq!(contractor.contacts.len(), 1);
+        assert_eq!(contractor.contacts[0].peer_cid, 100);
+        assert_eq!(contractor.contacts[0].kind, WAS_HIRED);
+        assert_eq!(contractor.contacts[0].role, "mayor");
+
+        // The note is a post like any other, and it is on the board's bus
+        // beside the task's own creation.
+        assert_eq!(social.board(&[100, 101], BOARD_LIMIT).posts[0].id, "p1");
+        let mut seen = Vec::new();
+        while let Ok(event) = notes.try_recv() {
+            seen.push(event);
+        }
+        assert!(
+            seen.iter().any(|event| matches!(
+                event,
+                Event::Board {
+                    kind: "post",
+                    post: Some(_),
+                    ..
+                }
+            )),
+            "the note is on the bus: {seen:?}"
+        );
+
+        // Seeding twice is idempotent: a second award of the same call cannot
+        // post a second note (the call has one award), but the links hold and
+        // the kinds do not flip.
+        let again = social.seed_award(&task, &mayor, &builder);
+        assert!(again.note.is_ok());
+        assert!(again.linked);
+        assert_eq!(
+            social.contacts(100, Presence::Live).expect("known").contacts[0].kind,
+            HIRED
+        );
+        assert_eq!(
+            social.contacts(101, Presence::Live).expect("known").contacts[0].kind,
+            WAS_HIRED
+        );
+    }
+
+    #[test]
+    fn an_award_an_agent_makes_to_itself_posts_a_note_and_links_nothing() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        let social = Social::new(Arc::clone(&events));
+        let task = ledger
+            .create(&CreateTask {
+                goal: "a solo job".to_string(),
+                acceptance: None,
+                budget: Some(1),
+                role: Some("builder".to_string()),
+            })
+            .expect("a task");
+        let builder = agent(101, "builder");
+
+        let seed = social.seed_award(&task, &builder, &builder);
+        assert!(seed.note.is_ok(), "the note still posts");
+        assert!(!seed.linked, "an agent is never its own contact");
+        assert_eq!(seed.note.expect("posted").body, "builder — a solo job");
+        assert_eq!(
+            social.contacts(101, Presence::Live).expect("known").total,
+            0,
+            "no self-contact, in either direction"
+        );
+    }
+
+    #[test]
+    fn the_hiring_notes_body_is_a_template_clamped_to_the_boards_cap() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        let social = Social::new(Arc::clone(&events));
+        // A goal at the ledger's own cap, with an acceptance clause beside it:
+        // the composed note is longer than the board's body cap and must still
+        // post, clamped on a character boundary.
+        let task = ledger
+            .create(&CreateTask {
+                goal: "x".repeat(tasks::MAX_TEXT),
+                acceptance: Some("the suite is green".to_string()),
+                budget: Some(1),
+                role: Some("builder".to_string()),
+            })
+            .expect("the ledger takes a goal at its cap");
+        let seed = social.seed_award(&task, &agent(100, "mayor"), &agent(101, "builder"));
+        let note = seed.note.expect("the note posts, clamped");
+        assert_eq!(note.body.len(), MAX_BODY);
+        assert!(
+            note.body.is_char_boundary(note.body.len()),
+            "the clamp cut on a character boundary"
+        );
+        assert_eq!(clamp("short", MAX_BODY), "short");
+        assert_eq!(clamp(&"é".repeat(3), 3), "é", "a 2-byte char at 3 bytes cuts to one");
+    }
+
+    #[test]
+    fn a_conversation_is_recorded_and_the_pairs_thread_is_oldest_first() {
+        let (social, notes) = lab();
+        let builder = agent(100, "builder");
+        let librarian = agent(101, "librarian");
+        let reviewer = agent(102, "reviewer");
+
+        let first = social
+            .say(&builder, &librarian, "do you have the plans?", None)
+            .expect("a room in the record");
+        assert_eq!(first.id, "c1");
+        assert_eq!(first.from_cid, 100);
+        assert_eq!(first.to_cid, 101);
+        assert_eq!(first.from_role, "builder");
+        assert_eq!(first.to_role, "librarian");
+        assert_eq!(first.text, "do you have the plans?");
+        // No admin surface to send the call through: the row says so rather
+        // than pretending the peer heard it.
+        assert!(!first.delivered);
+        assert_eq!(first.delivery.as_deref(), Some("hub admin is not configured"));
+        let second = social
+            .say(&librarian, &builder, "yes", None)
+            .expect("a room in the record");
+        assert_eq!(second.id, "c2");
+        social
+            .say(&builder, &reviewer, "unrelated", None)
+            .expect("a room in the record");
+
+        // The record is newest first, bounded.
+        let all = social.conversations(CONVERSATIONS_LIMIT);
+        assert_eq!(all.total, 3);
+        assert!(!all.truncated);
+        assert_eq!(
+            all.conversations.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["c3", "c2", "c1"]
+        );
+        let window = social.conversations(1);
+        assert!(window.truncated);
+        assert_eq!(window.conversations.len(), 1);
+        assert_eq!(window.conversations[0].id, "c3");
+        assert_eq!(window.active_secs, ACTIVE_SECS);
+
+        // A pair's thread is the pair's own, oldest first, whichever way the
+        // path names the pair.
+        let thread = social.thread(100, 101, CONVERSATIONS_LIMIT);
+        assert_eq!(thread.total, 2);
+        assert_eq!(
+            thread.messages.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["c1", "c2"]
+        );
+        assert!(thread.active, "an exchange just happened");
+        assert_eq!(thread.active_secs, ACTIVE_SECS);
+        assert!(!thread.truncated);
+        assert_eq!(
+            social.thread(101, 100, CONVERSATIONS_LIMIT).total,
+            2,
+            "the pair is unordered"
+        );
+        let bounded = social.thread(100, 101, 1);
+        assert!(bounded.truncated);
+        assert_eq!(
+            bounded.messages.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["c2"],
+            "the newest exchange is what the window keeps",
+        );
+        // A pair that has never spoken is an empty thread, not a refusal.
+        let empty = social.thread(100, 999, CONVERSATIONS_LIMIT);
+        assert_eq!(empty.total, 0);
+        assert!(!empty.active);
+        assert!(empty.messages.is_empty());
+
+        // Every exchange is on the bus.
+        assert_eq!(
+            notes.recv_timeout(Duration::from_secs(1)),
+            Ok(Event::Conversation {
+                id: "c1".to_string(),
+                from_cid: 100,
+                to_cid: 101,
+                delivered: false,
+            })
+        );
+        // And an agent does not speak to itself.
+        assert_eq!(
+            social.say(&builder, &builder, "hello me", None).unwrap_err(),
+            SocialError::Conflict("guest CID 100 cannot speak to itself".to_string())
+        );
+    }
+
+    #[test]
+    fn the_pair_rows_fold_the_record_and_the_active_window_is_inclusive() {
+        let row = |id: &str, from: u64, to: u64, at: u64| ConversationView {
+            id: id.to_string(),
+            from_cid: from,
+            to_cid: to,
+            from_role: "a".to_string(),
+            to_role: "b".to_string(),
+            text: "…".to_string(),
+            created_at: at,
+            delivered: false,
+            delivery: None,
+        };
+        // The window: an exchange within ACTIVE_SECS is active, and the
+        // boundary itself counts.
+        assert!(is_active(1_000_000, 1_000_000));
+        assert!(is_active(1_000_000, 1_000_000 + ACTIVE_SECS * 1000));
+        assert!(!is_active(1_000_000, 1_000_000 + ACTIVE_SECS * 1000 + 1));
+        assert!(is_active(1_000_000, 999_000), "a clock that went back is not a gap");
+
+        let rows = vec![
+            row("c1", 101, 100, 1000),
+            row("c2", 100, 101, 5000),
+            row("c3", 102, 100, 9000),
+            row("c4", 100, 102, 2000),
+        ];
+        let now = 10_000;
+        let (pairs, total) = pairs_of(&rows, now);
+        assert_eq!(total, 2, "two pairs, however many rows");
+        // The pair that spoke last is first, and the pair is canonical (a < b).
+        assert_eq!(
+            (pairs[0].a, pairs[0].b, pairs[0].count, pairs[0].last_at),
+            (100, 102, 2, 9000)
+        );
+        assert_eq!(
+            (pairs[1].a, pairs[1].b, pairs[1].count, pairs[1].last_at),
+            (100, 101, 2, 5000)
+        );
+        assert!(pairs.iter().all(|pair| pair.active));
+        // A pair whose last exchange is past the window is not active, but it
+        // is still a pair.
+        let stale = pairs_of(&rows, 9000 + ACTIVE_SECS * 1000 + 1).0;
+        assert_eq!(stale.len(), 2);
+        assert!(stale.iter().all(|pair| !pair.active));
+
+        // The window is bounded, and says how much it left out.
+        let many: Vec<ConversationView> = (0..MAX_PAIRS + 5)
+            .map(|index| row("c", 100, 200 + index as u64, index as u64))
+            .collect();
+        let (bounded, total) = pairs_of(&many, 0);
+        assert_eq!(bounded.len(), MAX_PAIRS);
+        assert_eq!(total, MAX_PAIRS + 5);
+    }
+
+    #[test]
+    fn the_conversation_record_refuses_an_exchange_past_its_cap() {
+        let (social, _notes) = lab();
+        let builder = agent(100, "builder");
+        let librarian = agent(101, "librarian");
+        {
+            let mut inner = social.lock();
+            inner.conversations = vec![
+                ConversationView {
+                    id: "c1".to_string(),
+                    from_cid: 100,
+                    to_cid: 101,
+                    from_role: "builder".to_string(),
+                    to_role: "librarian".to_string(),
+                    text: "…".to_string(),
+                    created_at: 1,
+                    delivered: false,
+                    delivery: None,
+                };
+                MAX_CONVERSATIONS
+            ];
+        }
+        assert_eq!(
+            social
+                .say(&builder, &librarian, "one more", None)
+                .unwrap_err(),
+            SocialError::Conflict(format!(
+                "the conversation record is full ({MAX_CONVERSATIONS} exchanges)"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_say_outside_the_contract_is_refused_before_anything_is_recorded() {
+        assert_eq!(
+            SayRequest {
+                to_cid: 101,
+                text: "  ".to_string()
+            }
+            .checked()
+            .unwrap_err(),
+            "text must not be empty"
+        );
+        assert_eq!(
+            SayRequest {
+                to_cid: 101,
+                text: "x".repeat(MAX_SAY_TEXT + 1)
+            }
+            .checked()
+            .unwrap_err(),
+            format!("text must be at most {MAX_SAY_TEXT} bytes")
+        );
+        assert!(
+            SayRequest {
+                to_cid: 101,
+                text: "x".repeat(MAX_SAY_TEXT)
+            }
+            .checked()
+            .is_ok(),
+            "the cap is inclusive"
+        );
+    }
+
+    /// A stub admin surface: binds an ephemeral loopback port and answers each
+    /// of `answers` in turn, handing back the requests it read.
+    fn stub_admin(answers: Vec<String>) -> (u16, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the stub admin binds");
+        let port = listener.local_addr().expect("a bound address").port();
+        let handle = thread::spawn(move || {
+            let mut seen = Vec::new();
+            for raw in answers {
+                let (stream, _peer) = listener.accept().expect("the daemon connects");
+                seen.push(serve_stub(stream, &raw));
+            }
+            seen
+        });
+        (port, handle)
+    }
+
+    /// Reads one request off `stream` and answers it with `raw`.
+    fn serve_stub(mut stream: TcpStream, raw: &str) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("a read timeout");
+        let mut reader = BufReader::new(stream.try_clone().expect("the stub clones its socket"));
+        let mut head = String::new();
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).expect("a header line") == 0 {
+                break;
+            }
+            if let Some((name, value)) = line.trim_end().split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+            let done = line == "\r\n" || line == "\n";
+            head.push_str(&line);
+            if done {
+                break;
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        if content_length > 0 {
+            reader.read_exact(&mut body).expect("the request body");
+        }
+        stream.write_all(raw.as_bytes()).expect("the stub answers");
+        stream.flush().expect("the answer is flushed");
+        format!("{head}{}", String::from_utf8_lossy(&body))
+    }
+
+    /// A stub answer with its own length.
+    fn answer(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[test]
+    fn a_delivery_is_the_contracts_tool_call_and_its_outcome_is_the_rows() {
+        // Three answers, in the order the three exchanges are made: the peer's
+        // session takes it, the agent refuses it, the hub refuses the tool.
+        let (port, stub) = stub_admin(vec![
+            answer("200 OK", r#"{"ok":true,"output":"heard"}"#),
+            answer("200 OK", r#"{"ok":false,"output":"denied: no such tool"}"#),
+            answer(
+                "403 Forbidden",
+                r#"{"ok":false,"output":"role librarian does not grant conversation"}"#,
+            ),
+        ]);
+        let admin = HubAdmin::parse(&format!("127.0.0.1:{port}")).expect("a loopback surface");
+        let (social, _notes) = lab();
+        let builder = agent(100, "builder");
+        let librarian = agent(101, "librarian");
+
+        let taken = social
+            .say(&builder, &librarian, "the plans?", Some(&admin))
+            .expect("a room in the record");
+        assert!(taken.delivered, "the peer's session answered ok");
+        assert_eq!(taken.delivery, None);
+
+        let refused = social
+            .say(&builder, &librarian, "again?", Some(&admin))
+            .expect("a room in the record");
+        assert!(!refused.delivered);
+        assert_eq!(refused.delivery.as_deref(), Some("denied: no such tool"));
+
+        let denied = social
+            .say(&builder, &librarian, "third?", Some(&admin))
+            .expect("a room in the record");
+        assert!(!denied.delivered);
+        assert_eq!(
+            denied.delivery.as_deref(),
+            Some(
+                "the hub refused with 403: \
+                 {\"ok\":false,\"output\":\"role librarian does not grant conversation\"}"
+            ),
+            "the hub's own answer, with the status it answered with"
+        );
+
+        // What the daemon asked the hub for: the contract's tool, on the
+        // peer's CID, with the speaker and the words in its arguments.
+        let seen = stub.join().expect("the stub read every request");
+        assert_eq!(seen.len(), 3);
+        for request in &seen {
+            assert!(request.starts_with("POST /tell HTTP/1.1"), "{request}");
+            assert!(
+                request.contains(r#""name":"conversation""#),
+                "the contract's tool name: {request}"
+            );
+            assert!(request.contains(r#""cid":101"#), "{request}");
+            assert!(request.contains(r#""from_role":"builder""#), "{request}");
+            assert!(request.contains(r#""from_cid":100"#), "{request}");
+        }
+        assert!(seen[0].contains(r#""text":"the plans?""#), "{}", seen[0]);
+        assert!(seen[1].contains(r#""text":"again?""#), "{}", seen[1]);
+    }
+
+    #[test]
+    fn a_delivery_to_an_unreachable_admin_is_recorded_in_the_agents_own_words() {
+        // A port nothing is listening on: the connect is refused, and the row
+        // says the admin could not be reached rather than blaming the peer.
+        let free = TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let port = free.local_addr().expect("a bound address").port();
+        drop(free);
+        let admin = HubAdmin::parse(&format!("127.0.0.1:{port}")).expect("a loopback surface");
+        let (social, _notes) = lab();
+        let row = social
+            .say(&agent(100, "builder"), &agent(101, "librarian"), "hello?", Some(&admin))
+            .expect("the exchange is still recorded");
+        assert!(!row.delivered);
+        let reason = row.delivery.clone().expect("a reason");
+        assert!(reason.starts_with("hub admin unreachable: "), "{reason}");
+        assert!(
+            reason.contains(&port.to_string()),
+            "the reason names the surface it could not reach"
+        );
+    }
+
+    #[test]
+    fn a_post_the_board_could_not_serialize_is_still_a_frame() {
+        // The frame carries the post's own JSON, so the two never disagree —
+        // asserted here because the stream's shape depends on it.
+        let post = PostView {
+            id: "p1".to_string(),
+            agent_cid: 100,
+            role: "builder".to_string(),
+            subject: "a \"quoted\" subject\nwith a newline".to_string(),
+            body: "the body".to_string(),
+            task: None,
+            posted_by: DEFAULT_POSTED_BY.to_string(),
+            created_at: 7,
+        };
+        let encoded = serde_json::to_string(&post).expect("a serializable post");
+        assert_eq!(
+            encoded,
+            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7}"#
+        );
+        let frame = Event::Board {
+            kind: "post",
+            post: Some(encoded),
+            agent_cid: 100,
+            role: "builder".to_string(),
+            read_up_to: None,
+        }
+        .frame();
+        assert_eq!(frame.matches("data: ").count(), 1, "one data line: {frame}");
+    }
+}

@@ -709,6 +709,23 @@ impl Registry {
         self.list().iter().find_map(|run| run.live_agent(cid))
     }
 
+    /// Every agent the node has connected right now, ordered by guest CID.
+    ///
+    /// The same reading as [`Registry::connected_agent`], taken over every run:
+    /// a VM row that is running under a run that is running. The plaza's
+    /// social layer is drawn for these agents — the floor's stations, the
+    /// board's unread counts — so it asks the register the one question the
+    /// claim asks, rather than deciding liveness for itself.
+    pub fn connected_agents(&self) -> Vec<ConnectedAgent> {
+        let mut agents: Vec<ConnectedAgent> = self
+            .list()
+            .iter()
+            .flat_map(|run| run.live_agents())
+            .collect();
+        agents.sort_by_key(|agent| agent.cid);
+        agents
+    }
+
     /// Registers a new run in `starting`, which is where the schema says a run
     /// begins (`core.check_run`).
     /// Reserves the next run id (`r{seq}`), consuming it.
@@ -877,12 +894,32 @@ impl Run {
             .vms
             .iter()
             .find(|slot| slot.guest_cid == Some(cid) && slot.state == VmState::Running)
-            .map(|slot| ConnectedAgent {
-                cid,
-                role: slot.role.clone(),
-                run: self.id.clone(),
-                vm: slot.id,
-            })
+            .map(|slot| self.agent_row(slot, cid))
+    }
+
+    /// Every agent this run has connected right now: the same reading as
+    /// [`Run::live_agent`], taken over every VM row.
+    fn live_agents(&self) -> Vec<ConnectedAgent> {
+        let inner = self.lock();
+        if inner.state != RunState::Running {
+            return Vec::new();
+        }
+        inner
+            .vms
+            .iter()
+            .filter(|slot| slot.state == VmState::Running)
+            .filter_map(|slot| slot.guest_cid.map(|cid| self.agent_row(slot, cid)))
+            .collect()
+    }
+
+    /// The register's row for one running VM of this run.
+    fn agent_row(&self, slot: &VmSlot, cid: u64) -> ConnectedAgent {
+        ConnectedAgent {
+            cid,
+            role: slot.role.clone(),
+            run: self.id.clone(),
+            vm: slot.id,
+        }
     }
 
     /// Sends `data` to one of the run's VMs (`vm` is the VM's index).

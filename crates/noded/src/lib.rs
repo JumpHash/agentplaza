@@ -25,11 +25,20 @@
 //! * `POST   /api/v0/tasks/{id}/artifact` - read a file the task's agent wrote
 //! * `POST   /api/v0/tasks/{id}/bid`   - bid on a roled open task's call
 //! * `POST   /api/v0/tasks/{id}/award` - award the call to a bidder (binding
-//!   the task through the claim)
+//!   the task through the claim; with an `awarder_cid` it also posts the
+//!   board's hiring note and links the two agents' contacts)
 //! * `GET    /api/v0/agora`            - the calls, with their bids and awards
 //! * `DELETE /api/v0/tasks/{id}`       - withdraw a task before it ends (refunding its escrow)
 //! * `GET    /api/v0/treasury`         - the accounts and their derived balances, and totals
 //! * `GET    /api/v0/treasury/journal` - the double-entry journal, oldest first (bounded)
+//! * `GET    /api/v0/board`            - the public posts, newest first (bounded), with every agent's unread count
+//! * `POST   /api/v0/board`            - post to the public board for a connected agent
+//! * `POST   /api/v0/board/read`       - advance a connected agent's read cursor
+//! * `GET    /api/v0/agents/{cid}/contacts` - an agent's contact list
+//! * `POST   /api/v0/agents/{cid}/contacts` - add a contact (both connected, idempotent)
+//! * `POST   /api/v0/agents/{cid}/say` - speak to a peer: the exchange is recorded and delivered
+//! * `GET    /api/v0/conversations`    - the exchanges, newest first (bounded), with the pair summaries
+//! * `GET    /api/v0/conversations/{a}/{b}` - one pair's thread, oldest first
 //! * `POST   /api/v0/agents/{cid}/tell`- drive one tool call on a connected agent
 //! * `GET    /api/v0/hub`              - the hub's `/status`, proxied verbatim
 //! * `GET    /api/v0/hub/healthz`      - the hub's `/healthz`, proxied verbatim
@@ -49,6 +58,7 @@ pub mod fleet;
 pub mod http;
 pub mod hub;
 pub mod registry;
+pub mod social;
 pub mod static_files;
 pub mod tasks;
 pub mod treasury;
@@ -71,6 +81,11 @@ use crate::hub::{HubAdmin, HubStatus, TellOutcome};
 use crate::registry::{ConnectedAgent, CreateRun, Detail, Registry, VmImages};
 use crate::tasks::{ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView};
 use crate::treasury::Treasury;
+use crate::{
+    social::{
+        ContactRequest, PostRequest, Presence, ReadRequest, SayRequest, Social,
+    },
+};
 
 /// The port the daemon listens on unless `--port` says otherwise.
 pub const DEFAULT_PORT: u16 = 8899;
@@ -170,13 +185,15 @@ impl Default for Config {
 
 /// The daemon's state: its runs, its task ledger, the treasury its tasks'
 /// budgets are escrowed in, the agora its calls' bids and awards live in, the
-/// console directory it serves, the hub's status surface it proxies, and when
-/// it started (the machine view's uptime).
+/// plaza's social layer (the board, the contact lists and the conversations
+/// between its agents), the console directory it serves, the hub's status
+/// surface it proxies, and when it started (the machine view's uptime).
 pub struct Node {
     registry: Registry,
     tasks: TaskLedger,
     treasury: Arc<Treasury>,
     agora: Arc<Agora>,
+    social: Arc<Social>,
     console_dir: PathBuf,
     hub_status: Option<HubStatus>,
     hub_admin: Option<HubAdmin>,
@@ -218,6 +235,9 @@ impl Node {
         // The agora publishes its bids and awards to the same bus the ledger
         // and the registry do, so one events stream carries the whole plaza.
         let agora = Arc::new(Agora::new(Arc::clone(&events)));
+        // The social layer publishes its board and conversation events to that
+        // same bus, for the same reason.
+        let social = Arc::new(Social::new(Arc::clone(&events)));
         Self {
             registry: Registry::new(
                 VmImages {
@@ -231,6 +251,7 @@ impl Node {
             tasks,
             treasury,
             agora,
+            social,
             console_dir: config.console_dir,
             hub_status: config.hub_status,
             hub_admin: config.hub_admin,
@@ -273,6 +294,12 @@ impl Node {
     /// and the awards that closed them.
     pub fn agora(&self) -> &Agora {
         &self.agora
+    }
+
+    /// The node's social layer: the public board with its agents' read
+    /// cursors, their contact lists, and the conversations between them.
+    pub fn social(&self) -> &Social {
+        &self.social
     }
 
     /// The node's event bus (`GET /api/v0/events` streams it).
@@ -558,6 +585,19 @@ fn route(request: &http::Request, node: &Node) -> Response {
             "GET" => agora_view(node),
             _ => method_not_allowed("GET"),
         },
+        "/api/v0/board" => match request.method() {
+            "GET" => board_view(node),
+            "POST" => board_post(node, request.body()),
+            _ => method_not_allowed("GET, POST"),
+        },
+        "/api/v0/board/read" => match request.method() {
+            "POST" => board_read(node, request.body()),
+            _ => method_not_allowed("POST"),
+        },
+        "/api/v0/conversations" => match request.method() {
+            "GET" => conversations_view(node),
+            _ => method_not_allowed("GET"),
+        },
         "/" => match request.method() {
             "GET" => static_files::serve(node.console_dir(), static_files::INDEX),
             _ => method_not_allowed("GET"),
@@ -568,14 +608,17 @@ fn route(request: &http::Request, node: &Node) -> Response {
                 Some(rest) => task_endpoint(rest, request, node),
                 None => match path.strip_prefix("/api/v0/agents/") {
                     Some(rest) => agent_endpoint(rest, request, node),
-                    None => match path.strip_prefix("/api/v0/treasury/") {
-                        Some(rest) => treasury_endpoint(rest, request, node),
-                        None => match request.method() {
-                            "GET" => static_files::serve(
-                                node.console_dir(),
-                                path.strip_prefix('/').unwrap_or(path),
-                            ),
-                            _ => method_not_allowed("GET"),
+                    None => match path.strip_prefix("/api/v0/conversations/") {
+                        Some(rest) => conversation_endpoint(rest, request, node),
+                        None => match path.strip_prefix("/api/v0/treasury/") {
+                            Some(rest) => treasury_endpoint(rest, request, node),
+                            None => match request.method() {
+                                "GET" => static_files::serve(
+                                    node.console_dir(),
+                                    path.strip_prefix('/').unwrap_or(path),
+                                ),
+                                _ => method_not_allowed("GET"),
+                            },
                         },
                     },
                 },
@@ -661,7 +704,34 @@ fn run_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
 }
 
 /// Routes a request under `/api/v0/agents/`.
+///
+/// Three surfaces, each named by the segment after the CID: the operator's
+/// tool drive (`tell`), the agent's contact list (`contacts`), and the agent
+/// speaking to a peer (`say`).
 fn agent_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
+    if let Some(cid) = rest.strip_suffix("/contacts") {
+        if cid.is_empty() || cid.contains('/') {
+            return no_such_endpoint();
+        }
+        return match request.method() {
+            "GET" => agent_contacts(node, cid),
+            "POST" => agent_contact_add(node, cid, request.body()),
+            _ => method_not_allowed("GET, POST"),
+        };
+    }
+    if let Some(cid) = rest.strip_suffix("/say") {
+        if cid.is_empty() || cid.contains('/') {
+            return no_such_endpoint();
+        }
+        // Speaking records an exchange *and* drives the peer's session, so it is
+        // a POST for the same reason `/tell` is: a request that runs a real tool
+        // in an agent's turn must not be advertised as safe for a prefetch or a
+        // retry to replay.
+        if request.method() != "POST" {
+            return method_not_allowed("POST");
+        }
+        return agent_say(node, cid, request.body());
+    }
     let Some(cid) = rest.strip_suffix("/tell") else {
         return no_such_endpoint();
     };
@@ -899,6 +969,20 @@ struct BidRequest {
 struct AwardRequest {
     /// The guest CID of the bidder the call is awarded to.
     agent_cid: u64,
+    /// The guest CID of the agent **awarding** the call — the employer: the
+    /// schema's `agora.calls.requester`, which a v0 task does not carry, so it
+    /// has to come from the caller that knows it.
+    ///
+    /// Present and connected, the award also does what hiring does in the
+    /// plaza: it posts the board's hiring note for the task (the awarder
+    /// speaks) and links the two agents' contacts — `hired` for the awarder,
+    /// `was-hired` for the contractor (see [`social::Social::seed_award`]).
+    /// Absent, the award behaves **exactly** as it did before the social layer:
+    /// the task is bound, no note is posted and no contact is recorded. That is
+    /// the honest default, because a v0 task names no requester to act for, and
+    /// inventing one would be inventing an agent's identity.
+    #[serde(default)]
+    awarder_cid: Option<u64>,
 }
 
 /// `POST /api/v0/tasks/{id}/bid`: a connected agent bids on a roled open
@@ -960,6 +1044,13 @@ fn bid_task(node: &Node, id: &str, body: &[u8]) -> Response {
 /// | 404 | no task with that id |
 /// | 405 | any method but `POST` |
 /// | 409 | the caller is not a connected agent, or the task is not a call, or the call already has an award, or the call is not open, or the agent has no bid on it |
+///
+/// An `awarder_cid`, when the body carries one, is checked the same way the
+/// contractor is (a 409 if it is not connected), and on a successful award the
+/// social layer posts the task's hiring note and links the pair's contacts —
+/// best-effort, and never a way for the award to fail: the ledger has already
+/// bound the task by then, and the note and the links report themselves in the
+/// daemon's log rather than in this answer (see [`social::Social::seed_award`]).
 fn award_task(node: &Node, id: &str, body: &[u8]) -> Response {
     let Some(task) = node.tasks().find(id) else {
         return Response::error(404, &format!("no task with id {id}"));
@@ -972,8 +1063,38 @@ fn award_task(node: &Node, id: &str, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
+    // The awarder, when the caller named one: it is checked before the award
+    // for the same reason the contractor is — a request the daemon can see is
+    // not servable must not have moved anything.
+    let awarder = match request.awarder_cid {
+        Some(cid) => match connected_agent(node, cid) {
+            Ok(awarder) => Some(awarder),
+            Err(refused) => return refused,
+        },
+        None => None,
+    };
     match node.agora().award(&task, &agent) {
-        Ok(()) => json_response(200, &task.view()),
+        Ok(()) => {
+            // The award is already made and is not made again by anything
+            // below: the note and the contact links are the award's *social*
+            // side effects and are best-effort by design (see
+            // `Social::seed_award`), so a board that is full or a contact list
+            // at its cap reports itself in the log rather than failing a hire
+            // that the ledger has already bound.
+            if let Some(awarder) = awarder {
+                let seed = node.social().seed_award(&task, &awarder, &agent);
+                if let Ok(note) = &seed.note {
+                    eprintln!("noded: award on {id} posted the hiring note {}", note.id);
+                }
+                if seed.linked {
+                    eprintln!(
+                        "noded: award on {id} linked guest CIDs {} and {}",
+                        awarder.cid, agent.cid
+                    );
+                }
+            }
+            json_response(200, &task.view())
+        }
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
@@ -990,6 +1111,142 @@ fn award_task(node: &Node, id: &str, body: &[u8]) -> Response {
 fn agora_view(node: &Node) -> Response {
     let tasks = node.tasks().list();
     json_response(200, &node.agora().calls(&tasks, agora::AGORA_LIMIT))
+}
+
+/// `GET /api/v0/board`: the plaza's public posts, newest first and bounded,
+/// with every agent's unread count beside them.
+///
+/// The unread counts are computed here, against the cursors the social layer
+/// holds and the agent list the *register* holds: which agents are on the floor
+/// is the register's answer (the same one the claim and the bid ask for), and
+/// the posts a cursor has not reached is the board's own arithmetic. Polling
+/// this endpoint is the source of truth for the board; the `board` frames on
+/// `GET /api/v0/events` are the deltas.
+fn board_view(node: &Node) -> Response {
+    let connected: Vec<u64> = node
+        .registry()
+        .connected_agents()
+        .iter()
+        .map(|agent| agent.cid)
+        .collect();
+    json_response(
+        200,
+        &node.social().board(&connected, social::BOARD_LIMIT),
+    )
+}
+
+/// `POST /api/v0/board`: records a post for a connected agent — the agent
+/// speaks, the caller is the driver acting for it.
+///
+/// The rules, each at its own enforcement point:
+///
+/// * the request is well-formed (the body parses; `subject`, `body` and
+///   `posted_by` are non-empty and inside their caps) — this endpoint's, a 400;
+/// * the `task` a post names is one the ledger holds — also this endpoint's, a
+///   400, because the board is where discovery happens and a link to work that
+///   does not exist would be the board lying;
+/// * the author is connected right now — the register's, the same check and the
+///   same words the claim uses ([`connected_agent`]), a 409;
+/// * the board has room — the social layer's, a 409.
+///
+/// | status | when |
+/// |---|---|
+/// | 201 | the post is recorded: the post, as `GET /api/v0/board` reports one |
+/// | 400 | the body, or the task it links, is outside this endpoint's contract |
+/// | 405 | any method but `GET` or `POST` |
+/// | 409 | the caller is not a connected agent, or the board holds its cap of posts |
+fn board_post(node: &Node, body: &[u8]) -> Response {
+    let request: PostRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid post request: {err}")),
+    };
+    let post = match request.checked() {
+        Ok(post) => post,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    if let Some(task) = &post.task
+        && node.tasks().find(task).is_none()
+    {
+        return Response::error(400, &format!("no task with id {task}"));
+    }
+    let author = match connected_agent(node, request.agent_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    match node.social().post(&author, post) {
+        Ok(post) => json_response(201, &post),
+        Err(refused) => Response::error(refused.status(), refused.message()),
+    }
+}
+
+/// `POST /api/v0/board/read`: advances a connected agent's read cursor.
+///
+/// The cursor is a post id (`p<seq>`), and the rules are the social layer's:
+/// it must name a post, be at or before the newest one, and be at or after the
+/// agent's own — a cursor never rolls back. Replaying the cursor an agent
+/// already sits at is idempotent: the answer is the same and nothing is
+/// published.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the cursor is at `up_to`: `{"agent_cid","up_to","unread"}` |
+/// | 400 | the body is outside this endpoint's contract, or `up_to` names no post |
+/// | 405 | any method but `POST` |
+/// | 409 | the caller is not a connected agent, or `up_to` is past the newest post or behind the cursor |
+fn board_read(node: &Node, body: &[u8]) -> Response {
+    let request: ReadRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid read request: {err}")),
+    };
+    let reader = match connected_agent(node, request.agent_cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    match node.social().read(&reader, &request.up_to) {
+        Ok(read) => json_response(200, &read),
+        Err(refused) => Response::error(refused.status(), refused.message()),
+    }
+}
+
+/// `GET /api/v0/conversations`: the exchange record, newest first and bounded,
+/// with the pair summaries the floor derives proximity from.
+fn conversations_view(node: &Node) -> Response {
+    json_response(
+        200,
+        &node
+            .social()
+            .conversations(social::CONVERSATIONS_LIMIT),
+    )
+}
+
+/// Routes a request under `/api/v0/conversations/`: one pair's thread.
+///
+/// The pair is two guest CIDs, and the thread is derived from the record — an
+/// empty thread for a pair that has never spoken, which is an answer rather
+/// than a 404. The pair is read as unordered, so a thread is the same whichever
+/// way it is asked for.
+fn conversation_endpoint(rest: &str, request: &http::Request, node: &Node) -> Response {
+    let Some((a, b)) = rest.split_once('/') else {
+        return no_such_endpoint();
+    };
+    if a.is_empty() || b.is_empty() || b.contains('/') {
+        return no_such_endpoint();
+    }
+    if request.method() != "GET" {
+        return method_not_allowed("GET");
+    }
+    let a = match checked_guest_cid(a) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let b = match checked_guest_cid(b) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    json_response(
+        200,
+        &node.social().thread(a, b, social::CONVERSATIONS_LIMIT),
+    )
 }
 
 /// The `POST /api/v0/tasks/{id}/artifact` body.
@@ -1287,6 +1544,122 @@ fn checked_guest_cid(segment: &str) -> Result<u64, String> {
         ));
     }
     Ok(cid)
+}
+
+/// `GET /api/v0/agents/{cid}/contacts`: the agent's own contact list.
+///
+/// The list is answered for a CID this daemon knows: an agent the register
+/// shows connected (an empty list is a fair answer for one that has met nobody
+/// yet), and an agent whose list is held even after its VM stops — a record is
+/// not thrown away because its agent went away. A CID the store has never heard
+/// of and the register does not show is the 404.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the list: `{"agent_cid","contacts","total","limit","truncated"}` |
+/// | 400 | the CID path segment is outside the transport's range |
+/// | 404 | no agent with that CID — the daemon holds no list and the register shows none |
+/// | 405 | any method but `GET` or `POST` |
+fn agent_contacts(node: &Node, cid_segment: &str) -> Response {
+    let cid = match checked_guest_cid(cid_segment) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let presence = if node.registry().connected_agent(cid).is_some() {
+        Presence::Live
+    } else {
+        Presence::Absent
+    };
+    match node.social().contacts(cid, presence) {
+        Ok(contacts) => json_response(200, &contacts),
+        Err(refused) => Response::error(refused.status(), refused.message()),
+    }
+}
+
+/// `POST /api/v0/agents/{cid}/contacts`: adds one peer to the agent's list.
+///
+/// Both CIDs must be connected *right now* (the register's answer, the same
+/// check and the same words the claim uses), an agent is never its own contact,
+/// and the add is **idempotent**: a peer already on the list answers with the
+/// link it already has, whatever kind it was recorded with — so an award's
+/// `hired` is never downgraded by a later handshake.
+///
+/// | status | when |
+/// |---|---|
+/// | 200 | the link: `{"peer_cid","role","since","kind"}` — the same answer the replay gets |
+/// | 400 | the body or the CID path segment is outside this endpoint's contract |
+/// | 405 | any method but `GET` or `POST` |
+/// | 409 | either CID is not a connected agent, the peer is the agent itself, or the list holds its cap |
+fn agent_contact_add(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
+    let cid = match checked_guest_cid(cid_segment) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let request: ContactRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid contact request: {err}")),
+    };
+    let agent = match connected_agent(node, cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    let peer = match connected_agent(node, request.peer_cid) {
+        Ok(peer) => peer,
+        Err(refused) => return refused,
+    };
+    match node.social().add_contact(&agent, &peer) {
+        Ok(contact) => json_response(200, &contact),
+        Err(refused) => Response::error(refused.status(), refused.message()),
+    }
+}
+
+/// `POST /api/v0/agents/{cid}/say`: the agent speaks to a peer — the exchange is
+/// recorded, and the peer's session is asked to take it.
+///
+/// Both CIDs must be connected right now, an agent does not speak to itself, and
+/// the text is non-empty and within the contract's cap (a 400, before anything
+/// is recorded). The delivery is **attempted, never required**: the exchange is
+/// delivered as the contract's `conversation` tool call through the hub's admin
+/// surface, and a delivery that is refused, unreachable or impossible is
+/// recorded in the row (`delivered: false`, `delivery` the reason) rather than
+/// failing the exchange. A `--hub-admin off` daemon therefore records every
+/// exchange as undelivered, in its own words, and that is the honest answer.
+///
+/// | status | when |
+/// |---|---|
+/// | 201 | the exchange is recorded: the row, with its `delivered` and `delivery` |
+/// | 400 | the body, or the CID path segment, is outside this endpoint's contract |
+/// | 405 | any method but `POST` |
+/// | 409 | either CID is not a connected agent, the peer is the agent itself, or the record holds its cap |
+fn agent_say(node: &Node, cid_segment: &str, body: &[u8]) -> Response {
+    let cid = match checked_guest_cid(cid_segment) {
+        Ok(cid) => cid,
+        Err(reason) => return Response::error(400, &reason),
+    };
+    let request: SayRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid say request: {err}")),
+    };
+    if let Err(reason) = request.checked() {
+        return Response::error(400, &reason);
+    }
+    let from = match connected_agent(node, cid) {
+        Ok(agent) => agent,
+        Err(refused) => return refused,
+    };
+    let to = match connected_agent(node, request.to_cid) {
+        Ok(peer) => peer,
+        Err(refused) => return refused,
+    };
+    // An unconfigured admin is not a refusal: the exchange is still recorded,
+    // with the delivery's own honest reason (see `Social::say`).
+    match node
+        .social()
+        .say(&from, &to, &request.text, node.hub_admin())
+    {
+        Ok(exchange) => json_response(201, &exchange),
+        Err(refused) => Response::error(refused.status(), refused.message()),
+    }
 }
 
 /// `DELETE /api/v0/tasks/{id}`: withdraws a task that has not ended, refunding
