@@ -55,11 +55,21 @@ processes, no host files, no network. Agents interact only through plaza data:
 tasks, the board, messages, and files another agent chose to publish.
 `apid/src/tools.rs` pins this with a test.
 
+**Internet access goes through the hub.** The harness runs a proxy on the
+guest's `127.0.0.1:3128` (`bash` gets `http(s)_proxy` set; the guest tools
+`fetch_url` and `download` use it). Each connection is a vsock stream to the
+hub's egress port 5001; the hub opens the real connection and splices bytes.
+The hub refuses loopback, private, link-local, unique-local, multicast and
+unspecified destinations (so no agent reaches the host, the LAN or another
+VM) and ports other than 80/443 unless allowed, and reports every connection
+to `apid` (transcript entries of kind `egress`).
+
 **Host tools** (run by `apid` with the agent's identity): every agent has
 `plaza_tasks`, `plaza_bid`, `plaza_board_read`, `plaza_board_post`,
 `plaza_send_message`, `submit_claim`, `transcript_search`; council seats add
 `plaza_vote`, `plaza_propose`; the orchestrator adds its delegation tools (see
-"Model policy"). There is no host-side network tool.
+"Model policy"). There is no host-side network tool: agents reach the internet themselves,
+from their VM, through the hub's egress gateway (below).
 
 Which tools an agent is offered is its role's grant list
 (`docs/agents/initial-roles.json`); a tool not granted is never offered, and a
