@@ -598,7 +598,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod route_tests {
     use super::*;
 
     fn agent(role: &str) -> Agent {
