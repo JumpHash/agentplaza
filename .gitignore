@@ -1,6 +1,19 @@
-.omp/
+# Rust build output (every workspace in this tree)
 target/
+
+# The web console's dependencies — its dist/ IS tracked deliberately: the node
+# daemon serves it, and the committed bundle is the deployed artifact.
+node_modules/
+
+# Harness / runtime scratch
+.omp/
 .claude/
 
 # Python bytecode from the acceptance runner
 __pycache__/
+*.pyc
+
+# Editors and OS noise
+.DS_Store
+*.swp
+*~
