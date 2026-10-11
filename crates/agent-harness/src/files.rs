@@ -44,11 +44,13 @@
 //!
 //! | cap | value | what it bounds |
 //! |-----|-------|----------------|
-//! | [`READ_DEFAULT_BYTES`] | 64 KiB | `read_file` without `max_bytes` |
+//! | [`READ_DEFAULT_LINES`] | 2000 lines | `read_file` without `limit` |
+//! | [`MAX_READ_LINE_CHARS`] | 2000 chars | one line `read_file` returns whole |
 //! | [`MAX_FILE_BYTES`] | 1 MiB | any file the tools will read or grow |
 //! | [`MAX_WRITE_BYTES`] | 256 KiB | one `write_file`/`append_file`/`edit_file` payload |
 //! | [`MAX_MESSAGE_BYTES`] | 2 KiB | one `conversation` message's `text` |
-//! | [`MAX_NEEDLE_BYTES`] | 4 KiB | a `search` pattern or `edit_file` needle |
+//! | [`MAX_NEEDLE_BYTES`] | 4 KiB | a `search` pattern or an edit's `old` |
+//! | [`MAX_MULTI_EDITS`] | 64 | edits in one `multi_edit` |
 //! | [`MAX_LIST_ENTRIES`] | 1024 | entries returned by `list` |
 //! | [`MAX_LIST_SCAN_ENTRIES`] | 65536 | entries `list` reads before stopping |
 //! | [`MAX_SEARCH_MATCHES`] | 256 | matches returned by `search` |
@@ -71,8 +73,15 @@ use crate::tools::ToolError;
 /// Where the guest's init mounts the writable volume.
 pub const WORKSPACE_ROOT: &str = "/workspace";
 
-/// The most `read_file` returns when it is not told how much: 64 KiB.
-pub const READ_DEFAULT_BYTES: u64 = 64 * 1024;
+/// The most lines `read_file` returns when it is not told how many: 2000.
+pub const READ_DEFAULT_LINES: usize = 2000;
+
+/// The longest line `read_file` returns whole, in characters. A longer line is
+/// cut to this many characters and ends in `…`.
+pub const MAX_READ_LINE_CHARS: usize = 2000;
+
+/// How many leading bytes of a file are searched for a NUL to call it binary.
+const BINARY_PROBE_BYTES: usize = 8 * 1024;
 
 /// The largest file any file tool will act on: 1 MiB.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -80,6 +89,9 @@ pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// The largest single `write_file`/`append_file` payload, and the largest
 /// `edit_file` replacement: 256 KiB.
 pub const MAX_WRITE_BYTES: u64 = 256 * 1024;
+
+/// The most edits one `multi_edit` applies.
+pub const MAX_MULTI_EDITS: usize = 64;
 
 /// The agent's conversation log, relative to the workspace root: the file
 /// [`conversation`] appends one line to for every message a peer sends this
@@ -92,7 +104,7 @@ pub const MESSAGES_LOG: &str = "messages.log";
 /// have stopped at the door.
 pub const MAX_MESSAGE_BYTES: usize = 2048;
 
-/// The largest `search` pattern, or `edit_file` needle: 4 KiB.
+/// The largest `search` pattern, or edit `old` text: 4 KiB.
 ///
 /// A needle is searched for over every byte of every file the tools will act
 /// on, so an unbounded one would let a caller ask for quadratic work; 4 KiB is
@@ -314,6 +326,17 @@ fn byte_arg(args: &Value, key: &str, cap: u64) -> Result<Option<u64>, ToolError>
     }
 }
 
+/// An optional whole-number count of lines under `key`, `default` when absent.
+fn line_arg(args: &Value, key: &str, default: usize) -> Result<usize, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| invalid(format!("{key:?} must be a whole number of lines"))),
+    }
+}
+
 fn invalid(reason: impl Into<String>) -> ToolError {
     ToolError::InvalidInput {
         reason: reason.into(),
@@ -369,8 +392,8 @@ fn io_tool_error(err: io::Error, what: impl fmt::Display) -> ToolError {
 
 /// Reads a whole file as text, bounded by [`MAX_FILE_BYTES`].
 ///
-/// Shared by `edit_file`, which has to hold the file it rewrites: a file over
-/// the cap is refused rather than edited in part.
+/// Shared by `edit_file` and `multi_edit`, which have to hold the file they
+/// rewrite: a file over the cap is refused rather than edited in part.
 fn read_text(path: &Path, label: &str) -> Result<String, ToolError> {
     let file =
         fs::File::open(path).map_err(|err| io_tool_error(err, format!("cannot read {label}")))?;
@@ -436,35 +459,54 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-/// `read_file`: the text of one file inside the workspace.
+/// One line as `cat -n` numbers it: the number right-aligned in six columns, a
+/// tab, the line, and a newline. A line over [`MAX_READ_LINE_CHARS`] characters
+/// is cut to that many and ends in `…`.
+fn numbered_line(number: usize, line: &str) -> String {
+    let body = if line.chars().count() > MAX_READ_LINE_CHARS {
+        let cut: String = line.chars().take(MAX_READ_LINE_CHARS).collect();
+        format!("{cut}…")
+    } else {
+        line.to_string()
+    };
+    format!("{number:>6}\t{body}\n")
+}
+
+/// `read_file`: the lines of one file inside the workspace, numbered as `cat -n`
+/// numbers them.
 ///
-/// Arguments: `path` (required, relative), `max_bytes` (optional, default
-/// [`READ_DEFAULT_BYTES`], at most [`MAX_FILE_BYTES`]), and the line window
-/// `offset` (the first line, from 1) and `limit` (how many lines). A line
-/// window reads up to [`MAX_FILE_BYTES`] unless `max_bytes` says otherwise.
+/// Arguments: `path` (required, relative); `offset` (optional, the 0-based first
+/// line, default 0); `limit` (optional, how many lines, default
+/// [`READ_DEFAULT_LINES`], at least 1); `max_bytes` (optional, how many bytes to
+/// read at most, default [`MAX_FILE_BYTES`]).
 ///
 /// Output: `{"path", "size", "bytes", "truncated", "content"}` — `size` is the
-/// file's size on disk, `content` the text returned (`bytes` bytes of it), and
-/// `truncated` is true when the cap, or lines past the window, ended it.
+/// file's size on disk, `bytes` the text read (before numbering), `content` the
+/// numbered lines returned. When lines remain past the window the content ends
+/// with `[showing lines 1-2000 of 5312; pass offset to read more]`; when the byte
+/// cap ended the read it says so the same way. `truncated` is true in either
+/// case, so a partial read never looks complete.
 ///
-/// A file that is not UTF-8 text is refused (`ok: false`, "is not UTF-8 text")
-/// rather than returned as mojibake: an agent reads text, and a mangled answer
-/// is worse than an honest error. A cap that lands inside a multi-byte
+/// A directory path returns what [`list`] returns for it. A binary file (a NUL
+/// byte in its first 8 KiB) returns `content` = `[binary file, N bytes]`. A file
+/// that is not UTF-8 text is refused (`invalid input`, "is not UTF-8 text")
+/// rather than returned as mojibake. A cap that lands inside a multi-byte
 /// character is not a refusal — the character the cap cut is dropped and
-/// `truncated` says so, which is what keeps a whole-file read of a valid file
-/// honest.
+/// `truncated` says so.
 pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
     let raw = string_arg(args, "path")?;
-    let window = line_window(args)?;
-    let default_cap = if window.is_some() { MAX_FILE_BYTES } else { READ_DEFAULT_BYTES };
-    let cap = byte_arg(args, "max_bytes", MAX_FILE_BYTES)?.unwrap_or(default_cap);
+    let offset = line_arg(args, "offset", 0)?;
+    let limit = line_arg(args, "limit", READ_DEFAULT_LINES)?;
+    if limit == 0 {
+        return Err(invalid("\"limit\" must be at least 1 line"));
+    }
+    let cap = byte_arg(args, "max_bytes", MAX_FILE_BYTES)?.unwrap_or(MAX_FILE_BYTES);
     let (path, label) = workspace.resolve(&raw)?;
     let metadata =
         fs::metadata(&path).map_err(|err| io_tool_error(err, format!("cannot read {label}")))?;
     if metadata.is_dir() {
-        return Err(invalid(format!(
-            "{label} is a directory; read_file reads one file"
-        )));
+        // A directory has no lines to read; its entries are what `list` reports.
+        return list(workspace, &json!({ "path": raw }));
     }
 
     let file =
@@ -473,11 +515,21 @@ pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
     file.take(cap + 1)
         .read_to_end(&mut bytes)
         .map_err(|err| io_tool_error(err, format!("cannot read {label}")))?;
-    let truncated = bytes.len() as u64 > cap;
-    if truncated {
+    let byte_cut = bytes.len() as u64 > cap;
+    if byte_cut {
         // The cap is the window; the byte after it is only ever read to learn
         // that the file goes on.
         bytes.truncate(cap as usize);
+    }
+    if bytes.iter().take(BINARY_PROBE_BYTES).any(|byte| *byte == 0) {
+        return Ok(json!({
+            "path": label,
+            "size": metadata.len(),
+            "bytes": 0,
+            "truncated": false,
+            "content": format!("[binary file, {} bytes]", metadata.len()),
+        })
+        .to_string());
     }
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
@@ -485,7 +537,7 @@ pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
         // file's own bytes and the file is valid, so keep them. (`from_utf8`
         // reports that case as an error with no invalid sequence, which is how
         // it is told apart from a file that really is not text.)
-        Err(err) if truncated && err.utf8_error().error_len().is_none() => {
+        Err(err) if byte_cut && err.utf8_error().error_len().is_none() => {
             let valid = err.utf8_error().valid_up_to();
             let bytes = err.into_bytes();
             // The prefix is valid by construction, so this is lossless.
@@ -499,16 +551,34 @@ pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
         }
     };
 
-    let (text, lines_left) = match window {
-        Some((first, limit)) => slice_lines(&text, first, limit),
-        None => (text, false),
-    };
+    let total = text.split_inclusive('\n').count();
+    let mut content = String::new();
+    for (index, line) in text.split_inclusive('\n').enumerate().skip(offset).take(limit) {
+        content.push_str(&numbered_line(index + 1, line.strip_suffix('\n').unwrap_or(line)));
+    }
+    let last = offset.saturating_add(limit).min(total);
+    let lines_cut = last < total;
+    if lines_cut {
+        content.push_str(&format!(
+            "[showing lines {}-{last} of {total}; pass offset to read more]\n",
+            offset + 1
+        ));
+    } else if offset >= total && total > 0 {
+        content.push_str(&format!(
+            "[offset {offset} is past the end; the file has {total} lines]\n"
+        ));
+    }
+    if byte_cut {
+        content.push_str(&format!(
+            "[the file is over the {cap}-byte read cap; the rest is not shown]\n"
+        ));
+    }
     Ok(json!({
         "path": label,
         "size": metadata.len(),
         "bytes": text.len(),
-        "truncated": truncated || lines_left,
-        "content": text,
+        "truncated": byte_cut || lines_cut,
+        "content": content,
     })
     .to_string())
 }
@@ -574,38 +644,6 @@ pub fn download(workspace: &Workspace, args: &Value) -> Result<String, ToolError
         "created": created,
     })
     .to_string())
-}
-
-/// The optional line window of `read_file`, as the index of the first line and
-/// how many lines: `offset` counts from 1, `limit` is a count.
-fn line_window(args: &Value) -> Result<Option<(usize, Option<usize>)>, ToolError> {
-    if args.get("offset").is_none() && args.get("limit").is_none() {
-        return Ok(None);
-    }
-    let offset = match args.get("offset") {
-        None | Some(Value::Null) => 1,
-        Some(value) => value
-            .as_u64()
-            .filter(|line| *line >= 1)
-            .ok_or_else(|| invalid("\"offset\" must be a line number from 1"))?,
-    };
-    let limit = match args.get("limit") {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(value.as_u64().ok_or_else(|| invalid("\"limit\" must be a number of lines"))?),
-    };
-    let to_usize = |n: u64| usize::try_from(n).unwrap_or(usize::MAX);
-    Ok(Some((to_usize(offset - 1), limit.map(to_usize))))
-}
-
-/// The lines of `text` from index `first`, at most `limit` of them, and whether
-/// lines remain after them.
-fn slice_lines(text: &str, first: usize, limit: Option<usize>) -> (String, bool) {
-    let mut lines = text.split_inclusive('\n').skip(first);
-    let picked: String = match limit {
-        Some(count) => lines.by_ref().take(count).collect(),
-        None => lines.by_ref().collect(),
-    };
-    (picked, lines.next().is_some())
 }
 
 /// `write_file`: creates or replaces one file inside the workspace.
@@ -868,65 +906,221 @@ fn append_bytes(
     Ok((path, label, size))
 }
 
-/// `edit_file`: one literal replacement, and only when it is unambiguous.
+/// One exact replacement, as `edit_file` and `multi_edit` apply it.
+struct Edit {
+    old: String,
+    new: String,
+    replace_all: bool,
+}
+
+/// A required text argument under `key`, or under `alias` when only the alias
+/// is given (`find` and `replace` are the names the older callers use).
+fn edit_text(args: &Value, key: &str, alias: &str) -> Result<String, ToolError> {
+    let key = if args.get(key).is_none() && args.get(alias).is_some() {
+        alias
+    } else {
+        key
+    };
+    string_arg(args, key)
+}
+
+/// The edit `args` describe: `old`, `new` and the optional `replace_all`
+/// (default false).
 ///
-/// Arguments: `path` (required, relative), `find` (required, a non-empty
-/// literal, at most [`MAX_NEEDLE_BYTES`]), `replace` (required, may be empty to
-/// delete).
-///
-/// Output: `{"path", "matches", "size"}` with `matches` always 1: the find text
-/// must appear **exactly once** in the file. Zero occurrences and more than one
-/// are both `ok: false` with the reason — a fuzzy or first-of-many replacement
-/// would be a guess about which occurrence the caller meant, and the tool
-/// never guesses. The rewrite is atomic, like `write_file`.
-pub fn edit_file(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
-    let raw = string_arg(args, "path")?;
-    let find = string_arg(args, "find")?;
-    let replace = string_arg(args, "replace")?;
-    if find.is_empty() {
-        return Err(invalid("\"find\" must not be empty"));
+/// Refused: an empty `old` (it would match everywhere), an `old` over
+/// [`MAX_NEEDLE_BYTES`], a `new` over [`MAX_WRITE_BYTES`], and an `old` equal to
+/// `new` (an edit that changes nothing is a mistake to report, not a no-op to
+/// accept).
+fn edit_spec(args: &Value) -> Result<Edit, ToolError> {
+    let old = edit_text(args, "old", "find")?;
+    let new = edit_text(args, "new", "replace")?;
+    let replace_all = match args.get("replace_all") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("\"replace_all\" must be true or false")),
+    };
+    if old.is_empty() {
+        return Err(invalid("\"old\" must not be empty"));
     }
-    if find.len() > MAX_NEEDLE_BYTES {
+    if old.len() > MAX_NEEDLE_BYTES {
         return Err(limit(format!(
-            "\"find\" is {} bytes, over the {MAX_NEEDLE_BYTES}-byte cap",
-            find.len()
+            "\"old\" is {} bytes, over the {MAX_NEEDLE_BYTES}-byte cap",
+            old.len()
         )));
     }
-    if replace.len() as u64 > MAX_WRITE_BYTES {
+    if new.len() as u64 > MAX_WRITE_BYTES {
         return Err(limit(format!(
-            "\"replace\" is {} bytes, over the {MAX_WRITE_BYTES}-byte cap",
-            replace.len()
+            "\"new\" is {} bytes, over the {MAX_WRITE_BYTES}-byte cap",
+            new.len()
         )));
     }
-    let (path, label) = workspace.resolve(&raw)?;
-    refuse_symlink_target(&path, &label)?;
-    let content = read_text(&path, &label)?;
-    let matches = content.matches(&find).count();
-    if matches == 0 {
-        return Err(not_found(format!(
-            "the text to replace does not appear in {label}"
-        )));
+    if old == new {
+        return Err(invalid("\"old\" and \"new\" are the same; the edit would change nothing"));
     }
-    if matches > 1 {
+    Ok(Edit {
+        old,
+        new,
+        replace_all,
+    })
+}
+
+/// The refusal for an `old` that does not occur, naming the closest line when
+/// there is one: the first line of `old`, trimmed, searched for by a trimmed
+/// `contains` over the file's lines.
+fn missing_message(content: &str, label: &str, old: &str) -> String {
+    let head = old.lines().next().unwrap_or("").trim();
+    let closest = if head.is_empty() {
+        None
+    } else {
+        content
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.trim().contains(head))
+    };
+    match closest {
+        Some((index, line)) => format!(
+            "the text to replace does not appear in {label}; closest line is {}: {:?}",
+            index + 1,
+            line.trim()
+        ),
+        None => format!("the text to replace does not appear in {label}"),
+    }
+}
+
+/// Applies `edit` to `content` under the rules every edit shares: `old` must
+/// occur, and exactly once unless `replace_all` says otherwise. Returns the
+/// updated text, how many replacements were made, and the byte offset of the
+/// first one (which the updated text shares with `content` up to that point).
+fn replace_exact(
+    content: &str,
+    label: &str,
+    edit: &Edit,
+) -> Result<(String, usize, usize), ToolError> {
+    let found = content.matches(&edit.old).count();
+    if found == 0 {
+        return Err(not_found(missing_message(content, label, &edit.old)));
+    }
+    if found > 1 && !edit.replace_all {
         return Err(invalid(format!(
-            "the text to replace appears {matches} times in {label}; edit_file needs exactly one match"
+            "the text to replace appears {found} times in {label}; add surrounding context to make it unique, or set \"replace_all\" to replace all {found}"
         )));
     }
-    let updated = content.replacen(&find, &replace, 1);
+    let first = content.find(&edit.old).unwrap_or(0);
+    let updated = if edit.replace_all {
+        content.replace(&edit.old, &edit.new)
+    } else {
+        content.replacen(&edit.old, &edit.new, 1)
+    };
     if updated.len() as u64 > MAX_FILE_BYTES {
         return Err(limit(format!(
             "the edit would make {label} {} bytes, over the {MAX_FILE_BYTES}-byte cap",
             updated.len()
         )));
     }
+    let replacements = if edit.replace_all { found } else { 1 };
+    Ok((updated, replacements, first))
+}
+
+/// The three numbered lines around a change at byte offset `at`: the line it
+/// starts on, and a line either side where the file has one.
+fn snippet(updated: &str, at: usize) -> String {
+    let changed = updated[..at].matches('\n').count();
+    updated
+        .lines()
+        .enumerate()
+        .skip(changed.saturating_sub(1))
+        .take(3)
+        .map(|(index, line)| numbered_line(index + 1, line))
+        .collect()
+}
+
+/// `edit_file`: one exact replacement, and only when it is unambiguous.
+///
+/// Arguments: `path` (required, relative), `old` (required, a non-empty literal,
+/// at most [`MAX_NEEDLE_BYTES`]), `new` (required, may be empty to delete, at most
+/// [`MAX_WRITE_BYTES`]), and `replace_all` (optional, default false). `find` and
+/// `replace` are accepted as the names of `old` and `new`.
+///
+/// `old` must occur. Zero occurrences is `not_found`, and the message names the
+/// closest line when one contains the first line of `old`. More than one, without
+/// `replace_all`, is `invalid input` with the count, telling the caller to add
+/// context or to set `replace_all`. `old` equal to `new` is refused.
+///
+/// Output: `{"path", "replacements", "size", "snippet"}` — `replacements` is the
+/// number made, and `snippet` the three numbered lines around the first change
+/// (see [`numbered_line`]). The rewrite is atomic, like `write_file`.
+pub fn edit_file(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
+    let raw = string_arg(args, "path")?;
+    let edit = edit_spec(args)?;
+    let (path, label) = workspace.resolve(&raw)?;
+    refuse_symlink_target(&path, &label)?;
+    let content = read_text(&path, &label)?;
+    let (updated, replacements, first) = replace_exact(&content, &label, &edit)?;
     write_atomic(&path, updated.as_bytes())
         .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
     Ok(json!({
         "path": label,
-        "matches": matches,
+        "replacements": replacements,
         "size": updated.len(),
+        "snippet": snippet(&updated, first),
     })
     .to_string())
+}
+
+/// `multi_edit`: several exact-string edits to one file, applied in order, all or nothing.
+///
+/// Arguments: `path` (required, relative) and `edits` (required, an array of 1 to
+/// [`MAX_MULTI_EDITS`] objects, each taking `old`, `new` and `replace_all` as
+/// [`edit_file`] does). Each edit runs against the text the earlier ones left, under
+/// the same rules as `edit_file`.
+///
+/// Output: `{"path", "edits", "replacements", "size"}`. If any edit fails, nothing is
+/// written and the error names its index (`edit 1 refused, nothing written: ...`).
+/// The file is written once, atomically, only when every edit has applied.
+pub fn multi_edit(workspace: &Workspace, input: &Value) -> Result<String, String> {
+    apply_edits(workspace, input).map_err(|err| err.to_string())
+}
+
+/// The work of [`multi_edit`], with its refusals as the shared taxonomy.
+fn apply_edits(workspace: &Workspace, input: &Value) -> Result<String, ToolError> {
+    let raw = string_arg(input, "path")?;
+    let specs = edit_list(input)?;
+    let (path, label) = workspace.resolve(&raw)?;
+    refuse_symlink_target(&path, &label)?;
+    let mut content = read_text(&path, &label)?;
+    let mut replacements = 0;
+    for (index, spec) in specs.iter().enumerate() {
+        let (updated, count, _first) = edit_spec(spec)
+            .and_then(|edit| replace_exact(&content, &label, &edit))
+            .map_err(|err| invalid(format!("edit {index} refused, nothing written: {err}")))?;
+        replacements += count;
+        content = updated;
+    }
+    write_atomic(&path, content.as_bytes())
+        .map_err(|err| io_tool_error(err, format!("cannot write {label}")))?;
+    Ok(json!({
+        "path": label,
+        "edits": specs.len(),
+        "replacements": replacements,
+        "size": content.len(),
+    })
+    .to_string())
+}
+
+/// The `edits` array of a `multi_edit`: present, non-empty and within the cap.
+fn edit_list(input: &Value) -> Result<&[Value], ToolError> {
+    match input.get("edits") {
+        Some(Value::Array(items)) if items.is_empty() => {
+            Err(invalid("\"edits\" must hold at least one edit"))
+        }
+        Some(Value::Array(items)) if items.len() > MAX_MULTI_EDITS => Err(limit(format!(
+            "{} edits, over the {MAX_MULTI_EDITS}-edit cap",
+            items.len()
+        ))),
+        Some(Value::Array(items)) => Ok(items.as_slice()),
+        Some(_) => Err(invalid("\"edits\" must be an array")),
+        None => Err(invalid("\"edits\" is required")),
+    }
 }
 
 /// `list`: the entries of one directory inside the workspace.
@@ -1254,6 +1448,10 @@ mod tests {
         fs::write(path, bytes).expect("the scratch file");
     }
 
+    fn read_back(workspace: &Workspace, relative: &str) -> String {
+        fs::read_to_string(workspace.root().join(relative)).expect("the file")
+    }
+
     // --- path discipline: the refusals every tool shares -------------------
 
     #[test]
@@ -1397,21 +1595,80 @@ mod tests {
     }
 
     #[test]
+    fn read_file_numbers_its_lines_like_cat_n() {
+        let (workspace, _outside) = scratch("read-numbered");
+        write_inside(&workspace, "ab.txt", b"a\nb\n");
+        let result = served(&workspace, "read_file", json!({ "path": "ab.txt" }));
+        assert_eq!(result["content"], "     1\ta\n     2\tb\n");
+        assert_eq!(result["truncated"], false);
+        // Past the default window of 2000 lines it says what it showed.
+        let long: String = (1..=2500).map(|n| format!("{n}\n")).collect();
+        write_inside(&workspace, "many.txt", long.as_bytes());
+        let result = served(&workspace, "read_file", json!({ "path": "many.txt" }));
+        let content = result["content"].as_str().expect("content");
+        assert!(content.contains("  2000\t2000\n"), "{content:?}");
+        assert!(!content.contains("  2001\t"), "{content:?}");
+        assert!(
+            content.ends_with("[showing lines 1-2000 of 2500; pass offset to read more]\n"),
+            "{content:?}"
+        );
+        assert_eq!(result["truncated"], true);
+    }
+
+    #[test]
     fn read_file_serves_a_line_window_and_says_when_lines_remain() {
         let (workspace, _outside) = scratch("read-lines");
         write_inside(&workspace, "notes.txt", b"one\ntwo\nthree\nfour\n");
         let window = |args: Value| served(&workspace, "read_file", args);
-        let second = window(json!({ "path": "notes.txt", "offset": 2, "limit": 2 }));
-        assert_eq!(second["content"], "two\nthree\n");
+        // `offset` is the 0-based first line, and `limit` counts lines.
+        let second = window(json!({ "path": "notes.txt", "offset": 1, "limit": 2 }));
+        assert_eq!(
+            second["content"],
+            "     2\ttwo\n     3\tthree\n[showing lines 2-3 of 4; pass offset to read more]\n"
+        );
         assert_eq!(second["truncated"], true);
-        let tail = window(json!({ "path": "notes.txt", "offset": 3 }));
-        assert_eq!(tail["content"], "three\nfour\n");
+        let tail = window(json!({ "path": "notes.txt", "offset": 2 }));
+        assert_eq!(tail["content"], "     3\tthree\n     4\tfour\n");
         assert_eq!(tail["truncated"], false);
-        assert_eq!(window(json!({ "path": "notes.txt", "offset": 99 }))["content"], "");
+        let past = window(json!({ "path": "notes.txt", "offset": 99 }));
+        assert!(past["content"].as_str().expect("content").contains("past the end"), "{past}");
         assert!(matches!(
-            refused(&workspace, "read_file", json!({ "path": "notes.txt", "offset": 0 })),
+            refused(&workspace, "read_file", json!({ "path": "notes.txt", "limit": 0 })),
             ToolError::InvalidInput { .. }
         ));
+        assert!(matches!(
+            refused(&workspace, "read_file", json!({ "path": "notes.txt", "offset": -1 })),
+            ToolError::InvalidInput { .. }
+        ));
+    }
+
+    #[test]
+    fn read_file_cuts_a_line_over_2000_characters_and_marks_it() {
+        let (workspace, _outside) = scratch("read-long-line");
+        write_inside(
+            &workspace,
+            "long.txt",
+            format!("{}\nshort\n", "x".repeat(2500)).as_bytes(),
+        );
+        let result = served(&workspace, "read_file", json!({ "path": "long.txt" }));
+        let content = result["content"].as_str().expect("content");
+        let first = format!("     1\t{}…\n", "x".repeat(2000));
+        assert!(content.starts_with(&first), "{content:?}");
+        assert!(content.ends_with("     2\tshort\n"), "{content:?}");
+    }
+
+    #[test]
+    fn read_file_on_a_directory_returns_its_entries() {
+        let (workspace, _outside) = scratch("read-dir");
+        write_inside(&workspace, "a.txt", b"1");
+        let result = served(&workspace, "read_file", json!({ "path": "." }));
+        let names: Vec<&str> = result["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|entry| entry["name"].as_str().expect("a name"))
+            .collect();
+        assert_eq!(names, vec!["a.txt"]);
     }
 
     #[test]
@@ -1423,7 +1680,9 @@ mod tests {
             "read_file",
             json!({ "path": "big.txt", "max_bytes": 4 }),
         );
-        assert_eq!(result["content"], "0123");
+        let content = result["content"].as_str().expect("content");
+        assert!(content.starts_with("     1\t0123\n"), "{content:?}");
+        assert!(content.contains("read cap"), "{content:?}");
         assert_eq!(result["size"], 10);
         assert_eq!(result["bytes"], 4);
         assert_eq!(result["truncated"], true);
@@ -1456,10 +1715,14 @@ mod tests {
     }
 
     #[test]
-    fn read_file_refuses_binary_content_rather_than_mangling_it() {
+    fn read_file_reports_a_binary_file_by_its_size_not_its_bytes() {
         let (workspace, _outside) = scratch("read-binary");
         write_inside(&workspace, "blob.bin", &[0xff, 0xfe, 0x00, 0x01]);
-        let err = refused(&workspace, "read_file", json!({ "path": "blob.bin" }));
+        let result = served(&workspace, "read_file", json!({ "path": "blob.bin" }));
+        assert_eq!(result["content"], "[binary file, 4 bytes]");
+        // Bytes that are neither UTF-8 nor binary (no NUL) are still refused.
+        write_inside(&workspace, "latin.txt", &[0xff, 0xfe, b'a']);
+        let err = refused(&workspace, "read_file", json!({ "path": "latin.txt" }));
         assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
         assert!(err.to_string().contains("is not UTF-8 text"), "{err}");
     }
@@ -1501,7 +1764,7 @@ mod tests {
         assert_eq!(result["created"], false);
         assert_eq!(
             served(&workspace, "read_file", json!({ "path": "a/b.txt" }))["content"],
-            "two"
+            "     1\ttwo\n"
         );
 
         // The write left no temp file behind.
@@ -1628,10 +1891,11 @@ mod tests {
         let err = refused(
             &workspace,
             "edit_file",
-            json!({ "path": "code.txt", "find": "x = 1", "replace": "x = 2" }),
+            json!({ "path": "code.txt", "old": "x = 1", "new": "x = 2" }),
         );
         assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
         assert!(err.to_string().contains("appears 2 times"), "{err}");
+        assert!(err.to_string().contains("replace_all"), "{err}");
         let err = refused(
             &workspace,
             "edit_file",
@@ -1642,7 +1906,7 @@ mod tests {
         // The file is untouched by either refusal.
         assert_eq!(
             served(&workspace, "read_file", json!({ "path": "code.txt" }))["content"],
-            "x = 1\nx = 1\n"
+            "     1\tx = 1\n     2\tx = 1\n"
         );
         // An empty needle is refused: it would match everywhere.
         let err = refused(
@@ -1651,6 +1915,108 @@ mod tests {
             json!({ "path": "code.txt", "find": "", "replace": "x" }),
         );
         assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn edit_file_replaces_one_unambiguous_match_and_shows_a_snippet() {
+        let (workspace, _outside) = scratch("edit-ok");
+        write_inside(&workspace, "code.txt", b"one\ntwo\nthree\nfour\nfive\n");
+        let result = served(
+            &workspace,
+            "edit_file",
+            json!({ "path": "code.txt", "old": "three", "new": "THREE" }),
+        );
+        assert_eq!(result["replacements"], 1);
+        assert_eq!(result["snippet"], "     2\ttwo\n     3\tTHREE\n     4\tfour\n");
+        assert_eq!(read_back(&workspace, "code.txt"), "one\ntwo\nTHREE\nfour\nfive\n");
+    }
+
+    #[test]
+    fn edit_file_names_the_closest_line_when_the_text_is_missing() {
+        let (workspace, _outside) = scratch("edit-closest");
+        write_inside(&workspace, "code.txt", b"fn main() {\n    let total = 1;\n}\n");
+        let err = refused(
+            &workspace,
+            "edit_file",
+            json!({ "path": "code.txt", "old": "let total = 1;\n    return;", "new": "x" }),
+        );
+        assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
+        assert!(err.to_string().contains("closest line is 2"), "{err}");
+        assert!(err.to_string().contains("let total = 1;"), "{err}");
+    }
+
+    #[test]
+    fn edit_file_replace_all_replaces_every_match_and_refuses_a_no_op() {
+        let (workspace, _outside) = scratch("edit-all");
+        write_inside(&workspace, "a.txt", b"x\nx\nx\n");
+        let err = refused(
+            &workspace,
+            "edit_file",
+            json!({ "path": "a.txt", "old": "x", "new": "y" }),
+        );
+        assert!(err.to_string().contains("appears 3 times"), "{err}");
+        let result = served(
+            &workspace,
+            "edit_file",
+            json!({ "path": "a.txt", "old": "x", "new": "y", "replace_all": true }),
+        );
+        assert_eq!(result["replacements"], 3);
+        assert_eq!(read_back(&workspace, "a.txt"), "y\ny\ny\n");
+        // An edit that changes nothing is refused and writes nothing.
+        let err = refused(
+            &workspace,
+            "edit_file",
+            json!({ "path": "a.txt", "old": "y", "new": "y" }),
+        );
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+        assert_eq!(read_back(&workspace, "a.txt"), "y\ny\ny\n");
+    }
+
+    // --- multi_edit --------------------------------------------------------
+
+    #[test]
+    fn multi_edit_applies_in_order_and_writes_once() {
+        let (workspace, _outside) = scratch("multi-ok");
+        write_inside(&workspace, "a.txt", b"alpha\nbeta\n");
+        let out = multi_edit(
+            &workspace,
+            &json!({
+                "path": "a.txt",
+                "edits": [
+                    { "old": "alpha", "new": "gamma" },
+                    { "old": "gamma", "new": "delta", "replace_all": false },
+                    { "old": "beta", "new": "BETA" },
+                ],
+            }),
+        )
+        .expect("the edits apply");
+        let result: Value = serde_json::from_str(&out).expect("JSON");
+        assert_eq!(result["edits"], 3);
+        assert_eq!(result["replacements"], 3);
+        assert_eq!(read_back(&workspace, "a.txt"), "delta\nBETA\n");
+    }
+
+    #[test]
+    fn multi_edit_writes_nothing_when_any_edit_fails() {
+        let (workspace, _outside) = scratch("multi-fail");
+        write_inside(&workspace, "a.txt", b"alpha\nbeta\n");
+        let err = multi_edit(
+            &workspace,
+            &json!({
+                "path": "a.txt",
+                "edits": [
+                    { "old": "alpha", "new": "gamma" },
+                    { "old": "missing", "new": "x" },
+                ],
+            }),
+        )
+        .expect_err("edit 1 should be refused");
+        assert!(err.contains("edit 1"), "{err}");
+        assert_eq!(read_back(&workspace, "a.txt"), "alpha\nbeta\n");
+        // An empty edit list is refused before the file is touched.
+        let err = multi_edit(&workspace, &json!({ "path": "a.txt", "edits": [] }))
+            .expect_err("no edits");
+        assert!(err.contains("at least one edit"), "{err}");
     }
 
     // --- list --------------------------------------------------------------
@@ -1754,7 +2120,7 @@ mod tests {
                 3 => json!([next(), "x", null]),
                 4 => json!({ "path": next() as i64 }),
                 5 => json!({ "path": ["a", "b"], "content": { "k": 1 } }),
-                6 => json!({ "pattern": next().to_string(), "max_bytes": -1 }),
+                6 => json!({ "pattern": next().to_string(), "max_bytes": -1, "offset": next() }),
                 _ => json!({ "path": format!("f{index}"), "find": "", "replace": null }),
             };
             for name in names {
@@ -1762,9 +2128,4 @@ mod tests {
             }
         }
     }
-}
-
-/// `multi_edit`: several exact-string edits to one file, applied in order, all or nothing.
-pub fn multi_edit(_workspace: &Workspace, _input: &Value) -> Result<String, String> {
-    Err("multi_edit is not available yet".to_string())
 }
