@@ -23,7 +23,10 @@
 //! * **drive** — run the planned workflow ([`crate::workflow`]) through
 //!   the hub's `POST /tell`, one tool call at a time, and finish the task
 //!   `done` with its artifacts (or, for a read-only run, with the line the
-//!   script read out) — or `failed` with the reason.
+//!   script read out) — or `failed` with the reason. A **confirmed** finish is
+//!   also the talk step ([`crate::social`]): the agent that did the work says
+//!   so to the task's awarder, when the board names one, in one line composed
+//!   from the task's own facts.
 //! * **retry** — the agent could not be reached: leave the task claimed and
 //!   try again on later passes, up to [`MAX_ATTEMPTS`], then finish it
 //!   `failed` with the evidence.
@@ -479,13 +482,21 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                 // line its script read out, and that line is the note. Either
                 // way the note is what the run actually did.
                 let note = workflow::done_note(&report, calls);
-                match self.ledger.finish(&task.id, Outcome::Done, &note) {
+                // The talk step's `done` line names the run's first artifact, so
+                // the report is read for it before the finish consumes nothing
+                // of it — a run that left none (the read-only script) says so.
+                let artifact = report.artifacts().first().cloned();
+                let finished = self.ledger.finish(&task.id, Outcome::Done, &note);
+                match finished {
                     Ok(()) => {
                         tally.done += 1;
                         log.line(&format!(
                             "dispatchd: task {} (role {role}) -> agent cid {cid} finished done: {note}",
                             task.id
                         ));
+                        // The transition is durable: now the finisher tells its
+                        // awarder (the talk step, bounded and logged).
+                        self.announce(task, cid, Outcome::Done, artifact.as_deref(), &note);
                     }
                     Err(reason) => {
                         tally.failed += 1;
@@ -513,13 +524,15 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                     } else {
                         note
                     };
-                    match self.ledger.finish(&task.id, Outcome::Failed, &note) {
+                    let finished = self.ledger.finish(&task.id, Outcome::Failed, &note);
+                    match finished {
                         Ok(()) => {
                             tally.failed += 1;
                             log.line(&format!(
                                 "dispatchd: task {} (role {role}) -> agent cid {cid} finished failed: {note}",
                                 task.id
                             ));
+                            self.announce(task, cid, Outcome::Failed, None, &note);
                         }
                         Err(reason) => {
                             log.line(&format!(
@@ -530,6 +543,27 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
                     }
                 }
             }
+        }
+    }
+
+    /// The talk step: the agent that finished `task` says so to the task's
+    /// awarder, when the board names one ([`crate::social::SocialPass::talk`]).
+    ///
+    /// A dispatcher without the social surface says nothing: it holds no seam
+    /// to say it through, and it is exactly the claim-and-drive dispatcher it
+    /// was. With the surface, every failure inside the step is logged there and
+    /// swallowed — the claim loop does not see it, and never waits past the
+    /// step's own bounded calls.
+    fn announce(
+        &mut self,
+        task: &Task,
+        cid: u64,
+        outcome: Outcome,
+        artifact: Option<&str>,
+        note: &str,
+    ) {
+        if let Some(social) = &mut self.social {
+            social.talk(task, cid, outcome, artifact, note);
         }
     }
 
@@ -685,7 +719,7 @@ mod tests {
 
     use std::rc::Rc;
 
-    use crate::testing::{FakeAgent, FakeLedger, FakeOperator, Recording, agent, task};
+    use crate::testing::{FakeAgent, FakeLedger, FakeOperator, FakeSocial, Recording, agent, task};
     use crate::views::Tell;
 
     /// A dispatcher over the fakes, with its log kept for assertions.
@@ -1685,5 +1719,269 @@ mod tests {
         assert!(busy_agents(&HashMap::new(), &[task("t3", "done", Some("builder"))]).is_empty());
         // And an open task has no claimant to be busy.
         assert!(busy_agents(&HashMap::new(), &[task("t1", "open", Some("builder"))]).is_empty());
+    }
+
+    // ------------------------------------------------------------ the talk step
+
+    /// A dispatcher holding the plaza's social surface, so its confirmed
+    /// finishes also run the talk step. Generic over the ledger and operator so
+    /// a test that restarts the dispatcher shares the fakes through an `Rc`.
+    fn dispatcher_with_social<L: Ledger, O: Operator>(
+        ledger: L,
+        operator: O,
+        social: &Arc<FakeSocial>,
+    ) -> (Dispatcher<L, O>, Arc<Recording>) {
+        let log = Arc::new(Recording::default());
+        let dispatcher = Dispatcher::new(
+            ledger,
+            operator,
+            Arc::clone(&log) as Arc<dyn Logger + Send + Sync>,
+        )
+        .with_social(Arc::clone(social) as Arc<dyn Social + Send + Sync>);
+        (dispatcher, log)
+    }
+
+    /// A board carrying the award's hiring note for `task`, authored by `cid`.
+    fn hired(social: FakeSocial, cid: u64, task: &str) -> FakeSocial {
+        social.with_post(
+            cid,
+            "mayor",
+            &format!("hiring for {task}"),
+            "go",
+            Some(task),
+        )
+    }
+
+    /// The talk step, end to end: the builder the dispatcher drives to `done`
+    /// says the task's own facts to the author of the board's hiring note for
+    /// it — once, and never again on a later pass.
+    #[test]
+    fn a_task_driven_to_done_is_announced_to_its_awarder() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
+        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.done), (1, 1));
+        assert_eq!(
+            social.said(),
+            vec![(300, 320, "done: t1 — build-notes.txt".to_string())],
+            "the builder told the awarder the task's own artifact"
+        );
+        assert!(
+            log.text().contains(
+                "dispatchd: social: agent cid 300 said to its awarder cid 320 about task t1 \
+                 (done): done: t1 — build-notes.txt (the node's conversation row carries the \
+                 delivery)"
+            ),
+            "{}",
+            log.text()
+        );
+
+        // The task is terminal now: a later pass reads it as such, skips it, and
+        // never reaches a transition to announce. One say per task, and the
+        // ledger's own terminal row is what bounds a restarted dispatcher.
+        dispatcher.pass().expect("the pass runs");
+        assert_eq!(social.said().len(), 1, "one say per task");
+    }
+
+    /// A task the dispatcher drives to `failed` says the dispatcher's own
+    /// failure note — the same line the ledger recorded, not a paraphrase.
+    #[test]
+    fn a_task_driven_to_failure_is_announced_with_the_failure_note() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::default().with_agent(
+            300,
+            FakeAgent::failing(DriveError::Refused {
+                name: "write_file".to_string(),
+                output: "the disk is full".to_string(),
+            }),
+        );
+        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
+        let (mut dispatcher, _log) = dispatcher_with_social(ledger, operator, &social);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.done, report.failed), (0, 1));
+        assert_eq!(
+            social.said(),
+            vec![(
+                300,
+                320,
+                "failed: t1 — tool write_file refused: the disk is full".to_string()
+            )]
+        );
+        // The record and the word are the same note.
+        let finishes = dispatcher.ledger.finishes.borrow();
+        assert_eq!(finishes[0].2, "tool write_file refused: the disk is full");
+    }
+
+    /// A task finished `failed` after the retry bound is spent says the note it
+    /// was finished with, suffix and all.
+    #[test]
+    fn a_failure_after_the_retry_bound_says_the_whole_note() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::unreachable("cannot connect: refused");
+        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
+        let (mut dispatcher, _log) = dispatcher_with_social(ledger, operator, &social);
+
+        for _ in 0..MAX_ATTEMPTS {
+            dispatcher.pass().expect("the pass runs");
+        }
+        assert_eq!(
+            social.said(),
+            vec![(
+                300,
+                320,
+                "failed: t1 — tool write_file unavailable: cannot connect: refused \
+                 (after 3 attempt(s))"
+                    .to_string()
+            )]
+        );
+    }
+
+    /// A `say` the node refuses changes nothing the pass reports: the task was
+    /// finished, the word was attempted once, and the refusal is a log line —
+    /// never a claim loop that stopped.
+    #[test]
+    fn a_refused_say_does_not_affect_the_pass() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+        let social = Arc::new(
+            hired(FakeSocial::new(), 320, "t1")
+                .say_failing("the say answered 409: no live agent has guest CID 320"),
+        );
+        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.done, report.failed), (1, 1, 0));
+        assert_eq!(dispatcher.ledger.task("t1").state, "done");
+        assert!(social.said().is_empty(), "the node took nothing");
+        assert!(
+            log.text().contains(
+                "dispatchd: social: agent cid 300: the word to awarder cid 320 about task t1 was \
+                 refused: the say answered 409: no live agent has guest CID 320; moving on"
+            ),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// A board with no hiring note for the task: the finish is untouched and
+    /// nothing is said — the skip is logged once.
+    #[test]
+    fn a_finish_with_no_awarder_on_the_board_is_silent() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+        let social = Arc::new(FakeSocial::new());
+        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.done), (1, 1));
+        assert!(social.said().is_empty());
+        assert!(
+            log.text().contains(
+                "dispatchd: social: agent cid 300 finished task t1 (done) but the board names no \
+                 awarder for it; nothing said"
+            ),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// A dispatcher without the social surface says nothing: the claim-and-drive
+    /// dispatcher is exactly what it was, and not one social call is made.
+    #[test]
+    fn a_dispatcher_without_the_social_surface_says_nothing() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
+        let (mut dispatcher, log) = dispatcher(ledger, operator);
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.claimed, report.done), (1, 1));
+        assert!(social.said().is_empty());
+        assert_eq!(social.boards(), 0, "not even the awarder's board is read");
+        assert!(!log.text().contains("dispatchd: social:"));
+    }
+
+    /// A re-adoption speaks once, not twice. The first dispatcher claims the
+    /// task and is stopped mid-drive (its retry state is in memory and dies
+    /// with it); the second adopts the stranded claim, drives it to done, and
+    /// says the one word — and the passes after that read the task as terminal
+    /// and say nothing, because the ledger's own row is the durable dedup.
+    #[test]
+    fn a_re_adopted_claim_is_announced_once() {
+        let ledger = Rc::new(
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder"),
+        );
+        let operator = Rc::new(
+            FakeOperator::unreachable("cannot connect: refused")
+                .with_agent(300, FakeAgent::default()),
+        );
+        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
+
+        // The first dispatcher claims t1 and cannot reach the agent: the claim
+        // is left behind, nothing is said.
+        let (mut first, _log) =
+            dispatcher_with_social(Rc::clone(&ledger), Rc::clone(&operator), &social);
+        assert_eq!(first.pass().expect("the pass runs").deferred, 1);
+        assert_eq!(ledger.task("t1").state, "claimed");
+        assert!(social.said().is_empty(), "nothing was finished");
+
+        // The agent comes back; a second dispatcher adopts the stranded claim.
+        operator.recover();
+        let (mut second, _log) =
+            dispatcher_with_social(Rc::clone(&ledger), Rc::clone(&operator), &social);
+        let report = second.pass().expect("the pass runs");
+        assert_eq!(
+            (report.claimed, report.done),
+            (0, 1),
+            "adopted, not re-claimed"
+        );
+        assert_eq!(
+            social.said(),
+            vec![(300, 320, "done: t1 — build-notes.txt".to_string())]
+        );
+        assert!(ledger.claims.borrow().len() == 1, "the claim was made once");
+
+        // And the passes after it: the task is terminal, so no second word.
+        for _ in 0..2 {
+            second.pass().expect("the pass runs");
+        }
+        assert_eq!(social.said().len(), 1);
+    }
+
+    /// A finish the ledger refuses is not a transition: nothing is said about a
+    /// task that is not (yet) over.
+    #[test]
+    fn a_refused_finish_says_nothing() {
+        let ledger =
+            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
+        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+        let social = Arc::new(hired(FakeSocial::new(), 320, "t1"));
+        let (mut dispatcher, log) = dispatcher_with_social(ledger, operator, &social);
+        dispatcher.ledger.finish_refusal = Some("a task may not go from done to done".to_string());
+
+        let report = dispatcher.pass().expect("the pass runs");
+        assert_eq!((report.done, report.failed), (0, 1));
+        assert!(
+            social.said().is_empty(),
+            "a task the ledger did not finish has nothing to say"
+        );
+        // The pass's one board read is the social pass's own (this is pass 1);
+        // the refused finish asks for none.
+        assert_eq!(social.boards(), 1);
+        assert!(
+            log.text().contains("the ledger refused to finish it done"),
+            "{}",
+            log.text()
+        );
     }
 }

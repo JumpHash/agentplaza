@@ -33,7 +33,62 @@
 //!    link, so the board — where discovery happens — points back at the work.
 //! 4. **the award is noded's own** — when a task is awarded, the node posts the
 //!    hiring note and links the contacts both ways. The dispatcher does not
-//!    duplicate it, and this pass never touches a contact or a conversation.
+//!    duplicate it, and this pass never touches a contact (the talk step below
+//!    is the one thing here that speaks).
+//!
+//! # The talk step: the finisher tells the awarder
+//!
+//! The social pass makes work *discoverable*; the talk step says when it is
+//! done. When the dispatcher finishes a task it drove — the confirmed `done`
+//! and `failed` transitions in [`crate::dispatch`] — the agent that did the
+//! work **says so to the task's awarder**, when the board names one, through
+//! the same `say` the contract's `POST /api/v0/agents/{cid}/say` serves.
+//!
+//! **The awarder, from the board.** The node posts an award's hiring note
+//! itself (`noded`'s `Social::seed_award`): a post whose `subject` is exactly
+//! `hiring for <task>`, whose `task` link names that task, and whose
+//! `agent_cid` is the **awarder** — the employer the award's caller named. That
+//! post is the one source this step reads for "who hired this": it is already
+//! the plaza's record of the hire, and the board must be read anyway to reach
+//! it. [`awarder_of`] takes the newest such post. No awarder, no word: the step
+//! skips, logs once and makes no `say`. An awarder that is the finisher itself
+//! is skipped the same way — nothing says anything to itself.
+//!
+//! **The template.** One line, every word of it the task's own:
+//!
+//! ```text
+//! done:   <task> — <the run's first artifact, or "no artifact note">
+//! failed: <task> — <the dispatcher's own failure note>
+//! ```
+//!
+//! Nothing is invented. The `done` line names the first artifact the run's
+//! report carries — a read-only run wrote none, and the line says so rather
+//! than claiming one — and the `failed` line is the same note the task was
+//! finished with: the agent's own refusal, or the dispatcher's evidence after
+//! the retry bound. [`talk_line`] composes it and cuts it to the contract's
+//! 2 KiB `text` cap ([`MAX_SAY_TEXT`]), so the node never has to refuse it for
+//! length.
+//!
+//! **The dedup.** At most one `say` per task. [`SocialPass::talk`] remembers
+//! every task id it has spoken about and refuses a second word about the same
+//! one. Across a restart the durable dedup is the **ledger's own terminal
+//! state**: the word is emitted only as part of a transition the ledger
+//! confirmed, and the ledger refuses `done` → `done` — so a restarted
+//! dispatcher reads the task as terminal, skips it, and never reaches the
+//! transition again. The conversation record is deliberately *not* the source:
+//! the [`Social`] seam this crate holds carries no conversations accessor, and
+//! the node's own conversation view is a bounded, newest-first **window**
+//! (`truncated` is a field of it) — a window cannot prove the *absence* of an
+//! earlier word, while a terminal row can. The in-memory set is therefore the
+//! within-run guard, bounded to [`MAX_REMEMBERED`] ids; what it forgets, the
+//! ledger already holds.
+//!
+//! **The bound.** The talk step is not the pass: it makes at most **two**
+//! loopback requests per confirmed terminal transition — one `GET
+//! /api/v0/board` (to recover the awarder) and at most one `POST
+//! /api/v0/agents/{cid}/say` — both under the same [`crate::http::TIMEOUT`]
+//! every other call rides, and it never retries. A task reaches a terminal
+//! transition at most once, so the step runs at most once per task.
 //!
 //! # The dedup rule (stated, not implied)
 //!
@@ -74,12 +129,12 @@
 //! pass: a social call can never stop, delay past its own bounded timeout, or
 //! otherwise perturb the claim workflow.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use crate::dispatch::{Logger, Social};
 use crate::roles::{self, Manifest};
-use crate::views::{Agent, Board, NewPost, Task};
+use crate::views::{Agent, Board, NewPost, Outcome, Post, Task};
 
 /// How many dispatch passes go by between social passes. One social pass every
 /// [`SOCIAL_EVERY`]-th pass — the daemon's own loop, but slower. At the default
@@ -96,6 +151,22 @@ pub const DRIVER: &str = "dispatchd";
 /// `body` cap (4 KiB). A composed note is cut to it on a character boundary
 /// rather than sent to be refused.
 pub const MAX_BODY_BYTES: usize = 4096;
+
+/// The most the talk step's line may occupy, in bytes: the contract's `say`
+/// `text` cap (2 KiB). Like a note, a composed line is cut to it on a
+/// character boundary rather than sent to be refused.
+pub const MAX_SAY_TEXT: usize = 2048;
+
+/// The `subject` prefix the node gives an award's hiring note: the post whose
+/// subject is this plus a task's id, and which links that task, is the board's
+/// record of who hired whom.
+pub const HIRING_NOTE: &str = "hiring for ";
+
+/// How many task ids the talk step remembers having spoken about. One id per
+/// distinct task is a handful of bytes, so the bound is not about weight but
+/// about being a bound at all: past it the oldest is forgotten, and what the
+/// memory drops the ledger's terminal row still holds ([`SocialPass::talk`]).
+pub const MAX_REMEMBERED: usize = 1024;
 
 /// The drive of one social pass: the agent it acted for, and which of the two
 /// things it did.
@@ -128,6 +199,10 @@ pub struct SocialPass {
     /// Where the round-robin over the connected register stands: the index
     /// (into the cid-ascending register) the *next* social pass starts at.
     cursor: usize,
+    /// The tasks the talk step has already spoken about, oldest first — the
+    /// dedup's within-run memory, bounded to [`MAX_REMEMBERED`] ids. The
+    /// durable dedup is the ledger's own terminal state ([`SocialPass::talk`]).
+    said: VecDeque<String>,
 }
 
 impl SocialPass {
@@ -138,6 +213,7 @@ impl SocialPass {
             node,
             log,
             cursor: 0,
+            said: VecDeque::new(),
         }
     }
 
@@ -145,6 +221,98 @@ impl SocialPass {
     /// at. Exposed so a test can prove the walk is a walk.
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// How many tasks the talk step remembers having spoken about — the bound
+    /// ([`MAX_REMEMBERED`]), made observable.
+    pub fn spoken(&self) -> usize {
+        self.said.len()
+    }
+
+    /// The talk step: the agent that finished `task` says so to the task's
+    /// awarder, when the board names one.
+    ///
+    /// Called by the dispatcher on a confirmed terminal transition. The order
+    /// is: the within-run dedup, then the board (for the awarder), then at most
+    /// one `say`. Every way of not speaking — already spoken, a board that will
+    /// not read, no hiring note for the task, an awarder that is the finisher
+    /// itself, a refused delivery — is one log line and no more; none of them
+    /// is an error the caller has to handle, which is what keeps the claim loop
+    /// unblocked. Answers whether a `say` was *made*, not whether it was
+    /// delivered (the node's own row records that).
+    pub fn talk(
+        &mut self,
+        task: &Task,
+        cid: u64,
+        outcome: Outcome,
+        artifact: Option<&str>,
+        note: &str,
+    ) -> bool {
+        if self.said.iter().any(|said| said == &task.id) {
+            self.log.line(&format!(
+                "dispatchd: social: agent cid {cid} has already told the awarder about task {} ({outcome}); not saying it again",
+                task.id
+            ));
+            return false;
+        }
+        let board = match self.node.board() {
+            Ok(board) => board,
+            Err(reason) => {
+                self.log.line(&format!(
+                    "dispatchd: social: agent cid {cid}: the board could not be read to name task {}'s awarder: {reason}; nothing said",
+                    task.id
+                ));
+                return false;
+            }
+        };
+        let Some(awarder) = awarder_of(&board, &task.id) else {
+            self.log.line(&format!(
+                "dispatchd: social: agent cid {cid} finished task {} ({outcome}) but the board names no awarder for it; nothing said",
+                task.id
+            ));
+            return false;
+        };
+        if awarder == cid {
+            self.log.line(&format!(
+                "dispatchd: social: agent cid {cid} finished task {} ({outcome}) and the board's awarder is that same agent; nothing said",
+                task.id
+            ));
+            return false;
+        }
+        // The one word for this task, whether or not the node takes it: the
+        // memory holds the attempt, so a second transition for the same task
+        // can never be a second `say`.
+        self.remember(task.id.clone());
+        let text = talk_line(&task.id, outcome, artifact, note);
+        match self.node.say(cid, awarder, &text) {
+            Ok(()) => {
+                // The node took the exchange: it is on the record, and whether
+                // the peer's session took the call is the node's own row to
+                // say (`delivered`/`delivery`), never this log line's claim.
+                self.log.line(&format!(
+                    "dispatchd: social: agent cid {cid} said to its awarder cid {awarder} about task {} ({outcome}): {text} (the node's conversation row carries the delivery)",
+                    task.id
+                ));
+                true
+            }
+            Err(reason) => {
+                self.log.line(&format!(
+                    "dispatchd: social: agent cid {cid}: the word to awarder cid {awarder} about task {} was refused: {reason}; moving on",
+                    task.id
+                ));
+                false
+            }
+        }
+    }
+
+    /// Records `id` as spoken about, forgetting the oldest once the memory is
+    /// full: the within-run guard is bounded, and the ledger's terminal row is
+    /// the durable one (`talk`'s own doc says why).
+    fn remember(&mut self, id: String) {
+        if self.said.len() == MAX_REMEMBERED {
+            self.said.pop_front();
+        }
+        self.said.push_back(id);
     }
 
     /// Runs one social pass over the snapshot `tasks` and `agents` — the same
@@ -286,6 +454,60 @@ pub fn already_signalled(board: &Board, tasks: &[Task], cid: u64, task: &str) ->
         || tasks
             .iter()
             .any(|row| row.id == task && row.agent_cid == Some(cid))
+}
+
+/// The awarder the board names for `task`, when it names one: the `agent_cid`
+/// of the newest **hiring note** for it.
+///
+/// An award's hiring note is the node's own post — `subject` exactly
+/// `hiring for <task>`, `task` the task's id, `agent_cid` the awarder's guest
+/// CID (`noded`'s `Social::seed_award`, which the award endpoint calls). It is
+/// the one source the talk step reads for "who hired this": a post that merely
+/// links the task (the interest note the social pass posts) or merely shares
+/// the subject is not a hiring note, and is not read as one. The board is
+/// newest-first, so the first match is the latest award of the task.
+pub fn awarder_of(board: &Board, task: &str) -> Option<u64> {
+    board
+        .posts
+        .iter()
+        .find(|post| is_hiring_note(post, task))
+        .map(|post| post.agent_cid)
+}
+
+/// Whether `post` is the board's hiring note for `task`: it names the task and
+/// its subject is exactly the node's own `hiring for <task>`.
+fn is_hiring_note(post: &Post, task: &str) -> bool {
+    post.task.as_deref() == Some(task)
+        && post
+            .subject
+            .strip_prefix(HIRING_NOTE)
+            .is_some_and(|named| named == task)
+}
+
+/// The one line the talk step says: a template over the task's own facts.
+///
+/// ```text
+/// done:   <task> — <the run's first artifact, or "no artifact note">
+/// failed: <task> — <the dispatcher's own failure note>
+/// ```
+///
+/// `artifact` is the first path the run's report carries, when it carries any:
+/// a read-only run wrote nothing, and the line states that rather than naming
+/// an artifact that does not exist. `note` is the same note the task was
+/// finished with — the agent's own refusal, or the dispatcher's evidence after
+/// the retry bound — never a paraphrase of it. The result is cut to the
+/// contract's `text` cap, so the node never refuses the line for length.
+pub fn talk_line(task: &str, outcome: Outcome, artifact: Option<&str>, note: &str) -> String {
+    let line = match outcome {
+        Outcome::Done => format!(
+            "done: {task} — {}",
+            artifact
+                .filter(|artifact| !artifact.trim().is_empty())
+                .unwrap_or("no artifact note")
+        ),
+        Outcome::Failed => format!("failed: {task} — {note}"),
+    };
+    bounded_bytes(&line, MAX_SAY_TEXT)
 }
 
 /// The interest note for `role`/`cid` serving `task`, under `roles` (the
@@ -1012,5 +1234,270 @@ mod tests {
         }
         assert_eq!(social.boards(), 0);
         assert!(!log.text().contains("dispatchd: social:"));
+    }
+
+    // ------------------------------------------------------------ the talk step
+
+    /// A board for the talk step's tests: the hiring note for `task` authored
+    /// by `cid`.
+    fn hire(social: FakeSocial, cid: u64, task: &str) -> FakeSocial {
+        social.with_post(
+            cid,
+            "mayor",
+            &format!("hiring for {task}"),
+            "go",
+            Some(task),
+        )
+    }
+
+    /// The awarder is the author of the board's hiring note for the task, and
+    /// only that: a post that merely links the task, or merely shares the
+    /// subject, is not a hire.
+    #[test]
+    fn the_awarder_is_the_hiring_notes_author() {
+        let board: Board = serde_json::from_str(
+            r#"{"posts":[
+                 {"id":"p3","agent_cid":320,"subject":"available for t1","task":"t1"},
+                 {"id":"p2","agent_cid":330,"subject":"hiring for t1","task":null},
+                 {"id":"p1","agent_cid":340,"subject":"hiring for t1","task":"t1"}
+               ]}"#,
+        )
+        .expect("a board");
+        assert_eq!(
+            awarder_of(&board, "t1"),
+            Some(340),
+            "the hiring note's author"
+        );
+        assert_eq!(awarder_of(&board, "t2"), None, "no hire names another task");
+
+        // Two hires for the same task: the board is newest-first, so the latest
+        // award is the one the finisher answers.
+        let board: Board = serde_json::from_str(
+            r#"{"posts":[
+                 {"id":"p2","agent_cid":321,"subject":"hiring for t1","task":"t1"},
+                 {"id":"p1","agent_cid":320,"subject":"hiring for t1","task":"t1"}
+               ]}"#,
+        )
+        .expect("a board");
+        assert_eq!(awarder_of(&board, "t1"), Some(321));
+    }
+
+    /// The template, exactly: the task's id, the run's first artifact (or the
+    /// admission that it left none), and the dispatcher's own failure note.
+    #[test]
+    fn the_talk_line_is_the_tasks_own_facts() {
+        assert_eq!(
+            talk_line(
+                "t3",
+                Outcome::Done,
+                Some("build-notes.txt"),
+                "artifacts: build-notes.txt (2 tool call(s))"
+            ),
+            "done: t3 — build-notes.txt"
+        );
+        assert_eq!(
+            talk_line(
+                "t1",
+                Outcome::Done,
+                None,
+                "read-only: 3 match(es) (1 tool call(s))"
+            ),
+            "done: t1 — no artifact note",
+            "a read-only run left no artifact, and the line says so"
+        );
+        assert_eq!(
+            talk_line("t1", Outcome::Done, Some("  "), "x"),
+            "done: t1 — no artifact note",
+            "a blank artifact is absent, not an empty name"
+        );
+        assert_eq!(
+            talk_line(
+                "t7",
+                Outcome::Failed,
+                None,
+                "tool write_file refused: boom (after 3 attempt(s))"
+            ),
+            "failed: t7 — tool write_file refused: boom (after 3 attempt(s))"
+        );
+
+        // A note past the contract's `text` cap is cut on a character boundary,
+        // not sent to be refused.
+        let long = talk_line("t1", Outcome::Failed, None, &"é".repeat(MAX_SAY_TEXT));
+        assert!(long.len() <= MAX_SAY_TEXT, "{} bytes", long.len());
+        assert!(long.ends_with('…'));
+    }
+
+    /// The talk step says once per task, in the template's own words, to the
+    /// awarder the board names — and a second word about the same task makes no
+    /// request at all.
+    #[test]
+    fn the_talk_step_says_once_to_the_awarder() {
+        let social = Arc::new(hire(FakeSocial::new(), 320, "t1"));
+        let (mut pass, log) = social_pass(&social);
+        let task = roled_task("t1", "do t1", None, "builder");
+
+        assert!(pass.talk(
+            &task,
+            300,
+            Outcome::Done,
+            Some("build-notes.txt"),
+            "artifacts: build-notes.txt (2 tool call(s))"
+        ));
+        assert_eq!(
+            social.said(),
+            vec![(300, 320, "done: t1 — build-notes.txt".to_string())]
+        );
+        assert!(
+            log.text().contains(
+                "agent cid 300 said to its awarder cid 320 about task t1 (done): \
+                 done: t1 — build-notes.txt (the node's conversation row carries the delivery)"
+            ),
+            "{}",
+            log.text()
+        );
+
+        // The dedup: the second word is refused — by the task's id, whatever
+        // outcome it would have carried — and not even the board is read for it.
+        let boards = social.boards();
+        assert!(!pass.talk(&task, 300, Outcome::Failed, None, "anything"));
+        assert_eq!(social.said().len(), 1);
+        assert_eq!(social.boards(), boards, "the dedup runs before the board");
+        assert_eq!(pass.spoken(), 1);
+        assert!(
+            log.text().contains(
+                "agent cid 300 has already told the awarder about task t1 (failed); \
+                 not saying it again"
+            ),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// No awarder on the board, and an awarder that is the finisher itself: both
+    /// make no request and one log line.
+    #[test]
+    fn the_talk_step_skips_when_the_board_names_no_other_agent() {
+        let task = roled_task("t1", "do t1", None, "builder");
+
+        let social = Arc::new(FakeSocial::new());
+        let (mut pass, log) = social_pass(&social);
+        assert!(!pass.talk(
+            &task,
+            300,
+            Outcome::Done,
+            Some("a.txt"),
+            "artifacts: a.txt (1 call)"
+        ));
+        assert!(social.said().is_empty());
+        assert_eq!(pass.spoken(), 0);
+        assert!(
+            log.text().contains(
+                "agent cid 300 finished task t1 (done) but the board names no awarder for it; \
+                 nothing said"
+            ),
+            "{}",
+            log.text()
+        );
+
+        let social = Arc::new(hire(FakeSocial::new(), 300, "t1"));
+        let (mut pass, log) = social_pass(&social);
+        assert!(!pass.talk(&task, 300, Outcome::Failed, None, "tool x refused: y"));
+        assert!(social.said().is_empty());
+        assert_eq!(pass.spoken(), 0);
+        assert!(
+            log.text()
+                .contains("the board's awarder is that same agent; nothing said"),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// A `say` the node refuses is one log line and one remembered attempt: it
+    /// makes no second request, and answers false.
+    #[test]
+    fn a_refused_say_is_logged_and_not_retried() {
+        let social = Arc::new(
+            hire(FakeSocial::new(), 320, "t1")
+                .say_failing("the say answered 409: no live agent has guest CID 320"),
+        );
+        let (mut pass, log) = social_pass(&social);
+        let task = roled_task("t1", "do t1", None, "builder");
+
+        assert!(!pass.talk(
+            &task,
+            300,
+            Outcome::Done,
+            Some("a.txt"),
+            "artifacts: a.txt (1 call)"
+        ));
+        assert!(social.said().is_empty(), "the node took nothing");
+        assert_eq!(pass.spoken(), 1, "but the one word was attempted");
+        assert!(
+            log.text().contains(
+                "the word to awarder cid 320 about task t1 was refused: \
+                 the say answered 409: no live agent has guest CID 320; moving on"
+            ),
+            "{}",
+            log.text()
+        );
+        assert!(!pass.talk(
+            &task,
+            300,
+            Outcome::Done,
+            Some("a.txt"),
+            "artifacts: a.txt (1 call)"
+        ));
+        assert_eq!(pass.spoken(), 1, "the refusal is not retried");
+    }
+
+    /// A board that will not read at talk time says nothing — and nothing is
+    /// remembered, because no word was ever composed.
+    #[test]
+    fn a_board_that_will_not_read_says_nothing() {
+        let social = Arc::new(FakeSocial::new().board_failing("the board answered 500: boom"));
+        let (mut pass, log) = social_pass(&social);
+        let task = roled_task("t1", "do t1", None, "builder");
+
+        assert!(!pass.talk(&task, 300, Outcome::Done, None, "x"));
+        assert!(social.said().is_empty());
+        assert_eq!(pass.spoken(), 0);
+        assert!(
+            log.text().contains(
+                "the board could not be read to name task t1's awarder: \
+                 the board answered 500: boom; nothing said"
+            ),
+            "{}",
+            log.text()
+        );
+    }
+
+    /// The talk step's memory is bounded: past [`MAX_REMEMBERED`] spoken tasks
+    /// the oldest id is forgotten and the count stops growing.
+    #[test]
+    fn the_talk_steps_memory_is_bounded() {
+        let mut social = FakeSocial::new();
+        for seq in 1..=MAX_REMEMBERED + 1 {
+            let id = format!("t{seq}");
+            social = hire(social, 320, &id);
+        }
+        let social = Arc::new(social);
+        let (mut pass, _log) = social_pass(&social);
+
+        for seq in 1..=MAX_REMEMBERED + 1 {
+            let task = roled_task(&format!("t{seq}"), "do it", None, "builder");
+            assert!(pass.talk(
+                &task,
+                300,
+                Outcome::Done,
+                Some("a.txt"),
+                "artifacts: a.txt (1 tool call(s))"
+            ));
+        }
+        assert_eq!(pass.spoken(), MAX_REMEMBERED, "the memory is capped");
+        assert_eq!(
+            social.said().len(),
+            MAX_REMEMBERED + 1,
+            "every word was made"
+        );
     }
 }

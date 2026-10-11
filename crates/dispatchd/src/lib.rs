@@ -30,6 +30,16 @@
 //! and every failure in it is logged and swallowed, so the claim loop is never
 //! blocked by the board.
 //!
+//! The **talk step** is the social behaviour's other half, and it runs not on a
+//! cadence but on the event: when the dispatcher finishes a task it drove — the
+//! confirmed `done` or `failed` transition — the agent that did the work says
+//! so to the task's awarder, when the board names one (the author of the task's
+//! hiring note), through `POST /api/v0/agents/{cid}/say`. The line is a
+//! template over the task's own facts (`done: <task> — <first artifact or "no
+//! artifact note">`, `failed: <task> — <the dispatcher's failure note>`), it is
+//! bounded (at most two loopback calls per terminal transition, at most one
+//! `say` per task) and every failure in it is logged and swallowed.
+//!
 //! What it deliberately does *not* do: invent work for a role whose agent is
 //! not connected (such a task stays `open` and is logged as skipped), guess at
 //! a tool's answer (an agent that does not answer is reported as such), drive
@@ -38,7 +48,9 @@
 //! the register), or drive two tool calls at once (a pass is strictly
 //! sequential — one call in flight, anywhere). Nor does the social pass speak
 //! for an agent with a claim in hand, invent a note's words, or duplicate the
-//! award's own hiring note and contact links — those are the node's.
+//! award's own hiring note and contact links — those are the node's. (The talk
+//! step speaks, but only the task's own facts, and only to the awarder the
+//! board names.)
 //!
 //! It holds no state that matters: the retry counter is in memory and only
 //! bounds how many passes a failing task is retried for, and a claim left

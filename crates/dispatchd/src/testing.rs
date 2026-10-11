@@ -537,6 +537,8 @@ struct FakeSocialInner {
     read_failure: Option<String>,
     /// When set, every post is refused with this.
     post_failure: Option<String>,
+    /// When set, every `say` is refused with this.
+    say_failure: Option<String>,
 }
 
 impl FakeSocial {
@@ -590,6 +592,13 @@ impl FakeSocial {
     /// contract).
     pub fn post_failing(self, reason: &str) -> Self {
         self.lock().post_failure = Some(reason.to_string());
+        self
+    }
+
+    /// A node whose `say` is refused (a 409 the peer is not connected, a 400
+    /// outside the contract, a 500).
+    pub fn say_failing(self, reason: &str) -> Self {
+        self.lock().say_failure = Some(reason.to_string());
         self
     }
 
@@ -741,7 +750,11 @@ impl Social for FakeSocial {
     }
 
     fn say(&self, cid: u64, to_cid: u64, text: &str) -> Result<(), String> {
-        self.lock().said.push((cid, to_cid, text.to_string()));
+        let mut inner = self.lock();
+        if let Some(reason) = &inner.say_failure {
+            return Err(reason.clone());
+        }
+        inner.said.push((cid, to_cid, text.to_string()));
         Ok(())
     }
 }

@@ -79,7 +79,15 @@ interest note (POST {noded}/api/v0/board, subject `available for <task>`,
 posted_by `dispatchd`) composed from the task's own words and the role's
 grants. A social call that fails is logged and the pass moves on: the claims
 are never blocked by the board. At the default 5 s interval a social pass is
-about one every 25 s.";
+about one every 25 s.
+
+When a pass finishes a task it drove (a confirmed done/failed transition), the
+agent that did the work says so to the task's awarder — the author of the
+board's hiring note for that task — through POST
+{noded}/api/v0/agents/{cid}/say, in one bounded line composed from the task's
+own facts (`done: <task> — <first artifact or 'no artifact note'>`, `failed:
+<task> — <the finish note>`). At most one say per task; a refusal is logged
+and never blocks the claim loop.";
 
 /// Everything `dispatchd` accepts on its command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
