@@ -11,6 +11,8 @@ import type { Task } from './models/task';
 import { parseTask, parseTasksView } from './models/task';
 import type { AgentTell } from './models/tell';
 import { parseTell } from './models/tell';
+import type { Journal, Treasury } from './models/treasury';
+import { parseJournal, parseTreasury } from './models/treasury';
 
 export class ApiError extends Error {
   readonly status: number | null;
@@ -136,6 +138,24 @@ export async function finishTask(id: string, outcome: 'done' | 'failed', note?: 
 /** Withdraw a task that has not ended (`open` or `claimed`). */
 export async function withdrawTask(id: string): Promise<Task> {
   return parseTask(await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+}
+
+/* ----------------------------------------------------------- the treasury
+   The plaza's account book: its frozen endpoints, both reads. Both bodies go
+   through the model's defensive parse — the relay is untrusted, and a missing
+   field is an error naming it, never a silent zero. Every amount is whole
+   credits (1 credit = $0.001; docs/treasury-draft/schema.sql). */
+
+/** The accounts with their derived balances, the totals line, and the honest
+    zero-spend note. */
+export async function getTreasury(): Promise<Treasury> {
+  return parseTreasury(await api<unknown>('/api/v0/treasury'));
+}
+
+/** The double-entry journal, oldest first as the daemon lists it, bounded to
+    its newest entries. */
+export async function getTreasuryJournal(): Promise<Journal> {
+  return parseJournal(await api<unknown>('/api/v0/treasury/journal'));
 }
 
 /** Read one file a task's agent wrote, through the daemon's read-through:

@@ -74,6 +74,18 @@ tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
 .rcpast .rcpastbtn { font-family: var(--mono); text-transform: none; letter-spacing: 0; text-align: left; }
 .rcpast .rcpastbtn[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
 
+/* the treasury: the plaza's account-book. The totals line is the one figure
+   the whole double-entry book rests on (credits and debits equal, the
+   balances summing to zero), and it is stamped as the decision it is; the
+   journal's memo is prose that wraps, its postings two ruled legs that wrap
+   together, and an entry's task is a link into its ledger row. */
+.treline { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin: 0; }
+.treline .m { font: 500 13px var(--mono); letter-spacing: .02em; }
+#treasury-table td.owner { overflow-wrap: anywhere; }
+#journal-table td.memo { white-space: normal; min-width: 160px; max-width: 320px; }
+#journal-table td.postings { white-space: normal; min-width: 200px; max-width: 420px; font: 11.5px var(--mono); color: var(--ink-2); }
+.chip.lkind { border-color: var(--ink-2); color: var(--ink); }
+
 @media (max-width: 760px) {
   canvas#map-canvas { height: 320px; }
   .v3mount { height: 340px; }

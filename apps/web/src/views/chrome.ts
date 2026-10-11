@@ -140,6 +140,9 @@ export function renderChrome(): void {
   let tasksInFlight = 0;
   for (const task of store.tasks) if (isOpenTask(task)) tasksInFlight++;
   byId('nav-ledger').textContent = store.tasksError != null ? '—' : fmtNum(tasksInFlight);
+  /* the treasury answers one question — how many entries the account-book
+     journal holds; a journal the console cannot read reads '—' */
+  byId('nav-treasury').textContent = store.journalError != null ? '—' : fmtNum(store.journalTotal);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 

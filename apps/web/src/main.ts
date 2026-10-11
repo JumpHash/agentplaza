@@ -17,6 +17,7 @@ import { renderMachine } from './views/machine';
 import { renderMap, syncMapVisibility } from './views/map2d';
 import { initRoster, renderRoster } from './views/roster';
 import { initTelemetry, renderTelemetry } from './views/telemetry';
+import { renderTreasury } from './views/treasury';
 import { cameraPreset, cameraState, districtState, initView3d, sync3d } from './views/view3d';
 
 /* ------------------------------------------------------------ routing */
@@ -164,6 +165,7 @@ store.onRender(() => {
     case 'telemetry': renderTelemetry(); break;
     case 'roster': renderRoster(); break;
     case 'ledger': renderLedger(); break;
+    case 'treasury': renderTreasury(); break;
   }
 });
 
@@ -189,6 +191,16 @@ window.__PLAZA_DIAG__ = {
   get artifact() {
     const a = store.artifact;
     return a == null ? null : { task: a.task, path: a.path, state: a.state };
+  },
+  get treasury() {
+    return {
+      accounts: store.treasury?.accounts.length ?? 0,
+      entries: store.journal.length,
+      total: store.journalTotal,
+      credits: store.treasury?.totals.credits ?? 0,
+      error: store.treasuryError,
+      journalError: store.journalError,
+    };
   },
   get tell() {
     const t = store.lastTell;

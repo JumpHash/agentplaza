@@ -1,6 +1,7 @@
 /* The live data layer: an EventSource on the daemon's event bus
-   (GET /api/v0/events — run/vm state transitions and serial deltas, LF-
-   framed, heartbeats as comments the browser discards).
+   (GET /api/v0/events — run/vm state transitions, serial deltas, task state
+   changes and treasury posts, LF-framed, heartbeats as comments the browser
+   discards).
 
    Semantics respected here:
    - The bus has no backlog: the stream's open IS the subscription, so the
@@ -21,6 +22,18 @@ import { store } from './store';
 
 const RUN_STATES: ReadonlySet<string> = new Set(['starting', 'running', 'done', 'failed', 'killed']);
 const VM_STATES: ReadonlySet<string> = new Set(['running', 'exited', 'killed']);
+/* A static membership table, so a hostile frame's entry kind can be refused whole. */
+const ENTRY_KINDS: Readonly<Record<string, true>> = {
+  mint: true,
+  spend: true,
+  subcontract: true,
+  payment: true,
+  refund: true,
+  clawback: true,
+  fine: true,
+  fee: true,
+  budget_move: true,
+};
 /* A static membership table, so a hostile frame's state can be refused whole. */
 const TASK_STATES: Readonly<Record<string, true>> = {
   open: true,
@@ -97,5 +110,22 @@ export function startEvents(): void {
        hostile non-string is read as "no assignee", never as a name */
     const assignee = data['assignee'];
     store.applyTaskEvent(data['id'], state as TaskState, typeof assignee === 'string' ? assignee : null);
+  });
+  source.addEventListener('treasury', (e) => {
+    const data = frame(e);
+    const entry = data?.['entry'];
+    const kind = data?.['kind'];
+    if (
+      !data ||
+      typeof entry !== 'number' ||
+      !Number.isInteger(entry) ||
+      typeof kind !== 'string' ||
+      ENTRY_KINDS[kind] !== true
+    ) {
+      return;
+    }
+    /* the frame is a whole post or it is dropped; the store asks the journal
+       for the row's detail the frame does not carry */
+    store.applyTreasuryEvent(entry);
   });
 }

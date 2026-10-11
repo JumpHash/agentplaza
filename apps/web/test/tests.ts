@@ -22,6 +22,7 @@ import { cidRange, roleOf } from '../src/models/run';
 import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq, artifactPaths } from '../src/models/task';
 import { parseArtifact, readStateOf } from '../src/models/artifact';
 import { parseTell, parseTellArgs, tellStateOf } from '../src/models/tell';
+import { balances, fmtSigned, parseJournal, parseTreasury, postingLabel } from '../src/models/treasury';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
 import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
@@ -144,7 +145,7 @@ store.applyRunEvent('r1', 'done');
 eq(store.details.get('r1')?.state, 'done', 'a run event patches the cached run');
 store.applyVmEvent('r1', 0, 'exited');
 eq(store.details.get('r1')?.vms[0]?.state, 'exited', 'a vm event patches the cached vm');
-eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0 }, 'the wire tallies every frame');
+eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0 }, 'the wire tallies every frame');
 
 /* ------- run ids restart with the daemon: identity is (id, created_at) ---- */
 function runShaped(id: string, createdAt: number, state: 'running' | 'done', serial: string) {
@@ -808,6 +809,108 @@ eq('error' in parseTellArgs('{oops}'), true, 'a box that is not JSON is refused 
   s.runs = [];
   s.pruneTells();
   eq(s.tells.has(301), true, 'an unreadable fleet does not erase the history it cannot confirm');
+}
+
+/* ==================== the treasury: the accounts and the double-entry book
+   The node's treasury is read whole and parsed defensively — the relay is
+   untrusted, so a missing or mistyped field is refused by name. The journal's
+   postings are the account-book's own words: a mint leg reads by its kind (its
+   owner IS the mint), an escrow leg by its kind and its task, and each amount
+   is signed. A `treasury` frame carries no row, only the news that the book
+   grew: an entry the console already holds is complete, and an unseen id asks
+   the journal once rather than inventing a post. */
+
+const MINT_ACCOUNT = { id: 1, kind: 'mint', owner_ref: 'mint', credit_limit: 0, balance: -1500 };
+const ESCROW_ACCOUNT = { id: 2, kind: 'task_escrow', owner_ref: 't1', credit_limit: 0, balance: 1500 };
+const TOTALS_FIXTURE = { accounts: 2, entries: 2, credits: 1500, debits: 1500, balance: 0 };
+const TREASURY_FIXTURE = {
+  accounts: [MINT_ACCOUNT, ESCROW_ACCOUNT],
+  totals: TOTALS_FIXTURE,
+  spent: 0,
+  note: 'v0 meters no real spend; a done task refunds its whole escrow',
+};
+const POSTING_MINT = { account: 1, kind: 'mint', owner_ref: 'mint', amount: -750 };
+const POSTING_ESCROW = { account: 2, kind: 'task_escrow', owner_ref: 't1', amount: 750 };
+const ENTRY_FIXTURE = {
+  id: 1,
+  kind: 'mint',
+  task_id: 't1',
+  root_task: 't1',
+  memo: 'task budget',
+  posted_by: 'treasury-service',
+  created_at: 1791680766728,
+  amount: 750,
+  postings: [POSTING_MINT, POSTING_ESCROW],
+};
+const JOURNAL_FIXTURE = { entries: [ENTRY_FIXTURE], total: 1, limit: 256, truncated: false };
+
+eq(parseTreasury(TREASURY_FIXTURE), TREASURY_FIXTURE, 'a well-formed treasury parses unchanged');
+eq(parseTreasury({ ...TREASURY_FIXTURE, git: 'sha' }), TREASURY_FIXTURE, 'unknown extra fields are tolerated and dropped');
+throws(() => parseTreasury(null), 'treasury is missing or not an object', 'a non-object treasury is rejected by name');
+throws(() => parseTreasury({ ...TREASURY_FIXTURE, accounts: {} }), 'treasury.accounts is missing or not an array', 'an accounts field that is not an array names the field');
+throws(() => parseTreasury({ ...TREASURY_FIXTURE, accounts: [{ ...MINT_ACCOUNT, kind: 'vault' }] }), 'treasury.accounts[0].kind', 'an unknown account kind is refused by name');
+throws(() => parseTreasury({ ...TREASURY_FIXTURE, accounts: [{ ...MINT_ACCOUNT, balance: 1.5 }] }), 'treasury.accounts[0].balance', 'a non-integer balance names the field');
+throws(() => parseTreasury({ ...TREASURY_FIXTURE, totals: { ...TOTALS_FIXTURE, credits: '1500' } }), 'treasury.totals.credits', 'a mistyped total names its path');
+throws(() => parseTreasury({ ...TREASURY_FIXTURE, spent: 1.5 }), 'treasury.spent', 'a non-integer spend names the field');
+{
+  const missing: Record<string, unknown> = { ...TREASURY_FIXTURE };
+  delete missing['note'];
+  throws(() => parseTreasury(missing), 'treasury.note', 'a missing required field names the path');
+}
+
+eq(parseJournal(JOURNAL_FIXTURE), JOURNAL_FIXTURE, 'a well-formed journal parses unchanged');
+eq(parseJournal({ ...JOURNAL_FIXTURE, extra: 1 }), JOURNAL_FIXTURE, 'unknown extra fields are tolerated and dropped');
+throws(() => parseJournal(null), 'journal is missing or not an object', 'a non-object journal is rejected by name');
+throws(() => parseJournal({ ...JOURNAL_FIXTURE, entries: [{ ...ENTRY_FIXTURE, kind: 'notary' }] }), 'journal.entries[0].kind', 'an unknown entry kind is refused by name');
+throws(() => parseJournal({ ...JOURNAL_FIXTURE, entries: [{ ...ENTRY_FIXTURE, postings: 5 }] }), 'journal.entries[0].postings', 'a postings field that is not an array names the field');
+throws(() => parseJournal({ ...JOURNAL_FIXTURE, entries: [{ ...ENTRY_FIXTURE, postings: [{ ...POSTING_MINT, amount: 'x' }] }] }), 'journal.entries[0].postings[0].amount', 'a bad posting names its index and field');
+throws(() => parseJournal({ ...JOURNAL_FIXTURE, truncated: 'yes' }), 'journal.truncated', 'a non-boolean truncation names the field');
+{
+  const missing: Record<string, unknown> = { ...ENTRY_FIXTURE };
+  delete missing['memo'];
+  throws(() => parseJournal({ ...JOURNAL_FIXTURE, entries: [missing] }), 'journal.entries[0].memo', 'a missing required entry field names the path');
+}
+eq(
+  parseJournal({ ...JOURNAL_FIXTURE, entries: [{ ...ENTRY_FIXTURE, task_id: null, root_task: null }] }).entries[0]?.task_id,
+  null,
+  'an entry that belongs to no task reads its null task',
+);
+
+eq(postingLabel(POSTING_MINT), 'mint', 'the mint leg names the account by its kind alone');
+eq(postingLabel(POSTING_ESCROW), 'task_escrow t1', 'an escrow leg names its kind and its task');
+eq(fmtSigned(-750), '\u2212750', 'a debit is written with a typed minus');
+eq(fmtSigned(750), '+750', 'a credit is written with a plus');
+eq(fmtSigned(-1500), '\u22121,500', 'a thousands-separated debit keeps its sign');
+eq(balances(TOTALS_FIXTURE), true, 'credits equal debits and the balances sum to zero');
+eq(balances({ ...TOTALS_FIXTURE, balance: 5 }), false, 'a non-zero balance is not balanced');
+eq(balances({ ...TOTALS_FIXTURE, credits: 1400 }), false, 'credits that do not equal debits are not balanced');
+
+/* a frame for an entry the journal already holds asks nothing — the book is
+   append-only and the row it has is complete */
+{
+  const s = new Store();
+  s.journal = [parseJournal(JOURNAL_FIXTURE).entries[0]!];
+  s.applyTreasuryEvent(1);
+  eq(s.wire.treasury, 1, 'the wire tallies the treasury frame');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(s.treasuryError, null, 'a frame for a known entry asks the accounts for nothing');
+  eq(s.journalError, null, 'and asks the journal for nothing');
+}
+
+/* a frame for an entry the console has never seen asks the book once, and
+   invents no post from the frame alone */
+{
+  const s = new Store();
+  s.applyTreasuryEvent(9);
+  eq(s.wire.treasury, 1, 'the wire tallies the treasury frame');
+  eq(s.journal.length, 0, 'no journal row is invented from a frame');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.journalError, 'string', 'the journal was asked for the truth');
+  eq(typeof s.treasuryError, 'string', 'and the accounts were asked too');
 }
 
 if (failures > 0) {

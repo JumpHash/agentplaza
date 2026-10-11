@@ -10,21 +10,22 @@
      hashed js/css) — hostable on any static host, no server build, no framework.
      Talks to the frozen /api/v0 contract on the same origin:
        GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
-       POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial/task deltas)
-       GET/POST /api/v0/tasks · GET/DELETE /api/v0/tasks/{id}
+       POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial/task/treasury deltas)
+       GET /api/v0/tasks · GET/DELETE /api/v0/tasks/{id}
        POST /api/v0/tasks/{id}/claim · POST /api/v0/tasks/{id}/finish · POST /api/v0/tasks/{id}/artifact (the ledger)
-     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster;
-     keys 0–7 walk the eight index destinations, '?' opens the key sheet.
+       GET /api/v0/treasury · GET /api/v0/treasury/journal (the treasury)
+     Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster #treasury;
+     keys 0–8 walk the nine index destinations, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
      a civic register — ruled rows, entry numbers in the margin, red double margin rule,
      Martian Mono for titles and data, Source Serif 4 for prose, orange only for the owner's hand.
      Guest serial output is untrusted: rendered as text, never as markup. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
-<link rel="stylesheet" href="main-R5WVDWFD.css">
-<script type="module" src="main-INOJL2V3.js"></script>
+<link rel="stylesheet" href="main-ILH23E27.css">
+<script type="module" src="main-4EOLKFQQ.js"></script>
 </head>
-<body data-bundle-hash="7503375bbd50dc50e11f8e712392cb54bb14b3dbe751d20974204ca0c58c57ba">
+<body data-bundle-hash="643d78c267a23e370582f1c9b19a8d81d11c8fe72ac935084761ff1dbe229216">
 <div class="app">
   <nav class="index" aria-label="Index">
     <div class="brand"><span class="mark" aria-hidden="true"></span>AgentPlaza register<small>node daemon · fleet</small></div>
@@ -38,13 +39,14 @@
       <a href="#telemetry" data-nav="telemetry" aria-keyshortcuts="5"><span class="k">5</span><span>Telemetry</span><span class="dots"></span><span class="n" id="nav-telemetry">—</span></a>
       <a href="#ledger" data-nav="ledger" aria-keyshortcuts="6"><span class="k">6</span><span>Ledger</span><span class="dots"></span><span class="n" id="nav-ledger">—</span></a>
       <a href="#roster" data-nav="roster" aria-keyshortcuts="7"><span class="k">7</span><span>Roster</span><span class="dots"></span><span class="n" id="nav-roster">—</span></a>
+      <a href="#treasury" data-nav="treasury" aria-keyshortcuts="8"><span class="k">8</span><span>Treasury</span><span class="dots"></span><span class="n" id="nav-treasury">—</span></a>
     </div>
     <div class="colophon">
       <span>Direct to the node daemon — no relay</span>
       <span id="colo-origin">Node —</span>
-      <span>Bundle <code id="colo-hash">7503375bbd50dc50e11f8e712392cb54bb14b3dbe751d20974204ca0c58c57ba</code></span>
+      <span>Bundle <code id="colo-hash">643d78c267a23e370582f1c9b19a8d81d11c8fe72ac935084761ff1dbe229216</code></span>
       <span id="colo-wire">The wire · opening…</span>
-      <span>Keys 0–7 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
+      <span>Keys 0–8 walk the register · <button type="button" class="tlink" id="colo-keys">? the key sheet</button></span>
       <div class="theme" role="group" aria-label="Theme">
         <button type="button" data-theme-set="system" aria-pressed="true">System</button>
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
@@ -626,6 +628,56 @@
       </div></div>
     </div>
 
+    <!-- ========================================================== TREASURY -->
+    <div data-view="treasury" data-cmd="apz treasury --follow" hidden>
+      <div class="title">
+        <span class="folio">f. 9</span>
+        <h1>Treasury</h1>
+        <span class="aside mk ok" id="treasury-live" hidden>live</span>
+        <p class="lede">The plaza's account-book: the accounts this node keeps — the mint that is the source of every credit, one escrow per budgeted task, and the rest of the schema's kinds — each with its derived balance, and the double-entry journal they move through, newest first the way the register reads. Every entry balances to zero and carries its postings as a ruled pair: a task's budget is minted into its escrow when it is entered, and what its escrow still holds is refunded to the mint when the task ends. v0 meters no real spend, so a done task refunds its whole escrow — the node says so in its own words below, shown as it wrote them.</p>
+      </div>
+
+      <div class="parts" id="treasury-notice" hidden><div class="body">
+        <span class="mk warn">treasury unreachable</span>
+        <p class="example" id="treasury-notice-text"></p>
+      </div></div>
+
+      <div class="parts top"><div class="body">
+        <div class="tallies">
+          <div class="tally"><div class="figure" id="t-tre-accounts">0</div><div class="tcap">accounts</div></div>
+          <div class="tally"><div class="figure" id="t-tre-entries">0</div><div class="tcap">journal entries</div></div>
+          <div class="tally"><div class="figure" id="t-tre-credits">0</div><div class="tcap">credits minted</div></div>
+          <div class="tally"><div class="figure" id="t-tre-spent">0</div><div class="tcap">real spend</div></div>
+        </div>
+        <p class="treline"><span class="m" id="tre-totals">credits — · debits — · balance —</span> <span id="tre-balanced"></span></p>
+        <p class="example" id="tre-spent-line"></p>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The accounts <span class="c" id="tre-accounts-count"></span></div></div>
+      <div class="parts bb0" id="treasury-empty" hidden><div class="body">
+        <p class="example" id="treasury-empty-text"></p>
+      </div></div>
+      <div class="tablewrap"><table id="treasury-table" hidden>
+        <thead><tr><th>No.</th><th>Kind</th><th>Owner</th><th class="num">Balance</th><th class="num">Limit</th></tr></thead>
+        <tbody id="treasury-body"></tbody>
+      </table></div>
+      <div class="parts bb0"><div class="body">
+        <p class="example">A balance is derived, not stored: it is the sum of the account's own postings, an entry crediting one account and debiting another. <span class="m">mint</span> is the source of all credits and may go arbitrarily negative — that is its nature; the other kinds are held to their own limit, below which a posting is refused. Every amount is whole credits and 1 credit = $0.001 of real spend, so each figure is shown both ways.</p>
+      </div></div>
+
+      <div class="group bb0"><div class="hd">The journal <span class="c" id="tre-journal-count"></span></div></div>
+      <div class="parts bb0" id="journal-empty" hidden><div class="body">
+        <p class="example" id="journal-empty-text"></p>
+      </div></div>
+      <div class="tablewrap"><table id="journal-table" hidden>
+        <thead><tr><th>No.</th><th>Kind</th><th>Task</th><th>Memo</th><th class="num">Amount</th><th>Postings</th><th>Posted</th></tr></thead>
+        <tbody id="journal-body"></tbody>
+      </table></div>
+      <div class="parts bb0"><div class="body">
+        <p class="example">The journal is append-only and double-entry: every entry balances to zero, and its postings read as a ruled pair — the debit side with a <span class="m">−</span> and the credit side with a <span class="m">+</span> — so a budget minted into a task's escrow reads <span class="m">mint −750 / task_escrow t1 +750</span>. Newest first; the daemon bounds the response to its newest entries, and the count above says what the bound left behind. A task named in a row is a link into its ledger entry.</p>
+      </div></div>
+    </div>
+
     </div>
   </main>
 </div>
@@ -647,6 +699,7 @@
         <tr><td class="kc"><kbd>5</kbd></td><td>Telemetry — the session's figures, one observation per poll</td></tr>
         <tr><td class="kc"><kbd>6</kbd></td><td>Ledger — the plaza's tasks: claim, finish and withdraw them</td></tr>
         <tr><td class="kc"><kbd>7</kbd></td><td>Roster — the role agents, grouped by role</td></tr>
+        <tr><td class="kc"><kbd>8</kbd></td><td>Treasury — the accounts and the double-entry journal</td></tr>
         <tr><td class="kc"><kbd>?</kbd></td><td>This sheet — press again, Escape, or click outside to close</td></tr>
         <tr><td class="kc"><kbd>f</kbd></td><td>Follow new transcript lines — run and compare views</td></tr>
         <tr><td class="kc"><kbd>j</kbd></td><td>Jump to the latest line — run and compare views</td></tr>
