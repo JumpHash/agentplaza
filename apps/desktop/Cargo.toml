@@ -1,14 +1,13 @@
 [package]
 name = "agentplaza-desktop"
 description = "AgentPlaza fleet dashboard: an iced + wgpu desktop client for the node daemon's API"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 
 # This app is deliberately its own workspace: it builds with its own Cargo.lock
 # and the root workspace (`members = ["crates/*"]`) never picks it up.
-[workspace]
 
 [dependencies]
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
@@ -26,8 +25,8 @@ iced = { version = "0.14", default-features = false, features = [
     # The fleet map is drawn with iced's own canvas (`iced::widget::canvas`).
     "canvas",
 ] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # iced's headless harness: it drives the same widgets and application the
