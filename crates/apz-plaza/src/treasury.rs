@@ -90,6 +90,7 @@
 //! (the journal and the accounts table are bounded, like the task ledger), and
 //! [`JOURNAL_LIMIT`] for the journal endpoint's response.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
@@ -100,6 +101,19 @@ use crate::now_ms;
 /// The `owner_ref` of the single `mint` account: the fixed name the schema's
 /// tests give it.
 pub const MINT_OWNER: &str = "mint";
+
+/// The `owner_ref` of the plaza's `town_budget` account: the pool every task is
+/// funded from and every refund returns to.
+pub const PLAZA_OWNER: &str = "plaza";
+
+/// The credits the plaza's budget is minted with when the treasury is created.
+pub const PLAZA_BUDGET: i64 = 100_000;
+
+/// The most credits one agent may transfer to others per UTC day.
+pub const TRANSFER_DAILY_CAP: i64 = 1_000;
+
+/// One UTC day, in the clock's milliseconds.
+const DAY_MS: u64 = 86_400_000;
 
 /// The `posted_by` of every entry: the schema's `posted_by_service` allows only
 /// service names, and every entry here is the treasury service's own.
@@ -207,11 +221,13 @@ pub enum EntryKind {
     Fee,
     /// Owner or council moves budget between towns (0137).
     BudgetMove,
+    /// Agent-to-agent move of earnings: no task money, so it names no chain.
+    Transfer,
 }
 
 impl EntryKind {
     /// Every kind, in the schema's enum order.
-    pub const ALL: [EntryKind; 9] = [
+    pub const ALL: [EntryKind; 10] = [
         EntryKind::Mint,
         EntryKind::Spend,
         EntryKind::Subcontract,
@@ -221,6 +237,7 @@ impl EntryKind {
         EntryKind::Fine,
         EntryKind::Fee,
         EntryKind::BudgetMove,
+        EntryKind::Transfer,
     ];
 
     /// The kind's name, exactly as the schema's enum spells it.
@@ -235,13 +252,15 @@ impl EntryKind {
             EntryKind::Fine => "fine",
             EntryKind::Fee => "fee",
             EntryKind::BudgetMove => "budget_move",
+            EntryKind::Transfer => "transfer",
         }
     }
 
     /// Whether the entry must name a chain: the schema's
-    /// `task_money_names_chain` exempts only `fine` and `fee`.
+    /// `task_money_names_chain` exempts `fine` and `fee`, and `transfer`, which
+    /// moves earnings and no task money.
     fn names_a_chain(self) -> bool {
-        !matches!(self, EntryKind::Fine | EntryKind::Fee)
+        !matches!(self, EntryKind::Fine | EntryKind::Fee | EntryKind::Transfer)
     }
 }
 
@@ -305,6 +324,9 @@ pub const POSTING_RULES: &[(EntryKind, AccountKind, Side)] = &[
     (EntryKind::Fee, AccountKind::Treasury, Side::Credit),
     (EntryKind::Fee, AccountKind::Treasury, Side::Debit),
     (EntryKind::Fee, AccountKind::AgentEarnings, Side::Credit),
+    (EntryKind::Spend, AccountKind::TownBudget, Side::Debit),
+    (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Debit),
+    (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Credit),
 ];
 
 /// Whether the schema's `posting_rules` allow `entry_kind` to post `side` to
@@ -467,6 +489,27 @@ pub enum PostError {
         /// Its owner.
         owner_ref: String,
     },
+    /// A transfer named the same agent as sender and receiver.
+    SelfTransfer {
+        /// The agent.
+        cid: u64,
+    },
+    /// An amount that must be positive was zero or negative.
+    NonPositive {
+        /// The amount.
+        amount: i64,
+    },
+    /// A sender's transfers this UTC day would pass [`TRANSFER_DAILY_CAP`].
+    TransferCap {
+        /// The sender.
+        cid: u64,
+        /// What it has already sent today.
+        sent_today: i64,
+        /// The transfer that was refused.
+        amount: i64,
+        /// The daily cap.
+        cap: i64,
+    },
 }
 
 impl PostError {
@@ -478,6 +521,8 @@ impl PostError {
     pub fn status(&self) -> u16 {
         match self {
             PostError::JournalFull { .. } | PostError::AccountsFull { .. } => 409,
+            PostError::SelfTransfer { .. } | PostError::NonPositive { .. } => 400,
+            PostError::TransferCap { .. } => 409,
             _ => 500,
         }
     }
@@ -486,6 +531,16 @@ impl PostError {
 impl std::fmt::Display for PostError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            PostError::SelfTransfer { cid } => {
+                write!(formatter, "agent cid:{cid} may not transfer to itself")
+            }
+            PostError::NonPositive { amount } => {
+                write!(formatter, "an amount must be positive, got {amount}")
+            }
+            PostError::TransferCap { cid, sent_today, amount, cap } => write!(
+                formatter,
+                "agent cid:{cid} has sent {sent_today} today; {amount} more passes the {cap} daily cap"
+            ),
             PostError::Empty => write!(formatter, "an entry must have at least one posting"),
             PostError::ZeroPosting { account, owner_ref } => write!(
                 formatter,
@@ -595,6 +650,8 @@ struct Inner {
     entries: Vec<Entry>,
     next_account: u64,
     next_entry: u64,
+    /// What each agent has transferred on each UTC day, keyed by (cid, day).
+    transferred: BTreeMap<(u64, u64), i64>,
 }
 
 impl Inner {
@@ -670,6 +727,11 @@ impl Inner {
     }
 }
 
+/// The `owner_ref` of agent `cid`'s `agent_earnings` account (its wallet).
+fn agent_owner(cid: u64) -> String {
+    format!("cid:{cid}")
+}
+
 /// The treasury: the accounts, the append-only double-entry journal, and the
 /// event bus every posted entry is published to.
 #[derive(Debug)]
@@ -679,11 +741,12 @@ pub struct Treasury {
 }
 
 impl Treasury {
-    /// A treasury with the single `mint` account and an empty journal, which
-    /// publishes every posted entry to `events`.
+    /// A treasury with the single `mint` account, the plaza's budget minted into
+    /// its `town_budget` (the one entry a fresh treasury holds), which publishes
+    /// every posted entry to `events`.
     pub fn new(events: Arc<EventBus>) -> Self {
         let now = now_ms();
-        Self {
+        let treasury = Self {
             events,
             inner: Mutex::new(Inner {
                 accounts: vec![Account {
@@ -696,8 +759,13 @@ impl Treasury {
                 entries: Vec::new(),
                 next_account: 1,
                 next_entry: 0,
+                transferred: BTreeMap::new(),
             }),
-        }
+        };
+        treasury
+            .mint_plaza_budget(PLAZA_BUDGET)
+            .expect("a fresh journal takes the plaza's first mint");
+        treasury
     }
 
     /// Posts one entry, or says which rule refused it. Nothing is mutated until
@@ -765,32 +833,110 @@ impl Treasury {
         Ok(id)
     }
 
-    /// Mints `amount` credits into `task_id`'s escrow: a `mint` entry, the
-    /// schema's `Fund` (mint debit, task_escrow credit). `amount` must be
-    /// positive; the ledger only calls this for a task whose budget is.
-    pub fn mint_task_budget(&self, task_id: &str, amount: i64) -> Result<u64, PostError> {
+    /// Mints `amount` credits into the plaza's budget: a `mint` entry, the mint
+    /// debited and the plaza's `town_budget` credited. Every task is funded from
+    /// this pool and every refund returns to it.
+    pub fn mint_plaza_budget(&self, amount: i64) -> Result<u64, PostError> {
         let spec = EntrySpec::new(
             EntryKind::Mint,
             vec![
                 PostingSpec::new(AccountKind::Mint, MINT_OWNER, -amount),
+                PostingSpec::new(AccountKind::TownBudget, PLAZA_OWNER, amount),
+            ],
+        )
+        .root(PLAZA_OWNER)
+        .memo("plaza budget minted");
+        self.post(&spec)
+    }
+
+    /// The plaza's budget balance, derived from its postings.
+    pub fn plaza_budget_balance(&self) -> i128 {
+        let inner = self.lock();
+        inner
+            .find_account(AccountKind::TownBudget, PLAZA_OWNER)
+            .map_or(0, |account| inner.balance(account.id))
+    }
+
+    /// Funds `task_id`'s escrow from the plaza's budget: a `subcontract` entry
+    /// (the plaza's `town_budget` debited, the task's escrow credited). Refused
+    /// when the budget would go negative.
+    pub fn fund_task(&self, task_id: &str, amount: i64) -> Result<u64, PostError> {
+        if amount <= 0 {
+            return Err(PostError::NonPositive { amount });
+        }
+        let spec = EntrySpec::new(
+            EntryKind::Subcontract,
+            vec![
+                PostingSpec::new(AccountKind::TownBudget, PLAZA_OWNER, -amount),
                 PostingSpec::new(AccountKind::TaskEscrow, task_id, amount),
             ],
         )
         .task(task_id)
         .root(task_id)
-        .memo("task budget");
+        .memo("task budget funded from the plaza");
         self.post(&spec)
     }
 
-    /// Refunds what `task_id`'s escrow still holds back to the mint: a `refund`
-    /// entry, the schema's `Close` for a root task (task_escrow debit, mint
-    /// credit). Returns the entry's id, or `None` when there is nothing to
-    /// refund (no escrow, or a balance of zero) — in which case no entry is
-    /// posted.
+    /// Charges `credits` of real spend: a `spend` entry, from the task's escrow
+    /// (or from the plaza's budget when `task_id` is `None`) to
+    /// `external_spend`. Refused when the escrow or budget would go negative.
+    pub fn charge_spend(
+        &self,
+        task_id: Option<&str>,
+        credits: i64,
+        memo: &str,
+    ) -> Result<u64, PostError> {
+        if credits <= 0 {
+            return Err(PostError::NonPositive { amount: credits });
+        }
+        let (kind, owner) = match task_id {
+            Some(task) => (AccountKind::TaskEscrow, task),
+            None => (AccountKind::TownBudget, PLAZA_OWNER),
+        };
+        let mut spec = EntrySpec::new(
+            EntryKind::Spend,
+            vec![
+                PostingSpec::new(kind, owner, -credits),
+                PostingSpec::new(AccountKind::ExternalSpend, "providers", credits),
+            ],
+        )
+        .root(owner)
+        .memo(memo);
+        if let Some(task) = task_id {
+            spec = spec.task(task);
+        }
+        self.post(&spec)
+    }
+
+    /// Pays `amount` of a task's escrow to agent `cid`'s wallet: a `payment`
+    /// entry. The chain's margin cap applies: a payment may not exceed 20 % of
+    /// the task's real cost so far.
+    pub fn pay_agent(&self, task_id: &str, cid: u64, amount: i64) -> Result<u64, PostError> {
+        if amount <= 0 {
+            return Err(PostError::NonPositive { amount });
+        }
+        let owner = agent_owner(cid);
+        let spec = EntrySpec::new(
+            EntryKind::Payment,
+            vec![
+                PostingSpec::new(AccountKind::TaskEscrow, task_id, -amount),
+                PostingSpec::new(AccountKind::AgentEarnings, &owner, amount),
+            ],
+        )
+        .task(task_id)
+        .root(task_id)
+        .memo("verified work");
+        self.post(&spec)
+    }
+
+    /// Refunds what `task_id`'s escrow still holds back to the plaza's budget: a
+    /// `refund` entry (task_escrow debited, the plaza's `town_budget` credited).
+    /// Returns the entry's id, or `None` when there is nothing to refund (no
+    /// escrow, or a balance of zero), in which case no entry is posted.
     ///
     /// The balance is read and the entry posted under one lock, so a concurrent
     /// post cannot make the refund overdraw.
-    pub fn refund_task_escrow(&self, task_id: &str) -> Result<Option<u64>, PostError> {
+    pub fn refund_task_to_budget(&self, task_id: &str) -> Result<Option<u64>, PostError> {
         let mut inner = self.lock();
         let Some(account) = inner.find_account(AccountKind::TaskEscrow, task_id) else {
             return Ok(None);
@@ -813,13 +959,103 @@ impl Treasury {
             EntryKind::Refund,
             vec![
                 PostingSpec::new(AccountKind::TaskEscrow, task_id, -amount),
-                PostingSpec::new(AccountKind::Mint, MINT_OWNER, amount),
+                PostingSpec::new(AccountKind::TownBudget, PLAZA_OWNER, amount),
             ],
         )
         .task(task_id)
         .root(task_id)
-        .memo("task budget refunded");
+        .memo("task budget returned to the plaza");
         self.append(&mut inner, &spec).map(Some)
+    }
+
+    /// Moves `amount` of earnings from agent `from_cid` to agent `to_cid`: a
+    /// `transfer` entry. Refused for a self-transfer, a non-positive amount, an
+    /// overdraw, or when the sender's transfers this UTC day would pass
+    /// [`TRANSFER_DAILY_CAP`]. The check, the post and the day's sum all happen
+    /// under one lock.
+    pub fn transfer(
+        &self,
+        from_cid: u64,
+        to_cid: u64,
+        amount: i64,
+        memo: &str,
+    ) -> Result<u64, PostError> {
+        if from_cid == to_cid {
+            return Err(PostError::SelfTransfer { cid: from_cid });
+        }
+        if amount <= 0 {
+            return Err(PostError::NonPositive { amount });
+        }
+        let mut inner = self.lock();
+        let day = now_ms() / DAY_MS;
+        let sent_today = inner
+            .transferred
+            .get(&(from_cid, day))
+            .copied()
+            .unwrap_or(0);
+        if sent_today.saturating_add(amount) > TRANSFER_DAILY_CAP {
+            return Err(PostError::TransferCap {
+                cid: from_cid,
+                sent_today,
+                amount,
+                cap: TRANSFER_DAILY_CAP,
+            });
+        }
+        let from = agent_owner(from_cid);
+        let to = agent_owner(to_cid);
+        let spec = EntrySpec::new(
+            EntryKind::Transfer,
+            vec![
+                PostingSpec::new(AccountKind::AgentEarnings, &from, -amount),
+                PostingSpec::new(AccountKind::AgentEarnings, &to, amount),
+            ],
+        )
+        .memo(memo);
+        let id = self.append(&mut inner, &spec)?;
+        // Only the current day's sums are kept, so the map stays small.
+        inner.transferred.retain(|&(_, sent_on), _| sent_on == day);
+        *inner.transferred.entry((from_cid, day)).or_insert(0) += amount;
+        Ok(id)
+    }
+
+    /// Fines agent `cid`: earnings -> the plaza's `treasury`, a `fine` entry.
+    /// Refused when it would take the agent's wallet below zero.
+    pub fn fine(&self, cid: u64, amount: i64, memo: &str) -> Result<u64, PostError> {
+        if amount <= 0 {
+            return Err(PostError::NonPositive { amount });
+        }
+        let owner = agent_owner(cid);
+        let spec = EntrySpec::new(
+            EntryKind::Fine,
+            vec![
+                PostingSpec::new(AccountKind::AgentEarnings, &owner, -amount),
+                PostingSpec::new(AccountKind::Treasury, PLAZA_OWNER, amount),
+            ],
+        )
+        .memo(memo);
+        self.post(&spec)
+    }
+
+    /// Agent `cid`'s wallet (its earnings balance), or 0 when it has none yet.
+    pub fn wallet(&self, cid: u64) -> i128 {
+        let inner = self.lock();
+        inner
+            .find_account(AccountKind::AgentEarnings, &agent_owner(cid))
+            .map_or(0, |account| inner.balance(account.id))
+    }
+
+    /// Every agent wallet as (cid, balance), in account-creation order.
+    pub fn wallets(&self) -> Vec<(u64, i128)> {
+        let inner = self.lock();
+        inner
+            .accounts
+            .iter()
+            .filter(|account| account.kind == AccountKind::AgentEarnings)
+            .filter_map(|account| {
+                let cid = account.owner_ref.strip_prefix("cid:")?.parse::<u64>().ok()?;
+                Some((cid, inner.balance(account.id)))
+            })
+            .collect()
     }
 
     /// `task_id`'s escrow balance, derived from its postings.
@@ -1268,7 +1504,7 @@ mod tests {
     /// `docs/treasury-draft/schema.sql` — the same table [`POSTING_RULES`]
     /// encodes, listed here independently so a transcription error in the
     /// constant is caught.
-    const SCHEMA_RULES: [(EntryKind, AccountKind, Side); 25] = [
+    const SCHEMA_RULES: [(EntryKind, AccountKind, Side); 28] = [
         (EntryKind::Mint, AccountKind::Mint, Side::Debit),
         (EntryKind::Mint, AccountKind::TaskEscrow, Side::Credit),
         (EntryKind::Mint, AccountKind::TownBudget, Side::Credit),
@@ -1294,6 +1530,9 @@ mod tests {
         (EntryKind::Fee, AccountKind::Treasury, Side::Credit),
         (EntryKind::Fee, AccountKind::Treasury, Side::Debit),
         (EntryKind::Fee, AccountKind::AgentEarnings, Side::Credit),
+        (EntryKind::Spend, AccountKind::TownBudget, Side::Debit),
+        (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Debit),
+        (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Credit),
     ];
 
     #[test]
@@ -1381,6 +1620,12 @@ mod tests {
                 Side::Credit,
                 "budget_move entry may not credit a agent_earnings account",
             ),
+            (
+                EntryKind::Transfer,
+                AccountKind::TaskEscrow,
+                Side::Debit,
+                "transfer entry may not debit a task_escrow account",
+            ),
         ];
         for (entry_kind, account_kind, side, message) in forbidden {
             // The offending posting is first, so it is the one the rules
@@ -1414,7 +1659,7 @@ mod tests {
             assert_eq!(refused.to_string(), message);
         }
         // None of these touched the journal.
-        assert_eq!(treasury.view().totals.entries, 0);
+        assert_eq!(treasury.view().totals.entries, 1);
     }
 
     #[test]
@@ -1443,7 +1688,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{kind} {owner} exists"))
                 .balance
         };
-        assert_eq!(balance("mint", MINT_OWNER), -500);
+        assert_eq!(balance("mint", MINT_OWNER), -i128::from(PLAZA_BUDGET) - 500);
         assert_eq!(balance("task_escrow", "t1"), 300);
         assert_eq!(balance("external_spend", "providers"), 200);
 
@@ -1475,56 +1720,54 @@ mod tests {
     #[test]
     fn the_mint_and_refund_cycle_returns_the_escrow_to_the_mint() {
         let treasury = new_treasury();
-        let mint = treasury.mint_task_budget("t1", 500).expect("a mint");
+        let mint = treasury.fund_task("t1", 500).expect("a funding");
         assert_eq!(treasury.escrow_balance("t1"), 500);
-        assert_eq!(treasury.view().totals.entries, 1);
+        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 500);
+        assert_eq!(treasury.view().totals.entries, 2);
 
         let refund = treasury
-            .refund_task_escrow("t1")
+            .refund_task_to_budget("t1")
             .expect("a refund")
             .expect("there was an escrow to refund");
         assert_eq!(refund, mint + 1);
         assert_eq!(treasury.escrow_balance("t1"), 0);
 
         let view = treasury.view();
-        assert_eq!(view.totals.entries, 2);
+        assert_eq!(view.totals.entries, 3);
         assert_eq!(view.spent, 0);
         assert_eq!(view.note, SPEND_NOTE);
-        // Both entries balance; the mint is home and nothing is spent.
-        assert_eq!(view.totals.credits, 1000);
-        assert_eq!(view.totals.debits, 1000);
-        let mint_account = view
+        // Every entry balances, and the refund brought the budget home.
+        assert_eq!(view.totals.balance, 0);
+        let budget = view
             .accounts
             .iter()
-            .find(|account| account.kind == "mint")
-            .expect("the mint account");
-        assert_eq!(mint_account.balance, 0);
+            .find(|account| account.kind == "town_budget")
+            .expect("the plaza's budget account");
+        assert_eq!(budget.balance, i128::from(PLAZA_BUDGET));
         // A second refund has nothing to refund and posts nothing.
-        assert_eq!(treasury.refund_task_escrow("t1").expect("no-op"), None);
-        assert_eq!(treasury.view().totals.entries, 2);
+        assert_eq!(treasury.refund_task_to_budget("t1").expect("no-op"), None);
+        assert_eq!(treasury.view().totals.entries, 3);
         // A task that never had a budget has no escrow to refund.
-        assert_eq!(treasury.refund_task_escrow("t9").expect("no-op"), None);
+        assert_eq!(treasury.refund_task_to_budget("t9").expect("no-op"), None);
         assert!(treasury.verify_journal().is_ok());
     }
-
     #[test]
     fn the_minted_total_counts_what_the_mint_issued_not_what_came_back() {
         let treasury = new_treasury();
-        // An empty journal has minted nothing.
-        assert_eq!(treasury.minted_total(), 0);
-        treasury.mint_task_budget("t1", 500).expect("a mint");
-        assert_eq!(treasury.minted_total(), 500, "the mint raised the total");
-        treasury.mint_task_budget("t2", 250).expect("a mint");
-        assert_eq!(treasury.minted_total(), 750, "and again");
-        // A refund returns the escrow to the mint but does not un-issue it: the
-        // total is what the mint issued, not what it still holds.
-        treasury.refund_task_escrow("t1").expect("a refund");
-        assert_eq!(treasury.minted_total(), 750);
-        // The journal's own credits total is larger (the refund credited the
-        // mint back), which is why the council reads this figure instead.
-        assert_eq!(treasury.view().totals.credits, 1250);
+        // The plaza's opening mint is the only issue so far.
+        assert_eq!(treasury.minted_total(), i128::from(PLAZA_BUDGET));
+        treasury.mint_plaza_budget(250).expect("a mint");
+        assert_eq!(
+            treasury.minted_total(),
+            i128::from(PLAZA_BUDGET) + 250,
+            "the mint raised the total"
+        );
+        // Funding and refunding move credits around the plaza but issue none,
+        // so the total is what the mint issued, not what it holds.
+        treasury.fund_task("t1", 500).expect("a funding");
+        treasury.refund_task_to_budget("t1").expect("a refund");
+        assert_eq!(treasury.minted_total(), i128::from(PLAZA_BUDGET) + 250);
     }
-
     #[test]
     fn an_escrow_cannot_overdraw() {
         let treasury = new_treasury();
@@ -1563,7 +1806,7 @@ mod tests {
         );
         // The refusal changed nothing.
         assert_eq!(treasury.escrow_balance("t1"), 100);
-        assert_eq!(treasury.view().totals.entries, 1);
+        assert_eq!(treasury.view().totals.entries, 2);
 
         // Draining it exactly is allowed.
         treasury
@@ -1724,7 +1967,7 @@ mod tests {
             .expect_err("999 is not 1000");
         assert_eq!(unbalanced, PostError::Unbalanced { sum: -1 });
         assert!(unbalanced.to_string().contains("does not balance"));
-        assert_eq!(treasury.view().totals.entries, 0);
+        assert_eq!(treasury.view().totals.entries, 1);
 
         // Money that moves for a task must name its chain...
         let no_chain = treasury
@@ -1793,7 +2036,7 @@ mod tests {
                 owner_ref: "t1".to_string()
             })
         );
-        assert_eq!(treasury.view().totals.entries, 0);
+        assert_eq!(treasury.view().totals.entries, 1);
     }
 
     #[test]
@@ -1824,8 +2067,8 @@ mod tests {
             .iter()
             .map(|entry| entry.id)
             .collect();
-        assert_eq!(ids, vec![1, 2]);
-        assert_eq!(treasury.journal(JOURNAL_LIMIT).total, 2);
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(treasury.journal(JOURNAL_LIMIT).total, 3);
 
         // Entries come out as snapshots: taking the journal twice yields equal
         // data, and a correction is a new entry, never an edit. (The journal
@@ -1848,18 +2091,18 @@ mod tests {
             .expect("a second refund");
         let after = serde_json::to_value(treasury.journal(JOURNAL_LIMIT).entries).expect("json");
         assert_eq!(
-            after.as_array().expect("an array")[..2],
+            after.as_array().expect("an array")[..3],
             before.as_array().expect("an array")[..]
         );
-        assert_eq!(after.as_array().expect("an array").len(), 3);
-        assert_eq!(treasury.journal(JOURNAL_LIMIT).entries[2].id, 3);
+        assert_eq!(after.as_array().expect("an array").len(), 4);
+        assert_eq!(treasury.journal(JOURNAL_LIMIT).entries[3].id, 4);
         assert!(treasury.verify_journal().is_ok());
     }
 
     #[test]
     fn accounts_are_opened_lazily_only_when_an_entry_needs_them() {
         let treasury = new_treasury();
-        // Only the mint exists until something needs more.
+        // Only the mint and the plaza's budget exist until something needs more.
         let kinds = |treasury: &Treasury| -> Vec<&'static str> {
             treasury
                 .accounts()
@@ -1867,12 +2110,12 @@ mod tests {
                 .map(|account| account.kind)
                 .collect()
         };
-        assert_eq!(kinds(&treasury), vec!["mint"]);
+        assert_eq!(kinds(&treasury), vec!["mint", "town_budget"]);
 
         fund(&treasury, "t1", 100);
-        assert_eq!(kinds(&treasury), vec!["mint", "task_escrow"]);
-        assert_eq!(treasury.accounts()[1].owner_ref, "t1");
-        assert_eq!(treasury.accounts()[1].credit_limit, 0);
+        assert_eq!(kinds(&treasury), vec!["mint", "town_budget", "task_escrow"]);
+        assert_eq!(treasury.accounts()[2].owner_ref, "t1");
+        assert_eq!(treasury.accounts()[2].credit_limit, 0);
 
         // The other kinds appear only when an entry names them.
         treasury
@@ -1890,20 +2133,19 @@ mod tests {
             .expect("a spend opens the spend counterparty");
         assert_eq!(
             kinds(&treasury),
-            vec!["mint", "task_escrow", "external_spend"]
+            vec!["mint", "town_budget", "task_escrow", "external_spend"]
         );
         // v0's lifecycle posts none of the rest, so they are still absent.
-        for kind in ["treasury", "town_budget", "agent_earnings"] {
+        for kind in ["treasury", "agent_earnings"] {
             assert!(!kinds(&treasury).contains(&kind), "{kind} appeared");
         }
     }
-
     #[test]
     fn the_caps_refuse_honestly() {
         let treasury = new_treasury();
         // The journal's cap: fill it with mint entries to a town budget, which
         // the rules allow and which touches no limited account.
-        for _ in 0..MAX_ENTRIES {
+        for _ in 0..MAX_ENTRIES - 1 {
             treasury
                 .post(&spec(
                     EntryKind::Mint,
@@ -1940,12 +2182,12 @@ mod tests {
         // The accounts cap: opening one past the cap is refused, and so is an
         // entry that would open one.
         let fresh = new_treasury();
-        for index in 0..MAX_ACCOUNTS - 1 {
+        for index in 0..MAX_ACCOUNTS - 2 {
             fresh
                 .open_account(AccountKind::TownBudget, &format!("t{index}"), 0)
                 .expect("an account under the cap");
         }
-        // The mint account plus MAX_ACCOUNTS - 1 town budgets is exactly the cap.
+        // The mint and plaza accounts plus MAX_ACCOUNTS - 2 town budgets are exactly the cap.
         assert_eq!(fresh.accounts().len(), MAX_ACCOUNTS);
         let refused = fresh
             .open_account(AccountKind::TownBudget, "one-too-many", 0)
@@ -1964,7 +2206,7 @@ mod tests {
             .expect_err("the accounts are full");
         assert_eq!(refused, PostError::AccountsFull { max: MAX_ACCOUNTS });
         assert_eq!(fresh.accounts().len(), MAX_ACCOUNTS);
-        assert_eq!(fresh.view().totals.entries, 0);
+        assert_eq!(fresh.view().totals.entries, 1);
     }
 
     #[test]
@@ -1984,28 +2226,29 @@ mod tests {
         }
         let journal = treasury.journal(JOURNAL_LIMIT);
         assert_eq!(journal.entries.len(), JOURNAL_LIMIT);
-        assert_eq!(journal.total, JOURNAL_LIMIT + 10);
+        assert_eq!(journal.total, JOURNAL_LIMIT + 11);
         assert_eq!(journal.limit, JOURNAL_LIMIT);
         assert!(journal.truncated);
         // Chronological: the newest entry is last, and the response holds the
         // newest window of the journal.
-        assert_eq!(journal.entries[0].id, 11);
-        assert_eq!(journal.entries[JOURNAL_LIMIT - 1].id, (JOURNAL_LIMIT + 10) as u64);
+        assert_eq!(journal.entries[0].id, 12);
+        assert_eq!(journal.entries[JOURNAL_LIMIT - 1].id, (JOURNAL_LIMIT + 11) as u64);
 
         // A short journal is not truncated, and is oldest-first.
         let small = new_treasury();
-        small.mint_task_budget("t1", 5).expect("mint");
+        small.fund_task("t1", 5).expect("mint");
         let journal = small.journal(JOURNAL_LIMIT);
         assert!(!journal.truncated);
-        assert_eq!(journal.total, 1);
-        assert_eq!(journal.entries[0].kind, "mint");
-        assert_eq!(journal.entries[0].task_id.as_deref(), Some("t1"));
-        assert_eq!(journal.entries[0].amount, 5);
-        assert_eq!(journal.entries[0].postings.len(), 2);
-        assert_eq!(journal.entries[0].posted_by, POSTED_BY);
-        assert_eq!(journal.entries[0].memo, "task budget");
+        // The plaza's mint is entry 1; the funding is entry 2.
+        assert_eq!(journal.total, 2);
+        assert_eq!(journal.entries[1].kind, "subcontract");
+        assert_eq!(journal.entries[1].task_id.as_deref(), Some("t1"));
+        assert_eq!(journal.entries[1].amount, 5);
+        assert_eq!(journal.entries[1].postings.len(), 2);
+        assert_eq!(journal.entries[1].posted_by, POSTED_BY);
+        assert_eq!(journal.entries[1].memo, "task budget funded from the plaza");
         // Every entry is a balanced pair summing to zero.
-        let sum: i64 = journal.entries[0]
+        let sum: i64 = journal.entries[1]
             .postings
             .iter()
             .map(|posting| posting.amount)
@@ -2019,9 +2262,9 @@ mod tests {
         let receiver = events.subscribe();
         let treasury = Treasury::new(Arc::clone(&events));
 
-        let mint = treasury.mint_task_budget("t1", 500).expect("a mint");
+        let mint = treasury.fund_task("t1", 500).expect("a funding");
         let refund = treasury
-            .refund_task_escrow("t1")
+            .refund_task_to_budget("t1")
             .expect("a refund")
             .expect("something to refund");
 
@@ -2032,8 +2275,10 @@ mod tests {
         assert_eq!(
             frames,
             vec![
+                "event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":100000,\"task\":null}\n\n"
+                    .to_string(),
                 format!(
-                    "event: treasury\ndata: {{\"entry\":{mint},\"kind\":\"mint\",\"amount\":500,\"task\":\"t1\"}}\n\n"
+                    "event: treasury\ndata: {{\"entry\":{mint},\"kind\":\"subcontract\",\"amount\":500,\"task\":\"t1\"}}\n\n"
                 ),
                 format!(
                     "event: treasury\ndata: {{\"entry\":{refund},\"kind\":\"refund\",\"amount\":500,\"task\":\"t1\"}}\n\n"
@@ -2041,7 +2286,6 @@ mod tests {
             ]
         );
     }
-
     #[test]
     fn the_append_only_guard_catches_a_tampered_journal() {
         let treasury = new_treasury();
@@ -2167,5 +2411,126 @@ mod tests {
         };
         assert_eq!(balance("shop"), 120000);
         assert_eq!(balance("lab"), 30000);
+    }
+}
+
+#[cfg(test)]
+mod economy_tests {
+    use super::*;
+
+    fn treasury() -> Treasury {
+        Treasury::new(EventBus::new())
+    }
+
+    #[test]
+    fn funding_and_refund_round_trip_keeps_every_balance_consistent() {
+        let treasury = treasury();
+        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET));
+        treasury.fund_task("t1", 300).expect("fund");
+        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 300);
+        assert_eq!(treasury.escrow_balance("t1"), 300);
+        treasury.charge_spend(Some("t1"), 120, "model call").expect("spend");
+        assert_eq!(treasury.escrow_balance("t1"), 180);
+        assert!(treasury.refund_task_to_budget("t1").expect("refund").is_some());
+        assert_eq!(treasury.escrow_balance("t1"), 0);
+        // The 120 credits spent are gone; the rest came home to the plaza.
+        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 120);
+        assert_eq!(treasury.refund_task_to_budget("t1").expect("nothing left"), None);
+        assert!(treasury.verify_journal().is_ok());
+        assert_eq!(treasury.view().totals.balance, 0);
+    }
+
+    #[test]
+    fn a_spend_is_refused_past_the_escrow() {
+        let treasury = treasury();
+        treasury.fund_task("t1", 50).expect("fund");
+        let refused = treasury
+            .charge_spend(Some("t1"), 51, "too much")
+            .expect_err("past the escrow");
+        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
+        assert_eq!(treasury.escrow_balance("t1"), 50);
+        // A spend from the plaza budget cannot overdraw it either, and funding
+        // past the budget is refused the same way.
+        let refused = treasury
+            .charge_spend(None, PLAZA_BUDGET + 1, "plaza")
+            .expect_err("past the budget");
+        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
+        let refused = treasury
+            .fund_task("t2", PLAZA_BUDGET)
+            .expect_err("past the budget");
+        assert!(matches!(refused, PostError::Overdrawn { .. }), "{refused:?}");
+        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 50);
+        assert!(treasury.verify_journal().is_ok());
+    }
+
+    #[test]
+    fn a_payment_lands_in_the_wallet() {
+        let treasury = treasury();
+        treasury.fund_task("t1", 200).expect("fund");
+        // A payment is capped at 20 % of the chain's real cost, so none lands
+        // before the work has cost anything.
+        assert!(matches!(
+            treasury.pay_agent("t1", 7, 5),
+            Err(PostError::MarginCap { .. })
+        ));
+        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury.pay_agent("t1", 7, 20).expect("pay");
+        assert_eq!(treasury.wallet(7), 20);
+        assert_eq!(treasury.wallet(8), 0);
+        assert_eq!(treasury.escrow_balance("t1"), 80);
+        assert_eq!(treasury.wallets(), vec![(7, 20)]);
+        assert!(treasury.verify_journal().is_ok());
+    }
+
+    #[test]
+    fn a_transfer_is_capped_per_sender_per_day() {
+        let treasury = treasury();
+        treasury.fund_task("t1", 6000).expect("fund");
+        treasury.charge_spend(Some("t1"), 5000, "real cost").expect("spend");
+        treasury.pay_agent("t1", 1, 1000).expect("pay");
+        assert!(matches!(
+            treasury.transfer(1, 1, 10, ""),
+            Err(PostError::SelfTransfer { cid: 1 })
+        ));
+        assert!(matches!(
+            treasury.transfer(1, 2, 0, ""),
+            Err(PostError::NonPositive { amount: 0 })
+        ));
+        treasury.transfer(1, 2, 600, "first").expect("first leg");
+        let capped = treasury.transfer(1, 2, 500, "over").expect_err("over the cap");
+        assert!(
+            matches!(
+                capped,
+                PostError::TransferCap { cid: 1, sent_today: 600, amount: 500, cap: 1000 }
+            ),
+            "{capped:?}"
+        );
+        treasury.transfer(1, 2, 400, "to the cap").expect("exactly the cap");
+        assert_eq!(treasury.wallet(1), 0);
+        assert_eq!(treasury.wallet(2), 1000);
+        // The allowance is per sender: agent 2 has sent nothing today.
+        treasury.transfer(2, 1, 1000, "back").expect("a fresh sender");
+        assert!(treasury.verify_journal().is_ok());
+    }
+
+    #[test]
+    fn a_fine_is_refused_below_zero() {
+        let treasury = treasury();
+        assert!(matches!(
+            treasury.fine(3, 10, "no earnings"),
+            Err(PostError::Overdrawn { .. })
+        ));
+        treasury.fund_task("t1", 200).expect("fund");
+        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury.pay_agent("t1", 3, 20).expect("pay");
+        assert!(matches!(
+            treasury.fine(3, 21, "too much"),
+            Err(PostError::Overdrawn { .. })
+        ));
+        assert_eq!(treasury.wallet(3), 20);
+        treasury.fine(3, 20, "all of it").expect("fine the whole wallet");
+        assert_eq!(treasury.wallet(3), 0);
+        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 200);
+        assert!(treasury.verify_journal().is_ok());
     }
 }
