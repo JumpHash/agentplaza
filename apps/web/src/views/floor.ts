@@ -1,5 +1,5 @@
 // The Floor: districts of robots on a three.js plaza. The scene owns placement,
-// wandering, socialising, packets, drones and labels; each robot owns its own animation
+// wandering, socialising, packets and labels; each robot owns its own animation
 // (floor3d/robot), and the furniture comes from floor3d/props.
 
 import '../styles/floor.css';
@@ -27,7 +27,8 @@ const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-i
 const AZIMUTH = Math.PI / 4;
 const SOCIAL_NEAR = 9.5; // districts this close count as neighbours for a visit or a chat
 const STROLL_R = 3.1; // the stroll ring just outside the dais
-const DRONE_Y = 2.6;
+const ROBOT_R = 0.45; // robot footprint radius for collisions
+const STEER = [0, 30, -30, 60, -60].map((d) => (d * Math.PI) / 180); // headings tried when a step is blocked
 const DUST_N = 90;
 const LABEL_CSS =
   'position:absolute;left:0;top:0;display:none;max-width:220px;padding:3px 6px;' +
@@ -86,19 +87,6 @@ interface Packet {
   halo: THREE.Mesh;
 }
 
-interface Drone {
-  group: THREE.Group;
-  ax: number; // the two districts it flies between
-  az: number;
-  bx: number;
-  bz: number;
-  px: number; // unit perpendicular to that line, for the sway
-  pz: number;
-  phase: number;
-  speed: number;
-  spins: THREE.Group[]; // the four rotor holders
-}
-
 /** A district's monitors and whether one of its robots is working right now. */
 interface DistrictLight {
   screens: THREE.MeshStandardMaterial[];
@@ -137,21 +125,24 @@ export function layoutDistricts(list: Agent[]): { districts: District[]; homes: 
     districts.push(d);
     const side = Math.max(1, Math.ceil(Math.sqrt(members.length)));
     members.sort((a, b) => a.cid - b.cid).forEach((a, i) => {
-      const gx = d.cx - (side - 1) + (i % side) * 2;
-      const gy = d.cy - (side - 1) + Math.floor(i / side) * 2;
+      const span = 1.5 * (side - 1); // homes sit 3 apart
+      const gx = d.cx - span + (i % side) * 3;
+      const gy = d.cy - span + Math.floor(i / side) * 3;
       homes.set(a.cid, [d, gx, gy]);
     });
   };
   const centre = groups.get('');
   if (centre) place({ role: 'orchestrator', cx: 0, cy: 0, r: 2, hue: 25 }, centre);
   const roles = [...groups.keys()].filter((k) => k).sort();
-  const ringR = 6 + Math.floor(roles.length / 6) * 2;
+  // Slabs are sized by member count; the ring is wide enough that neighbouring slabs do not overlap.
+  const slabR = (n: number): number => Math.ceil(1.5 * Math.max(1, Math.ceil(Math.sqrt(n))) + 1);
+  const rMax = roles.reduce((m, role) => Math.max(m, slabR(groups.get(role)!.length)), 0);
+  const ringR = Math.max(9, Math.ceil((2 * rMax + 1.5) / (2 * Math.sin(Math.PI / Math.max(3, roles.length)))));
   roles.forEach((role, i) => {
     const members = groups.get(role)!;
-    const side = Math.max(1, Math.ceil(Math.sqrt(members.length)));
     const angle = (i / roles.length) * Math.PI * 2 - Math.PI / 2;
     place(
-      { role, cx: Math.round(Math.cos(angle) * ringR), cy: Math.round(Math.sin(angle) * ringR), r: side + 1, hue: roleHue(role) },
+      { role, cx: Math.round(Math.cos(angle) * ringR), cy: Math.round(Math.sin(angle) * ringR), r: slabR(members.length), hue: roleHue(role) },
       members,
     );
   });
@@ -199,6 +190,24 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 const topOf = (d: District): number => (d.role === 'orchestrator' ? DAIS_H : SLAB_H);
+
+/** Whether (x, y) lies on a district's walkable top, inset by margin. */
+const onSlab = (d: District, x: number, y: number, margin: number): boolean =>
+  d.role === 'orchestrator'
+    ? Math.hypot(x - d.cx, y - d.cy) <= DAIS_R - margin
+    : Math.abs(x - d.cx) <= d.r - margin && Math.abs(y - d.cy) <= d.r - margin;
+
+/** A prop's ground footprint, in grid units. */
+interface Footprint {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+}
+
+/** Whether (x, y) lies within a robot's width of a prop footprint. */
+const near = (p: Footprint, x: number, y: number): boolean =>
+  x > p.x0 - ROBOT_R && x < p.x1 + ROBOT_R && y > p.z0 - ROBOT_R && y < p.z1 + ROBOT_R;
 
 /** Free geometry, materials and textures under an object. */
 function disposeTree(obj: THREE.Object3D): void {
@@ -326,8 +335,6 @@ export function mount(root: HTMLElement): Cleanup {
   scene.add(districtGroup);
   const pathGroup = new THREE.Group();
   scene.add(pathGroup);
-  const droneGroup = new THREE.Group();
-  scene.add(droneGroup);
   const plaza = buildPlaza(C);
   scene.add(plaza);
   const plazaAnim = plaza.userData.animate as (t: number) => void;
@@ -335,10 +342,6 @@ export function mount(root: HTMLElement): Cleanup {
   const packetGeo = new THREE.SphereGeometry(0.13, 14, 10);
   const haloGeo = new THREE.SphereGeometry(0.34, 14, 10);
   const tokenGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-  const droneBodyGeo = new THREE.BoxGeometry(0.34, 0.12, 0.34);
-  const rotorGeo = new THREE.CircleGeometry(0.2, 14);
-  const droneMat = new THREE.MeshStandardMaterial({ color: C.ink3, roughness: 0.5, metalness: 0.3 });
-  const rotorMat = new THREE.MeshBasicMaterial({ color: C.ink3, transparent: true, opacity: 0.3, depthWrite: false });
   const mats = {
     accent: new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false }),
     ok: new THREE.MeshBasicMaterial({ color: C.ok, toneMapped: false }),
@@ -387,7 +390,7 @@ export function mount(root: HTMLElement): Cleanup {
   let bots: Bot[] = [];
   const byCid = new Map<number, Bot>();
   const packets: Packet[] = [];
-  const drones: Drone[] = [];
+  const propBoxes: Footprint[] = []; // prop footprints on the ground
   const litByRole = new Map<string, DistrictLight>();
   const propAnim: ((t: number) => void)[] = [];
   const tmpV = new THREE.Vector3();
@@ -464,6 +467,12 @@ export function mount(root: HTMLElement): Cleanup {
       const props = buildDistrictProps(d.hue, d.r, d.role, C);
       props.position.set(d.cx, SLAB_H, d.cy);
       g.add(props);
+      props.updateMatrixWorld(true);
+      for (const part of props.children) {
+        const box = new THREE.Box3().setFromObject(part);
+        if (box.min.y > SLAB_H + 2.2) continue; // overhead pieces do not block the floor
+        propBoxes.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z });
+      }
       litByRole.set(d.role, { screens: (props.userData.screens ?? []) as THREE.MeshStandardMaterial[], lit: false });
       const anim = props.userData.animate as ((t: number) => void) | undefined;
       if (anim) propAnim.push(anim);
@@ -479,7 +488,7 @@ export function mount(root: HTMLElement): Cleanup {
     return g;
   }
 
-  /** Districts, their paths and their drones, rebuilt whenever the layout changes. */
+  /** Districts and their paths, rebuilt whenever the layout changes. */
   function buildWorld(ds: District[]): void {
     for (const child of [...districtGroup.children]) {
       districtGroup.remove(child);
@@ -487,47 +496,11 @@ export function mount(root: HTMLElement): Cleanup {
     }
     litByRole.clear();
     propAnim.length = 0;
+    propBoxes.length = 0;
     for (const d of ds) districtGroup.add(districtMesh(d));
     disposeTree(pathGroup);
     pathGroup.clear();
     pathGroup.add(buildPaths(ds.map((d) => new THREE.Vector3(d.cx, 0, d.cy)), C));
-    buildDrones(ds);
-  }
-
-  /** Three to five small drones, each looping between two districts. */
-  function buildDrones(ds: District[]): void {
-    droneGroup.clear();
-    drones.length = 0;
-    if (!ds.length) return;
-    const corners: [number, number][] = [
-      [-0.24, -0.24],
-      [0.24, -0.24],
-      [-0.24, 0.24],
-      [0.24, 0.24],
-    ];
-    const n = Math.min(5, Math.max(3, ds.length));
-    for (let i = 0; i < n; i++) {
-      const a = ds[i % ds.length]!;
-      const b = ds[(i * 3 + 1) % ds.length]!;
-      const group = new THREE.Group();
-      group.add(new THREE.Mesh(droneBodyGeo, droneMat));
-      const spins: THREE.Group[] = [];
-      for (const [x, z] of corners) {
-        const holder = new THREE.Group();
-        holder.position.set(x, 0.1, z);
-        const disc = new THREE.Mesh(rotorGeo, rotorMat);
-        disc.rotation.x = -Math.PI / 2;
-        holder.add(disc);
-        group.add(holder);
-        spins.push(holder);
-      }
-      const dx = b.cx - a.cx;
-      const dz = b.cy - a.cy;
-      const len = Math.hypot(dx, dz) || 1;
-      group.rotation.y = Math.atan2(dx, dz);
-      droneGroup.add(group);
-      drones.push({ group, ax: a.cx, az: a.cy, bx: b.cx, bz: b.cy, px: -dz / len, pz: dx / len, phase: i * 1.7, speed: 0.35 + i * 0.05, spins });
-    }
   }
 
   // Robots, labels, pads.
@@ -665,6 +638,28 @@ export function mount(root: HTMLElement): Cleanup {
     }
   }
 
+  /** The top of whatever lies under (x, y): a dais, a district slab, or the bare floor. */
+  function surfaceAt(x: number, y: number): number {
+    let top = 0;
+    for (const d of districts) if (onSlab(d, x, y, 0)) top = Math.max(top, topOf(d));
+    return top;
+  }
+
+  /** Whether a robot centred at (x, y) would clash with a prop, leave its slab, or overlap another robot. */
+  function blocked(b: Bot, x: number, y: number, checkProps: boolean): boolean {
+    if (checkProps) {
+      for (const p of propBoxes) if (near(p, x, y) && !near(p, b.x, b.y)) return true;
+      if (!onSlab(b.district, x, y, ROBOT_R) && onSlab(b.district, b.x, b.y, 0)) return true;
+    }
+    const partner = b.social?.partner ?? null;
+    for (const o of bots) {
+      if (o === b || o === partner) continue;
+      const d = Math.hypot(o.x - x, o.y - y);
+      if (d < ROBOT_R * 2 && d < Math.hypot(o.x - b.x, o.y - b.y)) return true;
+    }
+    return false;
+  }
+
   /** Robots: wander or socialise when idle, head home when working or offline, animate, tint pads. */
   function updateBots(dt: number, now: number): void {
     const t = now / 1000;
@@ -695,14 +690,23 @@ export function mount(root: HTMLElement): Cleanup {
       const dx = gx - b.x;
       const dy = gy - b.y;
       const dist = Math.hypot(dx, dy);
-      const step = SPEED * dt;
       b.moving = dist > 0.02;
-      if (dist > step) {
-        b.x += (dx / dist) * step;
-        b.y += (dy / dist) * step;
-      } else {
-        b.x = gx;
-        b.y = gy;
+      // Step toward the goal. A blocked step tries nearby headings, else the robot waits this frame.
+      const checkProps = roaming && !s;
+      let travel: number | null = null;
+      if (b.moving) {
+        const step = Math.min(SPEED * dt, dist);
+        const toGoal = Math.atan2(dx, dy);
+        for (const off of STEER) {
+          const ang = toGoal + off;
+          const nx = b.x + Math.sin(ang) * step;
+          const ny = b.y + Math.cos(ang) * step;
+          if (blocked(b, nx, ny, checkProps)) continue;
+          b.x = nx;
+          b.y = ny;
+          travel = ang;
+          break;
+        }
       }
       // Social arrivals: a visitor that has reached its partner starts the chat; a stroller waits briefly at the ring.
       if (s && roaming) {
@@ -720,7 +724,7 @@ export function mount(root: HTMLElement): Cleanup {
       const talker = s && s.phase === 'talk' ? s.partner : null;
       let want: number | null = null;
       if (talker) want = Math.atan2(talker.x - b.x, talker.y - b.y);
-      else if (b.moving) want = Math.atan2(dx, dy);
+      else if (b.moving) want = travel ?? Math.atan2(dx, dy);
       if (want !== null) {
         const diff = Math.atan2(Math.sin(want - b.heading), Math.cos(want - b.heading));
         b.heading += diff * Math.min(1, dt * 8);
@@ -735,7 +739,7 @@ export function mount(root: HTMLElement): Cleanup {
         b.highlighted = highlight;
         b.robot.setHighlighted(highlight);
       }
-      b.robot.group.position.set(b.x, topOf(b.district), b.y);
+      b.robot.group.position.set(b.x, surfaceAt(b.x, b.y), b.y);
       b.robot.group.rotation.y = b.heading;
       b.robot.update(dt, t);
       b.padMat.color.copy(status === 'working' ? C.info : status === 'idle' ? C.ok : C.ink3);
@@ -753,20 +757,6 @@ export function mount(root: HTMLElement): Cleanup {
     for (const p of litByRole.values()) {
       const want = p.lit ? 1.2 : 0.05;
       for (const m of p.screens) if (m.emissiveIntensity !== want) m.emissiveIntensity = want;
-    }
-  }
-
-  /** The drones loop between their two districts with a faint bob, and their rotors turn. */
-  function updateDrones(t: number): void {
-    for (const d of drones) {
-      const s = 0.5 - 0.5 * Math.cos(t * d.speed + d.phase);
-      const sway = Math.sin(t * d.speed * 2 + d.phase) * 0.8;
-      d.group.position.set(
-        d.ax + (d.bx - d.ax) * s + d.px * sway,
-        DRONE_Y + Math.sin(t * 1.7 + d.phase) * 0.12,
-        d.az + (d.bz - d.az) * s + d.pz * sway,
-      );
-      for (const r of d.spins) r.rotation.y = t * 22;
     }
   }
 
@@ -1005,7 +995,6 @@ export function mount(root: HTMLElement): Cleanup {
     const t = now / 1000;
     updateBots(dt, now);
     updatePackets(now);
-    updateDrones(t);
     updateDust(t);
     plazaAnim(t);
     for (const fn of propAnim) fn(t);
@@ -1029,8 +1018,6 @@ export function mount(root: HTMLElement): Cleanup {
     bots = [];
     byCid.clear();
     for (const p of packets.splice(0)) dropPacket(p);
-    drones.length = 0;
-    droneGroup.clear();
     disposeTree(districtGroup);
     disposeTree(pathGroup);
     disposeTree(plaza);
@@ -1042,10 +1029,6 @@ export function mount(root: HTMLElement): Cleanup {
     packetGeo.dispose();
     haloGeo.dispose();
     tokenGeo.dispose();
-    droneBodyGeo.dispose();
-    rotorGeo.dispose();
-    droneMat.dispose();
-    rotorMat.dispose();
     for (const m of Object.values(mats)) m.dispose();
     renderer.dispose();
     root.classList.remove('floor-view');
