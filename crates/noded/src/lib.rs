@@ -7,6 +7,7 @@
 //! * `GET /v1/runs` · `POST /v1/runs` — runs (groups of VMs) · boot one
 //! * `GET /v1/runs/{id}` · `DELETE /v1/runs/{id}` — one run with its serial captures · kill it
 //! * `POST /v1/runs/{id}/input` — write to one VM's serial console
+//! * `POST /v1/runs/{id}/vms/{index}/memory` — resize one VM's balloon
 //! * `GET /v1/events` — SSE: `run`, `vm`, `serial`
 //!
 //! With `--agents <roles manifest>` it also boots the role fleet at start:
@@ -407,6 +408,9 @@ fn router() -> Router<Node> {
         .get("/v1/runs/{id}", |node, _, params| get_run(node, params.get("id")))
         .delete("/v1/runs/{id}", |node, _, params| delete_run(node, params.get("id")))
         .post("/v1/runs/{id}/input", |node, request, params| send_input(node, params.get("id"), &request.body))
+        .post("/v1/runs/{id}/vms/{index}/memory", |node, request, params| {
+            set_vm_memory(node, params.get("id"), params.get("index"), &request.body)
+        })
 }
 
 /// `GET /v1/machine/stats`: the latest host sample, the last minute of samples,
@@ -477,6 +481,31 @@ fn send_input(node: &Node, id: &str, body: &[u8]) -> Response {
     }
     match run.send_input(request.vm, &data) {
         Ok(()) => Response::json(200, &run.view(Detail::Full)),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The `POST /v1/runs/{id}/vms/{index}/memory` body.
+#[derive(Debug, Deserialize)]
+struct MemoryRequest {
+    /// The guest's usable memory, in MiB.
+    usable_mib: u32,
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/memory`: resizes one VM's balloon and
+/// answers with the VM's memory as the balloon now reads it. An unknown run or
+/// VM is a 404; a VM with no balloon, or one that has stopped, is a 409 (see
+/// `registry::MemoryError::status`).
+fn set_vm_memory(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let Ok(vm) = index.parse::<u32>() else {
+        return Response::error(404, &format!("no VM {index} in run {id}"));
+    };
+    let request: MemoryRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid memory request: {err}")),
+    };
+    match node.registry().set_vm_memory(id, vm, request.usable_mib) {
+        Ok(memory) => Response::json(200, &memory),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }

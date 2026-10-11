@@ -222,7 +222,7 @@ served one with no session 409.
 ## noded HTTP (`127.0.0.1:8899`)
 
 `GET /v1/machine`, `GET/POST /v1/runs` (`POST {n, vcpus?, memory_mib?, role?,
-keepalive?, beats?}`), `GET/DELETE /v1/runs/{id}`, `POST /v1/runs/{id}/input`,
+keepalive?, beats?, balloon_usable_mib?}`), `GET/DELETE /v1/runs/{id}`, `POST /v1/runs/{id}/input`, `POST /v1/runs/{id}/vms/{index}/memory` (`{usable_mib}`: resize one VM's balloon; 404 unknown, 409 without a balloon or stopped),
 `GET /v1/events` (`run`, `vm`, `serial`).
 
 ## State
