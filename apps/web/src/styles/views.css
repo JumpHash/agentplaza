@@ -1,122 +1,15 @@
-/* The map screen: a surveyor's plan, same palette and type as the register. The
-   floor's own sheet is floor.css. */
+/* Screen-specific styles live here, one section per screen. */
 
-.canvasbody { position: relative; }
-canvas#map-canvas { display: block; width: 100%; height: 420px; border: 1px solid var(--rule); background: var(--paper); box-sizing: border-box; }
-/* the legend under a canvas: the marks the drawing uses, in the register's
-   own mark language) */
-.legend { display: flex; gap: 18px; flex-wrap: wrap; padding-top: 4px; }
-
-/* telemetry: the session's figures, ruled like the sample console's charts —
-   transparent ground so the sheet's own paper shows through, as with the SVG
-   figures in the design draft */
-canvas.tchart { display: block; width: 100%; height: 150px; box-sizing: border-box; }
-/* the run pick: text links in the register's voice; the picked one reads orange */
-.tlscope { display: flex; gap: 6px 18px; flex-wrap: wrap; font: 500 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
-.tlscope .tlink { font: inherit; letter-spacing: inherit; text-transform: inherit; }
-.tlscope .tlink[aria-pressed="true"] { color: var(--signal-ink); text-decoration-color: var(--signal-ink); font-weight: 700; }
-/* per-VM sparklines in the run table: one ink brush, no axes */
-td.sparkcell { padding-top: 6px; padding-bottom: 6px; }
-canvas.spark { display: block; width: 96px; height: 20px; }
-
-/* the hub line: the fleet's transport as the register writes it — mono, terse;
-   amber only when the hub cannot be read, which is not the same as an empty
-   hub (that still names its served CIDs and its zeroes) */
-.hubline { margin-top: 12px; font: 500 11.5px var(--mono); letter-spacing: .04em; color: var(--ink-2); }
-.hubline.warn { color: var(--warn); }
-
-/* the ledger: a task's goal is prose in a table of figures, so its column
-   wraps (every other column stays tabular); a row opens the sheet below it */
-#ledger-table td.goal { white-space: normal; min-width: 200px; max-width: 440px; }
-#ledger-detail h2 { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-#ledger-detail h2 .m { text-transform: none; letter-spacing: 0; color: var(--ink); }
-.ledprose { font: 16px/1.4 var(--serif); margin: 0; max-width: 68ch; }
-.ldacts { display: grid; gap: 14px; }
-.ldacts form { display: grid; gap: 4px; }
-.lrow { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
-.lrow input[type="number"] { width: 8ch; }
-.lrow input[type="text"] { width: min(34ch, 100%); }
-
-/* the ledger's work product: the artifacts a finished task's note names, each
-   a read-through to the agent's own file. The text is guest-derived, so it is
-   ruled and bounded, and it is a scroll region that takes focus (a scrolling
-   box must be reachable by keyboard) with the register's own ink border. */
-.ldart { display: grid; gap: 10px; }
-.ldart h3 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0; }
-.ldartpaths { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
-.ldartpaths .artpath { font-family: var(--mono); text-transform: none; letter-spacing: 0; }
-.ldartpaths .artpath[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
-.ldartbody { border: 1px solid var(--rule); background: var(--paper); }
-.ldarthead { display: flex; gap: 8px 14px; align-items: baseline; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
-.ldarthead .lbl { font: 500 11.5px var(--mono); overflow-wrap: anywhere; margin-right: auto; }
-.ldarthead .c { color: var(--ink-3); font: 400 10.5px var(--mono); }
-.ldartbody .err { padding: 10px 12px; }
-.ldarttext { margin: 0; padding: 10px 12px; max-height: 240px; overflow: auto; font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-
-/* the roster: one ruled band per role, the role's agents beneath it. The band
-   overrides the table's numbered first column, since it spans the row. */
-#roster-table tr.grp td { width: auto; text-align: left; padding: 16px 12px 6px; border-bottom: 1px solid var(--rule); color: var(--ink-3); font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
-#roster-table tr.grp td .role { color: var(--ink); }
-#roster-table tr.grp td .c { color: var(--ink-3); font-weight: 400; letter-spacing: 0; margin-left: 10px; }
-#roster-table tr.grp:first-child td { padding-top: 10px; }
-tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
-
-/* the roster's tool console: the operator's hand on a connected agent. It
-   reuses the ledger's ruled-text box (.ldartbody/.ldarttext) — the answer is
-   the agent's own, so it is bounded, ruled and text-only — and adds the tool
-   form and the recent-calls list, whose entries re-read an earlier answer. */
-#roster-console h2 .m { text-transform: none; letter-spacing: 0; color: var(--ink); }
-#roster-console textarea { font: 12.5px/1.5 var(--mono); resize: vertical; }
-.rcpast { display: grid; gap: 6px; }
-.rcpast h3 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0; }
-.rcpast ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; justify-items: start; }
-.rcpast .rcpastbtn { font-family: var(--mono); text-transform: none; letter-spacing: 0; text-align: left; }
-.rcpast .rcpastbtn[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
-
-/* the roster console's stop: the operator's hand on the agent's session —
-   a ruled band under the drive form, and a confirm line that states what will
-   happen (the red margin rule marks the owner's hand, as the copy's do) */
-.stopblock { display: grid; gap: 10px; padding-top: 14px; margin-top: 4px; border-top: 2px solid var(--ink); }
-.stopblock h3 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0; }
-.stopblock h3 .m { text-transform: none; letter-spacing: 0; color: var(--ink); }
-.stopconfirm { display: grid; gap: 10px; padding: 2px 0 2px 14px; border-left: 3px double var(--margin); }
-.confirmline { font: 15px/1.45 var(--serif); margin: 0; max-width: 68ch; }
-.stopblock .ldarttext.stoptext { white-space: normal; }
-
-/* the treasury: the plaza's account-book. The totals line is the one figure
-   the whole double-entry book rests on (credits and debits equal, the
-   balances summing to zero), and it is stamped as the decision it is; the
-   journal's memo is prose that wraps, its postings two ruled legs that wrap
-   together, and an entry's task is a link into its ledger row. */
-.treline { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin: 0; }
-.treline .m { font: 500 13px var(--mono); letter-spacing: .02em; }
-#treasury-table td.owner { overflow-wrap: anywhere; }
-#journal-table td.memo { white-space: normal; min-width: 160px; max-width: 320px; }
-#journal-table td.postings { white-space: normal; min-width: 200px; max-width: 420px; font: 11.5px var(--mono); color: var(--ink-2); }
-.chip.lkind { border-color: var(--ink-2); color: var(--ink); }
-
-/* the market: the agora's board — one ruled row per call, its bids and its
-   award hanging beneath it as indented sub-rows, the ruled-register way. A
-   sub-row's single cell spans the board, so it overrides the first column's
-   numbered margin and wraps where a call's own line stays tabular. */
-#market-table td.callid a { font: 500 12px var(--mono); letter-spacing: .02em; }
-#market-table tr.sub td { width: auto; text-align: left; white-space: normal; padding: 4px 12px 5px 40px; color: var(--ink-2); font: 11.5px var(--mono); }
-#market-table tr.sub td .lbl { font: 600 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); margin-right: 10px; }
-#market-table tr.sub td > * { margin-right: 10px; }
-#market-table tr.sub td > *:last-child { margin-right: 0; }
-#market-table tr.sub.award td { border-bottom: 1px solid var(--rule); color: var(--ink); }
-#market-table tr.sub td.note, #market-table tr.sub .dot { color: var(--ink-3); }
-#market-table .price { font: 12px var(--mono); color: var(--ink); }
-/* the winning bid's mark: the register's own decision stamp, in ink — orange
-   stays the owner's alone, and a won call needs no colour to read */
-.stamp.sm.won { color: var(--ink); }
-
-@media (max-width: 760px) {
-  #market-table tr.sub td { padding-left: 24px; }
+/* Overview */
+.overview-main { align-items: start; }
+.feed { list-style: none; margin: 0; padding: var(--s2) 0; max-height: 360px; overflow: auto; font-size: var(--fs-sm); }
+.feed li { display: grid; grid-template-columns: 72px max-content 1fr; gap: var(--s2); padding: 6px var(--s5); }
+.feed li .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-empty { display: block !important; text-align: center; }
+.fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s2); padding: var(--s4); }
+.fleet-tile {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; min-width: 0;
+  padding: var(--s3); border-radius: var(--r-md); border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer;
 }
-
-@media (max-width: 760px) {
-  canvas#map-canvas { height: 320px; }
-  canvas.tchart { height: 120px; }
-  .ldarttext { max-height: 200px; }
-}
+.fleet-tile:hover { border-color: var(--border-strong); background: var(--surface-3); }

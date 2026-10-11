@@ -1,0 +1,103 @@
+/* Design tokens. Every colour, size and radius in the console comes from here. */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest */
+  --bg: #0b0d12;
+  --surface: #12151c;
+  --surface-2: #181c25;
+  --surface-3: #1f2430;
+  --border: #262c38;
+  --border-strong: #343b4a;
+
+  /* Text */
+  --text: #e7eaf0;
+  --text-2: #a4acbb;
+  --text-3: #6f7889;
+
+  /* Accent and status */
+  --accent: #7c8cff;
+  --accent-2: #a3afff;
+  --accent-bg: rgba(124, 140, 255, 0.12);
+  --ok: #3ecf8e;
+  --ok-bg: rgba(62, 207, 142, 0.12);
+  --warn: #f2b84b;
+  --warn-bg: rgba(242, 184, 75, 0.12);
+  --danger: #f2667a;
+  --danger-bg: rgba(242, 102, 122, 0.12);
+  --info: #4fb6ff;
+  --info-bg: rgba(79, 182, 255, 0.12);
+  --muted-bg: rgba(164, 172, 187, 0.1);
+
+  /* Type */
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --lh: 1.5;
+
+  /* Space (4px grid) */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s8: 32px;
+  --s10: 40px;
+
+  /* Shape */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+
+  /* Layout */
+  --sidebar-w: 232px;
+  --topbar-h: 56px;
+  --content-max: 1440px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-2: #f8f9fb;
+    --surface-3: #eef0f4;
+    --border: #e3e6ec;
+    --border-strong: #cfd4dd;
+    --text: #151922;
+    --text-2: #4f5767;
+    --text-3: #868e9d;
+    --accent: #4f5ef7;
+    --accent-2: #3644d9;
+    --accent-bg: rgba(79, 94, 247, 0.09);
+    --muted-bg: rgba(79, 87, 103, 0.08);
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --surface-3: #eef0f4;
+  --border: #e3e6ec;
+  --border-strong: #cfd4dd;
+  --text: #151922;
+  --text-2: #4f5767;
+  --text-3: #868e9d;
+  --accent: #4f5ef7;
+  --accent-2: #3644d9;
+  --accent-bg: rgba(79, 94, 247, 0.09);
+  --muted-bg: rgba(79, 87, 103, 0.08);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
+}

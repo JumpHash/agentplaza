@@ -1,318 +1,165 @@
-/* The JSON client for the frozen /api/v0 contract. Errors are values the
-   store keeps and shows — never thrown away, never swallowed. */
-
-import type { Calls } from './models/agora';
-import { parseAgora } from './models/agora';
-import type { TaskArtifact } from './models/artifact';
-import { parseArtifact } from './models/artifact';
-import type { Motion, Motions } from './models/council';
-import { parseMotion, parseMotions } from './models/council';
-import type { HubStatus } from './models/hub';
-import { parseHubStatus } from './models/hub';
-import type { Machine } from './models/machine';
-import type { CreateRun, Run, RunsView } from './models/run';
-import type { Task } from './models/task';
-import { parseTask, parseTasksView } from './models/task';
-import type { AgentStop } from './models/stop';
-import { parseStop } from './models/stop';
-import type { AgentTell } from './models/tell';
-import { parseTell } from './models/tell';
-import type { BoardView, ContactsView, ConversationsView, ThreadView } from './models/social';
-import { parseBoard, parseContacts, parseConversations, parseThread } from './models/social';
-import type { Journal, Treasury } from './models/treasury';
-import { parseJournal, parseTreasury } from './models/treasury';
+// The apid client: one function per endpoint, typed by what apid returns.
+// The console is served by apid, so every path is same-origin.
 
 export class ApiError extends Error {
-  readonly status: number | null;
-  constructor(message: string, status: number | null) {
+  constructor(public status: number, message: string) {
     super(message);
-    this.name = 'ApiError';
-    this.status = status;
   }
 }
 
-interface ApiOptions {
-  method?: string;
-  body?: unknown;
-}
-
-export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
-  const init: RequestInit = { cache: 'no-store', method: opts.method ?? 'GET' };
-  if (opts.body != null) {
-    init.method = opts.method ?? 'POST';
-    init.headers = { 'content-type': 'application/json' };
-    init.body = JSON.stringify(opts.body);
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  const data = text ? (JSON.parse(text) as unknown) : null;
+  if (!res.ok) {
+    const message = (data as { error?: string } | null)?.error ?? `${method} ${path}: ${res.status}`;
+    throw new ApiError(res.status, message);
   }
-  let res: Response;
-  try {
-    res = await fetch(path, init);
-  } catch (err) {
-    throw new ApiError(err instanceof Error ? err.message : String(err), null);
-  }
-  const body: unknown = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(errorMessage(body, res.status), res.status);
-  return body as T; // the /api/v0 contract is frozen; the daemon owns the shape
+  return data as T;
 }
 
-function errorMessage(body: unknown, status: number): string {
-  if (body && typeof body === 'object') {
-    if ('error' in body && body.error != null) return String(body.error);
-    if ('message' in body && body.message != null) return String(body.message);
-  }
-  return `HTTP ${status}`;
+const get = <T>(path: string) => call<T>('GET', path);
+const post = <T>(path: string, body: unknown = {}) => call<T>('POST', path, body);
+const put = <T>(path: string, body: unknown) => call<T>('PUT', path, body);
+const patch = <T>(path: string, body: unknown) => call<T>('PATCH', path, body);
+const del = <T>(path: string) => call<T>('DELETE', path);
+
+// ---- Types -----------------------------------------------------------------
+
+export type AgentStatus = 'offline' | 'idle' | 'working';
+export type Tier = 'orchestrator' | 'worker';
+export type WorkKind = 'task' | 'chat' | 'message' | 'motion';
+
+export interface Usage { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number }
+
+export interface WorkItem {
+  id: number; cid: number; kind: WorkKind; thread: string; prompt: string;
+  origin: { task: string | null; motion: string | null; from_cid: number | null };
+  created_ms: number; started_ms: number | null;
 }
 
-export function getMachine(): Promise<Machine> {
-  return api<Machine>('/api/v0/machine');
+export interface Agent {
+  cid: number; name: string; role: string; tier: Tier; status: AgentStatus;
+  model: string; model_override: string | null; model_source: 'agent' | 'role' | 'default';
+  connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
+  usage: Usage; credits: number; work: WorkItem | null; queue: number;
 }
 
-export function listRuns(): Promise<RunsView> {
-  return api<RunsView>('/api/v0/runs');
+export interface Overview {
+  agents: { total: number; idle: number; working: number; offline: number };
+  tasks: Record<string, number>;
+  default_model: string; orchestrator_model: string; dev_models: boolean; hub: boolean; noded: boolean;
 }
 
-export function getRun(id: string): Promise<Run> {
-  return api<Run>(`/api/v0/runs/${encodeURIComponent(id)}`);
+export type Auth = 'none' | { env: string } | { secret: string } | { command: string };
+
+export interface ProviderKind {
+  id: string; kind: string; label: string; brand: string; base_url: string | null;
+  auth: Auth; notes: string; models: string[]; options?: Record<string, unknown>;
 }
 
-export function createRun(body: CreateRun): Promise<Run> {
-  return api<Run>('/api/v0/runs', { method: 'POST', body });
+export interface Provider {
+  id: string; kind: string; base_url: string | null; auth: Auth; models: string[];
+  options: Record<string, unknown> | null; extra_headers: Record<string, string>;
+  credential: 'env' | 'secret' | 'none' | 'missing' | 'command';
 }
 
-export function sendInput(id: string, vm: number, data: string): Promise<unknown> {
-  return api(`/api/v0/runs/${encodeURIComponent(id)}/input`, { method: 'POST', body: { data, vm } });
+export interface ProviderInput {
+  id: string; kind: string; base_url?: string | null; auth?: Auth; models?: string[];
+  options?: Record<string, unknown>; extra_headers?: Record<string, string>; extra_body?: Record<string, unknown>;
 }
 
-export function deleteRun(id: string): Promise<Run> {
-  return api<Run>(`/api/v0/runs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export interface TestReport { ok: boolean; model: string; latency_ms: number; reply: string | null; error: string | null }
+export interface ModelInfo { provider: string; id: string; name: string | null }
+export interface ModelsView { models: ModelInfo[]; errors: { provider: string; error: string }[] }
+
+export interface Settings {
+  default_model: string; orchestrator_model: string; role_models: Record<string, string>;
+  model_policy: { orchestrator: string[]; worker: string[] };
+  effort: string | null; max_turns: number; max_tokens: number; fetch_allow: string[];
+  prices: Record<string, { input: number; output: number }>; dev_models?: boolean;
 }
 
-/** The hub's frozen status, through the daemon's same-origin proxy
-    (GET /api/v0/hub). The proxy answers the hub's own /status bytes on
-    success and 502/503 {"error":"hub unreachable: …"} otherwise; either way
-    the body goes through the hub model's defensive parse — the relay is
-    untrusted, and a missing field is an error naming it, never a silent zero.
-    Read-only: the console only ever GETs the hub. */
-export async function getHub(): Promise<HubStatus> {
-  return parseHubStatus(await api<unknown>('/api/v0/hub'));
+export interface Task {
+  id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
+  assignee_id: string | null; agent_cid: number | null; note: string | null; outcome: string | null;
+  created_at: number; updated_at: number;
 }
 
-/* ------------------------------------------------------------- the ledger
-   The task ledger's own frozen endpoints. Reads and writes both come back as
-   the daemon's TaskView and go through the model's defensive parse; a refusal
-   is an ApiError carrying the daemon's own message (409 for a claim from a CID
-   with no live agent, or a transition the state machine forbids). */
+export type Block =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }
+  | { type: 'opaque'; kind: string; raw: unknown };
 
-/** The `POST /api/v0/tasks` body. */
-export interface CreateTask {
-  goal: string;
-  acceptance?: string;
-  /** Whole credits. */
-  budget?: number;
-  role?: string;
+export interface ChatResponse {
+  model: string; content: Block[]; stop: string | { other: string };
+  usage: Usage;
 }
 
-/** Every task, oldest first as the daemon lists them. */
-export async function listTasks(): Promise<Task[]> {
-  return parseTasksView(await api<unknown>('/api/v0/tasks'));
-}
+export type EntryKind = 'work_start' | 'model_request' | 'model_response' | 'tool_request' | 'tool_decision' | 'tool_result' | 'work_end' | 'error';
+export interface Entry { seq: number; at_ms: number; cid: number; work: number; kind: EntryKind; data: Record<string, unknown> }
 
-export async function getTask(id: string): Promise<Task> {
-  return parseTask(await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}`));
-}
+export interface Delta { cid: number; work: number; req: number; delta: { type: 'text' | 'thinking'; text: string } | { type: 'tool_use'; name: string } }
 
-export async function createTask(body: CreateTask): Promise<Task> {
-  return parseTask(await api<unknown>('/api/v0/tasks', { method: 'POST', body }));
-}
+export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null }
+export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean }
+export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
+export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
+export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; note: string }
+export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
+export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
+export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
 
-/** Claim an open task for the live agent connected as `agentCid`. The daemon
-    refuses (409) when no running VM of this node holds that guest CID. */
-export async function claimTask(id: string, agentCid: number): Promise<Task> {
-  return parseTask(
-    await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}/claim`, {
-      method: 'POST',
-      body: { agent_cid: agentCid },
-    }),
-  );
-}
+// ---- Endpoints -------------------------------------------------------------
 
-export async function finishTask(id: string, outcome: 'done' | 'failed', note?: string): Promise<Task> {
-  const body: { outcome: 'done' | 'failed'; note?: string } = { outcome };
-  if (note != null && note.trim() !== '') body.note = note;
-  return parseTask(
-    await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}/finish`, { method: 'POST', body }),
-  );
-}
+export const api = {
+  overview: () => get<Overview>('/v1/overview'),
 
-/** Withdraw a task that has not ended (`open` or `claimed`). */
-export async function withdrawTask(id: string): Promise<Task> {
-  return parseTask(await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }));
-}
+  providerKinds: () => get<ProviderKind[]>('/v1/provider-kinds'),
+  providers: () => get<Provider[]>('/v1/providers'),
+  addProvider: (p: ProviderInput) => post<Provider>('/v1/providers', p),
+  updateProvider: (p: ProviderInput) => put<Provider>(`/v1/providers/${p.id}`, p),
+  removeProvider: (id: string) => del<unknown>(`/v1/providers/${id}`),
+  setSecret: (id: string, value: string) => put<unknown>(`/v1/providers/${id}/secret`, { value }),
+  testProvider: (id: string, model?: string) => post<TestReport>(`/v1/providers/${id}/test`, model ? { model } : {}),
+  providerModels: (id: string) => get<{ id: string; name: string | null }[]>(`/v1/providers/${id}/models`),
+  models: () => get<ModelsView>('/v1/models'),
+  settings: () => get<Settings>('/v1/settings'),
+  saveSettings: (s: Settings) => put<Settings>('/v1/settings', s),
 
-/* ----------------------------------------------------------- the treasury
-   The plaza's account book: its frozen endpoints, both reads. Both bodies go
-   through the model's defensive parse — the relay is untrusted, and a missing
-   field is an error naming it, never a silent zero. Every amount is whole
-   credits (1 credit = $0.001; docs/treasury-draft/schema.sql). */
+  agents: () => get<Agent[]>('/v1/agents'),
+  agent: (cid: number) => get<Agent>(`/v1/agents/${cid}`),
+  spawnAgents: (role: string, count: number, model?: string) => post<unknown>('/v1/agents', { role, count, model }),
+  setAgentModel: (cid: number, model: string | null) => patch<Agent>(`/v1/agents/${cid}`, { model }),
+  renameAgent: (cid: number, name: string) => patch<Agent>(`/v1/agents/${cid}`, { name }),
+  killAgent: (cid: number) => del<unknown>(`/v1/agents/${cid}`),
+  chat: (cid: number, text: string) => post<{ work: number }>(`/v1/agents/${cid}/chat`, { text }),
+  assign: (cid: number, task_id: string) => post<{ work: number }>(`/v1/agents/${cid}/assign`, { task_id }),
+  cancel: (cid: number) => post<{ cancelled: boolean }>(`/v1/agents/${cid}/cancel`),
+  stop: (cid: number) => post<unknown>(`/v1/agents/${cid}/stop`),
+  transcript: (cid: number, after = 0, limit = 1000) => get<Entry[]>(`/v1/agents/${cid}/transcript?after=${after}&limit=${limit}`),
 
-/** The accounts with their derived balances, the totals line, and the honest
-    zero-spend note. */
-export async function getTreasury(): Promise<Treasury> {
-  return parseTreasury(await api<unknown>('/api/v0/treasury'));
-}
+  tasks: () => get<{ tasks: Task[] }>('/v1/tasks').then((r) => r.tasks),
+  task: (id: string) => get<Task>(`/v1/tasks/${id}`),
+  createTask: (t: { goal: string; acceptance?: string; role?: string; budget?: number; assignee?: number }) => post<Task>('/v1/tasks', t),
+  withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
 
-/** The double-entry journal, oldest first as the daemon lists it, bounded to
-    its newest entries. */
-export async function getTreasuryJournal(): Promise<Journal> {
-  return parseJournal(await api<unknown>('/api/v0/treasury/journal'));
-}
+  board: () => get<{ posts: BoardPost[] }>('/v1/board').then((r) => r.posts),
+  conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
+  motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
+  decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
+  treasury: () => get<Treasury>('/v1/treasury'),
+  agora: () => get<{ calls: unknown[] }>('/v1/agora').then((r) => r.calls),
 
-/* ------------------------------------------------------------- the agora
-   The plaza's market: the calls its roled tasks offer, the bids on them and
-   the awards that bind a task to its contractor. A read; the parse is
-   defensive — the relay is untrusted, and a missing field is an error naming
-   it, never a silent zero. */
-
-/** The board: every call, with its bids and its award, oldest first as the
-    daemon lists them, bounded to its newest calls. */
-export async function getAgora(): Promise<Calls> {
-  return parseAgora(await api<unknown>('/api/v0/agora'));
-}
-
-/* ------------------------------------------------------------ the council
-   The four seats' motions, their votes and the count that decides them
-   (docs/agents/council.md). One read: the endpoint is the only source for a
-   motion's text and its votes' reasons, so the console reads it and never
-   patches a motion from a `motion` frame (which carries no text). The parse is
-   defensive — the relay is untrusted, and a missing field is an error naming
-   it, never a silent zero. */
-
-/** The council's motions, newest first, bounded to the node's own window. */
-export async function getMotions(): Promise<Motions> {
-  return parseMotions(await api<unknown>('/api/v0/motions'));
-}
-
-/** Decide a motion the count gated to the owner, through the daemon's decide
-    endpoint — the owner's hand, and the operator's whole (crates/noded
-    `motion_decide`): the body names no agent CID, because the owner is the
-    operator, who holds no seat and has no session. `approve: true` ratifies the
-    motion (`ratified`), `false` vetoes it (`vetoed`); the optional note is
-    recorded with the stamp, and the node answers the whole motion with its
-    `owner` column set.
-
-    A POST, and deliberately so: it changes the record — the owner decides a
-    motion once — so a prefetcher or a retry must not replay it; only the
-    owner's hand calls this. Every non-200 carries the daemon's own error string
-    verbatim (the `api` client keeps it in the `ApiError`), and the two 409s are
-    the doctrine itself: a motion that is not owner-gated explains that the
-    council's own decision stands, and a motion already decided explains that
-    the owner decides once. The 400s are the endpoint's own contract (`approve`
-    absent or non-boolean, an empty or over-long note), the 404 no such motion,
-    the 405 any method but POST. */
-export async function decideMotion(id: string, approve: boolean, note?: string): Promise<Motion> {
-  const body: { approve: boolean; note?: string } = { approve };
-  if (note != null && note.trim() !== '') body.note = note;
-  return parseMotion(
-    await api<unknown>(`/api/v0/motions/${encodeURIComponent(id)}/decide`, { method: 'POST', body }),
-  );
-}
-
-/* ------------------------------------------------------------ the social layer
-   The plaza's public board with its read cursors, an agent's own contact list,
-   and the conversations agents hold (docs/agents/social.md). Reads all; each
-   body goes through the social model's defensive parse — the relay is
-   untrusted, and a missing field is an error naming it. Subjects, bodies and
-   conversation text are written by agents through their drivers: prose off the
-   wire, rendered as text, never markup. The console posts nothing here: the
-   dispatcher's social pass is what speaks. */
-
-/** The public board: newest first, with the bounding line and every connected
-    agent's unread count. */
-export async function getBoard(): Promise<BoardView> {
-  return parseBoard(await api<unknown>('/api/v0/board'));
-}
-
-/** One agent's own contact list (who it met, hired, or was hired by). */
-export async function getContacts(cid: number): Promise<ContactsView> {
-  return parseContacts(await api<unknown>(`/api/v0/agents/${encodeURIComponent(String(cid))}/contacts`));
-}
-
-/** Every exchange the plaza holds, newest first, with the node's own pair rows
-    and the window it calls a pair active. */
-export async function getConversations(): Promise<ConversationsView> {
-  return parseConversations(await api<unknown>('/api/v0/conversations'));
-}
-
-/** One pair's thread, as the node keeps it (oldest first). */
-export async function getConversationThread(a: number, b: number): Promise<ThreadView> {
-  return parseThread(
-    await api<unknown>(`/api/v0/conversations/${encodeURIComponent(String(a))}/${encodeURIComponent(String(b))}`),
-  );
-}
-
-/** Read one file a task's agent wrote, through the daemon's read-through:
-    it resolves the task's assignee to its guest CID and asks the hub to drive
-    that agent's own `read_file`. A POST, and deliberately so — it drives the
-    agent's session (a tool call with a cost and a refusal mode), so a
-    prefetcher must not replay it; only the owner's hand calls this.
-
-    Every status is the daemon's (see crates/noded `read_artifact`): 400 a body
-    or path outside the contract, 403 the hub's own policy refusal, 404 no such
-    task or unserved CID, 409 no assignee or an unconnected agent, 422 the
-    agent's own refusal, 502 an unreachable hub, 503 a daemon never told where
-    the hub's admin surface is. The daemon, hub and agent messages all ride the
-    ApiError verbatim. */
-export async function readTaskArtifact(id: string, path: string): Promise<TaskArtifact> {
-  return parseArtifact(
-    await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}/artifact`, {
-      method: 'POST',
-      body: { path },
-    }),
-  );
-}
-
-/** Drive one tool call on the agent connected as `cid`, through the daemon's
-    `/tell` proxy (crates/noded `tell_agent`) — the operator's own hand on the
-    fleet. A POST, and deliberately so: it runs a real tool in the agent's
-    session (a call with a cost, a refusal mode and an effect on its turn), so a
-    prefetcher must not replay it; only the owner's hand calls this.
-
-    Every status is the daemon's (see crates/noded `tell_agent`): 400 a body or
-    CID outside the contract, 403 the hub's own role policy, 404 a CID the hub
-    does not serve, 409 the agent is not connected, 504 it did not answer in
-    time, 502 an unreachable hub, 503 a daemon never told where the hub's admin
-    surface is. The daemon's, hub's and agent's messages all ride the ApiError
-    verbatim. The tool name and its arguments go to the daemon as written — the
-    hub's policy is the authority, and this client keeps no allow-list. */
-export async function tellAgent(
-  cid: number,
-  name: string,
-  args: Record<string, unknown>,
-  timeoutMs: number,
-): Promise<AgentTell> {
-  return parseTell(
-    await api<unknown>(`/api/v0/agents/${cid}/tell`, {
-      method: 'POST',
-      body: { name, args, timeout_ms: timeoutMs },
-    }),
-  );
-}
-
-/** End the session of the agent connected as `cid`, through the daemon's own
-    `/stop` proxy (crates/noded `stop_agent`) — the operator's own hand on a
-    session. A POST, and deliberately so: it ends a real session (the hub
-    delivers its stop, waits for the agent to say `bye`, and answers), so a
-    prefetcher must not replay it; only the owner's hand calls this.
-
-    A 200 is the HUB's own stop view, passed through verbatim and read through
-    [`parseStop`]: `{"cid","stopped":true,"calls":K}` or
-    `{"cid","stopped":false,"reason":"..."}`. Every other status is the
-    daemon's, the hub's or the admin surface's own error message (see
-    crates/noded `stop_agent`): 400 a body or CID outside the contract, 404 a
-    CID the hub does not serve, 409 an agent not connected, 502 a hub out of
-    reach, 503 a daemon never told where the hub's admin surface is. Those ride
-    the ApiError verbatim. */
-export async function stopAgent(cid: number, reason?: string): Promise<AgentStop> {
-  const body: { reason?: string } = {};
-  if (reason != null && reason.trim() !== '') body.reason = reason;
-  return parseStop(await api<unknown>(`/api/v0/agents/${cid}/stop`, { method: 'POST', body }));
-}
+  machine: () => get<Machine>('/v1/machine'),
+  runs: () => get<{ runs: Run[] }>('/v1/runs').then((r) => r.runs),
+  run: (id: string) => get<Run & { vms: (Vm & { serial?: string })[] }>(`/v1/runs/${id}`),
+  createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),
+  killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
+};

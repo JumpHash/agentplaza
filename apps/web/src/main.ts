@@ -1,287 +1,91 @@
-/* Boot: theme, chrome, router, views, polling. The store is the single
-   source of truth; every view renders from it on a coalesced microtask. */
+// The console: the shell (sidebar, top bar, banners) and the screen mount.
 
+import './styles/tokens.css';
 import './styles/base.css';
 import './styles/views.css';
-import './styles/floor.css';
-import './styles/talk.css';
-import './styles/council.css';
 
-import { startEvents } from './events';
-import { councilTally } from './models/council';
-import { KEY_ROUTES, NAV_OF, parseRoute } from './router';
-import { store } from './store';
-import { renderBoard } from './views/board';
-import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
-import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
-import { initCouncil, disarmCouncil, renderCouncil } from './views/council';
-import { floorFrame, floorState, initFloor, syncFloor, syncFloorVisibility } from './views/floor';
-import { initKeys, keysOpen, toggleKeys } from './views/keys';
-import { initLedger, renderLedger } from './views/ledger';
-import { renderMarket } from './views/market';
-import { initRegister, renderRegister } from './views/register';
-import { followKey, initRun, jumpKey, renderRun, resetRunView, selectVm } from './views/run';
-import { renderMachine } from './views/machine';
-import { renderMap, syncMapVisibility } from './views/map2d';
-import { initRoster, renderRoster } from './views/roster';
-import { initTelemetry, renderTelemetry } from './views/telemetry';
-import { renderTreasury } from './views/treasury';
-import { initTalk, renderTalk } from './views/talk';
+import { onRoute, href, type Route } from './router';
+import { agents, onConnection, overview, startShared } from './store';
+import { dot } from './ui/components';
+import { h, icon, replace } from './ui/dom';
+import { SCREENS, type Cleanup } from './views';
 
-/* ------------------------------------------------------------ routing */
-function show(): void {
-  const route = parseRoute(location.hash);
-  store.route = route;
+const navLinks = new Map<string, HTMLAnchorElement>();
+const counts = new Map<string, HTMLElement>();
 
-  document.querySelectorAll<HTMLElement>('[data-view]').forEach((v) => {
-    v.hidden = v.dataset['view'] !== route.name;
-  });
-  document.querySelectorAll<HTMLElement>('[data-nav]').forEach((a) => {
-    if (a.dataset['nav'] === NAV_OF[route.name]) a.setAttribute('aria-current', 'page');
-    else a.removeAttribute('aria-current');
-  });
-
-  if (route.name === 'run') {
-    if (store.detailId !== route.param) {
-      store.detailId = route.param;
-      store.vm = 0;
-      resetRunView();
+function sidebar(): HTMLElement {
+  const nav = h('nav.nav', { 'aria-label': 'Screens' });
+  let section = '';
+  for (const s of SCREENS) {
+    if (s.section !== section) {
+      section = s.section;
+      nav.appendChild(h('div.nav-section', null, section));
     }
+    const count = h('span.count');
+    counts.set(s.key, count);
+    const link = h('a', { href: href(s.key) }, icon(s.icon), s.label, count);
+    navLinks.set(s.key, link);
+    nav.appendChild(link);
   }
-  if (route.name === 'ledger') store.taskDetailId = route.param;
-  /* leaving the council sheet disarms any decide the owner had armed there */
-  if (route.name !== 'council') disarmCouncil();
-  window.scrollTo(0, 0);
-  /* the first fetch of any view fires even in a hidden tab */
-  store.ensurePolled();
-  store.scheduleRender();
-  syncMapVisibility();
-  syncFloorVisibility();
+  const foot = h('div.sidebar-foot');
+  onConnection((up) => replace(foot, h('span.row', null, dot(up ? 'ok' : 'danger'), up ? 'Live' : 'Reconnecting…')));
+  return h('aside.sidebar', null, h('div.brand', null, h('span.brand-mark', null, icon('sparkles')), 'AgentPlaza'), nav, foot);
 }
 
-function go(hash: string): void {
-  if (location.hash !== hash) location.hash = hash;
-  else show();
+function topbar(title: HTMLElement): HTMLElement {
+  const health = h('div.health');
+  overview.watch((o) => {
+    if (!o) return replace(health, h('span', null, dot('danger'), 'apid unreachable'));
+    replace(
+      health,
+      h('span', null, dot(o.hub ? 'ok' : 'danger'), 'Hub'),
+      h('span', null, dot(o.noded ? 'ok' : 'danger'), 'Node'),
+      h('span', null, dot(o.agents.working ? 'info' : 'muted'), `${o.agents.working} working · ${o.agents.idle} idle`),
+    );
+  });
+  return h('header.topbar', null, title, h('span.spacer'), health);
 }
 
-window.addEventListener('hashchange', show);
-
-document.addEventListener('click', (e) => {
-  const t = e.target;
-  if (!(t instanceof Element)) return;
-  const nav = t.closest<HTMLElement>('[data-nav]');
-  if (nav) {
-    e.preventDefault();
-    navigate(nav.dataset['nav'] ?? 'register');
-    return;
-  }
-  const g = t.closest<HTMLElement>('[data-go]');
-  if (g) {
-    e.preventDefault();
-    go(g.getAttribute('data-go') ?? '#register');
-    return;
-  }
-  /* a VM row's compare link: this row's VM against the one being viewed
-     (viewing that very row? compare it against a neighbour instead) */
-  const cmp = t.closest<HTMLElement>('[data-cmp-vm]');
-  if (cmp) {
-    e.preventDefault();
-    const run = store.openRun;
-    if (!run || run.vms.length < 2) return;
-    const right = Number(cmp.getAttribute('data-cmp-vm'));
-    if (!Number.isInteger(right)) return;
-    let left = store.vm;
-    if (left === right) left = right === 0 ? 1 : 0;
-    go(`#compare/${run.id}/${left}/${run.id}/${right}`);
-    return;
-  }
-  const s = t.closest<HTMLElement>('tr[data-sel-vm]');
-  if (s) selectVm(Number(s.getAttribute('data-sel-vm')));
-});
-
-function navigate(name: string): void {
-  if (name === 'run') {
-    /* the Run index entry opens the selected run, else the newest open run */
-    const id = store.detailId ?? store.runs.find((r) => r.state === 'starting' || r.state === 'running')?.id ?? store.runs[0]?.id;
-    if (id) go(`#run/${id}`);
-    return;
-  }
-  go('#' + name);
+function banner(): HTMLElement {
+  const el = h('div', { hidden: true });
+  overview.watch((o) => {
+    el.hidden = !o?.dev_models;
+    replace(el, icon('alert'), 'Development models are enabled: the model policy is relaxed (mock and local models allowed).');
+    el.className = 'banner danger';
+  });
+  return el;
 }
 
-document.addEventListener('keydown', (e) => {
-  const t = e.target;
-  if (e.altKey || e.ctrlKey || e.metaKey) return;
-  if (t instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-  if (t instanceof HTMLCanvasElement) return; // canvases own their arrows/enter
-  if (keysOpen()) return; // the sheet owns Escape, Tab and ? while open
-  if (e.key === '?') {
-    e.preventDefault();
-    toggleKeys();
-    return;
-  }
-  if (e.key === 't') {
-    cycleTheme();
-    return;
-  }
-  if (e.key === 'f' || e.key === 'j') {
-    const on = e.key === 'f';
-    if (store.route.name === 'run') (on ? followKey : jumpKey)();
-    else if (store.route.name === 'compare') (on ? cmpFollowKey : cmpJumpKey)();
-    return;
-  }
-  if (e.key === 'Enter' && t instanceof HTMLElement && t.matches('tr[data-sel-vm]')) {
-    selectVm(Number(t.getAttribute('data-sel-vm')));
-    return;
-  }
-  /* a focused ruled row (the ledger's, the roster's) opens like a click */
-  if (e.key === 'Enter' && t instanceof HTMLElement && t.matches('tr[data-go]')) {
-    const dest = t.getAttribute('data-go');
-    if (dest) {
-      e.preventDefault();
-      go(dest);
-      return;
+function main(): void {
+  startShared();
+  const title = h('span.title');
+  const content = h('main.view-host');
+  const app = h('div.app', null, sidebar(), h('div.main', null, topbar(title), banner(), content));
+  document.body.replaceChildren(app);
+
+  agents.watch((list) => {
+    const working = list.filter((a) => a.status === 'working').length;
+    counts.get('agents')!.textContent = list.length ? (working ? `${working}/${list.length}` : String(list.length)) : '';
+  });
+
+  let cleanup: Cleanup | undefined;
+  let mounted = '';
+  onRoute((route: Route) => {
+    const screen = SCREENS.find((s) => s.key === route.screen) ?? SCREENS[0]!;
+    for (const [key, link] of navLinks) {
+      if (key === screen.key) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
     }
-  }
-  const dest = KEY_ROUTES[e.key];
-  if (dest) navigate(dest);
-});
+    const key = `${screen.key}/${route.params.join('/')}`;
+    if (key === mounted) return;
+    mounted = key;
+    cleanup?.();
+    title.textContent = screen.label;
+    document.title = `${screen.label} · AgentPlaza`;
+    const root = h('div.view');
+    content.replaceChildren(root);
+    cleanup = screen.mount(root, route.params);
+  });
+}
 
-/* ------------------------------------------------------------ boot */
-initTheme();
-initColophon();
-initRegister();
-initRun();
-initCompare();
-initKeys();
-initTelemetry();
-initFloor();
-initRoster();
-initLedger();
-initTalk();
-initCouncil();
-
-store.onRender(renderChrome);
-store.onRender(() => {
-  switch (store.route.name) {
-    case 'register': renderRegister(); break;
-    case 'run': renderRun(); break;
-    case 'machine': renderMachine(); break;
-    case 'map': renderMap(); break;
-    case 'floor': syncFloor(); break;
-    case 'compare': renderCompare(); break;
-    case 'telemetry': renderTelemetry(); break;
-    case 'roster': renderRoster(); break;
-    case 'ledger': renderLedger(); break;
-    case 'treasury': renderTreasury(); break;
-    case 'market': renderMarket(); break;
-    case 'board': renderBoard(); break;
-    case 'talk': renderTalk(); break;
-    case 'council': renderCouncil(); break;
-  }
-});
-
-show();
-store.startPolling();
-startEvents();
-
-/* The verification harness's read-only window into the live data layer:
-   render passes flushed, wire frames carried, stream state. The app itself
-   never reads these. */
-window.__PLAZA_DIAG__ = {
-  get renders() { return store.renders; },
-  get wire() { return { ...store.wire }; },
-  get stream() { return store.stream; },
-  get tasks() {
-    return {
-      count: store.tasks.length,
-      open: store.tasks.filter((t) => t.state === 'open' || t.state === 'claimed').length,
-      detail: store.taskDetailId,
-      error: store.tasksError,
-    };
-  },
-  get artifact() {
-    const a = store.artifact;
-    return a == null ? null : { task: a.task, path: a.path, state: a.state };
-  },
-  get treasury() {
-    return {
-      accounts: store.treasury?.accounts.length ?? 0,
-      entries: store.journal.length,
-      total: store.journalTotal,
-      credits: store.treasury?.totals.credits ?? 0,
-      error: store.treasuryError,
-      journalError: store.journalError,
-    };
-  },
-  get market() {
-    return {
-      calls: store.calls.length,
-      open: store.calls.filter((c) => c.state === 'open').length,
-      bids: store.calls.reduce((n, c) => n + c.bids.length, 0),
-      awarded: store.calls.filter((c) => c.award != null).length,
-      total: store.callsTotal,
-      error: store.callsError,
-    };
-  },
-  get tell() {
-    const t = store.lastTell;
-    return t == null ? null : { cid: t.cid, name: t.name, state: t.state, status: t.status };
-  },
-  get stop() {
-    const t = store.lastStop;
-    return t == null ? null : { cid: t.cid, state: t.state, stopped: t.stopped, status: t.status };
-  },
-  get hub() {
-    const readable = store.hub != null && store.hubError == null;
-    return {
-      reachable: readable,
-      agents: readable ? (store.hub?.agents.length ?? 0) : 0,
-      sessions: readable ? (store.hub?.sessions_active ?? 0) : 0,
-      error: store.hubError,
-    };
-  },
-  get floor() { return floorState(); },
-  /** drives one floor frame when the tab fires no animation frames (headless
-      verification); the page's own loop never calls it */
-  floorFrame: () => floorFrame(),
-  get board() {
-    return {
-      posts: store.board.length,
-      total: store.boardTotal,
-      truncated: store.boardTruncated,
-      unread: store.boardUnread.length,
-      error: store.boardError,
-      errorStatus: store.boardErrorStatus,
-    };
-  },
-  get social() {
-    return {
-      conversations: store.conversations.length,
-      pairs: store.convPairs.length,
-      active: store.convPairs.filter((p) => p.active).length,
-      activeSecs: store.convActiveSecs,
-      contacts: [...store.contacts.keys()],
-      thread: store.thread == null ? null : { a: store.thread.a, b: store.thread.b, state: store.thread.state },
-      talkPair: store.talkPair,
-      error: store.conversationsError,
-      errorStatus: store.conversationsErrorStatus,
-    };
-  },
-  get council() {
-    const t = councilTally(store.motions);
-    const d = store.lastDecision;
-    return {
-      motions: store.motions.length,
-      total: store.motionsTotal,
-      truncated: store.motionsTruncated,
-      open: t.open,
-      awaiting: t.awaiting,
-      ties: t.ties,
-      filter: store.motionFilter,
-      error: store.motionsError,
-      errorStatus: store.motionsErrorStatus,
-      decision: d == null ? null : { id: d.id, state: d.state, status: d.status },
-    };
-  },
-};
+main();

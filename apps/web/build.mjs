@@ -1,8 +1,8 @@
 // Build: TypeScript + CSS sources -> apps/web/dist, plain static files.
 //
 // Tooling choice (boring on purpose): tsc typechecks (`npm run typecheck`),
-// esbuild bundles. No framework, no dev server, no runtime dependencies beyond
-// three.js. The output is exactly what an S3 bucket would serve: an index.html
+// esbuild bundles. No framework, no dev server, no runtime dependencies.
+// The output is exactly what an S3 bucket would serve: an index.html
 // plus hashed, minified js/css at the ROOT of dist (noded serves bare file
 // names only — no subdirectories).
 //
@@ -28,8 +28,6 @@ const result = await esbuild.build({
   sourcemap: false,
   target: ['es2022'],
   format: 'esm',
-  splitting: true, // the dynamic three.js import becomes an on-demand chunk
-  chunkNames: 'chunk-[hash]',
   outdir: dist,
   entryNames: '[name]-[hash]',
   metafile: true,
