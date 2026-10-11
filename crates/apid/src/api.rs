@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::agents::Status;
 use crate::state::App;
-use crate::{agents, artifacts, events, internal, plaza, providers, settings};
+use crate::{agents, artifacts, events, internal, memory, plaza, providers, settings};
 
 pub fn router() -> Router<App> {
     let router = Router::<App>::new()
@@ -31,6 +31,7 @@ pub fn router() -> Router<App> {
     let router = plaza::routes(router);
     let router = internal::routes(router);
     let router = artifacts::routes(router);
+    let router = memory::routes(router);
     router
         .get("/", |app, _, _| static_file(&app.config.console, "index.html"))
         .get("/{file}", |app, _, p| static_file(&app.config.console, p.get("file")))

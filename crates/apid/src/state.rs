@@ -70,6 +70,8 @@ pub struct App {
     pub bus: events::Bus,
     /// Files agents shared through `share_file`.
     pub artifacts: crate::artifacts::Artifacts,
+    /// Linked-note memory libraries, under <state-dir>/memory.
+    pub memory: crate::memory::Memory,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -96,6 +98,7 @@ impl App {
         let app = Arc::new(App {
             bus: events::Bus::default(),
             artifacts: crate::artifacts::Artifacts::default(),
+            memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
