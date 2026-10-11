@@ -54,8 +54,10 @@
 //     declarations, the framework calls, and the exit-structure reads.
 //   * `jail::sys` — the seccomp-bpf install path: the two `prctl(2)` calls that
 //     set `no_new_privs` and hand the kernel the BPF program. See [`jail`] for
-//     the allowlist and where it is armed; its probes are an integration test
-//     (`tests/jail.rs`), in a process of their own.
+//     the allowlist, where it is armed, and the `APZ_VMM_JAIL=kill|log|off`
+//     mode switch (`log` audits a missing entry instead of killing the daemon);
+//     its probes are an integration test (`tests/jail.rs`), in a process of
+//     their own.
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
