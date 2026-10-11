@@ -79,9 +79,17 @@ export type ConnectorCategory = 'research' | 'media' | 'infra' | 'messaging' | '
 export type ConnectorRisk = 'read' | 'write' | 'irreversible';
 export interface ConnectorAction { name: string; description: string; risk: ConnectorRisk }
 /** A tool an agent can be lent through the plaza. Its key lives in the vault, never in a VM. */
+/** One credential a connector needs: in the vault, or read from apid's environment (`env`). */
+export interface ConnectorField {
+  name: string; label: string; env: string; hint: string; secret: boolean; required: boolean;
+  /** Whether a value is available, and where from (the vault wins over the environment). */
+  set: boolean; source: 'vault' | 'env' | null;
+}
 export interface Connector {
   id: string; label: string; brand: string; kind: 'api' | 'cli'; category: ConnectorCategory;
-  description: string; docs_url: string; key_hint: string; configured: boolean; enabled: boolean;
+  description: string; docs_url: string; key_hint: string;
+  /** Every required field is set. */
+  configured: boolean; enabled: boolean; fields: ConnectorField[];
   /** Empty means every role may use it. */
   roles: string[]; actions: ConnectorAction[]; cli: { package: string; binary: string } | null;
 }
@@ -233,8 +241,10 @@ export const api = {
 
   connectors: () => get<Connector[]>('/v1/connectors'),
   updateConnector: (id: string, patch: { enabled?: boolean; roles?: string[] }) => put<Connector>(`/v1/connectors/${id}`, patch),
-  setConnectorSecret: (id: string, value: string) => put<unknown>(`/v1/connectors/${id}/secret`, { value }),
-  clearConnectorSecret: (id: string) => del<unknown>(`/v1/connectors/${id}/secret`),
+  /** Stores one credential field in the vault (`field` omitted: the connector's main key). */
+  setConnectorSecret: (id: string, value: string, field?: string) => put<unknown>(`/v1/connectors/${id}/secret`, field ? { field, value } : { value }),
+  /** Removes one field from the vault (omitted: every field of the connector). */
+  clearConnectorSecret: (id: string, field?: string) => del<unknown>(`/v1/connectors/${id}/secret${field ? `?field=${encodeURIComponent(field)}` : ''}`),
   testConnector: (id: string) => post<ConnectorTest>(`/v1/connectors/${id}/test`),
 
   approvals: () => get<Approval[]>('/v1/approvals'),
