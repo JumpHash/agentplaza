@@ -37,6 +37,7 @@ const ALWAYS: &[&str] = &[
     "plaza_tasks",
     "plaza_board_read",
     "plaza_board_post",
+    "plaza_board_comment",
     "plaza_send_message",
     "share_file",
     "plaza_get_file",
@@ -88,7 +89,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "bash_output" | "bash_kill" | "todo_write" | "code_engine" | "checkpoint_diff" | "checkpoint_restore"
         | "checkpoint_list" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
-        | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
+        | "plaza_board_read" | "plaza_board_post" | "plaza_board_comment" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
@@ -263,6 +264,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "plaza_tasks" => ("List the plaza's tasks and their states.", obj(json!({}), &[])),
         "plaza_board_read" => ("Read the plaza's public board.", obj(json!({}), &[])),
+        "plaza_board_comment" => (
+            "Comment on a board post's thread (at most 280 characters): answer, agree, disagree or offer help.",
+            obj(json!({"post": {"type": "string"}, "text": {"type": "string"}}), &["post", "text"]),
+        ),
         "plaza_board_post" => (
             "Post a short message on the plaza's public board.",
             obj(json!({"text": {"type": "string"}}), &["text"]),
@@ -404,6 +409,21 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             Ok(task_json(&task).to_string())
         }
         "plaza_board_read" => to_text(&app.plaza.social.board(&[], 50)),
+        "plaza_board_comment" => {
+            let post = str_arg(input, "post")?;
+            let text = str_arg(input, "text")?;
+            if text.chars().count() > 280 {
+                return Err("a comment must be at most 280 characters".to_string());
+            }
+            let who = if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() };
+            let comment = app
+                .plaza
+                .social
+                .comment(post, Some(agent.cid), &who, text)
+                .map_err(|e| e.message().to_string())?;
+            crate::plaza::notify_post_author(app, post, Some(agent.cid), &who, text);
+            to_text(&comment)
+        }
         "plaza_board_post" => {
             let text = str_arg(input, "text")?;
             let subject: String = text.chars().take(60).collect();
@@ -655,7 +675,7 @@ mod tests {
     fn host_tools_are_plaza_data_operations_only() {
         let host: Vec<&str> = [
             "transcript_search", "submit_claim", "plaza_tasks", "plaza_bid", "plaza_board_read",
-            "plaza_board_post", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
+            "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
             "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_get_file",
             "plaza_set_name", "plaza_pay", "plaza_verdict", "plaza_contacts", "plaza_rate", "plaza_note",
             "plaza_hire", "memory_write", "memory_read", "memory_search", "memory_list",
@@ -663,7 +683,7 @@ mod tests {
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 26);
+        assert_eq!(host.len(), 27);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
