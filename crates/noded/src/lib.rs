@@ -16,7 +16,7 @@ pub mod events;
 pub mod fleet;
 pub mod registry;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use apz_http::{Response, Router};
@@ -96,6 +96,8 @@ pub struct MachineView {
     pub backend: &'static str,
     pub irqchip: &'static str,
     pub class: &'static str,
+    pub kind: &'static str,
+    pub gpus: Vec<Gpu>,
     pub cpus: u32,
     pub memory_mib: u64,
     pub vsock_mode: &'static str,
@@ -112,12 +114,16 @@ impl Node {
     }
 
     pub fn machine(&self) -> MachineView {
+        let class = machine_class();
+        let gpus = host_gpus();
         MachineView {
             name: hostname(),
             arch: machine_arch(),
             backend: machine_backend(),
             irqchip: machine_irqchip(),
-            class: machine_class(),
+            class,
+            kind: machine_kind(class, &gpus),
+            gpus,
             cpus: host_cpus(),
             memory_mib: host_memory_mib(),
             vsock_mode: "uds-muxer",
@@ -212,6 +218,119 @@ fn host_memory_mib() -> u64 {
     0
 }
 
+
+/// A GPU the host has, read from sysfs and the NVIDIA driver's proc files
+/// (no driver process needed).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Gpu {
+    pub vendor: String,
+    pub name: String,
+    pub memory_mib: Option<u64>,
+}
+
+/// The vendor name for a sysfs PCI vendor id (`0x10de`), for the GPU vendors
+/// the node knows.
+fn gpu_vendor(id: &str) -> Option<&'static str> {
+    match id.trim() {
+        "0x10de" => Some("NVIDIA"),
+        "0x1002" => Some("AMD"),
+        "0x8086" => Some("Intel"),
+        "0x106b" => Some("Apple"),
+        _ => None,
+    }
+}
+
+/// The host's GPUs: `/sys/class/drm` cards and the NVIDIA driver's GPU
+/// directories.
+pub fn host_gpus() -> Vec<Gpu> {
+    gpus_in(Path::new("/sys/class/drm"), Path::new("/proc/driver/nvidia/gpus"))
+}
+
+/// The GPUs under a DRM class directory. Connector entries (`card0-HDMI-A-1`)
+/// and devices whose files cannot be read are skipped; the Nth NVIDIA card
+/// takes the Nth NVIDIA driver `Model:`.
+fn gpus_in(drm: &Path, nvidia: &Path) -> Vec<Gpu> {
+    let mut cards: Vec<PathBuf> = std::fs::read_dir(drm)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.strip_prefix("card").is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+            })
+        })
+        .collect();
+    cards.sort();
+    let models = nvidia_models(nvidia);
+    let mut nvidia_seen = 0;
+    let mut gpus = Vec::new();
+    for card in cards {
+        let device = card.join("device");
+        let Ok(vendor_id) = std::fs::read_to_string(device.join("vendor")) else {
+            continue;
+        };
+        let Some(vendor) = gpu_vendor(&vendor_id) else {
+            continue;
+        };
+        let Some(pci_id) = std::fs::read_to_string(device.join("uevent"))
+            .ok()
+            .and_then(|uevent| uevent.lines().find_map(|line| line.strip_prefix("PCI_ID=")).map(str::to_string))
+        else {
+            continue;
+        };
+        let name = if vendor == "NVIDIA" {
+            nvidia_seen += 1;
+            models.get(nvidia_seen - 1).cloned().unwrap_or_else(|| format!("{vendor} GPU {pci_id}"))
+        } else {
+            format!("{vendor} GPU {pci_id}")
+        };
+        let memory_mib = (vendor == "AMD")
+            .then(|| std::fs::read_to_string(device.join("mem_info_vram_total")).ok())
+            .flatten()
+            .and_then(|bytes| bytes.trim().parse::<u64>().ok())
+            .map(|bytes| bytes / (1024 * 1024));
+        gpus.push(Gpu { vendor: vendor.to_string(), name, memory_mib });
+    }
+    gpus
+}
+
+/// The `Model:` line of each NVIDIA driver GPU directory, in directory order.
+fn nvidia_models(dir: &Path) -> Vec<String> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()).collect();
+    dirs.sort();
+    dirs.iter()
+        .filter_map(|gpu| {
+            let info = std::fs::read_to_string(gpu.join("information")).ok()?;
+            info.lines().find_map(|line| line.strip_prefix("Model:")).map(|model| model.trim().to_string())
+        })
+        .collect()
+}
+
+/// The machine kind the console groups by: `edge` (Pi), `apple`,
+/// `workstation` (a server-class machine with a GPU), or `server`.
+fn machine_kind(class: &str, gpus: &[Gpu]) -> &'static str {
+    match class {
+        "pi4" | "pi5" => "edge",
+        "apple" => "apple",
+        "server" if !gpus.is_empty() => "workstation",
+        _ => "server",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gpu_vendor;
+
+    #[test]
+    fn pci_vendor_ids_map_to_gpu_vendors() {
+        assert_eq!(gpu_vendor("0x10de\n"), Some("NVIDIA"));
+        assert_eq!(gpu_vendor("0x1002"), Some("AMD"));
+        assert_eq!(gpu_vendor("0x8086"), Some("Intel"));
+        assert_eq!(gpu_vendor("0x106b"), Some("Apple"));
+        assert_eq!(gpu_vendor("0x1af4"), None);
+    }
+}
 
 /// A bound, serving node daemon.
 
