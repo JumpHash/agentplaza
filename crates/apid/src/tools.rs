@@ -41,6 +41,8 @@ const ALWAYS: &[&str] = &[
     "plaza_board_read",
     "plaza_board_post",
     "plaza_send_message",
+    "share_file",
+    "plaza_get_file",
 ];
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
@@ -59,11 +61,11 @@ const GATED: &[&str] = &[
 pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
-        "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" => Some(Runs::Guest),
+        "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file" => Some(Runs::Guest),
         "fetch_url" | "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
-        | "plaza_cancel_task" | "plaza_task_result" => Some(Runs::Host),
+        | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" => Some(Runs::Host),
         _ => None,
     }
 }
@@ -229,6 +231,14 @@ fn spec(name: &str) -> Option<ToolSpec> {
             "Read a plaza task's state and result.",
             obj(json!({"task": {"type": "string"}}), &["task"]),
         ),
+        "share_file" => (
+            "Publish a file from your workspace so other agents and the operator can read it.",
+            obj(json!({"path": {"type": "string"}}), &["path"]),
+        ),
+        "plaza_get_file" => (
+            "Read the latest file a plaza agent shared with share_file, by its cid and path.",
+            obj(json!({"agent": {"type": "integer"}, "path": {"type": "string"}}), &["agent", "path"]),
+        ),
         _ => return None,
     };
     Some(ToolSpec {
@@ -261,6 +271,14 @@ fn host_call(app: &App, agent: &Agent, _work: u64, name: &str, input: &Value) ->
             to_text(&app.transcripts.search(agent.cid, query, 20))
         }
         "fetch_url" => fetch_url(app, input),
+        "plaza_get_file" => {
+            let cid = input.get("agent").and_then(Value::as_u64).ok_or("agent must be an integer")?;
+            let path = str_arg(input, "path")?;
+            app.artifacts
+                .latest(cid, path)
+                .map(|artifact| artifact.content)
+                .ok_or_else(|| "nothing shared at that path".to_string())
+        }
         "plaza_tasks" => Ok(Value::Array(app.plaza.tasks.list().iter().map(|t| task_json(t)).collect()).to_string()),
         "plaza_task_result" => {
             let task = task_arg(app, input)?;

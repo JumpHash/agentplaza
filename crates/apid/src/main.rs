@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 mod agents;
+mod artifacts;
 mod api;
 mod events;
 mod internal;

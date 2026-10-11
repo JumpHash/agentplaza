@@ -68,6 +68,8 @@ pub struct App {
     pub config: Config,
     /// The SSE bus every module publishes on.
     pub bus: events::Bus,
+    /// Files agents shared through `share_file`.
+    pub artifacts: crate::artifacts::Artifacts,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -89,6 +91,7 @@ impl App {
         let token = write_token(&config.state_dir)?;
         let app = Arc::new(App {
             bus: events::Bus::default(),
+            artifacts: crate::artifacts::Artifacts::default(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,

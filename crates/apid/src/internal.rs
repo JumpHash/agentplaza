@@ -2,6 +2,9 @@
 //!
 //! OWNER: slice "loop". `handle` is the agent loop's host half.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock, PoisonError};
+
 use apz_http::{Request, Response, Router};
 use apz_proto::chat::{ChatRequest, Message, Role};
 use apz_proto::wire::{cap_output, Decision, GuestMessage, HostMessage};
@@ -103,6 +106,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             Some(tool_request(app, cid, &agent, work, call, &name, &input))
         }
         GuestMessage::ToolReport { work, call, ok, output } => {
+            let shared = pending().lock().unwrap_or_else(PoisonError::into_inner).remove(&(cid, call.clone()));
+            if let (Some((_, path)), true) = (shared, ok) {
+                app.artifacts.add(&app.bus, cid, work, &path, output.clone());
+            }
             app.transcripts.record(
                 &app.bus,
                 cid,
@@ -181,6 +188,15 @@ fn model_call(
     }
 }
 
+/// Share requests allowed to run, keyed by (cid, call), until their report
+/// arrives: (tool name, requested path).
+type Pending = Mutex<HashMap<(u64, String), (String, String)>>;
+
+fn pending() -> &'static Pending {
+    static PENDING: OnceLock<Pending> = OnceLock::new();
+    PENDING.get_or_init(Pending::default)
+}
+
 /// Decides and, for host tools, runs one tool request from the model.
 fn tool_request(
     app: &App,
@@ -201,7 +217,13 @@ fn tool_request(
     let granted: Vec<String> = profile(app, agent).tools.into_iter().map(|t| t.name).collect();
     let (decision, output, is_error) = match decide(&granted, name, runs(name)) {
         Err(reason) => (Decision::Deny, reason.to_string(), true),
-        Ok(Runs::Guest) => (Decision::Allow, String::new(), false),
+        Ok(Runs::Guest) => {
+            if name == "share_file" {
+                let path = input.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+                pending().lock().unwrap_or_else(PoisonError::into_inner).insert((cid, call.clone()), (name.to_string(), path));
+            }
+            (Decision::Allow, String::new(), false)
+        }
         Ok(Runs::Host) => {
             let (is_error, output) = run_host(app, agent, work, name, input);
             (Decision::Done, output, is_error)
