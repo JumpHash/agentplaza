@@ -101,7 +101,9 @@ pub fn check_program(prog: &Program) -> Vec<Diag> {
         c.item(r, it);
     }
     c.recursion();
-    c.diags
+    let mut d = c.diags;
+    d.extend(crate::authz::check_authz(prog));
+    d
 }
 
 impl<'a> Checker<'a> {

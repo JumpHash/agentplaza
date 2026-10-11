@@ -18,6 +18,7 @@
 //! | [`cli`] | `jhrl check`, `jhrl test` |
 
 pub mod ast;
+pub mod authz;
 pub mod check;
 pub mod cli;
 pub mod eval;
