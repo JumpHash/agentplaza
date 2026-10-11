@@ -101,6 +101,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "apid"
+version = "0.1.0"
+dependencies = [
+ "apz-gateway",
+ "apz-http",
+ "apz-plaza",
+ "apz-proto",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "apz-gateway"
 version = "0.1.0"
 dependencies = [
