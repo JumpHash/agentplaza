@@ -657,6 +657,12 @@ const HELPER_CMDLINE: &str = "console=ttyS0 panic=-1 plaza.halt=1";
 /// reaping (and for a loaded machine), not a timeout the mechanism needs.
 const ORPHAN_DEADLINE: Duration = Duration::from_secs(10);
 
+/// How long a VM spawned from a short-lived caller thread is watched after that
+/// thread is gone. The defect it pins killed the child within milliseconds of
+/// the spawning thread's exit, so a window this wide is far longer than the
+/// failure and far shorter than the parked guest's own life.
+const SURVIVES_CALLER_SETTLE: Duration = Duration::from_secs(3);
+
 /// The `apz-vmm` binary these tests run directly: [`CHILD_BINARY_ENV`] when an
 /// operator set it (the spawner's own override), else the one cargo built for
 /// this test.
@@ -694,6 +700,81 @@ fn helper_tail(dir: &Path) -> String {
         return "no helper log".to_string();
     };
     text[text.len().saturating_sub(600)..].to_string()
+}
+
+/// (g) The child's parent is the spawner's own thread, not the caller's: a VM
+/// spawned from a thread that **exits** — the shape of an HTTP request thread,
+/// which is how `noded` boots a run's VMs — keeps running.
+///
+/// This is the live defect the acceptance suite found (`tests/acceptance/
+/// suite_jail.py`, "an API-created run in process mode ... still up after the
+/// request"): `apz-vmm` arms `PR_SET_PDEATHSIG(SIGKILL)` against the *thread*
+/// that created it, and a request thread exits when its response is written, so
+/// the VM was `SIGKILL`ed milliseconds after the run reached `running`. The fix
+/// is that [`spawn`] hands the command to one long-lived supervisor thread
+/// (`spawner::process`), so the child's parent thread outlives the caller. The
+/// child here is a guest that parks forever ([`HELPER_CMDLINE`]), so nothing
+/// but the host can end it: if it is still alive once the caller thread is
+/// gone, the caller's death did not reach it.
+#[test]
+fn a_short_lived_caller_thread_does_not_take_the_guest_down() {
+    let _guard = mode_lock();
+    if smoke_kernel().is_none() {
+        eprintln!("skipping: set APZ_VMM_SMOKE_KERNEL (needs a hypervisor and a guest kernel)");
+        return;
+    }
+    assert!(harness_initrd().is_some(), "a guest initramfs is required");
+
+    let dir = scratch("short-lived-caller");
+    let cid = 416;
+    set_spawn_mode(SpawnMode::Process);
+
+    // The caller: a thread that boots the VM, returns the handle, and exits —
+    // exactly what an HTTP request thread does once it has answered.
+    let booted = spec(&dir, cid, HELPER_CMDLINE);
+    let mut vm = std::thread::Builder::new()
+        .name("short_lived_caller".to_string())
+        .spawn(move || spawn(booted))
+        .expect("the caller thread starts")
+        .join()
+        .expect("the caller thread ends")
+        .expect("the per-VM process boots the guest");
+    let pid = vm.process_id().expect("the VM runs in a per-VM process");
+    let proc = PathBuf::from(format!("/proc/{pid}"));
+
+    // The guest booted: its kernel reached the parent's capture.
+    assert!(
+        wait_for_serial(&vm, "Linux version", SETTLE),
+        "the guest's kernel did not reach the parent's capture: {}",
+        serial_tail(&vm)
+    );
+
+    // The caller thread is gone. The child must outlive it: the parent-death
+    // signal watches the thread that created the child, so a child spawned on a
+    // soon-to-exit thread is `SIGKILL`ed within milliseconds of it — long
+    // before this settle elapses.
+    std::thread::sleep(SURVIVES_CALLER_SETTLE);
+    assert!(
+        !is_dead(&proc),
+        "the per-VM process {pid} ended although the guest was parked (state {:?}): {}",
+        proc_state(&proc),
+        log_tail(&vm)
+    );
+
+    // And it armed the backstop it still carries: the daemon's death will take
+    // it, a caller's will not.
+    assert!(
+        vm.process_log().iter().any(|line| line == CHILD_PDEATHSIG),
+        "the child never armed its parent-death signal: {}",
+        log_tail(&vm)
+    );
+
+    vm.kill().expect("the kill takes the per-VM process down");
+    assert!(
+        wait_until(|| is_dead(&proc), Duration::from_secs(10)),
+        "the per-VM process {pid} was not reaped after the kill"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 /// (e) The per-VM process **dies with its parent**: a parent that is `SIGKILL`ed

@@ -168,14 +168,15 @@ const PARENT_DEATH_SIGNAL: libc::c_int = libc::SIGKILL;
 /// state, and the arm happens after that exec: arm-then-serve is the ordering
 /// that matters.
 ///
-/// **Whose death counts.** Measured on Linux 7.2.8: the signal was delivered
-/// when the parent *process* died, and it was *not* delivered when a
-/// non-leader thread that spawned the child exited while its process lived —
-/// the child outlived that thread for as long as the worker's process lived,
-/// and died when the process did. (The conservative reading of `prctl(2)` —
-/// that the signal belongs to the spawning *thread* — is therefore stricter
-/// than this kernel's behaviour.) So a parent must keep the *process* alive,
-/// not any particular thread, which is the shape a daemon has.
+/// **Whose death counts.** The watched parent is "the thread that created this
+/// process" (`prctl(2)`), and measured on Linux 7.2.8 it is exactly that: the
+/// signal was delivered when the *thread* that spawned the child exited, even
+/// though its process lived on — a parent process staying alive is not enough.
+/// So the spawner spawns every child from one long-lived supervisor thread
+/// (`vmm::spawner::process`), never from a caller's thread, and a daemon that
+/// boots a VM on an ephemeral request thread keeps its VM. The backstop's
+/// purpose is unchanged: when the daemon *process* dies, every thread in it —
+/// the supervisor included — is gone, so the kernel still kills the child.
 ///
 /// **What it is not.** This neither replaces the graceful path nor stops the
 /// guest the way `VmHandle::kill` does. The parent holds this process's stdin

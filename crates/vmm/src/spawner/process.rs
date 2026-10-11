@@ -44,7 +44,7 @@
 //! [`spawn`](super::spawn) call (with the child's own log in the error) rather
 //! than a handle to a VM that does not exist.
 //!
-//! **The child dies with its parent, structurally.** `apz-vmm` arms
+//! **The child dies with its daemon, structurally.** `apz-vmm` arms
 //! `PR_SET_PDEATHSIG(SIGKILL)` before it does anything else, so a parent that
 //! dies *without* running any stop path — `SIGKILL`, a crash, an OOM kill —
 //! takes the child and its guest with it, in the kernel, with no cooperation
@@ -58,9 +58,26 @@
 //! returns on `read` → 0) and leaves the guest running — measured, with the
 //! backstop absent, a child outlived a `SIGKILL`ed parent with its
 //! `plaza.halt` guest still parked — which is exactly why the backstop is a
-//! kernel signal and not "the pipe closed". The one window neither covers is a
-//! parent that dies before the child's `prctl(2)` lands; it is one syscall
-//! wide, and it is documented at the child's `arm_parent_death_signal`
+//! kernel signal and not "the pipe closed".
+//!
+//! **The signal belongs to the spawning *thread*, so every child is spawned
+//! from one thread that lives as long as the daemon.** `prctl(2)`'s parent-death
+//! signal watches "the thread that created this process", and measured on
+//! Linux 7.2.8 it is exactly that: a child spawned from a thread that then
+//! exits is `SIGKILL`ed while its process lives on (this is the defect the
+//! supervisor thread fixes — a daemon that boots a VM on an HTTP request thread
+//! loses it milliseconds after the response is written). [`boot`] therefore
+//! does not call `Command::spawn` on the caller's thread: it hands the built
+//! command to [`supervisor`], a single thread created on the first process-mode
+//! boot that lives until the process exits, which does the `spawn` and hands
+//! the child straight back. The child's parent thread is then the supervisor —
+//! alive for the daemon's life — so `PDEATHSIG` fires on the daemon's death
+//! (the backstop's real purpose) and *not* on the caller's. The supervisor
+//! holds no child after it answers, so it never outlives one while the daemon
+//! lives, and there is nothing to shut down but the process itself. The one
+//! window neither the backstop nor the supervisor covers is a daemon that dies
+//! before the child's `prctl(2)` lands; it is one syscall wide, and it is
+//! documented at the child's `arm_parent_death_signal`
 //! (`crates/vmm/src/bin/apz-vmm/linux.rs`).
 //!
 //! **The muxer: the child binds its own socket.** `VmSpec::vsock`'s
@@ -118,6 +135,78 @@ const CONFINEMENT_ENV: [&str; 6] = [
     crate::jail::NO_JAIL_ENV,
 ];
 
+/// A child-spawn request for the supervisor thread: the fully-built command,
+/// and the channel the child (or the spawn error) is answered on.
+struct SpawnRequest {
+    command: Command,
+    reply: mpsc::Sender<std::io::Result<Child>>,
+}
+
+/// The single thread every per-VM child is spawned from: the sender half of
+/// its request channel, created on the first process-mode boot (`None` before
+/// that) and living until the process exits. It is what makes the child's
+/// parent *thread* outlive the caller that asked for the VM — see the module
+/// documentation for why that is required, not merely tidy.
+static SUPERVISOR: Mutex<Option<mpsc::Sender<SpawnRequest>>> = Mutex::new(None);
+
+/// The supervisor thread's loop: spawn each requested child and answer with
+/// it. A caller that vanished before the answer (its receiver dropped) leaves
+/// a child with no handle — a VM nothing can stop — so that child is killed
+/// and reaped here rather than leaked. The loop ends when the channel closes,
+/// which in practice is when the process exits; the thread is deliberately
+/// never joined, because it is meant to outlive every VM.
+fn supervise(requests: mpsc::Receiver<SpawnRequest>) {
+    while let Ok(mut request) = requests.recv() {
+        let result = request.command.spawn();
+        if let Err(mpsc::SendError(result)) = request.reply.send(result)
+            && let Ok(mut child) = result
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// The supervisor sender, starting the thread on first use. A process that
+/// never boots a VM in [`super::SpawnMode::Process`] never starts it.
+fn supervisor() -> Result<mpsc::Sender<SpawnRequest>, SpawnError> {
+    let mut slot = SUPERVISOR.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(sender) = slot.as_ref() {
+        return Ok(sender.clone());
+    }
+    let (sender, requests) = mpsc::channel();
+    thread::Builder::new()
+        .name("apz_vmm_spawner".to_string())
+        .spawn(move || supervise(requests))?;
+    *slot = Some(sender.clone());
+    Ok(sender)
+}
+
+/// Spawns `command` on the supervisor thread and returns the child, so the
+/// child's parent *thread* is the supervisor and not the caller. The caller
+/// still blocks here until the child exists, so `spawn()` keeps the
+/// synchronous shape it had when it called [`Command::spawn`] itself.
+fn spawn_supervised(command: Command, binary: &std::path::Path) -> Result<Child, SpawnError> {
+    let sender = supervisor()?;
+    let (reply, answer) = mpsc::channel();
+    sender.send(SpawnRequest { command, reply }).map_err(|_| {
+        SpawnError::Thread(std::io::Error::other(
+            "the per-VM supervisor thread has stopped",
+        ))
+    })?;
+    answer
+        .recv()
+        .map_err(|_| {
+            SpawnError::Thread(std::io::Error::other(
+                "the per-VM supervisor thread answered no child",
+            ))
+        })?
+        .map_err(|source| SpawnError::ChildSpawn {
+            path: binary.to_path_buf(),
+            source,
+        })
+}
+
 /// Boots one VM in a child `apz-vmm` process, filling `runtime` in the same
 /// way a backend does (see [`super::boot`] for the contract). Returns once the
 /// child has reported its VM up.
@@ -141,10 +230,10 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
             command.env(name, value);
         }
     }
-    let mut child = command.spawn().map_err(|source| SpawnError::ChildSpawn {
-        path: binary.clone(),
-        source,
-    })?;
+    // The spawn runs on the supervisor thread, not here: the child's
+    // parent-death signal watches the *thread* that created it (see the module
+    // documentation), and this caller may be an ephemeral request thread.
+    let mut child = spawn_supervised(command, &binary)?;
     let pid = child.id();
 
     // The three pipes are the whole interface. Missing one is not possible
@@ -490,6 +579,34 @@ mod tests {
         let bare = child_args(&VmSpec::default());
         for absent in ["--initrd", "--gic", "--cid", "--uds", "--workspace"] {
             assert!(!bare.iter().any(|arg| arg == absent), "{absent} leaked");
+        }
+    }
+
+    /// The supervisor is one long-lived thread that is *not* the caller's: the
+    /// thread that first needs it can exit and a later `spawn` from another
+    /// thread is still answered. That is the property the per-VM child's
+    /// parent thread depends on — if the spawn ran on the caller's thread,
+    /// that thread's exit would `SIGKILL` the child. Two requests also reuse
+    /// the one thread rather than leaving a thread behind each.
+    #[test]
+    fn the_supervisor_outlives_its_first_caller_and_is_reused() {
+        // A caller thread starts the supervisor and exits.
+        std::thread::spawn(|| {
+            supervisor().expect("the supervisor starts");
+        })
+        .join()
+        .expect("the caller thread ends");
+
+        // A later request from this (different) thread is still served: the
+        // supervisor did not die with the caller that first needed it.
+        for _ in 0..2 {
+            let mut child =
+                spawn_supervised(Command::new("/bin/true"), std::path::Path::new("/bin/true"))
+                    .expect("the supervisor spawns for a later caller");
+            assert!(
+                child.wait().expect("the child is reapable").success(),
+                "/bin/true exits 0"
+            );
         }
     }
 }
