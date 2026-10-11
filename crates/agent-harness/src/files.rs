@@ -142,6 +142,12 @@ impl Workspace {
         Self { root: root.into() }
     }
 
+    /// The directory the workspace is rooted at, as configured (the shell's
+    /// working directory).
+    pub fn dir(&self) -> &Path {
+        &self.root
+    }
+
     /// The root this workspace was configured with, as given.
     ///
     /// The tools work from the *canonical* root ([`Workspace::canonical_root`]);
@@ -409,11 +415,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// `read_file`: the text of one file inside the workspace.
 ///
 /// Arguments: `path` (required, relative), `max_bytes` (optional, default
-/// [`READ_DEFAULT_BYTES`], at most [`MAX_FILE_BYTES`]).
+/// [`READ_DEFAULT_BYTES`], at most [`MAX_FILE_BYTES`]), and the line window
+/// `offset` (the first line, from 1) and `limit` (how many lines). A line
+/// window reads up to [`MAX_FILE_BYTES`] unless `max_bytes` says otherwise.
 ///
 /// Output: `{"path", "size", "bytes", "truncated", "content"}` — `size` is the
 /// file's size on disk, `content` the text returned (`bytes` bytes of it), and
-/// `truncated` is true when the cap, rather than the end of the file, ended it.
+/// `truncated` is true when the cap, or lines past the window, ended it.
 ///
 /// A file that is not UTF-8 text is refused (`ok: false`, "is not UTF-8 text")
 /// rather than returned as mojibake: an agent reads text, and a mangled answer
@@ -423,7 +431,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// honest.
 pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
     let raw = string_arg(args, "path")?;
-    let cap = byte_arg(args, "max_bytes", MAX_FILE_BYTES)?.unwrap_or(READ_DEFAULT_BYTES);
+    let window = line_window(args)?;
+    let default_cap = if window.is_some() { MAX_FILE_BYTES } else { READ_DEFAULT_BYTES };
+    let cap = byte_arg(args, "max_bytes", MAX_FILE_BYTES)?.unwrap_or(default_cap);
     let (path, label) = workspace.resolve(&raw)?;
     let metadata =
         fs::metadata(&path).map_err(|err| io_tool_error(err, format!("cannot read {label}")))?;
@@ -465,14 +475,50 @@ pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
         }
     };
 
+    let (text, lines_left) = match window {
+        Some((first, limit)) => slice_lines(&text, first, limit),
+        None => (text, false),
+    };
     Ok(json!({
         "path": label,
         "size": metadata.len(),
         "bytes": text.len(),
-        "truncated": truncated,
+        "truncated": truncated || lines_left,
         "content": text,
     })
     .to_string())
+}
+
+/// The optional line window of `read_file`, as the index of the first line and
+/// how many lines: `offset` counts from 1, `limit` is a count.
+fn line_window(args: &Value) -> Result<Option<(usize, Option<usize>)>, ToolError> {
+    if args.get("offset").is_none() && args.get("limit").is_none() {
+        return Ok(None);
+    }
+    let offset = match args.get("offset") {
+        None | Some(Value::Null) => 1,
+        Some(value) => value
+            .as_u64()
+            .filter(|line| *line >= 1)
+            .ok_or_else(|| invalid("\"offset\" must be a line number from 1"))?,
+    };
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| invalid("\"limit\" must be a number of lines"))?),
+    };
+    let to_usize = |n: u64| usize::try_from(n).unwrap_or(usize::MAX);
+    Ok(Some((to_usize(offset - 1), limit.map(to_usize))))
+}
+
+/// The lines of `text` from index `first`, at most `limit` of them, and whether
+/// lines remain after them.
+fn slice_lines(text: &str, first: usize, limit: Option<usize>) -> (String, bool) {
+    let mut lines = text.split_inclusive('\n').skip(first);
+    let picked: String = match limit {
+        Some(count) => lines.by_ref().take(count).collect(),
+        None => lines.by_ref().collect(),
+    };
+    (picked, lines.next().is_some())
 }
 
 /// `write_file`: creates or replaces one file inside the workspace.
@@ -1244,6 +1290,24 @@ mod tests {
     }
 
     // --- read_file ---------------------------------------------------------
+
+    #[test]
+    fn read_file_serves_a_line_window_and_says_when_lines_remain() {
+        let (workspace, _outside) = scratch("read-lines");
+        write_inside(&workspace, "notes.txt", b"one\ntwo\nthree\nfour\n");
+        let window = |args: Value| served(&workspace, "read_file", args);
+        let second = window(json!({ "path": "notes.txt", "offset": 2, "limit": 2 }));
+        assert_eq!(second["content"], "two\nthree\n");
+        assert_eq!(second["truncated"], true);
+        let tail = window(json!({ "path": "notes.txt", "offset": 3 }));
+        assert_eq!(tail["content"], "three\nfour\n");
+        assert_eq!(tail["truncated"], false);
+        assert_eq!(window(json!({ "path": "notes.txt", "offset": 99 }))["content"], "");
+        assert!(matches!(
+            refused(&workspace, "read_file", json!({ "path": "notes.txt", "offset": 0 })),
+            ToolError::InvalidInput { .. }
+        ));
+    }
 
     #[test]
     fn read_file_reports_truncation_instead_of_pretending() {

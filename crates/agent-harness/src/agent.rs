@@ -1,0 +1,880 @@
+//! The model-driven agent loop (v3), run inside a keepalive session.
+//!
+//! A welcome carrying a `profile` (or a later `profile` line) makes the session
+//! model-backed. `work` items queue FIFO and run one at a time. A work item is a
+//! loop of model calls: the guest sends `model_call` with the conversation, the
+//! host answers `model_result`, and each tool the model asks for goes through
+//! `tool_request` and `tool_decision` (allowed and run here, decided by the host,
+//! or denied). The conversation only grows. A chat thread keeps its conversation
+//! across work items until it passes [`THREAD_CLOSE_BYTES`].
+//!
+//! Every wait is one loop ([`Agent::await_message`]) that keeps beating, serves
+//! operator `tool_call`s, queues work and records cancels while it waits. A
+//! local tool runs on its own thread that the same beat runs beside, so a slow
+//! tool does not silence the session.
+
+use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use apz_proto::chat::{Block, ChatRequest, ChatResponse, Message, Role, StopReason, blocks_text};
+use apz_proto::line::{Lines, ReadTimeout, Recv};
+use apz_proto::wire::{
+    AgentProfile, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind, WorkStatus, cap_output,
+};
+use serde_json::{Value, json};
+
+use crate::bash;
+use crate::files::Workspace;
+use crate::session::{SessionError, escape_for_transcript, kind_of, note, send};
+use crate::tools;
+
+/// A chat thread whose history serializes past this is closed: its next work
+/// starts a new conversation, opened with the thread's last summary.
+pub const THREAD_CLOSE_BYTES: usize = 400 * 1024;
+/// Consecutive identical failing tool calls that stop a work item.
+const STUCK_FAILURES: u32 = 3;
+/// Token-limit stops a work item continues past (with a "continue" message).
+const TOKEN_LIMIT_CONTINUES: u32 = 1;
+/// How often a local tool's thread is checked while the beat runs beside it.
+const LOCAL_POLL: Duration = Duration::from_millis(20);
+
+/// A local tool's result: its output, or why it failed.
+type Outcome = Result<String, String>;
+
+/// A queued work item.
+struct Job {
+    work: u64,
+    kind: WorkKind,
+    thread: String,
+    prompt: String,
+}
+
+/// A chat thread's conversation, kept between its work items.
+#[derive(Default)]
+struct Thread {
+    messages: Vec<Message>,
+    /// The summary of the thread's last work item.
+    summary: String,
+}
+
+/// What one turn of the read loop saw.
+enum Incoming {
+    /// The beat came due before a line; a heartbeat went out.
+    Beat,
+    /// A line the loop acted on itself (operator call, queued work, cancel, profile).
+    Handled,
+    /// The host stopped the agent.
+    Stop(String),
+    /// A line a wait may be waiting for.
+    Message(HostMessage),
+}
+
+/// Why a wait ended early: the host stopped the agent, or the session broke.
+enum Halt {
+    Stop(String),
+    Failed(SessionError),
+}
+
+impl From<SessionError> for Halt {
+    fn from(error: SessionError) -> Self {
+        Halt::Failed(error)
+    }
+}
+
+/// The agent's state for one keepalive connection.
+struct Agent<'a, S, W> {
+    lines: &'a mut Lines<S>,
+    log: &'a mut W,
+    workspace: &'a Workspace,
+    heartbeat: Duration,
+    next_beat: Instant,
+    seq: u64,
+    /// Operator tool calls served.
+    calls: u64,
+    /// The last model call's request id.
+    req: u64,
+    profile: Option<AgentProfile>,
+    queue: VecDeque<Job>,
+    threads: HashMap<String, Thread>,
+    /// The work item in progress, if any.
+    current: Option<u64>,
+    /// A cancel for the work item in progress, taken at its next step.
+    cancelled: Option<String>,
+}
+
+/// Serves one keepalive connection's agent loop until the host's `stop`;
+/// returns how many operator tool calls were served.
+pub fn serve<S: Read + Write + ReadTimeout, W: Write>(
+    lines: &mut Lines<S>,
+    log: &mut W,
+    workspace: &Workspace,
+    profile: Option<AgentProfile>,
+    heartbeat: Duration,
+) -> Result<u64, SessionError> {
+    let mut agent = Agent {
+        lines,
+        log,
+        workspace,
+        heartbeat,
+        next_beat: Instant::now() + heartbeat,
+        seq: 0,
+        calls: 0,
+        req: 0,
+        profile,
+        queue: VecDeque::new(),
+        threads: HashMap::new(),
+        current: None,
+        cancelled: None,
+    };
+    loop {
+        let halt = match agent.queue.pop_front() {
+            Some(job) => agent.run_job(job).err(),
+            None => match agent.pump() {
+                Ok(Incoming::Stop(reason)) => Some(Halt::Stop(reason)),
+                Ok(_) => None,
+                Err(error) => Some(Halt::Failed(error)),
+            },
+        };
+        match halt {
+            None => {}
+            Some(Halt::Stop(reason)) => return agent.end(&reason),
+            Some(Halt::Failed(error)) => return Err(error),
+        }
+    }
+}
+
+impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
+    /// Ends the session the host asked for, with the `bye`.
+    fn end(&mut self, reason: &str) -> Result<u64, SessionError> {
+        let reason = if reason.is_empty() { "no reason given" } else { reason };
+        note(self.log, &format!("agent-harness: the hub stopped the agent ({})", escape_for_transcript(reason)));
+        self.say(&GuestMessage::Bye { calls: self.calls })?;
+        Ok(self.calls)
+    }
+
+    fn say(&mut self, message: &GuestMessage) -> Result<(), SessionError> {
+        send(self.lines, self.log, message)
+    }
+
+    /// Sends a heartbeat, saying whether a work item is in progress.
+    fn beat(&mut self) -> Result<(), SessionError> {
+        self.seq += 1;
+        let seq = self.seq;
+        let busy = self.current.is_some();
+        self.say(&GuestMessage::Heartbeat { seq, busy: Some(busy) })?;
+        note(self.log, &format!("agent-harness: heartbeat {seq}"));
+        self.next_beat = Instant::now() + self.heartbeat;
+        Ok(())
+    }
+
+    /// Reads one line, or beats when the beat came due. The lines the loop owns
+    /// are acted on here; anything else is returned for a waiting caller.
+    fn pump(&mut self) -> Result<Incoming, SessionError> {
+        let wait = self.next_beat.saturating_duration_since(Instant::now());
+        self.lines.get_ref().set_read_timeout(Some(wait.max(Duration::from_millis(1))))?;
+        let line = match self.lines.recv()? {
+            Recv::Idle => {
+                self.beat()?;
+                return Ok(Incoming::Beat);
+            }
+            Recv::Closed => return Err(SessionError::HostClosed),
+            Recv::Line(line) => line,
+        };
+        note(self.log, &format!("[vsock<-] {}", escape_for_transcript(&line)));
+        let message = match HostMessage::from_line(&line) {
+            Ok(message) => message,
+            Err(err) => {
+                note(self.log, &format!("agent-harness: ignoring malformed host line ({err})"));
+                return Ok(Incoming::Handled);
+            }
+        };
+        Ok(match message {
+            HostMessage::ToolCall { call, name, args } => {
+                self.serve_operator(call, &name, &args)?;
+                Incoming::Handled
+            }
+            HostMessage::Stop { reason } => Incoming::Stop(reason),
+            HostMessage::Work { work, kind, thread, prompt } => {
+                self.queue.push_back(Job { work, kind, thread, prompt });
+                Incoming::Handled
+            }
+            HostMessage::Cancel { work, reason } => {
+                self.cancel(work, reason)?;
+                Incoming::Handled
+            }
+            HostMessage::Profile { profile } => {
+                self.profile = Some(profile);
+                Incoming::Handled
+            }
+            other => Incoming::Message(other),
+        })
+    }
+
+    /// Waits for the host message `pick` accepts; anything else is logged and
+    /// skipped. A stop from the host ends the wait with [`Halt::Stop`].
+    fn await_message<T>(
+        &mut self,
+        awaited: &str,
+        mut pick: impl FnMut(HostMessage) -> Result<T, HostMessage>,
+    ) -> Result<T, Halt> {
+        loop {
+            match self.pump()? {
+                Incoming::Message(message) => match pick(message) {
+                    Ok(picked) => return Ok(picked),
+                    Err(other) => {
+                        let kind = kind_of(&other);
+                        note(self.log, &format!("agent-harness: ignoring {kind} while waiting for {awaited}"));
+                    }
+                },
+                Incoming::Stop(reason) => return Err(Halt::Stop(reason)),
+                Incoming::Beat | Incoming::Handled => {}
+            }
+        }
+    }
+
+    /// Runs a local tool on its own thread, beating beside it. A panicking tool
+    /// is an error result, not a dead session.
+    fn run_local(&mut self, job: impl FnOnce() -> Outcome + Send) -> Result<Outcome, SessionError> {
+        thread::scope(|scope| -> Result<Outcome, SessionError> {
+            let handle = scope.spawn(job);
+            while !handle.is_finished() {
+                if Instant::now() >= self.next_beat {
+                    self.beat()?;
+                }
+                thread::sleep(LOCAL_POLL);
+            }
+            Ok(handle.join().unwrap_or_else(|_| Err("internal: the tool panicked".to_string())))
+        })
+    }
+
+    /// Serves one operator `tool_call`: the hub drives the tool directly.
+    fn serve_operator(&mut self, call: u64, name: &str, args: &Value) -> Result<(), SessionError> {
+        self.calls += 1;
+        let workspace = self.workspace;
+        let outcome = self.run_local(move || tools::serve(workspace, name, args).map_err(|err| err.to_string()))?;
+        let (ok, output) = match outcome {
+            Ok(output) => (true, output),
+            Err(err) => {
+                let name = escape_for_transcript(name);
+                note(self.log, &format!("agent-harness: tool {name} call {call} refused: {err}"));
+                (false, err)
+            }
+        };
+        self.say(&GuestMessage::ToolResult { call, ok, output: cap_output(&output, MAX_TOOL_OUTPUT) })
+    }
+
+    /// `cancel`: the work item in progress stops after its current step; a
+    /// queued one is finished as stopped without running.
+    fn cancel(&mut self, work: u64, reason: String) -> Result<(), SessionError> {
+        if self.current == Some(work) {
+            self.cancelled = Some(reason);
+        } else if let Some(at) = self.queue.iter().position(|job| job.work == work) {
+            self.queue.remove(at);
+            self.finish(work, WorkStatus::Stopped, &reason)?;
+        } else {
+            note(self.log, &format!("agent-harness: ignoring cancel for work {work}, which is not queued"));
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, work: u64, status: WorkStatus, summary: &str) -> Result<(), SessionError> {
+        note(self.log, &format!("agent-harness: work {work} {status:?}: {}", escape_for_transcript(summary)));
+        self.say(&GuestMessage::WorkDone { work, status, summary: summary.to_string() })
+    }
+
+    /// Runs one work item to its end. A chat item extends its thread's
+    /// conversation; any other item starts fresh.
+    fn run_job(&mut self, job: Job) -> Result<(), Halt> {
+        let Some(profile) = self.profile.clone() else {
+            self.finish(job.work, WorkStatus::Failed, "this agent has no model")?;
+            return Ok(());
+        };
+        let chat = job.kind == WorkKind::Chat;
+        let mut prompt = job.prompt;
+        let mut messages = Vec::new();
+        if chat {
+            let thread = self.threads.remove(&job.thread).unwrap_or_default();
+            if serialized_len(&thread.messages) > THREAD_CLOSE_BYTES {
+                prompt = format!("Earlier in this conversation: {}\n\n{prompt}", thread.summary);
+            } else {
+                messages = thread.messages;
+            }
+        }
+        // A conversation that ended on tool results (a stopped item) gets the
+        // prompt in that same user turn, so roles still alternate.
+        match messages.last_mut() {
+            Some(last) if last.role == Role::User => last.content.push(Block::Text { text: prompt }),
+            _ => messages.push(Message::user_text(prompt)),
+        }
+
+        self.current = Some(job.work);
+        self.cancelled = None;
+        let result = self.drive(job.work, &profile, &mut messages);
+        self.current = None;
+        let (status, summary) = result?;
+        if chat {
+            self.threads.insert(job.thread, Thread { messages, summary: summary.clone() });
+        }
+        self.finish(job.work, status, &summary)?;
+        Ok(())
+    }
+
+    /// The model loop of one work item: call the model, run what it asks for,
+    /// repeat until a stop condition. `messages` is extended in place.
+    fn drive(
+        &mut self,
+        work: u64,
+        profile: &AgentProfile,
+        messages: &mut Vec<Message>,
+    ) -> Result<(WorkStatus, String), Halt> {
+        let mut turns = 0u32;
+        let mut token_limit_hits = 0u32;
+        // The last tool call's name and input, and how many times in a row it failed.
+        let mut failing: Option<(String, u32)> = None;
+        loop {
+            if let Some(reason) = self.cancelled.take() {
+                return Ok((WorkStatus::Stopped, reason));
+            }
+            if turns >= profile.max_turns {
+                return Ok((WorkStatus::Stopped, "turn budget reached".to_string()));
+            }
+            turns += 1;
+            let response = match self.model_call(work, profile, messages)? {
+                Ok(response) => response,
+                Err(reason) => return Ok((WorkStatus::Failed, reason)),
+            };
+            let ChatResponse { content, stop, .. } = response;
+            messages.push(Message::assistant(content.clone()));
+
+            let uses: Vec<(String, String, Value, Option<Value>)> = content
+                .iter()
+                .filter_map(|block| match block {
+                    Block::ToolUse { id, name, input, meta } => {
+                        Some((id.clone(), name.clone(), input.clone(), meta.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let ran_tools = !uses.is_empty();
+            let mut results = Vec::new();
+            let mut stuck = None;
+            for (id, name, input, meta) in uses {
+                let (text, is_error) = self.tool_step(work, &id, &name, &input, meta.as_ref())?;
+                let key = format!("{name} {input}");
+                failing = match (is_error, failing.take()) {
+                    (false, _) => None,
+                    (true, Some((last, count))) if last == key => Some((last, count + 1)),
+                    (true, _) => Some((key, 1)),
+                };
+                if matches!(failing, Some((_, count)) if count >= STUCK_FAILURES) && stuck.is_none() {
+                    stuck = Some(format!("stuck: {name} failed {STUCK_FAILURES} times in a row with the same input"));
+                }
+                results.push(Block::ToolResult { tool_use_id: id, content: text, is_error });
+            }
+            if ran_tools {
+                messages.push(Message { role: Role::User, content: results });
+            }
+            if let Some(reason) = stuck {
+                return Ok((WorkStatus::Stopped, reason));
+            }
+
+            match stop {
+                StopReason::EndTurn => return Ok((WorkStatus::Done, blocks_text(&content))),
+                StopReason::Refusal => return Ok((WorkStatus::Failed, "the model declined".to_string())),
+                StopReason::MaxTokens => {
+                    token_limit_hits += 1;
+                    if token_limit_hits > TOKEN_LIMIT_CONTINUES {
+                        return Ok((WorkStatus::Stopped, "the model hit its token limit".to_string()));
+                    }
+                    if !ran_tools {
+                        messages.push(Message::user_text("continue"));
+                    }
+                }
+                other if !ran_tools => {
+                    return Ok((WorkStatus::Failed, format!("the model stopped without an answer ({other:?})")));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// One model call on the conversation so far. The inner `Err` is the host's
+    /// reason the call failed.
+    fn model_call(
+        &mut self,
+        work: u64,
+        profile: &AgentProfile,
+        messages: &[Message],
+    ) -> Result<Result<ChatResponse, String>, Halt> {
+        self.req += 1;
+        let req = self.req;
+        let request = ChatRequest {
+            model: String::new(),
+            system: (!profile.system.is_empty()).then(|| profile.system.clone()),
+            messages: messages.to_vec(),
+            tools: profile.tools.clone(),
+            max_tokens: 0,
+            temperature: None,
+            effort: None,
+        };
+        self.say(&GuestMessage::ModelCall { req, work, request })?;
+        let (ok, response, error) = self.await_message("model_result", |message| match message {
+            HostMessage::ModelResult { req: got, ok, response, error } if got == req => Ok((ok, response, error)),
+            other => Err(other),
+        })?;
+        Ok(match (ok, response) {
+            (true, Some(response)) => Ok(response),
+            (true, None) => Err("the host sent no answer".to_string()),
+            (false, _) => Err(error.unwrap_or_else(|| "the model call failed".to_string())),
+        })
+    }
+
+    /// One tool the model asked for. Returns the result's text and whether it is
+    /// an error. Malformed input is refused without asking the host; otherwise the
+    /// host decides, and an allowed tool runs here.
+    fn tool_step(
+        &mut self,
+        work: u64,
+        id: &str,
+        name: &str,
+        input: &Value,
+        meta: Option<&Value>,
+    ) -> Result<(String, bool), Halt> {
+        if let Some(reason) = invalid_input(input, meta) {
+            return Ok((format!("INVALID_INPUT: {reason}"), true));
+        }
+        self.say(&GuestMessage::ToolRequest {
+            work,
+            call: id.to_string(),
+            name: name.to_string(),
+            input: input.clone(),
+        })?;
+        let (decision, output, is_error) = self.await_message("tool_decision", |message| match message {
+            HostMessage::ToolDecision { call, decision, output, is_error } if call == id => {
+                Ok((decision, output, is_error))
+            }
+            other => Err(other),
+        })?;
+        match decision {
+            Decision::Allow => {
+                let workspace = self.workspace;
+                let outcome = self.run_local(move || run_guest_tool(workspace, name, input))?;
+                let (ok, output) = match outcome {
+                    Ok(output) => (true, output),
+                    Err(err) => (false, err),
+                };
+                let output = cap_output(&output, MAX_TOOL_OUTPUT);
+                self.say(&GuestMessage::ToolReport { work, call: id.to_string(), ok, output: output.clone() })?;
+                Ok((output, !ok))
+            }
+            Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
+            Decision::Deny if output.is_empty() => Ok(("the host denied this tool call".to_string(), true)),
+            Decision::Deny => Ok((output, true)),
+        }
+    }
+}
+
+/// Why a tool call's input cannot run, found without asking the host: the
+/// gateway could not parse the model's arguments, or they are not an object.
+fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
+    if meta.is_some_and(|meta| {
+        meta.get("kind").and_then(Value::as_str) == Some("gateway")
+            && meta.get("error").and_then(Value::as_str) == Some("INVALID_JSON")
+    }) {
+        return Some("the arguments were not valid JSON");
+    }
+    if !input.is_object() {
+        return Some("the arguments must be a JSON object");
+    }
+    None
+}
+
+/// Runs a tool the host allowed, under the names the model knows. `edit_file`
+/// takes `old` and `new` from the model, which the file tool calls `find` and
+/// `replace`.
+fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
+    match name {
+        "bash" => bash::run(workspace, input),
+        "edit_file" => {
+            let args = edit_args(input)?;
+            tools::serve(workspace, name, &args).map_err(|err| err.to_string())
+        }
+        _ => tools::serve(workspace, name, input).map_err(|err| err.to_string()),
+    }
+}
+
+/// The file tool's arguments for the model's `{path, old, new}`.
+fn edit_args(input: &Value) -> Result<Value, String> {
+    let (Some(old), Some(new)) = (
+        input.get("old").and_then(Value::as_str),
+        input.get("new").and_then(Value::as_str),
+    ) else {
+        return Err("invalid input: edit_file needs string \"old\" and \"new\"".to_string());
+    };
+    let mut args = input.clone();
+    args["find"] = json!(old);
+    args["replace"] = json!(new);
+    Ok(args)
+}
+
+/// The size of a conversation as it is sent, in bytes.
+fn serialized_len(messages: &[Message]) -> usize {
+    serde_json::to_vec(messages).map_or(0, |bytes| bytes.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keepalive;
+    use crate::session::Identity;
+    use crate::session::testing::{next, pair};
+    use apz_proto::line::Lines;
+    use std::os::unix::net::UnixStream;
+
+    const IDENTITY: Identity = Identity { guest_cid: 104, vm: 4 };
+    const HEARTBEAT: Duration = Duration::from_millis(20);
+
+    fn scratch(name: &str) -> Workspace {
+        let dir = std::env::temp_dir().join(format!("apz-harness-agent-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch workspace");
+        Workspace::at(dir)
+    }
+
+    fn welcome(max_turns: u32) -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "tools": [{"name": "bash", "description": "run", "input_schema": {"type": "object"}}],
+                "max_turns": max_turns,
+            },
+        })
+        .to_string()
+    }
+
+    fn work(id: u64, kind: &str, thread: &str, prompt: &str) -> String {
+        json!({"type": "work", "work": id, "kind": kind, "thread": thread, "prompt": prompt}).to_string()
+    }
+
+    fn answer(req: u64, content: Value, stop: &str) -> String {
+        json!({
+            "type": "model_result", "req": req, "ok": true,
+            "response": {"model": "anthropic/x", "content": content, "stop": stop,
+                         "usage": {"input_tokens": 1, "output_tokens": 1}},
+        })
+        .to_string()
+    }
+
+    fn text(text: &str) -> Value {
+        json!({"type": "text", "text": text})
+    }
+
+    fn tool_use(id: &str, name: &str, input: Value) -> Value {
+        json!({"type": "tool_use", "id": id, "name": name, "input": input})
+    }
+
+    fn decision(call: &str, decision: &str, output: &str, is_error: bool) -> String {
+        json!({"type": "tool_decision", "call": call, "decision": decision, "output": output, "is_error": is_error})
+            .to_string()
+    }
+
+    /// The guest's next line that is not a heartbeat, parsed.
+    fn next_msg(host: &mut Lines<UnixStream>) -> Value {
+        loop {
+            let value: Value = serde_json::from_str(&next(host)).expect("a JSON line");
+            if value["type"] != "heartbeat" {
+                return value;
+            }
+        }
+    }
+
+    fn expect_type(host: &mut Lines<UnixStream>, kind: &str) -> Value {
+        let value = next_msg(host);
+        assert_eq!(value["type"], kind, "{value}");
+        value
+    }
+
+    /// Ends the session the way the hub does, and checks the `bye`.
+    fn stop(host: &mut Lines<UnixStream>) {
+        host.send(r#"{"type":"stop","reason":"test over"}"#).unwrap();
+        expect_type(host, "bye");
+    }
+
+    /// Runs a keepalive session whose hub is `script`, and returns the calls served.
+    fn run_hub(workspace: &Workspace, script: impl FnOnce(&mut Lines<UnixStream>) + Send + 'static) -> u64 {
+        let (mut guest, mut host) = pair();
+        let hub = thread::spawn(move || {
+            next(&mut host);
+            script(&mut host);
+        });
+        let mut log = Vec::new();
+        let result = keepalive::session(&mut guest, &mut log, &IDENTITY, workspace, Some("builder"), HEARTBEAT);
+        drop(guest);
+        hub.join().expect("the scripted hub finished");
+        result.expect("the hub stops the agent")
+    }
+
+    #[test]
+    fn an_allowed_tool_runs_here_and_its_output_reaches_the_next_model_call() {
+        let workspace = scratch("allow");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "say hi")).unwrap();
+            let first = expect_type(host, "model_call");
+            assert_eq!((first["req"].clone(), first["request"]["system"].clone()), (json!(1), json!("be brief")));
+            assert_eq!(first["request"]["messages"][0]["content"][0]["text"], "say hi");
+            host.send(&answer(1, json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]), "tool_use"))
+                .unwrap();
+            let request = expect_type(host, "tool_request");
+            assert_eq!((request["call"].clone(), request["name"].clone()), (json!("t1"), json!("bash")));
+            host.send(&decision("t1", "allow", "", false)).unwrap();
+            let report = expect_type(host, "tool_report");
+            assert_eq!((report["ok"].clone(), report["output"].clone()), (json!(true), json!("hi\nexit 0")));
+            let second = expect_type(host, "model_call");
+            assert_eq!(second["request"]["messages"][2]["content"][0]["content"], "hi\nexit 0");
+            host.send(&answer(2, json!([text("all done")]), "end_turn")).unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!((done["work"].clone(), done["status"].clone(), done["summary"].clone()),
+                (json!(1), json!("done"), json!("all done")));
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_host_run_tool_uses_the_decisions_output_and_the_guest_reports_nothing() {
+        let workspace = scratch("done");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "find it")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([tool_use("s1", "search", json!({"pattern": "x"}))]), "tool_use")).unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("s1", "done", "3 hits", false)).unwrap();
+            let next = expect_type(host, "model_call");
+            assert_eq!(next["request"]["messages"][2]["content"][0]["content"], "3 hits");
+            host.send(&answer(2, json!([text("found")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_denied_tool_is_an_error_result_carrying_the_reason() {
+        let workspace = scratch("deny");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "rm it")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]), "tool_use")).unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("d1", "deny", "not allowed here", true)).unwrap();
+            let next = expect_type(host, "model_call");
+            let result = &next["request"]["messages"][2]["content"][0];
+            assert_eq!((result["content"].clone(), result["is_error"].clone()), (json!("not allowed here"), json!(true)));
+            host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn malformed_tool_input_is_refused_without_asking_the_host() {
+        let workspace = scratch("invalid");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            expect_type(host, "model_call");
+            let not_an_object = tool_use("i1", "bash", json!("ls"));
+            let gateway_meta = json!({"type": "tool_use", "id": "i2", "name": "bash", "input": {},
+                                      "meta": {"kind": "gateway", "error": "INVALID_JSON"}});
+            host.send(&answer(1, json!([not_an_object, gateway_meta]), "tool_use")).unwrap();
+            let next = expect_type(host, "model_call");
+            let results = &next["request"]["messages"][2]["content"];
+            assert!(results[0]["content"].as_str().is_some_and(|c| c.starts_with("INVALID_INPUT: ")), "{results}");
+            assert!(results[1]["content"].as_str().is_some_and(|c| c.starts_with("INVALID_INPUT: ")), "{results}");
+            assert_eq!(results[1]["is_error"], true);
+            host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_refusal_fails_the_work_item() {
+        let workspace = scratch("refusal");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "x")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([text("no")]), "refusal")).unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!((done["status"].clone(), done["summary"].clone()), (json!("failed"), json!("the model declined")));
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_second_token_limit_stops_after_one_continue() {
+        let workspace = scratch("limit");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "long")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([text("partial")]), "max_tokens")).unwrap();
+            let again = expect_type(host, "model_call");
+            let messages = &again["request"]["messages"];
+            assert_eq!(messages[messages.as_array().unwrap().len() - 1]["content"][0]["text"], "continue");
+            host.send(&answer(2, json!([text("more")]), "max_tokens")).unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!((done["status"].clone(), done["summary"].clone()),
+                (json!("stopped"), json!("the model hit its token limit")));
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn the_turn_budget_stops_the_work_before_another_model_call() {
+        let workspace = scratch("budget");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(2)).unwrap();
+            host.send(&work(1, "task", "t", "loop")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([tool_use("b1", "list", json!({"path": "a"}))]), "tool_use")).unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("b1", "done", "[]", false)).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([tool_use("b2", "list", json!({"path": "b"}))]), "tool_use")).unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("b2", "done", "[]", false)).unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!((done["status"].clone(), done["summary"].clone()),
+                (json!("stopped"), json!("turn budget reached")));
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn the_same_failing_call_three_times_is_stuck() {
+        let workspace = scratch("stuck");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "again")).unwrap();
+            for req in 1..=3 {
+                expect_type(host, "model_call");
+                let call = format!("s{req}");
+                host.send(&answer(req, json!([tool_use(&call, "bash", json!({"command": "x"}))]), "tool_use"))
+                    .unwrap();
+                expect_type(host, "tool_request");
+                host.send(&decision(&call, "deny", "no", true)).unwrap();
+            }
+            let done = expect_type(host, "work_done");
+            assert_eq!((done["status"].clone(), done["summary"].clone()), (json!("stopped"),
+                json!("stuck: bash failed 3 times in a row with the same input")));
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_cancel_stops_after_the_current_step_and_runs_nothing_more() {
+        let workspace = scratch("cancel");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "stop me")).unwrap();
+            expect_type(host, "model_call");
+            host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#).unwrap();
+            host.send(&answer(1, json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]), "tool_use"))
+                .unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("c1", "allow", "", false)).unwrap();
+            expect_type(host, "tool_report");
+            let done = expect_type(host, "work_done");
+            assert_eq!((done["status"].clone(), done["summary"].clone()), (json!("stopped"), json!("operator stop")));
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_chat_thread_keeps_its_conversation_verbatim_and_queued_work_runs_in_order() {
+        let workspace = scratch("chat");
+        let opaque = json!({"type": "opaque", "kind": "anthropic", "raw": {"type": "thinking", "signature": "sig"}});
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "chat", "room", "hello")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([opaque.clone(), text("hi there")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+
+            host.send(&work(2, "chat", "room", "again")).unwrap();
+            let second = expect_type(host, "model_call");
+            let messages = &second["request"]["messages"];
+            assert_eq!(messages[0]["content"][0]["text"], "hello");
+            assert_eq!(messages[1]["content"], json!([opaque.clone(), text("hi there")]));
+            assert_eq!(messages[2]["content"][0]["text"], "again");
+            // Work 3 arrives while work 2 waits for its model answer, and runs after it.
+            host.send(&answer(2, json!([text("again!")]), "end_turn")).unwrap();
+            host.send(&work(3, "task", "other", "queued")).unwrap();
+            expect_type(host, "work_done");
+            let third = expect_type(host, "model_call");
+            assert_eq!((third["work"].clone(), third["request"]["messages"][0]["content"][0]["text"].clone()),
+                (json!(3), json!("queued")));
+            host.send(&answer(3, json!([text("queued done")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn heartbeats_go_out_while_a_model_call_is_pending() {
+        let workspace = scratch("beats");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "wait")).unwrap();
+            expect_type(host, "model_call");
+            let mut busy_beats = 0;
+            while busy_beats < 3 {
+                let value: Value = serde_json::from_str(&next(host)).expect("a JSON line");
+                if value["type"] == "heartbeat" && value["busy"] == true {
+                    busy_beats += 1;
+                }
+            }
+            host.send(&answer(1, json!([text("late")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            let mut idle_beat = false;
+            while !idle_beat {
+                let value: Value = serde_json::from_str(&next(host)).expect("a JSON line");
+                idle_beat = value["type"] == "heartbeat" && value["busy"] == false;
+            }
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_chat_thread_past_its_size_limit_opens_a_new_conversation_with_its_summary() {
+        let workspace = scratch("close");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "chat", "long", &"x".repeat(THREAD_CLOSE_BYTES + 1))).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([text("summary one")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            host.send(&work(2, "chat", "long", "second")).unwrap();
+            let next = expect_type(host, "model_call");
+            let messages = next["request"]["messages"].as_array().unwrap();
+            assert_eq!(messages.len(), 1, "{messages:?}");
+            assert_eq!(messages[0]["content"][0]["text"], "Earlier in this conversation: summary one\n\nsecond");
+            host.send(&answer(2, json!([text("ok")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn the_model_edit_arguments_map_onto_the_file_tools_names() {
+        let mapped = edit_args(&json!({"path": "a.txt", "old": "x", "new": "y"})).unwrap();
+        assert_eq!((mapped["find"].clone(), mapped["replace"].clone()), (json!("x"), json!("y")));
+        assert!(edit_args(&json!({"path": "a.txt", "old": "x"})).unwrap_err().starts_with("invalid input:"));
+    }
+}

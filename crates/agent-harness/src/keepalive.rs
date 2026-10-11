@@ -10,16 +10,15 @@
 
 use std::fmt;
 use std::io::{Read, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use apz_proto::line::{Lines, ReadTimeout, Recv};
-use apz_proto::wire::{GuestMessage, HostMessage, WELCOME_ECHO};
+use apz_proto::line::{Lines, ReadTimeout};
+use apz_proto::wire::{AgentProfile, GuestMessage, HostMessage, WELCOME_ECHO};
 
 use crate::files::Workspace;
 use crate::session::{
-    Identity, MAX_SKIPPED_LINES, SessionError, await_host, escape_for_transcript, kind_of, note, send, wrong_echo,
+    Identity, SessionError, await_host, escape_for_transcript, note, send, wrong_echo,
 };
-use crate::tools;
 
 pub const HEARTBEAT_SECS: u64 = 5;
 /// The first reconnect delay.
@@ -64,8 +63,9 @@ pub fn session<S: Read + Write + ReadTimeout, W: Write>(
     role: Option<&str>,
     heartbeat: Duration,
 ) -> Result<u64, KeepaliveError> {
-    handshake(lines, log, identity, role)?;
-    serve(lines, log, workspace, heartbeat).map_err(|error| KeepaliveError { adopted: true, error })
+    let profile = handshake(lines, log, identity, role)?;
+    crate::agent::serve(lines, log, workspace, profile, heartbeat)
+        .map_err(|error| KeepaliveError { adopted: true, error })
 }
 
 /// `hello`, then a `welcome` that confirms keepalive (a v1 hub's does not, and
@@ -75,7 +75,7 @@ fn handshake<S: Read + Write, W: Write>(
     log: &mut W,
     identity: &Identity,
     role: Option<&str>,
-) -> Result<(), SessionError> {
+) -> Result<Option<AgentProfile>, SessionError> {
     let hello = GuestMessage::Hello {
         vm: identity.vm,
         guest_cid: identity.guest_cid,
@@ -85,76 +85,21 @@ fn handshake<S: Read + Write, W: Write>(
     send(lines, log, &hello)?;
     let accepted = await_host(lines, log, "welcome", |message| match message {
         HostMessage::Welcome { echo, .. } if echo != WELCOME_ECHO => Some(Err(wrong_echo(&echo))),
-        HostMessage::Welcome { keepalive: Some(true), role: hub_role, .. } => Some(Ok(hub_role)),
+        HostMessage::Welcome { keepalive: Some(true), role: hub_role, profile, .. } => Some(Ok((hub_role, profile))),
         HostMessage::Welcome { keepalive, .. } => Some(Err(SessionError::Protocol(format!(
             "the hub did not confirm a keepalive session (welcome.keepalive is {keepalive:?})"
         )))),
         _ => None,
     })?;
+    let (accepted, profile) = accepted;
     match accepted.or_else(|| role.map(str::to_string)) {
         Some(role) => note(log, &format!("agent-harness: role {} accepted", escape_for_transcript(&role))),
         None => note(log, "agent-harness: keepalive session accepted (no role)"),
     }
-    Ok(())
-}
-
-/// Beats and serves tool calls until the hub stops the agent.
-fn serve<S: Read + Write + ReadTimeout, W: Write>(
-    lines: &mut Lines<S>,
-    log: &mut W,
-    workspace: &Workspace,
-    heartbeat: Duration,
-) -> Result<u64, SessionError> {
-    let (mut calls, mut seq, mut skipped) = (0u64, 0u64, 0usize);
-    let mut next_beat = Instant::now() + heartbeat;
-    loop {
-        let wait = next_beat.saturating_duration_since(Instant::now());
-        lines.get_ref().set_read_timeout(Some(wait.max(Duration::from_millis(1))))?;
-        let line = match lines.recv()? {
-            Recv::Idle => {
-                seq += 1;
-                send(lines, log, &GuestMessage::Heartbeat { seq, busy: None })?;
-                note(log, &format!("agent-harness: heartbeat {seq}"));
-                next_beat = Instant::now() + heartbeat;
-                continue;
-            }
-            Recv::Closed => return Err(SessionError::HostClosed),
-            Recv::Line(line) => line,
-        };
-        note(log, &format!("[vsock<-] {}", escape_for_transcript(&line)));
-        match HostMessage::from_line(&line) {
-            Ok(HostMessage::ToolCall { call, name, args }) => {
-                skipped = 0;
-                calls += 1;
-                let (ok, output) = match tools::serve(workspace, &name, &args) {
-                    Ok(output) => (true, output),
-                    Err(err) => {
-                        let name = escape_for_transcript(&name);
-                        note(log, &format!("agent-harness: tool {name} call {call} refused: {err}"));
-                        (false, err.to_string())
-                    }
-                };
-                send(lines, log, &GuestMessage::ToolResult { call, ok, output })?;
-            }
-            Ok(HostMessage::Stop { reason }) => {
-                let reason = if reason.is_empty() { "no reason given" } else { &reason };
-                note(log, &format!("agent-harness: the hub stopped the agent ({})", escape_for_transcript(reason)));
-                send(lines, log, &GuestMessage::Bye { calls })?;
-                return Ok(calls);
-            }
-            Ok(other) => {
-                skipped += 1;
-                note(log, &format!("agent-harness: ignoring {} while serving the hub", kind_of(&other)));
-            }
-            Err(err) => {
-                skipped += 1;
-                note(log, &format!("agent-harness: ignoring malformed host line ({err})"));
-            }
-        }
-        if skipped > MAX_SKIPPED_LINES {
-            return Err(SessionError::Protocol(format!("no tool_call or stop within {skipped} lines")));
-        }
+    if let Some(profile) = &profile {
+        note(log, &format!("agent-harness: model-backed as {}", escape_for_transcript(&profile.model)));
     }
+    Ok(profile)
 }
 
 /// The delay before reconnect attempt `failures` (1-based): 250 ms doubling to
@@ -210,7 +155,7 @@ mod tests {
             assert_eq!(next(&mut host), r#"{"type":"hello","vm":4,"guest_cid":104,"role":"builder","keepalive":true}"#);
             host.send(WELCOME).unwrap();
             for seq in 1..=3 {
-                assert_eq!(next_kind(&mut host, "heartbeat"), format!(r#"{{"type":"heartbeat","seq":{seq}}}"#));
+                assert_eq!(next_kind(&mut host, "heartbeat"), format!(r#"{{"type":"heartbeat","seq":{seq},"busy":false}}"#));
             }
             host.send(r#"{"type":"tool_call","call":1,"name":"echo","args":{"text":"hi there"}}"#).unwrap();
             assert_eq!(next_kind(&mut host, "tool_result"), r#"{"type":"tool_result","call":1,"ok":true,"output":"hi there"}"#);

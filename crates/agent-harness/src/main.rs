@@ -41,6 +41,8 @@
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "linux")]
+mod agent;
+mod bash;
 mod cmdline;
 #[cfg(target_os = "linux")]
 mod files;
