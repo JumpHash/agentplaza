@@ -219,6 +219,7 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
     let mut cid: Option<u64> = None;
     let mut uds: Option<PathBuf> = None;
     let mut gic: Option<GicVersion> = None;
+    let mut balloon: Option<u32> = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -250,6 +251,13 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
                 cid = Some(
                     text.parse()
                         .map_err(|_| format!("{flag} {text:?} is not a CID"))?,
+                );
+            }
+            "--balloon-usable-mib" => {
+                let text = value(args, &mut index, flag)?;
+                balloon = Some(
+                    text.parse()
+                        .map_err(|_| format!("{flag} {text:?} is not a number of MiB"))?,
                 );
             }
             "--uds" => uds = Some(PathBuf::from(value(args, &mut index, flag)?)),
@@ -291,6 +299,7 @@ fn parse(args: &[String]) -> Result<VmSpec, String> {
         gic,
         vsock,
         workspace,
+        balloon,
     })
 }
 
@@ -453,6 +462,7 @@ mod tests {
                 uds_path: PathBuf::from("/tmp/plaza-vsock/vm42"),
             }),
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
+            balloon: Some(32),
         };
         let args = vmm::spawner::process::child_args(&spec);
         let parsed = parse(&args).expect("the parent's command line parses");
@@ -464,6 +474,7 @@ mod tests {
         assert_eq!(parsed.gic, spec.gic);
         assert_eq!(parsed.vsock, spec.vsock);
         assert_eq!(parsed.workspace, spec.workspace);
+        assert_eq!(parsed.balloon, spec.balloon);
     }
 
     /// A command line that does not describe one VM is refused, with the flag

@@ -20,7 +20,7 @@ use std::io;
 
 use crate::devices::virtio::queue::{InvalidAvailIdx, QueueError};
 
-pub use device::{Discard, MadviseDiscard, VirtioBalloon};
+pub use device::{Discard, MadviseDiscard, SharedBalloon, VirtioBalloon};
 
 /// `VIRTIO_ID_BALLOON`: the virtio type id of a balloon device.
 pub const VIRTIO_ID_BALLOON: u32 = 5;

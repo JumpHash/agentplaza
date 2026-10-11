@@ -180,3 +180,14 @@ pub const WORKSPACE_MMIO_START: u64 = VSOCK_MMIO_START + MMIO_LEN;
 /// the floppy controller that traditionally owns IRQ 6 is a module the guest
 /// never loads.
 pub const WORKSPACE_GSI: u32 = GSI_LEGACY_START + 1;
+
+/// Guest-physical MMIO window of the `virtio-mmio` transport that carries the
+/// VM's balloon: the third slot of the 32-bit MMIO device region, one slot
+/// above the workspace volume's. The guest learns about it from its own
+/// `virtio_mmio.device=` entry, like the other two transports.
+pub const BALLOON_MMIO_START: u64 = WORKSPACE_MMIO_START + MMIO_LEN;
+
+/// Interrupt line of the balloon: the legacy GSI after the block device's
+/// (GSI 7, the parallel port's, which this platform does not have). Like
+/// [`WORKSPACE_GSI`] it stays inside the MPTable's identity map.
+pub const BALLOON_GSI: u32 = GSI_LEGACY_START + 2;

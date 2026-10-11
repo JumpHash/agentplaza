@@ -114,6 +114,7 @@ fn spec(dir: &Path, cid: u64, cmdline: &str) -> VmSpec {
             uds_path: dir.join(format!("vm{cid}")),
         }),
         workspace: None,
+        balloon: None,
     }
 }
 

@@ -155,6 +155,13 @@ pub struct VmSpec {
     /// Unsupported on Apple Silicon: a spec that sets it makes the boot fail
     /// with an explicit error rather than boot a VM whose device never appears.
     pub workspace: Option<PathBuf>,
+    /// The memory the guest may use at boot, in MiB, when the VM carries a
+    /// virtio-balloon: the VM is sized at [`VmSpec::memory_mib`] and the
+    /// balloon holds the rest, so its memory can later grow (and shrink) with
+    /// [`VmHandle::set_usable_memory_mib`] without a reboot. `None` = no
+    /// balloon; the guest has all of `memory_mib`. `x86_64` only for now: on
+    /// other backends the VM boots without one, with a warning.
+    pub balloon: Option<u32>,
 }
 
 impl Default for VmSpec {
@@ -168,6 +175,7 @@ impl Default for VmSpec {
             gic: None,
             vsock: None,
             workspace: None,
+            balloon: None,
         }
     }
 }
@@ -225,6 +233,9 @@ pub enum SpawnError {
     /// No backend is compiled in for this platform
     #[error("no VM backend is compiled in for this platform")]
     NoBackend,
+    /// The VM has no balloon, so its memory cannot be resized
+    #[error("this VM has no balloon")]
+    NoBalloon,
     /// Guest CID {guest_cid} is outside the supported range {min}..={max}
     #[error("guest CID {guest_cid} is outside the supported range {min}..={max}")]
     GuestCidOutOfRange {
@@ -480,6 +491,31 @@ fn child_binary() -> Result<PathBuf, SpawnError> {
 /// each of which has its own console error type.
 type InputHook = Box<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
 
+/// A VM's memory as its balloon reports it, in MiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryStats {
+    /// The VM's whole memory ([`VmSpec::memory_mib`]).
+    pub max_mib: u32,
+    /// What the guest may use now (the host's target).
+    pub usable_mib: u32,
+    /// What the balloon actually holds (the guest's acknowledged size).
+    pub held_mib: u64,
+    /// Free memory inside the guest, once it has reported it.
+    pub free_mib: Option<u64>,
+    /// Memory available without swapping inside the guest, once reported.
+    pub available_mib: Option<u64>,
+}
+
+/// How the host resizes a running VM's memory: in-process, the balloon device
+/// itself; for a VM in its own process, a request over that process's control
+/// socket.
+pub trait MemoryControl: Send + Sync {
+    /// Sets the memory the guest may use, in MiB.
+    fn set_usable_mib(&self, mib: u32) -> Result<(), SpawnError>;
+    /// The latest counters.
+    fn stats(&self) -> MemoryStats;
+}
+
 /// State shared between the spawner, the VM handle and the active backend.
 ///
 /// The spawner creates one per VM and hands it to the backend's `boot`, which
@@ -514,6 +550,9 @@ pub struct VmRuntime {
     /// to the VM's UART, which queues them and raises the console's interrupt
     /// (see [`VmHandle::serial_input`]).
     input: Mutex<Option<InputHook>>,
+    /// Memory control installed by the backend in `boot` when the VM has a
+    /// balloon (see [`VmHandle::set_usable_memory_mib`]).
+    memory: Mutex<Option<Arc<dyn MemoryControl>>>,
     /// Whether the stop control has been invoked.
     stop_requested: AtomicBool,
     /// Whether the guest ended the VM itself.
@@ -554,6 +593,7 @@ impl VmRuntime {
             process_log: Arc::new(Mutex::new(Vec::new())),
             stop: Mutex::new(None),
             input: Mutex::new(None),
+            memory: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
             guest_exited: AtomicBool::new(false),
             guest_reset: AtomicBool::new(false),
@@ -568,6 +608,23 @@ impl VmRuntime {
             .stop
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(stop));
+    }
+
+    /// Installs the memory control of a VM that has a balloon. Called by the
+    /// backend from `boot`.
+    pub fn set_memory_control(&self, control: Arc<dyn MemoryControl>) {
+        *self
+            .memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+    }
+
+    /// The VM's memory control, `None` when it has no balloon.
+    pub fn memory_control(&self) -> Option<Arc<dyn MemoryControl>> {
+        self.memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Installs the console input hook. Called by the backend from `boot`,
@@ -838,6 +895,22 @@ impl VmHandle {
     /// (`vmctl`'s stdin reader is the first such caller).
     pub fn runtime(&self) -> Arc<VmRuntime> {
         Arc::clone(&self.runtime)
+    }
+
+    /// Lets the guest use `mib` MiB of its memory: the balloon deflates to
+    /// grow it or inflates to take memory back (the guest frees pages first,
+    /// and the host discards their backing). Clamped to [`VmSpec::memory_mib`].
+    pub fn set_usable_memory_mib(&self, mib: u32) -> Result<(), SpawnError> {
+        self.runtime
+            .memory_control()
+            .ok_or(SpawnError::NoBalloon)?
+            .set_usable_mib(mib)
+    }
+
+    /// The guest's memory as its balloon last reported it, `None` when the VM
+    /// has no balloon.
+    pub fn memory_stats(&self) -> Option<MemoryStats> {
+        self.runtime.memory_control().map(|control| control.stats())
     }
 }
 

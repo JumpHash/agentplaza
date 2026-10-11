@@ -447,6 +447,10 @@ pub fn child_args(spec: &VmSpec) -> Vec<String> {
         args.push("--workspace".to_string());
         args.push(workspace.display().to_string());
     }
+    if let Some(usable) = spec.balloon {
+        args.push("--balloon-usable-mib".to_string());
+        args.push(usable.to_string());
+    }
     if let Some(gic) = spec.gic {
         args.push("--gic".to_string());
         args.push(
@@ -550,6 +554,7 @@ mod tests {
                 uds_path: PathBuf::from("/tmp/plaza-vsock/vm42"),
             }),
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
+            balloon: Some(32),
         };
         let args = child_args(&spec);
         let pairs: Vec<(&str, &str)> = args
@@ -569,6 +574,7 @@ mod tests {
             ("--cid", "42"),
             ("--uds", "/tmp/plaza-vsock/vm42"),
             ("--workspace", "/tmp/run/workspace-0.ext4"),
+            ("--balloon-usable-mib", "32"),
         ] {
             assert!(
                 pairs.contains(&(flag, value)),
@@ -577,7 +583,7 @@ mod tests {
         }
         // The optional fields are absent when the spec has none of them.
         let bare = child_args(&VmSpec::default());
-        for absent in ["--initrd", "--gic", "--cid", "--uds", "--workspace"] {
+        for absent in ["--initrd", "--gic", "--cid", "--uds", "--workspace", "--balloon-usable-mib"] {
             assert!(!bare.iter().any(|arg| arg == absent), "{absent} leaked");
         }
     }

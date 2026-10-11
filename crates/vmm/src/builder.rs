@@ -151,7 +151,7 @@ fn jail_the_vm(spec: &VmSpec, id: u32) -> Result<(), crate::jail::jailer::Jailer
 /// This is deliberate and documented, not a hidden rewrite: the appended
 /// strings are constants derived from the port's own layout, never host state
 /// (no environment variable, token or path can reach the guest this way).
-fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool) -> String {
+fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool, has_balloon: bool) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
     #[cfg(target_arch = "x86_64")]
@@ -188,7 +188,8 @@ fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool) -> Strin
     #[cfg(target_arch = "x86_64")]
     if !sets(&VIRTIO_MMIO_ARGS) {
         use crate::arch::x86_64::layout::{
-            MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
+            BALLOON_GSI, BALLOON_MMIO_START, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI,
+            WORKSPACE_MMIO_START,
         };
         if has_vsock {
             defaults.push(format!(
@@ -200,10 +201,15 @@ fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool) -> Strin
                 "virtio_mmio.device={MMIO_LEN:#x}@{WORKSPACE_MMIO_START:#x}:{WORKSPACE_GSI}"
             ));
         }
+        if has_balloon {
+            defaults.push(format!(
+                "virtio_mmio.device={MMIO_LEN:#x}@{BALLOON_MMIO_START:#x}:{BALLOON_GSI}"
+            ));
+        }
     }
     // On `aarch64` the device tree describes the transports.
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = (has_vsock, has_workspace);
+    let _ = (has_vsock, has_workspace, has_balloon);
 
     if defaults.is_empty() {
         return requested.to_string();
@@ -212,6 +218,32 @@ fn guest_cmdline(requested: &str, has_vsock: bool, has_workspace: bool) -> Strin
         defaults.join(" ")
     } else {
         format!("{requested} {}", defaults.join(" "))
+    }
+}
+
+/// The memory control of a VM whose balloon lives in this process.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+struct InProcessBalloon {
+    shared: crate::devices::virtio::balloon::SharedBalloon,
+    max_mib: u32,
+}
+
+impl crate::spawner::MemoryControl for InProcessBalloon {
+    fn set_usable_mib(&self, mib: u32) -> Result<(), SpawnError> {
+        self.shared.set_usable_mib(self.max_mib, mib);
+        Ok(())
+    }
+
+    fn stats(&self) -> crate::spawner::MemoryStats {
+        let stats = self.shared.stats();
+        let target_mib = self.shared.target_mib();
+        crate::spawner::MemoryStats {
+            max_mib: self.max_mib,
+            usable_mib: self.max_mib.saturating_sub(target_mib),
+            held_mib: stats.actual_mib,
+            free_mib: stats.free_mib,
+            available_mib: stats.available_mib,
+        }
     }
 }
 
@@ -372,15 +404,15 @@ mod tests {
     #[test]
     fn guest_cmdline_appends_console_defaults() {
         assert_eq!(
-            guest_cmdline("console=ttyS0 panic=-1", false, false),
+            guest_cmdline("console=ttyS0 panic=-1", false, false, false),
             format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("", false, false),
+            guest_cmdline("", false, false, false),
             format!("pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("  panic=-1  ", false, false),
+            guest_cmdline("  panic=-1  ", false, false, false),
             format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
     }
@@ -388,28 +420,28 @@ mod tests {
     #[test]
     fn guest_cmdline_respects_the_callers_settings() {
         assert_eq!(
-            guest_cmdline("quiet", false, false),
+            guest_cmdline("quiet", false, false, false),
             format!("quiet pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("debug", false, false),
+            guest_cmdline("debug", false, false, false),
             format!("debug pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("loglevel=3 ignore_loglevel", false, false),
+            guest_cmdline("loglevel=3 ignore_loglevel", false, false, false),
             format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=off loglevel=9", false, false),
+            guest_cmdline("pci=off loglevel=9", false, false, false),
             format!("pci=off loglevel=9{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=nocrs", false, false),
+            guest_cmdline("pci=nocrs", false, false, false),
             format!("pci=nocrs loglevel=7{REBOOT_ACPI}")
         );
         // A caller-chosen reboot mode is left alone.
         assert_eq!(
-            guest_cmdline("reboot=k", false, false),
+            guest_cmdline("reboot=k", false, false, false),
             "reboot=k pci=off loglevel=7"
         );
     }
@@ -423,7 +455,8 @@ mod tests {
     #[test]
     fn guest_cmdline_registers_the_x86_64_virtio_transports() {
         use crate::arch::x86_64::layout::{
-            MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
+            BALLOON_GSI, BALLOON_MMIO_START, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI,
+            WORKSPACE_MMIO_START,
         };
 
         let vsock = format!("{MMIO_LEN:#x}@{VSOCK_MMIO_START:#x}:{VSOCK_GSI}");
@@ -435,28 +468,38 @@ mod tests {
 
         // A vsock device, a workspace volume, or both.
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, false),
+            guest_cmdline("console=ttyS0", true, false, false),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock}")
         );
         assert_eq!(
-            guest_cmdline("console=ttyS0", false, true),
+            guest_cmdline("console=ttyS0", false, true, false),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={workspace}")
         );
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true),
+            guest_cmdline("console=ttyS0", true, true, false),
             format!(
                 "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
                  virtio_mmio.device={workspace}"
             )
         );
+        // A balloon gets its own window and interrupt, after the other two.
+        let balloon = format!("{MMIO_LEN:#x}@{BALLOON_MMIO_START:#x}:{BALLOON_GSI}");
+        assert!(balloon != vsock && balloon != workspace);
+        assert_eq!(
+            guest_cmdline("console=ttyS0", true, true, true),
+            format!(
+                "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
+                 virtio_mmio.device={workspace} virtio_mmio.device={balloon}"
+            )
+        );
         // A VM with neither device registers no transport...
         assert_eq!(
-            guest_cmdline("console=ttyS0", false, false),
+            guest_cmdline("console=ttyS0", false, false, false),
             "console=ttyS0 pci=off loglevel=7 reboot=acpi"
         );
         // ...and a caller that registered transports itself keeps its own.
         assert_eq!(
-            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true, true),
+            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true, true, false),
             "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
         );
     }
@@ -467,8 +510,8 @@ mod tests {
     #[test]
     fn guest_cmdline_adds_nothing_for_the_virtio_transports() {
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true),
-            guest_cmdline("console=ttyS0", false, false)
+            guest_cmdline("console=ttyS0", true, true, false),
+            guest_cmdline("console=ttyS0", false, false, false)
         );
     }
 }
@@ -483,7 +526,7 @@ mod x86_64 {
     use vmm_sys_util::eventfd::EventFd;
 
     use crate::arch::x86_64::layout::{
-        CMDLINE_MAX_SIZE, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI,
+        BALLOON_GSI, BALLOON_MMIO_START, CMDLINE_MAX_SIZE, MMIO_LEN, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI,
         WORKSPACE_MMIO_START,
     };
     use crate::arch::x86_64::{
@@ -495,6 +538,7 @@ mod x86_64 {
     };
     use crate::devices::virtio::VirtioError;
     use crate::devices::virtio::block::device::VirtioBlock;
+    use crate::devices::virtio::balloon::{SharedBalloon, VirtioBalloon};
     use crate::devices::virtio::block::mmio_device::BlockMmioDevice;
     use crate::devices::virtio::mmio::VirtioMmioTransport;
     use crate::devices::virtio::vsock::VsockError;
@@ -734,6 +778,37 @@ mod x86_64 {
             None => None,
         };
 
+        // The balloon, when the caller asked for one: a third transport in the
+        // next MMIO slot on the next legacy GSI. The VM is sized at
+        // `memory_mib` and the balloon starts out holding everything above the
+        // usable size, so the guest boots small and the host grows it later
+        // through the runtime's memory control.
+        let balloon = match spec.balloon {
+            Some(usable) => {
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, BALLOON_GSI).map_err(BootError::Irq)?;
+                let shared = SharedBalloon::new(VirtioBalloon::new());
+                let transport = VirtioMmioTransport::new(
+                    Box::new(shared.clone()),
+                    vm.guest_memory().clone(),
+                    irq,
+                );
+                shared.set_interrupt_status(transport.interrupt_status_handle());
+                let transport = Arc::new(Mutex::new(transport));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), BALLOON_MMIO_START, MMIO_LEN)?;
+                let max_mib = u32::try_from(spec.memory_mib).unwrap_or(u32::MAX);
+                shared.set_usable_mib(max_mib, usable);
+                runtime.set_memory_control(Arc::new(super::InProcessBalloon {
+                    shared,
+                    max_mib,
+                }));
+                Some(transport)
+            }
+            None => None,
+        };
+
         // Host console input (a caller's bytes for the guest to read from
         // ttyS0): installed before the vCPUs start, so it is in place by the
         // time the spawner hands the VM out. It holds the console weakly, so
@@ -745,7 +820,7 @@ mod x86_64 {
         // to its devices for as long as it runs. They are moved into the exit
         // watcher below, which is the VM's last thread — so the devices live
         // exactly as long as the VM does.
-        let legacy_devices = (serial, i8042, pm1, vsock, workspace);
+        let legacy_devices = (serial, i8042, pm1, vsock, workspace, balloon);
 
         // Load the kernel (ELF first, bzImage fallback), the optional initrd,
         // and write the boot parameters into guest memory.
@@ -765,7 +840,12 @@ mod x86_64 {
             None => None,
         };
         let cmdline = Cmdline::try_from(
-            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some(), spec.workspace.is_some())
+            super::guest_cmdline(
+                &spec.cmdline,
+                spec.vsock.is_some(),
+                spec.workspace.is_some(),
+                spec.balloon.is_some(),
+            )
                 .as_str(),
             CMDLINE_MAX_SIZE,
         )?;
@@ -1060,6 +1140,11 @@ mod aarch64 {
 
         // The bus only holds weak references: the watcher below keeps the
         // strong handles, so the devices live exactly as long as the VM.
+        // The balloon is `x86_64` only for now: this backend boots with all
+        // of `memory_mib` and says so.
+        if spec.balloon.is_some() {
+            eprintln!("warning: no balloon on this backend yet; the VM gets all of its memory");
+        }
         let legacy_devices = (serial, vsock, workspace);
 
         // Load the kernel (the PE loader, which covers arm64 `Image` and
@@ -1081,7 +1166,12 @@ mod aarch64 {
             None => None,
         };
         let cmdline = Cmdline::try_from(
-            super::guest_cmdline(&spec.cmdline, spec.vsock.is_some(), spec.workspace.is_some())
+            super::guest_cmdline(
+                &spec.cmdline,
+                spec.vsock.is_some(),
+                spec.workspace.is_some(),
+                spec.balloon.is_some(),
+            )
                 .as_str(),
             CMDLINE_MAX_SIZE,
         )?;

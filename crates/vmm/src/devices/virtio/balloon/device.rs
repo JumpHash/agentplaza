@@ -83,6 +83,16 @@ pub struct VirtioBalloon {
     /// The transport's interrupt status, where a config change is recorded
     /// (`VIRTIO_MMIO_INT_CONFIG`); set by [`VirtioBalloon::set_interrupt_status`].
     interrupt_status: Option<Arc<AtomicU32>>,
+    /// The stats buffer the guest last filled, held until the host asks for
+    /// fresh counters ([`VirtioBalloon::request_stats`]). Returning it at once
+    /// would have the guest refill it at once, forever.
+    stats_held: Option<u16>,
+}
+
+impl Default for VirtioBalloon {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioBalloon {
@@ -104,6 +114,7 @@ impl VirtioBalloon {
             mem: None,
             irq: None,
             interrupt_status: None,
+            stats_held: None,
         }
     }
 
@@ -137,6 +148,26 @@ impl VirtioBalloon {
     /// The size the guest has given back, in pages.
     pub fn actual_pages(&self) -> u32 {
         self.actual
+    }
+
+    /// Asks the guest for fresh memory counters: hands back the stats buffer it
+    /// last filled, which it refills and returns with current values.
+    pub fn request_stats(&mut self) {
+        let Some(head) = self.stats_held.take() else {
+            return;
+        };
+        let ring = &mut self.rings[STATS_QUEUE];
+        if let Err(err) = ring.add_used(head, 0) {
+            eprintln!("warning: virtio-balloon: cannot return the stats buffer: {err}");
+            return;
+        }
+        ring.advance_used_ring_idx();
+        if ring.prepare_kick()
+            && let Some(irq) = &self.irq
+            && let Err(err) = irq.write(u64::from(VIRTIO_MMIO_INT_VRING))
+        {
+            eprintln!("warning: virtio-balloon: cannot raise the device interrupt: {err}");
+        }
     }
 
     /// The guest's memory counters, as last reported on the stats queue.
@@ -243,12 +274,19 @@ impl VirtioDevice for VirtioBalloon {
             discard,
             stats,
             irq,
+            stats_held,
             ..
         } = self;
         let Some(mem) = mem.as_ref() else {
             return Ok(());
         };
-        let used = serve(&mut rings[index], index, mem, &mut **discard, stats)?;
+        if index == STATS_QUEUE {
+            if let Some(head) = take_stats(&mut rings[index], mem, stats)? {
+                *stats_held = Some(head);
+            }
+            return Ok(());
+        }
+        let used = serve(&mut rings[index], index, mem, &mut **discard)?;
         if used
             && rings[index].prepare_kick()
             && let Some(irq) = irq.as_ref()
@@ -267,8 +305,98 @@ impl VirtioDevice for VirtioBalloon {
         self.acked_features = 0;
         self.actual = 0;
         self.stats.clear();
+        self.stats_held = None;
         self.mem = None;
         self.irq = None;
+    }
+}
+
+/// A balloon the transport drives and the host controls at the same time: the
+/// transport owns a `Box<dyn VirtioDevice>`, so it gets this handle while the
+/// VM's runtime keeps a clone to set the target and read the counters. The
+/// driver-visible queue registers live in the handle (the transport hands out
+/// references to them) and are copied into the device on activation.
+#[derive(Clone)]
+pub struct SharedBalloon {
+    device: Arc<std::sync::Mutex<VirtioBalloon>>,
+    queue_regs: [QueueConfig; BALLOON_QUEUE_NUM],
+}
+
+impl SharedBalloon {
+    /// Wraps `device`.
+    pub fn new(device: VirtioBalloon) -> Self {
+        Self {
+            queue_regs: device.queue_regs,
+            device: Arc::new(std::sync::Mutex::new(device)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VirtioBalloon> {
+        self.device.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hands the device the transport's interrupt status (see
+    /// [`VirtioBalloon::set_interrupt_status`]).
+    pub fn set_interrupt_status(&self, status: Arc<AtomicU32>) {
+        self.lock().set_interrupt_status(status);
+    }
+
+    /// Sets how much of `memory_mib` the guest may use: the balloon holds the rest.
+    pub fn set_usable_mib(&self, memory_mib: u32, usable_mib: u32) {
+        let held = memory_mib.saturating_sub(usable_mib.min(memory_mib));
+        self.lock().set_target_pages(held << (20 - PAGE_SHIFT));
+    }
+
+    /// The memory the balloon is asked to hold, in MiB.
+    pub fn target_mib(&self) -> u32 {
+        self.lock().target_pages() >> (20 - PAGE_SHIFT)
+    }
+
+    /// The guest's latest counters; also asks it for fresh ones for next time.
+    pub fn stats(&self) -> BalloonStats {
+        let mut balloon = self.lock();
+        balloon.request_stats();
+        balloon.stats()
+    }
+}
+
+impl VirtioDevice for SharedBalloon {
+    fn device_type(&self) -> u32 {
+        VIRTIO_ID_BALLOON
+    }
+    fn features(&self) -> u64 {
+        self.lock().features()
+    }
+    fn ack_features_by_page(&mut self, page: u32, value: u32) -> Result<(), VirtioError> {
+        self.lock().ack_features_by_page(page, value)
+    }
+    fn queues(&self) -> &[QueueConfig] {
+        &self.queue_regs
+    }
+    fn queues_mut(&mut self) -> &mut [QueueConfig] {
+        &mut self.queue_regs
+    }
+    fn activate(&mut self, mem: &GuestMemoryMmap, irq: &EventFd) -> Result<(), VirtioError> {
+        let mut balloon = self.lock();
+        balloon.queue_regs = self.queue_regs;
+        balloon.activate(mem, irq)
+    }
+    fn read_config(&mut self, offset: u64, data: &mut [u8]) {
+        self.lock().read_config(offset, data);
+    }
+    fn write_config(&mut self, offset: u64, data: &[u8]) {
+        VirtioBalloon::write_config(&mut self.lock(), offset, data);
+    }
+    fn notify_queue(&mut self, index: u32) -> Result<(), VirtioError> {
+        self.lock().notify_queue(index)
+    }
+    fn reset(&mut self) {
+        let regs = {
+            let mut balloon = self.lock();
+            balloon.reset();
+            balloon.queue_regs
+        };
+        self.queue_regs = regs;
     }
 }
 
@@ -278,15 +406,28 @@ fn serve(
     index: usize,
     mem: &GuestMemoryMmap,
     discard: &mut dyn Discard,
-    stats: &mut BTreeMap<u16, u64>,
 ) -> Result<bool, BalloonError> {
     match index {
         INFLATE_QUEUE => drain(queue, |chain| inflate(chain, mem, discard)),
         DEFLATE_QUEUE => drain(queue, |_| {}),
-        STATS_QUEUE => drain(queue, |chain| record_stats(chain, mem, stats)),
         REPORTING_QUEUE => drain(queue, |chain| report_free(chain, mem, discard)),
         _ => Ok(false),
     }
+}
+
+/// Records every stats buffer the guest filled and returns the last one's head,
+/// which the device holds instead of using (see `VirtioBalloon::stats_held`).
+fn take_stats(
+    queue: &mut Queue,
+    mem: &GuestMemoryMmap,
+    stats: &mut BTreeMap<u16, u64>,
+) -> Result<Option<u16>, BalloonError> {
+    let mut held = None;
+    while let Some(chain) = queue.pop()? {
+        record_stats(&chain, mem, stats);
+        held = Some(chain.index);
+    }
+    Ok(held)
 }
 
 /// Pops every available buffer, hands each chain to `handle`, and returns it to
@@ -447,6 +588,17 @@ mod tests {
     }
 
     #[test]
+    fn shared_balloon_holds_everything_above_the_usable_size() {
+        let shared = SharedBalloon::new(VirtioBalloon::new());
+        shared.set_usable_mib(1024, 32);
+        assert_eq!(shared.target_mib(), 992);
+        assert_eq!(shared.lock().target_pages(), 992 * 256);
+        // Growing past the VM's size lets the guest have all of it.
+        shared.set_usable_mib(1024, 4096);
+        assert_eq!(shared.target_mib(), 0);
+    }
+
+    #[test]
     fn balloon_config_space_reports_target_and_takes_actual_from_the_guest() {
         let mut balloon = VirtioBalloon::new();
         balloon.set_target_pages(0x0012_3456);
@@ -492,7 +644,7 @@ mod tests {
         publish_buffer(&mem, &vq, 0, &bytes);
 
         let mut recorder = Recorder::default();
-        serve(&mut queue, INFLATE_QUEUE, &mem, &mut recorder, &mut BTreeMap::new()).unwrap();
+        serve(&mut queue, INFLATE_QUEUE, &mem, &mut recorder).unwrap();
 
         let host = |pfn: u64| mem.get_host_address(GuestAddress(pfn << PAGE_SHIFT)).unwrap() as usize;
         assert_eq!(
@@ -513,7 +665,7 @@ mod tests {
         publish_buffer(&mem, &vq, 1, &[0u8; 4]);
 
         let mut recorder = Recorder::default();
-        serve(&mut queue, DEFLATE_QUEUE, &mem, &mut recorder, &mut BTreeMap::new()).unwrap();
+        serve(&mut queue, DEFLATE_QUEUE, &mem, &mut recorder).unwrap();
 
         assert!(recorder.calls.is_empty());
         assert_eq!(vq.used_idx(), 2);
@@ -548,16 +700,14 @@ mod tests {
                 (STAT_SWAP_IN, 9),
             ]),
         );
-        serve(&mut queue, STATS_QUEUE, &mem, &mut Recorder::default(), &mut balloon.stats)
-            .unwrap();
+        assert_eq!(take_stats(&mut queue, &mem, &mut balloon.stats).unwrap(), Some(0));
 
         // A later report replaces the free-memory value and leaves the others.
         publish_buffer(&mem, &vq, 0, &encode(&[(STAT_FREE_MEMORY, 1 << 30)]));
-        serve(&mut queue, STATS_QUEUE, &mem, &mut Recorder::default(), &mut balloon.stats)
-            .unwrap();
+        assert_eq!(take_stats(&mut queue, &mem, &mut balloon.stats).unwrap(), Some(0));
 
-        assert_eq!(vq.used_idx(), 2);
-        assert_eq!(vq.used_elem(1), (0, 0));
+        // The buffer is held until the host asks for fresh counters.
+        assert_eq!(vq.used_idx(), 0);
 
         // 256 Ki pages given back is 1 GiB.
         balloon.write_config(4, &(256 * 1024u32).to_le_bytes());

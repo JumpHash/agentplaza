@@ -906,6 +906,7 @@ impl Registry {
                     .as_ref()
                     .and_then(|images| images.get(i as usize))
                     .cloned(),
+                balloon: None,
             }
         });
         match boot {
