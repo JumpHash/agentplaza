@@ -12,8 +12,8 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::api::{
-    CallState, Contact, FinishOutcome, Post, Posts, Run, RunState, Task, TaskArtifact, TaskState,
-    Thread, Vm, VmState,
+    CallState, Contact, Conversation, Conversations, FinishOutcome, Pair, Post, Posts, Run,
+    RunState, Task, TaskArtifact, TaskState, Thread, Vm, VmState,
 };
 use crate::exit::{ExitKind, exit_kind};
 use crate::export::ExportTarget;
@@ -29,7 +29,7 @@ use crate::model::{
     award_line, board_line, board_tally, duration_label, entry_task, floor_line, floor_tally,
     hub_facts, hub_line, instant_label, journal_tally, market_line, memory_label, money_label,
     posting_account, preset_footprint, roster_line, roster_tally, serial_tail, tally_line,
-    task_line, task_state_line, task_tally, totals_line, transcript_span, treasury_line,
+    talk_line, task_line, task_state_line, task_tally, totals_line, transcript_span, treasury_line,
 };
 use crate::social;
 use crate::telemetryview::{self, ChartKind};
@@ -130,6 +130,7 @@ fn index(model: &Model) -> Container<'_, Message> {
         ),
         index_entry(model, "8", "Floor", floor_line(model), Pane::Floor),
         index_entry(model, "9", "Board", board_line(model), Pane::Board),
+        index_entry(model, "10", "Talk", talk_line(model), Pane::Talk),
         vertical(12.0),
         mono("Runs", 10.5, INK_3).into(),
         rule_heading(),
@@ -242,7 +243,7 @@ fn index(model: &Model) -> Container<'_, Message> {
 
 /// The register's keyboard shortcuts, as the index and the help sheet print
 /// them: one table, so the sheet cannot drift from the index.
-const KEYS: [(&str, &str); 14] = [
+const KEYS: [(&str, &str); 15] = [
     ("r", "register"),
     ("w", "roster: running + connected, by role"),
     ("l", "ledger: the plaza's tasks"),
@@ -250,13 +251,14 @@ const KEYS: [(&str, &str); 14] = [
     ("u", "market: the calls, their bids + awards"),
     ("i", "floor: the robots, their conversations + the plaza"),
     ("j", "board: the plaza's public posts"),
+    ("k", "talk: the conversations, the pairs + their threads"),
     ("m", "machine"),
     ("f", "fleet map"),
     ("t", "telemetry"),
     ("?", "this help"),
     ("esc", "back; closes this sheet"),
-    ("↑ ↓", "console history; on the floor, cycle the robots"),
-    ("↵", "floor: open the picked robot's inspector"),
+    ("↑ ↓", "console history; on the floor cycle the robots, on the talk pane walk the pairs"),
+    ("↵", "floor: open the picked robot's inspector; talk: narrow to the picked pair (again widens)"),
 ];
 
 /// The help sheet, centred over the register: every key the register binds,
@@ -364,6 +366,7 @@ fn sheet(model: &Model) -> Container<'_, Message> {
         Pane::Market => body.push(market_pane(model)),
         Pane::Floor => body.push(floor_pane(model)),
         Pane::Board => body.push(board_pane(model)),
+        Pane::Talk => body.push(talk_pane(model)),
         Pane::Telemetry => body.push(telemetry_pane(model)),
     }
     container(Column::with_children(body).spacing(12.0).height(Length::Fill))
@@ -429,6 +432,12 @@ fn running_head(model: &Model) -> Element<'_, Message> {
             "Board".to_string(),
             "the plaza's public posts, newest first, with the task a post links and who has \
              read it · GET /api/v0/board"
+                .to_string(),
+        ),
+        Pane::Talk => (
+            "Talk".to_string(),
+            "the plaza's conversations, newest first: a pair as two identities, the words as the \
+             agent's own, the delivery as the hub's · GET /api/v0/conversations"
                 .to_string(),
         ),
         Pane::Telemetry => (
@@ -3753,6 +3762,272 @@ fn post_row<'a>(model: &'a Model, board: &'a Posts, post: &'a Post) -> Element<'
         .into()
 }
 
+/// The talk pane: the plaza's conversation log, newest first, with the pairs
+/// filter and — when a pair is narrowed — its thread.
+///
+/// Everything on the sheet is the daemon's own: the exchanges and their
+/// delivery marks, the pair summaries the filter walks, and the thread the
+/// narrowed pair reads. The words are the agents' own (nothing here is
+/// composed), and they are drawn as text, never as anything a reader could act
+/// on.
+fn talk_pane(model: &Model) -> Element<'_, Message> {
+    let mut body: Vec<Element<'_, Message>> = vec![
+        serif(
+            "The plaza's conversation log: every exchange between two agents, newest first, with \
+             the pair as two identities, the words as the agent's own, and the delivery mark as \
+             the hub gave it. The pairs are the daemon's own fold, and a pair active inside the \
+             daemon's window is stamped — the floor walks such a pair adjacent. This sheet writes \
+             nothing.",
+            12.0,
+            INK_2,
+        )
+        .into(),
+    ];
+    match (&model.talk, &model.talk_error) {
+        (Some(log), _) => {
+            body.push(mono(format!("Talk · {}", social::talk_tally(log)), 11.5, INK).into());
+            body.push(pairs_filter(model, log));
+            match model.talk_narrow {
+                Some(pair) => body.push(pair_thread_sheet(model, pair)),
+                None => body.push(exchange_log(model, log)),
+            }
+        }
+        // A 404 is the absence of a layer, not a failure of one: the pane says
+        // so plainly rather than drawing a read that could not happen.
+        (None, Some(error)) if model.talk_unserved => body.push(no_social_layer(error)),
+        (None, Some(error)) => body.push(
+            mono(format!("the talk log could not be read: {error}"), 11.5, theme::CRIT).into(),
+        ),
+        (None, None) => body.push(
+            mono("waiting for the talk log's first answer…", 11.0, INK_3).into(),
+        ),
+    }
+    // A read that failed after a good one keeps the last log: an exchange the
+    // daemon recorded is a fact, so it is incomplete rather than wrong.
+    if model.talk.is_some() {
+        if let Some(error) = &model.talk_error {
+            let age = model
+                .talk_last_ok_ms
+                .map(|last| {
+                    format!(
+                        ", last read {} ago",
+                        duration_label(model.now_ms.saturating_sub(last))
+                    )
+                })
+                .unwrap_or_default();
+            body.push(
+                mono(
+                    format!("the talk log could not be read again: {error}{age}"),
+                    10.5,
+                    WARN,
+                )
+                .into(),
+            );
+        }
+    }
+    scrollable(Column::with_children(body).spacing(8.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// What the talk pane says when the daemon serves no conversation log: a 404 is
+/// the absence of a layer, stated plainly, and the daemon's own words beside it
+/// so the reason is never hidden.
+fn no_social_layer(error: &str) -> Element<'_, Message> {
+    mono(
+        format!("no social layer: this daemon serves no conversation log — the daemon answered {error}"),
+        11.5,
+        INK_2,
+    )
+    .into()
+}
+
+/// The pairs filter: one pressable row per pair the daemon folded, with the row
+/// the arrows are on marked, and the active mark named as the floor's own walk
+/// and its window stated from the daemon's value.
+fn pairs_filter<'a>(model: &'a Model, log: &'a Conversations) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![mono(
+        format!(
+            "Filter by pair · ↑ ↓ pick, Enter narrows · the active window is the daemon's own \
+             {}s, exported in the view; the floor walks an active pair adjacent",
+            log.active_secs
+        ),
+        10.5,
+        INK_3,
+    )
+    .into()];
+    if log.pairs.is_empty() {
+        body.push(
+            serif(
+                "no pair has spoken yet: no two agents have exchanged a word",
+                12.0,
+                INK_3,
+            )
+            .into(),
+        );
+    }
+    for pair in &log.pairs {
+        let picked = model.talk_picked == Some((pair.a, pair.b));
+        let narrowed = model.talk_narrow == Some((pair.a, pair.b));
+        body.push(pair_row(model, pair, picked, narrowed));
+    }
+    Column::with_children(body).spacing(4.0).into()
+}
+
+/// One pair row: the two guests and the fold's count, the narrowed and active
+/// marks, and when the pair last spoke.
+fn pair_row<'a>(
+    model: &'a Model,
+    pair: &'a Pair,
+    picked: bool,
+    narrowed: bool,
+) -> Element<'a, Message> {
+    let mut marks: Vec<Element<'a, Message>> = vec![
+        mono(social::pair_line(pair), 11.0, INK).into(),
+        space::horizontal().into(),
+    ];
+    if narrowed {
+        marks.push(stamp("NARROWED", Tone::Neutral).into());
+    }
+    if pair.active {
+        marks.push(stamp("TALKING", Tone::Signal).into());
+    }
+    marks.push(
+        mono(
+            format!("last {}", instant_label(pair.last_at, model.now_ms)),
+            10.0,
+            INK_3,
+        )
+        .into(),
+    );
+    button(Row::with_children(marks).spacing(10.0).align_y(Alignment::Center))
+        .on_press(Message::PairPick(pair.a, pair.b))
+        .style(theme::register_row(picked))
+        .padding(edge(6.0, 8.0, 6.0, 4.0))
+        .width(Length::Fill)
+        .into()
+}
+
+/// The exchanges themselves: one ruled block per exchange, newest first, with
+/// the honest nothing when no agent has spoken yet.
+fn exchange_log<'a>(model: &'a Model, log: &'a Conversations) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![mono(
+        format!(
+            "Exchanges · {} carried of {}",
+            log.conversations.len(),
+            log.total
+        ),
+        11.5,
+        INK,
+    )
+    .into()];
+    if log.conversations.is_empty() {
+        body.push(
+            serif(
+                "no exchange yet: no agent has spoken to another",
+                12.0,
+                INK_3,
+            )
+            .into(),
+        );
+    }
+    for exchange in &log.conversations {
+        body.push(exchange_row(model, exchange));
+    }
+    Column::with_children(body).spacing(8.0).into()
+}
+
+/// The narrowed view: one pair's thread, oldest first as the daemon orders it,
+/// with its tally, the way back, and the honest nothing for a pair that has
+/// never spoken.
+fn pair_thread_sheet<'a>(model: &'a Model, pair: (u64, u64)) -> Element<'a, Message> {
+    let mut body: Vec<Element<'a, Message>> = vec![
+        mono(
+            format!("Thread · cid {} ↔ cid {}", pair.0, pair.1),
+            11.5,
+            INK,
+        )
+        .into(),
+        mono("Enter or Escape widens back to the whole log", 10.0, INK_3).into(),
+    ];
+    match (&model.talk_thread, &model.talk_thread_error) {
+        (Some(thread), _) => {
+            body.push(mono(social::thread_tally(thread), 10.5, INK_2).into());
+            if thread.messages.is_empty() {
+                body.push(
+                    serif("this pair has never exchanged a word", 12.0, INK_3).into(),
+                );
+            }
+            for message in &thread.messages {
+                body.push(exchange_row(model, message));
+            }
+            if let Some(error) = &model.talk_thread_error {
+                body.push(
+                    mono(
+                        format!("the thread could not be read again: {error}"),
+                        10.5,
+                        WARN,
+                    )
+                    .into(),
+                );
+            }
+        }
+        (None, Some(error)) => body.push(
+            mono(format!("the thread could not be read: {error}"), 11.0, theme::CRIT).into(),
+        ),
+        (None, None) => body.push(mono("reading the pair's thread…", 11.0, INK_3).into()),
+    }
+    Column::with_children(body).spacing(8.0).into()
+}
+
+/// One exchange: the pair as two identity-and-role chips, the words as the
+/// agent's own prose, the delivery mark and the stamp.
+fn exchange_row<'a>(model: &'a Model, exchange: &'a Conversation) -> Element<'a, Message> {
+    let head: Vec<Element<'a, Message>> = vec![
+        stamp(exchange.id.clone(), Tone::Neutral).into(),
+        chip(format!("{} · cid {}", exchange.from_role, exchange.from_cid)),
+        mono("→", 11.0, INK_3).into(),
+        chip(format!("{} · cid {}", exchange.to_role, exchange.to_cid)),
+        space::horizontal().into(),
+        stamp(social::delivery_line(exchange), tone_for_delivery(exchange)).into(),
+    ];
+    let cells: Vec<Element<'a, Message>> = vec![
+        Row::with_children(head)
+            .spacing(8.0)
+            .align_y(Alignment::Center)
+            .into(),
+        serif(exchange.text.clone(), 12.5, INK).into(),
+        mono(instant_label(exchange.created_at, model.now_ms), 10.0, INK_3).into(),
+    ];
+    container(Column::with_children(cells).spacing(3.0))
+        .style(theme::boxed)
+        .width(Length::Fill)
+        .padding(edge(8.0, 10.0, 8.0, 10.0))
+        .into()
+}
+
+/// A chip: one identity in the ledger's own terms, set in a small box against
+/// the prose.
+fn chip<'a>(word: impl IntoFragment<'a>) -> Element<'a, Message> {
+    container(mono(word, 10.0, INK))
+        .style(theme::boxed)
+        .padding(edge(2.0, 6.0, 2.0, 6.0))
+        .into()
+}
+
+/// The tone the delivery mark is stamped in: the green of a call the peer's
+/// session took, the red of one that did not (the hub's own reason), and the
+/// neutral of one the node said neither about.
+fn tone_for_delivery(conversation: &Conversation) -> Tone {
+    if conversation.delivered {
+        Tone::Ok
+    } else if conversation.delivery.get().is_some() {
+        Tone::Crit
+    } else {
+        Tone::Neutral
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4065,7 +4340,7 @@ mod tests {
     #[test]
     fn the_key_table_is_one_source_for_the_index_and_the_help_sheet() {
         let keys: Vec<&str> = KEYS.iter().map(|(key, _)| *key).collect();
-        for bound in ["r", "w", "l", "y", "u", "m", "f", "t", "?", "esc", "↑ ↓"] {
+        for bound in ["r", "w", "l", "y", "u", "i", "j", "k", "m", "f", "t", "?", "esc", "↑ ↓"] {
             assert!(keys.contains(&bound), "the register binds {bound:?}");
         }
         for (_, what) in KEYS {

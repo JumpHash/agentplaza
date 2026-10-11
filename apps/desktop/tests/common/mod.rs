@@ -712,6 +712,148 @@ pub const CONTACTS: &str = r#"{"agent_cid":100,"contacts":[
     {"peer_cid":101,"role":"reviewer","since":1791673000000,"kind":"met"}
     ],"total":1,"limit":256,"truncated":false}"#;
 
+/// The live plaza's own conversation log: three exchanges across two pairs,
+/// newest first, with the pair summaries the talk pane's filter walks. It is
+/// the shape the plaza answered with when this pane landed; the newest pair is
+/// marked active, so the pane's ACTIVE mark (the floor's walk) is drawn.
+pub const CONVERSATIONS_TALK: &str = r#"{"conversations":[
+    {"id":"c3","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman",
+     "text":"the east wing is framed; the mayor may inspect the build log",
+     "created_at":1791690975823,"delivered":true,"delivery":null},
+    {"id":"c2","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman","text":"done: t2 — build-notes.txt",
+     "created_at":1791690961870,"delivered":true,"delivery":null},
+    {"id":"c1","from_cid":100,"to_cid":103,"from_role":"architect","to_role":"builder",
+     "text":"the layout review is done; want to take the build?",
+     "created_at":1791690261070,"delivered":true,"delivery":null}
+    ],"pairs":[
+    {"a":103,"b":109,"active":true,"count":2,"last_at":1791690975823},
+    {"a":100,"b":103,"active":false,"count":1,"last_at":1791690261070}
+    ],"active_secs":120,"total":3,"limit":256,"truncated":false,
+    "pairs_total":2,"pairs_truncated":false}"#;
+
+/// The same log once one exchange failed to reach its peer: what the pane's
+/// delivery mark draws verbatim, and what its refused tally counts.
+pub const CONVERSATIONS_TALK_REFUSED: &str = r#"{"conversations":[
+    {"id":"c2","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman","text":"done: t2 — build-notes.txt",
+     "created_at":1791690961870,"delivered":false,
+     "delivery":"no live session for guest CID 109"},
+    {"id":"c1","from_cid":100,"to_cid":103,"from_role":"architect","to_role":"builder",
+     "text":"the layout review is done; want to take the build?",
+     "created_at":1791690261070,"delivered":true,"delivery":null}
+    ],"pairs":[
+    {"a":103,"b":109,"active":false,"count":1,"last_at":1791690961870},
+    {"a":100,"b":103,"active":false,"count":1,"last_at":1791690261070}
+    ],"active_secs":120,"total":2,"limit":256,"truncated":false,
+    "pairs_total":2,"pairs_truncated":false}"#;
+
+/// One pair's thread as `GET /api/v0/conversations/{a}/{b}` sends it: the two
+/// exchanges between cid 103 and cid 109, oldest first.
+pub const THREAD_TALK: &str = r#"{"a":103,"b":109,"active":true,"active_secs":120,"messages":[
+    {"id":"c2","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman","text":"done: t2 — build-notes.txt",
+     "created_at":1791690961870,"delivered":true,"delivery":null},
+    {"id":"c3","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman",
+     "text":"the east wing is framed; the mayor may inspect the build log",
+     "created_at":1791690975823,"delivered":true,"delivery":null}
+    ],"total":2,"limit":256,"truncated":false}"#;
+
+/// A thread body for a pair that has never spoken: the daemon's own answer for
+/// a pair with no exchange, not a refusal.
+pub const THREAD_EMPTY: &str = r#"{"a":100,"b":103,"active":false,"active_secs":120,
+    "messages":[],"total":0,"limit":256,"truncated":false}"#;
+
+/// The log of [`CONVERSATIONS_TALK`] once one more exchange was made: what a
+/// later read answers with, and what a `conversation` frame's read brings in.
+/// The new row carries a text and a role a frame cannot, so a console that
+/// draws it drew it from a read.
+pub const CONVERSATIONS_TALK_AFTER: &str = r#"{"conversations":[
+    {"id":"c4","from_cid":109,"to_cid":103,"from_role":"legal-agents-ombudsman",
+     "to_role":"builder","text":"the framed east wing is inspected — approved",
+     "created_at":1791691000000,"delivered":true,"delivery":null},
+    {"id":"c3","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman",
+     "text":"the east wing is framed; the mayor may inspect the build log",
+     "created_at":1791690975823,"delivered":true,"delivery":null},
+    {"id":"c2","from_cid":103,"to_cid":109,"from_role":"builder",
+     "to_role":"legal-agents-ombudsman","text":"done: t2 — build-notes.txt",
+     "created_at":1791690961870,"delivered":true,"delivery":null},
+    {"id":"c1","from_cid":100,"to_cid":103,"from_role":"architect","to_role":"builder",
+     "text":"the layout review is done; want to take the build?",
+     "created_at":1791690261070,"delivered":true,"delivery":null}
+    ],"pairs":[
+    {"a":103,"b":109,"active":true,"count":3,"last_at":1791691000000},
+    {"a":100,"b":103,"active":false,"count":1,"last_at":1791690261070}
+    ],"active_secs":120,"total":4,"limit":256,"truncated":false,
+    "pairs_total":2,"pairs_truncated":false}"#;
+
+/// A whole stub daemon whose conversation log grows between reads: the first
+/// read answers `log`, and every later read answers `log_after`.
+///
+/// It is how a test proves a `conversation` frame asks the pane's own surface
+/// for a read rather than assembling an exchange from a frame: the exchange the
+/// frame never described is the daemon's own row, and it arrives only through a
+/// read.
+pub fn talk_growing(
+    list: &str,
+    detail: &str,
+    events: &str,
+    log: &str,
+    log_after: &str,
+) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    let events = stream_head(events);
+    let log = log.to_string();
+    let log_after = log_after.to_string();
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&reads);
+    spawn(Box::new(move |request, _| {
+        let body = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/events") => return Some(events.clone()),
+            ("GET", "/api/v0/machine") => MACHINE,
+            ("GET", "/api/v0/runs") => list.as_str(),
+            ("GET", "/api/v0/conversations") => {
+                if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    log.as_str()
+                } else {
+                    log_after.as_str()
+                }
+            }
+            _ => detail.as_str(),
+        };
+        Some(response(200, body))
+    }))
+}
+
+/// A whole stub daemon with the register but **no social layer**: the register's
+/// paths answer `list`/`detail` and the machine answers [`MACHINE`], while every
+/// social path is the 404 an older daemon serves. It is how a test proves a pane
+/// states the absence of a layer rather than drawing an empty one.
+pub fn social_unserved(list: &str, detail: &str) -> Stub {
+    let list = list.to_string();
+    let detail = detail.to_string();
+    spawn(Box::new(move |request, _| {
+        match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/api/v0/machine") => Some(response(200, MACHINE)),
+            ("GET", "/api/v0/runs") => Some(response(200, list.as_str())),
+            ("GET", target) if target.starts_with("/api/v0/conversations") => {
+                Some(response(404, r#"{"error":"no such endpoint"}"#))
+            }
+            ("GET", target) if target.starts_with("/api/v0/agents/") => {
+                Some(response(404, r#"{"error":"no such endpoint"}"#))
+            }
+            ("GET", target) if target.starts_with("/api/v0/board") => {
+                Some(response(404, r#"{"error":"no such endpoint"}"#))
+            }
+            _ => Some(response(200, detail.as_str())),
+        }
+    }))
+}
+
 /// A thread body as `GET /api/v0/conversations/{a}/{b}` sends it.
 pub const THREAD: &str = r#"{"a":100,"b":101,"active":true,"active_secs":120,"messages":[
     {"id":"c1","from_cid":100,"to_cid":101,"from_role":"builder","to_role":"reviewer",

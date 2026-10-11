@@ -13,7 +13,7 @@
 //! `newest_seq - k` posts. Nothing here invents a cursor the daemon did not
 //! send.
 
-use crate::api::{Contact, Contacts, Conversation, Conversations, Post, Posts, Thread};
+use crate::api::{Contact, Contacts, Conversation, Conversations, Pair, Post, Posts, Thread};
 
 /// The number of an id like `p3`: its `p<digits>` sequence, or `None` for an
 /// id that is not one.
@@ -169,11 +169,58 @@ pub fn conversation_line(conversation: &Conversation) -> String {
     )
 }
 
+/// One pair as the talk pane's filter row writes it: its two guests, and how
+/// many exchanges the daemon folded into it.
+pub fn pair_line(pair: &Pair) -> String {
+    format!("cid {} ↔ cid {} · {} exchange(s)", pair.a, pair.b, pair.count)
+}
+
+/// The exchanges the log carries that did **not** reach the peer's session:
+/// the hub's refusals, timeouts and unreachable admins, and this daemon's own
+/// statement that there was nowhere to send the call.
+///
+/// The count is over the exchanges the response carries, not the whole record,
+/// because a truncated log is exactly the window the pane can be honest about.
+pub fn refused_count(log: &Conversations) -> usize {
+    log.conversations
+        .iter()
+        .filter(|row| !row.delivered)
+        .count()
+}
+
+/// How the talk log stands, as the pane's tally writes it: the exchanges the
+/// response carries of the record's own total, the pairs the daemon folded of
+/// every pair that has spoken, how many of those pairs are talking right now
+/// (inside the daemon's own window), and how many of the carried exchanges the
+/// hub could not deliver.
+pub fn talk_tally(log: &Conversations) -> String {
+    let active = log.pairs.iter().filter(|pair| pair.active).count();
+    let mut line = format!(
+        "{} exchange(s) carried of {} · {} pair(s) of {} · {} talking · {} refused",
+        log.conversations.len(),
+        log.total,
+        log.pairs.len(),
+        log.pairs_total,
+        active,
+        refused_count(log),
+    );
+    if log.truncated || log.pairs_truncated {
+        line.push_str(" · cut to the daemon's limit");
+    }
+    line
+}
+
 /// Whether an exchange reached the peer's session, and why when it did not.
+///
+/// The mark is the node's own: `delivered` when the peer's session took the
+/// call, the hub's reason verbatim when it did not, and the honest dash when
+/// the node said neither — a `delivered: false` row with no reason names no
+/// cause, so none is invented for it.
 pub fn delivery_line(conversation: &Conversation) -> &str {
     match conversation.delivery.get() {
         Some(reason) => reason.as_str(),
-        None => "delivered",
+        None if conversation.delivered => "delivered",
+        None => "—",
     }
 }
 
@@ -228,6 +275,53 @@ mod tests {
             truncated: false,
             posts,
             unread: unreads,
+        }
+    }
+
+    /// The live plaza's own log shape: three exchanges across two pairs, one
+    /// of them refused — the newest pair talking, the older one gone quiet.
+    fn talk_log() -> Conversations {
+        let exchange = |id: &str, from: u64, to: u64, delivered: bool, reason: Option<&str>| {
+            Conversation {
+                id: id.to_string(),
+                from_cid: from,
+                to_cid: to,
+                from_role: "builder".to_string(),
+                to_role: "ombudsman".to_string(),
+                text: "the east wing is framed".to_string(),
+                created_at: 1_791_690_975_823,
+                delivered,
+                delivery: Column::filled(reason.map(String::from)),
+            }
+        };
+        Conversations {
+            conversations: vec![
+                exchange("c3", 103, 109, true, None),
+                exchange("c2", 103, 109, false, Some("no live session")),
+                exchange("c1", 100, 103, true, None),
+            ],
+            pairs: vec![
+                Pair {
+                    a: 103,
+                    b: 109,
+                    active: true,
+                    count: 2,
+                    last_at: 1_791_690_975_823,
+                },
+                Pair {
+                    a: 100,
+                    b: 103,
+                    active: false,
+                    count: 1,
+                    last_at: 1_791_690_261_070,
+                },
+            ],
+            active_secs: 120,
+            total: 3,
+            limit: 256,
+            truncated: false,
+            pairs_total: 2,
+            pairs_truncated: false,
         }
     }
 
@@ -397,6 +491,11 @@ mod tests {
         assert_eq!(delivery_line(&exchange), "delivered");
         exchange.delivery = Column::filled(Some("no live session".to_string()));
         assert_eq!(delivery_line(&exchange), "no live session");
+        // The node said neither: it did not deliver, and it named no reason.
+        // The mark is the dash — never an invented "delivered".
+        exchange.delivery = Column::filled(None);
+        exchange.delivered = false;
+        assert_eq!(delivery_line(&exchange), "—");
     }
 
     #[test]
@@ -408,5 +507,45 @@ mod tests {
             kind: "hired".to_string(),
         };
         assert_eq!(contact_label(&contact), "reviewer · cid 103");
+    }
+
+    #[test]
+    fn a_pair_row_names_both_guests_and_the_fold_count() {
+        let pair = Pair {
+            a: 103,
+            b: 109,
+            active: false,
+            count: 2,
+            last_at: 1_791_690_975_823,
+        };
+        assert_eq!(pair_line(&pair), "cid 103 ↔ cid 109 · 2 exchange(s)");
+    }
+
+    #[test]
+    fn the_talk_tally_counts_the_exchanges_the_pairs_the_talking_and_the_refused() {
+        let log = talk_log();
+        // Three exchanges carried of three; two pairs of two; one talking; and
+        // exactly one of the carried exchanges the hub refused.
+        assert_eq!(refused_count(&log), 1);
+        assert_eq!(
+            talk_tally(&log),
+            "3 exchange(s) carried of 3 · 2 pair(s) of 2 · 1 talking · 1 refused"
+        );
+    }
+
+    #[test]
+    fn a_cut_log_says_so_and_counts_only_what_it_carries() {
+        let mut log = talk_log();
+        log.total = 9;
+        log.truncated = true;
+        log.pairs_truncated = true;
+        assert_eq!(
+            talk_tally(&log),
+            "3 exchange(s) carried of 9 · 2 pair(s) of 2 · 1 talking · 1 refused · cut to the daemon's limit"
+        );
+        // The refused count is over the exchanges carried, and an empty log
+        // counts nothing rather than refusing a claim.
+        log.conversations.clear();
+        assert_eq!(refused_count(&log), 0);
     }
 }

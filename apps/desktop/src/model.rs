@@ -7,10 +7,10 @@
 //! nothing more.
 
 use crate::api::{
-    ApiError, Award, Board, Column, Contacts, CreateRun, CreateTask, Endpoint, Entry,
-    FinishOutcome, FloorRead, HubAgent, HubStatus, Journal, Machine, Post, Posting, Posts, Run,
-    RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState, TasksPage, TellAnswer, Thread,
-    Totals, TreasuryRead, VmState,
+    ApiError, Award, Board, Column, Contacts, Conversations, CreateRun, CreateTask, Endpoint,
+    Entry, FinishOutcome, FloorRead, HubAgent, HubStatus, Journal, Machine, Post, Posting, Posts,
+    Run, RunState, RunsPage, StopOutcome, Task, TaskArtifact, TaskState, TasksPage, TellAnswer,
+    Thread, Totals, TreasuryRead, VmState,
 };
 use crate::events::{AgoraKind, Event};
 use crate::export::{
@@ -95,6 +95,11 @@ pub enum Pane {
     /// The plaza's public board: every post, newest first, with its author,
     /// task link and read count. Read-only — a post is the daemon's own.
     Board,
+    /// The plaza's conversation log: every exchange between two agents, newest
+    /// first, with a filter over the daemon's own pair summaries and a pair's
+    /// thread when one is narrowed. Read-only — an exchange is the daemon's own
+    /// and the delivery mark is the hub's.
+    Talk,
     /// The session's own figures, one observation per poll, as charts.
     Telemetry,
 }
@@ -139,6 +144,9 @@ pub enum KeyAction {
     Floor,
     /// `j`: the board — the plaza's public posts.
     Board,
+    /// `k`: the talk — the plaza's conversation log, its pairs and its
+    /// threads.
+    Talk,
     /// `t`: the session's telemetry.
     Telemetry,
     /// Escape: back to the register.
@@ -768,6 +776,9 @@ pub struct Effect {
     pub poll_floor: bool,
     /// Read the board: `GET /api/v0/board`, on the board pane's own schedule.
     pub poll_board: bool,
+    /// Read the talk log: `GET /api/v0/conversations`, on the talk pane's own
+    /// schedule.
+    pub poll_talk: bool,
     /// Read an agent's contacts: `GET /api/v0/agents/{cid}/contacts`.
     pub fetch_contacts: Option<u64>,
     /// Read a pair's thread: `GET /api/v0/conversations/{a}/{b}`.
@@ -904,6 +915,15 @@ impl Effect {
     pub fn board() -> Self {
         Self {
             poll_board: true,
+            ..Self::default()
+        }
+    }
+
+    /// Read the talk log: the plaza's exchanges, with the pair summaries the
+    /// filter walks.
+    pub fn talk() -> Self {
+        Self {
+            poll_talk: true,
             ..Self::default()
         }
     }
@@ -1194,6 +1214,16 @@ pub enum Message {
         /// The answer, or why the read did not happen.
         result: Result<Posts, ApiError>,
     },
+    /// The talk log answered: the plaza's exchanges, with the pair summaries
+    /// the pane's filter walks.
+    Talk {
+        /// When the answer arrived.
+        at_ms: u64,
+        /// The answer, or why the read did not happen.
+        result: Result<Conversations, ApiError>,
+    },
+    /// A pair row on the talk pane was pressed: narrow to its thread.
+    PairPick(u64, u64),
     /// An agent's contacts answered.
     Contacts {
         /// When the answer arrived.
@@ -1350,6 +1380,7 @@ impl Message {
             | Message::Agora { at_ms, .. }
             | Message::Floor { at_ms, .. }
             | Message::Board { at_ms, .. }
+            | Message::Talk { at_ms, .. }
             | Message::Contacts { at_ms, .. }
             | Message::Thread { at_ms, .. }
             | Message::Task { at_ms, .. }
@@ -1389,6 +1420,7 @@ impl Message {
             | Message::PickRobot(_)
             | Message::Inspect
             | Message::InspectClose
+            | Message::PairPick(_, _)
             | Message::ThreadPick(_)
             | Message::TaskEdit { .. }
             | Message::TaskCreate
@@ -1589,6 +1621,42 @@ pub struct Model {
     /// Whether a board frame has already asked for the read and the answer has
     /// not landed.
     pub board_asked: bool,
+    /// The plaza's talk log: every exchange, newest first, with the pair
+    /// summaries the pane's filter walks. `None` until the pane's first read
+    /// answers — a log nobody has read is not an empty log.
+    ///
+    /// The last read is kept when a later read fails: an exchange the daemon
+    /// recorded is a fact, so an older log is incomplete rather than wrong,
+    /// and the pane says which it is.
+    pub talk: Option<Conversations>,
+    /// Why the talk pane's last read failed, if it did.
+    pub talk_error: Option<String>,
+    /// Whether the talk pane's last read failed with the daemon's own 404 —
+    /// a daemon that serves no conversation log. The pane states that plainly,
+    /// as the absence of a layer rather than a failure of one.
+    pub talk_unserved: bool,
+    /// When the talk log last answered, in milliseconds since the Unix epoch.
+    pub talk_last_ok_ms: Option<u64>,
+    /// When the talk log should be read next.
+    pub talk_next_at_ms: u64,
+    /// How many talk reads have failed in a row: the talk pane's own backoff,
+    /// so a daemon that serves the register but not the social layer never
+    /// marks the register down.
+    pub talk_failures: u32,
+    /// Whether a conversation frame has already asked for the log and the
+    /// answer has not landed: a burst of exchanges is one read, not one per
+    /// exchange.
+    pub talk_asked: bool,
+    /// The pair the talk pane's arrows last picked, by its two guest CIDs: the
+    /// row `Enter` narrows to.
+    pub talk_picked: Option<(u64, u64)>,
+    /// The pair the talk pane is narrowed to, whose thread is drawn instead of
+    /// the whole log. `None` is the log.
+    pub talk_narrow: Option<(u64, u64)>,
+    /// The thread the talk pane has read for its narrowed pair.
+    pub talk_thread: Option<Thread>,
+    /// Why the narrowed thread's read failed, if it did.
+    pub talk_thread_error: Option<String>,
     /// The floor's derived layout, kept current while the floor shows so the
     /// canvas can borrow the model's own copy (a view cannot own the local
     /// [`Model::floor`] returns). Empty until the floor is first shown.
@@ -1695,6 +1763,17 @@ impl Default for Model {
             board_next_at_ms: 0,
             board_failures: 0,
             board_asked: false,
+            talk: None,
+            talk_error: None,
+            talk_unserved: false,
+            talk_last_ok_ms: None,
+            talk_next_at_ms: 0,
+            talk_failures: 0,
+            talk_asked: false,
+            talk_picked: None,
+            talk_narrow: None,
+            talk_thread: None,
+            talk_thread_error: None,
             floor_layout: FloorLayout::default(),
             refresh_ms: DEFAULT_REFRESH_MS,
             form: SpawnForm::default(),
@@ -2339,6 +2418,7 @@ impl Model {
             Message::Agora { at_ms, result } => self.agora_answer(at_ms, result),
             Message::Floor { at_ms, result } => self.floor_answer(at_ms, result),
             Message::Board { at_ms, result } => self.board_answer(at_ms, result),
+            Message::Talk { at_ms, result } => self.talk_answer(at_ms, result),
             Message::Contacts { at_ms, cid, result } => {
                 self.contacts_answer(at_ms, cid, result)
             }
@@ -2353,6 +2433,7 @@ impl Model {
                 Effect::none()
             }
             Message::ThreadPick(peer) => self.read_thread(peer),
+            Message::PairPick(a, b) => self.narrow_pair(a, b),
             Message::TaskArtifactRead(path) => self.task_artifact_read(path),
             Message::TaskArtifact {
                 at_ms,
@@ -2408,6 +2489,15 @@ impl Model {
         // marks the register down.
         effect.poll_floor = self.floor_tick(at_ms);
         effect.poll_board = self.board_tick(at_ms);
+        // And the talk pane's, the same way: its own log read on its own
+        // schedule. When it is narrowed, the pair's thread rides the same
+        // clock, so the thread a pane draws is as fresh as the log beside it.
+        effect.poll_talk = self.talk_tick(at_ms);
+        if effect.poll_talk {
+            if let Some(pair) = self.talk_narrow {
+                effect.fetch_thread = Some(pair);
+            }
+        }
         // A finished walk (home, or fully adjacent) is dropped every tick, so
         // the floor's walk list stays as small as the talking pairs are.
         self.prune_walks(at_ms);
@@ -2884,6 +2974,141 @@ impl Model {
         Effect::none()
     }
 
+    /// The talk pane's own schedule: read the log only while it is showing.
+    ///
+    /// Like the board's and the market's, this is independent of the register's
+    /// cadence and failures — it returns `false` off the sheet, and backs off
+    /// on the talk pane's own failures — so a daemon that serves the register
+    /// but not the social layer never reads the register down.
+    fn talk_tick(&mut self, at_ms: u64) -> bool {
+        if self.pane != Pane::Talk || at_ms < self.talk_next_at_ms {
+            return false;
+        }
+        self.talk_next_at_ms = at_ms
+            .saturating_add(poll_interval_ms(self.refresh_ms, self.talk_failures));
+        true
+    }
+
+    /// The talk log answered — or could not be read.
+    ///
+    /// The read is kept when a later one fails: an exchange the daemon recorded
+    /// is a fact, so the log stays true rather than being cleared. Its health
+    /// is its own, like the board's. A 404 is remembered as the absence of a
+    /// layer, not a failure of one.
+    fn talk_answer(&mut self, at_ms: u64, result: Result<Conversations, ApiError>) -> Effect {
+        self.talk_asked = false;
+        match result {
+            Ok(log) => {
+                self.talk = Some(log);
+                self.talk_error = None;
+                self.talk_unserved = false;
+                self.talk_last_ok_ms = Some(at_ms);
+                self.talk_failures = 0;
+                self.talk_next_at_ms = at_ms.saturating_add(self.refresh_ms);
+                // A log that no longer carries the picked pair moves the
+                // cursor back onto one it does.
+                self.reconcile_pair();
+            }
+            Err(error) => {
+                self.talk_unserved = error.is_not_found();
+                self.talk_error = Some(error.to_string());
+                self.talk_failures = self.talk_failures.saturating_add(1);
+                self.talk_next_at_ms = at_ms
+                    .saturating_add(poll_interval_ms(self.refresh_ms, self.talk_failures));
+            }
+        }
+        Effect::none()
+    }
+
+    /// Asks for the talk log, at most once per outstanding answer.
+    fn ask_for_the_talk(&mut self) -> Effect {
+        if self.talk_asked {
+            return Effect::none();
+        }
+        self.talk_asked = true;
+        Effect::talk()
+    }
+
+    /// Keeps the talk pane's pair cursor on a pair the log actually carries:
+    /// the one it held when it is still there, the first otherwise, and nothing
+    /// when the log folds no pair at all.
+    fn reconcile_pair(&mut self) {
+        let held = self
+            .talk
+            .as_ref()
+            .and_then(|log| log.pairs.first())
+            .map(|pair| (pair.a, pair.b));
+        let alive = self.talk_picked.is_some_and(|pair| {
+            self.talk
+                .as_ref()
+                .is_some_and(|log| log.pairs.iter().any(|row| (row.a, row.b) == pair))
+        });
+        if !alive {
+            self.talk_picked = held;
+        }
+    }
+
+    /// Cycles the talk pane's pair cursor by one row, wrapping. With nothing
+    /// picked, a step forward picks the first pair and a step back the last.
+    ///
+    /// Moving the cursor does not narrow: the thread is read only when a pair
+    /// is chosen, so walking the filter costs nothing.
+    fn cycle_pair(&mut self, step: HistoryStep) -> Effect {
+        let pairs: Vec<(u64, u64)> = self
+            .talk
+            .as_ref()
+            .map(|log| log.pairs.iter().map(|pair| (pair.a, pair.b)).collect())
+            .unwrap_or_default();
+        if pairs.is_empty() {
+            self.talk_picked = None;
+            return Effect::none();
+        }
+        let next = match self
+            .talk_picked
+            .and_then(|pair| pairs.iter().position(|held| *held == pair))
+        {
+            Some(index) => match step {
+                HistoryStep::Next => (index + 1) % pairs.len(),
+                HistoryStep::Prev => (index + pairs.len() - 1) % pairs.len(),
+            },
+            None => match step {
+                HistoryStep::Next => 0,
+                HistoryStep::Prev => pairs.len() - 1,
+            },
+        };
+        self.talk_picked = Some(pairs[next]);
+        Effect::none()
+    }
+
+    /// `Enter` on the talk pane: narrow to the picked pair — reading its
+    /// thread — or widen back to the whole log when already narrowed.
+    fn toggle_pair(&mut self) -> Effect {
+        match self.talk_narrow {
+            Some(_) => self.widen_pair(),
+            None => match self.talk_picked {
+                Some((a, b)) => self.narrow_pair(a, b),
+                None => self.refuse("the talk log folds no pair to narrow to"),
+            },
+        }
+    }
+
+    /// Narrows the talk pane to one pair and reads its thread.
+    fn narrow_pair(&mut self, a: u64, b: u64) -> Effect {
+        self.talk_picked = Some((a, b));
+        self.talk_narrow = Some((a, b));
+        self.talk_thread = None;
+        self.talk_thread_error = None;
+        Effect::thread(a, b)
+    }
+
+    /// Widens the talk pane back to the whole log.
+    fn widen_pair(&mut self) -> Effect {
+        self.talk_narrow = None;
+        self.talk_thread = None;
+        self.talk_thread_error = None;
+        Effect::none()
+    }
+
     /// Applies one board frame: the public board moved.
     ///
     /// A `post` frame carries the post's own JSON object, exactly as
@@ -2911,23 +3136,41 @@ impl Model {
     }
 
     /// Applies one conversation frame: two agents spoke, so the floor's
-    /// adjacency moved.
+    /// adjacency moved and the talk log has a new exchange.
     ///
-    /// A frame the floor already holds (an exchange it has read) is a
-    /// duplicate; anything else reads the floor again — once per burst — and
-    /// only while the floor is showing, because nothing else draws speech.
+    /// A frame the showing pane already holds (an exchange it has read) is a
+    /// duplicate and a no-op; anything else means the log or the adjacency
+    /// moved past what the pane saw, and the pane's own surface is read again
+    /// — once per burst. Only a pane that draws speech is refreshed: nothing
+    /// else needs it, and the sheet reads it when it opens. The frame carries
+    /// no text and no roles, so it can never grow a row: it only asks for a
+    /// read.
     fn conversation_event(&mut self, id: &str) -> Effect {
-        if self.pane != Pane::Floor {
-            return Effect::none();
+        match self.pane {
+            Pane::Floor => {
+                let seen = self.floor.as_ref().is_some_and(|read| {
+                    read.conversations
+                        .conversations
+                        .iter()
+                        .any(|row| row.id == id)
+                });
+                if seen {
+                    return Effect::none();
+                }
+                self.ask_for_the_floor()
+            }
+            Pane::Talk => {
+                let seen = self
+                    .talk
+                    .as_ref()
+                    .is_some_and(|log| log.conversations.iter().any(|row| row.id == id));
+                if seen {
+                    return Effect::none();
+                }
+                self.ask_for_the_talk()
+            }
+            _ => Effect::none(),
         }
-        let seen = self
-            .floor
-            .as_ref()
-            .is_some_and(|read| read.conversations.conversations.iter().any(|row| row.id == id));
-        if seen {
-            return Effect::none();
-        }
-        self.ask_for_the_floor()
     }
 
     /// Asks for the floor, at most once per outstanding answer.
@@ -3118,8 +3361,12 @@ impl Model {
         Effect::none()
     }
 
-    /// A pair's thread answered: filed when the inspector still holds that
-    /// pair.
+    /// A pair's thread answered: filed by the surface that asked for it.
+    ///
+    /// The talk pane and the floor's inspector read the same endpoint, and only
+    /// one of them is showing, so which one asked decides where the answer
+    /// lands. Each is dropped when the surface has moved past the pair it named
+    /// — a stale read for a robot or a pair the operator has left.
     fn thread_answer(
         &mut self,
         at_ms: u64,
@@ -3127,6 +3374,24 @@ impl Model {
         b: u64,
         result: Result<Thread, ApiError>,
     ) -> Effect {
+        if self.pane == Pane::Talk {
+            if self.talk_narrow != Some((a, b)) {
+                return Effect::none();
+            }
+            match result {
+                Ok(thread) => {
+                    self.succeeded(at_ms);
+                    self.talk_thread = Some(thread);
+                    self.talk_thread_error = None;
+                }
+                Err(error) => {
+                    self.failed(at_ms, &error);
+                    self.talk_thread = None;
+                    self.talk_thread_error = Some(error.to_string());
+                }
+            }
+            return Effect::none();
+        }
         if self.inspecting != Some(a) || self.thread_peer != Some(b) {
             return Effect::none();
         }
@@ -3882,6 +4147,13 @@ impl Model {
             self.thread_peer = None;
             self.thread_error = None;
         }
+        // The talk pane's narrowing is the talk pane's: leaving it widens back
+        // to the whole log, and the thread it had read goes with it.
+        if pane != Pane::Talk {
+            self.talk_narrow = None;
+            self.talk_thread = None;
+            self.talk_thread_error = None;
+        }
         match pane {
             Pane::Fleet => {
                 self.pane = Pane::Fleet;
@@ -3993,6 +4265,19 @@ impl Model {
                 // first. The schedule then runs from this read.
                 self.board_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
                 Effect::board()
+            }
+            Pane::Talk => {
+                self.pane = Pane::Talk;
+                self.detail = None;
+                // The talk pane is one read: the whole log, newest first, with
+                // the pair summaries its filter walks. Opening the sheet is a
+                // reason to want it now, and the schedule runs from this read
+                // so the next tick does not read again on top of it.
+                self.talk_next_at_ms = self.now_ms.saturating_add(self.refresh_ms);
+                // Put the pair cursor back on a pair the log carries, so the
+                // filter is never pointing at nothing.
+                self.reconcile_pair();
+                Effect::talk()
             }
             Pane::Telemetry => {
                 self.pane = Pane::Telemetry;
@@ -4147,14 +4432,25 @@ impl Model {
             KeyAction::Market => self.show(Pane::Market),
             KeyAction::Floor => self.show(Pane::Floor),
             KeyAction::Board => self.show(Pane::Board),
+            KeyAction::Talk => self.show(Pane::Talk),
             KeyAction::Telemetry => self.show(Pane::Telemetry),
             KeyAction::Help => {
                 self.help = true;
                 Effect::none()
             }
-            // Enter opens the floor's inspector for the selected robot; on
+            // Enter opens the floor's inspector for the selected robot, and
+            // narrows the talk pane to its picked pair (or widens it again); on
             // any other pane it names nothing and does nothing.
-            KeyAction::Inspect => self.open_inspector(),
+            KeyAction::Inspect => match self.pane {
+                Pane::Talk => self.toggle_pair(),
+                _ => self.open_inspector(),
+            },
+            // Escape widens the talk pane first, when it is narrowed: one
+            // Escape leaves the thread and a second leaves the pane, exactly as
+            // Escape leaves the floor's inspector before the floor.
+            KeyAction::Back if self.pane == Pane::Talk && self.talk_narrow.is_some() => {
+                self.widen_pair()
+            }
             // Escape closes the floor's inspector first, when one is open:
             // the inspector is over the floor, so one Escape leaves it and a
             // second leaves the floor.
@@ -4175,12 +4471,13 @@ impl Model {
                 } else {
                     HistoryStep::Next
                 };
-                // On the floor the arrows cycle the robots; elsewhere they walk
-                // the console's history (which only a run pane has).
-                if self.pane == Pane::Floor {
-                    self.cycle_robot(step)
-                } else {
-                    self.console_history(step)
+                // On the floor the arrows cycle the robots, and on the talk
+                // pane they walk the pairs filter; elsewhere they walk the
+                // console's history (which only a run pane has).
+                match self.pane {
+                    Pane::Floor => self.cycle_robot(step),
+                    Pane::Talk => self.cycle_pair(step),
+                    _ => self.console_history(step),
                 }
             }
         }
@@ -4727,6 +5024,7 @@ pub fn title(model: &Model) -> String {
         Pane::Market => "AgentPlaza register — market".to_string(),
         Pane::Floor => "AgentPlaza register — floor".to_string(),
         Pane::Board => "AgentPlaza register — board".to_string(),
+        Pane::Talk => "AgentPlaza register — talk".to_string(),
         Pane::Telemetry => "AgentPlaza register — telemetry".to_string(),
     }
 }
@@ -4957,6 +5255,24 @@ pub fn board_line(model: &Model) -> String {
             "{} post(s) · {} agent(s) behind",
             board.total,
             board.unread.iter().filter(|unread| unread.count > 0).count()
+        ),
+        None => "not read yet".to_string(),
+    }
+}
+
+/// The talk log as the index column writes it: the exchanges and the pairs
+/// once the pane has read it, and the honest nothing before that.
+///
+/// A log nobody has read is not an empty log: the entry the operator reads
+/// first says which of the two it is rather than claiming a count nobody took
+/// — the ledger's, the treasury's and the board's own rule.
+pub fn talk_line(model: &Model) -> String {
+    match &model.talk {
+        Some(log) => format!(
+            "{} exchange(s) · {} pair(s) · {} talking",
+            log.total,
+            log.pairs_total,
+            log.pairs.iter().filter(|pair| pair.active).count()
         ),
         None => "not read yet".to_string(),
     }
@@ -9496,6 +9812,26 @@ mod tests {
         })
     }
 
+    /// A pair's thread as the daemon answers one: `n` exchanges, oldest first.
+    fn thread_of(a: u64, b: u64, n: usize) -> Thread {
+        let messages: Vec<serde_json::Value> = (0..n)
+            .map(|k| {
+                serde_json::json!({
+                    "id": format!("c{}", k + 1),
+                    "from_cid": a, "to_cid": b,
+                    "from_role": "builder", "to_role": "reviewer",
+                    "text": "hello", "created_at": 9_000,
+                    "delivered": true, "delivery": null,
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "a": a, "b": b, "active": true, "active_secs": 120,
+            "messages": messages, "total": n, "limit": 256, "truncated": false,
+        }))
+        .expect("the fixture is the shape the daemon writes")
+    }
+
     /// A model showing the floor, with `fleet_with_roles`' register and one
     /// read already answered.
     fn with_floor(read: FloorRead) -> Model {
@@ -9947,6 +10283,336 @@ mod tests {
             }),
             Effect::none()
         );
+    }
+
+    // ---- the talk pane: the log, the pairs and the threads ----
+
+    /// The live plaza's own log shape: three exchanges across two pairs, the
+    /// newest pair (cid 103 ↔ cid 109) talking, the older one quiet.
+    fn talk_log() -> Conversations {
+        conversations_of(
+            serde_json::json!([
+                exchange("c3", 103, 109),
+                exchange("c2", 103, 109),
+                exchange("c1", 100, 103),
+            ]),
+            serde_json::json!([
+                {"a":103,"b":109,"active":true,"count":2,"last_at":9_300},
+                {"a":100,"b":103,"active":false,"count":1,"last_at":9_100},
+            ]),
+        )
+    }
+
+    /// A model showing the talk pane, with one read already answered.
+    fn with_talk(log: Conversations) -> Model {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Talk));
+        model.apply(Message::Talk {
+            at_ms: 10_000,
+            result: Ok(log),
+        });
+        model
+    }
+
+    #[test]
+    fn showing_the_talk_reads_it_and_a_tick_while_it_is_up_keeps_reading_it() {
+        let mut model = Model::new();
+        let effect = model.apply(Message::Key(KeyAction::Talk));
+        assert_eq!(model.pane, Pane::Talk);
+        assert_eq!(effect, Effect::talk());
+        // The first pair the log carries is picked before any read answers, so
+        // the filter is never pointing at nothing while the read is in flight.
+        assert_eq!(model.talk_picked, None, "nothing is picked before a read");
+
+        model.apply(Message::Talk {
+            at_ms: 10_000,
+            result: Ok(talk_log()),
+        });
+        assert!(model.talk.is_some());
+        assert_eq!(model.talk_picked, Some((103, 109)), "the first pair is picked");
+        assert_eq!(model.talk_next_at_ms, 12_000);
+        assert!(!model.apply(Message::Tick { at_ms: 11_000 }).poll_talk);
+        assert!(model.apply(Message::Tick { at_ms: 13_000 }).poll_talk);
+        model.apply(Message::Show(Pane::Fleet));
+        assert!(!model.apply(Message::Tick { at_ms: 20_000 }).poll_talk);
+    }
+
+    #[test]
+    fn the_talk_is_read_on_its_own_schedule_and_never_moves_the_registers_health() {
+        let mut model = Model::new();
+        model.apply(Message::Show(Pane::Talk));
+        model.apply(Message::Runs {
+            at_ms: 3_200,
+            result: page(vec![run("r1", RunState::Running)]),
+        });
+        model.apply(Message::Talk {
+            at_ms: 3_300,
+            result: Err(ApiError::Status {
+                status: 404,
+                message: "no such endpoint".to_string(),
+            }),
+        });
+        assert_eq!(model.talk_failures, 1);
+        assert!(model.talk_error.is_some());
+        assert!(model.talk_unserved, "a 404 is the absence of a layer");
+        assert_eq!(
+            model.talk_next_at_ms,
+            3_300 + poll_interval_ms(DEFAULT_REFRESH_MS, 1),
+            "the talk pane backs off on its own failures"
+        );
+        assert_eq!(model.failures, 0);
+        assert_eq!(model.health(), Health::Live);
+
+        // A healthy read clears both the failure and the absence.
+        model.apply(Message::Talk {
+            at_ms: 9_000,
+            result: Ok(talk_log()),
+        });
+        assert_eq!(model.talk_failures, 0);
+        assert!(!model.talk_unserved);
+        assert_eq!(model.talk_next_at_ms, 11_000, "the cadence measures from the answer");
+    }
+
+    #[test]
+    fn the_talk_filter_walks_the_pairs_and_enter_narrows_and_widens() {
+        let mut model = with_talk(talk_log());
+        assert_eq!(model.talk_picked, Some((103, 109)));
+
+        // The arrows cycle the pairs the daemon folded, wrapping.
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.talk_picked, Some((100, 103)));
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.talk_picked, Some((103, 109)), "it wraps");
+        model.apply(Message::Key(KeyAction::HistoryPrev));
+        assert_eq!(model.talk_picked, Some((100, 103)), "and back");
+
+        // A refresh keeps the cursor on the pair it was on.
+        model.apply(Message::Talk {
+            at_ms: 11_000,
+            result: Ok(talk_log()),
+        });
+        assert_eq!(model.talk_picked, Some((100, 103)), "a refresh keeps the picked pair");
+
+        // Enter narrows to the picked pair and reads its thread.
+        assert_eq!(model.talk_narrow, None);
+        let effect = model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.talk_narrow, Some((100, 103)));
+        assert_eq!(effect, Effect::thread(100, 103));
+        assert!(model.talk_thread.is_none(), "nothing is claimed until the read answers");
+        model.apply(Message::Thread {
+            at_ms: 11_000,
+            a: 100,
+            b: 103,
+            result: Ok(thread_of(100, 103, 1)),
+        });
+        assert!(model.talk_thread.is_some());
+
+        // Enter again widens back to the whole log, and drops the thread.
+        let effect = model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.talk_narrow, None);
+        assert!(model.talk_thread.is_none());
+        assert_eq!(effect, Effect::none());
+
+        // Escape widens too, when narrowed — and only then does a second
+        // Escape leave the pane.
+        model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.talk_narrow, Some((100, 103)));
+        model.apply(Message::Key(KeyAction::Back));
+        assert_eq!(model.talk_narrow, None, "Escape widens the thread");
+        assert_eq!(model.pane, Pane::Talk, "and stays on the pane");
+        model.apply(Message::Key(KeyAction::Back));
+        assert_eq!(model.pane, Pane::Fleet, "a second Escape leaves the pane");
+
+        // A press on a pair row narrows straight to it.
+        let mut model = with_talk(talk_log());
+        assert_eq!(
+            model.apply(Message::PairPick(103, 109)),
+            Effect::thread(103, 109)
+        );
+        assert_eq!(model.talk_narrow, Some((103, 109)));
+    }
+
+    #[test]
+    fn the_narrowed_thread_rides_the_talk_panes_clock_and_is_dropped_when_it_widens() {
+        let mut model = with_talk(talk_log());
+        model.apply(Message::Key(KeyAction::Inspect));
+        model.apply(Message::Thread {
+            at_ms: 10_100,
+            a: 103,
+            b: 109,
+            result: Ok(thread_of(103, 109, 2)),
+        });
+        assert!(model.talk_thread.is_some());
+
+        // The tick that reads the log reads the narrowed pair's thread beside
+        // it, on the pane's own clock.
+        model.apply(Message::Show(Pane::Fleet));
+        model.apply(Message::Show(Pane::Talk));
+        model.apply(Message::Talk {
+            at_ms: 20_000,
+            result: Ok(talk_log()),
+        });
+        model.apply(Message::Key(KeyAction::Inspect));
+        assert_eq!(model.talk_narrow, Some((103, 109)));
+        let effect = model.apply(Message::Tick { at_ms: 22_100 });
+        assert!(effect.poll_talk, "the pane's own read");
+        assert_eq!(
+            effect.fetch_thread,
+            Some((103, 109)),
+            "and the narrowed pair's thread beside it"
+        );
+        // Off the sheet, the tick asks for neither.
+        model.apply(Message::Key(KeyAction::Back));
+        model.apply(Message::Show(Pane::Fleet));
+        let effect = model.apply(Message::Tick { at_ms: 30_000 });
+        assert!(!effect.poll_talk);
+        assert_eq!(effect.fetch_thread, None);
+    }
+
+    #[test]
+    fn a_thread_answer_lands_on_the_talk_pane_and_only_for_the_narrowed_pair() {
+        let mut model = with_talk(talk_log());
+
+        // A thread the pane never asked for is dropped, not drawn.
+        model.apply(Message::Thread {
+            at_ms: 11_000,
+            a: 1,
+            b: 2,
+            result: Ok(thread_of(1, 2, 1)),
+        });
+        assert!(model.talk_thread.is_none());
+
+        model.apply(Message::Key(KeyAction::Inspect));
+        model.apply(Message::Thread {
+            at_ms: 11_100,
+            a: 103,
+            b: 109,
+            result: Ok(thread_of(103, 109, 2)),
+        });
+        let thread = model.talk_thread.as_ref().expect("the narrowed thread");
+        assert_eq!((thread.a, thread.b), (103, 109));
+        assert_eq!(thread.messages.len(), 2);
+        assert!(model.talk_thread_error.is_none());
+
+        // Widening drops it, so a stale answer cannot outlive its pane.
+        let mut model2 = with_talk(talk_log());
+        model2.apply(Message::Key(KeyAction::Inspect));
+        model2.apply(Message::Thread {
+            at_ms: 11_200,
+            a: 103,
+            b: 109,
+            result: Err(ApiError::Connect("refused".to_string())),
+        });
+        assert!(model2.talk_thread_error.is_some());
+        model2.apply(Message::Key(KeyAction::Back));
+        assert!(model2.talk_thread_error.is_none(), "widening drops the failure too");
+    }
+
+    #[test]
+    fn a_conversation_event_reads_the_talk_log_once_and_never_invents_an_exchange() {
+        let mut model = with_talk(talk_log());
+
+        // An exchange the log already holds is a duplicate.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_000,
+                event: Event::Conversation {
+                    id: "c3".to_string(),
+                    from_cid: 103,
+                    to_cid: 109,
+                    delivered: true,
+                },
+            }),
+            Effect::none()
+        );
+        // A fresh exchange: the log is read again, once for the burst. The
+        // frame carries no text and no roles, so it can only ask for a read.
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_100,
+                event: Event::Conversation {
+                    id: "c4".to_string(),
+                    from_cid: 103,
+                    to_cid: 109,
+                    delivered: false,
+                },
+            }),
+            Effect::talk()
+        );
+        assert!(model.talk_asked);
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 11_200,
+                event: Event::Conversation {
+                    id: "c5".to_string(),
+                    from_cid: 1,
+                    to_cid: 2,
+                    delivered: true,
+                },
+            }),
+            Effect::none(),
+            "a burst of exchanges is one read"
+        );
+        model.apply(Message::Talk {
+            at_ms: 11_300,
+            result: Ok(talk_log()),
+        });
+        assert!(!model.talk_asked);
+
+        // Off the sheet there is nothing to refresh.
+        model.apply(Message::Show(Pane::Fleet));
+        assert_eq!(
+            model.apply(Message::Event {
+                at_ms: 20_000,
+                event: Event::Conversation {
+                    id: "c9".to_string(),
+                    from_cid: 1,
+                    to_cid: 2,
+                    delivered: true,
+                },
+            }),
+            Effect::none()
+        );
+    }
+
+    #[test]
+    fn a_pair_that_leaves_the_log_moves_the_cursor_back_onto_one_it_carries() {
+        let mut model = with_talk(talk_log());
+        model.apply(Message::Key(KeyAction::HistoryNext));
+        assert_eq!(model.talk_picked, Some((100, 103)));
+
+        // A log that no longer folds that pair: the cursor moves onto one it
+        // does, rather than pointing at nothing.
+        let shrunk = conversations_of(
+            serde_json::json!([exchange("c3", 103, 109)]),
+            serde_json::json!([{"a":103,"b":109,"active":true,"count":1,"last_at":9_300}]),
+        );
+        model.apply(Message::Talk {
+            at_ms: 12_000,
+            result: Ok(shrunk),
+        });
+        assert_eq!(model.talk_picked, Some((103, 109)));
+
+        // And a log that folds no pair at all clears the cursor.
+        model.apply(Message::Talk {
+            at_ms: 13_000,
+            result: Ok(conversations_of(
+                serde_json::json!([]),
+                serde_json::json!([]),
+            )),
+        });
+        assert_eq!(model.talk_picked, None);
+    }
+
+    #[test]
+    fn the_talk_index_line_names_the_counts_or_says_not_read_yet() {
+        let mut model = Model::new();
+        assert_eq!(talk_line(&model), "not read yet");
+        model.apply(Message::Talk {
+            at_ms: 10_000,
+            result: Ok(talk_log()),
+        });
+        assert_eq!(talk_line(&model), "3 exchange(s) · 2 pair(s) · 1 talking");
     }
 
     #[test]

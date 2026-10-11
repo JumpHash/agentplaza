@@ -145,13 +145,21 @@ KEYS:
     j                      the board: the plaza's public posts, newest first,
                            with the task each links and who has read it —
                            read-only
+    k                      the talk: the plaza's conversation log, newest
+                           first — a pair as two identities, the words as the
+                           agent's own — with a filter over the pairs and one
+                           pair's thread when it is narrowed — read-only
     t                      the session's telemetry, one observation per poll
     ?                      the help sheet (Escape or ? closes it)
     Escape                 back to the register (and closes the floor's
-                           inspector first, when one is open)
+                           inspector, or widens the talk pane, when either is
+                           open)
     up / down              walk the console's command history; on the floor
-                           they cycle the robots
-    Enter                  open the picked robot's inspector on the floor
+                           they cycle the robots, and on the talk pane they
+                           walk the pairs filter
+    Enter                  open the picked robot's inspector on the floor, or
+                           narrow the talk pane to its picked pair (again
+                           widens)
 
 The dashboard polls GET /api/v0/runs and GET /api/v0/machine, follows
 GET /api/v0/runs/{id} for the selected run, writes to a VM's console with
@@ -198,6 +206,15 @@ a board frame for a post it already holds is a no-op.
 The board pane (read-only) reads GET /api/v0/board while it is up, on its own
 schedule: every post, newest first, with its author and role, the task it links
 and 'read by N of M' from the daemon's per-agent unread counts.
+The talk pane (read-only) reads GET /api/v0/conversations while it is up, on
+its own schedule: every exchange, newest first, as two identity-and-role chips,
+the words as the agent's own, the delivery mark (delivered, or the hub's own
+reason verbatim when it did not reach, or a dash when the node said neither),
+and the stamp. Its pairs filter walks the daemon's own pair summaries -- the
+active mark is the floor's walk, within the daemon's exported window -- and
+Enter narrows to the picked pair's thread (GET /api/v0/conversations/{a}/{b}),
+Escape or Enter again widening. It writes nothing. A conversation frame for an
+exchange the pane does not hold reads the log again rather than inventing one.
 When --hub-url names a status surface, GET /status is read at the same
 cadence and the roster joins it to the register by guest CID: an agent the
 register reports and the hub does not is drawn 'registered, not connected',
@@ -428,6 +445,7 @@ mod tests {
         // draws.
         assert!(HELP.contains("i                      the floor"));
         assert!(HELP.contains("j                      the board"));
+        assert!(HELP.contains("k                      the talk"));
         assert!(HELP.contains("GET /api/v0/conversations"));
         assert!(HELP.contains("55° tilt, 20° yaw"));
         assert!(HELP.contains("Enter                  open the picked robot's inspector"));

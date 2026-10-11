@@ -1185,6 +1185,76 @@ fn reading_a_thread_follows_the_pairs_path() {
 }
 
 #[test]
+fn reading_the_talk_log_reads_the_pairs_the_daemon_folded() {
+    // The talk pane's own read: the whole log in one GET, with the pairs the
+    // daemon folded — two pairs, newest activity first — and the delivery
+    // line each exchange carries.
+    let server = common::social_live(
+        LIST,
+        DETAIL,
+        "",
+        common::POSTS,
+        common::CONVERSATIONS_TALK,
+        common::CONTACTS,
+        common::THREAD_TALK,
+    );
+    let log = client(server.port)
+        .conversations()
+        .expect("the log should parse");
+    assert_eq!(log.conversations.len(), 3);
+    assert_eq!(log.total, 3);
+    assert_eq!(log.active_secs, 120);
+    assert_eq!(log.pairs_total, 2);
+    // The daemon's own fold, in its own order.
+    assert_eq!(log.pairs.len(), 2);
+    assert_eq!((log.pairs[0].a, log.pairs[0].b, log.pairs[0].count), (103, 109, 2));
+    assert!(log.pairs[0].active);
+    assert_eq!((log.pairs[1].a, log.pairs[1].b, log.pairs[1].count), (100, 103, 1));
+    assert!(!log.pairs[1].active);
+    // The newest exchange, and the one the log folded beneath it.
+    assert_eq!(log.conversations[0].id, "c3");
+    assert_eq!((log.conversations[0].from_cid, log.conversations[0].to_cid), (103, 109));
+    assert_eq!(log.conversations[0].delivery.get(), None, "delivered names no reason");
+
+    // The narrowed pair's thread: the same endpoint the pane reads with Enter.
+    let thread = client(server.port)
+        .thread(103, 109)
+        .expect("the thread should parse");
+    assert_eq!(thread.messages.len(), 2);
+    assert_eq!(thread.messages[0].id, "c2", "a thread is oldest first");
+    assert_eq!(thread.messages[1].id, "c3");
+
+    let requests = server.requests();
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v0/conversations");
+    assert_eq!(requests[1].target, "/api/v0/conversations/103/109");
+}
+
+#[test]
+fn a_conversations_delivery_that_did_not_reach_carries_the_hubs_reason() {
+    // The pane's delivery mark: the hub's own words when a call did not reach,
+    // verbatim, and never a fabricated "delivered".
+    let server = common::social_live(
+        LIST,
+        DETAIL,
+        "",
+        common::POSTS,
+        common::CONVERSATIONS_TALK_REFUSED,
+        common::CONTACTS,
+        common::THREAD,
+    );
+    let log = client(server.port)
+        .conversations()
+        .expect("the log should parse");
+    let refused = &log.conversations[0];
+    assert!(!refused.delivered);
+    assert_eq!(
+        refused.delivery.as_deref(),
+        Some("no live session for guest CID 109")
+    );
+}
+
+#[test]
 fn a_social_surface_the_daemon_does_not_serve_is_the_daemons_own_refusal() {
     // An older daemon with no social layer: each read is a refusal in the
     // daemon's words, never a panic and never a silent empty board.
@@ -1493,6 +1563,46 @@ fn a_live_daemon_reads_when_one_is_named() {
             "  pair cid {} ↔ cid {} · {} exchange(s) · active {} · last {}",
             pair.a, pair.b, pair.count, pair.active, pair.last_at
         );
+    }
+    // The talk pane's log, one exchange at a time, with the delivery mark the
+    // daemon gave — and never an invented one.
+    for exchange in &conversations.conversations {
+        println!(
+            "  exchange {} · {} (cid {}) → {} (cid {}) · {} · {}",
+            exchange.id,
+            exchange.from_role,
+            exchange.from_cid,
+            exchange.to_role,
+            exchange.to_cid,
+            agentplaza_desktop::social::delivery_line(exchange),
+            exchange.text,
+        );
+    }
+    // The talk pane's narrowed read: the first folded pair's thread, through
+    // the pair API. Read-only, like everything else here — the pane has no path
+    // that speaks.
+    if let Some(pair) = conversations.pairs.first() {
+        let thread = client
+            .thread(pair.a, pair.b)
+            .expect("the live daemon should answer the pair's thread");
+        println!(
+            "  thread cid {} ↔ cid {}: {} message(s) carried of {} · pair count {} · {}",
+            thread.a,
+            thread.b,
+            thread.messages.len(),
+            thread.total,
+            pair.count,
+            if thread.active { "talking" } else { "quiet" },
+        );
+        assert!(
+            thread
+                .messages
+                .iter()
+                .all(|message| (message.from_cid, message.to_cid) == (pair.a, pair.b)
+                    || (message.from_cid, message.to_cid) == (pair.b, pair.a)),
+            "every message the thread carries is the pair's own"
+        );
+        assert!(thread.messages.len() <= thread.limit, "the thread is bounded");
     }
     // The floor's own read is the two GETs above, read together: it must
     // answer, and it must carry the same two halves.

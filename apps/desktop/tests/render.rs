@@ -227,6 +227,15 @@ fn perform(effect: Effect, model: &mut Model, client: &Client) {
             result,
         });
     }
+    if effect.poll_talk {
+        // The talk pane's own read: the conversation log. What the runtime
+        // does for the effect, done synchronously.
+        let result = client.conversations();
+        model.apply(Message::Talk {
+            at_ms: model.now_ms,
+            result,
+        });
+    }
     if let Some(cid) = effect.fetch_contacts {
         let result = client.contacts(cid);
         model.apply(Message::Contacts {
@@ -4090,6 +4099,367 @@ fn the_whole_application_follows_a_board_frame_between_polls() {
     assert_eq!(
         model.polls, 1,
         "only the boot tick polled the register: the board read is its own"
+    );
+    assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
+}
+
+// ---- the talk pane: the log, the pairs and the threads ----
+
+/// A daemon stub with the register's role fleet, the talk pane's log and the
+/// thread its narrowed pair reads.
+fn talk_server(conversations: &'static str, thread: &'static str) -> common::Stub {
+    common::social_live(
+        ROLE_LIST,
+        ROLE_DETAIL,
+        "",
+        common::POSTS,
+        conversations,
+        common::CONTACTS,
+        thread,
+    )
+}
+
+/// A model on the talk pane, with the pane's own read already answered.
+fn talk_from(port: u16) -> Model {
+    let mut model = role_model(port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Talk));
+    perform(effect, &mut model, &client);
+    assert!(model.talk.is_some(), "the talk log read answered");
+    model
+}
+
+#[test]
+fn the_talk_pane_draws_the_exchanges_the_pairs_and_the_marks() {
+    // The live plaza's own log shape: three exchanges across two pairs, with
+    // the newest pair talking and the older one quiet.
+    let server = talk_server(common::CONVERSATIONS_TALK, common::THREAD_TALK);
+    let model = talk_from(server.port);
+    assert_eq!(model.pane, Pane::Talk);
+    let log = model.talk.as_ref().expect("the pane read it");
+    assert_eq!(log.conversations.len(), 3);
+    assert_eq!(log.pairs.len(), 2);
+    assert_eq!(model.talk_picked, Some((103, 109)), "the first pair the log folds is picked");
+
+    let mut ui = simulator(view::view(&model));
+    for expected in [
+        "Talk",
+        "the plaza's conversations, newest first",
+        // The pane's tally: exchanges, pairs, the talking, the refused.
+        "Talk · 3 exchange(s) carried of 3 · 2 pair(s) of 2 · 1 talking · 0 refused",
+        // The pairs filter, the active mark named as the floor's walk and its
+        // window stated from the daemon's own value.
+        "Filter by pair",
+        "the active window is the daemon's own 120s",
+        "the floor walks an active pair adjacent",
+        "cid 103 ↔ cid 109 · 2 exchange(s)",
+        "cid 100 ↔ cid 103 · 1 exchange(s)",
+        // The talking pair's own stamp (caps, so it is the stamp and not the
+        // tally's lowercase word).
+        "TALKING",
+        // The exchanges, newest first: two identity-and-role chips, the words
+        // as prose, the delivery mark and the stamp.
+        "Exchanges · 3 carried of 3",
+        "c3",
+        "builder · cid 103",
+        "legal-agents-ombudsman · cid 109",
+        "the east wing is framed; the mayor may inspect the build log",
+        "delivered",
+        "architect · cid 100",
+        "the layout review is done; want to take the build?",
+    ] {
+        assert!(
+            ui.find(says(expected)).is_ok(),
+            "the talk sheet should show {expected:?}"
+        );
+    }
+    // Nothing on the sheet is a write: the pane says so.
+    assert!(ui.find(says("This sheet writes nothing")).is_ok());
+}
+
+#[test]
+fn the_talk_delivery_mark_is_the_hubs_reason_verbatim_and_the_dash_when_it_says_neither() {
+    // A log whose newest exchange did not reach its peer: the hub's own reason
+    // is drawn verbatim, and the one that delivered reads `delivered`.
+    let server = talk_server(common::CONVERSATIONS_TALK_REFUSED, common::THREAD);
+    let model = talk_from(server.port);
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(
+            ui.find(says("no live session for guest CID 109")).is_ok(),
+            "the hub's own reason is drawn verbatim"
+        );
+        assert!(ui.find(says("delivered")).is_ok(), "the one that reached reads delivered");
+        assert!(
+            ui.find(says("Talk · 2 exchange(s) carried of 2 · 2 pair(s) of 2 · 0 talking · 1 refused"))
+                .is_ok(),
+            "the refused tally counts the exchange that did not reach"
+        );
+    }
+
+    // A row the node said neither about (delivered false, no reason): the mark
+    // is the dash, never an invented `delivered`.
+    let mut silent = agentplaza_desktop::api::Conversation {
+        id: "c9".to_string(),
+        from_cid: 103,
+        to_cid: 109,
+        from_role: "builder".to_string(),
+        to_role: "legal-agents-ombudsman".to_string(),
+        text: "into the void".to_string(),
+        created_at: 1_791_690_975_823,
+        delivered: false,
+        delivery: agentplaza_desktop::api::Column::filled(None),
+    };
+    assert_eq!(agentplaza_desktop::social::delivery_line(&silent), "—");
+    silent.delivered = true;
+    assert_eq!(agentplaza_desktop::social::delivery_line(&silent), "delivered");
+}
+
+#[test]
+fn the_talk_pane_narrows_to_a_pairs_thread_and_widens() {
+    let server = talk_server(common::CONVERSATIONS_TALK, common::THREAD_TALK);
+    let mut model = talk_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+
+    // Enter narrows to the picked pair and reads its thread through the pair
+    // API — nothing is drawn from the log's own rows for the narrowed view.
+    let effect = model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Inspect));
+    assert_eq!(effect, Effect::thread(103, 109));
+    perform(effect, &mut model, &client);
+    assert_eq!(model.talk_narrow, Some((103, 109)));
+    let thread = model.talk_thread.as_ref().expect("the thread read answered");
+    assert_eq!(thread.messages.len(), 2);
+
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Thread · cid 103 ↔ cid 109")).is_ok());
+        assert!(
+            ui.find(says("2 message(s) carried of 2 · talking (within 120s)")).is_ok(),
+            "the thread's own tally"
+        );
+        assert!(ui.find(says("Enter or Escape widens back to the whole log")).is_ok());
+        assert!(
+            ui.find(says("NARROWED")).is_ok(),
+            "the picked row is stamped as the narrowed pair"
+        );
+        assert!(ui.find(says("done: t2 — build-notes.txt")).is_ok());
+        assert!(
+            ui.find(says("the east wing is framed; the mayor may inspect the build log")).is_ok()
+        );
+        // The whole log is no longer drawn: the pane is narrowed.
+        assert!(
+            ui.find(says("Exchanges · 3 carried of 3")).is_err(),
+            "the narrowed pane draws the thread, not the log"
+        );
+    }
+
+    // Escape widens back to the whole log.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Back));
+    assert_eq!(model.talk_narrow, None);
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Exchanges · 3 carried of 3")).is_ok());
+    assert!(ui.find(says("Thread · cid 103 ↔ cid 109")).is_err());
+}
+
+#[test]
+fn a_narrowed_pair_with_no_exchange_draws_an_honest_empty_thread() {
+    // A daemon whose pair thread is empty: the narrowed pane says so rather
+    // than drawing a blank sheet.
+    let server = talk_server(common::CONVERSATIONS_TALK, common::THREAD_EMPTY);
+    let mut model = talk_from(server.port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Inspect));
+    perform(effect, &mut model, &client);
+    let thread = model.talk_thread.as_ref().expect("the thread read answered");
+    assert!(thread.messages.is_empty());
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("this pair has never exchanged a word")).is_ok());
+    assert!(
+        ui.find(says("0 message(s) carried of 0 · quiet")).is_ok(),
+        "the thread's tally says it is quiet"
+    );
+}
+
+#[test]
+fn an_empty_log_draws_no_exchange_rather_than_a_blank_sheet() {
+    // A fresh plaza: no two agents have spoken. The empty state is not a blank
+    // sheet.
+    let empty = r#"{"conversations":[],"pairs":[],"active_secs":120,"total":0,
+        "limit":256,"truncated":false,"pairs_total":0,"pairs_truncated":false}"#;
+    let server = talk_server(empty, common::THREAD_EMPTY);
+    let model = talk_from(server.port);
+    let mut ui = simulator(view::view(&model));
+    assert!(ui.find(says("Talk · 0 exchange(s) carried of 0 · 0 pair(s) of 0 · 0 talking · 0 refused")).is_ok());
+    assert!(ui.find(says("no pair has spoken yet: no two agents have exchanged a word")).is_ok());
+    assert!(ui.find(says("no exchange yet: no agent has spoken to another")).is_ok());
+}
+
+#[test]
+fn the_talk_pane_says_no_social_layer_for_a_404_and_names_an_unreachable_error() {
+    // A daemon with no social layer: the pane's read is the daemon's 404, and
+    // the sheet says so plainly rather than drawing an empty log.
+    let server = common::social_unserved(ROLE_LIST, ROLE_DETAIL);
+    let mut model = role_model(server.port);
+    let client = Client::new(model.endpoint.clone());
+    let effect = model.apply(Message::Show(Pane::Talk));
+    perform(effect, &mut model, &client);
+    assert!(model.talk.is_none());
+    assert!(model.talk_unserved);
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("no social layer")).is_ok(), "the absence of a layer is stated plainly");
+        assert!(ui.find(says("this daemon serves no conversation log")).is_ok());
+    }
+    assert_eq!(
+        model.health(),
+        agentplaza_desktop::model::Health::Live,
+        "a daemon with no social layer is still a live register"
+    );
+
+    // A read that fails after a good one keeps the last log and names the
+    // failure — an unreachable daemon names its error.
+    let server = talk_server(common::CONVERSATIONS_TALK, common::THREAD_TALK);
+    let mut model = talk_from(server.port);
+    let held = model.talk.clone();
+    let at_ms = model.now_ms;
+    model.apply(Message::Talk {
+        at_ms,
+        result: Err(agentplaza_desktop::api::ApiError::Connect(
+            "connection refused".to_string(),
+        )),
+    });
+    assert_eq!(model.talk, held, "the last log is kept, not blanked");
+    let mut ui = simulator(view::view(&model));
+    assert!(
+        ui.find(says("the talk log could not be read again: cannot reach connection refused")).is_ok(),
+        "the sheet names the failure beside the log it keeps"
+    );
+}
+
+#[test]
+fn the_talk_key_and_its_index_entry_reach_the_sheet() {
+    let server = talk_server(common::CONVERSATIONS_TALK, common::THREAD_TALK);
+    let mut model = role_model(server.port);
+
+    // The index offers the pane, and says it has not been read rather than
+    // claiming an empty plaza.
+    let messages = {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("Talk")).is_ok());
+        assert!(ui.find(says("not read yet")).is_ok());
+        ui.click("Talk").expect("the entry is clickable");
+        ui.into_messages().collect::<Vec<Message>>()
+    };
+    assert!(
+        messages.contains(&Message::Show(Pane::Talk)),
+        "the entry asks for the talk pane, got {messages:?}"
+    );
+
+    // The key sheet names the binding, from the one table the index and the
+    // help sheet share.
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Help));
+    {
+        let mut ui = simulator(view::view(&model));
+        assert!(ui.find(says("talk: the conversations, the pairs + their threads")).is_ok());
+    }
+    model.apply(Message::Help(false));
+    model.apply(Message::Key(agentplaza_desktop::model::KeyAction::Talk));
+    assert_eq!(model.pane, Pane::Talk, "the k key reaches the talk pane");
+}
+
+#[test]
+fn the_talk_pane_is_drawn_over_a_real_frame() {
+    let server = talk_server(common::CONVERSATIONS_TALK, common::THREAD_TALK);
+    let model = talk_from(server.port);
+
+    // The talking pair's stamp is drawn in the one hot signal: the same model
+    // with every pair gone quiet has strictly less of it.
+    let mut quiet = model.clone();
+    if let Some(log) = quiet.talk.as_mut() {
+        for pair in log.pairs.iter_mut() {
+            pair.active = false;
+        }
+    }
+    assert!(
+        count_near(&frame_of(model.clone()), SIGNAL, 8) > count_near(&frame_of(quiet), SIGNAL, 8),
+        "the talking pair's stamp is drawn in the register's signal"
+    );
+
+    let frame = frame_of(model);
+    assert_eq!((frame.size.width, frame.size.height), (1280, 860));
+    for (name, color, tolerance) in [("the page", PAPER, 2), ("the ink", INK, 8)] {
+        assert!(holds(&frame, color, tolerance), "{name} is not on the talk frame");
+    }
+    assert!(distinct_colors(frame.rgba.as_ref()) > 100);
+}
+
+#[test]
+fn the_whole_application_follows_a_conversation_frame_between_polls() {
+    // The talk pane reads when it opens; a `conversation` frame then asks the
+    // pane's own surface to be read again, between the register's polls. The
+    // frame carries no text and no roles, so the exchange that arrives can only
+    // be the daemon's own row, read rather than assembled.
+    let server = common::talk_growing(
+        ROLE_LIST,
+        ROLE_DETAIL,
+        "",
+        common::CONVERSATIONS_TALK,
+        common::CONVERSATIONS_TALK_AFTER,
+    );
+
+    let program = app::application(config_at(server.port, 30_000));
+    let (sender, mut receiver) = iced::futures::channel::mpsc::channel(64);
+    let mut emulator = iced_test::emulator::Emulator::new(
+        sender,
+        &program,
+        iced_test::emulator::Mode::Immediate,
+        Size::new(1280.0, 860.0),
+    );
+    let mut pump = |emulator: &mut iced_test::emulator::Emulator<_>, millis: u64| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(millis) {
+            if let Ok(iced_test::emulator::Event::Action(action)) = receiver.try_recv() {
+                emulator.perform(&program, action);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    pump(&mut emulator, 800);
+
+    emulator.update(&program, Message::Show(Pane::Talk));
+    pump(&mut emulator, 800);
+
+    // A `conversation` frame for an exchange the pane does not hold: the pane's
+    // own surface is read again, and the exchange that arrives is the daemon's.
+    emulator.update(
+        &program,
+        Message::Event {
+            at_ms: agentplaza_desktop::epoch_ms(),
+            event: agentplaza_desktop::events::Event::Conversation {
+                id: "c4".to_string(),
+                from_cid: 109,
+                to_cid: 103,
+                delivered: true,
+            },
+        },
+    );
+    pump(&mut emulator, 800);
+
+    let (model, _) = emulator.into_state();
+    let log = model.talk.as_ref().expect("the pane's read");
+    assert_eq!(log.conversations.len(), 4, "the frame drove a read, and the read grew the log");
+    assert_eq!(log.conversations[0].id, "c4");
+    assert_eq!(
+        log.conversations[0].text, "the framed east wing is inspected — approved",
+        "the words the frame never carried are the daemon's own"
+    );
+    assert_eq!(
+        log.conversations[0].from_role, "legal-agents-ombudsman",
+        "and so is the role the frame could not describe"
+    );
+    assert_eq!(
+        model.polls, 1,
+        "only the boot tick polled the register: the talk read is its own"
     );
     assert_eq!(model.health(), agentplaza_desktop::model::Health::Live);
 }

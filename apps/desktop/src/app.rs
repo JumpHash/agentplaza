@@ -223,6 +223,7 @@ pub fn shortcut(key: &Key) -> Option<KeyAction> {
             "u" => Some(KeyAction::Market),
             "i" => Some(KeyAction::Floor),
             "j" => Some(KeyAction::Board),
+            "k" => Some(KeyAction::Talk),
             "t" => Some(KeyAction::Telemetry),
             "?" => Some(KeyAction::Help),
             _ => None,
@@ -448,6 +449,18 @@ fn dispatch(
                 (epoch_ms(), result)
             },
             |(at_ms, result)| Message::Board { at_ms, result },
+        ));
+    }
+    if effect.poll_talk {
+        // The talk pane's own read: the conversation log, with the pair
+        // summaries its filter walks. Its own message and its own schedule.
+        let client = client.clone();
+        tasks.push(Task::perform(
+            async move {
+                let result = client.conversations();
+                (epoch_ms(), result)
+            },
+            |(at_ms, result)| Message::Talk { at_ms, result },
         ));
     }
     if let Some(cid) = effect.fetch_contacts {
@@ -725,6 +738,7 @@ mod tests {
             (Key::Character("t".into()), KeyAction::Telemetry),
             (Key::Character("i".into()), KeyAction::Floor),
             (Key::Character("j".into()), KeyAction::Board),
+            (Key::Character("k".into()), KeyAction::Talk),
             // A shifted letter is the same logical key in caps.
             (Key::Character("R".into()), KeyAction::Register),
             (Key::Character("M".into()), KeyAction::Machine),
@@ -735,6 +749,7 @@ mod tests {
             (Key::Character("T".into()), KeyAction::Telemetry),
             (Key::Character("I".into()), KeyAction::Floor),
             (Key::Character("J".into()), KeyAction::Board),
+            (Key::Character("K".into()), KeyAction::Talk),
             (Key::Named(keyboard::key::Named::Escape), KeyAction::Back),
             (Key::Named(keyboard::key::Named::Enter), KeyAction::Inspect),
             (Key::Character("?".into()), KeyAction::Help),

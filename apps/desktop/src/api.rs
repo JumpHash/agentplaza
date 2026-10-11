@@ -3768,6 +3768,40 @@ mod tests {
     }
 
     #[test]
+    fn a_two_pair_log_keeps_the_daemons_fold_order_and_every_count() {
+        // The live plaza's own log shape: two pairs, the newest activity
+        // first, each with its own count and clock. The client parses the
+        // fold the daemon made; it never folds one of its own.
+        const TWO_PAIRS: &str = r#"{"conversations":[
+            {"id":"c3","from_cid":103,"to_cid":109,"from_role":"builder",
+             "to_role":"ombudsman","text":"framed","created_at":300,
+             "delivered":true,"delivery":null},
+            {"id":"c2","from_cid":103,"to_cid":109,"from_role":"builder",
+             "to_role":"ombudsman","text":"done","created_at":200,
+             "delivered":true,"delivery":null},
+            {"id":"c1","from_cid":100,"to_cid":103,"from_role":"architect",
+             "to_role":"builder","text":"take it?","created_at":100,
+             "delivered":true,"delivery":null}
+            ],"pairs":[
+            {"a":103,"b":109,"active":true,"count":2,"last_at":300},
+            {"a":100,"b":103,"active":false,"count":1,"last_at":100}
+            ],"active_secs":120,"total":3,"limit":256,"truncated":false,
+            "pairs_total":2,"pairs_truncated":false}"#;
+        let record: Conversations = from_body(TWO_PAIRS);
+        assert_eq!(record.pairs.len(), 2);
+        assert_eq!(record.pairs_total, 2);
+        // The daemon's order (most recently active first) is held, not sorted.
+        assert_eq!((record.pairs[0].a, record.pairs[0].b), (103, 109));
+        assert_eq!(record.pairs[0].count, 2);
+        assert!(record.pairs[0].active);
+        assert_eq!(record.pairs[0].last_at, 300);
+        assert_eq!((record.pairs[1].a, record.pairs[1].b), (100, 103));
+        assert_eq!(record.pairs[1].count, 1);
+        assert!(!record.pairs[1].active);
+        assert_eq!(record.pairs[1].last_at, 100);
+    }
+
+    #[test]
     fn a_thread_body_parses_every_column_the_daemon_writes() {
         let thread: Thread = from_body(THREAD);
         assert_eq!((thread.a, thread.b), (100, 101));
