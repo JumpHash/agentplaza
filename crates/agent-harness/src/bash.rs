@@ -132,7 +132,7 @@ pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privi
 
 /// Runs `program args` in `dir` with a cleared environment (the proxy set), output captured
 /// and capped, killed after `timeout_s`. `Ok` on exit 0, else `Err` with the output and status.
-fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeout_s: u64, privilege: Privilege) -> Result<String, String> {
+pub(crate) fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeout_s: u64, privilege: Privilege) -> Result<String, String> {
     let root = dir;
     let (reader, writer) = io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
     let stderr = writer.try_clone().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
