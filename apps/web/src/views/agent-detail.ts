@@ -270,21 +270,25 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   let permission: PermissionMode | null = null;
   let permissionFailed = false;
   const renderPermission = (): void => {
-    const current = permissionOptions.find((o) => o.mode === permission);
-    const note = permissionFailed ? 'Could not load this setting' : current ? current.hint : 'Loading…';
+    // One full-width choice per mode, its hint under its name, so the card fits the side column.
     replace(
       permissionHost,
       h(
-        'div.row',
-        null,
-        ...permissionOptions.map((o) =>
-          button(o.label, () => choosePermission(o.mode), {
-            title: o.hint,
-            ...(o.mode === permission ? { kind: 'primary' as const } : {}),
-          }),
-        ),
+        'div.perm-options',
+        { role: 'radiogroup', 'aria-label': 'Permission mode' },
+        ...permissionOptions.map((o) => {
+          const choice = h(
+            'button.perm-option',
+            { type: 'button', role: 'radio', 'aria-checked': String(o.mode === permission) },
+            h('span.perm-label', null, o.label),
+            h('span.perm-hint', null, o.hint),
+          );
+          if (o.mode === permission) choice.classList.add('active');
+          choice.addEventListener('click', () => choosePermission(o.mode));
+          return choice;
+        }),
       ),
-      h('span.faint', null, note),
+      permissionFailed ? h('span.faint', null, 'Could not load this setting') : permission === null ? h('span.faint', null, 'Loading…') : null,
     );
   };
   const choosePermission = (next: PermissionMode): void => {

@@ -52,3 +52,15 @@
 
 .model-line { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
 .model-line strong { font-family: var(--mono); font-weight: 500; overflow-wrap: anywhere; }
+
+/* Permissions: stacked full-width choices in the side column. */
+.perm-options { display: flex; flex-direction: column; gap: 6px; }
+.perm-option {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  padding: 8px 10px; text-align: left; cursor: pointer;
+  background: var(--sheet); color: var(--ink); border: 1px solid var(--rule);
+}
+.perm-option:hover { border-color: var(--ink); }
+.perm-option.active { border: 2px solid var(--signal); padding: 7px 9px; background: color-mix(in srgb, var(--signal) 8%, var(--sheet)); }
+.perm-label { font: 600 12px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.perm-hint { font: 400 12.5px var(--serif); color: var(--ink-3); line-height: 1.35; overflow-wrap: anywhere; }
