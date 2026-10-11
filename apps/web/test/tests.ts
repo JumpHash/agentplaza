@@ -26,6 +26,18 @@ import { parseTell, parseTellArgs, tellStateOf } from '../src/models/tell';
 import { balances, fmtSigned, parseJournal, parseTreasury, postingLabel } from '../src/models/treasury';
 import type { Award, Bid, Call, Calls } from '../src/models/agora';
 import { parseAgora, winningBid } from '../src/models/agora';
+import type { Motion, Motions, Vote } from '../src/models/council';
+import {
+  councilTally,
+  gateLine,
+  KIND_LABEL,
+  motionSeq,
+  parseMotion,
+  parseMotions,
+  SEAT_COUNT,
+  STATE_LABEL,
+  tallyHolds,
+} from '../src/models/council';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import {
   activePairs,
@@ -179,7 +191,7 @@ store.applyRunEvent('r1', 'done');
 eq(store.details.get('r1')?.state, 'done', 'a run event patches the cached run');
 store.applyVmEvent('r1', 0, 'exited');
 eq(store.details.get('r1')?.vms[0]?.state, 'exited', 'a vm event patches the cached vm');
-eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0, agora: 0, board: 0, conversation: 0 }, 'the wire tallies every frame');
+eq(store.wire, { run: 1, vm: 1, serial: 6, task: 0, treasury: 0, agora: 0, board: 0, conversation: 0, motion: 0 }, 'the wire tallies every frame');
 
 /* ------- run ids restart with the daemon: identity is (id, created_at) ---- */
 function runShaped(id: string, createdAt: number, state: 'running' | 'done', serial: string) {
@@ -1403,6 +1415,175 @@ eq(
   setTimeout(mineDone, 250);
   await mine;
   eq(u.thread?.state, 'error', 'a frame for the shown pair re-reads its thread (either direction)');
+}
+
+/* ==================== the council: the seats' motions and the owner's gate
+   The motions endpoint is the only source for a motion's text and its votes'
+   reasons, so the whole motion is read from it and parsed defensively — the
+   relay is untrusted, and a missing or mistyped field is refused by name. A
+   motion's state and its gate are the node's own derivation; the console reads
+   them and asserts only the tally's arithmetic (voted == votes carried, of
+   four seats) without recomputing a decision. A `motion` frame carries no text
+   and no row, so the store asks the node and patches nothing in. */
+
+const VOTE_YES: Vote = { seat: 'finance', agent_cid: 105, vote: 'yes', reason: 'the record supports it', at: 1791705629367 };
+const VOTE_NO: Vote = { seat: 'incident', agent_cid: 106, vote: 'no', reason: 'the record is thin', at: 1791705629412 };
+const MOTION_FIXTURE: Motion = {
+  id: 'm1',
+  proposer_cid: 105,
+  proposer_role: 'finance',
+  kind: 'priority',
+  text: 'prioritise the east wing over new towns this week',
+  amount: null,
+  needs_owner: false,
+  state: 'tie_to_owner',
+  votes: [
+    { ...VOTE_YES, seat: 'finance' },
+    { ...VOTE_YES, seat: 'legal-agents-counsel', agent_cid: 107, at: 1791705629458 },
+    { ...VOTE_NO, seat: 'incident' },
+    { ...VOTE_NO, seat: 'mayor-office', agent_cid: 114, at: 1791705629506 },
+  ],
+  tally: { yes: 2, no: 2, abstain: 0, voted: 4, seats: 4 },
+  created_at: 1791705623593,
+  updated_at: 1791705629506,
+};
+const COUNCIL_FIXTURE: Motions = { motions: [MOTION_FIXTURE], total: 1, limit: 256, truncated: false };
+const GATED_FIXTURE: Motion = {
+  ...MOTION_FIXTURE,
+  id: 'm2',
+  proposer_cid: 107,
+  proposer_role: 'legal-agents-counsel',
+  kind: 'law_proposal',
+  text: 'amend S-001 so builders may read the review record',
+  needs_owner: true,
+  state: 'awaiting_owner',
+  votes: MOTION_FIXTURE.votes.map((v) => ({ ...v, vote: 'yes' as const })),
+  tally: { yes: 4, no: 0, abstain: 0, voted: 4, seats: 4 },
+};
+
+eq(parseMotions(COUNCIL_FIXTURE), COUNCIL_FIXTURE, 'a well-formed council parses unchanged');
+eq(parseMotions({ ...COUNCIL_FIXTURE, git: 'sha' }), COUNCIL_FIXTURE, 'unknown extra fields are tolerated and dropped');
+eq(parseMotion(MOTION_FIXTURE), MOTION_FIXTURE, 'one motion parses as the list reports it');
+throws(() => parseMotions(null), 'council is missing or not an object', 'a non-object council is rejected by name');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: {} }), 'council.motions is missing or not an array', 'a motions field that is not an array names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, kind: 'edict' }] }), 'council.motions[0].kind', 'an unknown kind is refused by name');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, state: 'pending' }] }), 'council.motions[0].state', 'an unknown state is refused by name');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, votes: [{ ...VOTE_YES, vote: 'aye' }] }] }), 'council.motions[0].votes[0].vote', 'an unknown vote word is refused by name');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, proposer_cid: 105.5 }] }), 'council.motions[0].proposer_cid', 'a non-integer proposer CID names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, amount: 'lots' }] }), 'council.motions[0].amount', 'an amount that is not an integer names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, needs_owner: 'yes' }] }), 'council.motions[0].needs_owner', 'a non-boolean gate names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, votes: 5 }] }), 'council.motions[0].votes', 'a votes field that is not an array names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, tally: null }] }), 'council.motions[0].tally', 'a tally that is not an object is refused by name');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, tally: { ...MOTION_FIXTURE.tally, yes: 1.5 } }] }), 'council.motions[0].tally.yes', 'a non-integer tally figure names its field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, truncated: 'yes' }), 'council.truncated', 'a non-boolean truncation names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, votes: [{ ...VOTE_YES, seat: 5 }] }] }), 'council.motions[0].votes[0].seat', 'a vote seat that is not a string names the field');
+throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, votes: [{ ...VOTE_YES, at: 1.2 }] }] }), 'council.motions[0].votes[0].at', 'a vote stamp that is not an integer names the field');
+{
+  const missing: Record<string, unknown> = { ...MOTION_FIXTURE };
+  delete missing['text'];
+  throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [missing] }), 'council.motions[0].text', 'a missing required motion field names the path');
+}
+{
+  const missing: Record<string, unknown> = { ...MOTION_FIXTURE };
+  delete missing['votes'];
+  throws(() => parseMotions({ ...COUNCIL_FIXTURE, motions: [missing] }), 'council.motions[0].votes', 'a motion with no votes key at all names the field');
+}
+{
+  const missing: Record<string, unknown> = { ...MOTION_FIXTURE };
+  delete missing['amount'];
+  eq(parseMotions({ ...COUNCIL_FIXTURE, motions: [missing] }).motions[0]?.amount, null, 'an absent amount column reads as no amount, not a missing field');
+}
+eq(
+  parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, amount: 500 }] }).motions[0]?.amount,
+  500,
+  'a budget move’s amount is read',
+);
+eq(
+  parseMotions({ ...COUNCIL_FIXTURE, motions: [{ ...MOTION_FIXTURE, amount: null }] }).motions[0]?.amount,
+  null,
+  'a null amount reads as none',
+);
+
+/* the folio, and the tally's arithmetic the console asserts */
+eq(motionSeq('m12'), 12, 'a motion id parses to its folio');
+eq(motionSeq('m'), 0, 'an id that does not parse is folio 0');
+eq(motionSeq(null), 0, 'a null id is folio 0');
+eq(SEAT_COUNT, 4, 'the doctrine seats four');
+
+eq(tallyHolds(MOTION_FIXTURE), true, 'a tally squares with its votes');
+eq(
+  tallyHolds({ ...MOTION_FIXTURE, tally: { ...MOTION_FIXTURE.tally, voted: 3 } }),
+  false,
+  'a tally whose voted disagrees with the votes carried is caught',
+);
+eq(
+  tallyHolds({ ...MOTION_FIXTURE, tally: { ...MOTION_FIXTURE.tally, seats: 5 } }),
+  false,
+  'a tally that seats more than four is caught',
+);
+eq(
+  tallyHolds({ ...MOTION_FIXTURE, tally: { ...MOTION_FIXTURE.tally, yes: 1 } }),
+  false,
+  'a tally whose words do not sum to voted is caught',
+);
+
+/* the sheet's figures: total, still open, awaiting the owner, the ties */
+eq(
+  councilTally([MOTION_FIXTURE, GATED_FIXTURE, { ...MOTION_FIXTURE, id: 'm3', state: 'open' }, { ...MOTION_FIXTURE, id: 'm4', state: 'carried' }]),
+  { total: 4, open: 1, awaiting: 1, ties: 1, owner: 2 },
+  'the tally counts the four the owner reads by, and nothing else as owner-waiting',
+);
+eq(councilTally([]), { total: 0, open: 0, awaiting: 0, ties: 0, owner: 0 }, 'an empty council counts zeroes');
+
+/* the gate, in plain words, from the kind the node derived it with */
+eq(
+  gateLine(GATED_FIXTURE),
+  'above the council’s authority: a law change waits for the owner’s ratification',
+  'a law proposal names its gate',
+);
+eq(gateLine(MOTION_FIXTURE), null, 'a motion the council decides outright names no gate');
+eq(
+  gateLine({ ...GATED_FIXTURE, kind: 'town_proposal' }),
+  'above the council’s authority: founding a town waits for the owner’s ratification',
+  'a town proposal names its gate',
+);
+eq(
+  gateLine({ ...GATED_FIXTURE, kind: 'mayor_replacement' }),
+  'above the council’s authority: replacing a mayor waits for the owner’s ratification',
+  'a mayor replacement names its gate',
+);
+eq(
+  gateLine({ ...GATED_FIXTURE, kind: 'budget_move', amount: 5000 }),
+  'above the council’s authority: a move over a tenth of the minted pool waits for the owner’s ratification',
+  'a gated budget move names its gate',
+);
+eq(
+  gateLine({ ...GATED_FIXTURE, kind: 'priority' }),
+  'above the council’s authority: this decision waits for the owner’s ratification',
+  'a gated kind v0 never derives reads as a plain gate, naming no invented rule',
+);
+
+/* the label tables cover every kind and every state */
+eq(Object.keys(KIND_LABEL).length, 6, 'every kind has a label');
+eq(Object.keys(STATE_LABEL).length, 5, 'every state has a label');
+
+/* a motion frame carries no text: the council is asked once, and nothing is
+   invented from the frame alone */
+{
+  const s = new Store();
+  s.applyMotionEvent();
+  eq(s.wire.motion, 1, 'the wire tallies the motion frame');
+  eq(s.motions.length, 0, 'no motion is invented from a frame');
+  const { promise: settled, resolve: settledDone } = Promise.withResolvers<void>();
+  setTimeout(settledDone, 250);
+  await settled;
+  eq(typeof s.motionsError, 'string', 'the council was asked for the truth');
+  eq(s.motionsTotal, 0, 'and the frame set no total of its own');
+  eq(s.motionFilter, null, 'no filter stands until the owner presses for one');
+  s.setMotionFilter('awaiting_owner');
+  eq(s.motionFilter, 'awaiting_owner', 'pressing a figure narrows the sheet');
+  s.clearMotionFilter();
+  eq(s.motionFilter, null, 'showing every motion clears the filter');
 }
 
 /* picking a pair narrows the talk sheet and asks the node for that pair's

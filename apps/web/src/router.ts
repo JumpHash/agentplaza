@@ -1,10 +1,11 @@
 /* Hash routing: #register (default) / #run/{id} / #machine / #map / #floor /
    #compare/{a}/{avm}/{b}/{bvm} / #telemetry / #roster / #ledger/{id} /
-   #treasury / #market / #board / #talk. Keys 0–9 walk the ten index
-   destinations; the board and the talk take the letters `b` and `c` (a
-   two-digit key cannot be a keystroke). The compare and ledger addresses
-   carry their subject so they can be bookmarked; the talk sheet's own pair
-   filter is view state, not an address. */
+   #treasury / #market / #board / #talk / #council. Keys 0–9 walk the ten index
+   destinations; the board, the talk and the council take the letters `b`, `c`
+   and `n` (a two-digit key cannot be a keystroke). The compare and ledger
+   addresses carry their subject so they can be bookmarked; the talk sheet's own
+   pair filter and the council sheet's state filter are view state, not an
+   address. */
 
 import type { CompareTarget, Route, ViewName } from './store';
 
@@ -22,6 +23,7 @@ const NAMES: Readonly<Record<string, ViewName>> = {
   market: 'market',
   board: 'board',
   talk: 'talk',
+  council: 'council',
 };
 
 export function parseRoute(hash: string): Route {
@@ -58,12 +60,13 @@ export const NAV_OF: Record<ViewName, ViewName> = {
   market: 'market',
   board: 'board',
   talk: 'talk',
+  council: 'council',
 };
 
 /** Key destinations. The ten index digits walk the index; the public board
-    takes the letter `b` (a two-digit key cannot be a keystroke), the way `f`,
-    `j` and `t` already stand beside the digits. `run` resolves against what
-    the store knows. */
+    takes the letter `b` (a two-digit key cannot be a keystroke), the talk `c`
+    and the council `n`, the way `f`, `j` and `t` already stand beside the
+    digits. `run` resolves against what the store knows. */
 export const KEY_ROUTES: Readonly<Record<string, ViewName>> = {
   '0': 'register',
   '1': 'run',
@@ -77,4 +80,5 @@ export const KEY_ROUTES: Readonly<Record<string, ViewName>> = {
   '9': 'market',
   b: 'board',
   c: 'talk',
+  n: 'council',
 };

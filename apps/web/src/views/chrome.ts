@@ -107,10 +107,11 @@ const HEALTH_MARK: Record<string, string> = { live: 'mk ok', stale: 'mk warn', d
    carried, kept honest about being transport — daemon health is the polls'. */
 function renderWire(): void {
   const w = store.wire;
-  const total = w.run + w.vm + w.serial + w.task + w.treasury + w.agora + w.board + w.conversation;
+  const total =
+    w.run + w.vm + w.serial + w.task + w.treasury + w.agora + w.board + w.conversation + w.motion;
   byId('colo-wire').textContent =
     store.stream === 'live'
-      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task · ${fmtNum(w.treasury)} treasury · ${fmtNum(w.agora)} agora · ${fmtNum(w.board)} board · ${fmtNum(w.conversation)} talk)`
+      ? `The wire · live — ${fmtNum(total)} frames carried (${fmtNum(w.run)} run · ${fmtNum(w.vm)} vm · ${fmtNum(w.serial)} serial · ${fmtNum(w.task)} task · ${fmtNum(w.treasury)} treasury · ${fmtNum(w.agora)} agora · ${fmtNum(w.board)} board · ${fmtNum(w.conversation)} talk · ${fmtNum(w.motion)} council)`
       : store.stream === 'reconnecting'
         ? 'The wire · down — reconnecting; the polls carry the register'
         : 'The wire · opening…';
@@ -170,6 +171,13 @@ export function renderChrome(): void {
   /* the talk answers one question — how many exchanges the plaza has recorded;
      conversations this node does not serve read '—' */
   byId('nav-talk').textContent = store.conversationsError != null ? '—' : fmtNum(store.convTotal);
+  /* the council answers one question — how many motions the owner's own hand
+     is what moves (carried but gated, or escalated by an even split) */
+  let ownerWaiting = 0;
+  for (const motion of store.motions) {
+    if (motion.state === 'awaiting_owner' || motion.state === 'tie_to_owner') ownerWaiting++;
+  }
+  byId('nav-council').textContent = store.motionsError != null ? '—' : fmtNum(ownerWaiting);
   /* session data, not daemon state — the count stands even while unreachable */
   byId('nav-telemetry').textContent = fmtNum(store.history.fleet.length);
 

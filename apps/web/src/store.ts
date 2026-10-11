@@ -4,11 +4,13 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, stopAgent as stopAgentApi, tellAgent } from './api';
+import { getBoard, getContacts, getConversationThread, getConversations, getAgora, getHub, getMachine, getMotions, getRun, getTask, getTreasury, getTreasuryJournal, listRuns, listTasks, readTaskArtifact, stopAgent as stopAgentApi, tellAgent } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
 import type { Call } from './models/agora';
 import type { ArtifactReadState } from './models/artifact';
 import { readStateOf } from './models/artifact';
+import type { Motion, MotionState } from './models/council';
+import { motionSeq } from './models/council';
 import type { RunSlice } from './models/history';
 import { SessionHistory } from './models/history';
 import type { HubStatus } from './models/hub';
@@ -28,7 +30,7 @@ import type { SerialCache } from './serial';
 import { linesOf, serialDelta } from './serial';
 import { toast } from './dom';
 
-export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'floor' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market' | 'board' | 'talk';
+export type ViewName = 'register' | 'run' | 'machine' | 'map' | 'floor' | 'compare' | 'telemetry' | 'roster' | 'ledger' | 'treasury' | 'market' | 'board' | 'talk' | 'council';
 export type Theme = 'system' | 'light' | 'dark';
 export type Health = 'live' | 'stale' | 'down';
 /** The event stream's own liveness — shown in the colophon, never feeds daemon health. */
@@ -43,7 +45,7 @@ declare global {
     /** Read-only counters for the verification harness; the app never reads them. */
     __PLAZA_DIAG__?: {
       readonly renders: number;
-      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number; readonly task: number; readonly treasury: number; readonly agora: number };
+      readonly wire: { readonly run: number; readonly vm: number; readonly serial: number; readonly task: number; readonly treasury: number; readonly agora: number; readonly board: number; readonly conversation: number; readonly motion: number };
       readonly stream: StreamState;
       /** What the hub line reads from: whether the hub is reachable, its
           agent and session counts, and the error when it is not. */
@@ -129,6 +131,20 @@ declare global {
         readonly contacts: readonly number[];
         readonly thread: { readonly a: number; readonly b: number; readonly state: string } | null;
         readonly talkPair: { readonly a: number; readonly b: number } | null;
+        readonly error: string | null;
+        readonly errorStatus: number | null;
+      };
+      /** The council as the store holds it: how many motions the console
+          carries, the bounding line, the state the sheet is narrowed to, and
+          the error (with its status) when the council is unreadable. */
+      readonly council: {
+        readonly motions: number;
+        readonly total: number;
+        readonly truncated: boolean;
+        readonly open: number;
+        readonly awaiting: number;
+        readonly ties: number;
+        readonly filter: string | null;
         readonly error: string | null;
         readonly errorStatus: number | null;
       };
@@ -257,6 +273,7 @@ const TREASURY_EVERY = 2; // ticks between treasury polls (accounts + journal ri
 const AGORA_EVERY = 2; // ticks between agora polls (the board is small and changes fast — bids land in bursts)
 const BOARD_EVERY = 2; // ticks between public-board polls (posts land in bursts; the cursor column moves with them)
 const CONVERSATIONS_EVERY = 2; // ticks between conversation polls (the floor's proximity derives from them)
+const MOTIONS_EVERY = 2; // ticks between council polls (a motion's votes land in bursts — the seats vote as they read)
 const LIVE_WINDOW_MS = 4000; // a success older than this reads "stale"
 const EVENT_REFRESH_MS = 150; // a burst of run events collapses into one list GET
 const LIVE_RENDER_MS = 100; // the live lane's bound: at most this often under a serial burst
@@ -327,6 +344,23 @@ export class Store {
   convTruncated = false;
   conversationsError: string | null = null;
   conversationsErrorStatus: number | null = null;
+  /** The council's motions, newest first (the daemon lists them newest first;
+      the console reads them the way the register reads runs). The `motion` SSE
+      frames ask for them: a frame carries the motion's id, kind and state and
+      NO text, so the motion's own row — its text and its votes' reasons — is
+      read from the node and never patched from a frame. */
+  motions: Motion[] = []; // newest first
+  /** How many motions the council holds (may exceed the bounded copy). */
+  motionsTotal = 0;
+  motionsLimit = 0;
+  motionsTruncated = false;
+  motionsError: string | null = null;
+  /** The status behind `motionsError`, so a node without a council is told
+      apart from a node that is merely unreachable (a 404). */
+  motionsErrorStatus: number | null = null;
+  /** The state the council sheet is narrowed to, or null for every motion. A
+      view preference: the sheet filters the motions it reads from `motions`. */
+  motionFilter: MotionState | null = null;
   /** Per-agent contact lists, by CID — read on demand, never polled. */
   readonly contacts = new Map<number, ContactsRead>();
   /** The one pair's thread the card is reading, or null. */
@@ -377,7 +411,7 @@ export class Store {
   /* the live wire (GET /api/v0/events): its own liveness and tallies —
      informational only; daemon health stays with the polls */
   stream: StreamState = 'connecting';
-  readonly wire = { run: 0, vm: 0, serial: 0, task: 0, treasury: 0, agora: 0, board: 0, conversation: 0 };
+  readonly wire = { run: 0, vm: 0, serial: 0, task: 0, treasury: 0, agora: 0, board: 0, conversation: 0, motion: 0 };
   /** Render passes flushed; the harness asserts a burst cannot storm the paint path. */
   renders = 0;
 
@@ -397,6 +431,7 @@ export class Store {
   private callsRefreshTimer: number | null = null;
   private boardRefreshTimer: number | null = null;
   private conversationsRefreshTimer: number | null = null;
+  private motionsRefreshTimer: number | null = null;
   private threadRefreshTimer: number | null = null;
   private hubRefreshTimer: number | null = null;
   private readonly detailRefreshPending = new Set<string>();
@@ -499,6 +534,9 @@ export class Store {
     const wantConversations =
       first || this.ticks % CONVERSATIONS_EVERY === 0 || this.conversationsError != null || this.conversations.length === 0;
     if (wantConversations) jobs.push(this.pollConversations());
+    const wantMotions =
+      first || this.ticks % MOTIONS_EVERY === 0 || this.motionsError != null || this.motions.length === 0;
+    if (wantMotions) jobs.push(this.pollMotions());
     if (first || this.ticks % MACHINE_EVERY === 0 || route.name === 'machine') jobs.push(this.pollMachine());
     if (first || this.ticks % HUB_EVERY === 0) jobs.push(this.pollHub());
 
@@ -713,6 +751,31 @@ export class Store {
     this.scheduleRender();
   }
 
+  /** Poll the council's motions. The daemon lists them newest first and bounds
+      them to its own window; the copy keeps that order and the total says what
+      the bound left behind. The node derives every motion's state and gate, so
+      the console reads the whole motion — nothing is patched in from a frame. */
+  private async pollMotions(): Promise<void> {
+    try {
+      const view = await getMotions();
+      const motions = view.motions.slice();
+      motions.sort((a, b) => motionSeq(b.id) - motionSeq(a.id)); // newest first
+      this.motions = motions;
+      this.motionsTotal = view.total;
+      this.motionsLimit = view.limit;
+      this.motionsTruncated = view.truncated;
+      this.motionsError = null;
+      this.motionsErrorStatus = null;
+      this.noteOk();
+    } catch (err) {
+      this.motionsError = err instanceof Error ? err.message : String(err);
+      this.motionsErrorStatus =
+        err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      this.noteErr();
+    }
+    this.scheduleRender();
+  }
+
   /** Read one agent's own contact list. A read, asked for when its card opens
       (the node emits no frame when a contact is added), so it is never polled
       — and an answer for an agent whose card has closed is still kept: the
@@ -793,6 +856,19 @@ export class Store {
       — it is the node's answer for its pair, not the sheet's filter. */
   clearTalkPair(): void {
     this.talkPair = null;
+    this.scheduleRender();
+  }
+
+  /** Narrow the council sheet to one state — the sheet's filter, answering the
+      same question its tally strip asks. */
+  setMotionFilter(state: MotionState): void {
+    this.motionFilter = state;
+    this.scheduleRender();
+  }
+
+  /** Widen the council sheet back to every motion it carries. */
+  clearMotionFilter(): void {
+    this.motionFilter = null;
     this.scheduleRender();
   }
 
@@ -1385,6 +1461,30 @@ export class Store {
     this.callsRefreshTimer = setTimeout(() => {
       this.callsRefreshTimer = null;
       void this.pollCalls();
+    }, EVENT_REFRESH_MS);
+  }
+
+  /** A motion moved on the council: a seat proposed one, or a seat voted on it.
+      The frame carries the motion's id, its kind and the state it is now in —
+      and NO text at all: a motion's text and its votes' reasons live only on
+      the motions endpoint, the one source for them, exactly as the exchange
+      record is for a conversation's words. So the console asks the council
+      once, coalesced, and patches nothing from a frame: a motion the console
+      has never seen (or one that just changed) is read whole from the node.
+      Even the frame's own state is not written in — the node's row is the
+      authority, and reading it keeps the console from ever disagreeing. */
+  applyMotionEvent(): void {
+    this.wire.motion++;
+    this.queueMotionsRefresh();
+  }
+
+  /** One council GET shortly after motion frames land; a burst of votes
+      collapses into it. */
+  private queueMotionsRefresh(): void {
+    if (this.motionsRefreshTimer != null) return;
+    this.motionsRefreshTimer = setTimeout(() => {
+      this.motionsRefreshTimer = null;
+      void this.pollMotions();
     }, EVENT_REFRESH_MS);
   }
 

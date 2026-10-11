@@ -5,6 +5,8 @@ import type { Calls } from './models/agora';
 import { parseAgora } from './models/agora';
 import type { TaskArtifact } from './models/artifact';
 import { parseArtifact } from './models/artifact';
+import type { Motions } from './models/council';
+import { parseMotions } from './models/council';
 import type { HubStatus } from './models/hub';
 import { parseHubStatus } from './models/hub';
 import type { Machine } from './models/machine';
@@ -174,6 +176,19 @@ export async function getTreasuryJournal(): Promise<Journal> {
     daemon lists them, bounded to its newest calls. */
 export async function getAgora(): Promise<Calls> {
   return parseAgora(await api<unknown>('/api/v0/agora'));
+}
+
+/* ------------------------------------------------------------ the council
+   The four seats' motions, their votes and the count that decides them
+   (docs/agents/council.md). One read: the endpoint is the only source for a
+   motion's text and its votes' reasons, so the console reads it and never
+   patches a motion from a `motion` frame (which carries no text). The parse is
+   defensive — the relay is untrusted, and a missing field is an error naming
+   it, never a silent zero. */
+
+/** The council's motions, newest first, bounded to the node's own window. */
+export async function getMotions(): Promise<Motions> {
+  return parseMotions(await api<unknown>('/api/v0/motions'));
 }
 
 /* ------------------------------------------------------------ the social layer

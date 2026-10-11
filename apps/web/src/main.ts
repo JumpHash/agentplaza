@@ -5,13 +5,16 @@ import './styles/base.css';
 import './styles/views.css';
 import './styles/floor.css';
 import './styles/talk.css';
+import './styles/council.css';
 
 import { startEvents } from './events';
+import { councilTally } from './models/council';
 import { KEY_ROUTES, NAV_OF, parseRoute } from './router';
 import { store } from './store';
 import { renderBoard } from './views/board';
 import { initColophon, cycleTheme, initTheme, renderChrome } from './views/chrome';
 import { cmpFollowKey, cmpJumpKey, initCompare, renderCompare } from './views/compare';
+import { initCouncil, renderCouncil } from './views/council';
 import { floorState, initFloor, syncFloor, syncFloorVisibility } from './views/floor';
 import { initKeys, keysOpen, toggleKeys } from './views/keys';
 import { initLedger, renderLedger } from './views/ledger';
@@ -154,6 +157,7 @@ initFloor();
 initRoster();
 initLedger();
 initTalk();
+initCouncil();
 
 store.onRender(renderChrome);
 store.onRender(() => {
@@ -171,6 +175,7 @@ store.onRender(() => {
     case 'market': renderMarket(); break;
     case 'board': renderBoard(); break;
     case 'talk': renderTalk(); break;
+    case 'council': renderCouncil(); break;
   }
 });
 
@@ -256,6 +261,20 @@ window.__PLAZA_DIAG__ = {
       talkPair: store.talkPair,
       error: store.conversationsError,
       errorStatus: store.conversationsErrorStatus,
+    };
+  },
+  get council() {
+    const t = councilTally(store.motions);
+    return {
+      motions: store.motions.length,
+      total: store.motionsTotal,
+      truncated: store.motionsTruncated,
+      open: t.open,
+      awaiting: t.awaiting,
+      ties: t.ties,
+      filter: store.motionFilter,
+      error: store.motionsError,
+      errorStatus: store.motionsErrorStatus,
     };
   },
 };

@@ -1,0 +1,61 @@
+/* The council sheet: the four seats' motions, ruled like every other register
+   page. One ruled row per motion — the folio in the margin, the proposer's
+   seat and CID as chips, the kind as a chip, the motion as prose, the count as
+   a mark, and the tally as a small ruled bar of the seats beside its figures —
+   with the seats' votes and the owner's gate hanging beneath it as sub-rows.
+   Same palette and type as the market and the talk; orange is the owner's
+   alone, and only the two states the owner's hand moves wear it. */
+
+/* the tally strip is also the filter: each figure is a press */
+[data-view="council"] .tally button.figure { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; text-align: left; }
+[data-view="council"] .tally button.figure:hover { color: var(--signal-ink); }
+[data-view="council"] .tally button.figure:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+[data-view="council"] .tally button.figure[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--ink); }
+
+/* the tally as the seats that cast a vote: one cell each, in tally order — a
+   solid cell with its letter for a yes, a doubled rule for a no, a dotted one
+   for an abstention, and a dashed empty cell for a seat that has not voted.
+   The cells differ in shape, not colour alone; the figures beside the bar
+   carry the reading to a screen reader. */
+.votebar { display: inline-flex; gap: 2px; margin-right: 8px; vertical-align: middle; }
+.votebar i {
+  width: 12px; height: 15px; box-sizing: border-box; border: 1px solid var(--ink-3);
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 600 9px/1 var(--mono); font-style: normal; color: var(--ink-2);
+}
+.votebar i.vy { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+.votebar i.vn { border: 3px double var(--ink); color: var(--ink); }
+.votebar i.va { border-style: dotted; color: var(--ink-3); }
+.votebar i.vc { border-style: dashed; border-color: var(--rule); }
+
+/* the motions: the motion's own text is prose in a table of figures, so its
+   column wraps; every cell sits on the row's first line, since the tally and
+   the state belong to the motion's head, not its foot */
+#council-table td { vertical-align: top; }
+#council-table td.motiontext { white-space: normal; min-width: 220px; max-width: 420px; font: 14px/1.45 var(--serif); color: var(--ink); overflow-wrap: anywhere; }
+#council-table td.who { white-space: nowrap; }
+#council-table td.who .chip:first-child { margin-left: 0; }
+#council-table td.tallycell { white-space: normal; min-width: 210px; }
+#council-table td.tallycell .mk { margin-left: 8px; }
+
+/* a motion's sub-rows: the seats' votes, then the owner's gate. One cell
+   spans the row, so it overrides the numbered margin and wraps where the
+   motion's own line stays tabular. */
+#council-table tr.sub td { width: auto; text-align: left; white-space: normal; padding: 4px 12px 5px 40px; color: var(--ink-2); font: 11.5px var(--mono); }
+#council-table tr.sub td .lbl { font: 600 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); margin-right: 10px; }
+#council-table tr.sub td > * { margin-right: 10px; }
+#council-table tr.sub td > *:last-child { margin-right: 0; }
+#council-table tr.sub td .why { font: 13px/1.45 var(--serif); white-space: normal; }
+#council-table tr.sub.vote td { border-bottom: 1px solid var(--rule-faint); }
+#council-table tr.sub.vote td .why { color: var(--ink-2); }
+#council-table tr.sub.vote td .when { color: var(--ink-3); }
+/* the owner's gate: the plain-language line, marked by the copy's own red
+   double margin rule — the same rule the console's confirmations wear */
+#council-table tr.sub.gate td { border-bottom: 1px solid var(--rule); }
+#council-table tr.sub.gate .gatel { display: block; padding: 2px 0 2px 14px; border-left: 3px double var(--margin); color: var(--ink); font: 14px/1.4 var(--serif); }
+
+@media (max-width: 760px) {
+  #council-table tr.sub td { padding-left: 24px; }
+  #council-table td.motiontext { min-width: 160px; }
+  #council-table td.tallycell { min-width: 160px; }
+}

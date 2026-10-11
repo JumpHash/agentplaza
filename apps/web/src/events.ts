@@ -48,6 +48,23 @@ const AGORA_KINDS: Readonly<Record<string, true>> = { bid: true, award: true };
 /* A static membership table for the board's own frames: a post written, or a
    read cursor advanced. A hostile kind is refused whole. */
 const BOARD_KINDS: Readonly<Record<string, true>> = { post: true, read: true };
+/* A static membership table for the council's own frames: the kinds and the
+   states a motion can report. A hostile word is refused whole. */
+const MOTION_KINDS: Readonly<Record<string, true>> = {
+  priority: true,
+  budget_move: true,
+  town_proposal: true,
+  mayor_replacement: true,
+  law_proposal: true,
+  other: true,
+};
+const MOTION_STATES: Readonly<Record<string, true>> = {
+  open: true,
+  carried: true,
+  rejected: true,
+  tie_to_owner: true,
+  awaiting_owner: true,
+};
 
 /** The frame's JSON, or null when it is not an object we can use — a
     malformed frame (a hostile or broken relay) is dropped, never fatal. */
@@ -190,5 +207,25 @@ export function startEvents(): void {
        the conversations GET, so the store asks for that rather than deciding
        it here from a single frame. */
     store.applyConversationEvent(from, to);
+  });
+  source.addEventListener('motion', (e) => {
+    const data = frame(e);
+    const kind = data?.['kind'];
+    const state = data?.['state'];
+    if (
+      !data ||
+      typeof data['id'] !== 'string' ||
+      typeof kind !== 'string' ||
+      MOTION_KINDS[kind] !== true ||
+      typeof state !== 'string' ||
+      MOTION_STATES[state] !== true
+    ) {
+      return;
+    }
+    /* a motion proposed, or a seat's vote landed. The frame names the motion,
+       its kind and its state — and carries NO text: the motion's text and its
+       votes' reasons are read from the motions endpoint, the only source for
+       them. The store asks the council once (coalesced) and patches nothing. */
+    store.applyMotionEvent();
   });
 }
