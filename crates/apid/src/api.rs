@@ -1,10 +1,11 @@
 //! The router: every module's routes, the proxies to noded and the hub, the
 //! overview and the console's static files.
 
+use std::collections::HashSet;
 use std::path::{Component, Path};
 
 use apz_http::{Response, Router};
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::agents::Status;
 use crate::state::App;
@@ -13,6 +14,7 @@ use crate::{agents, artifacts, events, internal, plaza, providers, settings};
 pub fn router() -> Router<App> {
     let router = Router::<App>::new()
         .get("/v1/overview", |app, _, _| overview(app))
+        .get("/v1/machines", |app, _, _| machines(app))
         .get("/v1/machine", |app, _, _| app.noded.proxy("GET", "/v1/machine", b""))
         .get("/v1/hub", |app, _, _| app.hub.proxy("GET", "/v1/status", b""))
         .get("/v1/runs", |app, _, _| app.noded.proxy("GET", "/v1/runs", b""))
@@ -33,6 +35,29 @@ pub fn router() -> Router<App> {
         .get("/", |app, _, _| static_file(&app.config.console, "index.html"))
         .get("/{file}", |app, _, p| static_file(&app.config.console, p.get("file")))
         .get("/assets/{file}", |app, _, p| static_file(&app.config.console, &format!("assets/{}", p.get("file"))))
+}
+
+/// `GET /v1/machines`: the machines this plaza runs on. Today the one local
+/// node: its facts from noded, the runs on it and how many agents are in them.
+fn machines(app: &App) -> Response {
+    let unreachable = || Response::json(200, &json!([{"id": "local", "reachable": false}]));
+    let Ok((200, machine)) = app.noded.get("/v1/machine") else {
+        return unreachable();
+    };
+    let runs = match app.noded.get("/v1/runs") {
+        Ok((200, body)) => body["runs"].clone(),
+        _ => json!([]),
+    };
+    let agents = {
+        let run_ids: HashSet<&str> = runs.as_array().into_iter().flatten().filter_map(|run| run["id"].as_str()).collect();
+        app.agents.list().iter().filter(|a| a.run.as_deref().is_some_and(|id| run_ids.contains(id))).count()
+    };
+    let mut entry: Map<String, Value> = machine.as_object().cloned().unwrap_or_default();
+    entry.insert("id".into(), json!("local"));
+    entry.insert("noded_port".into(), json!(app.noded.port));
+    entry.insert("runs".into(), runs);
+    entry.insert("agents".into(), json!(agents));
+    Response::json(200, &json!([entry]))
 }
 
 /// `GET /v1/overview`: counts and health at a glance.
