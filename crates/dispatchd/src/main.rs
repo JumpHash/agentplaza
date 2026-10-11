@@ -32,7 +32,7 @@ use dispatchd::{Dispatcher, Hub, Noded, Social, StdoutLog};
 const DEFAULT_NODED: &str = "http://127.0.0.1:8899";
 
 /// The hub's admin surface unless `--hub` says otherwise.
-const DEFAULT_HUB: &str = "http://127.0.0.1:19080";
+const DEFAULT_HUB: &str = "http://127.0.0.1:19081";
 
 /// How long to wait between passes unless `--interval-secs` says otherwise.
 const DEFAULT_INTERVAL_SECS: u64 = 5;
@@ -44,7 +44,7 @@ usage: dispatchd [--noded URL] [--hub URL] [--roles MANIFEST] [--once]
   --noded URL        the node daemon (the ledger and the fleet register)
                      (default http://127.0.0.1:8899)
   --hub URL          the hub's admin surface (POST /tell — the way into an
-                     agent's session) (default http://127.0.0.1:19080)
+                     agent's session) (default http://127.0.0.1:19081)
   --roles MANIFEST   the roles manifest the codex's tool grants are read from
                      (docs/agents/initial-roles.json): a task whose role cannot
                      be driven with the tools its family's script needs — a

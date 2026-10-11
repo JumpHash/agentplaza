@@ -30,7 +30,7 @@ pub struct Hub {
 
 impl Hub {
     /// A client for the hub's admin surface at `url`
-    /// (`http://127.0.0.1:19080`).
+    /// (`http://127.0.0.1:19081`).
     pub fn new(url: &str) -> Result<Self, String> {
         Ok(Self {
             target: Target::parse(url)?,
