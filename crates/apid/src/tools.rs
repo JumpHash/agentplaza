@@ -29,7 +29,8 @@ pub enum Runs {
     Host,
 }
 
-/// Host tools every agent is offered.
+/// Tools every agent is offered: host tools, plus the guest internet tools,
+/// which run in the agent's VM and reach the internet through the hub's egress proxy.
 const ALWAYS: &[&str] = &[
     "submit_claim",
     "transcript_search",
@@ -39,6 +40,8 @@ const ALWAYS: &[&str] = &[
     "plaza_send_message",
     "share_file",
     "plaza_get_file",
+    "fetch_url",
+    "download",
 ];
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
@@ -57,7 +60,8 @@ const GATED: &[&str] = &[
 pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
-        "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file" => Some(Runs::Guest),
+        "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
+        | "fetch_url" | "download" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
@@ -230,6 +234,14 @@ fn spec(name: &str) -> Option<ToolSpec> {
         "plaza_get_file" => (
             "Read the latest file a plaza agent shared with share_file, by its cid and path.",
             obj(json!({"agent": {"type": "integer"}, "path": {"type": "string"}}), &["agent", "path"]),
+        ),
+        "fetch_url" => (
+            "Fetch a web page or file over the internet (through the plaza's gateway) and return its text.",
+            obj(json!({"url": {"type": "string"}}), &["url"]),
+        ),
+        "download" => (
+            "Download a file from the internet into your workspace.",
+            obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
         ),
         _ => return None,
     };
@@ -482,7 +494,8 @@ mod tests {
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
         assert_eq!(host.len(), 15);
-        for name in ["fetch_url", "exec", "shell", "http_get", "read_host_file"] {
+        assert_eq!(runs("fetch_url"), Some(Runs::Guest));
+        for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
         }
     }
