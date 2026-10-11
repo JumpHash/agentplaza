@@ -41,6 +41,27 @@ pub fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
     }
 }
 
+/// Sends `signal` to `pid` (`kill(2)`).
+///
+/// The per-VM process mode's stop control is the caller: it asks the child
+/// `apz-vmm` to go with `SIGTERM` and, if the process is still there, with
+/// `SIGKILL`. `std::process::Child::kill` cannot express that — it sends
+/// `SIGKILL` and nothing else — and a signal that names a *process* rather
+/// than the open `Child` handle is what a stop control needs, because the
+/// handle itself is held by the waiter thread that is blocked in `wait(2)`.
+///
+/// A `pid` that no longer exists is `ESRCH`, which the caller treats as "the
+/// VM is already gone".
+pub fn send_signal(pid: i32, signal: libc::c_int) -> io::Result<()> {
+    // SAFETY: `kill(2)` takes two integers and touches no memory; `pid` is a
+    // process id this crate owns (the child it spawned), never a pointer.
+    if unsafe { libc::kill(pid, signal) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// The running kernel's release string (`uname -r`), or `None` if the
 /// syscall fails.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]

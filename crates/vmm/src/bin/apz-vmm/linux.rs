@@ -1,0 +1,423 @@
+// Copyright 2026 AgentPlaza
+// SPDX-License-Identifier: Apache-2.0
+//
+// The per-VM process body (Linux). Its dispatcher — and the reason a *binary*
+// is the shape — is `../apz-vmm.rs`; `vmm::spawner::process` is the parent
+// half. Read either of those first.
+//
+// What this program is: one microVM, in one process, booted through the same
+// `vmm::spawner`/`vmm::builder` code `noded` and `vmctl` call. It adds
+// nothing to the VMM; it adds the *process* the jailer needs. The jailer is
+// entered inside `spawner::spawn` (it is a step of `builder::boot`), at a
+// moment when this process has exactly one thread — so an unprivileged run on
+// a host without any jail privilege still gets a per-VM root, a mount
+// namespace and a `pivot_root`, which no in-daemon VM can.
+//
+// The three streams are the contract with the parent
+// (`vmm::spawner::process::boot`):
+//
+// * **stdout** — the guest's serial console, as it is produced. Raw bytes, no
+//   framing: the parent appends them to the VM handle's serial capture, so
+//   `VmHandle::serial` in the parent sees exactly what the in-process shape
+//   would have captured.
+// * **stderr** — this program's own log. [`CHILD_READY`] is written once the
+//   VM is up, and it is the parent's readiness gate; diagnostics and the exit
+//   line follow. Keeping the two apart is what makes "the VM is up" a fact the
+//   parent can rely on rather than something it has to guess from console
+//   output.
+// * **stdin** — console input, forwarded to the guest's `ttyS0` through the
+//   same `VmHandle::serial_input` the in-process shape uses.
+//
+// The **exit status** is the exit reason ([`CHILD_EXIT_SHUTDOWN`] /
+// [`CHILD_EXIT_RESET`]), so a parent learns how the VM ended from the kernel's
+// own report of the child rather than from a message this program could get
+// wrong.
+
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+use vmm::spawner::{
+    CHILD_EXIT_FAILED, CHILD_EXIT_RESET, CHILD_EXIT_SHUTDOWN, CHILD_EXIT_USAGE, CHILD_READY,
+    GicVersion, SpawnMode, VmExit, VmRuntime, VmSpec, VsockConfig,
+};
+
+const USAGE: &str = "\
+usage: apz-vmm --kernel PATH --cmdline STR [--initrd PATH] [--workspace IMAGE]
+               [--memory-mib M] [--vcpus V] [--cid N] [--uds PATH]
+               [--gic v2|v3]
+
+Boots exactly one microVM in this process, jailed on its own boot path, and
+serves it:
+  stdout  the guest's serial console (raw bytes)
+  stderr  this program's log, starting with the readiness line
+  stdin   console input, forwarded to the guest's serial line
+
+  --kernel PATH      guest kernel image (uncompressed ELF vmlinux or bzImage)
+  --cmdline STR      kernel command line
+  --initrd PATH      optional initrd image
+  --workspace IMAGE  optional writable virtio-blk volume (the guest's only
+                     writable device)
+  --memory-mib M     guest memory in MiB (default 512)
+  --vcpus V          vCPUs (default 1)
+  --cid N            vsock guest CID; --uds names the host socket it uses
+  --uds PATH         the host Unix socket the VM's vsock muxer binds (the
+                     daemon's convention is {uds_dir}/vm{cid})
+  --gic v2|v3        aarch64 interrupt controller (ignored on x86_64)
+  -h, --help         print this help
+
+The exit status is the VM's: 0 the guest shut down, 3 the guest reset, 1 a
+failure, 2 a refused command line.";
+
+/// How often the serial stream is drained from the capture to stdout.
+const SERIAL_POLL: Duration = Duration::from_millis(5);
+
+/// How many bytes one console-input read takes from stdin: the UART's input
+/// queue is 64 bytes and `serial_input` refuses a slice it cannot take whole.
+const CONSOLE_INPUT_CHUNK: usize = 64;
+
+/// How long the console-input thread waits before retrying a slice the guest
+/// has not drained yet.
+const CONSOLE_INPUT_RETRY: Duration = Duration::from_millis(10);
+
+/// How many times in a row a console-input slice is retried before it is
+/// dropped, so a guest that stopped reading cannot build an unbounded backlog.
+const CONSOLE_INPUT_ATTEMPTS: usize = 100;
+
+pub(crate) fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let spec = match parse(&args) {
+        Ok(spec) => spec,
+        Err(err) => {
+            eprintln!("apz-vmm: {err}");
+            eprintln!("{USAGE}");
+            return ExitCode::from(CHILD_EXIT_USAGE as u8);
+        }
+    };
+    match run(spec) {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("apz-vmm: {err}");
+            ExitCode::from(CHILD_EXIT_FAILED as u8)
+        }
+    }
+}
+
+/// The one VM's specification, parsed from the command line the parent laid
+/// out (`vmm::spawner::process::child_args`).
+///
+/// There is no VM *id* here: this process holds exactly one VM, so the VM is
+/// id `0` in every name this process makes (the VMM thread names, the jail
+/// root). The parent's own handle keeps the caller's id; nothing crosses the
+/// pipe that depends on the two agreeing.
+fn parse(args: &[String]) -> Result<VmSpec, String> {
+    let mut kernel: Option<PathBuf> = None;
+    let mut cmdline: Option<String> = None;
+    let mut initrd: Option<PathBuf> = None;
+    let mut workspace: Option<PathBuf> = None;
+    let mut memory_mib: Option<usize> = None;
+    let mut vcpus: Option<u8> = None;
+    let mut cid: Option<u64> = None;
+    let mut uds: Option<PathBuf> = None;
+    let mut gic: Option<GicVersion> = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        match flag {
+            "--kernel" => kernel = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--cmdline" => cmdline = Some(value(args, &mut index, flag)?.to_string()),
+            "--initrd" => initrd = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--workspace" => workspace = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--memory-mib" => {
+                let text = value(args, &mut index, flag)?;
+                memory_mib = Some(
+                    text.parse()
+                        .map_err(|_| format!("{flag} {text:?} is not a number of MiB"))?,
+                );
+            }
+            "--vcpus" => {
+                let text = value(args, &mut index, flag)?;
+                let count: u32 = text
+                    .parse()
+                    .map_err(|_| format!("{flag} {text:?} is not a number of vCPUs"))?;
+                vcpus = Some(
+                    u8::try_from(count)
+                        .map_err(|_| format!("{flag} {text:?} is more vCPUs than 8 bits"))?,
+                );
+            }
+            "--cid" => {
+                let text = value(args, &mut index, flag)?;
+                cid = Some(
+                    text.parse()
+                        .map_err(|_| format!("{flag} {text:?} is not a CID"))?,
+                );
+            }
+            "--uds" => uds = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--gic" => {
+                let text = value(args, &mut index, flag)?;
+                gic = Some(match text {
+                    "v2" => GicVersion::V2,
+                    "v3" => GicVersion::V3,
+                    other => return Err(format!("{flag} {other:?} is not v2 or v3")),
+                });
+            }
+            other => return Err(format!("{other:?} is not a flag this program takes")),
+        }
+        index += 1;
+    }
+
+    // The vsock device is one thing named by two flags: a CID without a socket
+    // path would leave the guest unreachable and a path without a CID would
+    // boot a device whose config space says nothing.
+    let vsock = match (cid, uds) {
+        (Some(guest_cid), Some(uds_path)) => Some(VsockConfig {
+            guest_cid,
+            uds_path,
+        }),
+        (None, None) => None,
+        (Some(_), None) => return Err("--cid needs --uds (the socket it listens on)".into()),
+        (None, Some(_)) => return Err("--uds needs --cid (the guest it reaches)".into()),
+    };
+
+    // The two optional numbers default to the spec's own, so this binary and
+    // `noded` cannot disagree about a VM's shape.
+    let defaults = VmSpec::default();
+    Ok(VmSpec {
+        kernel: kernel.ok_or("--kernel is required")?,
+        cmdline: cmdline.ok_or("--cmdline is required")?,
+        vcpus: vcpus.unwrap_or(defaults.vcpus),
+        memory_mib: memory_mib.unwrap_or(defaults.memory_mib),
+        initrd,
+        gic,
+        vsock,
+        workspace,
+    })
+}
+
+/// The value of `flag`: the argument after it, or why it is missing.
+fn value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&'a str, String> {
+    *index += 1;
+    args.get(*index)
+        .map(String::as_str)
+        .ok_or_else(|| format!("{flag} needs a value"))
+}
+
+/// Boots the VM, serves its console, and returns its exit status.
+fn run(spec: VmSpec) -> Result<ExitCode, String> {
+    // This process exists to hold one VM: it can never take the per-VM process
+    // mode itself, whatever the operator's environment says — that would be
+    // `apz-vmm` spawning `apz-vmm` without end.
+    vmm::spawner::set_spawn_mode(SpawnMode::InProcess);
+
+    let mut handle = vmm::spawner::spawn(spec).map_err(|err| err.to_string())?;
+
+    // The VM is up. This line is the parent's readiness gate; the jailer has
+    // already reported itself on stderr by now (it runs inside the boot), so
+    // an operator reading the log sees the jail before this.
+    eprintln!("{CHILD_READY}");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let serial = {
+        let stop = Arc::clone(&stop);
+        let sink = handle.serial_sink();
+        thread::Builder::new()
+            .name("apz_vmm_console_out".to_string())
+            .spawn(move || stream_serial(sink, stop))
+            .map_err(|err| format!("cannot start the serial stream: {err}"))?
+    };
+    // The console-input thread is deliberately not joined: it sits in a
+    // blocking read of stdin, which the parent holds open for as long as the
+    // VM lives, so joining it would hang this program after the VM stopped.
+    // It is a daemon of this process: the exit below ends it.
+    {
+        let stop = Arc::clone(&stop);
+        let runtime = handle.runtime();
+        thread::Builder::new()
+            .name("apz_vmm_console_in".to_string())
+            .spawn(move || forward_console_input(runtime, stop))
+            .map_err(|err| format!("cannot start the console reader: {err}"))?;
+    }
+
+    let exit = handle.wait().map_err(|err| err.to_string())?;
+    // The VM stopped: let the serial stream drain what is left, then report the
+    // exit the guest asked for.
+    stop.store(true, Ordering::SeqCst);
+    let _ = serial.join();
+    match exit {
+        VmExit::GuestExited { reset } => {
+            eprintln!(
+                "apz-vmm: the guest {} the VM",
+                if reset { "reset" } else { "shut down" }
+            );
+            Ok(ExitCode::from(if reset {
+                CHILD_EXIT_RESET as u8
+            } else {
+                CHILD_EXIT_SHUTDOWN as u8
+            }))
+        }
+        // Nothing in this process kills its own VM, so this is the stop control
+        // of a caller that made the VM stop *without* the guest exiting — which
+        // the parent reports as a kill, not a guest exit.
+        VmExit::Killed => {
+            eprintln!("apz-vmm: the VM was stopped by the host");
+            Ok(ExitCode::from(CHILD_EXIT_FAILED as u8))
+        }
+    }
+}
+
+/// Writes the guest's console to stdout as it is produced, until `stop` is set
+/// and the capture is drained.
+fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, stop: Arc<AtomicBool>) {
+    let mut stdout = std::io::stdout();
+    let mut printed = 0usize;
+    loop {
+        let pending = {
+            let buffer = sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if buffer.len() > printed {
+                Some(buffer[printed..].to_vec())
+            } else {
+                None
+            }
+        };
+        match pending {
+            Some(chunk) => {
+                if stdout
+                    .write_all(&chunk)
+                    .and_then(|()| stdout.flush())
+                    .is_err()
+                {
+                    // The parent stopped reading (it is gone): nothing left to
+                    // stream to.
+                    return;
+                }
+                printed += chunk.len();
+            }
+            // Nothing to print and the VM has stopped: the capture is drained.
+            None if stop.load(Ordering::SeqCst) => return,
+            None => thread::sleep(SERIAL_POLL),
+        }
+    }
+}
+
+/// Reads stdin and hands it to the guest's serial console, the same way
+/// `VmHandle::serial_input` does: a slice whole or not at all, retried while
+/// the guest's console has no room for it.
+fn forward_console_input(runtime: Arc<VmRuntime>, stop: Arc<AtomicBool>) {
+    let mut stdin = std::io::stdin();
+    let mut buffer = [0u8; CONSOLE_INPUT_CHUNK];
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        match stdin.read(&mut buffer) {
+            Ok(0) => return,
+            Ok(n) => {
+                let data = &buffer[..n];
+                for attempt in 1..=CONSOLE_INPUT_ATTEMPTS {
+                    match runtime.serial_input(data) {
+                        Ok(()) => break,
+                        Err(err) => {
+                            if attempt == CONSOLE_INPUT_ATTEMPTS {
+                                eprintln!("apz-vmm: console input dropped: {err}");
+                            } else {
+                                thread::sleep(CONSOLE_INPUT_RETRY);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The command line the parent writes parses back into the same spec.
+    #[test]
+    fn a_command_line_round_trips() {
+        let spec = VmSpec {
+            kernel: PathBuf::from("/boot/vmlinuz-linux"),
+            cmdline: "console=ttyS0 plaza.keepalive=1".to_string(),
+            vcpus: 2,
+            memory_mib: 768,
+            initrd: Some(PathBuf::from("/tmp/initrd.gz")),
+            gic: Some(GicVersion::V2),
+            vsock: Some(VsockConfig {
+                guest_cid: 42,
+                uds_path: PathBuf::from("/tmp/plaza-vsock/vm42"),
+            }),
+            workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
+        };
+        let args = vmm::spawner::process::child_args(&spec);
+        let parsed = parse(&args).expect("the parent's command line parses");
+        assert_eq!(parsed.kernel, spec.kernel);
+        assert_eq!(parsed.cmdline, spec.cmdline);
+        assert_eq!(parsed.vcpus, spec.vcpus);
+        assert_eq!(parsed.memory_mib, spec.memory_mib);
+        assert_eq!(parsed.initrd, spec.initrd);
+        assert_eq!(parsed.gic, spec.gic);
+        assert_eq!(parsed.vsock, spec.vsock);
+        assert_eq!(parsed.workspace, spec.workspace);
+    }
+
+    /// A command line that does not describe one VM is refused, with the flag
+    /// named — never a VM booted with a field missing.
+    #[test]
+    fn a_command_line_that_names_no_vm_is_refused() {
+        for (args, wanted) in [
+            (vec!["--cmdline", "x"], "--kernel"),
+            (vec!["--kernel", "/k"], "--cmdline"),
+            (
+                vec!["--kernel", "/k", "--cmdline", "x", "--cid", "9"],
+                "--uds",
+            ),
+            (
+                vec!["--kernel", "/k", "--cmdline", "x", "--uds", "/u"],
+                "--cid",
+            ),
+            (
+                vec!["--kernel", "/k", "--cmdline", "x", "--memory-mib", "lots"],
+                "--memory-mib",
+            ),
+            (vec!["--kernel"], "needs a value"),
+            (vec!["--nonsense"], "not a flag"),
+        ] {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            let err = parse(&args).expect_err("must be refused");
+            assert!(err.contains(wanted), "{args:?}: {err}");
+        }
+    }
+
+    /// Both optional numbers default to the spec's own, and every optional
+    /// field is absent where the parent omitted it.
+    #[test]
+    fn the_defaults_are_the_specs_defaults() {
+        let args: Vec<String> = ["--kernel", "/k", "--cmdline", "c"]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        let spec = parse(&args).expect("a minimal command line");
+        assert_eq!(spec.vcpus, VmSpec::default().vcpus);
+        assert_eq!(spec.memory_mib, VmSpec::default().memory_mib);
+        assert!(spec.vsock.is_none());
+        assert!(spec.workspace.is_none());
+        assert!(spec.initrd.is_none());
+        assert!(spec.gic.is_none());
+    }
+}

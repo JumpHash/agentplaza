@@ -59,14 +59,19 @@ fn image_from_env(name: &str) -> Option<PathBuf> {
 /// `target/guest/initrd.x86_64.gz` there), so a relative path is tried from
 /// both. A path that exists in neither is passed on as it was given, so the
 /// failure names the file the operator asked for.
+///
+/// The answer is canonicalised: the jailer mirrors every source at its own path
+/// and refuses one that names a parent directory (`..`), so the repository-root
+/// candidate this helper builds must be resolved before it reaches a boot —
+/// otherwise the boot is refused for a path the operator never wrote.
 fn resolve(path: PathBuf) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path;
+    if let Ok(real) = std::fs::canonicalize(&path) {
+        return real;
     }
     let from_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(&path);
-    if from_root.exists() { from_root } else { path }
+    std::fs::canonicalize(&from_root).unwrap_or(path)
 }
 
 /// Polls `condition` until it holds or `timeout` elapses.

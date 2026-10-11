@@ -10,12 +10,39 @@
 //! is backend-neutral. A backend's `boot` fills the runtime in and returns
 //! once the VM is running; the spawner then owns the runtime and joins the
 //! backend's threads when the VM stops.
+//!
+//! **Two boot modes, one API.** [`SpawnMode::InProcess`] (the default) is the
+//! v0 shape above: the VMM is a set of threads of the calling process, which
+//! is what `noded`, `vmctl` and `spawn_n` have always had.
+//! [`SpawnMode::Process`] boots the same VM in a child `apz-vmm` process —
+//! one VM per process, which is the only shape in which
+//! [`crate::jail::jailer`] (a single-threaded boot, a per-VM root,
+//! `pivot_root`) actually applies, since a user namespace cannot be split off
+//! a multi-threaded process. The mode is selected with
+//! [`set_spawn_mode`]/[`spawn_mode`] or the [`SPAWN_MODE_ENV`] switch; see
+//! [`crate::spawner::process`] for what the child is handed and what the
+//! parent proxies. Everything the caller sees — [`VmHandle::serial`],
+//! [`VmHandle::serial_input`], [`VmHandle::wait`], [`VmHandle::kill`] — is the
+//! same in both modes.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+/// The per-VM process mode ([`SpawnMode::Process`]): the parent half of the
+/// `apz-vmm` child protocol. Linux only (the child boots through
+/// [`crate::builder`]). Read the module documentation for what is proxied
+/// and why.
+#[cfg(target_os = "linux")]
+pub mod process;
+
+/// How long the per-VM process is given to report that its VM is up or to
+/// fail. A boot that is still silently working after this is treated as a
+/// boot failure, so a stuck child cannot hold a [`spawn`] call forever.
+#[cfg(target_os = "linux")]
+const CHILD_BOOT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often [`VmHandle::wait_timeout`] re-checks whether the VM's backend
 /// threads have all finished.
@@ -218,6 +245,37 @@ pub enum SpawnError {
         /// bytes once the guest has drained the console's input queue.
         reason: String,
     },
+    /// The boot mode is misconfigured: {reason}
+    #[error("the VMM's boot mode is misconfigured: {reason}")]
+    SpawnMode {
+        /// Why the mode could not be decided.
+        reason: String,
+    },
+    /// The per-VM process binary could not be found (tried {tried:?})
+    #[error("cannot find the per-VM process binary `apz-vmm` (tried {tried:?})")]
+    ChildBinary {
+        /// Every path that was tried, in the order they were tried.
+        tried: Vec<PathBuf>,
+    },
+    /// Failed to start the per-VM process {path}: {source}
+    #[error("cannot start the per-VM process {path}: {source}")]
+    ChildSpawn {
+        /// The binary that could not be started.
+        path: PathBuf,
+        /// The error the spawn failed with.
+        source: std::io::Error,
+    },
+    /// The per-VM process for VM {id} exited before its VM was up ({status}): {log}
+    #[error("the per-VM process for VM {id} exited before its VM was up ({status}): {log}")]
+    ChildBoot {
+        /// Id of the VM whose per-VM process failed.
+        id: u32,
+        /// How the child exited (its status, or `still running` for a
+        /// readiness timeout).
+        status: String,
+        /// The tail of the child's own log (its stderr).
+        log: String,
+    },
 }
 
 impl SpawnError {
@@ -229,6 +287,182 @@ impl SpawnError {
 
 /// A thread the backend must join before the VM is considered stopped.
 type StopControl = Box<dyn Fn() + Send + Sync>;
+
+// ---------------------------------------------------------------------------
+// The boot mode: in this process, or in a per-VM `apz-vmm` process.
+// ---------------------------------------------------------------------------
+
+/// The environment variable that selects the boot mode: exactly `in-process`
+/// or `process` (ASCII case-insensitive, trimmed). Anything else is refused,
+/// so a typo stops the VM rather than silently picking a mode.
+pub const SPAWN_MODE_ENV: &str = "APZ_VMM_SPAWN";
+
+/// The environment variable that names the `apz-vmm` binary to run in
+/// [`SpawnMode::Process`], overriding the sibling-of-this-binary default.
+pub const CHILD_BINARY_ENV: &str = "APZ_VMM_CHILD";
+
+/// The name of the per-VM process binary, as built from this crate
+/// (`src/bin/apz-vmm.rs`) and looked for beside the running binary.
+pub const CHILD_BINARY_NAME: &str = "apz-vmm";
+
+/// The one line the per-VM process writes on **stderr** once its VM is up.
+/// It is the parent's readiness gate: until it arrives there is no VM to hand
+/// out, and anything else on the child's stderr is its log.
+pub const CHILD_READY: &str = "apz-vmm: ready";
+
+/// The per-VM process's exit status when the guest shut the VM down
+/// (`VmExit::GuestExited { reset: false }`).
+pub const CHILD_EXIT_SHUTDOWN: i32 = 0;
+
+/// The per-VM process's exit status when the guest reset the VM
+/// (`VmExit::GuestExited { reset: true }`).
+pub const CHILD_EXIT_RESET: i32 = 3;
+
+/// The per-VM process's exit status when it failed: a boot error, an internal
+/// error, or a VM stopped by anything other than the guest (a signal). The
+/// parent reports such an exit as [`VmExit::Killed`], never as a guest exit.
+pub const CHILD_EXIT_FAILED: i32 = 1;
+
+/// The per-VM process's exit status when its command line was refused.
+pub const CHILD_EXIT_USAGE: i32 = 2;
+
+/// How a VM is booted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnMode {
+    /// In the caller's own process, as a set of VMM threads (the v0 shape
+    /// `noded`, `vmctl` and `spawn_n` have always used).
+    InProcess,
+    /// In a child `apz-vmm` process that boots exactly one VM. This is the
+    /// only shape the jailer
+    /// ([`crate::jail::jailer`]) can confine: `unshare(CLONE_NEWUSER)` — the
+    /// unprivileged road to a mount namespace — is refused by a multi-threaded
+    /// process, and the child is single-threaded at its boot by construction,
+    /// because one process holds one VM. Linux only (the child boots through
+    /// [`crate::builder`]).
+    Process,
+}
+
+/// The mode this process is set to. `0` = read the environment; then
+/// `MODE_IN_PROCESS`/`MODE_PROCESS`; `MODE_INVALID` = the environment named a
+/// mode that does not exist, refused until something sets it.
+static MODE: AtomicU8 = AtomicU8::new(0);
+
+const MODE_FROM_ENV: u8 = 0;
+const MODE_IN_PROCESS: u8 = 1;
+const MODE_PROCESS: u8 = 2;
+const MODE_INVALID: u8 = 3;
+
+/// The `apz-vmm` binary [`SpawnMode::Process`] runs, when a caller named one
+/// programmatically.
+static CHILD_BINARY: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Sets the boot mode, overriding the environment for the rest of the process.
+/// The library half of a CLI flag or of a deployment's configuration: a
+/// daemon that wants every VM in its own jailed process calls this once, and
+/// one that wants the v0 thread shape leaves it alone (the default).
+pub fn set_spawn_mode(mode: SpawnMode) {
+    MODE.store(
+        match mode {
+            SpawnMode::InProcess => MODE_IN_PROCESS,
+            SpawnMode::Process => MODE_PROCESS,
+        },
+        Ordering::SeqCst,
+    );
+}
+
+/// Names the `apz-vmm` binary [`SpawnMode::Process`] runs, overriding both
+/// [`CHILD_BINARY_ENV`] and the sibling-of-this-binary default. A path that
+/// does not exist is not refused here — it fails the boot, with the paths that
+/// were tried, so the operator learns what is missing.
+pub fn set_child_binary(path: impl Into<PathBuf>) {
+    *CHILD_BINARY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path.into());
+}
+
+/// The mode this process is set to: the programmatic one if [`set_spawn_mode`]
+/// was called, otherwise the environment's, otherwise
+/// [`SpawnMode::InProcess`]. An [`SPAWN_MODE_ENV`] value that names no mode is
+/// refused — on every call, until something sets the mode.
+pub fn spawn_mode() -> Result<SpawnMode, SpawnError> {
+    match MODE.load(Ordering::SeqCst) {
+        MODE_FROM_ENV => mode_from_env(),
+        MODE_IN_PROCESS => Ok(SpawnMode::InProcess),
+        MODE_PROCESS => Ok(SpawnMode::Process),
+        // Only `MODE_INVALID` is left: `set_spawn_mode` and `mode_from_env`
+        // store these four values and nothing else.
+        _ => Err(SpawnError::SpawnMode {
+            reason: format!(
+                "{SPAWN_MODE_ENV}={:?} is not a mode: expected \"in-process\" or \"process\"",
+                std::env::var(SPAWN_MODE_ENV).unwrap_or_default()
+            ),
+        }),
+    }
+}
+
+/// The mode an [`SPAWN_MODE_ENV`] value names: `in-process` or `process`,
+/// ASCII case-insensitive and trimmed. Anything else — an empty string
+/// included — is refused.
+fn parse_spawn_mode_env(value: &str) -> Result<SpawnMode, SpawnError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "in-process" => Ok(SpawnMode::InProcess),
+        "process" => Ok(SpawnMode::Process),
+        _ => Err(SpawnError::SpawnMode {
+            reason: format!(
+                "{SPAWN_MODE_ENV}={value:?} is not a mode: expected \"in-process\" or \"process\""
+            ),
+        }),
+    }
+}
+
+/// Reads [`SPAWN_MODE_ENV`] and caches the decision in [`MODE`] — an invalid
+/// value included, so it is never silently re-read as a default.
+fn mode_from_env() -> Result<SpawnMode, SpawnError> {
+    match std::env::var(SPAWN_MODE_ENV) {
+        Ok(value) => {
+            let mode = parse_spawn_mode_env(&value);
+            if mode.is_err() {
+                MODE.store(MODE_INVALID, Ordering::SeqCst);
+            }
+            mode
+        }
+        Err(_) => Ok(SpawnMode::InProcess),
+    }
+}
+
+/// The `apz-vmm` binary [`SpawnMode::Process`] runs: [`set_child_binary`]'s
+/// path, else [`CHILD_BINARY_ENV`], else a [`CHILD_BINARY_NAME`] sibling of
+/// the running binary (and of its parent directory, which is where cargo puts
+/// it relative to a `deps/` test or example binary). Every candidate is
+/// returned in order when none exists, so the error names what was tried.
+#[cfg(target_os = "linux")]
+fn child_binary() -> Result<PathBuf, SpawnError> {
+    if let Some(path) = CHILD_BINARY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        return Ok(path);
+    }
+    if let Ok(path) = std::env::var(CHILD_BINARY_ENV)
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+    let mut tried = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        tried.push(dir.join(CHILD_BINARY_NAME));
+        if let Some(parent) = dir.parent() {
+            tried.push(parent.join(CHILD_BINARY_NAME));
+        }
+    }
+    match tried.iter().find(|candidate| candidate.is_file()) {
+        Some(found) => Ok(found.clone()),
+        None => Err(SpawnError::ChildBinary { tried }),
+    }
+}
 
 /// The backend's console input hook: host bytes for the guest to read from its
 /// serial console (see [`VmRuntime::set_input_hook`]).
@@ -250,8 +484,19 @@ pub struct VmRuntime {
     /// 0-based id of the VM this runtime belongs to.
     pub id: u32,
     /// Guest serial (console) capture. The backend's UART appends to it; the
-    /// VM handle reads it (see [`VmHandle::serial`]).
+    /// VM handle reads it (see [`VmHandle::serial`]). In
+    /// [`SpawnMode::Process`] the child's console stream is appended here by
+    /// the mode's reader thread, so callers see the same growing capture.
     pub serial: Arc<Mutex<Vec<u8>>>,
+    /// The pid of the VM's per-VM process, when the VM runs in one (`0` = the
+    /// VM is this process's threads, the v0 shape).
+    child_pid: AtomicU32,
+    /// The per-VM process's own log (its stderr), when the VM runs in one: the
+    /// last lines it wrote, bounded by the mode's reader. Empty in
+    /// [`SpawnMode::InProcess`], where there is no child to log. This is what
+    /// an operator reads when a VM's confinement is in question — the jailer
+    /// reports where it jailed the VM (or why it could not) on this stream.
+    pub process_log: Arc<Mutex<Vec<String>>>,
     /// Stop control installed by the backend in `boot`: asks the VM's vCPU
     /// loop to finish. Left installed after it is invoked, so that
     /// [`VmHandle::kill`] can invoke it again when the first request did not
@@ -297,6 +542,8 @@ impl VmRuntime {
         Self {
             id,
             serial: Arc::new(Mutex::new(Vec::new())),
+            child_pid: AtomicU32::new(0),
+            process_log: Arc::new(Mutex::new(Vec::new())),
             stop: Mutex::new(None),
             input: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
@@ -384,6 +631,21 @@ impl VmRuntime {
         self.stop_requested.load(Ordering::SeqCst)
     }
 
+    /// Records the pid of the VM's per-VM process. Called by
+    /// [`SpawnMode::Process`]'s boot, before it returns.
+    pub fn set_process_id(&self, pid: u32) {
+        self.child_pid.store(pid, Ordering::SeqCst);
+    }
+
+    /// The pid of the VM's per-VM process, or `None` when the VM runs in this
+    /// process ([`SpawnMode::InProcess`]).
+    pub fn process_id(&self) -> Option<u32> {
+        match self.child_pid.load(Ordering::SeqCst) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
     /// Invokes the stop control and records the request.
     ///
     /// The control stays installed, so that a stop that did not take (a wake
@@ -454,6 +716,32 @@ impl VmHandle {
     /// The VM's id: its 0-based index among the VMs [`spawn_n`] created.
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// The per-VM process's own log (its stderr) so far, line by line; empty
+    /// when the VM runs as threads of this process ([`SpawnMode::InProcess`]).
+    ///
+    /// This carries the child's boot diagnostics — including the jailer's own
+    /// line, which names the root the VM was jailed in or the reason this
+    /// process could not jail it — so a caller can tell a confined VM from a
+    /// VM that only kept the seccomp half without guessing.
+    pub fn process_log(&self) -> Vec<String> {
+        self.runtime
+            .process_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The pid of the VM's per-VM process, or `None` when the VM runs as
+    /// threads of this process ([`SpawnMode::InProcess`]).
+    ///
+    /// This is the handle's window onto the jail: the VM's confinement is the
+    /// child process's root, mount namespace and seccomp state, which an
+    /// operator reads from `/proc/{pid}` — not from anything the daemon says
+    /// about itself.
+    pub fn process_id(&self) -> Option<u32> {
+        self.runtime.process_id()
     }
 
     /// Blocks until the VM has stopped and reports how it stopped.
@@ -748,7 +1036,31 @@ pub fn materialize_workspaces(
 ///   [`VmRuntime::mark_guest_reset`], for a reset) when the guest stopped the
 ///   VM itself, and
 /// * return once the VM is running (not when it stops).
+///
+/// [`SpawnMode::Process`] takes the other road first: the VM is built by a
+/// child `apz-vmm` process (see [`process`]), and the parent's job is the
+/// proxy that satisfies the same six rules from outside — which is what makes
+/// the two modes interchangeable to a caller.
 fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+    if spawn_mode()? == SpawnMode::Process {
+        #[cfg(target_os = "linux")]
+        {
+            return process::boot(spec, runtime);
+        }
+        // The per-VM process boots through `crate::builder`, which is the
+        // Linux/KVM path: the Hypervisor.framework backend has no such binary,
+        // so the mode is refused rather than silently downgraded.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (spec, runtime);
+            return Err(SpawnError::SpawnMode {
+                reason: "the per-VM process mode is Linux-only: this platform has no `apz-vmm` \
+                         binary to run"
+                    .to_string(),
+            });
+        }
+    }
+
     #[cfg(target_os = "linux")]
     {
         crate::builder::boot(spec, runtime)
@@ -874,6 +1186,47 @@ mod tests {
     #[test]
     fn a_spec_without_vsock_is_accepted() {
         assert!(validate_spec(&VmSpec::default()).is_ok());
+    }
+
+    /// The boot mode an `APZ_VMM_SPAWN` value names: exactly the two modes,
+    /// trimmed and case-insensitive — and *nothing else*, because a typo must
+    /// stop the VM rather than pick a mode the operator did not ask for.
+    #[test]
+    fn a_boot_mode_env_value_that_names_no_mode_is_refused() {
+        assert_eq!(
+            parse_spawn_mode_env("in-process").expect("in-process"),
+            SpawnMode::InProcess
+        );
+        assert_eq!(
+            parse_spawn_mode_env("  PROCESS\n").expect("process"),
+            SpawnMode::Process
+        );
+        for typo in ["", " ", "inprocess", "child", "off", "on", "in process"] {
+            assert!(
+                matches!(
+                    parse_spawn_mode_env(typo),
+                    Err(SpawnError::SpawnMode { .. })
+                ),
+                "{typo:?} names no boot mode and must be refused"
+            );
+        }
+    }
+
+    /// The switch is programmatic — the library half of a CLI or of a
+    /// deployment's configuration — and the default (nothing set) is the v0
+    /// shape, in this process.
+    #[test]
+    fn the_boot_mode_is_programmatic_and_defaults_in_process() {
+        set_spawn_mode(SpawnMode::Process);
+        assert_eq!(spawn_mode().expect("a set mode"), SpawnMode::Process);
+        set_spawn_mode(SpawnMode::InProcess);
+        assert_eq!(spawn_mode().expect("a set mode"), SpawnMode::InProcess);
+        // Back to "read the environment" for any later test in this binary.
+        MODE.store(MODE_FROM_ENV, Ordering::SeqCst);
+        // Nothing is set in the test process's environment: the default is the
+        // in-process shape. The environment path itself is driven by
+        // `tests/per_vm_process.rs`, which runs the mode through a child.
+        assert_eq!(spawn_mode().expect("the default"), SpawnMode::InProcess);
     }
 
     /// F4: the vsock socket directory is created `0700`, and an existing wider
