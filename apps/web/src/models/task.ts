@@ -172,6 +172,28 @@ export function isFinishedTask(task: Task | null | undefined): boolean {
   return !!task && !isOpenTask(task);
 }
 
+/* The done note's artifact line. A task whose workflow wrote files is finished
+   with `artifacts: <p1>, <p2> (N tool call(s))` — the paths its workspace
+   holds, joined with ", ", the count of tool calls in parentheses. A read-only
+   run carries its own one-line summary instead (`read-only: 3 match(es) (1
+   tool call(s))`), and a note written by hand names none; both read as no
+   artifacts. The parse is pure and total: a note this console does not
+   recognise yields nothing, never a guessed path. */
+const NOTE_ARTIFACTS = /^artifacts:[ \t]*(.*?)(?:[ \t]*\(\d+ tool call\(s\)\))?[ \t]*$/;
+
+/** The artifact paths a finish note names, in the order the note lists them;
+    empty when it names none — a summary note, a plain note, a null note, or an
+    `artifacts:` line with no paths. */
+export function artifactPaths(note: string | null | undefined): string[] {
+  if (note == null) return [];
+  const m = NOTE_ARTIFACTS.exec(note.trim());
+  if (m == null) return [];
+  return (m[1] ?? '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p !== '');
+}
+
 /** How the ledger names a task's state in its own marginalia. */
 export const STATE_LABEL: Readonly<Record<TaskState, string>> = {
   open: 'open · unclaimed',

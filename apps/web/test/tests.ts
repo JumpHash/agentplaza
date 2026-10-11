@@ -19,7 +19,8 @@ import { fmtDateTime, fmtDur, fmtMoney, fmtStamp } from '../src/format';
 import { hubLine, joinHub, parseHubStatus } from '../src/models/hub';
 import type { Run, Vm, VmState } from '../src/models/run';
 import { cidRange, roleOf } from '../src/models/run';
-import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq } from '../src/models/task';
+import { isFinishedTask, isOpenTask, parseTask, parseTasksView, seqOf as taskSeq, artifactPaths } from '../src/models/task';
+import { parseArtifact, readStateOf } from '../src/models/artifact';
 import { sessionOf, sessionSummary } from '../src/models/session';
 import { Store } from '../src/store';
 import { ARC_DWELL_MS, arcAlive, arcLift, focusFraming, overviewFraming, runPlateLines } from '../src/views/district';
@@ -645,6 +646,71 @@ eq(fmtMoney(1500), '1,500 cr · $1.50', 'the dollar column follows the codex rat
   setTimeout(settledDone, 30);
   await settled;
   eq(typeof s.tasksError, 'string', 'the ledger was asked at once for identity');
+}
+
+/* ==================== the work product: the note's paths, the read's shape
+   The dispatcher finishes a task whose workflow wrote files with
+   `artifacts: <p1>, <p2> (N tool call(s))`. The note is parsed into the paths
+   the ledger offers to read — a read-only run's summary line and a note
+   written by hand name none — and the read's own answer is parsed defensively,
+   since the content is a file the AGENT wrote. */
+
+eq(artifactPaths('artifacts: build-notes.txt (2 tool call(s))'), ['build-notes.txt'], 'a note names its one artifact');
+eq(artifactPaths('artifacts: a.txt, b/index.txt (7 tool call(s))'), ['a.txt', 'b/index.txt'], 'a note names several, in its own order');
+eq(artifactPaths('artifacts:  (0 tool call(s))'), [], 'a note naming no artifacts reads as none');
+eq(artifactPaths('read-only: 3 match(es) (1 tool call(s))'), [], 'a read-only run’s summary names no artifacts');
+eq(artifactPaths("the agent's note — 21 handbooks committed"), [], 'a hand-written note names none');
+eq(artifactPaths('note: artifacts: x.txt (1 tool call(s))'), [], 'the line must begin the note, not merely contain the word');
+eq(artifactPaths('artifacts: x.txt'), ['x.txt'], 'a note whose call count is absent still names its path');
+eq(artifactPaths('  artifacts: x.txt (1 tool call(s))  '), ['x.txt'], 'a note’s surrounding space is trimmed');
+eq(artifactPaths('artifacts: a.txt, (3 tool call(s))'), ['a.txt'], 'an empty segment between commas names nothing');
+eq(artifactPaths(null), [], 'no note, no artifacts');
+eq(artifactPaths(''), [], 'an empty note names none');
+
+const ARTIFACT_FIXTURE = {
+  task: 't3',
+  agent_cid: 103,
+  path: 'build-notes.txt',
+  content: 'task t3: verify the fixed loop',
+  size: 30,
+  truncated: false,
+};
+eq(parseArtifact(ARTIFACT_FIXTURE), ARTIFACT_FIXTURE, 'a well-formed artifact parses unchanged');
+eq(parseArtifact({ ...ARTIFACT_FIXTURE, extra: 1 }), ARTIFACT_FIXTURE, 'unknown extra fields are tolerated and dropped');
+throws(() => parseArtifact(null), 'artifact is missing or not an object', 'a non-object artifact is rejected by name');
+throws(() => parseArtifact({ ...ARTIFACT_FIXTURE, content: 5 }), 'artifact.content', 'mistyped content names the field');
+throws(() => parseArtifact({ ...ARTIFACT_FIXTURE, truncated: 'yes' }), 'artifact.truncated', 'a non-boolean truncation names the field');
+throws(() => parseArtifact({ ...ARTIFACT_FIXTURE, size: -1 }), 'artifact.size', 'a negative size names the field');
+throws(() => parseArtifact({ ...ARTIFACT_FIXTURE, agent_cid: 1.5 }), 'artifact.agent_cid', 'a non-integer agent CID names the field');
+{
+  const missing: Record<string, unknown> = { ...ARTIFACT_FIXTURE };
+  delete missing['path'];
+  throws(() => parseArtifact(missing), 'artifact.path', 'a missing required field names the path');
+}
+
+/* the read's status, read as the console's own state: a node never told where
+   the hub's admin surface is is not a hub out of reach, and neither is a
+   refusal (the daemon's, the hub's or the agent's own words) */
+eq(readStateOf(503), 'unconfigured', 'a daemon with no admin surface reads not configured');
+eq(readStateOf(502), 'unreachable', 'a hub out of reach reads unreachable');
+eq(readStateOf(null), 'unreachable', 'a node that never answered reads unreachable');
+eq(readStateOf(403), 'refused', 'the hub’s policy refusal reads refused');
+eq(readStateOf(422), 'refused', 'the agent’s own refusal reads refused');
+eq(readStateOf(400), 'refused', 'a path outside the contract reads refused');
+eq(readStateOf(404), 'refused', 'an unknown task reads refused');
+eq(readStateOf(409), 'refused', 'an unassigned task reads refused');
+
+/* the read is the owner's hand alone — and a console that cannot reach the
+   node records that honestly, inventing no content and no success */
+{
+  const s = new Store();
+  await s.readArtifact('t3', 'build-notes.txt');
+  eq(s.artifact?.task, 't3', 'the ask records which task it was for');
+  eq(s.artifact?.path, 'build-notes.txt', 'the ask records which path it was for');
+  eq(s.artifact?.state, 'unreachable', 'a read that never reached the node reads as unreachable');
+  eq((s.artifact?.error.length ?? 0) > 0, true, 'the failure carries a reason, not silence');
+  eq(s.artifact?.content, '', 'no content is invented for a read that failed');
+  eq(s.artifact?.status, null, 'and no status the node never sent');
 }
 
 if (failures > 0) {

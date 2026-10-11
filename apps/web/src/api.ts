@@ -1,6 +1,8 @@
 /* The JSON client for the frozen /api/v0 contract. Errors are values the
    store keeps and shows — never thrown away, never swallowed. */
 
+import type { TaskArtifact } from './models/artifact';
+import { parseArtifact } from './models/artifact';
 import type { HubStatus } from './models/hub';
 import { parseHubStatus } from './models/hub';
 import type { Machine } from './models/machine';
@@ -132,4 +134,25 @@ export async function finishTask(id: string, outcome: 'done' | 'failed', note?: 
 /** Withdraw a task that has not ended (`open` or `claimed`). */
 export async function withdrawTask(id: string): Promise<Task> {
   return parseTask(await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+}
+
+/** Read one file a task's agent wrote, through the daemon's read-through:
+    it resolves the task's assignee to its guest CID and asks the hub to drive
+    that agent's own `read_file`. A POST, and deliberately so — it drives the
+    agent's session (a tool call with a cost and a refusal mode), so a
+    prefetcher must not replay it; only the owner's hand calls this.
+
+    Every status is the daemon's (see crates/noded `read_artifact`): 400 a body
+    or path outside the contract, 403 the hub's own policy refusal, 404 no such
+    task or unserved CID, 409 no assignee or an unconnected agent, 422 the
+    agent's own refusal, 502 an unreachable hub, 503 a daemon never told where
+    the hub's admin surface is. The daemon, hub and agent messages all ride the
+    ApiError verbatim. */
+export async function readTaskArtifact(id: string, path: string): Promise<TaskArtifact> {
+  return parseArtifact(
+    await api<unknown>(`/api/v0/tasks/${encodeURIComponent(id)}/artifact`, {
+      method: 'POST',
+      body: { path },
+    }),
+  );
 }

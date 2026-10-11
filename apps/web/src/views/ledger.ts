@@ -15,7 +15,9 @@ import { claimTask, createTask, finishTask, withdrawTask } from '../api';
 import { announce, byId, el, toast } from '../dom';
 import { fmtMoney, fmtNum, fmtStamp, pad } from '../format';
 import type { Task } from '../models/task';
-import { isOpenTask, seqOf } from '../models/task';
+import { artifactPaths, isOpenTask, seqOf } from '../models/task';
+import type { ArtifactReadState } from '../models/artifact';
+import type { ArtifactRead } from '../store';
 import { store } from '../store';
 
 /* The table rebuilds only when the ledger's shape changes; the act error spans
@@ -23,6 +25,13 @@ import { store } from '../store';
 let ledgerSig: string | null = null;
 const rowRefs = new Map<string, HTMLTableRowElement>();
 let pinnedFor: string | null = null;
+
+/* The artifact section's path buttons are kept across renders — a rebuild
+   would throw away the focus of the button the owner just pressed — and its
+   last announced reading, so a screen reader hears each answer once. */
+let artSig: string | null = null;
+let artRefs: Array<{ path: string; btn: HTMLButtonElement }> = [];
+let artAnnounced = '';
 
 /** The state as the register marks a decision: a stamp for a task that has
     ended (the schema's outcome), a mark while it lives. */
@@ -48,6 +57,119 @@ function fact(dt: string, dd: string): HTMLElement {
   row.appendChild(el('i'));
   row.appendChild(el('dd', 'm', dd));
   return row;
+}
+
+/* -------------------------------------------------------- the work product
+   A finished task's note names the files its agent wrote (`artifacts: …`).
+   Each named path is a read-through: a POST the owner's hand alone sends,
+   which drives that agent's own `read_file` — a tool call with a cost and a
+   refusal mode — so the console fetches none of them on its own. What comes
+   back is a file the AGENT wrote, so it lands in the sheet as text and never
+   as markup. */
+
+/** The mark each ending wears, in the register's own language: an outlined
+    crit mark for a refusal, amber for a node that cannot read (no hub admin
+    surface, or a hub out of reach), the ok roundel for a read. */
+const ARTIFACT_MARK: Readonly<Record<ArtifactReadState, { cls: string; label: string }>> = {
+  loading: { cls: 'mk warn', label: 'reading' },
+  read: { cls: 'mk ok', label: 'read' },
+  refused: { cls: 'mk crit', label: 'refused' },
+  unconfigured: { cls: 'mk warn', label: 'not configured' },
+  unreachable: { cls: 'mk warn', label: 'unreachable' },
+};
+
+/** The section's lede: what the note names, or the honest reason it names
+    nothing — a read-only run reports its own summary line and a hand-written
+    note names none, so neither is ever dressed up as artifacts. */
+function artifactLede(task: Task, paths: readonly string[]): string {
+  if (paths.length > 0) {
+    const what = paths.length === 1 ? 'one artifact' : `${fmtNum(paths.length)} artifacts`;
+    return `The note names ${what} in the agent's workspace. Reading one posts to the node, which asks that agent to read the file — a tool call of its own, never a prefetch.`;
+  }
+  if (task.note == null) return 'The task carries no note yet, so it names no work product.';
+  return 'The note names no artifacts — a read-only run reports its own summary line instead, and a note written by hand names none.';
+}
+
+/** The read's own line: its size and the agent that read it, or the refusal
+    with the status that tells the three kinds apart. */
+function artifactReading(read: ArtifactRead): string {
+  if (read.state === 'loading') return 'posting the read to the node …';
+  if (read.state === 'read') {
+    const who = read.cid === 0 ? '' : ` · read by the agent at cid ${read.cid}`;
+    const cut = read.truncated ? " · the agent's read cap ended this window, not the file's end" : '';
+    return `${fmtNum(read.size)} bytes${who}${cut}`;
+  }
+  return read.status == null ? 'the node did not answer' : `HTTP ${read.status}`;
+}
+
+function renderArtifactBody(read: ArtifactRead | null): void {
+  const body = byId('ld-art-body');
+  if (read == null) {
+    body.hidden = true;
+    return;
+  }
+  body.hidden = false;
+  byId('ld-art-name').textContent = read.path;
+  const mark = byId('ld-art-mark');
+  const mk = ARTIFACT_MARK[read.state];
+  mark.className = mk.cls;
+  mark.textContent = mk.label;
+  byId('ld-art-meta').textContent = artifactReading(read);
+
+  const err = byId('ld-art-err');
+  err.hidden = read.error === '';
+  err.textContent = read.error;
+
+  const text = byId<HTMLPreElement>('ld-art-text');
+  text.hidden = read.state !== 'read';
+  text.textContent = read.state === 'read' ? read.content : '';
+
+  /* a screen reader hears each answer once, and only answers — the pending
+     state is the press it already made */
+  if (read.state !== 'loading') {
+    const key = `${read.task}\u0000${read.path}\u0000${read.state}`;
+    if (key !== artAnnounced) {
+      artAnnounced = key;
+      announce(
+        read.state === 'read'
+          ? `The artifact ${read.path} is on the sheet — ${fmtNum(read.size)} bytes.`
+          : `Reading ${read.path} was ${mk.label}: ${read.error}`,
+      );
+    }
+  }
+}
+
+/** The work product, for the sheet's pinned task. */
+function renderArtifact(task: Task): void {
+  const paths = artifactPaths(task.note);
+  byId('ld-art-note').textContent = artifactLede(task, paths);
+  const list = byId('ld-art-paths');
+  list.hidden = paths.length === 0;
+  const sig = `${task.id}\u0000${paths.join('\u0000')}`;
+  if (sig !== artSig) {
+    artSig = sig;
+    artRefs = [];
+    list.textContent = '';
+    for (const path of paths) {
+      const btn = el('button', 'btn sm artpath');
+      btn.type = 'button';
+      btn.textContent = path;
+      btn.addEventListener('click', () => {
+        artAnnounced = '';
+        void store.readArtifact(task.id, path);
+      });
+      list.appendChild(btn);
+      artRefs.push({ path, btn });
+    }
+  }
+  /* only this task's own read is ever shown: another task's read names its
+     own agent's workspace, so it is neither shown nor offered as pressed */
+  const read = store.artifact != null && store.artifact.task === task.id ? store.artifact : null;
+  for (const ref of artRefs) {
+    if (read != null && read.path === ref.path) ref.btn.setAttribute('aria-pressed', 'true');
+    else ref.btn.removeAttribute('aria-pressed');
+  }
+  renderArtifactBody(read);
 }
 
 /* ------------------------------------------------------------ rendering */
@@ -95,7 +217,7 @@ function renderTable(tasks: readonly Task[]): void {
   }
 
   const sig = tasks
-    .map((t) => `${t.id}:${t.state}:${t.updated_at}:${t.assignee_id ?? ''}:${t.agent_cid ?? ''}`)
+    .map((t) => `${t.id}:${t.state}:${t.updated_at}:${t.assignee_id ?? ''}:${t.agent_cid ?? ''}:${t.note ?? ''}`)
     .join('|');
   if (sig !== ledgerSig) {
     ledgerSig = sig;
@@ -108,7 +230,17 @@ function renderTable(tasks: readonly Task[]): void {
       tr.setAttribute('data-go', `#ledger/${task.id}`);
       tr.setAttribute('aria-label', `${task.id}, ${task.state}: ${task.goal}`);
       tr.appendChild(el('td', null, pad(seqOf(task.id), 4)));
-      tr.appendChild(el('td', 'goal', task.goal));
+      const goalTd = el('td', 'goal', task.goal);
+      /* the work product is legible from the ledger itself, not only from the
+         sheet: a finished task whose note names artifacts carries their count
+         in the margin of its own row */
+      const artifacts = artifactPaths(task.note);
+      if (artifacts.length > 0) {
+        goalTd.appendChild(
+          el('span', 'chip art', `${fmtNum(artifacts.length)} artifact${artifacts.length === 1 ? '' : 's'}`),
+        );
+      }
+      tr.appendChild(goalTd);
       const roleTd = el('td');
       roleTd.appendChild(task.role == null ? document.createTextNode('—') : el('span', 'chip role', task.role));
       tr.appendChild(roleTd);
@@ -164,6 +296,7 @@ function renderDetail(): void {
   facts.appendChild(fact('agent cid', task.agent_cid == null ? '—' : String(task.agent_cid)));
   facts.appendChild(fact('verifier', task.verifier_id ?? '—'));
   byId('ld-note-line').textContent = task.note == null ? '' : `the agent's note — ${task.note}`;
+  renderArtifact(task);
 }
 
 /* -------------------------------------------------------------- actions */

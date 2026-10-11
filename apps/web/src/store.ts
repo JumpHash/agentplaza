@@ -4,8 +4,10 @@
    deltas. Rendering is coalesced through a microtask: the paint path never
    depends on animation frames, so hidden tabs still paint what they have. */
 
-import { getHub, getMachine, getRun, getTask, listRuns, listTasks } from './api';
+import { getHub, getMachine, getRun, getTask, listRuns, listTasks, readTaskArtifact } from './api';
 import { ActivityTracker, vmKey } from './models/activity';
+import type { ArtifactReadState } from './models/artifact';
+import { readStateOf } from './models/artifact';
 import type { RunSlice } from './models/history';
 import { SessionHistory } from './models/history';
 import type { HubStatus } from './models/hub';
@@ -46,6 +48,9 @@ declare global {
         readonly detail: string | null;
         readonly error: string | null;
       };
+      /** The artifact the ledger's sheet last read, if any: which task and
+          path, and how the read ended. */
+      readonly artifact: { readonly task: string; readonly path: string; readonly state: string } | null;
       /** The 3D camera's position and target, when the scene has booted. */
       readonly camera3d: { readonly pos: readonly number[]; readonly target: readonly number[] } | null;
       /** What the 3D plot holds — platforms, blocks, live arcs — and the
@@ -74,6 +79,27 @@ export interface Route {
   name: ViewName;
   param: string | null;
   compare: CompareTarget | null;
+}
+
+/** One artifact the ledger's sheet has read — or is reading — for a task. */
+export interface ArtifactRead {
+  /** The task whose agent read it. */
+  task: string;
+  /** The path asked for, as the sheet sent it. */
+  path: string;
+  state: ArtifactReadState;
+  /** The text, once read; empty otherwise. */
+  content: string;
+  /** The file's size in bytes, as the agent reported it. */
+  size: number;
+  /** Whether the agent's read cap, not the file's end, ended the content. */
+  truncated: boolean;
+  /** The guest CID of the agent that read it, or 0 before it answers. */
+  cid: number;
+  /** A refusal or failure, in whoever wrote it — verbatim, never paraphrased. */
+  error: string;
+  /** The HTTP status, or null when the node never answered. */
+  status: number | null;
 }
 
 const TICK_MS =
@@ -107,6 +133,10 @@ export class Store {
   tasksError: string | null = null;
   /** The task the ledger sheet is pinned to (`#ledger/{id}`), or null. */
   taskDetailId: string | null = null;
+  /** The artifact the ledger's sheet last asked for — the one read in flight,
+      or the last one it answered. Only ever set by the owner's own click: the
+      read-through drives the agent's session, so it is never polled. */
+  artifact: ArtifactRead | null = null;
   /** Every run fetched with serial, by id (map/3D poll each open run). */
   readonly details = new Map<string, Run>();
   detailError: string | null = null;
@@ -150,6 +180,8 @@ export class Store {
   private tasksRefreshTimer: number | null = null;
   private readonly detailRefreshPending = new Set<string>();
   private readonly vmPushAt = new Map<string, number>();
+  /** The newest artifact ask's serial: an older answer never overwrites it. */
+  private artifactReq = 0;
 
   get health(): Health {
     if (this.lastOkAt === 0) return this.lastErrAt > 0 ? 'down' : 'stale';
@@ -370,6 +402,46 @@ export class Store {
   /** The store's copy of a task, or null. */
   taskOf(id: string | null | undefined): Task | null {
     return id ? (this.tasks.find((t) => t.id === id) ?? null) : null;
+  }
+
+  /** Read one of a task's artifacts through the daemon's read-through. This is
+      the owner's hand alone: it drives the task agent's own `read_file` — a
+      tool call with a cost and a refusal mode — so it is called from a click
+      and never from a poll. Only the newest ask lands; an older answer that
+      arrives after a newer click is dropped. */
+  async readArtifact(task: string, path: string): Promise<void> {
+    const req = ++this.artifactReq;
+    this.artifact = { task, path, state: 'loading', content: '', size: 0, truncated: false, cid: 0, error: '', status: null };
+    this.scheduleRender();
+    try {
+      const read = await readTaskArtifact(task, path);
+      if (req === this.artifactReq) {
+        this.artifact = {
+          task,
+          path,
+          state: 'read',
+          content: read.content,
+          size: read.size,
+          truncated: read.truncated,
+          cid: read.agent_cid,
+          error: '',
+          status: 200,
+        };
+      }
+      this.noteOk();
+    } catch (err) {
+      /* a refusal is the daemon's, the hub's or the agent's own words — kept
+         verbatim; the status tells the three apart (a 503 is a node never
+         configured with the hub's admin surface, a 502 a hub out of reach) */
+      const status = err && typeof err === 'object' && 'status' in err ? (err.status as number | null) : null;
+      const message = err instanceof Error ? err.message : String(err);
+      const state = readStateOf(status);
+      if (req === this.artifactReq) {
+        this.artifact = { task, path, state, content: '', size: 0, truncated: false, cid: 0, error: message, status };
+      }
+      this.noteErr();
+    }
+    this.scheduleRender();
   }
 
   /** One fleet observation, derived from what the client already holds: the

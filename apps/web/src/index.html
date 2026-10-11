@@ -12,7 +12,7 @@
        GET /api/v0/machine · GET/POST /api/v0/runs · GET/DELETE /api/v0/runs/{id}
        POST /api/v0/runs/{id}/input · GET /api/v0/events (the live wire: run/vm/serial/task deltas)
        GET/POST /api/v0/tasks · GET/DELETE /api/v0/tasks/{id}
-       POST /api/v0/tasks/{id}/claim · POST /api/v0/tasks/{id}/finish (the ledger)
+       POST /api/v0/tasks/{id}/claim · POST /api/v0/tasks/{id}/finish · POST /api/v0/tasks/{id}/artifact (the ledger)
      Routes: #register #run/{id} #machine #map #view3d #compare/{a}/{avm}/{b}/{bvm} #telemetry #ledger/{id} #roster;
      keys 0–7 walk the eight index destinations, '?' opens the key sheet.
      Visual system "Plaza" per docs/ux-draft/owner-console.html + critique-round-34.md:
@@ -464,7 +464,7 @@
         <span class="folio">f. 7</span>
         <h1>Ledger</h1>
         <span class="aside mk ok" id="ledger-live" hidden>live</span>
-        <p class="lede">The plaza's account-book: every task this node holds, newest first — its folio number in the margin, its goal, the role it was entered for, its budget in credits and the dollars they stand for, and its state as a stamp or a mark. A live agent claims one by its guest CID; the agent that did reports it done or failed, and the owner may withdraw one that has not ended. The node keeps no transition history, so a sheet shows the task's present state and invents no journal.</p>
+        <p class="lede">The plaza's account-book: every task this node holds, newest first — its folio number in the margin, its goal, the role it was entered for, its budget in credits and the dollars they stand for, and its state as a stamp or a mark. A live agent claims one by its guest CID; the agent that did reports it done or failed, and the owner may withdraw one that has not ended. A finished task's sheet also reads that agent's own work product — the files its note names — through the node, one read at a time. The node keeps no transition history, so a sheet shows the task's present state and invents no journal.</p>
       </div>
 
       <div class="parts" id="ledger-notice" hidden><div class="body">
@@ -513,6 +513,23 @@
         <p class="example" id="ld-acceptance-line"></p>
         <dl id="ld-facts"></dl>
         <p class="example" id="ld-note-line"></p>
+
+        <div class="ldart" id="ld-artifact">
+          <h3>The work product</h3>
+          <p class="example" id="ld-art-note"></p>
+          <div class="ldartpaths" id="ld-art-paths" hidden></div>
+          <div class="ldartbody" id="ld-art-body" hidden>
+            <div class="ldarthead">
+              <span class="lbl" id="ld-art-name">—</span>
+              <span class="mk" id="ld-art-mark"></span>
+              <span class="c" id="ld-art-meta"></span>
+            </div>
+            <p class="err" id="ld-art-err" role="alert" hidden></p>
+            <pre class="ldarttext" id="ld-art-text" tabindex="0" aria-label="The artifact, as the task's agent read it" hidden></pre>
+          </div>
+          <p class="example">A finished task's note names the files its agent wrote (<code>artifacts: …</code>); each path above is a read-through — the node asks that agent to read the file, a tool call of its own, so the console fetches none on its own. A refusal is the daemon's, the hub's or the agent's own words, written as they wrote them; a node never told where the hub's admin surface is reads <em>not configured</em>, and a hub out of reach reads <em>unreachable</em>. The file is the agent's own: shown as text, never as markup.</p>
+        </div>
+
         <p class="example">The node keeps no transition history — a task's present state is all it records, so this sheet shows the present, not a journal.</p>
         <div class="ldacts">
           <form id="ld-claim" novalidate>

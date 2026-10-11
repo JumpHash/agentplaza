@@ -186,6 +186,10 @@ window.__PLAZA_DIAG__ = {
       error: store.tasksError,
     };
   },
+  get artifact() {
+    const a = store.artifact;
+    return a == null ? null : { task: a.task, path: a.path, state: a.state };
+  },
   get hub() {
     const readable = store.hub != null && store.hubError == null;
     return {

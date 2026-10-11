@@ -38,6 +38,22 @@ canvas.spark { display: block; width: 96px; height: 20px; }
 .lrow input[type="number"] { width: 8ch; }
 .lrow input[type="text"] { width: min(34ch, 100%); }
 
+/* the ledger's work product: the artifacts a finished task's note names, each
+   a read-through to the agent's own file. The text is guest-derived, so it is
+   ruled and bounded, and it is a scroll region that takes focus (a scrolling
+   box must be reachable by keyboard) with the register's own ink border. */
+.ldart { display: grid; gap: 10px; }
+.ldart h3 { font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin: 0; }
+.ldartpaths { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.ldartpaths .artpath { font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+.ldartpaths .artpath[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+.ldartbody { border: 1px solid var(--rule); background: var(--paper); }
+.ldarthead { display: flex; gap: 8px 14px; align-items: baseline; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+.ldarthead .lbl { font: 500 11.5px var(--mono); overflow-wrap: anywhere; margin-right: auto; }
+.ldarthead .c { color: var(--ink-3); font: 400 10.5px var(--mono); }
+.ldartbody .err { padding: 10px 12px; }
+.ldarttext { margin: 0; padding: 10px 12px; max-height: 240px; overflow: auto; font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* the roster: one ruled band per role, the role's agents beneath it. The band
    overrides the table's numbered first column, since it spans the row. */
 #roster-table tr.grp td { width: auto; text-align: left; padding: 16px 12px 6px; border-bottom: 1px solid var(--rule); color: var(--ink-3); font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
@@ -50,4 +66,5 @@ tr.link .c { color: var(--ink-3); font: 400 11px var(--mono); }
   canvas#map-canvas { height: 320px; }
   .v3mount { height: 340px; }
   canvas.tchart { height: 120px; }
+  .ldarttext { max-height: 200px; }
 }
