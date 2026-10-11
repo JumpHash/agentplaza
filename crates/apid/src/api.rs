@@ -34,6 +34,7 @@ pub fn router() -> Router<App> {
     let router = crate::society::routes(router);
     let router = crate::connectors::routes(router);
     let router = crate::llm_proxy::routes(router);
+    let router = crate::approvals::routes(router);
     let router = memory::routes(router);
     router
         .get("/", |app, _, _| static_file(&app.config.console, "index.html"))

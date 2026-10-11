@@ -1,0 +1,378 @@
+//! Per-agent permission modes and the owner's approvals queue.
+//!
+//! A mode says what an agent may do with the tools that change things.
+//! `autonomous` (the default) lets them run, `ask` holds each call until the
+//! owner approves that exact call, and `read_only` refuses them. Read-class
+//! tools pass in every mode. Modes persist in `permissions.json`; the queue is
+//! kept in memory, newest last, capped at `QUEUE_CAP`.
+
+use std::collections::BTreeMap;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use apz_http::{Params, Request, Response, Router};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::providers::write_atomic;
+use crate::state::App;
+
+/// How many approvals the queue keeps; the oldest drop first.
+const QUEUE_CAP: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    #[default]
+    Autonomous,
+    Ask,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Pending,
+    Approved,
+    Denied,
+    Used,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Approval {
+    pub id: String,
+    pub cid: u64,
+    pub tool: String,
+    pub input: Value,
+    pub created_ms: u64,
+    pub state: State,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecideError {
+    NotFound,
+    NotPending,
+}
+
+#[derive(Default)]
+struct Inner {
+    modes: BTreeMap<u64, Mode>,
+    queue: Vec<Approval>,
+    next: u64,
+}
+
+/// Modes (persisted) and the approvals queue (in memory).
+pub struct Store {
+    path: PathBuf,
+    inner: Mutex<Inner>,
+}
+
+impl Store {
+    /// Loads the saved modes from `dir`. A missing or unreadable file means
+    /// every agent starts in `autonomous`.
+    pub fn load(dir: &Path) -> Store {
+        let path = dir.join("permissions.json");
+        let modes = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<BTreeMap<u64, Mode>>(&bytes).ok())
+            .unwrap_or_default();
+        Store {
+            path,
+            inner: Mutex::new(Inner { modes, queue: Vec::new(), next: 1 }),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn mode(&self, cid: u64) -> Mode {
+        self.lock().modes.get(&cid).copied().unwrap_or_default()
+    }
+
+    /// Saves the mode for `cid` and writes the whole map to disk. On a failed
+    /// write the in-memory mode is put back.
+    pub fn set_mode(&self, cid: u64, mode: Mode) -> io::Result<()> {
+        let mut inner = self.lock();
+        let previous = inner.modes.insert(cid, mode);
+        let saved = serde_json::to_vec_pretty(&inner.modes)
+            .map_err(io::Error::other)
+            .and_then(|bytes| write_atomic(&self.path, &bytes, 0o600));
+        if saved.is_err() {
+            match previous {
+                Some(p) => {
+                    inner.modes.insert(cid, p);
+                }
+                None => {
+                    inner.modes.remove(&cid);
+                }
+            }
+        }
+        saved
+    }
+
+    /// The gate for one call. `class` is the tool's risk class. Returns the
+    /// refusal the agent sees (None lets the call run) and the approval this
+    /// call just queued, if one was created, so the caller can publish it.
+    pub fn gate(&self, cid: u64, tool: &str, class: &str, input: &Value) -> (Option<String>, Option<Approval>) {
+        if class == "read" {
+            return (None, None);
+        }
+        let mut inner = self.lock();
+        match inner.modes.get(&cid).copied().unwrap_or_default() {
+            Mode::Autonomous => (None, None),
+            Mode::ReadOnly => (Some(format!("this agent is read-only: {tool} is not allowed")), None),
+            Mode::Ask => {
+                if let Some(a) = inner
+                    .queue
+                    .iter_mut()
+                    .find(|a| a.cid == cid && a.tool == tool && a.state == State::Approved && a.input == *input)
+                {
+                    a.state = State::Used;
+                    return (None, None);
+                }
+                if let Some(a) = inner
+                    .queue
+                    .iter()
+                    .find(|a| a.cid == cid && a.tool == tool && a.state == State::Pending && a.input == *input)
+                {
+                    return (Some(format!("still waiting for the owner's approval ({})", a.id)), None);
+                }
+                let id = format!("a{}", inner.next);
+                inner.next += 1;
+                let item = Approval {
+                    id: id.clone(),
+                    cid,
+                    tool: tool.to_string(),
+                    input: input.clone(),
+                    created_ms: now_ms(),
+                    state: State::Pending,
+                    reason: None,
+                };
+                inner.queue.push(item.clone());
+                if inner.queue.len() > QUEUE_CAP {
+                    let excess = inner.queue.len() - QUEUE_CAP;
+                    inner.queue.drain(..excess);
+                }
+                let refusal = format!(
+                    "waiting for the owner's approval ({id}); you'll be told when it is decided, then run the same call again"
+                );
+                (Some(refusal), Some(item))
+            }
+        }
+    }
+
+    /// Records the owner's decision on a pending approval.
+    pub fn decide(&self, id: &str, approve: bool, reason: Option<String>) -> Result<Approval, DecideError> {
+        let mut inner = self.lock();
+        let item = inner
+            .queue
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or(DecideError::NotFound)?;
+        if item.state != State::Pending {
+            return Err(DecideError::NotPending);
+        }
+        item.state = if approve { State::Approved } else { State::Denied };
+        item.reason = reason.filter(|r| !r.trim().is_empty());
+        Ok(item.clone())
+    }
+
+    /// The queue, newest first.
+    pub fn list(&self) -> Vec<Approval> {
+        self.lock().queue.iter().rev().cloned().collect()
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Called on the tool path before a call runs. Publishes a newly queued
+/// approval and returns the reason the call is held, or None to let it run.
+pub fn gate(app: &App, cid: u64, tool: &str, input: &Value) -> Option<String> {
+    let (refusal, created) = app
+        .approvals
+        .gate(cid, tool, crate::laws::risk_class(tool), input);
+    if let Some(item) = created {
+        app.bus.publish("approval", &item);
+    }
+    refusal
+}
+
+pub fn routes(router: Router<App>) -> Router<App> {
+    router
+        .get("/v1/approvals", list)
+        .post("/v1/approvals/{id}", decide)
+        .get("/v1/agents/{cid}/permissions", get_mode)
+        .route("PUT", "/v1/agents/{cid}/permissions", put_mode)
+}
+
+#[derive(Deserialize)]
+struct DecideBody {
+    approve: bool,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ModeBody {
+    mode: Mode,
+}
+
+fn list(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
+    Response::json(200, &app.approvals.list())
+}
+
+fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    let body: DecideBody = match req.json() {
+        Ok(body) => body,
+        Err(_) => return Response::error(400, "body must be {\"approve\": bool, \"reason\": string?}"),
+    };
+    let item = match app.approvals.decide(id, body.approve, body.reason) {
+        Ok(item) => item,
+        Err(DecideError::NotFound) => return Response::error(404, "no such approval"),
+        Err(DecideError::NotPending) => return Response::error(409, "this approval is already decided"),
+    };
+    app.bus.publish("approval", &item);
+    let approved = item.state == State::Approved;
+    let verb = if approved { "approved" } else { "denied" };
+    let why = match &item.reason {
+        Some(r) => format!(": {r}"),
+        None => String::new(),
+    };
+    let tail = if approved { " Run the same call again now." } else { "" };
+    let text = format!(
+        "[plaza] The owner {verb} your {} call ({}){why}.{tail}",
+        item.tool, item.id
+    );
+    app.work.enqueue(
+        app,
+        item.cid,
+        apz_proto::wire::WorkKind::Chat,
+        format!("op-{}", item.cid),
+        text,
+        crate::scheduler::Origin::default(),
+    );
+    Response::json(200, &item)
+}
+
+fn cid_param(p: &Params<'_>) -> Option<u64> {
+    p.get("cid").parse().ok()
+}
+
+fn get_mode(app: &App, _req: &Request, p: &Params<'_>) -> Response {
+    let Some(cid) = cid_param(p) else {
+        return Response::error(400, "cid must be a number");
+    };
+    Response::json(200, &json!({ "mode": app.approvals.mode(cid) }))
+}
+
+fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let Some(cid) = cid_param(p) else {
+        return Response::error(400, "cid must be a number");
+    };
+    let body: ModeBody = match req.json() {
+        Ok(body) => body,
+        Err(_) => return Response::error(400, "body must be {\"mode\": \"autonomous\" | \"ask\" | \"read_only\"}"),
+    };
+    if let Err(e) = app.approvals.set_mode(cid, body.mode) {
+        return Response::error(500, &format!("could not save the permission mode: {e}"));
+    }
+    Response::json(200, &json!({ "mode": body.mode }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apid-approvals-{tag}-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn mode_round_trips_through_disk() {
+        let dir = scratch("mode");
+        let store = Store::load(&dir);
+        assert_eq!(store.mode(7), Mode::Autonomous);
+        store.set_mode(7, Mode::ReadOnly).unwrap();
+        store.set_mode(9, Mode::Ask).unwrap();
+
+        let again = Store::load(&dir);
+        assert_eq!(again.mode(7), Mode::ReadOnly);
+        assert_eq!(again.mode(9), Mode::Ask);
+        assert_eq!(again.mode(3), Mode::Autonomous);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_holds_a_call_until_approved_then_passes_once() {
+        let dir = scratch("ask");
+        let store = Store::load(&dir);
+        store.set_mode(1, Mode::Ask).unwrap();
+        let input = json!({ "path": "/x", "body": "y" });
+
+        let (held, created) = store.gate(1, "write_thing", "write", &input);
+        let item = created.expect("a pending approval is queued");
+        assert_eq!(item.state, State::Pending);
+        assert!(held.unwrap().contains(&item.id));
+
+        // The same call while still pending is held again, with no new item.
+        let (again, none) = store.gate(1, "write_thing", "write", &input);
+        assert!(again.unwrap().starts_with("still waiting"));
+        assert!(none.is_none());
+
+        let approved = store.decide(&item.id, true, Some("ok".into())).unwrap();
+        assert_eq!(approved.state, State::Approved);
+        assert!(matches!(store.decide(&item.id, false, None), Err(DecideError::NotPending)));
+
+        // The matching call passes exactly once.
+        assert_eq!(store.gate(1, "write_thing", "write", &input).0, None);
+        let used = store.list().into_iter().find(|a| a.id == item.id).unwrap();
+        assert_eq!(used.state, State::Used);
+        assert!(store.gate(1, "write_thing", "write", &input).0.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_only_refuses_writes() {
+        let dir = scratch("ro");
+        let store = Store::load(&dir);
+        store.set_mode(2, Mode::ReadOnly).unwrap();
+        let (refusal, created) = store.gate(2, "write_thing", "write", &json!({}));
+        assert_eq!(refusal.unwrap(), "this agent is read-only: write_thing is not allowed");
+        assert!(created.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_class_passes_in_every_mode() {
+        let dir = scratch("read");
+        let store = Store::load(&dir);
+        for (cid, mode) in [(1, Mode::Autonomous), (2, Mode::Ask), (3, Mode::ReadOnly)] {
+            store.set_mode(cid, mode).unwrap();
+            let (refusal, created) = store.gate(cid, "read_thing", "read", &json!({}));
+            assert!(refusal.is_none() && created.is_none(), "{mode:?} must pass reads");
+        }
+        assert!(store.list().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autonomous_lets_writes_run() {
+        let dir = scratch("auto");
+        let store = Store::load(&dir);
+        let (refusal, created) = store.gate(4, "write_thing", "write", &json!({}));
+        assert!(refusal.is_none() && created.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

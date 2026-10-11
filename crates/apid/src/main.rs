@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 mod agents;
+mod approvals;
 mod artifacts;
 mod connectors;
 mod autoscale;

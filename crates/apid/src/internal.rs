@@ -292,8 +292,13 @@ fn tool_request(
     let granted: Vec<String> = profile(app, agent).tools.into_iter().map(|t| t.name).collect();
     // The plaza's laws come first: a forbid refuses the call and goes on the agent's record.
     let refused = app.laws.refusal(cid, &agent.role, name, input);
+    // The owner's permission mode next — only for calls that would otherwise run, so a refused
+    // or ungranted call never waits in the approvals queue.
+    let runnable = refused.is_none() && decide(&granted, name, runs(name)).is_ok();
+    let gate = if runnable { crate::approvals::gate(app, cid, name, input) } else { None };
     let (decision, output, is_error) = match decide(&granted, name, runs(name)) {
         _ if refused.is_some() => (Decision::Deny, refused.unwrap_or_default(), true),
+        _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),
         Err(reason) => (Decision::Deny, reason.to_string(), true),
         Ok(Runs::Guest) => {
             if name == "share_file" {
