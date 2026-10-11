@@ -1,0 +1,4 @@
+vsockd: admin on http://127.0.0.1:46771 (POST /tell, POST /stop, GET /healthz)
+vsockd: listening on /tmp/apz-matrix-final-1/treasury-unknown-uds/vm150_5000 for guest CID 150
+vsockd: listening on /tmp/apz-matrix-final-1/treasury-unknown-uds/vm151_5000 for guest CID 151
+vsockd: stop requested, closing the listeners

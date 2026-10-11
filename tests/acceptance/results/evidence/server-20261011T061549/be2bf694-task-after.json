@@ -1,0 +1,15 @@
+{
+  "id": "t1",
+  "goal": "write the plaza's welcome note",
+  "acceptance": "the note is in the workspace",
+  "budget": 400,
+  "role": "builder",
+  "state": "done",
+  "outcome": "accepted",
+  "assignee_id": "builder",
+  "verifier_id": null,
+  "agent_cid": 177,
+  "note": "artifacts: build-notes.txt (2 tool call(s))",
+  "created_at": 1791693103952,
+  "updated_at": 1791693105997
+}

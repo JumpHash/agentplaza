@@ -1,0 +1,7 @@
+post for an unconnected CID: 409 {"error":"no live agent has guest CID 999"}
+post naming an unknown task:  400 {"error":"no task with id t9"}
+cursor behind the agent's own: 409 {"error":"up_to p1 is behind the agent's read cursor p2"}
+cursor past the newest post:   409 {"error":"up_to p9 is past the newest post p2"}
+cursor naming no post:         400 {"error":"up_to must name a post (p<seq>), not nope"}
+cursor naming p0:              400 {"error":"up_to must name a post: the first post is p1"}
+caps: {'an empty subject': (400, 'subject must not be empty', 'subject must not be empty'), 'an empty body': (400, 'body must not be empty', 'body must not be empty'), 'a subject over the cap': (400, 'subject must be at most 256 bytes', 'subject must be at most 256 bytes'), 'a body over the cap': (400, 'body must be at most 4096 bytes', 'body must be at most 4096 bytes')}

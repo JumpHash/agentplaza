@@ -2,22 +2,22 @@
   "acceptance": "AgentPlaza MVP",
   "verdict": "PASS",
   "machine_class": "server",
-  "generated_at": "2026-10-11T02:00:09+0200",
-  "wall_seconds": 21.222,
+  "generated_at": "2026-10-11T06:33:09+0200",
+  "wall_seconds": 21.28,
   "manifest": {
     "suite": "fleet",
     "harness_version": "tests/acceptance 1",
     "sut_git": {
-      "head": "33b2c992c2907a43562b164abc1147a7f9fa3db9",
+      "head": "600f60318a8ddf94a4edf608dcc421adb088d27b",
       "dirty": true,
-      "harness_tree_sha256": "27d21da6d158ac47b0157fb5da95bb8aef54dd41f3e7914238bd8be70f1d0b65"
+      "harness_tree_sha256": "af33923eab85335b002e47a1ecfaeb281c37cc8a0008050dd671a645b00e6f2a"
     },
     "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
     "vm_image": {
       "kernel": "/boot/vmlinuz-linux",
       "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
-      "initrd": "/tmp/apz-fleet-pin/initrd.x86_64.gz",
-      "initrd_sha256": "74f06ccd984228fdada67d38edc965129e1c05e8fe109452c7c5263abbf5b7e8",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "bc4dd19fd0d5eef3fd98b8a36453573881dbfd2f19304c694a32f89306a491b2",
       "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
       "workspace_bytes": 16777216,
       "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
@@ -35,180 +35,180 @@
     "model_family": null,
     "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
     "seed": "apz-acceptance-v1",
-    "artifacts_dir": "/tmp/apz-acceptance-server-ilp9az9j",
-    "started_at": "2026-10-11T02:00:09+0200",
+    "artifacts_dir": "/tmp/apz-final-fleet",
+    "started_at": "2026-10-11T06:33:09+0200",
     "binaries": {
       "noded": {
-        "path": "/tmp/apz-fleet-pin/noded",
-        "sha256": "9af4eab4515f3e0d997a798a8f3d9301b70a32d5956c4ffccf985d6fca330c1f"
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "350098546c2dd9bf1981c338ec474c4987de039384b7ffe51ba329343ad4e053"
       },
       "vsockd": {
-        "path": "/tmp/apz-fleet-pin/vsockd",
-        "sha256": "6b5b628528e03b7b0532e24620877ce739edc01c9bb78839f243b5da866c1840"
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
       }
     },
     "canary_planted": null,
     "evidence": [
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-lifecycle-logs/noded.log",
-        "bytes": 139,
-        "sha256": "8e5bddbcaca2c0e9697a07776c78b76fd852f4be40ad37c82a141fbe85911005",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/8e5bddbc-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-lifecycle-logs/noded.log",
+        "bytes": 154,
+        "sha256": "d7321803f02d1d7fc07655846fe31cf0494c5c4684d5e59dd52297e11652767c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/d7321803-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-lifecycle-logs/vsockd.log",
-        "bytes": 1804,
-        "sha256": "2be2cdcaef46cc25278a9501e4ef05c7f680ba8b2a9ffe872fe3073c15a00b4a",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/2be2cdca-vsockd.log",
-        "excerpt_bytes": 1804
+        "source": "/tmp/apz-final-fleet/fleet-lifecycle-logs/vsockd.log",
+        "bytes": 1789,
+        "sha256": "9a6fba0fe3a552af4fcbc569a4337b7db7c2818f87edd05b27bb26387d18214b",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/9a6fba0f-vsockd.log",
+        "excerpt_bytes": 1789
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-a-logs/noded.log",
-        "bytes": 139,
-        "sha256": "5ac93c6e9d8a6867cba8271ef3f2e0cef0e87d876aec99e932a41798c32d1dc0",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/5ac93c6e-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-restart-a-logs/noded.log",
+        "bytes": 154,
+        "sha256": "f1d21b7a6852f52e390e612d01f29c00a3d1000832570850a69495c31799e0bd",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/f1d21b7a-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-a-logs/vsockd.log",
-        "bytes": 717,
-        "sha256": "470accaae9ae71608551b4fd8f6ddab0d7c59e761d49bb80323266dcc086df28",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/470accaa-vsockd.log",
-        "excerpt_bytes": 717
+        "source": "/tmp/apz-final-fleet/fleet-restart-a-logs/vsockd.log",
+        "bytes": 687,
+        "sha256": "6e46f8b6046a3160364077c108660a8f70982aa88dfaf77a85b3538a3494ced9",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/6e46f8b6-vsockd.log",
+        "excerpt_bytes": 687
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-b-logs/noded.log",
-        "bytes": 139,
-        "sha256": "3276d16697c61c2f1becb063ef8d09dc2cd5c9efab3ec084c18eb499aed62fd6",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/3276d166-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-restart-b-logs/noded.log",
+        "bytes": 154,
+        "sha256": "29b3227d2fae1aabcdc91867cd60f0e229d30bf90bf23b98d4960821f7ad63b0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/29b3227d-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-restart-b-logs/vsockd.log",
-        "bytes": 2447,
-        "sha256": "0a7772ab578b3eca7658a76a13cd5bc0327e01945be09f23267ccef946e4fbe8",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/0a7772ab-vsockd.log",
-        "excerpt_bytes": 2447
+        "source": "/tmp/apz-final-fleet/fleet-restart-b-logs/vsockd.log",
+        "bytes": 2417,
+        "sha256": "18b30363c7653caf6aba52b6b44bcfd95489d8e839a3f9e61a8906341cda49c5",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/18b30363-vsockd.log",
+        "excerpt_bytes": 2417
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-readopt-logs/noded.log",
-        "bytes": 139,
-        "sha256": "e0332d06beeb205f2bd7222f9a329d3f98bc86ab82a861b57cd690f223b79bab",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/e0332d06-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-readopt-logs/noded.log",
+        "bytes": 154,
+        "sha256": "5d232a8d4f0ad0b580c050849062941e8f0d1f25257910dcaf9662100a390e9c",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/5d232a8d-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-readopt-logs/vsockd.log",
-        "bytes": 1538,
-        "sha256": "112d062c10c49011b4bfe52e5ff8f7b57700d80c0613f9828832951fc97170bf",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/112d062c-vsockd.log",
-        "excerpt_bytes": 1538
+        "source": "/tmp/apz-final-fleet/fleet-readopt-logs/vsockd.log",
+        "bytes": 1523,
+        "sha256": "37a42be95870fbd4454beee72fee9b3c910efffce33e1b51afa53734a91490d0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/37a42be9-vsockd.log",
+        "excerpt_bytes": 1523
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-reap-logs/noded.log",
-        "bytes": 139,
-        "sha256": "d0c759114d85a5ba029c33f620564dab19c5bce79d697898bbf73850f83b180e",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/d0c75911-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-reap-logs/noded.log",
+        "bytes": 154,
+        "sha256": "d52ea1bd2fb22fd1a45e1fec78fd5c44c9d65c4a8da978bece299da5505ef4e7",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/d52ea1bd-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-reap-logs/vsockd.log",
-        "bytes": 2792,
-        "sha256": "26336618ecd3d8c6da786b1ca01f439877af618ac29bb94a8eb78e4f361b112b",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/26336618-vsockd.log",
-        "excerpt_bytes": 2792
+        "source": "/tmp/apz-final-fleet/fleet-reap-logs/vsockd.log",
+        "bytes": 2777,
+        "sha256": "816b31e86275a452454ccdc4dd06d9b28d7edb252def9ff37cc33c056f6eb075",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/816b31e8-vsockd.log",
+        "excerpt_bytes": 2777
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-status-logs/noded.log",
-        "bytes": 139,
-        "sha256": "fcacfb63eec07382a7a19c8781f566e45be4d0a723a03f3045affb0486aa71e9",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/fcacfb63-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-status-logs/noded.log",
+        "bytes": 154,
+        "sha256": "1945aaa88f98d8136a3a05a9f2905faf3bdd9d3a71c6a8d53a18c6423b43d411",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/1945aaa8-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-status-logs/vsockd.log",
-        "bytes": 766,
-        "sha256": "e10f74a8aea25fb6edd294a0d8f97ba240bf4d69b14dc7fda52f6cd256bd89d5",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/e10f74a8-vsockd.log",
-        "excerpt_bytes": 766
+        "source": "/tmp/apz-final-fleet/fleet-status-logs/vsockd.log",
+        "bytes": 751,
+        "sha256": "0aad59f0a5916062d1aaf9459aef51aabb4b598c66d469b61bde9894b6da9161",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/0aad59f0-vsockd.log",
+        "excerpt_bytes": 751
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-logs/noded.log",
-        "bytes": 139,
-        "sha256": "5dc3a76484fe2a2bd2525cd7f22768b623c6d0c2f16ef31d5a3d78eb37697870",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/5dc3a764-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-proxy-logs/noded.log",
+        "bytes": 154,
+        "sha256": "348603e9dd19263738119904eb70c279db5dd553fd7bd2c62eb1b1b37aeae923",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/348603e9-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-logs/vsockd.log",
-        "bytes": 785,
-        "sha256": "3751654ed83c1611f632ddf33f229d5301dc4b803eec31b30d337511ca0bda8d",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/3751654e-vsockd.log",
-        "excerpt_bytes": 785
+        "source": "/tmp/apz-final-fleet/fleet-proxy-logs/vsockd.log",
+        "bytes": 770,
+        "sha256": "5e7e2d98046e81046e2708a23fc816e02279556681201e0a63b46de14e2699cb",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/5e7e2d98-vsockd.log",
+        "excerpt_bytes": 770
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-off-logs/noded.log",
-        "bytes": 139,
-        "sha256": "651161e0fc33b0faadac5844f0af162f0736170c34e30f9636c602a503068eb1",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/651161e0-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-proxy-off-logs/noded.log",
+        "bytes": 154,
+        "sha256": "058cde8532a762647d154d45305cedc4296e1cde26c87801f74feba3b309b5d0",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/058cde85-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-off-logs/vsockd.log",
-        "bytes": 150,
-        "sha256": "f9cc5442c68cedede320c9665685d510526c50dab9a11e38b113bc28b8c3909f",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/f9cc5442-vsockd.log",
-        "excerpt_bytes": 150
+        "source": "/tmp/apz-final-fleet/fleet-proxy-off-logs/vsockd.log",
+        "bytes": 135,
+        "sha256": "9a3593836909a661449b3923e37d8b11f1a3b572d7642cb5ca73ace0084838f4",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/9a359383-vsockd.log",
+        "excerpt_bytes": 135
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-down-logs/noded.log",
-        "bytes": 139,
-        "sha256": "01117ab6647077e63cd364c3e002682de41ece3cccf66edae4821f7e0f47bad1",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/01117ab6-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-proxy-down-logs/noded.log",
+        "bytes": 154,
+        "sha256": "c5302c927dea3289e1932997d2482af6315cc9fe921eef219f57b5ef6965b5db",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/c5302c92-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-proxy-down-logs/vsockd.log",
-        "bytes": 151,
-        "sha256": "f4f071eea3f3638abf73237466b93994131799eb3a9d1069420b12c3fcfa6632",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/f4f071ee-vsockd.log",
-        "excerpt_bytes": 151
+        "source": "/tmp/apz-final-fleet/fleet-proxy-down-logs/vsockd.log",
+        "bytes": 136,
+        "sha256": "b333ba7b0e6a9079b770cdc19d8a597562aa6c06f346627e2568f7f36088b2bd",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/b333ba7b-vsockd.log",
+        "excerpt_bytes": 136
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-manifest/roles.json",
+        "source": "/tmp/apz-final-fleet/fleet-manifest/roles.json",
         "bytes": 396,
         "sha256": "778f9362abb60a5efdb66198fa24e68b54cf5d887786bdddb96d4c1dd4d02cc2",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/778f9362-roles.json",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/778f9362-roles.json",
         "excerpt_bytes": 396
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-logs/noded.log",
-        "bytes": 16398,
-        "sha256": "b2bd213ae3ba49170248cbeafbf74c80e4af6c75ac14debec05768a919018861",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/b2bd213a-noded.log",
-        "excerpt_bytes": 16398
+        "source": "/tmp/apz-final-fleet/fleet-agents-logs/noded.log",
+        "bytes": 16413,
+        "sha256": "dd5257fc8be3e0afcca4b6f008c7f909be46086b84352ae5546d18441f13a7eb",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/dd5257fc-noded.log",
+        "excerpt_bytes": 16413
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-logs/vsockd.log",
-        "bytes": 1141,
-        "sha256": "4933c0734c750326dea582dad76dbeebcfa2ebaf7f1db9a9a4ddcc2ac0eaf9bc",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/4933c073-vsockd.log",
-        "excerpt_bytes": 1141
+        "source": "/tmp/apz-final-fleet/fleet-agents-logs/vsockd.log",
+        "bytes": 1111,
+        "sha256": "4c3807ffa02607cfd6ffc1122323216cb0e6e4b3a1a50eb594d103912cfce63f",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/4c3807ff-vsockd.log",
+        "excerpt_bytes": 1111
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-hub2-logs/noded.log",
-        "bytes": 139,
-        "sha256": "da80fb0216c9f05def1f4d19b784756bfb03aff8192e85f9f657a30023ef0ca6",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/da80fb02-noded.log",
-        "excerpt_bytes": 139
+        "source": "/tmp/apz-final-fleet/fleet-agents-hub2-logs/noded.log",
+        "bytes": 154,
+        "sha256": "32fefee67f5dc8d3673a8b211dd3ce5270692eea5660146049e300564f33cbdf",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/32fefee6-noded.log",
+        "excerpt_bytes": 154
       },
       {
-        "source": "/tmp/apz-acceptance-server-ilp9az9j/fleet-agents-hub2-logs/vsockd.log",
-        "bytes": 1281,
-        "sha256": "05c5c2da5eed47876a7ff458813854d4a6b5f37a246237208a7428e9e3faf65a",
-        "excerpt": "tests/acceptance/results/evidence/server-20261011T015948/05c5c2da-vsockd.log",
-        "excerpt_bytes": 1281
+        "source": "/tmp/apz-final-fleet/fleet-agents-hub2-logs/vsockd.log",
+        "bytes": 1251,
+        "sha256": "e3130c308e5a08866cdb0ba9b20100d0d5c16f1ba883eaeb2f16ab7ee681f728",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063247/e3130c30-vsockd.log",
+        "excerpt_bytes": 1251
       }
     ]
   },
@@ -221,8 +221,8 @@
       "pass_bar": "every case passes; a case whose required flag/binary is absent is BLOCKED with the reason (never a pass)",
       "status": "PASS",
       "blocked_reason": null,
-      "cases_passed": 7,
-      "cases_total": 7,
+      "cases_passed": 8,
+      "cases_total": 8,
       "cases": [
         {
           "name": "keepalive lifecycle: role welcome, heartbeats, tool call/answer, clean end",
@@ -263,22 +263,22 @@
             {
               "name": "the hub answered the guest's uptime tool call",
               "ok": true,
-              "detail": "result={'type': 'tool_result', 'call': 2, 'ok': True, 'output': '285642.60 6072452.19'}"
+              "detail": "result={'type': 'tool_result', 'call': 2, 'ok': True, 'output': '302022.09 6412090.30'}"
             },
             {
               "name": "the registry row carries the cid, the accepted role and the call count",
               "ok": true,
-              "detail": "row={'cid': 50, 'role': 'architect', 'connected_at_ms': 1791676788401, 'last_heartbeat_ms': 1791676788459, 'calls': 2}"
+              "detail": "row={'cid': 50, 'role': 'architect', 'connected_at_ms': 1791693167889, 'last_heartbeat_ms': 1791693167945, 'calls': 2}"
             },
             {
               "name": "last_heartbeat advanced across the beats",
               "ok": true,
-              "detail": "first=1791676788402 last=1791676788459"
+              "detail": "first=1791693167889 last=1791693167945"
             },
             {
               "name": "the hub logged a clean end after 2 tool calls",
               "ok": true,
-              "detail": ":true,\"output\":\"plaza-agent-50\"}\nvsockd: answered call 1 (echo) for agent 50\n[guest 50 vm0 ->] {\"type\": \"tool_call\", \"call\": 2, \"name\": \"uptime\", \"args\": {}}\n[<-] guest 50 vm0 {\"type\":\"tool_result\",\"call\":2,\"ok\":true,\"output\":\"285642.60 6072452.19\"}\nvsockd: answered call 2 (uptime) for agent 50\n[guest 50 vm0 ->] {\"type\": \"bye\", \"calls\": 2}\nvsockd: agent 50 session ended cleanly after 2 tool calls\n"
+              "detail": ":true,\"output\":\"plaza-agent-50\"}\nvsockd: answered call 1 (echo) for agent 50\n[guest 50 vm0 ->] {\"type\": \"tool_call\", \"call\": 2, \"name\": \"uptime\", \"args\": {}}\n[<-] guest 50 vm0 {\"type\":\"tool_result\",\"call\":2,\"ok\":true,\"output\":\"302022.09 6412090.30\"}\nvsockd: answered call 2 (uptime) for agent 50\n[guest 50 vm0 ->] {\"type\": \"bye\", \"calls\": 2}\nvsockd: agent 50 session ended cleanly after 2 tool calls\n"
             },
             {
               "name": "the hub closed the session after the bye",
@@ -339,12 +339,12 @@
             {
               "name": "the restarted hub logged the agent's registration",
               "ok": true,
-              "detail": "kd: session with cid 51 dropped: protocol violation (the guest closed before sending hello)\n[guest 51 vm? ->] {\"type\": \"hello\", \"vm\": 0, \"guest_cid\": 51, \"role\": \"builder\", \"keepalive\": true}\nvsockd: guest 51 vm 0 says hello (accepted on the socket for cid 51)\nvsockd: agent 51 role builder connected\n[<-] guest 51 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n"
+              "detail": "st 51 vm? ->] {\"type\": \"hello\", \"vm\": 0, \"guest_cid\": 51, \"role\": \"builder\", \"keepalive\": true}\nvsockd: session with cid 51 dropped: protocol violation (the guest closed before sending hello)\nvsockd: guest 51 vm 0 says hello (accepted on the socket for cid 51)\nvsockd: agent 51 role builder connected\n[<-] guest 51 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\n"
             },
             {
               "name": "the registry shows the agent again with a fresh connected_at",
               "ok": true,
-              "detail": "before=1791676788829 after=1791676788936"
+              "detail": "before=1791693168318 after=1791693168476"
             },
             {
               "name": "the re-registered session serves a tool call",
@@ -364,7 +364,7 @@
             {
               "name": "the v1 session's tool calls are answered end to end",
               "ok": true,
-              "detail": "echo={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-52-hello'} uptime={'type': 'tool_result', 'call': 2, 'ok': True, 'output': '285643.08 6072462.29'}"
+              "detail": "echo={'type': 'tool_result', 'call': 1, 'ok': True, 'output': 'plaza-guest-52-hello'} uptime={'type': 'tool_result', 'call': 2, 'ok': True, 'output': '302022.62 6412102.05'}"
             },
             {
               "name": "the v1 session ends cleanly and the hub logs it",
@@ -405,7 +405,7 @@
             {
               "name": "the registry still carries the adopted row (the predecessor could not evict it)",
               "ok": true,
-              "detail": "row={'cid': 53, 'role': 'builder', 'connected_at_ms': 1791676789253, 'last_heartbeat_ms': 1791676789253, 'calls': 1} log=ccepted on the socket for cid 53)\nvsockd: agent 53 role builder connected\nvsockd: agent 53 re-adopted (previous session role builder, connected 0s ago)\n[<-] guest 53 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\nvsockd: session with cid 53 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)\n[guest 53 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"still-mine\"}}\n[<-] guest 53 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"still-mine\"}\nvsockd: answered call 1 (echo) for agent 53\n"
+              "detail": "row={'cid': 53, 'role': 'builder', 'connected_at_ms': 1791693168795, 'last_heartbeat_ms': 1791693168795, 'calls': 1} log=ccepted on the socket for cid 53)\nvsockd: agent 53 role builder connected\nvsockd: agent 53 re-adopted (previous session role builder, connected 0s ago)\n[<-] guest 53 vm0 {\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"role\":\"builder\",\"keepalive\":true}\nvsockd: session with cid 53 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)\n[guest 53 vm0 ->] {\"type\": \"tool_call\", \"call\": 1, \"name\": \"echo\", \"args\": {\"text\": \"still-mine\"}}\n[<-] guest 53 vm0 {\"type\":\"tool_result\",\"call\":1,\"ok\":true,\"output\":\"still-mine\"}\nvsockd: answered call 1 (echo) for agent 53\n"
             },
             {
               "name": "the adopted session ends cleanly",
@@ -439,7 +439,7 @@
             {
               "name": "the registry row persists across the silence",
               "ok": true,
-              "detail": "row={'cid': 54, 'role': 'reviewer', 'connected_at_ms': 1791676789572, 'last_heartbeat_ms': 1791676789572, 'calls': 0}"
+              "detail": "row={'cid': 54, 'role': 'reviewer', 'connected_at_ms': 1791693169164, 'last_heartbeat_ms': 1791693169164, 'calls': 0}"
             },
             {
               "name": "the silent agent is still served (it was not reaped)",
@@ -510,7 +510,7 @@
             {
               "name": "a connected agent appears as a row with cid/role/connected_at/last_heartbeat/calls",
               "ok": true,
-              "detail": "row={'cid': 55, 'role': 'architect', 'connected_at_ms': 1791676800547, 'last_heartbeat_ms': 1791676800547, 'calls': 0}"
+              "detail": "row={'cid': 55, 'role': 'architect', 'connected_at_ms': 1791693180090, 'last_heartbeat_ms': 1791693180090, 'calls': 0}"
             },
             {
               "name": "sessions_active is 1 while the agent is connected",
@@ -551,7 +551,7 @@
             {
               "name": "the proxied view is live: a connected agent appears in it",
               "ok": true,
-              "detail": "agents=[{'cid': 56, 'role': 'architect', 'connected_at_ms': 1791676800869, 'last_heartbeat_ms': 1791676800870, 'calls': 0}]"
+              "detail": "agents=[{'cid': 56, 'role': 'architect', 'connected_at_ms': 1791693180413, 'last_heartbeat_ms': 1791693180414, 'calls': 0}]"
             },
             {
               "name": "a noded not told where the hub is answers 503",
@@ -580,7 +580,7 @@
             {
               "name": "noded booted the initial role fleet at startup",
               "ok": true,
-              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, reviewer, CIDs 100..=101)\nnoded: listening on http://127.0.0.1:39497 (kernel /boot/vmlinuz-linux, initrd /tmp/apz-fleet-pin/initrd.x86_64.gz, console apps/web/dist)\n"
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, reviewer, CIDs 100..=101)\nnoded: listening on http://127.0.0.1:40015 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)\n"
             },
             {
               "name": "the startup line names the fleet run",
@@ -605,7 +605,7 @@
             {
               "name": "the hub's registry shows both agents, sessions_active == 2",
               "ok": true,
-              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 2, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 100, 'role': 'builder', 'connected_at_ms': 1791676803928, 'last_heartbeat_ms': 1791676803928, 'calls': 0}, {'cid': 101, 'role': 'reviewer', 'connected_at_ms': 1791676803948, 'last_heartbeat_ms': 1791676803948, 'calls': 0}], 'sessions_active': 2}"
+              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 2, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 100, 'role': 'builder', 'connected_at_ms': 1791693183466, 'last_heartbeat_ms': 1791693183466, 'calls': 0}, {'cid': 101, 'role': 'reviewer', 'connected_at_ms': 1791693183481, 'last_heartbeat_ms': 1791693183481, 'calls': 0}], 'sessions_active': 2}"
             },
             {
               "name": "each guest's transcript shows its role accepted",
@@ -630,12 +630,12 @@
             {
               "name": "both real guests reconnect to the restarted hub",
               "ok": true,
-              "detail": "hub_log=['vsockd: agent 100 role builder connected', 'vsockd: agent 101 role reviewer connected']"
+              "detail": "hub_log=['vsockd: agent 101 role reviewer connected', 'vsockd: agent 100 role builder connected']"
             },
             {
               "name": "the restarted hub's registry shows both agents again",
               "ok": true,
-              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 100, 'role': 'builder', 'connected_at_ms': 1791676809231, 'last_heartbeat_ms': 1791676809231, 'calls': 0}, {'cid': 101, 'role': 'reviewer', 'connected_at_ms': 1791676809234, 'last_heartbeat_ms': 1791676809234, 'calls': 0}], 'sessions_active': 2}"
+              "detail": "status={'node': {'cids': [100, 101], 'port': 5000, 'uptime_s': 0, 'max_sessions': 64, 'keepalive_idle_s': 300}, 'agents': [{'cid': 100, 'role': 'builder', 'connected_at_ms': 1791693188783, 'last_heartbeat_ms': 1791693188783, 'calls': 0}, {'cid': 101, 'role': 'reviewer', 'connected_at_ms': 1791693188777, 'last_heartbeat_ms': 1791693188777, 'calls': 0}], 'sessions_active': 2}"
             },
             {
               "name": "no guest rebooted across the hub restart",
@@ -674,6 +674,47 @@
             }
           ],
           "notes": []
+        },
+        {
+          "name": "a reused work directory is refused (a regression case)",
+          "detail": "",
+          "vector": "deterministic fixtures, no daemon: a fresh (or empty, or absent) directory is accepted, while a directory holding an earlier run's daemon log (whose `listening on` line would satisfy the readiness wait against a dead port) or an earlier run's per-CID socket file is refused with the reason",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "a work directory that does not exist yet is accepted (the runner makes one)",
+              "ok": true,
+              "detail": "/tmp/apz-final-fleet/harness-work-dir/absent"
+            },
+            {
+              "name": "an empty work directory is accepted (an operator may pre-create one)",
+              "ok": true,
+              "detail": "/tmp/apz-final-fleet/harness-work-dir/empty"
+            },
+            {
+              "name": "a directory holding an earlier run's daemon log is refused, naming the readiness hazard",
+              "ok": true,
+              "detail": "reason=\"it already holds leftovers from an earlier run: the daemon logs 'demo-logs' (a stale `listening on` line satisfies a readiness wait and the harness then talks to a dead port) \u2014 a reused directory silently defeats the harness's readiness waits, so this run's results would mix two runs' state\""
+            },
+            {
+              "name": "a directory holding an earlier run's socket file is refused too (existence is not a listener)",
+              "ok": true,
+              "detail": "reason=\"it already holds leftovers from an earlier run: the socket directory 'demo-uds' (a stale socket path is not a live listener) \u2014 a reused directory silently defeats the harness's readiness waits, so this run's results would mix two runs' state\""
+            },
+            {
+              "name": "any other leftover still refuses the directory (only a directory the runner can call its own is used)",
+              "ok": true,
+              "detail": "reason=\"it already holds leftovers from an earlier run: entries starting 'notes.txt' \u2014 a reused directory silently defeats the harness's readiness waits, so this run's results would mix two runs' state\""
+            }
+          ],
+          "notes": [
+            "the refusal is at the runner's door (Ctx): run.py reports it as BLOCKED (exit 2) with the reason, so a reused directory can never silently mix two runs' artifacts into one result row."
+          ]
         }
       ],
       "data": {},
@@ -683,8 +724,8 @@
         "noded --hub-status: present (the one-origin proxy case runs)"
       ],
       "findings": [],
-      "started_at": "2026-10-11T01:59:48+0200",
-      "duration_s": 21.22
+      "started_at": "2026-10-11T06:32:47+0200",
+      "duration_s": 21.277
     }
   ],
   "findings": []

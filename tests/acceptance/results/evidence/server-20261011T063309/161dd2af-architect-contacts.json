@@ -1,0 +1,14 @@
+{
+  "agent_cid": 172,
+  "contacts": [
+    {
+      "peer_cid": 173,
+      "role": "builder",
+      "since": 1791693194584,
+      "kind": "hired"
+    }
+  ],
+  "total": 1,
+  "limit": 256,
+  "truncated": false
+}

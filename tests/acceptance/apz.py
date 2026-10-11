@@ -313,6 +313,51 @@ class LabError(RuntimeError):
     """A lab could not be brought up or driven."""
 
 
+def work_dir_reuse_reason(path: Path) -> str | None:
+    """Why ``path`` cannot be this run's work directory, or ``None``.
+
+    The harness's hermeticity contract is one **fresh** work directory per run
+    (``--artifacts`` of its own, or none for a ``mktemp -d``), and a reused one
+    is refused rather than used, because its leftovers are dangerous rather than
+    merely untidy: a lab opens its daemon logs for *append* and
+    ``Lab._await_line`` scans the whole file, so a previous run's
+    ``noded: listening on http://127.0.0.1:PORT`` line satisfies the wait before
+    the new daemon has printed anything and the harness then talks to a dead
+    port; a previous run's per-CID socket files satisfy ``Lab._await_listeners``
+    the same way, and a stale ``vm{cid}`` path can even make a fresh muxer's
+    bind fail. Found on 2026-10-11: a full-matrix run pointed ``--artifacts`` at
+    a previous run's directory, every demo cell and the red-team lab reported
+    ``Connection refused`` against the stale port, and the run's own results
+    would have mixed two runs' artifacts.
+    """
+    if not path.exists():
+        return None
+    try:
+        leftover = sorted(entry.name for entry in path.iterdir())
+    except OSError as err:
+        return f"it cannot be read: {err}"
+    if not leftover:
+        return None
+    # Name what was actually found: a lab's logs (`{tag}-logs`) and its socket
+    # directory (`{tag}-uds`) are the two leftovers that defeat the readiness
+    # waits, and saying so is what makes the refusal actionable.
+    logs = [name for name in leftover if name.endswith("-logs")]
+    sockets = [name for name in leftover if name.endswith("-uds")]
+    found = []
+    if logs:
+        found.append(
+            f"the daemon logs {logs[0]!r} (a stale `listening on` line satisfies a readiness wait "
+            f"and the harness then talks to a dead port)"
+        )
+    if sockets:
+        found.append(f"the socket directory {sockets[0]!r} (a stale socket path is not a live listener)")
+    detail = "; ".join(found) or f"entries starting {leftover[0]!r}"
+    return (
+        f"it already holds leftovers from an earlier run: {detail} — a reused directory silently "
+        f"defeats the harness's readiness waits, so this run's results would mix two runs' state"
+    )
+
+
 class Result:
     """One HTTP reply: status plus decoded JSON body (when it was JSON)."""
     def __init__(self, status: int, body: str, elapsed: float):
@@ -960,6 +1005,11 @@ class Ctx:
         self.artifacts_dir = Path(
             args.artifacts or tempfile.mkdtemp(prefix=f"apz-acceptance-{self.machine_class}-")
         )
+        reused = work_dir_reuse_reason(self.artifacts_dir)
+        if reused is not None:
+            # Refused, not used: see `work_dir_reuse_reason`. A run that reuses a
+            # work directory reports results that belong to a *mix* of two runs.
+            raise LabError(f"the work directory {self.artifacts_dir} cannot be used afresh: {reused}")
         self.stamp = time.strftime("%Y%m%dT%H%M%S")
         self.findings: list[dict] = []
         self.suites: list[Suite] = []

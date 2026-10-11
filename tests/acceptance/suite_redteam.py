@@ -79,6 +79,29 @@ VIRTIO_TRANSPORT_DEVICES = (
     ("block (the workspace volume)", ("BlockMmioDevice::new",)),
 )
 
+#: The network-interface signatures a booted guest's kernel log and console must
+#: never carry. They are matched as **standalone tokens**, not as substrings:
+#: the guest's kernel log prints physical addresses, and `RAMDISK: [mem
+#: 0x07ee1000-0x07ffffff]` — the initrd's load address, which is top-of-RAM
+#: minus the initrd's size and therefore moves whenever the initrd is rebuilt —
+#: embeds `e1000` in a hex literal. A NIC, a NIC driver or a net device always
+#: prints its name as a token of its own (`e1000: Intel(R) PRO/1000 Network
+#: Driver`, `eth0: ...`), so token matching keeps the detection and drops the
+#: false positive (see `_case_nic_signature_scan`).
+NIC_SIGNATURES = ("virtio_net", "virtio-net", "eth0", "Ethernet", "e1000", "net device")
+
+
+def nic_signatures(text: str) -> dict[str, int]:
+    """How many times each NIC signature appears in ``text`` *as a token*.
+
+    A signature counts when it stands alone: not embedded in a longer
+    alphanumeric run (a hex address, an identifier) on either side.
+    """
+    return {
+        name: len(re.findall(rf"(?<![0-9A-Za-z_]){re.escape(name)}(?![0-9A-Za-z_])", text))
+        for name in NIC_SIGNATURES
+    }
+
 
 def _transport_device(lines: list[str], number: int) -> str:
     """Which MVP device the ``VirtioMmioTransport::new`` at ``number`` serves.
@@ -161,8 +184,9 @@ def _case_no_nic(suite: Suite, ctx, source: dict) -> None:
         serials = [vm.get("serial", "") for vm in final["vms"]]
         joined = "\n".join(serials)
         streams = "\n".join(reconstruct_console(serial) for serial in serials)
-        signatures = ("virtio_net", "virtio-net", "eth0", "Ethernet", "e1000", "net device")
-        present = {name: joined.count(name) + streams.count(name) for name in signatures}
+        raw_counts = nic_signatures(joined)
+        stream_counts = nic_signatures(streams)
+        present = {name: raw_counts[name] + stream_counts[name] for name in NIC_SIGNATURES}
         case.invariant(
             "no NIC signature in any guest kernel log (raw or reconstructed)",
             all(count == 0 for count in present.values()),
@@ -199,6 +223,12 @@ def _case_no_nic(suite: Suite, ctx, source: dict) -> None:
             f"identifiers={source['net_identifiers']}",
         )
         case.note(f"scanned {source['source']} for net-device identifiers and mmio transports")
+        case.note(
+            "the kernel-log scan is token-aware (see `nic_signatures`): the substring match it replaced "
+            "counted the `e1000` inside the kernel's own `RAMDISK: [mem 0x07ee1000-0x07ffffff]` line — the "
+            "initrd's load address, which moves whenever the initrd is rebuilt — and failed this case on a "
+            "guest with no NIC. `_case_nic_signature_scan` pins both halves of the fix, deterministically."
+        )
 
 
 def _case_only_wire(suite: Suite, ctx) -> None:
@@ -348,6 +378,52 @@ def _case_canary(suite: Suite, ctx) -> None:
         )
 
 
+def _case_nic_signature_scan(suite: Suite) -> None:
+    """The NIC-signature scan reads names, not addresses — a regression case.
+
+    New failure mode, surfaced by the 2026-10-11 full-matrix run and added to
+    the fixed suite here: the guest's kernel log prints `RAMDISK: [mem
+    0x07ee1000-0x07ffffff]` — the initrd's load address, top-of-RAM minus the
+    initrd's size — and the scan's *substring* match counted the `e1000` inside
+    that hex literal once per guest, failing `guest has no network device` on a
+    guest with no NIC at all. The trigger is environmental and repetitive: the
+    initrd is rebuilt whenever the harness changes (the `conversation` slice did
+    exactly that), and each rebuild moves the address.
+
+    Deterministic, no VM: the fixtures pin both halves — the address is not a
+    signature, and a driver banner, a device probe line and every other
+    signature's standalone form still are.
+    """
+    case = suite.case(
+        "the NIC-signature scan reads names, not addresses (a regression case)",
+        vector=(
+            "deterministic fixtures, no VM: `RAMDISK: [mem 0x07ee1000-0x07ffffff]` (the initrd's load "
+            "address, which moves whenever the initrd is rebuilt) must not count as `e1000`, while a driver "
+            "banner, a device probe line and the standalone forms of the other signatures must"
+        ),
+    )
+    fixtures = (
+        ("the initrd's load address is not a NIC (the false positive this case pins)", "[    0.000168] RAMDISK: [mem 0x07ee1000-0x07ffffff]", {}),
+        ("an address that embeds the signature on its right is not a NIC either", "[    0.0] mem 0x00000000e10000-0x00000000e1ffff", {}),
+        ("the e1000 driver's own banner is one", "[    1.234567] e1000: Intel(R) PRO/1000 Network Driver", {"e1000": 1}),
+        ("an e1000 device's probe line is one", "[    1.3] e1000 0000:00:03.0: (PCI:33MHz:32-bit) 52:54:00:12:34:56", {"e1000": 1}),
+        ("a virtio-net probe is one", "[    1.1] virtio_net virtio0: ...", {"virtio_net": 1}),
+        ("a virtio-net's hyphenated device name is one", "[    1.1] virtio-net: device", {"virtio-net": 1}),
+        ("an interface name is one (every occurrence)", "[    2.2] eth0: renamed from eth0", {"eth0": 2}),
+        ("a driver class line is one", "[    1.0] Ethernet Channel Bonding Driver", {"Ethernet": 1}),
+        ("a generic net-device line is one", "[    1.0] net device: no such device", {"net device": 1}),
+    )
+    for label, text, expected in fixtures:
+        counts = nic_signatures(text)
+        wanted = {name: expected.get(name, 0) for name in NIC_SIGNATURES}
+        case.invariant(f"the scan reads {label}", counts == wanted, f"counts={counts} wanted={wanted} text={text!r}")
+    case.note(
+        "the scan is token-aware (a signature embedded in a longer alphanumeric run does not count): a NIC, a "
+        "NIC driver or a net device prints its name as a token of its own, while the guest's kernel log prints "
+        "physical addresses. The live case above still asserts the guest's own kernel log carries none of them."
+    )
+
+
 def _case_bounded_capture(suite: Suite, ctx) -> None:
     case = suite.case(
         "serial capture stays bounded",
@@ -400,6 +476,7 @@ def run(ctx) -> Suite:
         return suite
     source = _vmm_source_scan()
     _case_no_nic(suite, ctx, source)
+    _case_nic_signature_scan(suite)
     _case_only_wire(suite, ctx)
     _case_canary(suite, ctx)
     _case_bounded_capture(suite, ctx)

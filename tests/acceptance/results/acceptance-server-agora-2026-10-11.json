@@ -1,0 +1,356 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "PASS",
+  "machine_class": "server",
+  "generated_at": "2026-10-11T06:33:29+0200",
+  "wall_seconds": 5.925,
+  "manifest": {
+    "suite": "agora",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "600f60318a8ddf94a4edf608dcc421adb088d27b",
+      "dirty": true,
+      "harness_tree_sha256": "af33923eab85335b002e47a1ecfaeb281c37cc8a0008050dd671a645b00e6f2a"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "bc4dd19fd0d5eef3fd98b8a36453573881dbfd2f19304c694a32f89306a491b2",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "server",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-final-agora",
+    "started_at": "2026-10-11T06:33:29+0200",
+    "binaries": {
+      "noded": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "350098546c2dd9bf1981c338ec474c4987de039384b7ffe51ba329343ad4e053"
+      },
+      "vsockd": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
+      }
+    },
+    "canary_planted": null,
+    "evidence": [
+      {
+        "source": "/tmp/apz-final-agora/agora-manifest-flow/roles.json",
+        "bytes": 711,
+        "sha256": "724b99949d7e8f001f0455c34030ff020faf331024d600b7e8ea0a9b2bc1daec",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/724b9994-roles.json",
+        "excerpt_bytes": 711
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-flow-logs/noded.log",
+        "bytes": 16508,
+        "sha256": "a3712ab51b38394d091480fc11c0aaf7239a0c84c72895cb8d4a1862aed3a2e1",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/a3712ab5-noded.log",
+        "excerpt_bytes": 16508
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-flow-logs/vsockd.log",
+        "bytes": 1170,
+        "sha256": "8b465334dd24414a406b3b919d86636559ec9827374b11aeb0848965bf18e968",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/8b465334-vsockd.log",
+        "excerpt_bytes": 1170
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-flow/agora-after-award.json",
+        "bytes": 645,
+        "sha256": "0c8e0911a1b7523154df021693e649e620b07313d2a1a5dadcb672b876b05722",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/0c8e0911-agora-after-award.json",
+        "excerpt_bytes": 645
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-flow/journal.json",
+        "bytes": 581,
+        "sha256": "51825fac598586a7b0d0555b720e11bbf155ec5ad12b3e27a622daa602b81dbb",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/51825fac-journal.json",
+        "excerpt_bytes": 581
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-flow/board-note.json",
+        "bytes": 251,
+        "sha256": "16e5eed5df2c547a95ab3296d26a7dd1a5f81d71e69ea73b1d5d3c6f1a801060",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/16e5eed5-board-note.json",
+        "excerpt_bytes": 251
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-flow/builder-transcript.txt",
+        "bytes": 502,
+        "sha256": "78166eef81188e908e66dee898777dd5b1abceb7949558ed1fe1254996f0aeb1",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/78166eef-builder-transcript.txt",
+        "excerpt_bytes": 502
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-flow/librarian-transcript.txt",
+        "bytes": 508,
+        "sha256": "004005151a959388eefc17fc9425ec79edc39104f7bb9c34047bfeedad0e6add",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/00400515-librarian-transcript.txt",
+        "excerpt_bytes": 508
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-manifest-rules/roles.json",
+        "bytes": 711,
+        "sha256": "724b99949d7e8f001f0455c34030ff020faf331024d600b7e8ea0a9b2bc1daec",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/724b9994-roles.json",
+        "excerpt_bytes": 711
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-rules-logs/noded.log",
+        "bytes": 16602,
+        "sha256": "c0d964fdd5b274dfa4dfecb408cbcbc2ed22e41fa6c463bf1b5e28516cea8234",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/c0d964fd-noded.log",
+        "excerpt_bytes": 16602
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-rules-logs/vsockd.log",
+        "bytes": 1172,
+        "sha256": "720850c4b723b26d01dd795a75050e961e9c9b678369c65c72f6681ce622cda9",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/720850c4-vsockd.log",
+        "excerpt_bytes": 1172
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-rules/refusals.txt",
+        "bytes": 895,
+        "sha256": "3b906beb37d6cb7aaeccf57ed6122ba55d2b6497080c41440e1810d5350fbf77",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/3b906beb-refusals.txt",
+        "excerpt_bytes": 895
+      },
+      {
+        "source": "/tmp/apz-final-agora/agora-evidence-rules/calls-257.json",
+        "bytes": 53562,
+        "sha256": "c15d63528fac26c5116d12f9fe10601e2fe65777c5529e73e4048c5bd9deaf6a",
+        "excerpt": "tests/acceptance/results/evidence/server-20261011T063323/c15d6352-calls-257.json",
+        "excerpt_bytes": 53562
+      }
+    ]
+  },
+  "suites_run": [
+    "agora"
+  ],
+  "suites": [
+    {
+      "suite": "agora",
+      "pass_bar": "every case passes; a case whose required flag is absent is BLOCKED with the reason (never a pass)",
+      "status": "PASS",
+      "blocked_reason": null,
+      "cases_passed": 2,
+      "cases_total": 2,
+      "cases": [
+        {
+          "name": "the market end to end: the call, the bid, the award that binds through the claim, and the hiring integration",
+          "detail": "",
+          "vector": "noded --agents <builder + librarian>: a roled open task is a call (capability/spec_ref/max_price derived from the task); the builder bids and a re-bid replaces its own row; the award binds the task through the ledger's own claim (a later claim is the ledger's 409); the call reads back `awarded` at the price the agent bid; the award's `escrow_entry` names the task's budget mint, which the treasury journal actually holds; and the board carries the hiring note \u2014 subject `hiring for <task>`, the template over the task's own fields, posted by the awarder",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "noded booted the initial role fleet at startup",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, librarian, CIDs 180..=181)\nnoded: listening on http://127.0.0.1:44165 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)\n"
+            },
+            {
+              "name": "the two-role fleet boots one VM per role, in alphabetical order, at the CIDs the base gives them",
+              "ok": true,
+              "detail": "roles={'builder': 180, 'librarian': 181}"
+            },
+            {
+              "name": "both role guests connected to the hub",
+              "ok": true,
+              "detail": "connected=['vsockd: agent 181 role librarian connected', 'vsockd: agent 180 role builder connected']"
+            },
+            {
+              "name": "a roled open task is a call: capability, spec_ref and max_price derived from the task, no bids, no award",
+              "ok": true,
+              "detail": "201 {'calls': [{'task': 't1', 'capability': 'builder', 'spec_ref': 'the artifact is filed', 'max_price': 500, 'state': 'open', 'created_at': 1791693205657, 'bids': [], 'award': None}], 'total': 1, 'limit': 256, 'truncated': False}"
+            },
+            {
+              "name": "a connected agent of the call's own role bids: the row names its call, bidder and price",
+              "ok": true,
+              "detail": "200 {\"task\":\"t1\",\"agent_cid\":180,\"bidder\":\"builder\",\"price\":300,\"created_at\":1791693205658}"
+            },
+            {
+              "name": "a re-bid replaces the agent's own row: the call still holds one bid, at the new price",
+              "ok": true,
+              "detail": "200 {\"task\":\"t1\",\"agent_cid\":180,\"bidder\":\"builder\",\"price\":350,\"created_at\":1791693205658} bids=[{'task': 't1', 'agent_cid': 180, 'bidder': 'builder', 'price': 350, 'created_at': 1791693205658}]"
+            },
+            {
+              "name": "the award binds the task through the ledger's own claim: claimed, assignee_id and agent_cid set",
+              "ok": true,
+              "detail": "200 {\"id\":\"t1\",\"goal\":\"the plaza's paid work\",\"acceptance\":\"the artifact is filed\",\"budget\":500,\"role\":\"builder\",\"state\":\"claimed\",\"outcome\":null,\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":180"
+            },
+            {
+              "name": "an awarded task is indistinguishable from a claimed one: claiming it again is the ledger's own 409",
+              "ok": true,
+              "detail": "{\"error\":\"a task may not go from claimed to claimed\"}"
+            },
+            {
+              "name": "the call reads back `awarded`, with the award's row at the price the agent bid (never one the caller named)",
+              "ok": true,
+              "detail": "call={'task': 't1', 'capability': 'builder', 'spec_ref': 'the artifact is filed', 'max_price': 500, 'state': 'awarded', 'created_at': 1791693205657, 'bids': [{'task': 't1', 'agent_cid': 180, 'bidder': 'builder', 'price': 350, 'created_at': 1791693205658}], 'award': {'task': 't1', 'contractor': 'builder', 'agent_cid': 180, 'price': 350, 'escrow_entry': 1, 'created_at': 1791693205660}}"
+            },
+            {
+              "name": "the award's `escrow_entry` names the ledger's own escrow: the task's budget mint, which the treasury journal holds",
+              "ok": true,
+              "detail": "escrow_entry=1 mint={'id': 1, 'kind': 'mint', 'task_id': 't1', 'root_task': 't1', 'memo': 'task budget', 'posted_by': 'treasury-service', 'created_at': 1791693205657, 'amount': 500, 'postings': [{'account': 1, 'kind': 'mint', 'owner_ref': 'mint', 'amount': -500}, {'account': 2, 'kind': 'task_escrow', 'owner_ref': 't1', 'amount': 500}]}"
+            },
+            {
+              "name": "the award posts the board's hiring note: the contract's subject, the awarder as author, the task link",
+              "ok": true,
+              "detail": "note={'id': 'p1', 'agent_cid': 181, 'role': 'librarian', 'subject': 'hiring for t1', 'body': \"builder \u2014 the plaza's paid work (acceptance: the artifact is filed)\", 'task': 't1', 'posted_by': 'librarian', 'created_at': 1791693205660}"
+            },
+            {
+              "name": "the hiring note's body is the template over the task's own fields (capability \u2014 goal, and its acceptance)",
+              "ok": true,
+              "detail": "body=\"builder \u2014 the plaza's paid work (acceptance: the artifact is filed)\""
+            }
+          ],
+          "notes": []
+        },
+        {
+          "name": "the market's refusals, the unbudgeted call's null escrow, and the bounded calls read",
+          "detail": "",
+          "vector": "noded --agents <builder + librarian>: every bid and award refusal in the endpoint's own words (a role that is not the call's capability, a price above the ceiling, an unconnected agent, a task that is not a call, an award with no bid, an unknown task, a malformed body, the method contract); a closed call takes neither a bid nor a second award; an unbudgeted call awards with a `null` escrow entry and posts no journal entry; and the calls response is bounded at 257 calls (the newest 256, oldest first, untruncated window said so)",
+          "ok": true,
+          "blocked_reason": null,
+          "tasks_passed": 0,
+          "tasks_required": 0,
+          "tasks_total": 0,
+          "tasks": [],
+          "invariants": [
+            {
+              "name": "noded booted the initial role fleet at startup",
+              "ok": true,
+              "detail": "noded: initial role fleet r1: 2 agents running (roles builder, librarian, CIDs 182..=183)\nnoded: listening on http://127.0.0.1:41285 (kernel /boot/vmlinuz-linux, initrd /mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz, console apps/web/dist)\n"
+            },
+            {
+              "name": "the two-role fleet boots one VM per role, in alphabetical order, at the CIDs the base gives them",
+              "ok": true,
+              "detail": "roles={'builder': 182, 'librarian': 183}"
+            },
+            {
+              "name": "both role guests connected to the hub",
+              "ok": true,
+              "detail": "connected=['vsockd: agent 182 role builder connected', 'vsockd: agent 183 role librarian connected']"
+            },
+            {
+              "name": "a bid from an agent that is not the call's capability is a 409, naming both roles",
+              "ok": true,
+              "detail": "409 {\"error\":\"the agent on guest CID 183 is role librarian, not builder\"}"
+            },
+            {
+              "name": "a bid above the call's ceiling is a 409, naming the price and the ceiling",
+              "ok": true,
+              "detail": "409 {\"error\":\"bid price 600 exceeds max_price 500\"}"
+            },
+            {
+              "name": "a bid from an agent this node has no live session for is the register's own 409",
+              "ok": true,
+              "detail": "409 {\"error\":\"no live agent has guest CID 999\"}"
+            },
+            {
+              "name": "a bid on a task that names no role is a 409: there is no call there",
+              "ok": true,
+              "detail": "409 {\"error\":\"task t2 names no role, so it is not a call\"}"
+            },
+            {
+              "name": "an award to an agent with no bid on the call is a 409, naming both",
+              "ok": true,
+              "detail": "409 {\"error\":\"award to guest CID 182 matches no bid on call t1\"}"
+            },
+            {
+              "name": "an award on a task that names no role is a 409: there is no call there",
+              "ok": true,
+              "detail": "409 {\"error\":\"task t2 names no role, so it is not a call\"}"
+            },
+            {
+              "name": "an awarder the daemon has no live session for is checked before anything moves: 409",
+              "ok": true,
+              "detail": "409 {\"error\":\"no live agent has guest CID 999\"}"
+            },
+            {
+              "name": "a bid or an award for an unknown task is a 404, in the ledger's own words",
+              "ok": true,
+              "detail": "bid=404 {\"error\":\"no task with id t404\"} award=404 {\"error\":\"no task with id t404\"}"
+            },
+            {
+              "name": "a malformed bid body is a 400 before anything is consulted",
+              "ok": true,
+              "detail": "400 {\"error\":\"invalid bid request: invalid type: string \\\"not a cid\\\", expected u64 at line 1 column 25\"}"
+            },
+            {
+              "name": "the bid and the award are POST-only",
+              "ok": true,
+              "detail": "bid=405 award=405"
+            },
+            {
+              "name": "a refused bid or award changes nothing: the call still holds no bid and no award",
+              "ok": true,
+              "detail": "{'calls': [{'task': 't1', 'capability': 'builder', 'spec_ref': None, 'max_price': 500, 'state': 'open', 'created_at': 1791693208306, 'bids': [], 'award': None}], 'total': 1, 'limit': 256, 'truncated': False}"
+            },
+            {
+              "name": "the award closes the call and binds the task",
+              "ok": true,
+              "detail": "200 {\"id\":\"t1\",\"goal\":\"the call under test\",\"acceptance\":null,\"budget\":500,\"role\":\"builder\",\"state\":\"claimed\",\"outcome\":null,\"assignee_id\":\"builder\",\"verifier_id\":null,\"agent_cid\":182,\"note\":null,\"created"
+            },
+            {
+              "name": "a second award on the same call is a 409 naming the contractor it already has",
+              "ok": true,
+              "detail": "409 {\"error\":\"call t1 is already awarded to builder\"}"
+            },
+            {
+              "name": "a bid on a call that has closed is a 409 naming the state it is in",
+              "ok": true,
+              "detail": "409 {\"error\":\"call t1 is claimed, not open\"}"
+            },
+            {
+              "name": "an unbudgeted call bids at zero and awards with a null escrow entry (there is no mint to name)",
+              "ok": true,
+              "detail": "bid=200 award=200 call={'task': 't3', 'capability': 'builder', 'spec_ref': None, 'max_price': 0, 'state': 'awarded', 'created_at': 1791693208316, 'bids': [{'task': 't3', 'agent_cid': 182, 'bidder': 'builder', 'price': 0, 'created_at': 1791693208316}], 'award': {'task': 't3', 'contractor': 'builder', 'agent_cid': 182, 'price': 0, 'escrow_entry': None, 'created_at': 1791693208317}}"
+            },
+            {
+              "name": "an unbudgeted call posts no journal entry (nothing was minted)",
+              "ok": true,
+              "detail": "entries=1 before=1"
+            },
+            {
+              "name": "the calls response is bounded: 257 calls, the newest 256 returned in ledger order, truncated said so",
+              "ok": true,
+              "detail": "total=257 len=256 truncated=True first=t3 last=t258 roled=257"
+            }
+          ],
+          "notes": []
+        }
+      ],
+      "data": {},
+      "notes": [
+        "noded --agents: present"
+      ],
+      "findings": [],
+      "started_at": "2026-10-11T06:33:23+0200",
+      "duration_s": 5.923
+    }
+  ],
+  "findings": []
+}

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# AgentPlaza acceptance suites — the four fixed suites plus the fleet and
-# treasury suites, runnable from CI.
+# AgentPlaza acceptance suites — the four fixed suites plus the fleet,
+# treasury, social and agora suites, runnable from CI.
 #
-#   scripts/acceptance.sh [demo|redteam|killresume|budgets|fleet|treasury|all] [run.py options]
+#   scripts/acceptance.sh [demo|redteam|killresume|budgets|fleet|treasury|social|agora|all] [run.py options]
 #
 # This is a thin wrapper around tests/acceptance/run.py (the repository's
 # convention: a shell entry point per test tree, docs/*/check.sh). It needs
@@ -19,6 +19,11 @@
 # installed. Override the path with --workspace-image.
 #
 # Exit status: 0 all executed suites passed, 1 a suite failed, 2 blocked.
+#
+# --artifacts names this run's work directory and must be fresh (omit it for a
+# mktemp -d): a non-empty one is refused, because a previous run's daemon logs
+# and socket files satisfy the harness's readiness waits and the run would then
+# report a mixture of two runs' state. --keep keeps the tree for inspection.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

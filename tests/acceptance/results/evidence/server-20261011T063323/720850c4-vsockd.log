@@ -1,0 +1,15 @@
+vsockd: listening on /tmp/apz-final-agora/agora-rules-uds/vm182_5000 for guest CID 182
+vsockd: listening on /tmp/apz-final-agora/agora-rules-uds/vm183_5000 for guest CID 183
+vsockd: accepted a connection from cid 182
+[guest 182 vm? ->] {"type":"hello","vm":0,"guest_cid":182,"role":"builder","keepalive":true}
+vsockd: guest 182 vm 0 says hello (accepted on the socket for cid 182)
+vsockd: agent 182 role builder connected
+[<-] guest 182 vm0 {"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true}
+vsockd: accepted a connection from cid 183
+[guest 183 vm? ->] {"type":"hello","vm":1,"guest_cid":183,"role":"librarian","keepalive":true}
+vsockd: guest 183 vm 1 says hello (accepted on the socket for cid 183)
+vsockd: agent 183 role librarian connected
+[<-] guest 183 vm1 {"type":"welcome","echo":"plaza-orchestrator","role":"librarian","keepalive":true}
+vsockd: session with cid 183 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: session with cid 182 dropped: connection lost (the keepalive agent's connection dropped; it reconnects with backoff)
+vsockd: stop requested, closing the listeners

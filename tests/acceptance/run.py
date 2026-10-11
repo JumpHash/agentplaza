@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""AgentPlaza acceptance runner — the four fixed suites plus the fleet and
-treasury suites.
+"""AgentPlaza acceptance runner — the four fixed suites plus the fleet,
+treasury, social and agora suites.
 
 ```text
-tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|treasury|all] [options]
+tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|treasury|social|agora|all] [options]
 ```
 
 Design (the stated choice):
@@ -47,11 +47,13 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import apz
+import suite_agora
 import suite_budgets
 import suite_demo
 import suite_fleet
 import suite_killresume
 import suite_redteam
+import suite_social
 import suite_treasury
 
 SUITES = {
@@ -61,6 +63,8 @@ SUITES = {
     "budgets": suite_budgets,
     "fleet": suite_fleet,
     "treasury": suite_treasury,
+    "social": suite_social,
+    "agora": suite_agora,
 }
 
 
@@ -90,7 +94,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--results-dir", default=str(apz.RESULTS_DIR), help="where the results JSON goes")
-    parser.add_argument("--artifacts", default=None, help="artifact root (default: a fresh mktemp -d)")
+    parser.add_argument("--artifacts", default=None, help="artifact root (default: a fresh mktemp -d; a non-empty one is refused: the harness needs a fresh work directory per run)")
     parser.add_argument("--keep", action="store_true", help="keep the artifact tree even on success")
     parser.add_argument(
         "--no-evidence",
@@ -192,7 +196,13 @@ def main(argv: list[str]) -> int:
             print("cannot auto-detect the machine class on this host: pass --machine-class", file=sys.stderr)
             return 2
         args.machine_class = detected
-    ctx = apz.Ctx(args)
+    try:
+        ctx = apz.Ctx(args)
+    except apz.LabError as err:
+        # A refused work directory (or another invocation-level refusal) is not a
+        # suite result: nothing ran, so this is BLOCKED, with the reason.
+        print(str(err), file=sys.stderr)
+        return 2
     ctx.results_dir.mkdir(parents=True, exist_ok=True)
 
     names = list(SUITES) if args.suite == "all" else [args.suite]

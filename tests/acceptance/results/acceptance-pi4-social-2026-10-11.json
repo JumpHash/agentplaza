@@ -1,0 +1,73 @@
+{
+  "acceptance": "AgentPlaza MVP",
+  "verdict": "BLOCKED",
+  "machine_class": "pi4",
+  "generated_at": "2026-10-11T06:33:29+0200",
+  "wall_seconds": 0.0,
+  "manifest": {
+    "suite": "social",
+    "harness_version": "tests/acceptance 1",
+    "sut_git": {
+      "head": "600f60318a8ddf94a4edf608dcc421adb088d27b",
+      "dirty": true,
+      "harness_tree_sha256": "af33923eab85335b002e47a1ecfaeb281c37cc8a0008050dd671a645b00e6f2a"
+    },
+    "vmm_version": "0.1.0 (crates/vmm Cargo.toml)",
+    "vm_image": {
+      "kernel": "/boot/vmlinuz-linux",
+      "kernel_sha256": "fb3e75cf32214fad38a22939f8bdafffa78bd7e0e5b2aa2afa89f0ebe02849ba",
+      "initrd": "/mnt/fast/AgentPlaza/target/guest/initrd.x86_64.gz",
+      "initrd_sha256": "bc4dd19fd0d5eef3fd98b8a36453573881dbfd2f19304c694a32f89306a491b2",
+      "workspace": "/mnt/fast/AgentPlaza/target/guest/workspace.ext4",
+      "workspace_bytes": 16777216,
+      "workspace_sha256": "a6d7281595cd60234f1f2f028790f6f23a4e7264309037c4a28ac395f89b6031"
+    },
+    "host": {
+      "machine_class": "pi4",
+      "os": "linux",
+      "arch": "x86_64",
+      "hostname": "zarathos-pc",
+      "kernel": "7.2.8-arch1-2",
+      "cpus": 24,
+      "memory_mib": 128320,
+      "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)"
+    },
+    "model_family": null,
+    "model_note": "no model family is configured in this repository (no provider/keys/model config exists); the MVP demo task is the frozen vsock session, so the machine x model cells collapse to the machine dimension",
+    "seed": "apz-acceptance-v1",
+    "artifacts_dir": "/tmp/apz-acceptance-pi4-93827irw",
+    "started_at": "2026-10-11T06:33:29+0200",
+    "binaries": {
+      "noded": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/noded",
+        "sha256": "350098546c2dd9bf1981c338ec474c4987de039384b7ffe51ba329343ad4e053"
+      },
+      "vsockd": {
+        "path": "/mnt/fast/AgentPlaza/target/debug/vsockd",
+        "sha256": "6c1703f4d49b649f65163ff9a66a54d20b8455d9c0b60467d1048be8c4fca446"
+      }
+    },
+    "canary_planted": null,
+    "evidence": []
+  },
+  "suites_run": [
+    "social"
+  ],
+  "suites": [
+    {
+      "suite": "social",
+      "pass_bar": "every case passes; a case whose required binary/flag/image is absent is BLOCKED with the reason (never a pass)",
+      "status": "BLOCKED",
+      "blocked_reason": "machine class 'pi4' needs a linux/aarch64 host; this host is linux/x86_64",
+      "cases_passed": 0,
+      "cases_total": 0,
+      "cases": [],
+      "data": {},
+      "notes": [],
+      "findings": [],
+      "started_at": "2026-10-11T06:33:29+0200",
+      "duration_s": 0.0
+    }
+  ],
+  "findings": []
+}

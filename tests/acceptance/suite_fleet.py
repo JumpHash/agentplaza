@@ -53,6 +53,7 @@ from apz import (
     now,
     probe_unix_socket,
     reconstruct_console,
+    work_dir_reuse_reason,
 )
 
 #: The orchestrator's handshake echo (the frozen protocol).
@@ -1029,6 +1030,84 @@ def _case_real_guest(suite: Suite, ctx, status: bool) -> None:
     _guarded(case, body)
 
 
+def _case_work_dir_freshness(suite: Suite, ctx) -> None:
+    """A reused work directory is refused — a regression case.
+
+    New failure mode, surfaced by the 2026-10-11 full-matrix run and added to
+    the fixed suite here: the runner was pointed at a work directory a previous
+    run had used. A lab opens its daemon logs for *append* and `Lab._await_line`
+    scans the whole file, so the previous run's `noded: listening on
+    http://127.0.0.1:PORT` line satisfied the wait before the new daemon had
+    printed anything; the harness then talked to that dead port and every demo
+    cell and the red-team lab failed with `Connection refused`, in ~0.5 s, while
+    every daemon was in fact healthy. A previous run's per-CID socket files
+    satisfy `Lab._await_listeners` the same way.
+
+    Deterministic, no VM: the fixtures pin the refusal (and the positive), so a
+    harness that later trusts a reused directory again fails this case.
+    """
+    case = suite.case(
+        "a reused work directory is refused (a regression case)",
+        vector=(
+            "deterministic fixtures, no daemon: a fresh (or empty, or absent) directory is accepted, while a "
+            "directory holding an earlier run's daemon log (whose `listening on` line would satisfy the "
+            "readiness wait against a dead port) or an earlier run's per-CID socket file is refused with the "
+            "reason"
+        ),
+    )
+    root = ctx.new_dir("harness-work-dir")
+    empty = root / "empty"
+    empty.mkdir()
+    stale_log = root / "stale-log"
+    (stale_log / "demo-logs").mkdir(parents=True)
+    (stale_log / "demo-logs" / "noded.log").write_text(
+        "noded: listening on http://127.0.0.1:46067 (kernel /boot/vmlinuz-linux, initrd ...)\n"
+    )
+    stale_socket = root / "stale-socket"
+    (stale_socket / "demo-uds").mkdir(parents=True)
+    (stale_socket / "demo-uds" / "vm10_5000").touch()
+    stale_other = root / "stale-other"
+    stale_other.mkdir()
+    (stale_other / "notes.txt").write_text("an operator's note left in a previous run's directory\n")
+    case.invariant(
+        "a work directory that does not exist yet is accepted (the runner makes one)",
+        work_dir_reuse_reason(root / "absent") is None,
+        f"{root / 'absent'}",
+    )
+    case.invariant(
+        "an empty work directory is accepted (an operator may pre-create one)",
+        work_dir_reuse_reason(empty) is None,
+        f"{empty}",
+    )
+    log_reason = work_dir_reuse_reason(stale_log)
+    case.invariant(
+        "a directory holding an earlier run's daemon log is refused, naming the readiness hazard",
+        log_reason is not None
+        and "demo-logs" in log_reason
+        and "readiness wait" in log_reason
+        and "dead port" in log_reason,
+        f"reason={log_reason!r}",
+    )
+    socket_reason = work_dir_reuse_reason(stale_socket)
+    case.invariant(
+        "a directory holding an earlier run's socket file is refused too (existence is not a listener)",
+        socket_reason is not None
+        and "demo-uds" in socket_reason
+        and "not a live listener" in socket_reason,
+        f"reason={socket_reason!r}",
+    )
+    unnamed_reason = work_dir_reuse_reason(stale_other)
+    case.invariant(
+        "any other leftover still refuses the directory (only a directory the runner can call its own is used)",
+        unnamed_reason is not None and "leftovers from an earlier run" in unnamed_reason,
+        f"reason={unnamed_reason!r}",
+    )
+    case.note(
+        "the refusal is at the runner's door (Ctx): run.py reports it as BLOCKED (exit 2) with the reason, so a "
+        "reused directory can never silently mix two runs' artifacts into one result row."
+    )
+
+
 # --------------------------------------------------------------------- the run
 
 
@@ -1071,4 +1150,5 @@ def run(ctx) -> Suite:
     _case_status_surface(suite, ctx)
     _case_hub_proxy(suite, ctx, hub_ok)
     _case_real_guest(suite, ctx, status)
+    _case_work_dir_freshness(suite, ctx)
     return suite
