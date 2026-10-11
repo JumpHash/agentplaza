@@ -45,6 +45,8 @@ mod agent;
 mod bash;
 mod cmdline;
 #[cfg(target_os = "linux")]
+mod egress;
+#[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
 mod keepalive;
@@ -201,6 +203,9 @@ fn one_shot(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
 /// agent stays up and tries again; it never decides that its work is done.
 #[cfg(target_os = "linux")]
 fn keepalive(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
+    // The egress shim serves the guest's outbound HTTP for as long as the agent
+    // runs; a bind failure is printed there, never fatal here.
+    egress::spawn_shim();
     let mut failures = 0u32;
     loop {
         match keepalive_once(config, out) {

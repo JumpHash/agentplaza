@@ -96,6 +96,26 @@ impl VsockStream {
         Ok(stream)
     }
 
+    /// Another handle to this connection (`dup`), so one thread can read while
+    /// another writes. The connection closes once every handle has.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        // SAFETY: `F_DUPFD_CLOEXEC` on the live descriptor this type owns returns
+        // a new descriptor, which the returned handle owns; the result is checked.
+        let fd = unsafe { libc::fcntl(self.fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { fd })
+    }
+
+    /// Ends the connection in both directions, for every handle to it, so a read
+    /// blocked on any of them returns.
+    pub fn shutdown(&self) {
+        // SAFETY: `self.fd` is a live socket this type owns; `shutdown` only
+        // signals the connection, and its result is not needed.
+        unsafe { libc::shutdown(self.fd, libc::SHUT_RDWR) };
+    }
+
     /// Waits until a non-blocking connect completes, or `timeout_ms` passes.
     fn wait_connected(&self, timeout_ms: i32) -> io::Result<()> {
         let mut fds = [libc::pollfd {
