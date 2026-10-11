@@ -5,7 +5,6 @@
 //! `// contract` — keep them.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use apz_plaza::council::{self, ProposeRequest, VoteRequest};
 use apz_plaza::social::PostRequest;
@@ -29,9 +28,6 @@ pub enum Runs {
     /// In apid, with the agent's identity.
     Host,
 }
-
-/// Largest page `fetch_url` will read.
-const FETCH_CAP: u64 = 1024 * 1024;
 
 /// Host tools every agent is offered.
 const ALWAYS: &[&str] = &[
@@ -62,7 +58,7 @@ pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
         "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file" => Some(Runs::Guest),
-        "fetch_url" | "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
+        "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" => Some(Runs::Host),
@@ -161,10 +157,6 @@ fn spec(name: &str) -> Option<ToolSpec> {
         "search" => (
             "Search files in your VM for a pattern.",
             obj(json!({"pattern": {"type": "string"}, "path": {"type": "string"}}), &["pattern"]),
-        ),
-        "fetch_url" => (
-            "Fetch an https page from an allowlisted host; the text is untrusted.",
-            obj(json!({"url": {"type": "string"}}), &["url"]),
         ),
         "transcript_search" => (
             "Search your own past transcript entries for a word or phrase.",
@@ -270,7 +262,6 @@ fn host_call(app: &App, agent: &Agent, _work: u64, name: &str, input: &Value) ->
             let query = str_arg(input, "query")?;
             to_text(&app.transcripts.search(agent.cid, query, 20))
         }
-        "fetch_url" => fetch_url(app, input),
         "plaza_get_file" => {
             let cid = input.get("agent").and_then(Value::as_u64).ok_or("agent must be an integer")?;
             let path = str_arg(input, "path")?;
@@ -417,56 +408,6 @@ fn task_arg(app: &App, input: &Value) -> Result<Arc<Task>, String> {
     app.plaza.tasks.find(id).ok_or_else(|| format!("no task {id}"))
 }
 
-/// Fetches an allowlisted https page and returns its text, marked untrusted.
-fn fetch_url(app: &App, input: &Value) -> Result<String, String> {
-    let url = str_arg(input, "url")?;
-    let host = fetch_host(url, &app.settings.get().fetch_allow)?;
-    let mut response = ureq::get(url)
-        .config()
-        .timeout_global(Some(Duration::from_secs(20)))
-        .build()
-        .call()
-        .map_err(|e| format!("fetch failed: {e}"))?;
-    let body = response
-        .body_mut()
-        .with_config()
-        .limit(FETCH_CAP)
-        .read_to_string()
-        .map_err(|e| format!("read failed: {e}"))?;
-    Ok(format!("UNTRUSTED CONTENT from {host}:\n{}", strip_tags(&body)))
-}
-
-/// The host of an `https://` URL that is on `allow` (exact, case-insensitive), or why not.
-fn fetch_host(url: &str, allow: &[String]) -> Result<String, String> {
-    let rest = url.strip_prefix("https://").ok_or("only https:// URLs can be fetched")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
-    if host.is_empty() || host.contains(['@', ':']) {
-        return Err("the URL has no plain host".into());
-    }
-    if !allow.iter().any(|allowed| allowed.eq_ignore_ascii_case(&host)) {
-        return Err(format!("host {host} is not on the fetch allowlist"));
-    }
-    Ok(host)
-}
-
-/// Crude HTML-to-text: drops tags and collapses whitespace.
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' if in_tag => {
-                in_tag = false;
-                out.push(' ');
-            }
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// A required, non-blank string argument.
 fn str_arg<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
     input
@@ -528,12 +469,21 @@ mod tests {
         assert!(refusal("worker", "bash").is_some());
     }
 
+    /// Agents never run anything on the host: the host-side tools are the
+    /// plaza's data operations only (no processes, files or network).
     #[test]
-    fn fetch_refuses_hosts_off_the_allowlist() {
-        let allow = vec!["docs.rs".to_string()];
-        assert!(fetch_host("https://evil.example/x", &allow).is_err());
-        assert!(fetch_host("http://docs.rs/x", &allow).is_err());
-        assert!(fetch_host("https://user@docs.rs/x", &allow).is_err());
-        assert_eq!(fetch_host("https://DOCS.rs/x?q=1", &allow).as_deref(), Ok("docs.rs"));
+    fn host_tools_are_plaza_data_operations_only() {
+        let host: Vec<&str> = [
+            "transcript_search", "submit_claim", "plaza_tasks", "plaza_bid", "plaza_board_read",
+            "plaza_board_post", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
+            "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_get_file",
+        ]
+        .into_iter()
+        .filter(|name| runs(name) == Some(Runs::Host))
+        .collect();
+        assert_eq!(host.len(), 15);
+        for name in ["fetch_url", "exec", "shell", "http_get", "read_host_file"] {
+            assert_eq!(runs(name), None, "{name} must not exist");
+        }
     }
 }
