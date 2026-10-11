@@ -51,6 +51,12 @@ mod files;
 #[cfg(target_os = "linux")]
 mod keepalive;
 #[cfg(target_os = "linux")]
+mod plan;
+#[cfg(target_os = "linux")]
+mod search_tools;
+#[cfg(target_os = "linux")]
+mod shells;
+#[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 mod tools;

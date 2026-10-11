@@ -1763,3 +1763,8 @@ mod tests {
         }
     }
 }
+
+/// `multi_edit`: several exact-string edits to one file, applied in order, all or nothing.
+pub fn multi_edit(_workspace: &Workspace, _input: &Value) -> Result<String, String> {
+    Err("multi_edit is not available yet".to_string())
+}

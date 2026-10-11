@@ -43,6 +43,13 @@ const ALWAYS: &[&str] = &[
     "fetch_url",
     "download",
     "install_packages",
+    "glob",
+    "grep",
+    "multi_edit",
+    "bash_start",
+    "bash_output",
+    "bash_kill",
+    "todo_write",
     "plaza_set_name",
     "plaza_pay",
     "plaza_contacts",
@@ -73,7 +80,8 @@ pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
         "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
-        | "fetch_url" | "download" | "install_packages" => Some(Runs::Guest),
+        | "fetch_url" | "download" | "install_packages" | "glob" | "grep" | "multi_edit" | "bash_start"
+        | "bash_output" | "bash_kill" | "todo_write" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
@@ -151,7 +159,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "read_file" => (
-            "Read a file in your VM, optionally from a line offset for a line limit.",
+            "Read a file in your VM. Lines come numbered (like cat -n); for long files pass offset (0-based line) and limit to read a window.",
             obj(
                 json!({"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1}}),
                 &["path"],
@@ -162,10 +170,52 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"path": {"type": "string"}, "content": {"type": "string"}}), &["path", "content"]),
         ),
         "edit_file" => (
-            "Replace one exact occurrence of `old` with `new` in a file in your VM.",
+            "Replace an exact string in a file in your VM. `old` must match exactly once unless replace_all is true; include enough surrounding lines to make it unique.",
             obj(
-                json!({"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}),
+                json!({"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}, "replace_all": {"type": "boolean"}}),
                 &["path", "old", "new"],
+            ),
+        ),
+        "multi_edit" => (
+            "Apply several exact-string edits to one file in order, all or nothing.",
+            obj(
+                json!({"path": {"type": "string"}, "edits": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"old": {"type": "string"}, "new": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["old", "new"]}}}),
+                &["path", "edits"],
+            ),
+        ),
+        "glob" => (
+            "Find files by glob pattern (e.g. **/*.rs, src/**/test_*.py), newest first.",
+            obj(json!({"pattern": {"type": "string"}, "path": {"type": "string"}}), &["pattern"]),
+        ),
+        "grep" => (
+            "Search file contents with a regular expression (ripgrep-like). output_mode: files_with_matches (default), content (matching lines with numbers), or count. Filter files with glob; add context lines; case_insensitive; head_limit caps results.",
+            obj(
+                json!({
+                    "pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"},
+                    "output_mode": {"type": "string", "enum": ["files_with_matches", "content", "count"]},
+                    "context": {"type": "integer", "minimum": 0, "maximum": 10},
+                    "case_insensitive": {"type": "boolean"}, "head_limit": {"type": "integer", "minimum": 1}
+                }),
+                &["pattern"],
+            ),
+        ),
+        "bash_start" => (
+            "Start a long-running shell command in the background (a dev server, a build, a watcher); returns its id at once.",
+            obj(json!({"command": {"type": "string"}}), &["command"]),
+        ),
+        "bash_output" => (
+            "Read what a background command printed since you last looked, and whether it is still running. wait_s waits up to that long for more output.",
+            obj(json!({"id": {"type": "string"}, "wait_s": {"type": "integer", "minimum": 0, "maximum": 60}}), &["id"]),
+        ),
+        "bash_kill" => (
+            "Stop a background command.",
+            obj(json!({"id": {"type": "string"}}), &["id"]),
+        ),
+        "todo_write" => (
+            "Keep your plan for this work as a todo list: pass the whole list each time, each item pending, in_progress (one at a time) or completed. Use it for anything with 3+ steps.",
+            obj(
+                json!({"todos": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}}, "required": ["content", "status"]}}}),
+                &["todos"],
             ),
         ),
         "list" => (
@@ -268,7 +318,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"name": {"type": "string"}}), &["name"]),
         ),
         "fetch_url" => (
-            "Fetch a web page or file over the internet (through the plaza's gateway) and return its text.",
+            "Fetch a web page or file over the internet (through the plaza's gateway). HTML comes back as readable text with its links; JSON and text as they are.",
             obj(json!({"url": {"type": "string"}}), &["url"]),
         ),
         "install_packages" => (

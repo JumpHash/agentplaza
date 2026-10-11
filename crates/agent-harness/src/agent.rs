@@ -26,7 +26,8 @@ use apz_proto::wire::{
 use serde_json::{Value, json};
 
 use crate::bash;
-use crate::files::Workspace;
+use crate::files::{self, Workspace};
+use crate::{plan, search_tools, shells};
 use crate::session::{SessionError, escape_for_transcript, kind_of, note, send};
 use crate::tools;
 
@@ -509,6 +510,13 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
     match name {
         "bash" => bash::run(workspace, input),
         "install_packages" => bash::install_packages(workspace, input),
+        "multi_edit" => files::multi_edit(workspace, input),
+        "glob" => search_tools::glob(workspace, input),
+        "grep" => search_tools::grep(workspace, input),
+        "bash_start" => shells::start(workspace, input),
+        "bash_output" => shells::output(workspace, input),
+        "bash_kill" => shells::kill(workspace, input),
+        "todo_write" => plan::todo_write(workspace, input),
         "edit_file" => {
             let args = edit_args(input)?;
             tools::serve(workspace, name, &args).map_err(|err| err.to_string())
