@@ -14,7 +14,8 @@ import { button, clip } from '../ui/components';
 import { h } from '../ui/dom';
 import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
 import { buildDistrictProps, buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
-import { grass, polish, slabSide, tiles } from './floor3d/textures';
+import { grass, paving, rng, slabSide, tiles } from './floor3d/textures';
+import { clouds, grassTufts, outline, sky, toonMat } from './floor3d/toon';
 import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
 
@@ -31,7 +32,7 @@ const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-i
 const AZIMUTH = Math.PI / 4;
 const SOCIAL_NEAR = 9.5; // districts this close count as neighbours for a visit or a chat
 const STROLL_R = 3.1; // the stroll ring just outside the dais
-const ROBOT_R = 0.45; // robot footprint radius for collisions
+const ROBOT_R = 0.55; // robot footprint radius for collisions
 const STEER = [0, 30, -30, 60, -60].map((d) => (d * Math.PI) / 180); // headings tried when a step is blocked
 const DUST_N = 90;
 const LABEL_CSS =
@@ -76,6 +77,8 @@ interface Bot {
   activity: string; // what the agent is doing right now, shown on its label and card
   robot: Robot;
   robotKey: string;
+  /** The robot's orientation, eased toward the ground's slope and its heading. */
+  tilt: THREE.Quaternion;
   pad: THREE.Mesh; // console pad under the home slot, tinted by state
   padMat: THREE.MeshBasicMaterial;
   token: THREE.Mesh; // the glowing task token, shown while working
@@ -95,7 +98,7 @@ interface Packet {
 
 /** A district's monitors and whether one of its robots is working right now. */
 interface DistrictLight {
-  screens: THREE.MeshStandardMaterial[];
+  screens: THREE.MeshToonMaterial[];
   lit: boolean;
 }
 
@@ -112,10 +115,18 @@ interface Palette {
   danger: string;
 }
 
+/** The district hues: a curated cartoon set (coral, tangerine, butter, lime, mint, teal, sky, periwinkle, lavender, rose). */
+const HUES = [8, 28, 46, 88, 140, 172, 198, 222, 262, 340];
+
+/** An agent's own colour: hues spread by the golden angle, so neighbours never match. */
+export function agentHue(cid: number): number {
+  return (cid * 137.508 + 20) % 360;
+}
+
 export function roleHue(role: string): number {
   let hash = 0;
   for (const ch of role) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  return hash % 360;
+  return HUES[hash % HUES.length]!;
 }
 
 /** Districts by role around a central dais; each agent gets a console slot. */
@@ -261,10 +272,12 @@ export function mount(root: HTMLElement): Cleanup {
     return mountFloor2d(root);
   }
   const palette = readPalette();
+  // The scene's own cartoon grade of the register palette: cream, sand and slate instead of
+  // paper greys, with the same signal orange and status colours.
   const C = {
-    sheet: colour(palette.sheet, '#ffffff'),
-    rule: colour(palette.rule, '#d6d2c8'),
-    ink3: colour(palette.ink3, '#8a8a8a'),
+    sheet: new THREE.Color(0xfff4de),
+    rule: new THREE.Color(0xe2b97f),
+    ink3: new THREE.Color(0x667892),
     signal: colour(palette.signal, '#d9482b'),
     ok: colour(palette.ok, '#2f8f5b'),
     info: colour(palette.info, '#2f6fb0'),
@@ -284,14 +297,19 @@ export function mount(root: HTMLElement): Cleanup {
   // Renderer, scene, camera, controls.
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap; // crisp, cartoon shadows
   const canvas = renderer.domElement;
   canvas.classList.add('floor-canvas');
   canvas.setAttribute('aria-label', 'The plaza floor');
   canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab';
 
   const scene = new THREE.Scene();
-  scene.background = C.paper;
+  const SKY_TOP = new THREE.Color(0x5fa8e8);
+  const SKY_HORIZON = new THREE.Color(0xfde9c4);
+  scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x8fcd62)));
+  scene.fog = new THREE.Fog(SKY_HORIZON, 70, 240);
+  const cloudLayer = clouds(14, 70, rng(31));
+  scene.add(cloudLayer.group);
   const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -303,32 +321,25 @@ export function mount(root: HTMLElement): Cleanup {
   controls.minDistance = 6;
   controls.maxDistance = 300;
 
-  scene.add(new THREE.HemisphereLight(0xfff3e2, 0xb3a18a, 1.6));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+  scene.add(new THREE.HemisphereLight(0xdff0ff, 0x8a7a5a, 1.1));
+  const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
   sun.position.set(22, 40, 16);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.bias = -0.0008;
+  sun.shadow.normalBias = 0.03;
   const sc = sun.shadow.camera;
   Object.assign(sc, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 140 });
   sc.updateProjectionMatrix();
   scene.add(sun);
 
-  // Ground: a large sheet with a subtle grid.
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(200, 200),
-    new THREE.MeshStandardMaterial({ map: grass(), roughness: 1 }),
-  );
+  // Ground: a meadow out to the painted horizon.
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: grass() }));
+  grass().repeat.set(36, 36);
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.01;
   ground.receiveShadow = true;
   scene.add(ground);
-  const grid = new THREE.GridHelper(200, 100, C.rule, C.rule);
-  const gridMat = grid.material as THREE.LineBasicMaterial;
-  gridMat.transparent = true;
-  gridMat.opacity = 0.35;
-  gridMat.depthWrite = false;
-  scene.add(grid);
 
   // Shared resources.
   const districtGroup = new THREE.Group();
@@ -404,6 +415,10 @@ export function mount(root: HTMLElement): Cleanup {
   const ndcVec = new THREE.Vector2();
   const raycaster = new THREE.Raycaster();
   const camDir = new THREE.Vector3();
+  const UP = new THREE.Vector3(0, 1, 0);
+  const slopeN = new THREE.Vector3();
+  const tiltQ = new THREE.Quaternion();
+  const yawQ = new THREE.Quaternion();
 
   // Plaques, slabs and the dais.
   function plaqueTexture(text: string, orch: boolean): THREE.CanvasTexture {
@@ -442,7 +457,7 @@ export function mount(root: HTMLElement): Cleanup {
     if (orch) {
       const dais = new THREE.Mesh(
         new THREE.CylinderGeometry(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48),
-        new THREE.MeshStandardMaterial({ map: polish(C.sheet), roughness: 0.35, metalness: 0.05 }),
+        toonMat({ map: paving(new THREE.Color(0xf0d3a2), 3) }),
       );
       dais.position.set(d.cx, DAIS_H / 2, d.cy);
       dais.castShadow = true;
@@ -457,14 +472,12 @@ export function mount(root: HTMLElement): Cleanup {
       box.rotateY(Math.PI / 4);
       const slab = new THREE.Mesh(
         box,
-        [slabSide(d.hue), new THREE.MeshStandardMaterial({ map: tiles(d.hue), roughness: 0.95 }), slabSide(d.hue)],
+        [slabSide(d.hue), toonMat({ map: tiles(d.hue) }), slabSide(d.hue)],
       );
       slab.position.set(d.cx, SLAB_H / 2, d.cy);
       slab.castShadow = true;
       slab.receiveShadow = true;
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: C.rule }));
-      edges.position.copy(slab.position);
-      g.add(slab, edges);
+      g.add(slab);
       // Furniture for the district: desks, plants, a lamp, and its role's pieces.
       const props = buildDistrictProps(d.hue, d.r, d.role, C);
       props.position.set(d.cx, SLAB_H, d.cy);
@@ -475,7 +488,7 @@ export function mount(root: HTMLElement): Cleanup {
         if (box.min.y > SLAB_H + 2.2) continue; // overhead pieces do not block the floor
         propBoxes.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z });
       }
-      litByRole.set(d.role, { screens: (props.userData.screens ?? []) as THREE.MeshStandardMaterial[], lit: false });
+      litByRole.set(d.role, { screens: (props.userData.screens ?? []) as THREE.MeshToonMaterial[], lit: false });
       const anim = props.userData.animate as ((t: number) => void) | undefined;
       if (anim) propAnim.push(anim);
     }
@@ -487,6 +500,7 @@ export function mount(root: HTMLElement): Cleanup {
     plaque.rotation.x = -Math.PI / 2;
     plaque.position.set(d.cx, topOf(d) + 0.01, orch ? d.cy - 1.6 : d.cy - d.r + 0.55);
     g.add(plaque);
+    outline(g);
     return g;
   }
 
@@ -510,12 +524,30 @@ export function mount(root: HTMLElement): Cleanup {
     const outside = buildScatter(ds, C);
     pathGroup.add(outside.group);
     for (const b of outside.boxes) propBoxes.push(b);
+    // Grass tufts everywhere the meadow is open: off the plaza, the terraces and the paths.
+    let far = 12;
+    for (const d of ds) far = Math.max(far, Math.hypot(d.cx, d.cy) + d.r + 10);
+    const tufts = grassTufts(9000, Math.min(far, 60), (x, z) => {
+      if (Math.hypot(x, z) < 4.8) return false;
+      for (const d of ds) {
+        const pad = d.role === 'orchestrator' ? DAIS_R + DAIS_RAMP : d.r + RAMP;
+        if (Math.abs(x - d.cx) < pad + 0.2 && Math.abs(z - d.cy) < pad + 0.2) return false;
+        const len = Math.hypot(d.cx, d.cy);
+        if (len > 0.5) {
+          const t = clamp((x * d.cx + z * d.cy) / (len * len), 0, 1);
+          if (Math.hypot(x - d.cx * t, z - d.cy * t) < 0.75) return false;
+        }
+      }
+      return !propBoxes.some((b) => x > b.x0 - 0.1 && x < b.x1 + 0.1 && z > b.z0 - 0.1 && z < b.z1 + 0.1);
+    }, rng(97));
+    pathGroup.add(tufts.mesh);
+    propAnim.push(tufts.animate);
   }
 
   // Robots, labels, pads.
   function createBot(agent: Agent, district: District, hx: number, hy: number): Bot {
     const orch = agent.tier === 'orchestrator';
-    const robot = makeRobot(district.hue, orch, robotPalette);
+    const robot = makeRobot(district.hue, orch, robotPalette, agentHue(agent.cid));
     robot.group.traverse((o) => {
       o.castShadow = true;
       o.receiveShadow = true;
@@ -556,6 +588,7 @@ export function mount(root: HTMLElement): Cleanup {
       activity: 'idle',
       robot,
       robotKey: `${district.hue}|${orch}`,
+      tilt: new THREE.Quaternion(),
       pad,
       padMat,
       token,
@@ -769,7 +802,14 @@ export function mount(root: HTMLElement): Cleanup {
         b.vy = 0;
       }
       b.robot.group.position.set(b.x, b.py, b.y);
-      b.robot.group.rotation.y = b.heading;
+      // Lean with the ground: the slope's normal from the surface around the robot, then the heading.
+      const e = 0.3;
+      const sx = (surfaceAt(b.x + e, b.y) - surfaceAt(b.x - e, b.y)) / (2 * e);
+      const sz = (surfaceAt(b.x, b.y + e) - surfaceAt(b.x, b.y - e)) / (2 * e);
+      slopeN.set(-sx, 1, -sz).normalize();
+      tiltQ.setFromUnitVectors(UP, slopeN).multiply(yawQ.setFromAxisAngle(UP, b.heading));
+      b.tilt.slerp(tiltQ, 1 - Math.exp(-10 * dt));
+      b.robot.group.quaternion.copy(b.tilt);
       b.robot.update(dt, t);
       b.padMat.color.copy(status === 'working' ? C.info : status === 'idle' ? C.ok : C.ink3);
       // Working robots stay at their desk, carrying a glowing task token; their district's monitors light up.
@@ -1026,6 +1066,7 @@ export function mount(root: HTMLElement): Cleanup {
     updatePackets(now);
     updateDust(t);
     plazaAnim(t);
+    cloudLayer.animate(t);
     for (const fn of propAnim) fn(t);
     controls.update();
     renderer.render(scene, camera);
@@ -1051,7 +1092,7 @@ export function mount(root: HTMLElement): Cleanup {
     disposeTree(pathGroup);
     disposeTree(plaza);
     disposeTree(ground);
-    disposeTree(grid);
+    disposeTree(cloudLayer.group);
     dustGeo.dispose();
     dustMat.dispose();
     padGeo.dispose();

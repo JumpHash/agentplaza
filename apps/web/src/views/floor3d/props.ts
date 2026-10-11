@@ -7,6 +7,7 @@
 // robots collide with it.
 
 import * as THREE from 'three';
+import { outline, toonMat } from './toon';
 import { canvasTexture, metal as metalTex, paving, polish, rng, water, wood as woodTex, type Rand } from './textures';
 
 /** The palette colours the props need, already resolved to three.js colours. */
@@ -47,8 +48,8 @@ const BOARD = new Set(['architect', 'reviewer']);
 const LAMP = new THREE.Color(0xffd79a);
 const CLAY = new THREE.Color(0xc98b66);
 
-function std(color: THREE.Color, roughness: number, metalness = 0.1): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+function std(color: THREE.Color, roughness: number, metalness = 0.1): THREE.MeshToonMaterial {
+  return toonMat({ color, roughness, metalness });
 }
 
 /** `base` mixed a little toward the role hue, so each district carries its own tint. */
@@ -107,7 +108,7 @@ function bench(mat: THREE.Material): THREE.Group {
 }
 
 /** A sign plate: the role name in ink on the sheet colour. */
-function signMaterial(text: string, bg: THREE.Color, ink: THREE.Color): THREE.MeshStandardMaterial {
+function signMaterial(text: string, bg: THREE.Color, ink: THREE.Color): THREE.MeshToonMaterial {
   const tex = canvasTexture(`sign:${text}:${bg.getStyle()}:${ink.getStyle()}`, 256, 96, 1, (g, w, h) => {
     g.fillStyle = bg.getStyle();
     g.fillRect(0, 0, w, h);
@@ -120,7 +121,7 @@ function signMaterial(text: string, bg: THREE.Color, ink: THREE.Color): THREE.Me
     g.textBaseline = 'middle';
     g.fillText(text, w / 2, h / 2 + 2);
   });
-  return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 });
+  return toonMat({ map: tex, roughness: 0.6 });
 }
 
 function desk(parent: THREE.Object3D, x: number, z: number, wood: THREE.Material, metal: THREE.Material, screen: THREE.Material): void {
@@ -152,7 +153,7 @@ export function buildDistrictProps(roleHue: number, size: number, role: string, 
   const leaf = std(tint(palette.ok, roleHue, 0.2), 0.85, 0);
   const leaf2 = std(tint(palette.ok, roleHue, 0.45), 0.85, 0);
   const crate = std(tint(palette.rule, roleHue, 0.55), 0.9, 0);
-  const screen = new THREE.MeshStandardMaterial({
+  const screen = toonMat({
     color: tint(palette.ink3, roleHue, 0.3),
     emissive: palette.info,
     emissiveIntensity: 0.05,
@@ -250,14 +251,14 @@ export function buildDistrictProps(roleHue: number, size: number, role: string, 
 export function buildPlaza(palette: PropPalette): THREE.Group {
   const g = new THREE.Group();
   const stone = palette.rule.clone().lerp(palette.sheet, 0.4);
-  const pave = part(g, new THREE.CylinderGeometry(4.3, 4.45, 0.06, 64), new THREE.MeshStandardMaterial({ map: paving(stone, 4), roughness: 0.9 }), 0, 0.03, 0);
+  const pave = part(g, new THREE.CylinderGeometry(4.3, 4.45, 0.06, 64), toonMat({ map: paving(stone, 4), roughness: 0.9 }), 0, 0.03, 0);
   pave.receiveShadow = true;
   const ring = part(g, new THREE.RingGeometry(3.7, 3.95, 72), std(stone.clone().multiplyScalar(0.72), 0.9, 0), 0, 0.066, 0);
   ring.rotation.x = -Math.PI / 2;
   const inlay = part(g, new THREE.TorusGeometry(3.3, 0.025, 6, 72), std(palette.rule, 0.8, 0), 0, 0.065, 0);
   inlay.rotation.x = Math.PI / 2;
 
-  const benchWood = new THREE.MeshStandardMaterial({ map: woodTex(), color: palette.rule.clone().lerp(palette.ink3, 0.25), roughness: 0.8 });
+  const benchWood = toonMat({ map: woodTex(), color: palette.rule.clone().lerp(palette.ink3, 0.25), roughness: 0.8 });
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2;
     const x = Math.cos(a) * 3.6;
@@ -268,32 +269,28 @@ export function buildPlaza(palette: PropPalette): THREE.Group {
     g.add(b);
   }
 
-  // The globe: a transparent wireframe on a short pillar above the dais.
-  const pillar = part(g, new THREE.CylinderGeometry(0.05, 0.05, 1.35, 8), std(palette.ink3, 0.45, 0.4), 0, 1.475, 0);
-  pillar.castShadow = true;
-  const globe = new THREE.Mesh(
-    new THREE.SphereGeometry(0.75, 24, 16),
-    new THREE.MeshStandardMaterial({
-      color: palette.signal,
-      emissive: palette.signal,
-      emissiveIntensity: 0.7,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.5,
-      depthWrite: false,
-    }),
+  // A chunky low-poly beacon gem with an orbiting ring: the orchestrator's landmark.
+  const globe = new THREE.Group();
+  const gem = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.5, 0),
+    toonMat({ color: palette.signal, emissive: palette.signal, emissiveIntensity: 0.25 }),
   );
-  globe.position.set(0, 2.9, 0);
+  gem.scale.set(1, 1.35, 1);
+  const orbit = new THREE.Mesh(new THREE.TorusGeometry(0.85, 0.05, 8, 48), toonMat({ color: palette.sheet }));
+  orbit.rotation.x = Math.PI / 2.4;
+  globe.add(gem, orbit);
+  globe.position.set(0, 3.7, 0);
   g.add(globe);
 
   g.userData = {
     animate: (t: number) => {
       globe.rotation.y = t * 0.4;
-      globe.position.y = 2.9 + Math.sin(t * 0.9) * 0.05;
+      globe.position.y = 3.7 + Math.sin(t * 0.9) * 0.08;
     },
   };
   shadows(g);
   globe.castShadow = false;
+  outline(g);
   return g;
 }
 
@@ -312,10 +309,10 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
   }
 
   const waterTex = water();
-  const stoneMat = new THREE.MeshStandardMaterial({ map: polish(palette.sheet), roughness: 0.4 });
-  const waterMat = new THREE.MeshStandardMaterial({ map: waterTex, roughness: 0.12, transparent: true, opacity: 0.9 });
-  const counterMat = new THREE.MeshStandardMaterial({ map: woodTex(), roughness: 0.8 });
-  const poleMat = new THREE.MeshStandardMaterial({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
+  const stoneMat = toonMat({ map: polish(palette.sheet), roughness: 0.4 });
+  const waterMat = toonMat({ map: waterTex, roughness: 0.12, transparent: true, opacity: 0.9 });
+  const counterMat = toonMat({ map: woodTex(), roughness: 0.8 });
+  const poleMat = toonMat({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
   const awningTex = canvasTexture(`awning:${palette.signal.getStyle()}:${palette.sheet.getStyle()}`, 256, 64, 1, (cg, w, h) => {
     const n = 8;
     for (let i = 0; i < n; i++) {
@@ -323,7 +320,7 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
       cg.fillRect((i * w) / n, 0, w / n, h);
     }
   });
-  const awningMat = new THREE.MeshStandardMaterial({ map: awningTex, roughness: 0.9, side: THREE.DoubleSide });
+  const awningMat = toonMat({ map: awningTex, roughness: 0.9, side: THREE.DoubleSide });
 
   chosen.forEach((a, i) => {
     const x = Math.cos(a) * RING;
@@ -356,17 +353,22 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
   const animate = (t: number): void => {
     waterTex.offset.y = (t * 0.04) % 1;
   };
+  outline(g);
   return { group: g, boxes, animate };
 }
 
 /** Flat paved strips from the origin out to each point (y = 0), for the paths between the centre and the districts. */
 export function buildPaths(from: THREE.Vector3[], palette: PropPalette): THREE.Group {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ map: paving(palette.rule.clone().lerp(palette.sheet, 0.35), 2), roughness: 0.95 });
+  const mat = toonMat({ map: paving(palette.rule.clone().lerp(palette.sheet, 0.35), 2), roughness: 0.95 });
   for (const to of from) {
     const len = Math.hypot(to.x, to.z);
     if (len < 0.5) continue;
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, 0.9), mat);
+    const geo = new THREE.BoxGeometry(len, 0.03, 0.9);
+    // Repeat the stones along the strip instead of stretching one tile over it.
+    const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
+    for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * (len / 0.9));
+    const strip = new THREE.Mesh(geo, mat);
     strip.position.set(to.x / 2, 0.015, to.z / 2);
     strip.rotation.y = -Math.atan2(to.z, to.x);
     strip.receiveShadow = true;
@@ -389,7 +391,7 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
   const reach = Math.min(34, far + 6);
 
   // Materials shared by every piece of the scatter.
-  const bark = new THREE.MeshStandardMaterial({ map: woodTex(), roughness: 0.9 });
+  const bark = toonMat({ map: woodTex(), roughness: 0.9 });
   const greens = [0x5f8f4a, 0x77a25a, 0x4d7a3c, 0x8fae5e].map((c) => std(new THREE.Color(c), 0.85, 0));
   const darkGreens = [0x2f5d3a, 0x3c6e47].map((c) => std(new THREE.Color(c), 0.9, 0));
   const blossoms = [0xf2b8c6, 0xf7e3ea].map((c) => std(new THREE.Color(c), 0.85, 0));
@@ -397,8 +399,8 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
   const soil = std(palette.rule.clone().lerp(palette.ink3, 0.6), 1, 0);
   const clay = std(CLAY, 0.9, 0);
   const rockMat = std(palette.ink3.clone().lerp(palette.sheet, 0.45), 0.95, 0);
-  const benchWood = new THREE.MeshStandardMaterial({ map: woodTex(), roughness: 0.8 });
-  const poleMat = new THREE.MeshStandardMaterial({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
+  const benchWood = toonMat({ map: woodTex(), roughness: 0.8 });
+  const poleMat = toonMat({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
   const bulb = new THREE.MeshBasicMaterial({ color: LAMP, toneMapped: false });
 
   /** Whether a piece of radius `rad` at (x, z) clears the plaza, the districts, the paths and the boxes so far. */
@@ -414,7 +416,11 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
     return true;
   };
 
+  const lamps: [number, number][] = [];
   const addLamp = (x: number, z: number): void => {
+    // Paths meet at the centre, so lamps of neighbouring paths can land on one spot: keep one.
+    if (lamps.some(([lx, lz]) => Math.hypot(lx - x, lz - z) < 3)) return;
+    lamps.push([x, z]);
     const l = new THREE.Group();
     l.position.set(x, 0, z);
     const pole = part(l, new THREE.CylinderGeometry(0.035, 0.045, 2.2, 8), poleMat, 0, 1.1, 0);
@@ -481,19 +487,19 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
     boxes.push(footprint(b));
   };
 
-  // Street lamps along each path, set just off its edges and well short of the districts.
-  for (const s of sites) {
+  // One street lamp per path, just off its edge where it reaches the district, sides alternating.
+  sites.forEach((s, i) => {
     const dist = Math.hypot(s.cx, s.cy);
-    if (dist < 1) continue;
+    const d = dist - s.r - 2.6;
+    if (dist < 1 || d < 7) return;
     const ux = s.cx / dist;
     const uz = s.cy / dist;
-    for (let d = 6.6; d < dist - s.r - 3.2; d += 4.5) {
-      for (const side of [-1, 1]) addLamp(ux * d - uz * side * 1.2, uz * d + ux * side * 1.2);
-    }
-  }
+    const side = i % 2 === 0 ? 1 : -1;
+    addLamp(ux * d - uz * side * 0.95, uz * d + ux * side * 0.95);
+  });
 
   // Scatter: trees most often, then flower beds, rocks and benches, wherever the spot is clear.
-  for (let i = 0; i < 140; i++) {
+  for (let i = 0; i < 320; i++) {
     const x = (rand() * 2 - 1) * reach;
     const z = (rand() * 2 - 1) * reach;
     const roll = rand();
@@ -507,5 +513,6 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
       addBench(x, z);
     }
   }
+  outline(g, 0.1);
   return { group: g, boxes };
 }

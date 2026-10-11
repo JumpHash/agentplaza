@@ -4,6 +4,7 @@
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { outline, toonMat } from './toon';
 
 export type RobotState = 'idle' | 'working' | 'walking' | 'offline';
 
@@ -29,38 +30,42 @@ const BODY_H = 0.5;
 const NECK_Y = 0.78;
 const HEAD_Y = 0.82;      // head pivot, at the top of the neck
 const HEAD_H = 0.24;
-const ORCH_SCALE = 1.25;
+const SCALE = 1.3; // a touch bigger than the furniture, so the robots read from afar
+const ORCH_SCALE = 1.25 * SCALE;
 const LABEL_LIFT = 0.35;
 
-/** `hue` (0–360) tints the body panel; the orchestrator is larger with a signal-orange trim. */
-export function makeRobot(hue: number, orchestrator: boolean, palette: Palette): Robot {
+/**
+ * `bodyHue` (0–360) colours the robot's shell and arms, so every agent has its own colour;
+ * `hue` (its district's) tints the front panel. The orchestrator is larger with a signal-orange trim.
+ */
+export function makeRobot(hue: number, orchestrator: boolean, palette: Palette, bodyHue = hue): Robot {
   const root = new THREE.Group();
   root.name = orchestrator ? 'robot-orchestrator' : 'robot';
-  if (orchestrator) root.scale.setScalar(ORCH_SCALE);
+  root.scale.setScalar(orchestrator ? ORCH_SCALE : SCALE);
 
   const allMats: THREE.Material[] = [];
   // Materials that take the highlight glow (the shell and running gear).
-  const shell: THREE.MeshStandardMaterial[] = [];
-  const std = (color: string | THREE.Color, roughness: number, metalness = 0.1): THREE.MeshStandardMaterial => {
-    const m = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  const shell: THREE.MeshToonMaterial[] = [];
+  const std = (color: string | THREE.Color, roughness: number, metalness = 0.1): THREE.MeshToonMaterial => {
+    const m = toonMat({ color, roughness, metalness });
     allMats.push(m);
     shell.push(m);
     return m;
   };
 
-  const sheetMat = std(palette.sheet, 0.65);
+  const sheetMat = std(new THREE.Color().setHSL(bodyHue / 360, 0.6, 0.64, THREE.SRGBColorSpace), 0.65);
   const paperMat = std(palette.paper, 0.6);
-  const panelMat = std(new THREE.Color().setHSL(hue / 360, 0.45, 0.55), 0.5);
+  const panelMat = std(new THREE.Color().setHSL(hue / 360, 0.5, 0.82, THREE.SRGBColorSpace), 0.5);
   const rivetMat = std(palette.rule, 0.45);
   const inkMat = std(palette.ink, 0.8, 0.05);
   const signalMat = std(palette.signal, 0.5);
 
   // Glass and lights are not part of the glow, so the highlight never washes out the eyes.
-  const glassMat = new THREE.MeshStandardMaterial({ color: palette.ink, roughness: 0.12, metalness: 0.4 });
-  const pupilMat = new THREE.MeshStandardMaterial({
+  const glassMat = toonMat({ color: palette.ink, roughness: 0.12, metalness: 0.4 });
+  const pupilMat = toonMat({
     color: palette.ok, emissive: palette.ok, emissiveIntensity: 1.2, roughness: 0.3,
   });
-  const lightMat = new THREE.MeshStandardMaterial({
+  const lightMat = toonMat({
     color: palette.signal, emissive: palette.signal, emissiveIntensity: 1.2, roughness: 0.4,
   });
   allMats.push(glassMat, pupilMat, lightMat);
@@ -162,6 +167,7 @@ export function makeRobot(hue: number, orchestrator: boolean, palette: Palette):
   };
   applyState('idle');
 
+  outline(root, 0.03);
   return {
     group: root,
 

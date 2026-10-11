@@ -1,8 +1,9 @@
-// Procedural textures for the Floor: each is drawn once on a 2D canvas, cached by key, and
+// Procedural cartoon textures for the Floor: each is drawn once on a 2D canvas, cached by key, and
 // repeat-wrapped so a small tile covers a large surface. All are sRGB with 4x anisotropy; the
 // materials that use them set their own colour and roughness.
 
 import * as THREE from 'three';
+import { toonMat } from './toon';
 
 /** A seeded random source, so a texture drawn from the same key is always the same picture. */
 export type Rand = () => number;
@@ -51,141 +52,184 @@ export function canvasTexture(key: string, w: number, h: number, repeat: number,
 
 const css = (c: THREE.Color): string => c.getStyle();
 
-/** Grass: speckled greens with a few dry patches. The ground plane repeats it every 4 units. */
+/** Rounded rectangle path. */
+function rrect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+/** Grass: a flat cartoon meadow — soft lighter patches and little inked tufts. */
 export function grass(): THREE.CanvasTexture {
-  return canvasTexture('grass', 256, 256, 50, (g, w, h, r) => {
-    g.fillStyle = '#7a9d5c';
+  return canvasTexture('grass', 512, 512, 24, (g, w, h, r) => {
+    g.fillStyle = '#86c45e';
     g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 2200; i++) {
-      g.fillStyle = `hsla(${80 + r() * 50}, ${35 + r() * 25}%, ${30 + r() * 26}%, ${0.35 + r() * 0.4})`;
-      g.fillRect(r() * w, r() * h, 1 + r() * 2.2, (1 + r() * 2.2) * (1 + r()));
-    }
-    for (let i = 0; i < 40; i++) {
-      g.fillStyle = `hsla(${50 + r() * 20}, 40%, 55%, 0.25)`;
+    // Big soft patches in two close greens.
+    for (let i = 0; i < 14; i++) {
+      g.fillStyle = r() < 0.5 ? '#8fcb66' : '#7fbc58';
       g.beginPath();
-      g.arc(r() * w, r() * h, 4 + r() * 10, 0, Math.PI * 2);
+      g.ellipse(r() * w, r() * h, 30 + r() * 60, 20 + r() * 40, r() * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    // Tufts: three-stroke "v"s, the classic cartoon grass mark.
+    g.lineCap = 'round';
+    for (let i = 0; i < 90; i++) {
+      const x = r() * w;
+      const y = r() * h;
+      const s = 4 + r() * 5;
+      g.strokeStyle = r() < 0.7 ? 'rgba(70,128,52,0.55)' : 'rgba(196,232,150,0.7)';
+      g.lineWidth = 1.6;
+      g.beginPath();
+      g.moveTo(x - s * 0.6, y - s);
+      g.lineTo(x, y);
+      g.lineTo(x + s * 0.1, y - s * 1.3);
+      g.moveTo(x, y);
+      g.lineTo(x + s * 0.7, y - s * 0.9);
+      g.stroke();
+    }
+    // A few tiny flowers.
+    for (let i = 0; i < 12; i++) {
+      g.fillStyle = ['#fff6d8', '#ffd25e', '#ff9db5'][Math.floor(r() * 3)]!;
+      g.beginPath();
+      g.arc(r() * w, r() * h, 2 + r() * 1.5, 0, Math.PI * 2);
       g.fill();
     }
   });
 }
 
-/** Offset stone pavers with mortar lines and a little colour variation per stone. */
+/** Cobblestones: rounded stones, each with a highlight and an inked edge, set in dark grout. */
 export function paving(tint: THREE.Color, repeat = 4): THREE.CanvasTexture {
   return canvasTexture(`paving:${css(tint)}:${repeat}`, 256, 256, repeat, (g, w, h, r) => {
-    const rows = 4;
+    const rows = 5;
     const rowH = h / rows;
-    const stoneW = w / 3;
-    g.fillStyle = css(tint.clone().multiplyScalar(0.7));
+    const stoneW = w / 4;
+    g.fillStyle = css(tint.clone().multiplyScalar(0.55));
     g.fillRect(0, 0, w, h);
     for (let row = 0; row < rows; row++) {
       const shift = (row % 2) * (stoneW / 2);
-      for (let col = -1; col <= 3; col++) {
-        g.fillStyle = css(tint.clone().multiplyScalar(0.88 + r() * 0.16));
-        g.fillRect(col * stoneW + shift + 2, row * rowH + 2, stoneW - 4, rowH - 4);
+      for (let col = -1; col <= 4; col++) {
+        const x = col * stoneW + shift + 3 + r() * 2;
+        const y = row * rowH + 3 + r() * 2;
+        const sw = stoneW - 7;
+        const sh = rowH - 7;
+        rrect(g, x, y, sw, sh, 9);
+        g.fillStyle = css(tint.clone().multiplyScalar(0.92 + r() * 0.14));
+        g.fill();
+        g.lineWidth = 2;
+        g.strokeStyle = 'rgba(43,36,32,0.55)';
+        g.stroke();
+        rrect(g, x + 5, y + 4, sw * 0.45, 5, 2.5);
+        g.fillStyle = 'rgba(255,255,255,0.45)';
+        g.fill();
       }
-    }
-    for (let i = 0; i < 160; i++) {
-      g.fillStyle = `rgba(40,34,28,${0.05 + r() * 0.1})`;
-      g.fillRect(r() * w, r() * h, 1 + r() * 2, 1 + r() * 2);
     }
   });
 }
 
-/** A district's floor tiles, tinted by its role hue, with a subtle grout. */
+/** A district's floor: big glazed tiles in its role hue, a highlight on each and inked grout. */
 export function tiles(hue: number, repeat = 3): THREE.CanvasTexture {
   return canvasTexture(`tiles:${Math.round(hue)}:${repeat}`, 256, 256, repeat, (g, w, h, r) => {
-    const grout = new THREE.Color().setHSL(hue / 360, 0.18, 0.74, THREE.SRGBColorSpace);
-    const base = new THREE.Color().setHSL(hue / 360, 0.3, 0.86, THREE.SRGBColorSpace);
+    const grout = new THREE.Color().setHSL(hue / 360, 0.28, 0.66, THREE.SRGBColorSpace);
+    const base = new THREE.Color().setHSL(hue / 360, 0.5, 0.84, THREE.SRGBColorSpace);
     g.fillStyle = css(grout);
     g.fillRect(0, 0, w, h);
     const n = 4;
     const t = w / n;
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
-        g.fillStyle = css(base.clone().multiplyScalar(0.96 + r() * 0.08));
-        g.fillRect(i * t + 2, j * t + 2, t - 4, t - 4);
+        const alt = (i + j) % 2 === 0 ? 1 : 0.9;
+        rrect(g, i * t + 3, j * t + 3, t - 6, t - 6, 6);
+        g.fillStyle = css(base.clone().multiplyScalar(alt * (0.97 + r() * 0.06)));
+        g.fill();
+        g.beginPath();
+        g.moveTo(i * t + 10, j * t + 14);
+        g.lineTo(i * t + 22, j * t + 9);
+        g.strokeStyle = 'rgba(255,255,255,0.6)';
+        g.lineWidth = 3;
+        g.lineCap = 'round';
+        g.stroke();
       }
     }
   });
 }
 
-/** Warm wooden planks with grain and seams. */
+/** Cartoon planks: warm, flat bands with inked seams and a few knots. */
 export function wood(): THREE.CanvasTexture {
   return canvasTexture('wood', 256, 256, 1, (g, w, h, r) => {
     const planks = 4;
     const ph = h / planks;
     for (let p = 0; p < planks; p++) {
-      g.fillStyle = `hsl(${26 + r() * 6}, ${40 + r() * 12}%, ${40 + r() * 10}%)`;
+      g.fillStyle = `hsl(${28 + r() * 6}, ${55 + r() * 10}%, ${50 + r() * 8}%)`;
       g.fillRect(0, p * ph, w, ph);
-      for (let k = 0; k < 14; k++) {
-        const y = p * ph + r() * ph;
-        g.strokeStyle = `hsla(26, 45%, 25%, ${0.15 + r() * 0.2})`;
-        g.lineWidth = 1 + r();
+      g.fillStyle = 'rgba(255,255,255,0.18)';
+      g.fillRect(0, p * ph + 4, w, 5);
+      for (let k = 0; k < 2; k++) {
+        g.strokeStyle = 'rgba(90,50,20,0.45)';
+        g.lineWidth = 2;
         g.beginPath();
-        g.moveTo(0, y);
-        g.bezierCurveTo(w * 0.3, y + (r() - 0.5) * 6, w * 0.7, y + (r() - 0.5) * 6, w, y);
+        g.ellipse(r() * w, p * ph + ph / 2, 7 + r() * 5, 3, 0, 0, Math.PI * 2);
         g.stroke();
       }
-      g.fillStyle = 'rgba(40,25,12,0.55)';
-      g.fillRect(0, p * ph, w, 2);
+      g.fillStyle = 'rgba(60,32,14,0.8)';
+      g.fillRect(0, p * ph, w, 3);
     }
   });
 }
 
-/** Brushed metal: fine horizontal streaks over a cool grey. */
+/** Painted metal: a flat cool grey with one bright stripe. */
 export function metal(): THREE.CanvasTexture {
-  return canvasTexture('metal', 128, 128, 2, (g, w, h, r) => {
-    g.fillStyle = '#9aa0a8';
+  return canvasTexture('metal', 64, 64, 1, (g, w, h) => {
+    g.fillStyle = '#8f9bab';
     g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 260; i++) {
-      g.strokeStyle = r() < 0.5 ? 'rgba(255,255,255,0.18)' : 'rgba(40,44,52,0.18)';
-      const y = r() * h;
-      g.beginPath();
-      g.moveTo(0, y);
-      g.lineTo(w, y + (r() - 0.5) * 1.5);
-      g.stroke();
-    }
+    g.fillStyle = 'rgba(255,255,255,0.35)';
+    g.fillRect(0, h * 0.2, w, h * 0.12);
   });
 }
 
-/** Polished stone: the tint with faint, soft veining. */
+/** Polished stone: the tint, a little warmer, with a few soft cartoon sparkles. */
 export function polish(tint: THREE.Color): THREE.CanvasTexture {
   return canvasTexture(`polish:${css(tint)}`, 256, 256, 2, (g, w, h, r) => {
     g.fillStyle = css(tint);
     g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 26; i++) {
-      g.strokeStyle = `rgba(90,80,70,${0.05 + r() * 0.08})`;
-      g.lineWidth = 0.6 + r() * 1.4;
-      let x = r() * w;
-      let y = r() * h;
+    for (let i = 0; i < 14; i++) {
+      g.fillStyle = 'rgba(255,255,255,0.35)';
+      rrect(g, r() * w, r() * h, 18 + r() * 30, 5, 2.5);
+      g.fill();
+    }
+    for (let i = 0; i < 10; i++) {
+      g.fillStyle = 'rgba(120,100,80,0.12)';
       g.beginPath();
-      g.moveTo(x, y);
-      for (let k = 0; k < 4; k++) {
-        x += (r() - 0.5) * 90;
-        y += (r() - 0.5) * 60;
-        g.lineTo(x, y);
-      }
-      g.stroke();
+      g.arc(r() * w, r() * h, 8 + r() * 14, 0, Math.PI * 2);
+      g.fill();
     }
   });
 }
 
-/** Water: a turquoise gradient with pale ripple streaks. Scrolled over time by the fountain. */
+/** Water: flat cartoon teal with white wave squiggles. Scrolled over time by the fountain. */
 export function water(): THREE.CanvasTexture {
   return canvasTexture('water', 256, 256, 2, (g, w, h, r) => {
-    const grad = g.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#7fd3da');
-    grad.addColorStop(1, '#2f8fa6');
-    g.fillStyle = grad;
+    g.fillStyle = '#3cc0d6';
     g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 60; i++) {
+    g.fillStyle = '#5fd3e3';
+    for (let i = 0; i < 10; i++) {
+      g.beginPath();
+      g.ellipse(r() * w, r() * h, 30 + r() * 30, 12 + r() * 10, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.lineCap = 'round';
+    for (let i = 0; i < 26; i++) {
       const x = r() * w;
       const y = r() * h;
-      g.strokeStyle = `rgba(255,255,255,${0.12 + r() * 0.25})`;
-      g.lineWidth = 1 + r() * 2;
+      g.strokeStyle = 'rgba(255,255,255,0.85)';
+      g.lineWidth = 3;
       g.beginPath();
       g.moveTo(x, y);
-      g.quadraticCurveTo(x + 12 + r() * 12, y - 4, x + 28 + r() * 20, y);
+      g.quadraticCurveTo(x + 8, y - 6, x + 16, y);
+      g.quadraticCurveTo(x + 24, y + 6, x + 32, y);
       g.stroke();
     }
   });
@@ -196,10 +240,7 @@ export function slabSide(hue: number): THREE.Material {
   const key = `side:${Math.round(hue)}`;
   const hit = materials.get(key);
   if (hit) return hit;
-  const m = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(hue / 360, 0.25, 0.68, THREE.SRGBColorSpace),
-    roughness: 0.95,
-  });
+  const m = toonMat({ color: new THREE.Color().setHSL(hue / 360, 0.35, 0.66, THREE.SRGBColorSpace) });
   materials.set(key, m);
   return m;
 }
