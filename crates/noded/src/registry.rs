@@ -388,6 +388,9 @@ struct RunMeta {
     beats: Option<u32>,
     /// The role every VM runs as, when the run has one.
     role: Option<String>,
+    /// Whether the run's guests are keepalive agents: their workspace images
+    /// persist when `--persist-dir` is set.
+    keepalive: bool,
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
@@ -633,11 +636,37 @@ pub struct RunsView<'a> {
     pub runs: Vec<RunView<'a>>,
 }
 
+/// The persistent workspace image of the keepalive VM with guest CID `cid`:
+/// `persist_dir/workspaces/cid-{cid}.ext4`. The first call copies `base` there;
+/// a later call (a restarted daemon's run on the same CID) returns the image as
+/// it is and never overwrites it, so the agent's files survive. The copy is
+/// made under a partial name and renamed into place, so an interrupted copy is
+/// never reused.
+fn prepare_persistent_workspace(
+    base: &std::path::Path,
+    persist_dir: &std::path::Path,
+    cid: u64,
+) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = persist_dir.join("workspaces");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    let image = dir.join(format!("cid-{cid}.ext4"));
+    if !image.exists() {
+        let partial = dir.join(format!("cid-{cid}.ext4.partial"));
+        std::fs::copy(base, &partial)?;
+        std::fs::rename(&partial, &image)?;
+    }
+    Ok(image)
+}
+
 /// The daemon's runs, in creation order.
 pub struct Registry {
     images: VmImages,
     /// Directory holding the per-VM vsock Unix sockets (`{uds_dir}/vm{cid}`).
     uds_dir: PathBuf,
+    /// Where keepalive runs' workspace images persist (`--persist-dir`), or
+    /// `None` for the per-run copies.
+    persist_dir: Option<PathBuf>,
     /// When this daemon started, in milliseconds since the Unix epoch: part of
     /// a run's workspace-directory name, because run ids restart with the
     /// daemon (a bare `run-{id}` would collide with the previous daemon's
@@ -665,6 +694,7 @@ impl Registry {
         Self {
             images,
             uds_dir,
+            persist_dir: None,
             epoch_ms: now_ms(),
             events,
             cids: Arc::new(CidBook::default()),
@@ -673,6 +703,14 @@ impl Registry {
                 runs: Vec::new(),
             }),
         }
+    }
+
+    /// Keeps keepalive runs' workspace images under `persist_dir` (see
+    /// [`prepare_persistent_workspace`]); `None` keeps every run's copies in its
+    /// own directory.
+    pub fn with_persist_dir(mut self, persist_dir: Option<PathBuf>) -> Self {
+        self.persist_dir = persist_dir;
+        self
     }
 
     /// The directory a run's workspace copies live in: `run-{id}-{epoch_ms}`.
@@ -733,6 +771,7 @@ impl Registry {
                 memory_mib: request.memory_mib,
                 beats: request.beats,
                 role: request.role.clone(),
+                keepalive,
             },
             plans,
         )
@@ -766,6 +805,8 @@ impl Registry {
                 beats: None,
                 // The fleet's VMs carry their own roles; the run has none.
                 role: None,
+                // Fleet VMs are long-lived keepalive agents.
+                keepalive: true,
             },
             plans,
         )
@@ -808,8 +849,23 @@ impl Registry {
         // made before the run is registered, so a failure to prepare them is
         // reported to the caller without leaving a run behind. The copies stay
         // when the run ends: they hold the guests' work.
-        let workspaces = match &self.images.workspace {
-            Some(base) => {
+        let workspaces = match (&self.images.workspace, &self.persist_dir) {
+            // A keepalive run's workspace images persist: each VM's image is
+            // keyed by its guest CID, copied once, reused by every later run on
+            // that CID, and never deleted with the run.
+            (Some(base), Some(persist)) if meta.keepalive => Some(
+                plans
+                    .iter()
+                    .map(|plan| prepare_persistent_workspace(base, persist, plan.vsock_cid))
+                    .collect::<std::io::Result<Vec<PathBuf>>>()
+                    .map_err(|err| {
+                        self.give_back(
+                            &id,
+                            format!("cannot prepare the run's workspace images: {err}"),
+                        )
+                    })?,
+            ),
+            (Some(base), _) => {
                 // The directory name carries the daemon's start stamp as well
                 // as the run id: run ids restart with the daemon, so a bare
                 // `run-{id}` would let a new `r1` overwrite the workspace
@@ -825,7 +881,7 @@ impl Registry {
                     })?,
                 )
             }
-            None => None,
+            (None, _) => None,
         };
         let run = self.insert(id, meta);
         let boot = spawner::spawn_each(vms, |i| {
@@ -2032,5 +2088,32 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+}
+
+#[cfg(test)]
+mod persistent_workspace_tests {
+    use super::prepare_persistent_workspace;
+
+    #[test]
+    fn a_persistent_workspace_is_copied_once_and_reused_for_its_cid() {
+        let dir = std::env::temp_dir().join(format!("apz-noded-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let base = dir.join("workspace.ext4");
+        std::fs::write(&base, b"workspace bytes").expect("the base image");
+        let persist = dir.join("persist");
+
+        let first = prepare_persistent_workspace(&base, &persist, 42).expect("the first image");
+        assert_eq!(first, persist.join("workspaces").join("cid-42.ext4"));
+        assert_eq!(std::fs::read(&first).expect("the copy"), b"workspace bytes");
+        // The agent's run writes a marker; the next run on the same CID must
+        // find it, not a fresh copy of the base.
+        std::fs::write(&first, b"M").expect("a marker write");
+
+        let second = prepare_persistent_workspace(&base, &persist, 42).expect("the reused image");
+        assert_eq!(second, first);
+        assert_eq!(std::fs::read(&second).expect("the reused image"), b"M");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
