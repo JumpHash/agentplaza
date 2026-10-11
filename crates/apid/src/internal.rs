@@ -37,6 +37,17 @@ struct Gone {
     reason: String,
 }
 
+/// One egress decision and its outcome, reported by the hub's egress proxy.
+#[derive(Deserialize)]
+struct Egress {
+    host: String,
+    port: u16,
+    allowed: bool,
+    bytes_up: u64,
+    bytes_down: u64,
+    ms: u64,
+}
+
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/internal/v1/agents/{cid}/hello", |app, req, p| {
@@ -57,6 +68,26 @@ pub fn routes(router: Router<App>) -> Router<App> {
             authorized(app, req, p.get("cid"), |cid| {
                 let gone: Gone = req.json().unwrap_or(Gone { reason: String::new() });
                 crate::agents::gone(app, cid, &gone.reason);
+                Ok(Response::json(200, &json!({})))
+            })
+        })
+        .post("/internal/v1/agents/{cid}/egress", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| {
+                let egress: Egress = req.json().map_err(|e| Response::error(400, &e.to_string()))?;
+                app.transcripts.record(
+                    &app.bus,
+                    cid,
+                    0,
+                    "egress",
+                    json!({
+                        "host": egress.host,
+                        "port": egress.port,
+                        "allowed": egress.allowed,
+                        "bytes_up": egress.bytes_up,
+                        "bytes_down": egress.bytes_down,
+                        "ms": egress.ms,
+                    }),
+                );
                 Ok(Response::json(200, &json!({})))
             })
         })
