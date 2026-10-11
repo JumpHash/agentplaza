@@ -9,20 +9,10 @@
 
 mod common;
 
-use std::fs;
 use std::io::BufRead as _;
 use std::io::Write as _;
-use std::path::PathBuf;
 
 use common::request;
-
-/// A fresh directory to serve as the console, unique to the calling test.
-fn console_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("noded-console-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("a console directory");
-    dir
-}
 
 /// A create request for one 128 MiB VM, which always fails to boot here.
 const UNBOOTABLE: &str = r#"{"n":1,"vcpus":1,"memory_mib":128}"#;
@@ -39,7 +29,7 @@ fn failed_run(port: u16) -> String {
 
 #[test]
 fn the_run_list_starts_empty() {
-    let server = common::start(console_dir("list"));
+    let server = common::start();
     let reply = request(server.port(), "GET", "/v1/runs", None);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(reply.content_type.starts_with("application/json"));
@@ -48,7 +38,7 @@ fn the_run_list_starts_empty() {
 
 #[test]
 fn unknown_runs_are_404() {
-    let server = common::start(console_dir("unknown"));
+    let server = common::start();
     let port = server.port();
     for (method, target, body) in [
         ("GET", "/v1/runs/r7", None),
@@ -71,7 +61,7 @@ fn unknown_runs_are_404() {
 
 #[test]
 fn create_requests_outside_the_contract_are_400() {
-    let server = common::start(console_dir("create-400"));
+    let server = common::start();
     let port = server.port();
     for body in [
         r#"{"n":0,"vcpus":1,"memory_mib":128}"#,
@@ -100,7 +90,7 @@ fn create_requests_outside_the_contract_are_400() {
 
 #[test]
 fn an_events_stream_carries_a_runs_life() {
-    let server = common::start(console_dir("events"));
+    let server = common::start();
     let port = server.port();
 
     // Subscribe before the run exists: the events a stream carries start at
@@ -213,7 +203,7 @@ fn an_events_stream_carries_a_runs_life() {
 
 #[test]
 fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
-    let server = common::start(console_dir("failed"));
+    let server = common::start();
     let port = server.port();
     let reply = request(
         port,
@@ -255,7 +245,7 @@ fn a_run_whose_vms_cannot_boot_is_failed_and_readable() {
 
 #[test]
 fn a_run_without_beats_reports_null() {
-    let server = common::start(console_dir("beats"));
+    let server = common::start();
     let port = server.port();
     failed_run(port);
     let run = request(port, "GET", "/v1/runs/r1", None).json();
@@ -264,7 +254,7 @@ fn a_run_without_beats_reports_null() {
 
 #[test]
 fn a_finished_run_is_idempotent_to_kill_and_refuses_input() {
-    let server = common::start(console_dir("kill"));
+    let server = common::start();
     let port = server.port();
     let id = failed_run(port);
     let ended = request(port, "GET", &format!("/v1/runs/{id}"), None).json()["ended_at"]
@@ -300,75 +290,8 @@ fn a_finished_run_is_idempotent_to_kill_and_refuses_input() {
 }
 
 #[test]
-fn the_console_is_served_from_its_directory_only() {
-    let dir = console_dir("static");
-    fs::write(dir.join("index.html"), "<!doctype html><title>plaza</title>")
-        .expect("index.html");
-    fs::write(dir.join("app.css"), "body { color: red }").expect("app.css");
-    fs::write(dir.join("app.js"), "console.log(1)").expect("app.js");
-    fs::create_dir_all(dir.join("private")).expect("a subdirectory");
-    fs::write(dir.join("private/secret.txt"), "secret").expect("a file in the subdirectory");
-    #[cfg(unix)]
-    {
-        let outside = dir
-            .parent()
-            .expect("a parent directory")
-            .join(format!("noded-outside-{}.txt", std::process::id()));
-        fs::write(&outside, "outside the console directory").expect("a file outside");
-        std::os::unix::fs::symlink(&outside, dir.join("escape.html")).expect("a symlink out");
-    }
-    let server = common::start(dir);
-    let port = server.port();
-
-    let index = request(port, "GET", "/", None);
-    assert_eq!(index.status, 200, "{}", index.body);
-    assert!(index.content_type.starts_with("text/html"), "{}", index.content_type);
-    assert!(index.body.contains("plaza"));
-
-    let css = request(port, "GET", "/app.css", None);
-    assert_eq!(css.status, 200, "{}", css.body);
-    assert!(css.content_type.starts_with("text/css"), "{}", css.content_type);
-
-    // The query string is not part of the file name.
-    let js = request(port, "GET", "/app.js?v=1", None);
-    assert_eq!(js.status, 200, "{}", js.body);
-    assert!(
-        js.content_type.starts_with("text/javascript"),
-        "{}",
-        js.content_type
-    );
-
-    for target in [
-        "/../Cargo.toml",
-        "/..",
-        "/.",
-        "/private/secret.txt",
-        "/%2e%2e/Cargo.toml",
-        "/escape.html",
-        "/missing.js",
-        "/v1/nope",
-        "/v1/runs/",
-        "/index.html/",
-    ] {
-        let reply = request(port, "GET", target, None);
-        assert_eq!(reply.status, 404, "{target}: {}", reply.body);
-        assert!(reply.json()["error"].is_string(), "{target}: {}", reply.body);
-    }
-}
-
-#[test]
-fn a_missing_console_directory_is_a_404_not_a_crash() {
-    let missing = std::env::temp_dir().join(format!("noded-no-console-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&missing);
-    let server = common::start(missing);
-    let reply = request(server.port(), "GET", "/", None);
-    assert_eq!(reply.status, 404, "{}", reply.body);
-    assert!(reply.json()["error"].is_string());
-}
-
-#[test]
 fn a_kill_racing_a_boot_leaves_a_consistent_run() {
-    let server = common::start(console_dir("race"));
+    let server = common::start();
     let port = server.port();
     for round in 0..8 {
         // The run ids are the registry's, in creation order, so the round's
@@ -403,8 +326,8 @@ fn a_kill_racing_a_boot_leaves_a_consistent_run() {
 
 #[test]
 fn runs_are_kept_apart_across_two_daemons() {
-    let first = common::start(console_dir("first"));
-    let second = common::start(console_dir("second"));
+    let first = common::start();
+    let second = common::start();
     assert_ne!(first.port(), second.port());
     assert_eq!(failed_run(first.port()), "r1");
     assert_eq!(failed_run(second.port()), "r1");

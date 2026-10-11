@@ -23,10 +23,11 @@
 //! for the run's lifetime ([`CidBook`]) and released when the run ends, and a
 //! create the node cannot give CIDs to is refused before any VM boots.
 //!
-//! Which harness session a run's guests speak follows who chose the CIDs (see
-//! [`RunSession`]): a caller who pins `vsock_cid` gets the demo task's frozen
-//! one-shot session, unchanged, and a run the node allocated CIDs for is an
-//! operator run whose VMs are long-running, hub-connected agents.
+//! Whether a run's guests are long-lived agents follows who chose the CIDs (see
+//! [`RunSession`]) unless the request says otherwise: a caller who pins
+//! `vsock_cid` gets the one-shot session, and a run the node allocated CIDs for
+//! is an operator run of keepalive agents. A run with a `role` is always a
+//! keepalive agent of that role, booted exactly as the role fleet boots its VMs.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::fleet::Fleet;
+use crate::fleet::{Fleet, agent_flags};
 use vmm::spawner::{
     self, MAX_GUEST_CID, MIN_GUEST_CID, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec,
     VsockConfig,
@@ -119,33 +120,47 @@ pub struct CreateRun {
     /// operator run of long-running agents.
     #[serde(default)]
     pub vsock_cid: Option<u64>,
+    /// The role every VM of the run runs as (`plaza.role=`), or `None` for a
+    /// run with no role: 1 to 64 characters of `a-z`, `0-9` and `-`.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Whether each guest is a long-lived keepalive agent. `None` takes the
+    /// default for the run's CIDs (see [`RunSession`]); a roled run is always
+    /// keepalive, so `false` is refused for one.
+    #[serde(default)]
+    pub keepalive: Option<bool>,
 }
 
-/// The harness session a run's guests speak.
+/// The longest role name a run may carry.
+pub const MAX_ROLE_LEN: usize = 64;
+
+/// The harness session a run's guests speak when the request leaves
+/// `keepalive` unset.
 ///
-/// Both are started by `plaza.harness=1`; which one is honest for a run
-/// follows who chose the run's CIDs.
+/// Both are started by `plaza.harness=1`; which one is the default follows who
+/// chose the run's CIDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunSession {
     /// The frozen v1 session - `hello`, `welcome`, `echo`, `uptime`, `bye` -
     /// after which the guest's `init` reboots it, so the run ends as `done`.
     /// This is the demo task's contract, and it is what a run whose CIDs the
-    /// caller **pinned** speaks: the acceptance suites drive it byte for byte,
-    /// and it is why `beats` has any meaning there only as an upper bound.
+    /// caller **pinned** speaks by default: the acceptance suites drive it byte
+    /// for byte, and it is why `beats` has any meaning there only as an upper
+    /// bound.
     Frozen,
     /// The keepalive agent session: the guest registers on the hub, beats,
     /// serves the hub's tool calls, and its `init` never reboots it. A run
     /// whose CIDs the **node allocated** is an operator run - the owner's
     /// console creates one by leaving `vsock_cid` empty - so its VMs are
-    /// agents the plaza can see (`vsockd`'s `/status`) and drive (`/tell`)
-    /// until the run is killed or `beats` churns the guest.
+    /// agents the plaza can see and drive until the run is killed or `beats`
+    /// churns the guest.
     Agent,
 }
 
 impl CreateRun {
-    /// Checks the request's counts and, when the caller named one, its
-    /// `vsock_cid`; returns how many VMs the run has and the base the caller
-    /// named.
+    /// Checks the request's counts, its role, its keepalive choice and, when
+    /// the caller named one, its `vsock_cid`; returns how many VMs the run has
+    /// and the base the caller named.
     ///
     /// `n` is 1..=64, `vcpus` is 1..=64, `memory_mib` is at least 128, and a
     /// named `vsock_cid` must be a base whose whole span `base..base + n` fits
@@ -159,6 +174,12 @@ impl CreateRun {
         // before a run id, a CID or a workspace copy is spent on it.
         spawner_vcpus(self.vcpus)?;
         spawner_memory_mib(self.memory_mib)?;
+        if let Some(role) = &self.role {
+            checked_role(role)?;
+            if self.keepalive == Some(false) {
+                return Err("a run with a role is a keepalive agent: keepalive cannot be false".to_string());
+            }
+        }
         let named = match self.vsock_cid {
             Some(base) => Some(checked_base(base, vms)?),
             None => None,
@@ -166,22 +187,45 @@ impl CreateRun {
         Ok((vms, named))
     }
 
-    /// The template command line every VM of the run shares, before its own
-    /// index: the console device, the churn count when the run has one, the
-    /// harness, and - for an operator run - the keepalive flag that makes each
-    /// guest a long-lived plaza agent rather than the demo task's one-shot
-    /// session.
-    fn cmdline(&self, session: RunSession) -> String {
+    /// Whether the run's guests are keepalive agents: always for a roled run,
+    /// otherwise the request's choice or the default its session implies.
+    fn keepalive(&self, session: RunSession) -> bool {
+        self.role.is_some() || self.keepalive.unwrap_or(session == RunSession::Agent)
+    }
+
+    /// The kernel command line of VM `index` of the run.
+    ///
+    /// A roled VM is the role fleet's VM, flag for flag (see [`agent_flags`]),
+    /// behind the console device and the churn count when the run has one. Any
+    /// other VM names the harness, and the keepalive flag when it is a
+    /// keepalive agent, and carries its index for its identity within the run.
+    fn vm_cmdline(&self, index: usize, keepalive: bool) -> String {
         let beats = match self.beats {
             Some(beats) => format!(" plaza.beats={beats}"),
             None => String::new(),
         };
-        let keepalive = match session {
-            RunSession::Frozen => "",
-            RunSession::Agent => " plaza.keepalive=1",
-        };
-        format!("{CONSOLE}{beats} plaza.harness=1{keepalive}")
+        match &self.role {
+            Some(role) => format!("{CONSOLE}{beats} {}", agent_flags(role, index)),
+            None => {
+                let keepalive = if keepalive { " plaza.keepalive=1" } else { "" };
+                format!("{CONSOLE}{beats} plaza.harness=1{keepalive} plaza.vm={index}")
+            }
+        }
     }
+}
+
+/// Checks a run's role: 1 to [`MAX_ROLE_LEN`] characters of `a-z`, `0-9` and
+/// `-`, so it is one `plaza.role=` value on the guest's command line.
+fn checked_role(role: &str) -> Result<(), String> {
+    let valid = role
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if valid && (1..=MAX_ROLE_LEN).contains(&role.len()) {
+        return Ok(());
+    }
+    Err(format!(
+        "role must be 1 to {MAX_ROLE_LEN} characters of a-z, 0-9 and '-', not {role:?}"
+    ))
 }
 
 /// Checks an explicit `vsock_cid` base, and the run of CIDs it roots, against
@@ -334,7 +378,7 @@ fn put(held: &mut Vec<(String, Vec<u64>)>, run: &str, cids: Vec<u64>) {
 }
 
 /// The run-level shape every VM of a run shares.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RunMeta {
     /// vCPUs per VM, as the API reports it.
     vcpus: u32,
@@ -342,6 +386,8 @@ struct RunMeta {
     memory_mib: u32,
     /// Heartbeats before a guest reboots itself, when the run churns.
     beats: Option<u32>,
+    /// The role every VM runs as, when the run has one.
+    role: Option<String>,
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
@@ -546,6 +592,8 @@ pub struct RunView<'a> {
     pub memory_mib: u32,
     /// Heartbeats before the guest reboots itself, or `null`.
     pub beats: Option<u32>,
+    /// The role every VM of the run runs as, or `null`.
+    pub role: Option<&'a str>,
     /// When the run was created, in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// When the run ended, in milliseconds since the Unix epoch, or `null`.
@@ -583,39 +631,6 @@ pub struct VmView {
 pub struct RunsView<'a> {
     /// Every run, oldest first.
     pub runs: Vec<RunView<'a>>,
-}
-
-/// A live agent of the fleet: a VM row of a run that is up right now.
-///
-/// The register is the node's answer to "which agents are connected?" - a VM
-/// that is running under a run that is running. (The hub's session registry in
-/// `vsockd` - heartbeats, and their absence - is the stronger signal a later
-/// slice can add; at v0 a running VM is what a task claim needs.)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectedAgent {
-    /// The agent's vsock guest CID.
-    pub cid: u64,
-    /// The role the VM was started as, when it was started as one (the role
-    /// fleet's VMs are).
-    pub role: Option<String>,
-    /// The run whose VM the agent is.
-    pub run: String,
-    /// The VM's index in that run, as the run's API reports it.
-    pub vm: u32,
-}
-
-impl ConnectedAgent {
-    /// The schema's `assignee_id` for this agent at v0: the role name the hub
-    /// accepted as the agent's identity, or `cid:<n>` for a VM the node booted
-    /// without a role. (`core.tasks.assignee_id` references `core.agents.id`;
-    /// noded v0 has no agent table - the fleet is a roles manifest - so the
-    /// role stands in for it, and a roleless VM is named by its CID.)
-    pub fn assignee_id(&self) -> String {
-        match &self.role {
-            Some(role) => role.clone(),
-            None => format!("cid:{}", self.cid),
-        }
-    }
 }
 
 /// The daemon's runs, in creation order.
@@ -700,24 +715,24 @@ impl Registry {
             }
             None => (self.cids.allocate(&id, count)?, RunSession::Agent),
         };
-        let template = request.cmdline(session);
         // One plan per VM. Every VM's CID is the run's base plus its index,
         // and its index rides on the command line as the flag the guest
         // harness reads for its identity within the run.
-        let mut plans = Vec::with_capacity(vms);
-        for index in 0..count {
-            plans.push(VmPlan {
-                cmdline: format!("{template} plaza.vm={index}"),
-                vsock_cid: base + u64::from(index),
-                role: None,
-            });
-        }
+        let keepalive = request.keepalive(session);
+        let plans = (0..vms)
+            .map(|index| VmPlan {
+                cmdline: request.vm_cmdline(index, keepalive),
+                vsock_cid: base + index as u64,
+                role: request.role.clone(),
+            })
+            .collect();
         self.boot_run(
             id,
             RunMeta {
                 vcpus: request.vcpus,
                 memory_mib: request.memory_mib,
                 beats: request.beats,
+                role: request.role.clone(),
             },
             plans,
         )
@@ -749,6 +764,8 @@ impl Registry {
                 vcpus: u32::from(fleet.vcpus()),
                 memory_mib: fleet.memory_mib(),
                 beats: None,
+                // The fleet's VMs carry their own roles; the run has none.
+                role: None,
             },
             plans,
         )
@@ -930,35 +947,6 @@ impl Registry {
         self.lock().runs.clone()
     }
 
-    /// The live agent with that guest CID, when the node has one: a VM row
-    /// that is running under a run that is running.
-    ///
-    /// `None` means the node knows no agent with that CID - it never booted
-    /// one, or its VM has stopped - and either way it is not an agent to accept
-    /// a task claim from.
-    pub fn connected_agent(&self, cid: u64) -> Option<ConnectedAgent> {
-        self.list().iter().find_map(|run| run.live_agent(cid))
-    }
-
-    /// Every agent the node has connected right now, ordered by guest CID.
-    ///
-    /// The same reading as [`Registry::connected_agent`], taken over every run:
-    /// a VM row that is running under a run that is running. The plaza's
-    /// social layer is drawn for these agents — the floor's stations, the
-    /// board's unread counts — so it asks the register the one question the
-    /// claim asks, rather than deciding liveness for itself.
-    pub fn connected_agents(&self) -> Vec<ConnectedAgent> {
-        let mut agents: Vec<ConnectedAgent> = self
-            .list()
-            .iter()
-            .flat_map(|run| run.live_agents())
-            .collect();
-        agents.sort_by_key(|agent| agent.cid);
-        agents
-    }
-
-    /// Registers a new run in `starting`, which is where the schema says a run
-    /// begins (`core.check_run`).
     /// Reserves the next run id (`r{seq}`), consuming it.
     ///
     /// A run's id names its own directory under the UDS root
@@ -975,6 +963,8 @@ impl Registry {
         format!("r{}", inner.next_seq)
     }
 
+    /// Registers a new run in `starting`, which is where the schema says a run
+    /// begins (`core.check_run`).
     fn insert(&self, id: String, meta: RunMeta) -> Arc<Run> {
         let mut inner = self.lock();
         let run = Arc::new(Run {
@@ -982,6 +972,7 @@ impl Registry {
             vcpus: meta.vcpus,
             memory_mib: meta.memory_mib,
             beats: meta.beats,
+            role: meta.role,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             cids: Arc::clone(&self.cids),
@@ -1015,6 +1006,8 @@ pub struct Run {
     vcpus: u32,
     memory_mib: u32,
     beats: Option<u32>,
+    /// The role every VM of the run runs as, when the run has one.
+    role: Option<String>,
     created_at: u64,
     /// Where this run's state, VM and serial-delta events are published.
     events: Arc<EventBus>,
@@ -1099,6 +1092,7 @@ impl Run {
             vcpus: self.vcpus,
             memory_mib: self.memory_mib,
             beats: self.beats,
+            role: self.role.as_deref(),
             created_at: self.created_at,
             ended_at: inner.ended_at,
             vms: inner
@@ -1115,45 +1109,6 @@ impl Run {
                     },
                 })
                 .collect(),
-        }
-    }
-
-    /// The agent this run's VM with that guest CID is, when the run and that
-    /// VM are both running right now.
-    fn live_agent(&self, cid: u64) -> Option<ConnectedAgent> {
-        let inner = self.lock();
-        if inner.state != RunState::Running {
-            return None;
-        }
-        inner
-            .vms
-            .iter()
-            .find(|slot| slot.guest_cid == Some(cid) && slot.state == VmState::Running)
-            .map(|slot| self.agent_row(slot, cid))
-    }
-
-    /// Every agent this run has connected right now: the same reading as
-    /// [`Run::live_agent`], taken over every VM row.
-    fn live_agents(&self) -> Vec<ConnectedAgent> {
-        let inner = self.lock();
-        if inner.state != RunState::Running {
-            return Vec::new();
-        }
-        inner
-            .vms
-            .iter()
-            .filter(|slot| slot.state == VmState::Running)
-            .filter_map(|slot| slot.guest_cid.map(|cid| self.agent_row(slot, cid)))
-            .collect()
-    }
-
-    /// The register's row for one running VM of this run.
-    fn agent_row(&self, slot: &VmSlot, cid: u64) -> ConnectedAgent {
-        ConnectedAgent {
-            cid,
-            role: slot.role.clone(),
-            run: self.id.clone(),
-            vm: slot.id,
         }
     }
 
@@ -1483,6 +1438,8 @@ mod tests {
                 memory_mib: MIN_MEMORY_MIB,
                 beats: None,
                 vsock_cid: None,
+                role: None,
+                keepalive: None,
             })
             .expect("the run exists even when its VMs cannot boot");
 
@@ -1585,51 +1542,6 @@ mod tests {
         assert!(!RunState::Running.is_finished());
     }
 
-    #[test]
-    fn an_agents_assignee_id_is_its_role_or_its_cid() {
-        let with_role = ConnectedAgent {
-            cid: 100,
-            role: Some("builder".to_string()),
-            run: "r1".to_string(),
-            vm: 3,
-        };
-        assert_eq!(with_role.assignee_id(), "builder");
-
-        let without_role = ConnectedAgent {
-            cid: 100,
-            role: None,
-            run: "r1".to_string(),
-            vm: 3,
-        };
-        assert_eq!(without_role.assignee_id(), "cid:100");
-    }
-
-    #[test]
-    fn a_registry_with_no_live_vm_has_no_connected_agent() {
-        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new());
-        assert_eq!(registry.connected_agent(100), None);
-        // A run whose VMs never came up is not an agent, either: the fleet run
-        // here fails its boot, so its CIDs are not connected.
-        let fleet = Fleet::parse(&manifest(&["builder"]), 100, 128, 1)
-            .expect("a one-role manifest");
-        let run = registry
-            .create_agent_fleet(&fleet)
-            .expect("the run exists even when its VMs cannot boot");
-        assert_eq!(run.view(Detail::Summary).state, "failed");
-        assert_eq!(registry.connected_agent(100), None);
-    }
-
-    /// A run with one VM row, built by hand: the tests here have no hypervisor
-    /// to boot a real one, and this is the shape a booted run is in anyway.
-    fn run_with_one_vm(
-        run_state: RunState,
-        vm_state: VmState,
-        cid: Option<u64>,
-        role: Option<&str>,
-    ) -> Arc<Run> {
-        run_with_one_vm_and_book(run_state, vm_state, cid, role, Arc::new(CidBook::default()))
-    }
-
     /// The same run, holding `cids` as its CID book: what a run whose CIDs are
     /// in the node's book is (see [`an_ending_run_gives_its_cids_back`]).
     fn run_with_one_vm_and_book(
@@ -1644,6 +1556,7 @@ mod tests {
             vcpus: 1,
             memory_mib: MIN_MEMORY_MIB,
             beats: None,
+            role: role.map(str::to_string),
             created_at: now_ms(),
             events: EventBus::new(),
             cids,
@@ -1664,64 +1577,6 @@ mod tests {
     }
 
     #[test]
-    fn a_connected_agent_is_a_running_vm_of_a_running_run() {
-        // The one reading that is an agent: the run and its VM are both up.
-        let live = run_with_one_vm(RunState::Running, VmState::Running, Some(100), Some("builder"))
-            .live_agent(100)
-            .expect("a running VM of a running run is an agent");
-        assert_eq!(
-            live,
-            ConnectedAgent {
-                cid: 100,
-                role: Some("builder".to_string()),
-                run: "r1".to_string(),
-                vm: 0,
-            }
-        );
-
-        // A roleless VM is an agent too: it is named by its CID instead.
-        let roleless = run_with_one_vm(RunState::Running, VmState::Running, Some(100), None)
-            .live_agent(100)
-            .expect("a running VM is an agent, role or no role");
-        assert_eq!(roleless.role, None);
-        assert_eq!(roleless.assignee_id(), "cid:100");
-
-        // Every other reading is not: the VM has stopped, the run has, the VM
-        // has no CID, or it is a different CID.
-        for (label, run) in [
-            (
-                "the VM has stopped",
-                run_with_one_vm(RunState::Running, VmState::Exited, Some(100), Some("builder")),
-            ),
-            (
-                "the VM was killed",
-                run_with_one_vm(RunState::Running, VmState::Killed, Some(100), Some("builder")),
-            ),
-            (
-                "the run is starting",
-                run_with_one_vm(RunState::Starting, VmState::Running, Some(100), Some("builder")),
-            ),
-            (
-                "the run has ended",
-                run_with_one_vm(RunState::Done, VmState::Running, Some(100), Some("builder")),
-            ),
-            (
-                "the run was killed",
-                run_with_one_vm(RunState::Killed, VmState::Running, Some(100), Some("builder")),
-            ),
-            (
-                "the VM has no vsock device",
-                run_with_one_vm(RunState::Running, VmState::Running, None, Some("builder")),
-            ),
-        ] {
-            assert_eq!(run.live_agent(100), None, "{label}");
-        }
-        // A live agent answers only for its own CID.
-        let run = run_with_one_vm(RunState::Running, VmState::Running, Some(100), Some("builder"));
-        assert!(run.live_agent(101).is_none());
-    }
-
-    #[test]
     fn a_vm_exit_maps_to_the_state_the_api_reports() {
         assert_eq!(
             VmState::from_exit(VmExit::GuestExited { reset: true }),
@@ -1739,35 +1594,24 @@ mod tests {
     /// operator run, and its VMs are keepalive agents. Both command lines name
     /// the harness, which is what makes `plaza.vm=<i>` meaningful at all.
     #[test]
-    fn the_cmdline_names_the_harness_and_the_runs_session() {
-        let request = |beats: Option<u32>| CreateRun {
+    fn the_cmdline_names_the_harness_its_session_and_the_role() {
+        let request = |beats: Option<u32>, role: Option<&str>| CreateRun {
             n: 1,
             vcpus: 1,
             memory_mib: 128,
             beats,
             vsock_cid: None,
+            role: role.map(str::to_string),
+            keepalive: None,
         };
-
-        // The demo session: the harness, exactly as it was before the run
-        // range existed.
+        assert_eq!(request(None, None).vm_cmdline(0, false), "console=ttyS0 plaza.harness=1 plaza.vm=0");
         assert_eq!(
-            request(None).cmdline(RunSession::Frozen),
-            "console=ttyS0 plaza.harness=1"
+            request(Some(2), None).vm_cmdline(1, true),
+            "console=ttyS0 plaza.beats=2 plaza.harness=1 plaza.keepalive=1 plaza.vm=1"
         );
-        assert_eq!(
-            request(Some(2)).cmdline(RunSession::Frozen),
-            "console=ttyS0 plaza.beats=2 plaza.harness=1"
-        );
-
-        // The operator run: the same harness, kept up by the keepalive flag.
-        assert_eq!(
-            request(None).cmdline(RunSession::Agent),
-            "console=ttyS0 plaza.harness=1 plaza.keepalive=1"
-        );
-        assert_eq!(
-            request(Some(2)).cmdline(RunSession::Agent),
-            "console=ttyS0 plaza.beats=2 plaza.harness=1 plaza.keepalive=1"
-        );
+        let roled = request(None, Some("builder")).vm_cmdline(0, true);
+        assert!(roled.contains("plaza.role=builder") && roled.contains("plaza.keepalive=1"), "{roled}");
+        assert!(request(None, Some("Bad Role")).checked().is_err());
     }
 
     /// The run range must hold one full-size run: a request of [`MAX_VMS`] VMs
@@ -1796,6 +1640,8 @@ mod tests {
             memory_mib,
             beats: None,
             vsock_cid: None,
+            role: None,
+            keepalive: None,
         };
 
         let (vms, named) = request(2, 2, 512)
@@ -1832,6 +1678,8 @@ mod tests {
             memory_mib: 128,
             beats: None,
             vsock_cid,
+            role: None,
+            keepalive: None,
         };
 
         // A CID inside the valid range is accepted, base + n - 1 included.
@@ -1955,6 +1803,8 @@ mod tests {
                 memory_mib: MIN_MEMORY_MIB,
                 beats: None,
                 vsock_cid: None,
+                role: None,
+                keepalive: None,
             })
             .err()
             .expect("the workspace copies cannot be prepared");
@@ -2000,6 +1850,8 @@ mod tests {
                 memory_mib: MIN_MEMORY_MIB,
                 beats: None,
                 vsock_cid: None,
+                role: None,
+                keepalive: None,
             })
             .err()
             .expect("the run range is full");
@@ -2026,6 +1878,8 @@ mod tests {
                 memory_mib: MIN_MEMORY_MIB,
                 beats: None,
                 vsock_cid: Some(crate::DEFAULT_AGENTS_CID_BASE),
+                role: None,
+                keepalive: None,
             })
             .expect("a pinned run does not need the run range");
 
@@ -2046,6 +1900,8 @@ mod tests {
                     memory_mib: MIN_MEMORY_MIB,
                     beats: None,
                     vsock_cid: None,
+                    role: None,
+                    keepalive: None,
                 })
                 .expect("the run exists even when its VMs cannot boot");
             assert_eq!(run.view(Detail::Summary).state, "failed");

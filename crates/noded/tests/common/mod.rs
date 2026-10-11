@@ -29,24 +29,17 @@ pub fn missing_kernel() -> PathBuf {
 }
 
 /// A daemon serving on an ephemeral port whose runs boot from
-/// [`missing_kernel`], with `console_dir` as its console.
-pub fn start(console_dir: PathBuf) -> Server {
-    start_with(console_dir, Config::default().hub)
+/// [`missing_kernel`].
+pub fn start() -> Server {
+    Server::start(config()).expect("the test daemon should bind")
 }
 
-/// Like [`start`], with the hub chosen: `None` is the `--hub-port off` daemon.
-pub fn start_with(console_dir: PathBuf, hub: Option<Hub>) -> Server {
-    Server::start(config(console_dir, hub)).expect("the test daemon should bind")
-}
-
-/// The config [`start_with`] runs a daemon with.
-pub fn config(console_dir: PathBuf, hub: Option<Hub>) -> Config {
+/// The config [`start`] runs a daemon with.
+pub fn config() -> Config {
     Config {
         port: 0,
         kernel: missing_kernel(),
         initrd: missing_kernel(),
-        hub,
-        console_dir,
         uds_dir: PathBuf::from("/tmp/plaza-vsock"),
         workspace: None,
         ..Config::default()

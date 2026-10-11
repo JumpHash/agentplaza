@@ -322,7 +322,7 @@ impl Fleet {
             .map(|(index, role)| AgentVm {
                 role: role.clone(),
                 guest_cid: self.cid_base + index as u64,
-                flags: format!("plaza.role={role} plaza.keepalive=1 plaza.vm={index}"),
+                flags: agent_flags(role, index),
             })
             .collect()
     }
@@ -336,6 +336,12 @@ impl Fleet {
     pub fn vcpus(&self) -> u8 {
         self.vcpus
     }
+}
+
+/// The command-line flags that make VM `index` of a run a keepalive agent of
+/// `role`: the role fleet's VMs and a roled run's VMs share them.
+pub fn agent_flags(role: &str, index: usize) -> String {
+    format!("plaza.role={role} plaza.keepalive=1 plaza.vm={index}")
 }
 
 /// Checks that `name` can be a `plaza.role=` value, and says why not when it
