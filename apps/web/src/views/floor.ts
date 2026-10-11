@@ -280,10 +280,7 @@ export function mount(root: HTMLElement): Cleanup {
   const probe = document.createElement('canvas');
   const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
   const renderer = gl ? newRenderer() : null;
-  if (!renderer) {
-    root.replaceChildren(h('p.faint', null, '3D unavailable (no WebGL) — showing the 2D floor.'));
-    return mountFloor2d(root);
-  }
+  if (!renderer) return mountFloor2d(root);
   const palette = readPalette();
   // The scene's own cartoon grade of the register palette: cream, sand and slate instead of
   // paper greys, with the same signal orange and status colours.

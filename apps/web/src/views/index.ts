@@ -10,6 +10,7 @@ import { mount as floor } from './floor';
 import { mount as machine } from './machine';
 import { mount as models } from './models';
 import { mount as overview } from './overview';
+import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
 
@@ -29,6 +30,7 @@ export const SCREENS: Screen[] = [
   { key: 'agents', label: 'Agents', icon: 'agents', section: 'Plaza', mount: agents },
   { key: 'tasks', label: 'Tasks', icon: 'tasks', section: 'Plaza', mount: tasks },
   { key: 'floor', label: 'Floor', icon: 'floor', section: 'Plaza', mount: floor },
+  { key: 'society', label: 'Society', icon: 'society', section: 'Social', mount: society },
   { key: 'conversations', label: 'Conversations', icon: 'conversations', section: 'Social', mount: conversations },
   { key: 'board', label: 'Board', icon: 'board', section: 'Social', mount: board },
   { key: 'council', label: 'Council', icon: 'council', section: 'Social', mount: council },

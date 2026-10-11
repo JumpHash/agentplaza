@@ -9,6 +9,7 @@ const names = {
   send: 'SendHorizontal', stop: 'Square', x: 'X', check: 'Check', alert: 'TriangleAlert', play: 'Play',
   refresh: 'RefreshCw', key: 'KeyRound', trash: 'Trash2', edit: 'Pencil', chevronRight: 'ChevronRight',
   chevronDown: 'ChevronDown', terminal: 'Terminal', wrench: 'Wrench', brain: 'Brain', user: 'User',
+  society: 'Share2', memory: 'Brain', heart: 'Heart', link: 'Link',
   orchestrator: 'Network', search: 'Search', external: 'ExternalLink', clock: 'Clock', zap: 'Zap',
   file: 'FileText', settings: 'SlidersHorizontal', ban: 'Ban', copy: 'Copy', sparkles: 'Sparkles',
 };

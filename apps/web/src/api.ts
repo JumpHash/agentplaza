@@ -130,6 +130,19 @@ export interface MachineNode extends Machine {
   stats: { cpu_percent: number; load: [number, number, number]; mem_total_mib: number; mem_used_mib: number; uptime_s: number; vms_running: number; guest_mem_mib: number; history: { t_ms: number; cpu_percent: number; mem_used_mib: number }[] } | null;
 }
 
+/** One agent's view of another (AP-072): decayed evidence r/s, belief, disbelief, uncertainty, expected trust. */
+export interface Opinion { r: number; s: number; b: number; d: number; u: number; e: number; updated_ms: number }
+/** A directed contact edge (AP-071) with the holder's opinion of the peer. `note` is the holder's private memory of the peer. */
+export interface Bond {
+  from: number; to: number; kind: 'met' | 'hired' | 'was-hired' | 'added'; since_ms: number;
+  strength: number; interactions: number; last_ms: number; note: string | null; blocked: boolean;
+  opinion: Opinion;
+}
+export interface SocietyAgent { cid: number; name: string; role: string; reputation: number; confidence: number; wallet: number }
+export interface Society { agents: SocietyAgent[]; bonds: Bond[]; computed_ms: number }
+export interface MemoryNote { slug: string; title: string; kind: 'note' | 'journal' | 'person'; links: string[]; tags: string[]; updated_ms: number; size: number }
+export interface MemoryDoc extends MemoryNote { body: string; backlinks: string[]; provenance: { task: string | null; work: number | null } }
+
 // ---- Endpoints -------------------------------------------------------------
 
 export const api = {
@@ -174,6 +187,12 @@ export const api = {
   mintBudget: (amount: number) => post<unknown>('/v1/treasury/mint', { amount }),
   fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
   agora: () => get<{ calls: unknown[] }>('/v1/agora').then((r) => r.calls),
+
+  society: () => get<Society>('/v1/society'),
+  /** The owner rates an agent (AP-072: the owner is the root of trust), value in [-1, 1]. */
+  rateAgent: (cid: number, value: number) => post<Opinion>(`/v1/agents/${cid}/rating`, { value }),
+  memory: (cid: number) => get<{ notes: MemoryNote[] }>(`/v1/agents/${cid}/memory`).then((r) => r.notes),
+  memoryNote: (cid: number, slug: string) => get<MemoryDoc>(`/v1/agents/${cid}/memory/${encodeURIComponent(slug)}`),
 
   machine: () => get<Machine>('/v1/machine'),
   machines: () => get<MachineNode[]>('/v1/machines'),
