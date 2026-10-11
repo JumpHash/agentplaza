@@ -4,6 +4,7 @@
 //! only. Every request carries the internal token, read from its file on each
 //! call, so an apid that restarted with a new token is picked up at once.
 
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use apz_proto::wire::{AgentProfile, Decision, GuestMessage, HostMessage};
 use serde_json::json;
 
 /// The header that carries the internal token.
-const TOKEN_HEADER: &str = "x-apz-internal";
+pub const TOKEN_HEADER: &str = "x-apz-internal";
 /// apid's internal surface when `--apid` is not given.
 pub const DEFAULT_APID: &str = "http://127.0.0.1:7700";
 /// The hello runs on the session thread, so it is kept short.
@@ -73,6 +74,13 @@ impl Apid {
         self.post(&format!("/internal/v1/agents/{cid}/egress"), record, Duration::from_secs(2)).map(drop)
     }
 
+    /// A plain TCP connection to apid's internal surface, for a relay that
+    /// writes its own request (the egress gateway). The caller sends the token.
+    pub fn connect(&self, timeout: Duration) -> Result<TcpStream, String> {
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.port));
+        TcpStream::connect_timeout(&addr, timeout).map_err(|err| format!("apid unreachable: {err}"))
+    }
+
     /// One authenticated POST whose answer must be 200 and JSON.
     fn post(&self, path: &str, body: &str, timeout: Duration) -> Result<serde_json::Value, String> {
         let token = self.token()?;
@@ -85,7 +93,7 @@ impl Apid {
     }
 
     /// The token as the file holds it now (trimmed). Never echoed in an error.
-    fn token(&self) -> Result<String, String> {
+    pub fn token(&self) -> Result<String, String> {
         let path = self.token_file.as_ref().ok_or("forwarding is off: no --internal-token-file")?;
         let text = std::fs::read_to_string(path).map_err(|err| format!("cannot read the internal token: {err}"))?;
         let token = text.trim();
