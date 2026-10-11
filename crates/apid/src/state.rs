@@ -74,6 +74,8 @@ pub struct App {
     pub providers: providers::Store,
     pub roles: agents::Roles,
     pub agents: agents::Roster,
+    /// Agent names by CID, persisted at `<state-dir>/names.json`.
+    pub names: agents::Names,
     pub transcripts: transcript::Store,
     pub work: scheduler::Queues,
     pub plaza: plaza::Plaza,
@@ -95,6 +97,7 @@ impl App {
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
+            names: agents::Names::load(config.state_dir.join("names.json")),
             agents: agents::Roster::default(),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),

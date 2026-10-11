@@ -3,8 +3,8 @@
 //! OWNER: slice "agents". Signatures used by other modules are marked
 //! `// contract` — keep them.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::role::Role;
 use crate::scheduler::Origin;
 use crate::settings::{tier_of, Tier};
 use crate::state::App;
@@ -80,6 +81,104 @@ impl Roster {
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Agent>> {
         self.agents.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Agent names by CID, kept at `<state-dir>/names.json` and written atomically.
+pub struct Names {
+    path: PathBuf,
+    names: Mutex<BTreeMap<u64, String>>,
+    /// CIDs already asked to choose a name in this run.
+    asked: Mutex<BTreeSet<u64>>,
+}
+
+impl Names {
+    /// Loads the store; a missing or unreadable file starts empty.
+    pub fn load(path: PathBuf) -> Self {
+        let names: BTreeMap<u64, String> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        Self { path, names: Mutex::new(names), asked: Mutex::new(BTreeSet::new()) }
+    }
+
+    pub fn get(&self, cid: u64) -> Option<String> {
+        self.guard().get(&cid).cloned()
+    }
+
+    /// Whether another agent already uses `name` (case-insensitive).
+    pub fn used_by_other(&self, cid: u64, name: &str) -> bool {
+        let wanted = name.to_lowercase();
+        self.guard().iter().any(|(other, used)| *other != cid && used.to_lowercase() == wanted)
+    }
+
+    /// Stores `name` for `cid` and writes the file; on failure nothing changes.
+    pub fn set(&self, cid: u64, name: &str) -> std::io::Result<()> {
+        let mut names = self.guard();
+        let mut next = names.clone();
+        next.insert(cid, name.to_owned());
+        let text = serde_json::to_string_pretty(&next).map_err(std::io::Error::other)?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &self.path)?;
+        *names = next;
+        Ok(())
+    }
+
+    /// True the first time it is called for `cid` in this run.
+    pub fn first_ask(&self, cid: u64) -> bool {
+        self.asked.lock().unwrap_or_else(PoisonError::into_inner).insert(cid)
+    }
+
+    fn guard(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, String>> {
+        self.names.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Checks a proposed name for agent `cid` and returns it trimmed: 2 to 16
+/// characters, letters only, at most one inner space or hyphen, not a role
+/// name, and not another agent's name.
+pub fn check_name(app: &App, cid: u64, raw: &str) -> Result<String, String> {
+    let name = raw.trim().to_owned();
+    let len = name.chars().count();
+    if !(2..=16).contains(&len) {
+        return Err(format!("name must be 2 to 16 characters; it is {len}"));
+    }
+    let separators = name.chars().filter(|c| *c == ' ' || *c == '-').count();
+    let edged = name.starts_with([' ', '-']) || name.ends_with([' ', '-']);
+    let letters = name.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-');
+    if separators > 1 || edged || !letters {
+        return Err("name must be letters only, with at most one inner space or hyphen".into());
+    }
+    if Role::parse(&name.to_lowercase().replace(' ', "-")).is_some() {
+        return Err(format!("{name} is a role name; choose a personal name"));
+    }
+    if app.names.used_by_other(cid, &name) {
+        return Err(format!("the name {name} is already used by another agent"));
+    }
+    Ok(name)
+}
+
+/// Stores a checked name: the file first, then the roster.
+fn store_name(app: &App, cid: u64, name: &str) -> Result<(), String> {
+    app.names.set(cid, name).map_err(|e| format!("name not saved: {e}"))?;
+    app.agents.update(cid, |agent| agent.name = name.to_owned());
+    Ok(())
+}
+
+/// Renames agent `cid` (checked), pushes its profile to the guest and publishes it.
+pub fn rename(app: &App, cid: u64, raw: &str) -> Result<Agent, String> {
+    let name = check_name(app, cid, raw)?;
+    store_name(app, cid, &name)?;
+    let agent = app.agents.get(cid).ok_or("no such agent")?;
+    let push = json!({"message": HostMessage::Profile { profile: profile(app, &agent) }});
+    let _ = app.hub.post(&format!("/v1/agents/{cid}/send"), &push);
+    app.bus.publish("agent", &agent);
+    Ok(agent)
+}
+
+/// The human label of a role, or the raw name when it is not a known role.
+pub fn role_label(role: &str) -> &str {
+    Role::parse(role).map(Role::label).unwrap_or(role)
 }
 
 /// The roles manifest and the role prompts.
@@ -166,8 +265,14 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
 /// The system prompt: the plaza preamble, then the role's own prompt.
 fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
+    let label = role_label(&agent.role);
+    let who = if agent.name.is_empty() {
+        format!("You have no name yet. You are the {label} agent of an AgentPlaza (CID {}).", agent.cid)
+    } else {
+        format!("You are {}, the {label} agent of an AgentPlaza (CID {}).", agent.name, agent.cid)
+    };
     let mut text = format!(
-        "You are {name}, the {role} agent of an AgentPlaza (CID {cid}).\n\n\
+        "{who}\n\n\
          You work in your own virtual machine. Guest tools (bash, file tools) act only on your own \
          /workspace inside that VM. Host tools (names starting with plaza_) act on the shared plaza that \
          every agent uses. Use only the tools you are given.\n\n\
@@ -177,9 +282,6 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
          Plaza laws: never seek, copy or reveal credentials, keys or tokens. Never impersonate another \
          agent or the operator. Never act outside the tools you were given. Report honestly; never claim \
          work you did not do.",
-        name = agent.name,
-        role = agent.role,
-        cid = agent.cid,
     );
     if orchestrator {
         text.push_str(
@@ -204,7 +306,7 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     let previous = app.agents.get(cid);
     let agent = Agent {
         cid,
-        name: previous.as_ref().map_or_else(|| format!("{role}-{cid}"), |old| old.name.clone()),
+        name: app.names.get(cid).unwrap_or_default(),
         role: role.to_owned(),
         model_override: previous.as_ref().and_then(|old| old.model_override.clone()),
         status: Status::Idle,
@@ -217,6 +319,10 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
+    if agent.name.is_empty() && app.names.first_ask(cid) {
+        let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
+        let _ = app.work.enqueue(app, cid, WorkKind::Chat, format!("op-{cid}"), prompt.to_owned(), Origin::default());
+    }
     Some(profile(app, &agent))
 }
 
@@ -362,6 +468,7 @@ fn view(app: &App, agent: &Agent) -> Value {
             json!(model_source(agent.model_override.is_some(), has_role_model)),
         );
         obj.insert("tier".into(), json!(tier_of(&agent.role)));
+        obj.insert("role_label".into(), json!(role_label(&agent.role)));
         obj.insert("work".into(), json!(app.work.current(agent.cid)));
         obj.insert("queue".into(), json!(app.work.queued(agent.cid).len()));
     }
@@ -455,17 +562,22 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
     };
     let name = match b.get("name") {
         None => None,
-        Some(Value::String(n)) if !n.trim().is_empty() => Some(n.trim().to_string()),
-        Some(_) => return Response::error(400, "name must be a non-empty string"),
+        Some(Value::String(n)) => match check_name(app, agent.cid, n) {
+            Ok(valid) => Some(valid),
+            Err(e) => return Response::error(400, &e),
+        },
+        Some(_) => return Response::error(400, "name must be a string"),
     };
     app.agents.update(agent.cid, |a| {
         if let Some(m) = model {
             a.model_override = m;
         }
-        if let Some(n) = name {
-            a.name = n;
-        }
     });
+    if let Some(n) = &name {
+        if let Err(e) = store_name(app, agent.cid, n) {
+            return Response::error(500, &e);
+        }
+    }
     let Some(updated) = app.agents.get(agent.cid) else {
         return Response::error(404, "no such agent");
     };
@@ -657,7 +769,10 @@ mod route_tests {
         assert!(orchestrator.contains("You plan and delegate"));
         assert!(orchestrator.contains("plaza_assign"));
         assert!(!worker.contains("delegate"));
-        assert!(worker.contains("You are builder-42, the builder agent"));
+        assert!(worker.contains("You are builder-42, the Builder agent"));
         assert!(worker.ends_with("Write the code."));
+        let unnamed = Agent { name: String::new(), ..agent("qa") };
+        let text = system_prompt(&unnamed, "");
+        assert!(text.contains("You have no name yet. You are the QA agent"));
     }
 }

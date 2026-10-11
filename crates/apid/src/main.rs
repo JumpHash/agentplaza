@@ -16,6 +16,7 @@ mod events;
 mod internal;
 mod plaza;
 mod providers;
+mod role;
 mod scheduler;
 mod settings;
 mod state;

@@ -42,6 +42,7 @@ const ALWAYS: &[&str] = &[
     "plaza_get_file",
     "fetch_url",
     "download",
+    "plaza_set_name",
 ];
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
@@ -65,7 +66,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
-        | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" => Some(Runs::Host),
+        | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" => Some(Runs::Host),
         _ => None,
     }
 }
@@ -235,6 +236,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
             "Read the latest file a plaza agent shared with share_file, by its cid and path.",
             obj(json!({"agent": {"type": "integer"}, "path": {"type": "string"}}), &["agent", "path"]),
         ),
+        "plaza_set_name" => (
+            "Set your own name: 2 to 16 letters, at most one inner space or hyphen. Names are unique and cannot be role names.",
+            obj(json!({"name": {"type": "string"}}), &["name"]),
+        ),
         "fetch_url" => (
             "Fetch a web page or file over the internet (through the plaza's gateway) and return its text.",
             obj(json!({"url": {"type": "string"}}), &["url"]),
@@ -381,6 +386,11 @@ fn host_call(app: &App, agent: &Agent, _work: u64, name: &str, input: &Value) ->
             task_arg(app, input)?.withdraw().map_err(|e| format!("{e:?}"))?;
             Ok("cancelled".into())
         }
+        "plaza_set_name" => {
+            let name = str_arg(input, "name")?;
+            let renamed = agents::rename(app, agent.cid, name)?;
+            to_text(&json!({"cid": renamed.cid, "name": renamed.name}))
+        }
         other => Err(format!("{other} is not implemented")),
     }
 }
@@ -489,11 +499,12 @@ mod tests {
             "transcript_search", "submit_claim", "plaza_tasks", "plaza_bid", "plaza_board_read",
             "plaza_board_post", "plaza_send_message", "plaza_vote", "plaza_propose", "plaza_agents",
             "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_get_file",
+            "plaza_set_name",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 15);
+        assert_eq!(host.len(), 16);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
