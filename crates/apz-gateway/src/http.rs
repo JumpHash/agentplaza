@@ -18,7 +18,7 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// One request, built by an adapter.
 pub(crate) struct Req {
-    post: bool,
+    verb: &'static str,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -28,11 +28,16 @@ pub(crate) struct Req {
 
 impl Req {
     pub fn get(url: impl Into<String>) -> Self {
-        Req { post: false, url: url.into(), headers: Vec::new(), body: Vec::new(), secret: None }
+        Req::raw("GET", url, Vec::new())
+    }
+
+    /// A request with any verb (`GET`, `POST`, `PUT`, `DELETE`) and body.
+    pub fn raw(verb: &'static str, url: impl Into<String>, body: Vec<u8>) -> Self {
+        Req { verb, url: url.into(), headers: Vec::new(), body, secret: None }
     }
 
     pub fn post_json(url: impl Into<String>, body: &Value) -> Self {
-        let mut req = Req { post: true, body: body.to_string().into_bytes(), ..Req::get(url) };
+        let mut req = Req { verb: "POST", body: body.to_string().into_bytes(), ..Req::get(url) };
         req.set_header("content-type", "application/json");
         req
     }
@@ -74,7 +79,7 @@ impl Req {
     }
 
     pub fn method(&self) -> &'static str {
-        if self.post { "POST" } else { "GET" }
+        self.verb
     }
 
     #[cfg(test)]
@@ -92,12 +97,17 @@ pub(crate) struct Http {
 
 impl Http {
     pub fn new(retries: u32, base_delay: Duration) -> Self {
+        Self::with_timeout(retries, base_delay, Duration::from_secs(60 * 60))
+    }
+
+    /// As [`Http::new`], with the whole call capped at `global`.
+    pub fn with_timeout(retries: u32, base_delay: Duration, global: Duration) -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(10)))
             // Long generations: time to the first byte, then the whole call.
             .timeout_recv_response(Some(Duration::from_secs(15 * 60)))
-            .timeout_global(Some(Duration::from_secs(60 * 60)))
+            .timeout_global(Some(global))
             .user_agent("agentplaza-gateway/0.1")
             .build();
         Http { agent: ureq::Agent::new_with_config(config), retries, base_delay }
@@ -151,18 +161,28 @@ impl Http {
     }
 
     fn send_once(&self, req: &Req) -> Result<Response<Body>, ureq::Error> {
-        if req.post {
-            let mut rb = self.agent.post(&req.url);
-            for (name, value) in &req.headers {
-                rb = rb.header(name, value);
+        match req.verb {
+            "POST" | "PUT" => {
+                let mut rb = if req.verb == "PUT" { self.agent.put(&req.url) } else { self.agent.post(&req.url) };
+                for (name, value) in &req.headers {
+                    rb = rb.header(name, value);
+                }
+                rb.send(&req.body[..])
             }
-            rb.send(&req.body[..])
-        } else {
-            let mut rb = self.agent.get(&req.url);
-            for (name, value) in &req.headers {
-                rb = rb.header(name, value);
+            "DELETE" => {
+                let mut rb = self.agent.delete(&req.url);
+                for (name, value) in &req.headers {
+                    rb = rb.header(name, value);
+                }
+                rb.call()
             }
-            rb.call()
+            _ => {
+                let mut rb = self.agent.get(&req.url);
+                for (name, value) in &req.headers {
+                    rb = rb.header(name, value);
+                }
+                rb.call()
+            }
         }
     }
 }
