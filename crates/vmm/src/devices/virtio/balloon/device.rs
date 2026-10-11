@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use vm_memory::GuestMemoryBackend;
 use vmm_sys_util::eventfd::EventFd;
@@ -78,6 +80,9 @@ pub struct VirtioBalloon {
     mem: Option<GuestMemoryMmap>,
     /// The device's interrupt, set on activation.
     irq: Option<EventFd>,
+    /// The transport's interrupt status, where a config change is recorded
+    /// (`VIRTIO_MMIO_INT_CONFIG`); set by [`VirtioBalloon::set_interrupt_status`].
+    interrupt_status: Option<Arc<AtomicU32>>,
 }
 
 impl VirtioBalloon {
@@ -98,12 +103,25 @@ impl VirtioBalloon {
             discard,
             mem: None,
             irq: None,
+            interrupt_status: None,
         }
+    }
+
+    /// Hands the balloon the transport's shared interrupt status
+    /// ([`VirtioMmioTransport::interrupt_status_handle`]), so a configuration
+    /// change is reported in the status the guest reads.
+    pub fn set_interrupt_status(&mut self, status: Arc<AtomicU32>) {
+        self.interrupt_status = Some(status);
     }
 
     /// Sets the host's target size (in pages) and tells the guest its configuration changed.
     pub fn set_target_pages(&mut self, pages: u32) {
         self.num_pages = pages;
+        // The status is recorded before the interrupt is raised, so the guest
+        // reads CONFIG when its handler runs.
+        if let Some(status) = &self.interrupt_status {
+            status.fetch_or(VIRTIO_MMIO_INT_CONFIG, Ordering::SeqCst);
+        }
         if let Some(irq) = &self.irq
             && let Err(err) = irq.write(u64::from(VIRTIO_MMIO_INT_CONFIG))
         {
@@ -197,6 +215,10 @@ impl VirtioDevice for VirtioBalloon {
         self.irq = Some(irq.try_clone().map_err(BalloonError::from)?);
         self.mem = Some(mem.clone());
         Ok(())
+    }
+
+    fn write_config(&mut self, offset: u64, data: &[u8]) {
+        VirtioBalloon::write_config(self, offset, data);
     }
 
     fn read_config(&mut self, offset: u64, data: &mut [u8]) {
@@ -442,6 +464,20 @@ mod tests {
         // The host owns the target: a guest write to it is dropped.
         balloon.write_config(0, &7u32.to_le_bytes());
         assert_eq!(balloon.target_pages(), 0x0012_3456);
+    }
+
+    #[test]
+    fn balloon_target_change_sets_the_config_interrupt_in_the_shared_status() {
+        let status = Arc::new(AtomicU32::new(0));
+        let mut balloon = VirtioBalloon::new();
+        balloon.set_interrupt_status(Arc::clone(&status));
+
+        balloon.set_target_pages(42);
+        assert_eq!(status.load(Ordering::SeqCst), VIRTIO_MMIO_INT_CONFIG);
+
+        // The guest's configuration write goes through the trait to `actual`.
+        VirtioDevice::write_config(&mut balloon, 4, &7u32.to_le_bytes());
+        assert_eq!(balloon.actual_pages(), 7);
     }
 
     #[test]
