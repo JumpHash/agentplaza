@@ -15,6 +15,8 @@
 #[cfg(target_os = "linux")]
 mod apid;
 #[cfg(target_os = "linux")]
+mod egress;
+#[cfg(target_os = "linux")]
 mod http;
 #[cfg(target_os = "linux")]
 mod hub;
@@ -116,11 +118,15 @@ impl Drop for SessionGuard {
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
-              [--internal-token-file PATH]
+              [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock)
   --cids LIST       comma-separated guest CIDs to serve, one listener each (default 3)
   --port P          vsock port each CID's listener answers (default 5000)
+  --egress on|off   the egress proxy on vsock port 5001 per CID (default on); off serves none
+  --egress-ports LIST
+                    extra destination ports the proxy may reach beyond 80 and 443
+                    (default none); private and loopback addresses are always refused
   --http-port P     the HTTP surface on 127.0.0.1 (default 19080): GET /v1/status,
                     GET /healthz, POST /v1/agents/{cid}/{send,tell,stop}
   --apid URL        apid's internal surface, http://127.0.0.1:PORT (default
@@ -166,6 +172,8 @@ struct Config {
     http_port: u16,
     apid: String,
     internal_token_file: Option<PathBuf>,
+    egress: bool,
+    egress_ports: Vec<u16>,
 }
 
 #[cfg(target_os = "linux")]
@@ -178,6 +186,8 @@ impl Default for Config {
             http_port: DEFAULT_HTTP_PORT,
             apid: apid::DEFAULT_APID.to_string(),
             internal_token_file: None,
+            egress: true,
+            egress_ports: Vec::new(),
         }
     }
 }
@@ -201,6 +211,20 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 if config.cids.is_empty() {
                     return Err("--cids: at least one CID is required".to_string());
                 }
+            }
+            "--egress" => {
+                config.egress = match value?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--egress: expected on or off, not {other}")),
+                }
+            }
+            "--egress-ports" => {
+                config.egress_ports = value?
+                    .split(',')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| part.parse::<u16>().map_err(|err| format!("--egress-ports: invalid port {part}: {err}")))
+                    .collect::<Result<_, _>>()?;
             }
             "--port" => config.port = value?.parse().map_err(|err| format!("--port: {err}"))?,
             "--http-port" => config.http_port = value?.parse().map_err(|err| format!("--http-port: {err}"))?,
@@ -231,6 +255,7 @@ fn run(config: Config) -> Result<(), String> {
     sys::install_signal_handlers();
     create_uds_dir(&config.uds_dir)
         .map_err(|err| format!("cannot create the socket directory {}: {err}", config.uds_dir.display()))?;
+    let egress_apid = apid.clone();
     let hub = Arc::new(Hub::new(Arc::new(StdoutLog), apid));
     let facts = http::NodeFacts {
         cids: config.cids.clone(),
@@ -246,6 +271,7 @@ fn run(config: Config) -> Result<(), String> {
     // Every listener is bound before any is served: a taken path fails the
     // daemon rather than half-serving.
     let mut listeners = Vec::new();
+    let mut egress_listeners = Vec::new();
     for &cid in &config.cids {
         let path = config.uds_dir.join(format!("vm{cid}_{}", config.port));
         let listener = bind_listener(&path, cid)?;
@@ -254,6 +280,15 @@ fn run(config: Config) -> Result<(), String> {
             .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
         println!("vsockd: listening on {} for guest CID {cid}", path.display());
         listeners.push((cid, path, listener));
+        if config.egress {
+            let path = config.uds_dir.join(format!("vm{cid}_{}", egress::EGRESS_PORT));
+            let listener = bind_listener(&path, cid)?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
+            println!("vsockd: egress proxy listening on {} for guest CID {cid}", path.display());
+            egress_listeners.push((cid, path, listener));
+        }
     }
     let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
     let mut paths = Vec::new();
@@ -262,6 +297,12 @@ fn run(config: Config) -> Result<(), String> {
         paths.push(path);
         let (limiter, hub) = (Arc::clone(&limiter), Arc::clone(&hub));
         loops.push(thread::spawn(move || accept_loop(cid, listener, limiter, hub)));
+    }
+    let policy = Arc::new(egress::Policy::new(config.egress_ports.clone()));
+    for (cid, path, listener) in egress_listeners {
+        paths.push(path);
+        let (policy, egress_apid) = (Arc::clone(&policy), egress_apid.clone());
+        loops.push(thread::spawn(move || egress::accept_loop(cid, listener, policy, egress_apid)));
     }
     for accept in loops {
         let _ = accept.join();
@@ -402,6 +443,7 @@ mod tests {
         let config = args(&[
             "--uds-dir", "/tmp/x", "--cids", "3,4,5", "--port", "6000", "--http-port", "0",
             "--apid", "http://127.0.0.1:9", "--internal-token-file", "t.token",
+            "--egress", "off", "--egress-ports", "8080,8443",
         ])
         .unwrap();
         let expected = Config {
@@ -411,9 +453,20 @@ mod tests {
             http_port: 0,
             apid: "http://127.0.0.1:9".into(),
             internal_token_file: Some("t.token".into()),
+            egress: false,
+            egress_ports: vec![8080, 8443],
         };
         assert_eq!(config, expected);
-        for bad in [&["--port"][..], &["--port", "x"], &["--cids", ""], &["--http-port", "70000"], &["--roles", "r.json"]] {
+        assert!(Config::default().egress, "the egress proxy is on by default");
+        for bad in [
+            &["--port"][..],
+            &["--port", "x"],
+            &["--cids", ""],
+            &["--http-port", "70000"],
+            &["--roles", "r.json"],
+            &["--egress", "maybe"],
+            &["--egress-ports", "70000"],
+        ] {
             assert!(args(bad).is_err(), "{bad:?}");
         }
     }
