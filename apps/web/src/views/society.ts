@@ -354,7 +354,7 @@ function detail(d: Society, selected: number | null, act: Actions): HTMLElement 
   const name = agentName(me);
   const rep = clamp(me.reputation, 0, 100);
   const fill = h('span.soc-meter-fill');
-  fill.style.width = `${rep}%`;
+  fill.style.width = me.confidence >= 0.05 ? `${rep}%` : "0%"; // unrated: an empty bar
   const meter = h(
     'div.soc-meter',
     { role: 'meter', 'aria-label': 'Reputation', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(rep) },
@@ -375,7 +375,7 @@ function detail(d: Society, selected: number | null, act: Actions): HTMLElement 
     h(
       'div.soc-stats',
       null,
-      h('div.soc-stat', null, h('span.soc-k', null, 'Reputation'), h('span.soc-v', null, `${Math.round(rep)} / 100`)),
+      h('div.soc-stat', null, h('span.soc-k', null, 'Reputation'), h('span.soc-v', null, me.confidence >= 0.05 ? `${Math.round(rep)} / 100` : 'Unrated')),
       meter,
       h('div.soc-stat', null, h('span.soc-k', null, 'Confidence'), h('span.soc-v', null, `${Math.round(clamp(me.confidence, 0, 1) * 100)}%`)),
       h('div.soc-stat', null, h('span.soc-k', null, 'Wallet'), h('span.soc-v', null, compact(me.wallet))),
@@ -401,7 +401,7 @@ function row(peer: number, peerName: string, bond: Bond, gap: boolean, pick: (ci
     null,
     h('div.soc-row-top', null, who, badge(bond.kind, KIND_TONE[bond.kind]), gap ? badge('they disagree', 'warn') : null),
     bar(bond.opinion),
-    bond.note ? h('p.soc-note', null, bond.note) : null,
+    bond.note ? noteEl(bond.note) : null,
   );
 }
 
@@ -442,4 +442,11 @@ function legend(): HTMLElement {
     ),
     h('p.soc-note', null, 'Trusting an agent more or less moves the opinions held of it.'),
   );
+}
+
+/** A private note, clamped to a few lines; a click shows all of it. */
+function noteEl(text: string): HTMLElement {
+  const el = h('p.soc-note.clamped', { title: 'Click to expand' }, text);
+  el.addEventListener('click', () => el.classList.toggle('clamped'));
+  return el;
 }

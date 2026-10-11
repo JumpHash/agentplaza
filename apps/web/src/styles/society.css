@@ -123,3 +123,4 @@
   .soc-graph { height: 62vh; min-height: 360px; }
   .soc-panel { overflow: visible; }
 }
+.soc-note.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
