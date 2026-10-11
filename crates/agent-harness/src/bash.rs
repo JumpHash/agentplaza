@@ -6,10 +6,8 @@
 //! process group. A root guest drops to uid and gid 1000 first. Stdout and
 //! stderr are captured together and capped; the result ends with `exit <code>`.
 //!
-//! A command that outlives its timeout has its shell killed. The crate forbids
-//! `unsafe`, so the whole process group cannot be signalled; a grandchild the
-//! shell started may outlive the timeout, and its output is taken without
-//! waiting for it.
+//! A command that outlives its timeout is killed with its whole process group (the
+//! shell and everything it started), through kill(1) since the crate forbids `unsafe`.
 
 use std::io::{self, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -172,7 +170,7 @@ fn execute(dir: &std::path::Path, program: &str, args: &[&str], timeout_s: u64, 
             Ok(Some(status)) => break (Some(status), false),
             Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
             Ok(None) => {
-                let _ = child.kill();
+                kill_group(&mut child);
                 break (child.wait().ok(), true);
             }
             Err(err) => return Err(format!("internal: cannot wait for the shell: {err}")),
@@ -271,4 +269,17 @@ mod tests {
         }
     }
 
+}
+
+/// Kills a command started in its own process group (`process_group(0)`, so the group id is
+/// the shell's pid) together with everything it started — a dev server, a sleeping
+/// grandchild. The crate forbids `unsafe`, so the group is signalled with kill(1).
+pub(crate) fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
 }

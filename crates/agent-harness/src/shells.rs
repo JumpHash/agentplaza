@@ -166,8 +166,8 @@ pub fn kill(_workspace: &Workspace, input: &Value) -> Result<String, String> {
     };
     let mut child = locked(&job.child);
     let was_running = matches!(child.try_wait(), Ok(None));
-    // Only the shell is signalled: the crate forbids unsafe, so its process group cannot be.
-    let _ = child.kill();
+    // The whole process group goes: the shell and whatever it started.
+    crate::bash::kill_group(&mut child);
     let _ = child.wait();
     Ok(if was_running {
         format!("killed job {id}")
