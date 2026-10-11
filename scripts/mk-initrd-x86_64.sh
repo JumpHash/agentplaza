@@ -301,9 +301,13 @@ cat > "$out_dir/init.c" <<'EOF'
 // writable from the guest's side.
 #include <errno.h>
 #include <fcntl.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
@@ -825,11 +829,34 @@ static void reap_harness(pid_t *harness, int keepalive)
     write(1, msg, (size_t)len);
 }
 
+// Brings the loopback interface up, so a proxy on 127.0.0.1 inside the guest
+// is reachable. Failure is reported on the serial line and does not stop init.
+static void lo_up(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        put("plaza guest: lo: socket failed\n");
+        return;
+    }
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof ifr);
+    strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0) {
+        put("plaza guest: lo: SIOCGIFFLAGS failed\n");
+    } else {
+        ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+        if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0)
+            put("plaza guest: lo: SIOCSIFFLAGS failed\n");
+    }
+    close(fd);
+}
+
 int main(void)
 {
     mount("devtmpfs", "/dev", "devtmpfs", 0, "");
     mount("proc", "/proc", "proc", 0, "");
     mount("sysfs", "/sys", "sysfs", 0, "");
+    lo_up();
 
     const unsigned long beats = parse_flag("plaza.beats=");
     const unsigned long halt = parse_flag("plaza.halt=");
