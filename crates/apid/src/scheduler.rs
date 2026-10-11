@@ -310,6 +310,7 @@ pub fn spawn(app: Arc<App>) {
     let spawned = thread::Builder::new().name("apid-scheduler".into()).spawn(move || {
         let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
         loop {
+            ask_names(&app);
             assign_tasks(&app);
             offer_motions(&app, &mut motions_seen);
             thread::sleep(Duration::from_secs(2));
@@ -317,6 +318,18 @@ pub fn spawn(app: Arc<App>) {
     });
     if let Err(err) = spawned {
         eprintln!("scheduler: cannot start: {err}");
+    }
+}
+
+/// Asks each unnamed agent, once and only after its session settled, to name itself.
+fn ask_names(app: &App) {
+    let now = apz_plaza::now_ms();
+    for agent in app.agents.list() {
+        let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
+        if agent.name.is_empty() && agent.status == crate::agents::Status::Idle && settled && app.names.first_ask(agent.cid) {
+            let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
+            app.work.enqueue(app, agent.cid, WorkKind::Chat, format!("op-{}", agent.cid), prompt.to_owned(), Origin::default());
+        }
     }
 }
 

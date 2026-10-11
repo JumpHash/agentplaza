@@ -319,10 +319,6 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
-    if agent.name.is_empty() && app.names.first_ask(cid) {
-        let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
-        let _ = app.work.enqueue(app, cid, WorkKind::Chat, format!("op-{cid}"), prompt.to_owned(), Origin::default());
-    }
     Some(profile(app, &agent))
 }
 
