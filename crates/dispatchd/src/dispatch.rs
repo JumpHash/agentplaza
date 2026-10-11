@@ -45,11 +45,12 @@
 //! work it can find is bounded by the ledger's own cap (1024 tasks) and the
 //! hub's session caps. `--once` is exactly one pass.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::roles::Manifest;
-use crate::views::{Agent, Outcome, Task, Tell};
+use crate::social::SocialPass;
+use crate::views::{Agent, Board, Contact, NewPost, Outcome, Post, ReadAck, Task, Tell};
 use crate::workflow::{self, DriveError, Driver, Plan};
 
 /// How many passes a task whose agent could not be reached is retried for
@@ -93,6 +94,37 @@ pub trait Operator {
         args: &serde_json::Value,
         timeout_ms: u64,
     ) -> Result<Tell, String>;
+}
+
+/// The plaza's social surface: the node's board, its read cursors, the contact
+/// lists and the peer conversations (`docs/agents/social.md`).
+///
+/// It is one trait because it is one daemon's answer to one question — what is
+/// the plaza saying — and because the social pass reads and writes it through
+/// this seam alone. The pass itself uses the board and the read cursor (the
+/// interest note is a post); the contact and conversation calls are the rest of
+/// the contract, kept here so the client is the whole surface rather than the
+/// half the first driver happens to need. `move` and `hibernate` are the
+/// dispatcher's business nowhere: an award seeds a contact itself, in the node
+/// ([`crate::social`] says so), so the driver never duplicates it.
+pub trait Social {
+    /// The board: the newest posts, and every agent's unread count.
+    fn board(&self) -> Result<Board, String>;
+    /// Advances `cid`'s read cursor to `up_to`, and answers what it left
+    /// unread. The cursor is monotonic: a cursor at or behind the one the agent
+    /// already holds is refused rather than rolled back.
+    fn read_board(&self, cid: u64, up_to: &str) -> Result<ReadAck, String>;
+    /// Records `post` for a connected agent and answers the post the board now
+    /// holds.
+    fn post(&self, post: &NewPost) -> Result<Post, String>;
+    /// The agent's own contact list.
+    fn contacts(&self, cid: u64) -> Result<Vec<Contact>, String>;
+    /// Adds one peer to the agent's list. Idempotent: a peer already on the
+    /// list keeps the kind it was first recorded with.
+    fn add_contact(&self, cid: u64, peer_cid: u64) -> Result<(), String>;
+    /// The agent speaks to a peer: the exchange is recorded and delivered to
+    /// the peer's session when it has one.
+    fn say(&self, cid: u64, to_cid: u64, text: &str) -> Result<(), String>;
 }
 
 /// Where the dispatcher's own voice goes.
@@ -162,6 +194,10 @@ pub struct Dispatcher<L: Ledger, O: Operator> {
     /// tasks and their states, and this only bounds how many passes a task
     /// whose agent is unreachable is tried for.
     retries: HashMap<String, Attempt>,
+    /// The social pass ([`crate::social`]), when the dispatcher was given the
+    /// node's social surface. `None` is a dispatcher that only claims and
+    /// drives: a test, or a run for which the board is off.
+    social: Option<SocialPass>,
     passes: u64,
 }
 
@@ -185,8 +221,23 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
             log,
             roles,
             retries: HashMap::new(),
+            social: None,
             passes: 0,
         }
+    }
+
+    /// Gives the dispatcher the plaza's social surface, so its pass also runs
+    /// the social pass ([`crate::social`]).
+    ///
+    /// The social pass is the dispatcher's social behaviour: one idle connected
+    /// agent per social pass reads the board and, when the board names work its
+    /// role can serve, says so. It is wired here rather than required by
+    /// [`Dispatcher::new`] so a dispatcher built for driving alone — every test
+    /// that only cares about claims — stays exactly what it was.
+    pub fn with_social(mut self, node: Arc<dyn Social + Send + Sync>) -> Self {
+        let log = Arc::clone(&self.log);
+        self.social = Some(SocialPass::new(node, log));
+        self
     }
 
     /// How many passes have been run: the number the log's lines carry.
@@ -212,6 +263,19 @@ impl<L: Ledger, O: Operator> Dispatcher<L, O> {
             tasks.len(),
             agents.len()
         ));
+
+        // The social pass runs first, and on the pass's own cadence but slower
+        // ([`crate::social::SOCIAL_EVERY`]): over the same snapshot the claim
+        // walk is about to work from, before any claim is taken — so the agent
+        // it acts for is one the register shows idle, never one this pass is
+        // mid-claim with. Every social failure is logged inside and swallowed
+        // here: the claim walk is untouched by it.
+        if let Some(social) = &mut self.social
+            && self.passes % crate::social::SOCIAL_EVERY == 1
+        {
+            let busy = busy_agents(&self.retries, &tasks);
+            social.run(&tasks, &agents, &busy, self.roles.as_ref());
+        }
 
         for task in &tasks {
             if task.is_terminal() {
@@ -494,6 +558,27 @@ pub fn pick_agent<'a>(agents: &'a [Agent], role: &str) -> Option<&'a Agent> {
         .iter()
         .filter(|agent| agent.role == role)
         .min_by_key(|agent| agent.cid)
+}
+
+/// The guest CIDs that are **busy** — an agent with a claim in hand — as the
+/// social pass must read that.
+///
+/// Two sources, and both are facts the dispatcher already holds: the ledger
+/// rows this pass read whose claimant has not ended (a claim left by an earlier
+/// pass, a deferred retry, or another dispatcher's), and this dispatcher's own
+/// retry state (the claim it took and is still driving). An agent in this set
+/// is skipped by the social pass, so the board is never spoken to for an agent
+/// that is mid-claim.
+fn busy_agents(retries: &HashMap<String, Attempt>, tasks: &[Task]) -> BTreeSet<u64> {
+    let mut busy: BTreeSet<u64> = retries.values().map(|attempt| attempt.cid).collect();
+    for task in tasks {
+        if !task.is_terminal()
+            && let Some(cid) = task.agent_cid
+        {
+            busy.insert(cid);
+        }
+    }
+    busy
 }
 
 /// The agent at `cid` connected as *exactly* `role`, when the register lists
@@ -1566,5 +1651,39 @@ mod tests {
             Reporter::default().summary(),
             "0 considered, 0 claimed, 0 done, 0 failed, 0 deferred, 0 skipped"
         );
+    }
+
+    /// The busy set the social pass skips: the ledger's un-ended claims and the
+    /// dispatcher's own in-memory retries — the agents that hold a claim.
+    #[test]
+    fn the_busy_set_is_the_ledgers_claims_and_the_dispatchers_retries() {
+        let mut claimed = task("t2", "claimed", Some("builder"));
+        claimed.agent_cid = Some(300);
+        let mut other = task("t4", "claimed", Some("librarian"));
+        other.agent_cid = Some(310);
+        let tasks = vec![
+            task("t1", "open", Some("builder")),
+            claimed,
+            task("t3", "done", Some("builder")),
+            other,
+        ];
+        let retries = HashMap::from([(
+            "t9".to_string(),
+            Attempt {
+                cid: 320,
+                attempts: 1,
+            },
+        )]);
+        assert_eq!(
+            busy_agents(&retries, &tasks)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![300, 310, 320]
+        );
+
+        // A terminal task's claimant is not busy: its claim is over.
+        assert!(busy_agents(&HashMap::new(), &[task("t3", "done", Some("builder"))]).is_empty());
+        // And an open task has no claimant to be busy.
+        assert!(busy_agents(&HashMap::new(), &[task("t1", "open", Some("builder"))]).is_empty());
     }
 }

@@ -13,9 +13,9 @@
 
 use serde::Deserialize;
 
-use crate::dispatch::Ledger;
+use crate::dispatch::{Ledger, Social};
 use crate::http::{self, Answer, TIMEOUT, Target};
-use crate::views::{Agent, Outcome, Task};
+use crate::views::{Agent, Board, Contact, ContactsView, NewPost, Outcome, Post, ReadAck, Task};
 
 /// The node daemon: the ledger and the register behind one client.
 #[derive(Debug, Clone)]
@@ -68,6 +68,76 @@ impl Ledger for Noded {
         let path = format!("/api/v0/tasks/{}/finish", task_path(id)?);
         let body = serde_json::json!({ "outcome": outcome.as_str(), "note": note }).to_string();
         expect_ok(&self.target, &path, body.as_bytes(), "the finish")
+    }
+}
+
+/// The node's social surface, as `docs/agents/social.md` spells it: the board
+/// with its read cursor, the contact lists, and the conversations.
+///
+/// The one reading rule is the same everywhere here: a request the node
+/// refuses is a refusal carrying the node's own words — never a silently empty
+/// board, an empty contact list, or a post that was not recorded. The
+/// dispatcher's social pass reads the first two calls (the newest posts, and
+/// the cursor advance); the rest is the contract's surface, reached through
+/// this same client so the plaza is not half-wired.
+impl Social for Noded {
+    fn board(&self) -> Result<Board, String> {
+        let answer = http::get(&self.target, "/api/v0/board", TIMEOUT)?;
+        if answer.status() != 200 {
+            return Err(refused("the board", &answer));
+        }
+        serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the board could not be read: {err}"))
+    }
+
+    fn read_board(&self, cid: u64, up_to: &str) -> Result<ReadAck, String> {
+        let body = serde_json::json!({ "agent_cid": cid, "up_to": up_to }).to_string();
+        let answer = http::post(&self.target, "/api/v0/board/read", body.as_bytes(), TIMEOUT)?;
+        if answer.status() != 200 {
+            return Err(refused("the board read", &answer));
+        }
+        serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the board read's answer could not be read: {err}"))
+    }
+
+    fn post(&self, post: &NewPost) -> Result<Post, String> {
+        let body = serde_json::json!({
+            "agent_cid": post.agent_cid,
+            "subject": post.subject,
+            "body": post.body,
+            "task": post.task,
+            "posted_by": post.posted_by,
+        })
+        .to_string();
+        let answer = http::post(&self.target, "/api/v0/board", body.as_bytes(), TIMEOUT)?;
+        if answer.status() != 201 {
+            return Err(refused("the post", &answer));
+        }
+        serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the post the board recorded could not be read: {err}"))
+    }
+
+    fn contacts(&self, cid: u64) -> Result<Vec<Contact>, String> {
+        let path = format!("/api/v0/agents/{cid}/contacts");
+        let answer = http::get(&self.target, &path, TIMEOUT)?;
+        if answer.status() != 200 {
+            return Err(refused("the contact list", &answer));
+        }
+        let view: ContactsView = serde_json::from_slice(answer.body())
+            .map_err(|err| format!("the contact list could not be read: {err}"))?;
+        Ok(view.contacts)
+    }
+
+    fn add_contact(&self, cid: u64, peer_cid: u64) -> Result<(), String> {
+        let path = format!("/api/v0/agents/{cid}/contacts");
+        let body = serde_json::json!({ "peer_cid": peer_cid }).to_string();
+        expect_ok(&self.target, &path, body.as_bytes(), "the contact")
+    }
+
+    fn say(&self, cid: u64, to_cid: u64, text: &str) -> Result<(), String> {
+        let path = format!("/api/v0/agents/{cid}/say");
+        let body = serde_json::json!({ "to_cid": to_cid, "text": text }).to_string();
+        expect_ok(&self.target, &path, body.as_bytes(), "the say")
     }
 }
 
@@ -275,5 +345,203 @@ mod tests {
         let err = noded.tasks().expect_err("the ledger refused");
         assert_eq!(err, "the ledger answered 404: no such endpoint");
         served.join().expect("the stub finishes");
+    }
+
+    /// The social client speaks the node's own contract: the board, the cursor
+    /// advance, the post, the contacts and the say — each at its own path, each
+    /// with the body the endpoint takes, each read back from the node's own
+    /// shape.
+    #[test]
+    fn the_social_client_speaks_the_nodes_contract() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the test binds a port");
+        let addr = listener.local_addr().expect("a bound address");
+        let (requests, received) = channel();
+        let served = thread::spawn(move || {
+            for _ in 0..6 {
+                let (stream, _peer) = listener.accept().expect("the client connects");
+                serve_social(stream, &requests);
+            }
+        });
+        let noded =
+            Noded::new(&format!("http://127.0.0.1:{}", addr.port())).expect("a loopback URL");
+
+        let board = noded.board().expect("the board answers");
+        assert_eq!(board.newest().map(|post| post.id.as_str()), Some("p2"));
+        assert_eq!(board.unread_of(300), Some(0));
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "GET /api/v0/board HTTP/1.1");
+        assert!(body.is_empty());
+
+        let ack = noded.read_board(300, "p2").expect("the cursor advances");
+        assert_eq!(
+            (ack.agent_cid, ack.up_to.as_str(), ack.unread),
+            (300, "p2", 0)
+        );
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "POST /api/v0/board/read HTTP/1.1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("the read body is JSON"),
+            serde_json::json!({ "agent_cid": 300, "up_to": "p2" })
+        );
+
+        let post = NewPost {
+            agent_cid: 300,
+            subject: "available for t1".to_string(),
+            body: "builder can serve t1".to_string(),
+            task: Some("t1".to_string()),
+            posted_by: "dispatchd".to_string(),
+        };
+        let recorded = noded.post(&post).expect("the post is recorded");
+        assert_eq!(recorded.id, "p3");
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "POST /api/v0/board HTTP/1.1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("the post body is JSON"),
+            serde_json::json!({
+                "agent_cid": 300,
+                "subject": "available for t1",
+                "body": "builder can serve t1",
+                "task": "t1",
+                "posted_by": "dispatchd",
+            })
+        );
+
+        let contacts = noded.contacts(300).expect("the list answers");
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].peer_cid, 310);
+        assert_eq!(
+            received.recv().expect("a request").0,
+            "GET /api/v0/agents/300/contacts HTTP/1.1"
+        );
+
+        noded.add_contact(300, 310).expect("the contact is taken");
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "POST /api/v0/agents/300/contacts HTTP/1.1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("the contact body is JSON"),
+            serde_json::json!({ "peer_cid": 310 })
+        );
+
+        noded.say(300, 310, "hello").expect("the say is taken");
+        let (line, body) = received.recv().expect("a request");
+        assert_eq!(line, "POST /api/v0/agents/300/say HTTP/1.1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("the say body is JSON"),
+            serde_json::json!({ "to_cid": 310, "text": "hello" })
+        );
+
+        served.join().expect("the stub node finishes");
+    }
+
+    /// Every social call reports a refusal in the node's own words, never as an
+    /// empty board, an empty list, or a post that was not made.
+    #[test]
+    fn a_social_refusal_carries_the_nodes_words() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the test binds a port");
+        let addr = listener.local_addr().expect("a bound address");
+        let served = thread::spawn(move || {
+            for _ in 0..6 {
+                let (mut stream, _peer) = listener.accept().expect("the client connects");
+                let _ = crate::testing::read_http_request(&mut stream);
+                let answer = r#"{"error":"the agent is not connected"}"#;
+                let response = format!(
+                    "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("the answer is written");
+            }
+        });
+        let noded =
+            Noded::new(&format!("http://127.0.0.1:{}", addr.port())).expect("a loopback URL");
+        let post = NewPost {
+            agent_cid: 300,
+            subject: "available for t1".to_string(),
+            body: "builder can serve t1".to_string(),
+            task: None,
+            posted_by: "dispatchd".to_string(),
+        };
+
+        assert_eq!(
+            noded.board().expect_err("refused"),
+            "the board answered 409: the agent is not connected"
+        );
+        assert_eq!(
+            noded.read_board(300, "p1").expect_err("refused"),
+            "the board read answered 409: the agent is not connected"
+        );
+        assert_eq!(
+            noded.post(&post).expect_err("refused"),
+            "the post answered 409: the agent is not connected"
+        );
+        assert_eq!(
+            noded.contacts(300).expect_err("refused"),
+            "the contact list answered 409: the agent is not connected"
+        );
+        assert_eq!(
+            noded.add_contact(300, 310).expect_err("refused"),
+            "the contact answered 409: the agent is not connected"
+        );
+        assert_eq!(
+            noded.say(300, 310, "hello").expect_err("refused"),
+            "the say answered 409: the agent is not connected"
+        );
+
+        served.join().expect("the stub finishes");
+    }
+
+    /// Serves one request against the social stub node's fixed answers.
+    fn serve_social(mut stream: std::net::TcpStream, requests: &Sender<(String, String)>) {
+        let request = crate::testing::read_http_request(&mut stream);
+        let line = request.lines().next().unwrap_or_default().to_string();
+        let mut parts = line.split(' ');
+        let method = parts.next().unwrap_or_default().to_string();
+        let path = parts.next().unwrap_or_default().to_string();
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default();
+        requests.send((line, body)).expect("the test is listening");
+
+        let (status, answer) = match (method.as_str(), path.as_str()) {
+            ("GET", "/api/v0/board") => (
+                "200 OK",
+                r#"{"posts":[
+                     {"id":"p2","agent_cid":320,"role":"mayor","subject":"hiring for t1","body":"do t1","task":"t1","posted_by":"operator","created_at":2},
+                     {"id":"p1","agent_cid":310,"role":"librarian","subject":"found work","body":"for a builder","task":null,"posted_by":"operator","created_at":1}
+                   ],"total":2,"limit":256,"truncated":false,
+                   "unread":[{"agent_cid":300,"count":0},{"agent_cid":310,"count":2}]}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v0/board") => (
+                "201 Created",
+                r#"{"id":"p3","agent_cid":300,"role":"builder","subject":"available for t1","body":"builder can serve t1","task":"t1","posted_by":"dispatchd","created_at":3}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v0/board/read") => (
+                "200 OK",
+                r#"{"agent_cid":300,"up_to":"p2","unread":0}"#.to_string(),
+            ),
+            ("GET", "/api/v0/agents/300/contacts") => (
+                "200 OK",
+                r#"{"agent_cid":300,"contacts":[{"peer_cid":310,"role":"librarian","since":7,"kind":"met"}],"total":1,"limit":256,"truncated":false}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v0/agents/300/contacts") | ("POST", "/api/v0/agents/300/say") => {
+                ("200 OK", "{}".to_string())
+            }
+            (_, other) => (
+                "404 Not Found",
+                format!(r#"{{"error":"no endpoint {other}"}}"#),
+            ),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+            answer.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("the answer is written");
     }
 }

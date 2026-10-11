@@ -160,6 +160,150 @@ pub enum Tell {
     UnknownCid,
 }
 
+/// One post on the plaza's board, as `GET /api/v0/board` reports one
+/// (`docs/agents/social.md`'s `board.posts`).
+///
+/// A post is the record of something an agent said, so an id is required and
+/// everything else is read defensively: `role`, `posted_by` and `created_at`
+/// are facts beside the post, and a daemon that omits one does not make the
+/// post unreadable.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Post {
+    /// The post's id (`p<seq>`), monotonic and never reused.
+    pub id: String,
+    /// The guest CID of the agent the post is for — the author.
+    #[serde(default)]
+    pub agent_cid: u64,
+    /// The author's identity in the ledger's own terms.
+    #[serde(default)]
+    pub role: String,
+    /// What the post is about.
+    #[serde(default)]
+    pub subject: String,
+    /// The post itself.
+    #[serde(default)]
+    pub body: String,
+    /// The task the post names, when it names one.
+    #[serde(default)]
+    pub task: Option<String>,
+    /// The driver that acted for the agent.
+    #[serde(default)]
+    pub posted_by: String,
+    /// When the post was recorded, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+/// One agent's unread count, as `GET /api/v0/board` carries it.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Unread {
+    /// The agent's guest CID.
+    pub agent_cid: u64,
+    /// How many posts the agent's cursor has not reached.
+    #[serde(default)]
+    pub count: usize,
+}
+
+/// The board endpoint's body: the newest posts and every agent's unread count.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Board {
+    /// Up to the endpoint's limit of posts, newest first.
+    #[serde(default)]
+    pub posts: Vec<Post>,
+    /// How many posts the board holds.
+    #[serde(default)]
+    pub total: usize,
+    /// The limit the response was cut to.
+    #[serde(default)]
+    pub limit: usize,
+    /// Whether the board holds more posts than the response carries.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Every known agent's unread count, in ascending CID order.
+    #[serde(default)]
+    pub unread: Vec<Unread>,
+}
+
+impl Board {
+    /// The newest post, when the board holds one. The response is newest first,
+    /// so this is its head.
+    pub fn newest(&self) -> Option<&Post> {
+        self.posts.first()
+    }
+
+    /// How many posts `cid` has not read, when the board reports it. A daemon
+    /// that carries no count for a CID is read as "nothing to read" rather than
+    /// as an unknown agent: the pass never advances a cursor on a guess.
+    pub fn unread_of(&self, cid: u64) -> Option<usize> {
+        self.unread
+            .iter()
+            .find(|entry| entry.agent_cid == cid)
+            .map(|entry| entry.count)
+    }
+
+    /// Whether a post the agent itself authored already names `task`: the
+    /// board's own record that it has spoken about this work.
+    pub fn posted_about(&self, cid: u64, task: &str) -> bool {
+        self.posts
+            .iter()
+            .any(|post| post.agent_cid == cid && post.task.as_deref() == Some(task))
+    }
+}
+
+/// A post the driver asks the board to record for a connected agent — the
+/// `POST /api/v0/board` body. The agent speaks; the caller is the driver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPost {
+    /// The guest CID of the agent the post is for.
+    pub agent_cid: u64,
+    /// What the post is about.
+    pub subject: String,
+    /// The post itself.
+    pub body: String,
+    /// The task the post names, when it names one.
+    pub task: Option<String>,
+    /// The driver that acted for the agent.
+    pub posted_by: String,
+}
+
+/// The read endpoint's answer: where the cursor now sits, and what it left.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ReadAck {
+    /// The agent whose cursor advanced.
+    pub agent_cid: u64,
+    /// The post the cursor now sits at.
+    #[serde(default)]
+    pub up_to: String,
+    /// How many posts remain unread after the advance.
+    #[serde(default)]
+    pub unread: usize,
+}
+
+/// One entry of an agent's contact list, as `GET
+/// /api/v0/agents/{cid}/contacts` reports it.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Contact {
+    /// The peer's guest CID.
+    #[serde(default)]
+    pub peer_cid: u64,
+    /// The peer's identity in the ledger's own terms.
+    #[serde(default)]
+    pub role: String,
+    /// When the link was recorded, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub since: u64,
+    /// `met`, `hired` or `was-hired`.
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// The contacts endpoint's body.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ContactsView {
+    #[serde(default)]
+    pub(crate) contacts: Vec<Contact>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +394,62 @@ mod tests {
     fn the_outcome_spelling_is_the_endpoints() {
         assert_eq!(Outcome::Done.as_str(), "done");
         assert_eq!(Outcome::Failed.as_str(), "failed");
+    }
+
+    /// The board is read from the node's own shape: the newest post is the
+    /// response's head, an agent's unread count is looked up by CID, and a post
+    /// an agent authored about a task is what says it has already spoken.
+    #[test]
+    fn the_board_is_read_from_the_nodes_shape() {
+        let board: Board = serde_json::from_str(
+            r#"{"posts":[
+                 {"id":"p2","agent_cid":300,"role":"builder","subject":"available for t1",
+                  "body":"builder (cid 300) can serve t1: do t1. acceptance: (none stated); tools: read_file",
+                  "task":"t1","posted_by":"dispatchd","created_at":2},
+                 {"id":"p1","agent_cid":320,"role":"mayor","subject":"hiring for t1",
+                  "body":"do t1","task":"t1","posted_by":"operator","created_at":1}
+               ],
+               "total":2,"limit":256,"truncated":false,
+               "unread":[{"agent_cid":300,"count":0},{"agent_cid":310,"count":2}]}"#,
+        )
+        .expect("the node's own board reads");
+        assert_eq!(board.newest().map(|post| post.id.as_str()), Some("p2"));
+        assert_eq!(board.unread_of(300), Some(0));
+        assert_eq!(board.unread_of(310), Some(2));
+        assert_eq!(board.unread_of(999), None, "a CID with no count is unknown");
+        assert!(board.posted_about(300, "t1"));
+        assert!(!board.posted_about(310, "t1"));
+        assert!(!board.posted_about(300, "t9"));
+
+        // An empty board is a board, not an error: nothing to read, nothing to
+        // serve.
+        let empty: Board =
+            serde_json::from_str(r#"{"total":0,"limit":256}"#).expect("an empty board reads");
+        assert!(empty.newest().is_none());
+        assert!(empty.posts.is_empty() && empty.unread.is_empty());
+
+        // A post with no id is not a post the pass can advance a cursor to.
+        assert!(serde_json::from_str::<Board>(r#"{"posts":[{"subject":"x"}]}"#).is_err());
+    }
+
+    /// A post is composed and a read's answer is read in the node's own words.
+    #[test]
+    fn a_note_and_a_read_answer_are_the_nodes_shapes() {
+        let ack: ReadAck = serde_json::from_str(r#"{"agent_cid":310,"up_to":"p2","unread":0}"#)
+            .expect("the read answer reads");
+        assert_eq!(
+            (ack.agent_cid, ack.up_to.as_str(), ack.unread),
+            (310, "p2", 0)
+        );
+
+        // A contact row is the contract's `{peer_cid, role, since, kind}`.
+        let view: ContactsView = serde_json::from_str(
+            r#"{"agent_cid":300,"contacts":[{"peer_cid":310,"role":"librarian","since":7,"kind":"met"}],
+                "total":1,"limit":256,"truncated":false}"#,
+        )
+        .expect("the contacts body reads");
+        assert_eq!(view.contacts.len(), 1);
+        assert_eq!(view.contacts[0].peer_cid, 310);
+        assert_eq!(view.contacts[0].kind, "met");
     }
 }

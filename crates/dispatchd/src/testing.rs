@@ -24,8 +24,8 @@ use std::sync::Mutex;
 
 use serde_json::json;
 
-use crate::dispatch::{Ledger, Logger, Operator};
-use crate::views::{Agent, Outcome, Task, Tell};
+use crate::dispatch::{Ledger, Logger, Operator, Social};
+use crate::views::{Agent, Board, Contact, NewPost, Outcome, Post, ReadAck, Task, Tell, Unread};
 use crate::workflow::{DriveError, Driver};
 
 /// A whole agent, faked: a workspace in a map that answers the harness's tools
@@ -498,6 +498,251 @@ impl Logger for Recording {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .push(text.to_string());
+    }
+}
+
+/// The node's social surface, faked: a board in memory with its read cursors,
+/// the node's own rules (a monotonic cursor, a board that refuses a cursor past
+/// the newest post), and the ways a real node fails.
+///
+/// It is the *daemon* faked, not an internal seam: `board` derives the unread
+/// counts the way `noded` does (from the cursors against the posts), `read`
+/// enforces the monotonic cursor the node enforces, and every refusal is the
+/// node's own `{error}`-shaped message — so a social pass that passes these
+/// tests is a pass the real node would answer the same way.
+#[derive(Default)]
+pub struct FakeSocial {
+    inner: Mutex<FakeSocialInner>,
+}
+
+#[derive(Default)]
+struct FakeSocialInner {
+    /// The posts the board holds, oldest first.
+    posts: Vec<Post>,
+    /// Each agent's read cursor: the number of the last post it read.
+    cursors: BTreeMap<u64, u64>,
+    /// Every `(cid, up_to)` cursor advance the pass asked for, in order.
+    reads: Vec<(u64, String)>,
+    /// How many times the pass read the board.
+    boards: usize,
+    /// Every post the pass asked the board to record, in order.
+    written: Vec<NewPost>,
+    /// Every `(cid, peer)` contact the pass asked for, in order.
+    contacts: Vec<(u64, u64)>,
+    /// Every `(from, to, text)` the pass said, in order.
+    said: Vec<(u64, u64, String)>,
+    /// When set, reading the board fails with this.
+    board_failure: Option<String>,
+    /// When set, every cursor advance is refused with this.
+    read_failure: Option<String>,
+    /// When set, every post is refused with this.
+    post_failure: Option<String>,
+}
+
+impl FakeSocial {
+    /// An empty board with every cursor at zero.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Seeds a post on the board, authored by `cid` as `role`, and returns the
+    /// board now holding it.
+    pub fn with_post(
+        self,
+        cid: u64,
+        role: &str,
+        subject: &str,
+        body: &str,
+        task: Option<&str>,
+    ) -> Self {
+        let mut inner = self.lock();
+        let seq = inner.posts.len() as u64 + 1;
+        inner
+            .posts
+            .push(board_post(seq, cid, role, subject, body, task));
+        drop(inner);
+        self
+    }
+
+    /// Puts `cid`'s read cursor at the current newest post: the agent that has
+    /// already read everything.
+    pub fn cursor_at_newest(self, cid: u64) -> Self {
+        let mut inner = self.lock();
+        let newest = inner.posts.len() as u64;
+        inner.cursors.insert(cid, newest);
+        drop(inner);
+        self
+    }
+
+    /// A board that will not read: a node that is down, or a 500.
+    pub fn board_failing(self, reason: &str) -> Self {
+        self.lock().board_failure = Some(reason.to_string());
+        self
+    }
+
+    /// A node whose cursor advance is refused (a 409, say).
+    pub fn read_failing(self, reason: &str) -> Self {
+        self.lock().read_failure = Some(reason.to_string());
+        self
+    }
+
+    /// A node whose post is refused (a 409 board full, a 400 outside the
+    /// contract).
+    pub fn post_failing(self, reason: &str) -> Self {
+        self.lock().post_failure = Some(reason.to_string());
+        self
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FakeSocialInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Every `(cid, up_to)` the pass asked the board to advance to.
+    pub fn reads(&self) -> Vec<(u64, String)> {
+        self.lock().reads.clone()
+    }
+
+    /// How many times the pass read the board: the cadence, made observable.
+    pub fn boards(&self) -> usize {
+        self.lock().boards
+    }
+
+    /// Every post the pass asked the board to record.
+    pub fn written(&self) -> Vec<NewPost> {
+        self.lock().written.clone()
+    }
+
+    /// Every contact the pass asked for — empty for a driver that leaves the
+    /// award's links to the node.
+    pub fn contacts(&self) -> Vec<(u64, u64)> {
+        self.lock().contacts.clone()
+    }
+
+    /// Everything the pass said to a peer — empty for a driver that leaves the
+    /// conversations to the agents.
+    pub fn said(&self) -> Vec<(u64, u64, String)> {
+        self.lock().said.clone()
+    }
+}
+
+/// A post the fake's board holds, with the id the node would give it.
+fn board_post(
+    seq: u64,
+    cid: u64,
+    role: &str,
+    subject: &str,
+    body: &str,
+    task: Option<&str>,
+) -> Post {
+    Post {
+        id: format!("p{seq}"),
+        agent_cid: cid,
+        role: role.to_string(),
+        subject: subject.to_string(),
+        body: body.to_string(),
+        task: task.map(str::to_string),
+        posted_by: "operator".to_string(),
+        created_at: seq,
+    }
+}
+
+impl Social for FakeSocial {
+    fn board(&self) -> Result<Board, String> {
+        let mut inner = self.lock();
+        inner.boards += 1;
+        if let Some(reason) = &inner.board_failure {
+            return Err(reason.clone());
+        }
+        let total = inner.posts.len();
+        let newest = total as u64;
+        let posts: Vec<Post> = inner.posts.iter().rev().cloned().collect();
+        let unread = inner
+            .cursors
+            .iter()
+            .map(|(cid, cursor)| Unread {
+                agent_cid: *cid,
+                count: (newest - cursor) as usize,
+            })
+            .collect();
+        Ok(Board {
+            posts,
+            total,
+            limit: 256,
+            truncated: false,
+            unread,
+        })
+    }
+
+    fn read_board(&self, cid: u64, up_to: &str) -> Result<ReadAck, String> {
+        let mut inner = self.lock();
+        if let Some(reason) = &inner.read_failure {
+            return Err(reason.clone());
+        }
+        inner.reads.push((cid, up_to.to_string()));
+        let newest = inner.posts.len() as u64;
+        let Some(seq) = up_to
+            .strip_prefix('p')
+            .and_then(|seq| seq.parse::<u64>().ok())
+        else {
+            return Err(format!(
+                "the board read answered 400: up_to must name a post (p<seq>), not {up_to:?}"
+            ));
+        };
+        if newest == 0 {
+            return Err("the board read answered 409: the board is empty".to_string());
+        }
+        if seq > newest {
+            return Err(format!(
+                "the board read answered 409: up_to {up_to} is past the newest post p{newest}"
+            ));
+        }
+        let held = inner.cursors.get(&cid).copied().unwrap_or(0);
+        if seq < held {
+            return Err(format!(
+                "the board read answered 409: up_to {up_to} is behind the agent's read cursor p{held}"
+            ));
+        }
+        inner.cursors.insert(cid, seq);
+        Ok(ReadAck {
+            agent_cid: cid,
+            up_to: up_to.to_string(),
+            unread: (newest - seq) as usize,
+        })
+    }
+
+    fn post(&self, post: &NewPost) -> Result<Post, String> {
+        let mut inner = self.lock();
+        if let Some(reason) = &inner.post_failure {
+            return Err(reason.clone());
+        }
+        inner.written.push(post.clone());
+        let seq = inner.posts.len() as u64 + 1;
+        let recorded = board_post(
+            seq,
+            post.agent_cid,
+            "",
+            &post.subject,
+            &post.body,
+            post.task.as_deref(),
+        );
+        inner.posts.push(recorded.clone());
+        Ok(recorded)
+    }
+
+    fn contacts(&self, _cid: u64) -> Result<Vec<Contact>, String> {
+        Ok(Vec::new())
+    }
+
+    fn add_contact(&self, cid: u64, peer_cid: u64) -> Result<(), String> {
+        self.lock().contacts.push((cid, peer_cid));
+        Ok(())
+    }
+
+    fn say(&self, cid: u64, to_cid: u64, text: &str) -> Result<(), String> {
+        self.lock().said.push((cid, to_cid, text.to_string()));
+        Ok(())
     }
 }
 

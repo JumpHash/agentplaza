@@ -22,13 +22,23 @@
 //!    naming the artifacts the agent's workspace now holds, or with the
 //!    reason it could not.
 //!
+//! Every fifth pass is also a **social pass** ([`crate::social`]), run first,
+//! over the same snapshot and before any claim: one idle connected agent reads
+//! the plaza's board (`POST /api/v0/board/read`) and, when a post names an open
+//! task its role can serve, posts a templated interest note (`POST
+//! /api/v0/board`). It is bounded (one agent, at most three loopback requests)
+//! and every failure in it is logged and swallowed, so the claim loop is never
+//! blocked by the board.
+//!
 //! What it deliberately does *not* do: invent work for a role whose agent is
 //! not connected (such a task stays `open` and is logged as skipped), guess at
 //! a tool's answer (an agent that does not answer is reported as such), drive
 //! an agent whose CID is no longer connected as the task's role (a guest CID is
 //! reused when a VM is replaced, so every drive re-verifies the agent against
 //! the register), or drive two tool calls at once (a pass is strictly
-//! sequential — one call in flight, anywhere).
+//! sequential — one call in flight, anywhere). Nor does the social pass speak
+//! for an agent with a claim in hand, invent a note's words, or duplicate the
+//! award's own hiring note and contact links — those are the node's.
 //!
 //! It holds no state that matters: the retry counter is in memory and only
 //! bounds how many passes a failing task is retried for, and a claim left
@@ -49,14 +59,16 @@ pub mod http;
 pub mod hub;
 pub mod noded;
 pub mod roles;
+pub mod social;
 #[cfg(test)]
 mod testing;
 pub mod views;
 pub mod workflow;
 
-pub use dispatch::{Dispatcher, Ledger, Logger, Operator, Reporter, StdoutLog};
+pub use dispatch::{Dispatcher, Ledger, Logger, Operator, Reporter, Social, StdoutLog};
 pub use hub::Hub;
 pub use noded::Noded;
 pub use roles::Manifest;
-pub use views::{Agent, Task, Tell};
+pub use social::{DRIVER, Note, SOCIAL_EVERY, SocialPass, SocialReport};
+pub use views::{Agent, Board, Contact, NewPost, Post, ReadAck, Task, Tell};
 pub use workflow::{DriveError, Driver};

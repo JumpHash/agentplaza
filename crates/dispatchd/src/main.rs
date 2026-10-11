@@ -26,7 +26,7 @@ use std::thread;
 use std::time::Duration;
 
 use dispatchd::roles::Manifest;
-use dispatchd::{Dispatcher, Hub, Noded, StdoutLog};
+use dispatchd::{Dispatcher, Hub, Noded, Social, StdoutLog};
 
 /// The node daemon's loopback address unless `--noded` says otherwise.
 const DEFAULT_NODED: &str = "http://127.0.0.1:8899";
@@ -68,7 +68,18 @@ naming what the run left. A task whose role has no connected agent, or whose
 role cannot be driven, is left open and logged. An agent that answers and
 refuses finishes the task failed at once; an agent that cannot be reached is
 retried for at most 3 passes, then finished failed with the evidence. Every URL
-is a loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.";
+is a loopback `http://127.0.0.1:PORT` or `http://localhost:PORT`.
+
+Every fifth pass is also a social pass, run first, over the same snapshot and
+before any claim: one idle connected agent (the register walked round-robin,
+agents with a claim in hand skipped) reads the board (POST
+{noded}/api/v0/board/read up to the newest post) and, when a post names an open
+task of that agent's role it has not already spoken for, posts a templated
+interest note (POST {noded}/api/v0/board, subject `available for <task>`,
+posted_by `dispatchd`) composed from the task's own words and the role's
+grants. A social call that fails is logged and the pass moves on: the claims
+are never blocked by the board. At the default 5 s interval a social pass is
+about one every 25 s.";
 
 /// Everything `dispatchd` accepts on its command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,7 +175,8 @@ fn main() -> ExitCode {
         },
         None => None,
     };
-    let mut dispatcher = Dispatcher::with_roles(ledger, hub, Arc::new(StdoutLog), roles);
+    let mut dispatcher = Dispatcher::with_roles(ledger.clone(), hub, Arc::new(StdoutLog), roles)
+        .with_social(Arc::new(ledger) as Arc<dyn Social + Send + Sync>);
 
     if config.once {
         return match dispatcher.pass() {
