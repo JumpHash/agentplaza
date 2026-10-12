@@ -125,31 +125,41 @@ jobs:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: packaging/windows/build.ps1 -Stage stage -Version $env:VERSION -Arch ${{ matrix.arch }} -Out out-windows-${{ matrix.arch }}
-      # An administrative install unpacks the MSI's files without installing it (no administrator
-      # needed, nothing left on the shared runner); what it unpacked must run.
-      - name: Verify the MSI (x64)
+      # The runner's account cannot reach the Windows Installer service (no install, not even an
+      # administrative one), so: the zip (the same staged files as the MSI) is unpacked and what it
+      # holds must run, and the MSI's own File table (read in-process, no service) must list them.
+      - name: Verify the zip and the MSI (x64)
         if: inputs.package && matrix.arch == 'x64'
         shell: pwsh
         run: |
-          $msi = (Get-ChildItem out-windows-${{ matrix.arch }} -Filter *.msi).FullName
-          $dir = Join-Path $env:RUNNER_TEMP 'msi-unpacked'
+          $out = 'out-windows-${{ matrix.arch }}'
+          $dir = Join-Path $env:RUNNER_TEMP 'zip-unpacked'
           Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
-          $log = Join-Path $env:RUNNER_TEMP 'msi.log'
-          $p = Start-Process msiexec.exe -ArgumentList '/a', "`"$msi`"", '/qn', "TARGETDIR=`"$dir`"", '/l*v', "`"$log`"" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec /a exited $($p.ExitCode)" }
-          $apid = Get-ChildItem $dir -Recurse -Filter apid.exe | Select-Object -First 1
-          if (-not $apid) { throw 'apid.exe is not in the MSI' }
-          $bin = $apid.DirectoryName
-          $root = Split-Path $bin -Parent
-          foreach ($b in 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop', 'noded', 'vsockd', 'vmctl') {
-            & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" }
+          Expand-Archive (Get-ChildItem $out -Filter *.zip).FullName -DestinationPath $dir
+          $bins = 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop', 'noded', 'vsockd', 'vmctl'
+          foreach ($b in $bins) {
+            & (Join-Path $dir "bin\$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" }
           }
-          if (-not (Test-Path (Join-Path $root 'share\agentplaza\console\index.html'))) { throw 'console missing' }
+          $want = @('share\agentplaza\console\index.html')
           if ('${{ github.event_name }}' -ne 'workflow_dispatch') {
-            foreach ($f in 'vmlinux', 'initrd.gz') {
-              if (-not (Test-Path (Join-Path $root "share\agentplaza\guest\x86_64\$f"))) { throw "guest $f missing" }
-            }
+            $want += 'share\agentplaza\guest\x86_64\vmlinux', 'share\agentplaza\guest\x86_64\initrd.gz'
           }
+          foreach ($f in $want) { if (-not (Test-Path (Join-Path $dir $f))) { throw "the zip has no $f" } }
+
+          $msi = (Get-ChildItem $out -Filter *.msi).FullName
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi, 0))
+          $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT `FileName` FROM `File`'))
+          $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+          $names = @()
+          while ($rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) {
+            # FileName is "short|long" when a short name exists.
+            $names += ($rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1) -split '\|')[-1]
+          }
+          "the MSI carries $($names.Count) files"
+          $need = ($bins | ForEach-Object { "$_.exe" }) + 'index.html'
+          if ('${{ github.event_name }}' -ne 'workflow_dispatch') { $need += 'vmlinux', 'initrd.gz' }
+          foreach ($n in $need) { if ($names -notcontains $n) { throw "the MSI has no $n" } }
       # Handed to release.yml's publish job through the cache (no artifact storage).
       - uses: actions/cache/save@v4
         if: inputs.package
