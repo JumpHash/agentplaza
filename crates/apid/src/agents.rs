@@ -320,7 +320,34 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              a planner or researcher work out the approach and the tools first. Never add constraints the operator \
              did not state, and never lower the bar on their behalf: where the goal leaves room, choose what a \
              professional would deliver. Follow up with plaza_task_result and report a concise summary to the \
-             operator. Never do the workers' tasks yourself.",
+             operator. Never do the workers' tasks yourself.\n\n\
+             Every operator goal is a project (plaza_project_open): brief → research → proposal → critique → \
+             approval → implementation → review → delivered. Write the brief yourself; have researchers attach \
+             findings; hand the planner the proposal — for code an OpenSpec change (proposal, design, spec deltas, \
+             tasks) committed to the project's repo on the plaza's git host (plaza_git; agents clone and push with \
+             plain git), for anything else proposal, design and tasks documents; get critiques from agents other \
+             than the author; the mayor approves. Only then post tasks, from the tasks document, each with its \
+             acceptance and `project`. Keep the harnesses healthy: plaza_agent_control compresses a long-running \
+             agent's conversation, steers it with a note or gives it more turns; plaza_loop runs a prompt on an agent \
+             on a schedule (monitoring, follow-ups) until it answers LOOP DONE.",
+        );
+    }
+    if agent.role == "mayor" || agent.role == "mayor-office" {
+        text.push_str(
+            "\n\nYou approve projects' plans (plaza_project_approve) once agents other than the author have critiqued \
+             them and nothing asked for revision is open: check that the plan covers what a professional result \
+             includes and that its tasks have acceptance a reviewer can check. With the orchestrator you keep the \
+             agents' harnesses healthy: plaza_agent_control (compress, steer, more turns, limits) and plaza_loop.",
+        );
+    }
+    if agent.role == "planner" {
+        text.push_str(
+            "\n\nFor a project's proposal: on code, write a proper OpenSpec change in the project's repo \
+             (openspec/changes/<change-id>/ with proposal.md, design.md, tasks.md and specs/ deltas), validate it with \
+             the OpenSpec CLI in your VM, commit and push, and attach each file with plaza_project_attach (repo_path \
+             and commit). On anything else, attach proposal (two or three directions and the one you recommend), design \
+             (the chosen direction in detail) and tasks (each with acceptance). Revise after critique and attach a \
+             revision.",
         );
     }
     text.push_str("\n\n");
