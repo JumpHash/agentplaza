@@ -36,6 +36,11 @@ pub struct Store {
 }
 
 impl Store {
+    /// Drops the in-memory log of `cid` (the stored rows are deleted separately).
+    pub fn clear(&self, cid: u64) {
+        self.agents.lock().unwrap_or_else(PoisonError::into_inner).remove(&cid);
+    }
+
     /// Every entry recorded from now on is also handed to `sink`.
     pub fn set_sink(&self, sink: Sink) {
         *self.sink.lock().unwrap_or_else(PoisonError::into_inner) = Some(sink);

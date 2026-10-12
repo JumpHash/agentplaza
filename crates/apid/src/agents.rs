@@ -77,6 +77,11 @@ impl Roster {
         self.lock().insert(agent.cid, agent);
     }
 
+    /// Takes the agent off the roster; returns whether it was there.
+    pub fn remove(&self, cid: u64) -> bool {
+        self.lock().remove(&cid).is_some()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Agent>> {
         self.agents.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -123,6 +128,21 @@ impl Names {
     /// True the first time it is called for `cid` in this run.
     pub fn first_ask(&self, cid: u64) -> bool {
         self.asked.lock().unwrap_or_else(PoisonError::into_inner).insert(cid)
+    }
+
+    /// Forgets `cid`'s chosen name and lets it choose again; writes the file, and on
+    /// failure nothing changes.
+    pub fn forget(&self, cid: u64) -> std::io::Result<()> {
+        self.asked.lock().unwrap_or_else(PoisonError::into_inner).remove(&cid);
+        let mut names = self.guard();
+        if !names.contains_key(&cid) {
+            return Ok(());
+        }
+        let mut next = names.clone();
+        next.remove(&cid);
+        self.save(&next)?;
+        *names = next;
+        Ok(())
     }
 
     fn guard(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, String>> {
