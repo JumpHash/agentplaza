@@ -13,3 +13,16 @@
   background: var(--surface-2); color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer;
 }
 .fleet-tile:hover { border-color: var(--border-strong); background: var(--surface-3); }
+
+/* sign-in */
+.signin { display: grid; place-items: center; min-height: 100vh; min-height: 100dvh; padding: 16px; background: var(--paper); color: var(--ink); }
+.signin-sheet { width: 100%; max-width: 420px; padding: 32px; background: var(--sheet); border: 1px solid var(--ink); border-radius: 0; }
+.signin-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; color: var(--ink); }
+.signin-name { font-family: var(--mono); font-size: 15px; letter-spacing: 0.02em; }
+.signin h1 { margin: 0 0 12px; font-family: var(--mono); font-size: 20px; font-weight: 600; line-height: 1.25; }
+.signin-lede { margin: 0 0 16px; font-family: var(--serif); font-size: 16px; line-height: 1.55; color: var(--ink-2); max-width: 72ch; }
+.signin-hub { margin: 0 0 24px; font-family: var(--mono); font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+.signin .input { width: 100%; font-family: var(--mono); }
+.signin-error { min-height: 1.4em; margin: 12px 0 0; font-family: var(--mono); font-size: 12px; color: var(--crit); }
+.signin-actions { display: flex; justify-content: flex-end; margin-top: 20px; }
+.signin-sheet[aria-busy='true'] .btn { opacity: 0.6; cursor: progress; }
