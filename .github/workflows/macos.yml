@@ -63,11 +63,14 @@ jobs:
         run: cargo build --release --locked --target aarch64-apple-darwin -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
       - name: "Build (release, Intel: hub and desktop)"
         run: cargo build --release --locked --target x86_64-apple-darwin -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop
+      - uses: actions/download-artifact@v4
+        with: { pattern: "guest-*", path: target/guest, merge-multiple: false }
       - name: Stage and package
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
         run: |
+          for d in target/guest/guest-*; do mv "$d" "target/guest/${d##*guest-}"; done
           packaging/scripts/stage.sh aarch64-apple-darwin target/aarch64-apple-darwin/release stage-arm64 "$APZ_VERSION"
           packaging/scripts/stage.sh x86_64-apple-darwin target/x86_64-apple-darwin/release stage-x86_64 "$APZ_VERSION"
           packaging/macos/build-dmg.sh stage-arm64 stage-x86_64 "$APZ_VERSION" out
@@ -77,6 +80,8 @@ jobs:
           for b in apid apz-link agentplaza agentplaza-desktop noded; do /tmp/apz/AgentPlaza.app/Contents/MacOS/$b --version; done
           lipo -archs /tmp/apz/AgentPlaza.app/Contents/MacOS/agentplaza-desktop
           codesign -d --entitlements - /tmp/apz/AgentPlaza.app/Contents/MacOS/apz-vmm
+          test -s /tmp/apz/AgentPlaza.app/Contents/Resources/share/agentplaza/guest/aarch64/vmlinux
+          test -s /tmp/apz/AgentPlaza.app/Contents/Resources/share/agentplaza/guest/aarch64/initrd.gz
           hdiutil detach /tmp/apz
       - uses: actions/upload-artifact@v4
         with:

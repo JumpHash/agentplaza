@@ -82,8 +82,11 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Build (release)
         run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+      - uses: actions/download-artifact@v4
+        with: { pattern: "guest-*", path: target/guest, merge-multiple: false }
       - name: Stage and package
         run: |
+          for d in target/guest/guest-*; do mv "$d" "target/guest/${d##*guest-}"; done
           packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$APZ_VERSION"
           packaging/linux/build.sh stage "$APZ_VERSION" ${{ matrix.arch }} out
       - uses: actions/upload-artifact@v4
@@ -121,3 +124,5 @@ jobs:
         run: |
           for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done
           test -f /usr/share/agentplaza/console/index.html
+          test -s /usr/share/agentplaza/guest/${{ matrix.arch }}/vmlinux
+          test -s /usr/share/agentplaza/guest/${{ matrix.arch }}/initrd.gz

@@ -38,23 +38,26 @@ jobs:
           FORCE_BUMP: ${{ (inputs.bump && inputs.bump != 'auto') && inputs.bump || '' }}
         run: packaging/scripts/next-version.sh
 
-  linux:
+  guest:
     needs: version
+    uses: ./.github/workflows/guest.yml
+  linux:
+    needs: [version, guest]
     uses: ./.github/workflows/linux.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   macos:
-    needs: version
+    needs: [version, guest]
     uses: ./.github/workflows/macos.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   windows:
-    needs: version
+    needs: [version, guest]
     uses: ./.github/workflows/windows.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   raspberry-pi:
-    needs: version
+    needs: [version, guest]
     uses: ./.github/workflows/raspberry-pi.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit

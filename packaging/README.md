@@ -31,8 +31,12 @@ stage.sh <target-triple> <cargo-out-dir> <stage-dir> <version>
     roles/initial-roles.json
     prompts/        the roles' prompts (docs/codex-draft/roles)
     icons/          agentplaza-<n>.png, agentplaza.ico, agentplaza.icns
+    guest/<arch>/       vmlinux, initrd.gz, guest.json — the agents' VM kernel and initrd, found by noded
     VERSION         the version, one line
 ```
+
+The guest comes from `scripts/mk-guest.sh` (built per architecture by `.github/workflows/guest.yml`,
+cached) and is read from `target/guest` (or `APZ_GUEST_DIR`).
 
 At run time `apz_os::dirs::resources()` finds `share/agentplaza` next to the binaries
 (`<bin>/../share/agentplaza`; inside a macOS bundle `Contents/Resources/share/agentplaza`), so
