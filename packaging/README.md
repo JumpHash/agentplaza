@@ -23,7 +23,7 @@ stage.sh <target-triple> <cargo-out-dir> <stage-dir> <version>
 `<cargo-out-dir>` holds the release binaries (`target/<triple>/release`). It writes:
 
 ```
-<stage>/bin/        apid, apz-link, agentplaza-desktop           (every platform)
+<stage>/bin/        apid, apz-link, agentplaza (the CLI), agentplaza-desktop  (every platform)
                     noded, vsockd, apz-vmm, vmctl                (Linux and macOS: the VM node)
                     (+ .exe on Windows)
 <stage>/share/agentplaza/

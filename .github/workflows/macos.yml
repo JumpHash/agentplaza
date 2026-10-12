@@ -60,9 +60,9 @@ jobs:
         with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: "Build (release, Apple Silicon: hub, desktop and the VM node)"
-        run: cargo build --release --locked --target aarch64-apple-darwin -p apid -p apz-link -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+        run: cargo build --release --locked --target aarch64-apple-darwin -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
       - name: "Build (release, Intel: hub and desktop)"
-        run: cargo build --release --locked --target x86_64-apple-darwin -p apid -p apz-link -p agentplaza-desktop
+        run: cargo build --release --locked --target x86_64-apple-darwin -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop
       - name: Stage and package
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -74,7 +74,7 @@ jobs:
       - name: Verify the bundle
         run: |
           hdiutil attach out/*.dmg -mountpoint /tmp/apz -nobrowse
-          for b in apid apz-link agentplaza-desktop noded; do /tmp/apz/AgentPlaza.app/Contents/MacOS/$b --version; done
+          for b in apid apz-link agentplaza agentplaza-desktop noded; do /tmp/apz/AgentPlaza.app/Contents/MacOS/$b --version; done
           lipo -archs /tmp/apz/AgentPlaza.app/Contents/MacOS/agentplaza-desktop
           codesign -d --entitlements - /tmp/apz/AgentPlaza.app/Contents/MacOS/apz-vmm
           hdiutil detach /tmp/apz

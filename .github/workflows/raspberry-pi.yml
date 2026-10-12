@@ -54,7 +54,7 @@ jobs:
       - name: Build (release)
         if: inputs.package
         env: { APZ_VERSION: "${{ inputs.version }}" }
-        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
       - name: Stage and package
         if: inputs.package
         run: |
@@ -78,6 +78,6 @@ jobs:
         with: { name: pkg-raspberrypi }
       - run: apt-get update && apt-get install -y ./agentplaza_*_arm64-raspberrypi.deb
       - run: |
-          for b in apid apz-link noded vsockd agentplaza-desktop; do "$b" --version; done
+          for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done
           test -f /etc/default/agentplaza-node
           test -f /usr/share/agentplaza/console/index.html

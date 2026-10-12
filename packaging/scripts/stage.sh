@@ -19,7 +19,7 @@ esac
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/agentplaza"
 
-bins=(apid apz-link agentplaza-desktop)
+bins=(apid apz-link agentplaza agentplaza-desktop)
 [ "$node" = yes ] && bins+=(noded vsockd apz-vmm vmctl)
 for b in "${bins[@]}"; do
   src="$out/$b$exe"

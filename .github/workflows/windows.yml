@@ -70,7 +70,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: "Build (release: hub, desktop, node link)"
-        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-desktop
+        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop
       - name: Stage
         run: packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$APZ_VERSION"
       - name: Package
@@ -87,7 +87,7 @@ jobs:
           $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', "`"$log`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec exited $($p.ExitCode)" }
           $bin = Join-Path $env:ProgramFiles 'AgentPlaza\bin'
-          foreach ($b in 'apid', 'apz-link', 'agentplaza-desktop') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
+          foreach ($b in 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
           if (-not (Test-Path (Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\console\index.html'))) { throw 'console missing' }
       - uses: actions/upload-artifact@v4
         with:

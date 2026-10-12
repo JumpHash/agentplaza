@@ -81,7 +81,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Build (release)
-        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
       - name: Stage and package
         run: |
           packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$APZ_VERSION"
@@ -119,5 +119,5 @@ jobs:
         run: ${{ matrix.install }}
       - name: Run
         run: |
-          for b in apid apz-link noded vsockd agentplaza-desktop; do "$b" --version; done
+          for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done
           test -f /usr/share/agentplaza/console/index.html
