@@ -123,7 +123,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::{now_ms, ConnectedAgent};
@@ -307,7 +307,7 @@ impl std::error::Error for AwardError {}
 ///
 /// The row names its call (`task`), as the schema's does (its key is
 /// `(call_id, bidder)`), so the bid a `POST …/bid` answers with stands alone.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BidView {
     /// The call this bid is on (its task's id).
     pub task: String,
@@ -325,7 +325,7 @@ pub struct BidView {
 
 /// One award as the API reports it: the schema's `agora.awards` row, minus
 /// what v0 does not record (`warranty_until`, `outcome`).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AwardView {
     /// The call this award closed (its task's id).
     pub task: String,
@@ -388,7 +388,7 @@ pub struct CallsView {
 }
 
 /// The agora's own state: the bids each call holds, and its award.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct AgoraInner {
     /// The bids on each call, keyed by the call's task id, in bid order. A
     /// re-bid replaces the bidder's own row in place, so this never holds two
@@ -623,15 +623,44 @@ impl Agora {
 
 
 impl Agora {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    /// The whole state as JSON: each call's bids and its award. The bus is not
+    /// in it, and a restore publishes nothing.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D3
+        let inner = self.lock();
+        serde_json::to_string(&*inner).expect("the agora state serializes")
     }
 
-    /// Replaces the state with a [`Agora::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D3
+    /// Replaces the state with an [`Agora::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let restored: AgoraInner = serde_json::from_str(json)
+            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+        check_agora_snapshot(&restored)?;
+        *self.lock() = restored;
+        Ok(())
     }
+}
+
+/// The invariants an agora snapshot must hold before it may replace one: each
+/// bid and award sits under its own call, and no agent holds two bids on one
+/// call (a re-bid replaces its row).
+fn check_agora_snapshot(inner: &AgoraInner) -> Result<(), String> {
+    for (task, bids) in &inner.bids {
+        let mut bidders = std::collections::HashSet::new();
+        for bid in bids {
+            if &bid.task != task {
+                return Err(format!("a bid under {task} names the call {}", bid.task));
+            }
+            if !bidders.insert(bid.agent_cid) {
+                return Err(format!("agent {} holds two bids on {task}", bid.agent_cid));
+            }
+        }
+    }
+    for (task, award) in &inner.awards {
+        if &award.task != task {
+            return Err(format!("an award under {task} names the call {}", award.task));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -639,6 +668,53 @@ mod tests {
     use super::*;
     use crate::tasks::{CreateTask, FinishOutcome, TaskLedger};
     use std::time::Duration;
+
+    #[test]
+    fn a_snapshot_restores_the_same_calls_bids_and_awards() {
+        let events = EventBus::new();
+        let (ledger, agora) = lab(&events);
+        let called = call_task(&ledger, "ship the agora", "builder", 500);
+        let other = call_task(&ledger, "review the agora", "reviewer", 300);
+        agora.bid(&called, &agent(100, "builder"), 400).expect("a bid");
+        agora.bid(&called, &agent(101, "builder"), 350).expect("a bid");
+        agora.award(&called, &agent(101, "builder")).expect("an award");
+        agora.bid(&other, &agent(102, "reviewer"), 200).expect("a bid");
+
+        let json = agora.snapshot();
+        let restored = Agora::new(Arc::clone(&events));
+        restored.restore(&json).expect("a snapshot restores");
+        assert_eq!(
+            serde_json::to_value(board(&restored, &ledger)).expect("json"),
+            serde_json::to_value(board(&agora, &ledger)).expect("json"),
+        );
+        // The bid maps are hash maps, so compare the snapshots as values.
+        let again: serde_json::Value = serde_json::from_str(&restored.snapshot()).expect("json");
+        assert_eq!(again, serde_json::from_str::<serde_json::Value>(&json).expect("json"));
+    }
+
+    #[test]
+    fn a_garbled_agora_snapshot_is_refused_and_changes_nothing() {
+        let events = EventBus::new();
+        let (ledger, agora) = lab(&events);
+        let called = call_task(&ledger, "ship the agora", "builder", 500);
+        agora.bid(&called, &agent(100, "builder"), 400).expect("a bid");
+        let before = agora.snapshot();
+
+        assert!(agora.restore("not json").is_err());
+        assert!(agora.restore("{\"bids\": 7}").is_err());
+        // A second bid from the same agent on the same call is refused.
+        let mut value: serde_json::Value = serde_json::from_str(&before).expect("json");
+        let rows = value["bids"]
+            .as_object_mut()
+            .expect("bids")
+            .values_mut()
+            .next()
+            .expect("a call");
+        let copy = rows[0].clone();
+        rows.as_array_mut().expect("rows").push(copy);
+        assert!(agora.restore(&value.to_string()).is_err());
+        assert_eq!(agora.snapshot(), before);
+    }
 
     /// A connected agent with a role, as the register would report one.
     fn agent(cid: u64, role: &str) -> ConnectedAgent {

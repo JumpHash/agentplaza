@@ -542,18 +542,7 @@ impl Bonds {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let disk = Disk {
-            contacts: st
-                .contacts
-                .iter()
-                .map(|(&(a, b), c)| (a, b, c.clone()))
-                .collect(),
-            opinions: st
-                .opinions
-                .iter()
-                .map(|(&(a, b), o)| (a, b, o.clone()))
-                .collect(),
-        };
+        let disk = st.to_disk();
         let bytes =
             serde_json::to_vec_pretty(&disk).map_err(|e| BondError::Persist(e.to_string()))?;
         write_atomic(path, &bytes).map_err(|e| BondError::Persist(e.to_string()))
@@ -648,15 +637,66 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 
-impl Bonds {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        String::new() // contract: D3
+impl State {
+    /// The state in its on-disk form, rows in key order.
+    fn to_disk(&self) -> Disk {
+        Disk {
+            contacts: self
+                .contacts
+                .iter()
+                .map(|(&(a, b), c)| (a, b, c.clone()))
+                .collect(),
+            opinions: self
+                .opinions
+                .iter()
+                .map(|(&(a, b), o)| (a, b, o.clone()))
+                .collect(),
+        }
     }
 
-    /// Replaces the state with a [`Bonds::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D3
+    /// The state read back from its on-disk form. A pair repeated, or an edge
+    /// from a contact to itself, is refused: the graph holds each ordered pair once.
+    fn from_disk(disk: Disk) -> Result<Self, String> {
+        let mut contacts = BTreeMap::new();
+        for (a, b, contact) in disk.contacts {
+            if a == b {
+                return Err(format!("the snapshot holds a contact from {a} to itself"));
+            }
+            if contacts.insert((a, b), contact).is_some() {
+                return Err(format!("the snapshot holds the contact {a} to {b} twice"));
+            }
+        }
+        let mut opinions = BTreeMap::new();
+        for (a, b, opinion) in disk.opinions {
+            if a == b {
+                return Err(format!("the snapshot holds an opinion from {a} to itself"));
+            }
+            if opinions.insert((a, b), opinion).is_some() {
+                return Err(format!("the snapshot holds the opinion {a} to {b} twice"));
+            }
+        }
+        Ok(Self { contacts, opinions })
+    }
+}
+
+impl Bonds {
+    /// The whole state as JSON, for Postgres (`crate::db`): the same form the
+    /// graph's file holds.
+    pub fn snapshot(&self) -> String {
+        let st = self.lock();
+        serde_json::to_string(&st.to_disk()).expect("the bond state serializes")
+    }
+
+    /// Replaces the graph with a [`Bonds::snapshot`], and writes its file when it
+    /// has one, as a save does; a refusal changes nothing.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let disk: Disk = serde_json::from_str(json)
+            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+        let restored = State::from_disk(disk)?;
+        let mut st = self.lock();
+        self.persist(&restored).map_err(|err| err.to_string())?;
+        *st = restored;
+        Ok(())
     }
 }
 
@@ -665,6 +705,23 @@ mod tests {
     use super::*;
 
     const T0: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_snapshot_restores_the_same_bonds_and_opinions() {
+        let b = Bonds::load(None);
+        b.add(1, 2, T0).unwrap();
+        b.set_note(1, 2, Some("a friend".to_string())).unwrap();
+        b.evidence(1, 2, 1.0, 400.0, T0).unwrap();
+        let json = b.snapshot();
+
+        let restored = Bonds::load(None);
+        restored.restore(&json).expect("a snapshot restores");
+        assert_eq!(restored.bonds(T0), b.bonds(T0));
+        assert_eq!(restored.opinion(1, 2, T0), b.opinion(1, 2, T0));
+        assert_eq!(restored.snapshot(), json);
+        assert!(restored.restore("not json").is_err());
+        assert_eq!(restored.snapshot(), json);
+    }
 
     fn days(n: i64) -> i64 {
         n * DAY_MS

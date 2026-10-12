@@ -224,7 +224,7 @@ pub const OWNER_BUDGET_PERCENT: i128 = 10;
 /// The kinds a motion may be (`docs/agents/council.md`'s enum). The
 /// deserializer is the membership check: a word outside this enum is a 400
 /// before this code runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// Set a fleet-wide priority.
@@ -267,7 +267,7 @@ impl Kind {
 
 /// One vote word (`yes | no | abstain`), membership-checked by the
 /// deserializer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Vote {
     /// In favour.
@@ -699,7 +699,7 @@ pub struct MotionsView {
 
 /// One seat's cast vote, as the store holds it: the word as the enum (so the
 /// tally is exhaustive and typed) and the reason.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Cast {
     agent_cid: u64,
     vote: Vote,
@@ -709,7 +709,7 @@ struct Cast {
 
 /// One owner's decision, as the store holds it: whether the owner approved,
 /// the note they left (or none), and when.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Decision {
     approve: bool,
     note: Option<String>,
@@ -719,11 +719,12 @@ struct Decision {
 /// One motion, as the store holds it: the votes keyed by seat, the gate the
 /// daemon derived when it was proposed, and the owner's decision once they made
 /// one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Motion {
     id: String,
     proposer_cid: u64,
-    proposer_role: &'static str,
+    /// The seat's name, as the seat table spells it.
+    proposer_role: String,
     kind: Kind,
     text: String,
     amount: Option<u64>,
@@ -795,7 +796,8 @@ impl Motion {
         MotionView {
             id: self.id.clone(),
             proposer_cid: self.proposer_cid,
-            proposer_role: self.proposer_role,
+            proposer_role: SEATS[seat_of(&self.proposer_role)
+                .expect("a motion's proposer holds a seat")],
             kind: self.kind.as_str(),
             text: self.text.clone(),
             amount: self.amount,
@@ -849,7 +851,7 @@ pub struct Council {
     inner: Mutex<CouncilInner>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct CouncilInner {
     /// The motions, oldest first. Motions are never removed and their ids are
     /// contiguous from `m1`.
@@ -930,7 +932,7 @@ impl Council {
         let motion = Motion {
             id: format!("m{}", inner.seq),
             proposer_cid: proposer.cid,
-            proposer_role: SEATS[seat],
+            proposer_role: SEATS[seat].to_string(),
             kind: proposal.kind,
             text: proposal.text,
             amount: proposal.amount,
@@ -1077,20 +1079,71 @@ fn seated_index(agent: &ConnectedAgent) -> Result<usize, CouncilError> {
 
 
 impl Council {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    /// The whole state as JSON: the motions, their votes and owner decisions,
+    /// and the counter. The bus is not in it, and a restore publishes nothing.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D3
+        let inner = self.lock();
+        serde_json::to_string(&*inner).expect("the council state serializes")
     }
 
     /// Replaces the state with a [`Council::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D3
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let restored: CouncilInner = serde_json::from_str(json)
+            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+        check_council_snapshot(&restored)?;
+        *self.lock() = restored;
+        Ok(())
     }
+}
+
+/// The invariants a council snapshot must hold before it may replace one: the
+/// motions are the contiguous ids `m1`, `m2`, … in order, and the counter is at
+/// least the newest id, so no id is ever handed out twice.
+fn check_council_snapshot(inner: &CouncilInner) -> Result<(), String> {
+    for (index, motion) in inner.motions.iter().enumerate() {
+        let want = format!("m{}", index + 1);
+        if motion.id != want {
+            return Err(format!("motion {} is where {want} belongs", motion.id));
+        }
+        if !is_seated(&motion.proposer_role) {
+            return Err(format!("motion {} names {} as its proposer seat", motion.id, motion.proposer_role));
+        }
+    }
+    if inner.seq < inner.motions.len() as u64 {
+        return Err(format!("the counter {} is behind its newest motion", inner.seq));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snapshot_restores_the_same_motions_and_refuses_garbage() {
+        let (council, _notes) = lab();
+        for (cid, seat, text) in [(100, SEATS[0], "move the budget"), (101, SEATS[1], "move it again")] {
+            let mut request = proposal(Kind::BudgetMove, text, Some(100), None);
+            request.proposer_cid = cid;
+            let checked = request.checked(1000).expect("a proposal inside the contract");
+            council.propose(&agent(cid, seat), checked).expect("a motion");
+        }
+        let json = council.snapshot();
+
+        let (restored, _restored_notes) = lab();
+        restored.restore(&json).expect("a snapshot restores");
+        assert_eq!(
+            serde_json::to_value(restored.motions(10)).expect("json"),
+            serde_json::to_value(council.motions(10)).expect("json"),
+        );
+        assert_eq!(restored.snapshot(), json);
+
+        // Garbage, a broken id sequence and a counter behind its motions are refused.
+        assert!(restored.restore("not json").is_err());
+        assert!(restored.restore(&json.replace("\"m2\"", "\"m9\"")).is_err());
+        assert!(restored.restore(&json.replace("\"seq\":2", "\"seq\":1")).is_err());
+        assert_eq!(restored.snapshot(), json);
+    }
 
     /// A connected agent with a role, as the register would report one.
     fn agent(cid: u64, role: &str) -> ConnectedAgent {
