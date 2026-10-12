@@ -95,7 +95,7 @@ impl Engine {
                 "--permission-mode",
                 "bypassPermissions",
             ],
-            Self::Codex => vec!["exec", "--skip-git-repo-check", "--full-auto", prompt],
+            Self::Codex => vec!["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", prompt],
             Self::OpenCode => vec!["run", prompt],
         };
         words.into_iter().map(str::to_string).collect()
@@ -260,7 +260,7 @@ mod tests {
             Engine::Claude.args("fix the bug"),
             ["-p", "fix the bug", "--output-format", "json", "--permission-mode", "bypassPermissions"]
         );
-        assert_eq!(Engine::Codex.args("fix the bug"), ["exec", "--skip-git-repo-check", "--full-auto", "fix the bug"]);
+        assert_eq!(Engine::Codex.args("fix the bug"), ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "fix the bug"]);
         assert_eq!(Engine::OpenCode.args("fix the bug"), ["run", "fix the bug"]);
     }
 

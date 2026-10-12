@@ -40,6 +40,8 @@ const GATEWAY_PORT: u16 = 80;
 /// Guest headers that never reach apid: hop-by-hop ones, the guest's own
 /// credentials, and any internal token the guest forged.
 const GATEWAY_DROPPED: &[&str] = &[
+    // apid only serves loopback Hosts (DNS-rebinding guard); the head gets its own below.
+    "host",
     "connection",
     "keep-alive",
     "proxy-connection",
@@ -349,7 +351,7 @@ fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str) -> 
         .filter(|(name, _)| name.trim().eq_ignore_ascii_case("connection"))
         .flat_map(|(_, value)| value.split(',').map(|item| item.trim().to_ascii_lowercase()))
         .collect();
-    let mut out = format!("{method} /internal/v1/agents/{cid}/gateway{path} HTTP/1.1\r\n");
+    let mut out = format!("{method} /internal/v1/agents/{cid}/gateway{path} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
     for line in lines {
         let name = line.split_once(':').map_or(String::new(), |(name, _)| name.trim().to_ascii_lowercase());
         if GATEWAY_DROPPED.contains(&name.as_str()) || listed.contains(&name) {
@@ -553,7 +555,7 @@ mod tests {
                     Keep-Alive: 5\r\nContent-Type: application/json\r\nContent-Length: 4\r\n\r\n";
         assert_eq!(
             gateway_head("POST", 7, "/v1/messages?stream=1", head, "s3cret"),
-            "POST /internal/v1/agents/7/gateway/v1/messages?stream=1 HTTP/1.1\r\nHost: plaza.gateway\r\n\
+            "POST /internal/v1/agents/7/gateway/v1/messages?stream=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\
              Content-Type: application/json\r\nContent-Length: 4\r\nx-apz-internal: s3cret\r\n\
              Connection: close\r\n\r\n"
         );
