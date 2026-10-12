@@ -890,24 +890,32 @@ mod tests {
         // Test-only override: loopback is reachable, and the echo port is allowed.
         let policy = Policy { allow_loopback: true, ..Policy::new(vec![port]) };
         let (mut client, server) = UnixStream::pair().unwrap();
+        // Every wait is bounded, so a stall fails at the step that stalled
+        // instead of hanging the test.
+        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let apid = Apid::off();
-        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &apid));
+        let (finished, proxy) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = finished.send(serve_conn(server, 7, &policy, &apid));
+        });
 
         client
             .write_all(format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
             .unwrap();
         let mut answer = vec![0u8; ESTABLISHED.len()];
-        client.read_exact(&mut answer).unwrap();
+        client.read_exact(&mut answer).expect("the tunnel is established");
         assert_eq!(answer, ESTABLISHED);
 
         let payload = b"ping through the tunnel";
         client.write_all(payload).unwrap();
         let mut echoed = vec![0u8; payload.len()];
-        client.read_exact(&mut echoed).unwrap();
+        client.read_exact(&mut echoed).expect("the payload comes back through the tunnel");
         assert_eq!(&echoed[..], &payload[..]);
 
         client.shutdown(Shutdown::Write).unwrap();
-        let audit = proxy.join().unwrap();
+        let audit = proxy
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the relay ends once the guest closed its side");
         assert!(
             audit.allowed && audit.port == port && audit.up == payload.len() as u64 && audit.down == payload.len() as u64,
             "{audit:?}"
