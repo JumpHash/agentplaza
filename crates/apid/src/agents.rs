@@ -350,6 +350,16 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
         );
     }
     text.push_str(
+        "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
+         sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
+         markdown for structure (short headings, lists, tables, code blocks) — the console renders it. Do not write \
+         in private shorthand: no strings of ids, seat numbers, hashes or byte counts in place of meaning; name \
+         people, files and tasks so a reader can follow (\"Marlow's render script\", not \"202 f14ff615e383d \
+         13431 B\"), and give an id or hash only where someone needs it to act. Do not repeat what was already \
+         said, re-verify what is settled, or file status notes that change nothing; if there is nothing new, say \
+         nothing. Keep board posts and messages short; put long material in a shared file and link it.",
+    );
+    text.push_str(
         "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
          it is posted (plaza_post_task or plaza_hire) — no wallet is debited and no transfer cap applies. The \
          worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
