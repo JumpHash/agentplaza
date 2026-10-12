@@ -22,7 +22,7 @@ use ratatui::style::Color;
 use serde_json::{Value, json};
 
 use super::floor::FloorView;
-use super::screens::{self, clip};
+use super::screens;
 use crate::ctx::{Client, seg};
 
 const FRAME: Duration = Duration::from_millis(50);
@@ -285,7 +285,9 @@ impl App {
                 Msg::Link(up) => self.link = up,
                 Msg::Event(kind, data) => {
                     self.floor.on_event(&kind, &data);
-                    self.log.push(event_line(&kind, &data));
+                    if kind != "serial" {
+                        self.log.push(event_line(&kind, &data));
+                    }
                 }
                 Msg::Done(label, result) => {
                     self.notice = Some(match result {
@@ -541,8 +543,19 @@ fn parse_frame(text: &str) -> Option<(String, Value)> {
     Some((kind, frame.get("data").cloned().unwrap_or(Value::Null)))
 }
 
+/// One log line: the kind, then the data's top-level scalar fields as `key=value` (anything else as
+/// its one-line text), with line breaks collapsed to spaces.
 fn event_line(kind: &str, data: &Value) -> String {
-    format!("{kind}  {}", clip(&data.to_string(), 120))
+    let body = match data.as_object() {
+        Some(map) => map
+            .iter()
+            .filter(|(_, v)| !v.is_object() && !v.is_array())
+            .map(|(k, v)| format!("{k}={}", screens::show(Some(v))))
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => screens::show(Some(data)),
+    };
+    format!("{kind}  {body}").replace(['\r', '\n'], " ")
 }
 
 fn short(id: &str) -> String {

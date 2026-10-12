@@ -18,8 +18,10 @@ const PACKET_SECS: f32 = 1.0;
 const MAX_PACKETS: usize = 96;
 /// Working agents blink at this rate, in cycles per second.
 const BLINK_HZ: f32 = 1.5;
-/// Width of one agent's slot in a room: a glyph, a space, a short name.
+/// Width of one agent's slot in the gateway: a glyph, a space, a short name.
 const SLOT_W: u16 = 8;
+/// The widest a room gets, in cells; a longer role name is cut to fit.
+const ROOM_MAX_W: usize = 22;
 /// The gateway's hue, as on the web floor.
 const HUB_HUE: f32 = 25.0;
 /// Tools that hand a message or a task to another agent (`to_cid`, or `assignee`).
@@ -152,21 +154,23 @@ impl FloorView {
         let legend = area.height >= 8;
         let floor = Rect { height: if legend { area.height - 1 } else { area.height }, ..area };
 
-        let rooms = layout(&self.room_roles(), floor);
+        let rooms = layout(&self.room_sizes(), floor);
         let mut at: HashMap<i64, (f32, f32)> = HashMap::new();
         for (role, rect) in &rooms {
             let color = role_color(role);
             draw_box(buf, *rect, role, color);
             let members: Vec<&Agent> =
                 self.agents.iter().filter(|a| !a.orchestrator && a.role == *role).collect();
-            self.draw_members(buf, inner(*rect), &members, color, &mut at);
+            self.draw_members(buf, inner(*rect), 1, &members, color, &mut at);
         }
 
         let hub = hub_rect(floor);
         let hub_color = hue_color(HUB_HUE);
         draw_box(buf, hub, "gateway", hub_color);
         let orchestrators: Vec<&Agent> = self.agents.iter().filter(|a| a.orchestrator).collect();
-        self.draw_members(buf, inner(hub), &orchestrators, hub_color, &mut at);
+        let hub_inner = inner(hub);
+        let hub_cols = usize::from((hub_inner.width / SLOT_W).max(1));
+        self.draw_members(buf, hub_inner, hub_cols, &orchestrators, hub_color, &mut at);
         let hub_at = ((hub.x + hub.width / 2) as f32, (hub.y + hub.height / 2) as f32);
 
         for p in &self.packets {
@@ -252,11 +256,30 @@ impl FloorView {
         set.into_iter().map(str::to_string).collect()
     }
 
-    /// Draws the agents of one room (or the gateway) into `inner`, recording where each glyph is.
+    /// Each non-gateway role with the size its room needs.
+    fn room_sizes(&self) -> Vec<(String, u16, u16)> {
+        self.room_roles()
+            .into_iter()
+            .map(|role| {
+                let names: Vec<&str> = self
+                    .agents
+                    .iter()
+                    .filter(|a| !a.orchestrator && a.role == role)
+                    .map(|a| a.name.as_str())
+                    .collect();
+                let (w, h) = room_size(&role, &names);
+                (role, w, h)
+            })
+            .collect()
+    }
+
+    /// Draws the agents of one room (or the gateway) into `inner`, `cols` to a row, recording where
+    /// each glyph is.
     fn draw_members(
         &self,
         buf: &mut Buffer,
         inner: Rect,
+        cols: usize,
         members: &[&Agent],
         color: Color,
         at: &mut HashMap<i64, (f32, f32)>,
@@ -264,7 +287,6 @@ impl FloorView {
         if inner.width == 0 || inner.height == 0 || members.is_empty() {
             return;
         }
-        let cols = (inner.width / SLOT_W).max(1) as usize;
         let capacity = cols * inner.height as usize;
         let shown = if members.len() > capacity { capacity - 1 } else { members.len() };
         let blink_on = self.phase.sin() > 0.0;
@@ -272,7 +294,9 @@ impl FloorView {
             let (x, y) = slot(inner, cols, i);
             let (glyph, glyph_style, name_style) = agent_style(a, color, blink_on);
             put(buf, x, y, glyph, glyph_style);
-            let room = inner.right().saturating_sub(x + 2).min(SLOT_W - 2) as usize;
+            // In a multi-column row a name stops at its slot's edge; a room's name runs to its wall.
+            let edge = if cols > 1 { (x + SLOT_W).min(inner.right()) } else { inner.right() };
+            let room = edge.saturating_sub(x + 2) as usize;
             put(buf, x + 2, y, &trunc(&a.name, room), name_style);
             at.insert(a.cid, (x as f32, y as f32));
         }
@@ -303,38 +327,75 @@ fn text_of(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
-/// Lays the rooms of `roles` on a ring around the centre of `area`, one per role, each the same
-/// size. The room width shrinks until no two rooms touch.
-pub fn layout(roles: &[String], area: Rect) -> Vec<(String, Rect)> {
-    let n = roles.len();
+/// The size of one room: wide enough for the full role name and for its longest "● name" line,
+/// one row per member and at least three rows in all.
+fn room_size(role: &str, names: &[&str]) -> (u16, u16) {
+    let longest = names.iter().map(|n| n.chars().count() + 2).max().unwrap_or(0);
+    let w = (role.chars().count() + 6).max(longest + 4).min(ROOM_MAX_W);
+    let h = (names.len() + 2).max(3);
+    (w as u16, h as u16)
+}
+
+/// Places the rooms `(role, width, height)` in `area`: on a ring around its centre when they fit
+/// there without touching, otherwise in a tidy grid that fills it. No two rooms overlap; a room
+/// larger than the area is cut down to it.
+pub fn layout(rooms: &[(String, u16, u16)], area: Rect) -> Vec<(String, Rect)> {
+    let n = rooms.len();
     if n == 0 || area.width == 0 || area.height == 0 {
         return Vec::new();
     }
+    let rooms: Vec<(String, u16, u16)> =
+        rooms.iter().map(|(role, w, h)| (role.clone(), (*w).min(area.width), (*h).min(area.height))).collect();
     let (w, h) = (area.width as f32, area.height as f32);
-    let mut rw = ((w * 0.16).round().clamp(12.0, 24.0) as u16).min(area.width);
-    let rh = ((h / 5.0).round().clamp(4.0, 9.0) as u16).min(area.height);
+    let max_w = rooms.iter().map(|r| r.1).max().unwrap_or(0) as f32;
+    let max_h = rooms.iter().map(|r| r.2).max().unwrap_or(0) as f32;
     let (cx, cy) = (area.x as f32 + w / 2.0, area.y as f32 + h / 2.0);
-    loop {
-        let rx = (w / 2.0 - rw as f32 / 2.0 - 1.0).max(0.0);
-        let ry = (h / 2.0 - rh as f32 / 2.0 - 1.0).max(0.0);
-        let rects: Vec<Rect> = (0..n)
-            .map(|i| {
-                let a = -FRAC_PI_2 + TAU * i as f32 / n as f32;
-                let x = cx + rx * a.cos() - rw as f32 / 2.0;
-                let y = cy + ry * a.sin() - rh as f32 / 2.0;
-                Rect::new(
-                    snap(x, area.x, area.right() - rw),
-                    snap(y, area.y, area.bottom() - rh),
-                    rw,
-                    rh,
-                )
-            })
-            .collect();
-        if rw <= 8 || !crowded(&rects) {
-            return roles.iter().cloned().zip(rects).collect();
-        }
-        rw -= 1;
+    // The largest ring on which every room still lies inside the area.
+    let (rx, ry) = ((w - max_w).max(0.0) / 2.0, (h - max_h).max(0.0) / 2.0);
+    let ring: Vec<Rect> = rooms
+        .iter()
+        .enumerate()
+        .map(|(i, &(_, rw, rh))| {
+            let a = -FRAC_PI_2 + TAU * i as f32 / n as f32;
+            let x = cx + rx * a.cos() - rw as f32 / 2.0;
+            let y = cy + ry * a.sin() - rh as f32 / 2.0;
+            Rect::new(snap(x, area.x, area.right() - rw), snap(y, area.y, area.bottom() - rh), rw, rh)
+        })
+        .collect();
+    if crowded(&ring) {
+        return grid(&rooms, area).unwrap_or_default();
     }
+    rooms.into_iter().map(|r| r.0).zip(ring).collect()
+}
+
+/// The rooms in rows of equal cells, as many columns as the area takes, centred. `None` when not
+/// even one room per cell fits.
+fn grid(rooms: &[(String, u16, u16)], area: Rect) -> Option<Vec<(String, Rect)>> {
+    let n = rooms.len();
+    let cell_w = rooms.iter().map(|r| r.1).max()? + 1;
+    let cell_h = rooms.iter().map(|r| r.2).max()? + 1;
+    // A block of `c` columns is `c * cell` cells less the last gap; it must fit the area.
+    let fits = |c: usize| {
+        let rows = n.div_ceil(c);
+        c * usize::from(cell_w) <= usize::from(area.width) + 1
+            && rows * usize::from(cell_h) <= usize::from(area.height) + 1
+    };
+    let cols = (1..=n).rev().find(|&c| fits(c))?;
+    let rows = n.div_ceil(cols);
+    let block_w = cols as u16 * cell_w - 1;
+    let block_h = rows as u16 * cell_h - 1;
+    let x0 = area.x + area.width.saturating_sub(block_w) / 2;
+    let y0 = area.y + area.height.saturating_sub(block_h) / 2;
+    Some(
+        rooms
+            .iter()
+            .enumerate()
+            .map(|(i, (role, w, h))| {
+                let (col, row) = ((i % cols) as u16, (i / cols) as u16);
+                (role.clone(), Rect::new(x0 + col * cell_w, y0 + row * cell_h, *w, *h))
+            })
+            .collect(),
+    )
 }
 
 fn snap(v: f32, lo: u16, hi: u16) -> u16 {
@@ -511,17 +572,47 @@ mod tests {
     #[test]
     fn rooms_fit_the_area_and_do_not_overlap() {
         let area = Rect::new(0, 0, 120, 40);
-        let roles: Vec<String> = (0..8).map(|i| format!("role{i}")).collect();
-        let rooms = layout(&roles, area);
-        assert_eq!(rooms.len(), 8);
-        for (role, r) in &rooms {
+        let rooms: Vec<(String, u16, u16)> = (0..8).map(|i| (format!("role{i}"), 12, 3)).collect();
+        let placed = layout(&rooms, area);
+        assert_eq!(placed.len(), 8);
+        for (role, r) in &placed {
             assert!(
                 r.x >= area.x && r.y >= area.y && r.right() <= area.right() && r.bottom() <= area.bottom(),
                 "{role} outside the area: {r:?}"
             );
         }
-        let rects: Vec<Rect> = rooms.iter().map(|(_, r)| *r).collect();
+        let rects: Vec<Rect> = placed.iter().map(|(_, r)| *r).collect();
         assert!(!crowded(&rects), "rooms touch: {rects:?}");
+    }
+
+    #[test]
+    fn sixteen_roles_show_their_full_names_without_overlap() {
+        let roles = [
+            "architect", "edge-operator", "orchestrator", "designer", "developer", "reviewer", "tester",
+            "security", "data-engineer", "devops", "product-owner", "writer", "analyst", "support",
+            "researcher", "qa-lead",
+        ];
+        let agents: Vec<Value> = roles
+            .iter()
+            .enumerate()
+            .map(|(i, role)| json!({"cid": i as i64 + 1, "name": format!("agent{i:02}"), "role": role, "status": "idle"}))
+            .collect();
+        let mut view = FloorView::new();
+        view.on_agents(&Value::Array(agents));
+
+        let placed = layout(&view.room_sizes(), Rect::new(0, 0, 160, 39));
+        assert_eq!(placed.len(), 16);
+        let rects: Vec<Rect> = placed.iter().map(|(_, r)| *r).collect();
+        assert!(!crowded(&rects), "rooms overlap: {rects:?}");
+
+        let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        term.draw(|f| view.render(f, f.area())).unwrap();
+        let buf = term.backend().buffer();
+        let rows: Vec<String> = (0..40).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+        for role in roles {
+            let label = format!(" {role} ");
+            assert!(rows.iter().any(|row| row.contains(&label)), "{role} is not shown in full");
+        }
     }
 
     #[test]
