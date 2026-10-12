@@ -13,7 +13,6 @@
 //! guest message drops the session. The CID is the socket's, never the line's.
 
 use std::fmt;
-use std::fs;
 use std::io::{self, Read, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
@@ -502,7 +501,7 @@ fn host_uptime() -> io::Result<String> {
 /// The first two fields of `/proc/uptime`.
 #[cfg(not(windows))]
 fn host_uptime() -> io::Result<String> {
-    let text = fs::read_to_string("/proc/uptime")?;
+    let text = std::fs::read_to_string("/proc/uptime")?;
     match text.split_whitespace().take(2).collect::<Vec<_>>()[..] {
         [up, idle] => Ok(format!("{up} {idle}")),
         _ => Err(io::Error::new(io::ErrorKind::InvalidData, "/proc/uptime has fewer than two fields")),
@@ -536,6 +535,7 @@ mod tests {
     use super::*;
     use crate::hub::tests::{Recording, hub_with};
     use crate::hub::{SendOutcome, StopOutcome, TellOutcome};
+    use std::fs;
     use std::net::Shutdown;
     use apz_uds::UnixStream;
     use std::path::PathBuf;
