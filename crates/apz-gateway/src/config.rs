@@ -196,7 +196,7 @@ pub fn presets() -> Vec<Preset> {
           "Claude via the Messages API. Use {\"env\": \"ANTHROPIC_AUTH_TOKEN\"} or a command for a bearer token. \
            options.refusal_fallbacks: true enables server-side refusal fallbacks.")
             .with(&["claude-opus-5-5", "claude-haiku-5-5"], Value::Null),
-        p("openai", OpenAi, "OpenAI", "openai", Some("https://api.openai.com/v1"), env("OPENAI_API_KEY"), "Chat Completions.")
+        p("openai", OpenAiResponses, "OpenAI", "openai", Some("https://api.openai.com/v1"), env("OPENAI_API_KEY"), "Responses API (current models need it for tools with reasoning).")
             .with(OPENAI_MODELS, Value::Null),
         p("openai-responses", OpenAiResponses, "OpenAI (Responses API)", "openai", Some("https://api.openai.com/v1"),
           env("OPENAI_API_KEY"), "Responses API, stateless (store: false) with encrypted reasoning replay.")

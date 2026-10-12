@@ -20,6 +20,9 @@ use crate::scheduler::{Origin, REVIEWER_ROLE};
 use crate::settings::{tier_of, Tier};
 use crate::state::App;
 
+/// The escrow a task gets when its poster names no budget.
+pub const DEFAULT_TASK_BUDGET: u64 = 2000;
+
 /// Where a tool runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Runs {
@@ -328,7 +331,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "plaza_agents" => ("List the connected agents with their cids and roles.", obj(json!({}), &[])),
         "plaza_post_task" => (
-            "Create a plaza task; optionally assign it to an agent at once.",
+            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is the escrow that pays the worker's model calls and tool steps — work stops when it runs out — so size it to the job (default 2000; a substantial build or media job may need 5000+).",
             obj(
                 json!({
                     "title": {"type": "string"},
@@ -532,7 +535,8 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
         "plaza_post_task" => {
             let title = str_arg(input, "title")?;
             let body = str_arg(input, "body")?;
-            let budget = input.get("budget").and_then(Value::as_u64).unwrap_or(0);
+            // An unfunded task would stop at its first model call: give it a working default.
+            let budget = input.get("budget").and_then(Value::as_u64).filter(|b| *b > 0).unwrap_or(DEFAULT_TASK_BUDGET);
             let role = input.get("role").and_then(Value::as_str).map(str::to_string);
             let task = app
                 .plaza

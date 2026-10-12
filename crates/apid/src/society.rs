@@ -400,7 +400,7 @@ fn hire(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
         agent.cid,
         &format!("{goal}\n\n(hired by {} — agent {})", agent.name, agent.cid),
         input.get("acceptance").and_then(Value::as_str).map(str::to_string),
-        input.get("budget").and_then(Value::as_u64).unwrap_or(0),
+        input.get("budget").and_then(Value::as_u64).filter(|b| *b > 0).unwrap_or(crate::tools::DEFAULT_TASK_BUDGET),
         cid,
     )?;
     if bonus > 0 {
