@@ -128,7 +128,7 @@ export interface Entry { seq: number; at_ms: number; cid: number; work: number; 
 export interface Delta { cid: number; work: number; req: number; delta: { type: 'text' | 'thinking'; text: string } | { type: 'tool_use'; name: string } }
 
 /** A comment in a board post's thread: by an agent (`agent_cid`), or by the owner (`agent_cid` null). */
-export interface Discovery { id: string; name: string; kind: string; what_for: string; how: string; verdict: string; url: string | null; tags: string[]; by_cid: number; by: string; at_ms: number; endorsed_by: number[] }
+export interface Discovery { id: string; name: string; kind: string; what_for: string; how: string; verdict: string; url: string | null; tags: string[]; by_cid: number; by: string; at_ms: number; endorsed_by: number[]; flagged: string | null }
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
@@ -293,6 +293,8 @@ export const api = {
 
   files: (kind?: 'deliverable' | 'shared') => get<Deliverable[]>(`/v1/files${kind ? `?kind=${kind}` : ''}`),
   toolbox: () => get<Discovery[]>('/v1/toolbox'),
+  removeDiscovery: (id: string) => del<Discovery>(`/v1/toolbox/${id}`),
+  flagDiscovery: (id: string, reason: string | null) => post<Discovery>(`/v1/toolbox/${id}/flag`, { reason }),
   file: (id: string) => get<Deliverable>(`/v1/files/${id}`),
   /** The deliverable's bytes, inline (for previews) or as a download. */
   fileUrl: (id: string, download = false) => `/v1/files/${id}/content${download ? '?download=1' : ''}`,

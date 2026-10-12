@@ -59,6 +59,9 @@ pub struct Discovery {
     /// Agents that tried it too and vouch for it (cids), the finder excluded.
     #[serde(default)]
     pub endorsed_by: Vec<u64>,
+    /// The owner's flag: why this should not be used (shown to agents beside it), or None.
+    #[serde(default)]
+    pub flagged: Option<String>,
 }
 
 /// The discoveries, kept in `<state-dir>/toolbox.json`.
@@ -204,6 +207,7 @@ impl Store {
                 by: by.to_string(),
                 at_ms: now,
                 endorsed_by: Vec::new(),
+                flagged: None,
             };
             items.push(d.clone());
             d
@@ -279,8 +283,32 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
     }
 }
 
+impl Store {
+    /// Removes a discovery (the owner). Err when there is none.
+    pub fn remove(&self, _id: &str) -> Result<Discovery, String> {
+        Err("not available yet".into()) // contract: T5
+    }
+
+    /// Flags a discovery with the owner's reason, or clears the flag with None.
+    pub fn flag(&self, _id: &str, _reason: Option<String>) -> Result<Discovery, String> {
+        Err("not available yet".into()) // contract: T5
+    }
+}
+
 pub fn routes(router: Router<App>) -> Router<App> {
-    router.get("/v1/toolbox", list_route)
+    router
+        .get("/v1/toolbox", list_route)
+        .delete("/v1/toolbox/{id}", remove_route)
+        .post("/v1/toolbox/{id}/flag", flag_route)
+}
+
+fn remove_route(_app: &App, _: &Request, _p: &Params<'_>) -> Response {
+    Response::error(501, "contract: T5") // 200 with the removed item; publish "toolbox" on the bus
+}
+
+/// Body `{reason: string | null}`; null clears the flag.
+fn flag_route(_app: &App, _: &Request, _p: &Params<'_>) -> Response {
+    Response::error(501, "contract: T5") // 200 with the item; publish "toolbox" on the bus
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
