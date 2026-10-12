@@ -7,20 +7,22 @@ set -euo pipefail
 triple=$1 out=$2 stage=$3 version=$4
 root=$(cd "$(dirname "$0")/../.." && pwd)
 
-# The VM node (noded, vsockd, apz-vmm, vmctl) ships where a VM backend exists: Linux (KVM) and
-# Apple Silicon (Hypervisor.framework). Windows and Intel Macs run the hub, the desktop app and
-# the node link, and use nodes elsewhere.
+# The VM node ships on Linux (KVM), Apple Silicon (Hypervisor.framework) and Windows x64 (Windows
+# Hypervisor Platform). apz-vmm, the per-VM process, is not built for Windows: Windows x64 gets
+# noded, vsockd and vmctl. Windows arm64 and Intel Macs run the hub, the desktop app and the node
+# link only.
 case "$triple" in
-  *windows*) exe=.exe; node=no ;;
-  x86_64-apple-darwin) exe=; node=no ;;
-  *) exe=; node=yes ;;
+  x86_64-pc-windows-msvc) exe=.exe; node=yes; node_bins=(noded vsockd vmctl) ;;
+  *windows*) exe=.exe; node=no; node_bins=() ;;
+  x86_64-apple-darwin) exe=; node=no; node_bins=() ;;
+  *) exe=; node=yes; node_bins=(noded vsockd apz-vmm vmctl) ;;
 esac
 
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/share/agentplaza"
 
 bins=(apid apz-link agentplaza agentplaza-desktop)
-[ "$node" = yes ] && bins+=(noded vsockd apz-vmm vmctl)
+[ "$node" = yes ] && bins+=("${node_bins[@]}")
 for b in "${bins[@]}"; do
   src="$out/$b$exe"
   [ -f "$src" ] || { echo "stage.sh: missing $src" >&2; exit 1; }
@@ -39,7 +41,7 @@ printf '%s\n' "$version" > "$share/VERSION"
 # by noded. Only where the stage has the VM node; a missing guest fails unless APZ_ALLOW_NO_GUEST=1.
 if [ "$node" = yes ]; then
   case "$triple" in
-    x86_64-unknown-linux-gnu) garch=x86_64 ;;
+    x86_64-unknown-linux-gnu|x86_64-pc-windows-msvc) garch=x86_64 ;;
     aarch64-unknown-linux-gnu|aarch64-apple-darwin) garch=aarch64 ;;
     *) echo "stage.sh: no guest image for $triple" >&2; exit 1 ;;
   esac

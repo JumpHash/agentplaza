@@ -24,8 +24,9 @@ stage.sh <target-triple> <cargo-out-dir> <stage-dir> <version>
 
 ```
 <stage>/bin/        apid, apz-link, agentplaza (the CLI), agentplaza-desktop  (every platform)
-                    noded, vsockd, apz-vmm, vmctl                (Linux and macOS: the VM node)
-                    (+ .exe on Windows)
+                    Linux, Apple Silicon: noded, vsockd, apz-vmm, vmctl
+                    Windows x64: noded, vsockd, vmctl
+                    (+ .exe on Windows; Windows arm64 and Intel Macs: none, hub/desktop/link only)
 <stage>/share/agentplaza/
     console/        the web console (apps/web/dist), served by apid
     roles/initial-roles.json
@@ -42,9 +43,9 @@ At run time `apz_os::dirs::resources()` finds `share/agentplaza` next to the bin
 (`<bin>/../share/agentplaza`; inside a macOS bundle `Contents/Resources/share/agentplaza`), so
 `apid` and the desktop app need no paths on the command line.
 
-Windows has no VM backend yet (the Windows Hypervisor Platform backend is planned), so its
-packages hold the hub, the desktop app and the node link: a Windows machine runs the plaza and
-connects to nodes elsewhere until then.
+Windows x64 runs agents through the Windows Hypervisor Platform backend (the optional "Windows
+Hypervisor Platform" feature must be enabled; see `docs/windows-whp.md`). Windows arm64 runs the
+hub, the desktop app and the node link.
 
 ## Where things go
 

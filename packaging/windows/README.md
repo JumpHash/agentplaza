@@ -15,5 +15,8 @@ Build locally with `build.ps1` (PowerShell 7, WiX Toolset 5 is installed automat
 - Unsigned today. SmartScreen will warn: choose **More info**, then **Run anyway**.
   If the signing secrets `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` are set,
   the exes and the MSI are Authenticode-signed instead.
-- Windows runs the hub, the desktop app and the node link.
-- Agents run on Linux and macOS nodes until the Windows Hypervisor Platform backend lands.
+- The x64 package runs agents itself: `noded`, `vsockd` and `vmctl` run on the Windows Hypervisor
+  Platform backend, which needs the optional "Windows Hypervisor Platform" feature enabled (see
+  `docs/windows-whp.md`). The x64 package also ships the x86_64 guest (kernel and initrd).
+- The arm64 package has no VM node yet: it runs the hub, the desktop app and the node link.
+  Its agents run on Linux and macOS nodes.
