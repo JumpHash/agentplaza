@@ -28,6 +28,18 @@ pub trait AsRawFd {
     fn as_raw_fd(&self) -> RawFd;
 }
 
+impl AsRawFd for apz_uds::UnixStream {
+    fn as_raw_fd(&self) -> RawFd {
+        std::os::windows::io::AsRawSocket::as_raw_socket(self)
+    }
+}
+
+impl AsRawFd for apz_uds::UnixListener {
+    fn as_raw_fd(&self) -> RawFd {
+        std::os::windows::io::AsRawSocket::as_raw_socket(self)
+    }
+}
+
 /// Locks a mutex, ignoring poisoning: the guarded state is plain data that is
 /// left consistent by every critical section, so a panicked peer must not
 /// take the device model down with it.

@@ -56,6 +56,6 @@ pub enum VsockUnixBackendError {
     TooManyConnections,
 }
 
-type MuxerConnection = super::csm::VsockConnection<std::os::unix::net::UnixStream>;
+type MuxerConnection = super::csm::VsockConnection<apz_uds::UnixStream>;
 
-impl VsockConnectionBackend for std::os::unix::net::UnixStream {}
+impl VsockConnectionBackend for apz_uds::UnixStream {}

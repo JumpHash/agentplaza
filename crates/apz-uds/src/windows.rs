@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Once;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use vm_memory::bitmap::BitmapSlice;
+use vm_memory::{ReadVolatile, VolatileMemoryError, VolatileSlice, WriteVolatile};
 use windows_sys::Win32::Networking::WinSock as ws;
 
 use crate::encode_sun_path;
@@ -357,6 +359,70 @@ impl Write for &UnixStream {
 impl AsRawSocket for UnixStream {
     fn as_raw_socket(&self) -> RawSocket {
         self.0 .0 as RawSocket
+    }
+}
+
+/// Largest chunk moved through the bounce buffer of the volatile I/O impls below.
+const VOLATILE_CHUNK: usize = 64 * 1024;
+
+/// `Read` into a bounce buffer, then copy into the (possibly guest-backed) volatile slice.
+fn read_volatile_via<R: Read, B: BitmapSlice>(
+    reader: &mut R,
+    buf: &mut VolatileSlice<B>,
+) -> Result<usize, VolatileMemoryError> {
+    let mut tmp = vec![0u8; buf.len().min(VOLATILE_CHUNK)];
+    let n = reader
+        .read(&mut tmp)
+        .map_err(VolatileMemoryError::IOError)?;
+    buf.copy_from(&tmp[..n]);
+    Ok(n)
+}
+
+/// Copy out of the (possibly guest-backed) volatile slice into a bounce buffer, then `Write` it.
+fn write_volatile_via<W: Write, B: BitmapSlice>(
+    writer: &mut W,
+    buf: &VolatileSlice<B>,
+) -> Result<usize, VolatileMemoryError> {
+    let mut tmp = vec![0u8; buf.len().min(VOLATILE_CHUNK)];
+    let n = buf.copy_to(&mut tmp[..]);
+    writer
+        .write(&tmp[..n])
+        .map_err(VolatileMemoryError::IOError)
+}
+
+impl ReadVolatile for UnixStream {
+    fn read_volatile<B: BitmapSlice>(
+        &mut self,
+        buf: &mut VolatileSlice<B>,
+    ) -> Result<usize, VolatileMemoryError> {
+        read_volatile_via(self, buf)
+    }
+}
+
+impl ReadVolatile for &UnixStream {
+    fn read_volatile<B: BitmapSlice>(
+        &mut self,
+        buf: &mut VolatileSlice<B>,
+    ) -> Result<usize, VolatileMemoryError> {
+        read_volatile_via(self, buf)
+    }
+}
+
+impl WriteVolatile for UnixStream {
+    fn write_volatile<B: BitmapSlice>(
+        &mut self,
+        buf: &VolatileSlice<B>,
+    ) -> Result<usize, VolatileMemoryError> {
+        write_volatile_via(self, buf)
+    }
+}
+
+impl WriteVolatile for &UnixStream {
+    fn write_volatile<B: BitmapSlice>(
+        &mut self,
+        buf: &VolatileSlice<B>,
+    ) -> Result<usize, VolatileMemoryError> {
+        write_volatile_via(self, buf)
     }
 }
 

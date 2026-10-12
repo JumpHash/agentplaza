@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Read;
 use crate::pal::{AsRawFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use apz_uds::{UnixListener, UnixStream};
 use std::path::Path;
 
 use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
@@ -280,10 +280,9 @@ impl VsockEpollListener for VsockMuxer {
                 for ev in &epoll_events[0..ev_cnt] {
                     self.handle_event(
                         ev.fd(),
-                        // It's ok to unwrap here, since the `epoll_events[i].events` is filled
-                        // in by `epoll::wait()`, and therefore contains only valid epoll
-                        // flags.
-                        EventSet::from_bits(ev.events).unwrap(),
+                        // `event_set()` decodes the events that `epoll::wait()` filled in
+                        // for this entry, which are always valid epoll flags.
+                        ev.event_set(),
                     );
                 }
             }
@@ -660,8 +659,17 @@ impl VsockMuxer {
     /// admits up to `defs::MAX_CONNECTIONS` (1023) guest connections while a
     /// host listener's default backlog is 128 — so the guest would lose all
     /// vsock RX/TX until the listener accepted.
+    ///
+    /// On Windows an AF_UNIX connect completes or fails immediately, so a blocking
+    /// connect followed by non-blocking mode cannot park the event thread.
+    #[cfg(target_os = "linux")]
     fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
         crate::sys::connect_unix_nonblocking(path)
+    }
+
+    #[cfg(windows)]
+    fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
+        UnixStream::connect_nonblocking(path)
     }
 
     /// Handle a new connection request comming from our peer (the guest vsock driver).
