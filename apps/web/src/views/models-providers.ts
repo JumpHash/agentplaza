@@ -2,10 +2,11 @@
 // A grid of provider cards, grouped by how each one is credentialed.
 
 import '../styles/models.css';
-import { api, type Auth, type Provider, type ProviderKind, type TestReport } from '../api';
+import { api, isDecisionKind, type Auth, type Provider, type ProviderKind, type TestReport } from '../api';
 import { attempt, badge, brandLogo, button, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
+import { decisionPanel } from './models-decisions';
 
 type Group = 'Configured with a key' | 'Needs a key' | 'Local';
 const GROUPS: Group[] = ['Configured with a key', 'Needs a key', 'Local'];
@@ -21,6 +22,11 @@ const CREDENTIAL: Record<Provider['credential'], [string, Tone]> = {
 /** The kind entry a configured provider was made from: same id, else the first of the same kind. */
 function kindOf(p: Provider, kinds: ProviderKind[]): ProviderKind | undefined {
   return kinds.find((k) => k.id === p.id) ?? kinds.find((k) => k.kind === p.kind);
+}
+
+/** Decision providers sit under the Decisions heading; the rest are chat. */
+function isDecision(p: Provider): boolean {
+  return p.group ? p.group === 'decisions' : isDecisionKind(p.kind);
 }
 
 function groupOf(p: Provider): Group {
@@ -60,11 +66,15 @@ export function mountProviders(root: HTMLElement): Cleanup {
   const add = button('Add provider', () => openAdd(), { kind: 'primary' });
   root.append(h('div.prov-bar', null, add), body);
 
+  /** The decision model card and Try-it form, under the Decisions heading. */
+  const panel = decisionPanel();
+
   const refresh = async (): Promise<void> => {
     const [k, p] = await Promise.all([attempt(() => api.providerKinds()), attempt(() => api.providers())]);
     if (k) kinds = k;
     if (p) providers = p;
     render();
+    void panel.reload();
   };
 
   const render = (): void => {
@@ -73,8 +83,9 @@ export function mountProviders(root: HTMLElement): Cleanup {
       return;
     }
     const groups: Record<Group, Provider[]> = { 'Configured with a key': [], 'Needs a key': [], Local: [] };
-    for (const p of providers) groups[groupOf(p)].push(p);
-    const sections = GROUPS.filter((g) => groups[g].length > 0).map((g) =>
+    const chat = providers.filter((p) => !isDecision(p));
+    for (const p of chat) groups[groupOf(p)].push(p);
+    const chatSections = GROUPS.filter((g) => groups[g].length > 0).map((g) =>
       h(
         'section.prov-group',
         null,
@@ -82,7 +93,23 @@ export function mountProviders(root: HTMLElement): Cleanup {
         h('div.prov-grid', null, groups[g].map(providerCard)),
       ),
     );
-    replace(body, ...sections);
+    const decisionCards = providers.filter(isDecision);
+    replace(
+      body,
+      h('section.prov-section', { 'data-key': 'chat-models' }, h('h2.prov-section-title', null, 'Chat models'), ...chatSections),
+      h(
+        'section.prov-section',
+        { 'data-key': 'decision-models' },
+        h('h2.prov-section-title', null, 'Decisions'),
+        h(
+          'p.prov-lede',
+          null,
+          'Models that answer typed questions with calibrated probabilities instead of writing text. The plaza uses them to decide; agents never chat with them.',
+        ),
+        decisionCards.length ? h('div.prov-grid', null, decisionCards.map(providerCard)) : null,
+        panel.el,
+      ),
+    );
   };
 
   const providerCard = (p: Provider): HTMLElement => {
@@ -320,7 +347,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
     const taken = new Set(providers.map((p) => p.id));
     const free = kinds.filter((k) => !taken.has(k.id));
     const search = input({ type: 'search', placeholder: 'Search providers', autocomplete: 'off' });
-    const grid = h('div.prov-kind-grid');
+    const grid = h('div.stack');
 
     const pick = (k: ProviderKind): void => {
       close();
@@ -330,12 +357,21 @@ export function mountProviders(root: HTMLElement): Cleanup {
     const draw = (): void => {
       const q = search.value.trim().toLowerCase();
       const shown = free.filter((k) => !q || `${k.label} ${k.id} ${k.kind}`.toLowerCase().includes(q));
-      const tiles = shown.map((k) => {
-        const tile = h('button.prov-kind', { type: 'button', 'data-key': `kind-${k.id}` }, brandLogo(k.brand, true), h('span.truncate', null, k.label));
-        tile.addEventListener('click', () => pick(k));
-        return tile;
-      });
-      replace(grid, ...(tiles.length ? tiles : [h('p.faint', null, free.length ? 'No matches' : 'Every provider is already configured')]));
+      const tile = (k: ProviderKind): HTMLElement => {
+        const el = h('button.prov-kind', { type: 'button', 'data-key': `kind-${k.id}` }, brandLogo(k.brand, true), h('span.truncate', null, k.label));
+        el.addEventListener('click', () => pick(k));
+        return el;
+      };
+      const section = (title: string, list: ProviderKind[]): HTMLElement[] =>
+        list.length ? [h('h3.prov-kind-title', null, title), h('div.prov-kind-grid', null, list.map(tile))] : [];
+      const chatKinds = shown.filter((k) => !isDecisionKind(k.kind));
+      const decisionKinds = shown.filter((k) => isDecisionKind(k.kind));
+      replace(
+        grid,
+        ...(shown.length
+          ? [...section('Chat', chatKinds), ...section('Decisions', decisionKinds)]
+          : [h('p.faint', null, free.length ? 'No matches' : 'Every provider is already configured')]),
+      );
     };
 
     search.addEventListener('input', draw);
