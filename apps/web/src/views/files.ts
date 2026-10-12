@@ -5,7 +5,7 @@
 
 import '../styles/files.css';
 import { api, type Deliverable } from '../api';
-import { attempt, button, empty, input, modal } from '../ui/components';
+import { attempt, button, empty, input, modal, tabs } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import type { Cleanup } from './index';
@@ -13,6 +13,12 @@ import type { Cleanup } from './index';
 type Group = 'Video' | 'Image' | 'Audio' | 'Documents' | 'Other';
 const GROUPS: Group[] = ['Video', 'Image', 'Audio', 'Documents', 'Other'];
 const ALL = 'All';
+
+/** The intro line under the tabs, per tab. */
+const INTRO: Record<'deliverable' | 'shared', string> = {
+  deliverable: "What the agents hand in. Stored in the plaza's object store.",
+  shared: 'Files the agents share with each other and on the board.',
+};
 
 /** Text files up to this size are read into the detail view; larger ones are download-only. */
 const TEXT_LIMIT = 200 * 1024;
@@ -154,12 +160,37 @@ export function mount(root: HTMLElement): Cleanup {
   ) as HTMLSelectElement;
   const grid = h('div.lib-grid', null);
 
+  let kind: 'deliverable' | 'shared' = 'deliverable';
+  const intro = h('p.faint', null, INTRO[kind]);
+  const tabHost = h('div', null);
+  const drawTabs = (): void => {
+    replace(
+      tabHost,
+      tabs(
+        [
+          { key: 'deliverable', label: 'Deliverables' },
+          { key: 'shared', label: 'Shared' },
+        ],
+        kind,
+        (key) => {
+          if (key === kind) return;
+          kind = key === 'shared' ? 'shared' : 'deliverable';
+          intro.textContent = INTRO[kind];
+          drawTabs();
+          void refresh();
+        },
+      ),
+    );
+  };
+  drawTabs();
+
   root.append(
     h('div.view-head', null, h('h1', null, 'Library')),
     h(
       'div.stack',
       null,
-      h('p.faint', null, "What the agents hand in. Stored in the plaza's object store."),
+      tabHost,
+      intro,
       h('div.lib-toolbar', null, search, typeSelect),
       grid,
     ),
@@ -171,7 +202,13 @@ export function mount(root: HTMLElement): Cleanup {
       { tabindex: '0', title: d.name },
       h('div.lib-tile-wrap', null, tile(d), h('span.lib-tag', null, d.store)),
       h('div.prov-title', null, h('h3.truncate', null, d.title || d.name), h('span.mono.faint.truncate', null, d.name)),
-      h('div.prov-meta', null, h('span.faint', null, `by ${d.author} · ${ago(d.created_ms)}`), h('span.faint', null, humanSize(d.size))),
+      h(
+        'div.prov-meta',
+        null,
+        h('span.faint', null, `by ${d.author} · ${ago(d.created_ms)}`),
+        h('span.faint', null, humanSize(d.size)),
+        d.kind === 'shared' && d.audience === 'private' ? h('span.faint', null, `private · ${d.allowed.length} agents`) : null,
+      ),
       d.task ? h('span.mono.faint.truncate', { title: 'Task' }, d.task) : null,
     );
     el.addEventListener('click', () => openDetail(d));
@@ -197,7 +234,7 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   const refresh = async (): Promise<void> => {
-    const list = await attempt(() => api.files());
+    const list = await attempt(() => api.files(kind));
     if (list) files = list.slice().sort((a, b) => b.created_ms - a.created_ms);
     render();
   };
