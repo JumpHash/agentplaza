@@ -325,3 +325,25 @@ mod tests {
         drop(listener);
     }
 }
+
+/// Where a URL-based request goes: `http(s)://host:port` (a base, no path), the hub certificate's
+/// pin for https (SHA-256 of its DER; required for https — there is no CA trust), an owner bearer
+/// token, and extra headers (e.g. a node's signature headers).
+#[derive(Debug, Clone, Default)]
+pub struct Target {
+    pub base: String,
+    pub pin: Option<[u8; 32]>,
+    pub bearer: Option<String>,
+    pub headers: Vec<(String, String)>,
+}
+
+/// One request to `target.base + path`, over plain TCP (http) or pinned TLS (https). Same reply
+/// handling as [`send_with`] (no chunked bodies; Content-Length or read to close).
+pub fn request(_target: &Target, _method: &str, _path: &str, _body: Option<&[u8]>, _timeout: Duration) -> io::Result<Reply> {
+    Err(io::Error::other("contract: H2"))
+}
+
+/// [`request`] with a JSON body and a JSON answer (Null when empty).
+pub fn request_json(_target: &Target, _method: &str, _path: &str, _body: Option<&Value>, _timeout: Duration) -> io::Result<(u16, Value)> {
+    Err(io::Error::other("contract: H2"))
+}
