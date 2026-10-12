@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use apz_plaza::council::{self, ProposeRequest, VoteRequest};
+use apz_plaza::council::{ProposeRequest, VoteRequest};
 use apz_plaza::social::PostRequest;
 use apz_plaza::tasks::{CreateTask, Task};
 use apz_plaza::ConnectedAgent;
@@ -16,8 +16,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::agents::{self, Agent};
-use crate::scheduler::{Origin, REVIEWER_ROLE};
-use crate::settings::{tier_of, Tier};
+use crate::scheduler::Origin;
 use crate::state::App;
 
 /// The escrow a task gets when its poster names no budget.
@@ -153,22 +152,9 @@ pub fn run_host(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) 
     }
 }
 
-/// Whether `role` may be offered or run host tool `name` (tier and seat gates).
+/// Whether `role` may be offered or run tool `name` (host or guest): the JHRL laws decide (`tools.jhrl`).
 fn permitted(role: &str, name: &str) -> bool {
-    let orchestrator = matches!(tier_of(role), Tier::Orchestrator);
-    match name {
-        "plaza_agents" | "plaza_post_task" | "plaza_assign" | "plaza_cancel_task"
-        | "plaza_task_result" => orchestrator,
-        "plaza_bid" => !orchestrator,
-        "plaza_vote" | "plaza_propose" => council::is_seated(role),
-        "plaza_verdict" => role == REVIEWER_ROLE,
-        // Projects: the orchestrator opens them; it and the planner move them along; the mayor approves plans.
-        "plaza_project_open" => orchestrator,
-        "plaza_project_advance" => orchestrator || role == "planner",
-        "plaza_project_approve" => role == "mayor" || role == "mayor-office",
-        "plaza_agent_control" | "plaza_loop" => crate::harness_control::may_control(role),
-        _ => true,
-    }
+    crate::laws::global().permits(role, name)
 }
 
 /// Why host tool `name` may not run for `role`, or `None` when it may.
@@ -936,6 +922,14 @@ mod tests {
             }
         }
         assert!(runs("bash") == Some(Runs::Guest));
+    }
+
+    #[test]
+    fn the_laws_decide_the_offer() {
+        assert!(!offered("builder", &[]).iter().any(|n| n == "plaza_post_task"));
+        assert!(!offered("builder", &[]).iter().any(|n| n == "plaza_project_approve"));
+        assert!(offered("mayor", &[]).iter().any(|n| n == "plaza_project_approve"));
+        assert!(refusal("builder", "plaza_post_task").is_some());
     }
 
     #[test]
