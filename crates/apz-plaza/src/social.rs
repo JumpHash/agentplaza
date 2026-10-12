@@ -368,6 +368,8 @@ pub struct PostView {
     /// The post's comments, oldest first. A post keeps its newest
     /// [`Social::MAX_COMMENTS`]; the oldest is dropped past that.
     pub comments: Vec<CommentView>,
+    /// Ids of the files shown with the post (the plaza's file store). Always present.
+    pub attachments: Vec<String>,
 }
 
 /// One comment on a board post's thread, as the API reports it: the contract's
@@ -386,6 +388,8 @@ pub struct CommentView {
     pub body: String,
     /// When the comment was recorded, in milliseconds since the Unix epoch.
     pub created_at: u64,
+    /// Ids of the files shown with the comment. Always present.
+    pub attachments: Vec<String>,
 }
 
 /// One agent's unread count: how many posts the board holds that the agent's
@@ -482,6 +486,8 @@ pub struct ConversationView {
     /// Why it did not, when it did not: the hub's own words, or this daemon's
     /// statement that there is nowhere to send the call. `null` when delivered.
     pub delivery: Option<String>,
+    /// Ids of the files sent with the message. Always present.
+    pub attachments: Vec<String>,
 }
 
 /// One pair's conversation as the view folds it: who, how many exchanges, how
@@ -665,6 +671,7 @@ impl Social {
             posted_by: post.posted_by,
             created_at: now_ms(),
             comments: Vec::new(),
+            attachments: Vec::new(),
         };
         inner.posts.push(post.clone());
         // Published under the lock, so a stream sees the board in post order —
@@ -715,6 +722,7 @@ impl Social {
             author: author.to_string(),
             body: body.to_string(),
             created_at: now_ms(),
+            attachments: Vec::new(),
         };
         let thread = &mut inner.posts[index].comments;
         if thread.len() >= Self::MAX_COMMENTS {
@@ -750,6 +758,27 @@ impl Social {
     /// monotonic, so it never rolls back ([`SocialError::Conflict`]). Replaying
     /// the cursor it already sits at is **idempotent**: the answer is the same
     /// and nothing is published, because nothing changed.
+    /// Sets the files shown with a post (`p<seq>`), a comment (`c<seq>` on
+    /// some post's thread) or a message (`c<seq>` in the exchange record).
+    /// `on` picks which: "post", "comment" or "message".
+    pub fn attach(&self, on: &str, id: &str, files: &[String]) -> Result<(), SocialError> {
+        let mut inner = self.lock();
+        let slot = match on {
+            "post" => inner.posts.iter_mut().find(|p| p.id == id).map(|p| &mut p.attachments),
+            "comment" => inner
+                .posts
+                .iter_mut()
+                .flat_map(|p| p.comments.iter_mut())
+                .find(|c| c.id == id)
+                .map(|c| &mut c.attachments),
+            "message" => inner.conversations.iter_mut().find(|c| c.id == id).map(|c| &mut c.attachments),
+            _ => return Err(SocialError::Invalid(format!("cannot attach files to a {on}"))),
+        };
+        let slot = slot.ok_or_else(|| SocialError::Unknown(format!("no {on} {id}")))?;
+        *slot = files.to_vec();
+        Ok(())
+    }
+
     pub fn read(&self, agent: &ConnectedAgent, up_to: &str) -> Result<ReadView, SocialError> {
         let seq = post_seq(up_to).ok_or_else(|| {
             SocialError::Invalid(format!("up_to must name a post (p<seq>), not {up_to}"))
@@ -879,6 +908,7 @@ impl Social {
             created_at: now_ms(),
             delivered,
             delivery,
+            attachments: Vec::new(),
         };
         inner.conversations.push(row.clone());
         self.events.publish(Event::Conversation {
@@ -1827,6 +1857,7 @@ mod tests {
             created_at: at,
             delivered: false,
             delivery: None,
+            attachments: Vec::new(),
         };
         // The window: an exchange within ACTIVE_SECS is active, and the
         // boundary itself counts.
@@ -1887,6 +1918,7 @@ mod tests {
                     created_at: 1,
                     delivered: false,
                     delivery: None,
+                    attachments: Vec::new(),
                 };
                 MAX_CONVERSATIONS
             ];
@@ -1946,11 +1978,12 @@ mod tests {
             posted_by: DEFAULT_POSTED_BY.to_string(),
             created_at: 7,
             comments: Vec::new(),
+            attachments: Vec::new(),
         };
         let encoded = serde_json::to_string(&post).expect("a serializable post");
         assert_eq!(
             encoded,
-            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7,"comments":[]}"#
+            r#"{"id":"p1","agent_cid":100,"role":"builder","subject":"a \"quoted\" subject\nwith a newline","body":"the body","task":null,"posted_by":"driver","created_at":7,"comments":[],"attachments":[]}"#
         );
         let frame = Event::Board {
             kind: "post",
