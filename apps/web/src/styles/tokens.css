@@ -70,7 +70,7 @@
   --shadow: 3px 3px 0 var(--ink);
   --focus: 0 0 0 2px var(--signal);
 
-  --sidebar-w: 248px;
+  --sidebar-w: 272px;
   --topbar-h: 46px;
   --margin-w: 62px;
   --content-max: 1480px;
