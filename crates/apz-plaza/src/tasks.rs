@@ -797,6 +797,19 @@ impl TaskLedger {
     }
 }
 
+
+impl TaskLedger {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D2
+    }
+
+    /// Replaces the state with a [`TaskLedger::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

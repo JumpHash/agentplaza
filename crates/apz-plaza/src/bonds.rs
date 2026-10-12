@@ -647,6 +647,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+
+impl Bonds {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D3
+    }
+
+    /// Replaces the state with a [`Bonds::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D3
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -523,6 +523,19 @@ fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
     }
 }
 
+
+impl Queues {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D7
+    }
+
+    /// Replaces the state with a [`Queues::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D7
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

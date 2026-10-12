@@ -454,3 +454,15 @@ pub const PROMPT: &str = "You are part of a society of agents. You keep your own
      memory library of markdown notes linked with [[Title]] (memory_write, memory_read, memory_search, \
      memory_list): record what you learn, how things work, and what you know about people, and check it \
      before you start something new.";
+
+impl Society {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D6
+    }
+
+    /// Replaces the state with a [`Society::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D6
+    }
+}

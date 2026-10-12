@@ -761,6 +761,19 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
     Response::json(200, &app.transcripts.after(agent.cid, after, limit.min(1000)))
 }
 
+
+impl Names {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D6
+    }
+
+    /// Replaces the state with a [`Names::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D6
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

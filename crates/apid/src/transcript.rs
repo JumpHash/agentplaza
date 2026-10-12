@@ -25,13 +25,27 @@ pub struct Entry {
     pub data: Value,
 }
 
+/// Where each recorded entry is also written (Postgres): (cid, seq, work, kind, at_ms, data).
+pub type Sink = Box<dyn Fn(u64, u64, u64, &str, u64, &Value) + Send + Sync>;
+
 #[derive(Default)]
 pub struct Store {
     seq: AtomicU64,
     agents: Mutex<HashMap<u64, VecDeque<Entry>>>,
+    sink: Mutex<Option<Sink>>,
 }
 
 impl Store {
+    /// Every entry recorded from now on is also handed to `sink`.
+    pub fn set_sink(&self, _sink: Sink) {
+        // contract: D8
+    }
+
+    /// Loads stored entries back (oldest first) at start, and moves `seq` past the largest.
+    pub fn preload(&self, _cid: u64, _entries: Vec<(u64, u64, String, u64, Value)>) {
+        // contract: D8
+    }
+
     /// Appends an entry and publishes it as a `transcript` event.
     pub fn record(&self, bus: &Bus, cid: u64, work: u64, kind: &'static str, data: Value) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;

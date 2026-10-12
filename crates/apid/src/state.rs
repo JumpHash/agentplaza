@@ -93,6 +93,8 @@ pub struct App {
     pub harness: crate::harness_control::Store,
     /// The plaza's git host (Forgejo) and the agents' identities on it.
     pub forge: crate::git::Forge,
+    /// Postgres, the plaza's state of record (memory is the working copy).
+    pub db: Arc<crate::db::Db>,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -132,6 +134,7 @@ impl App {
             projects: crate::projects::Store::load(&config.state_dir),
             harness: crate::harness_control::Store::load(&config.state_dir),
             forge: crate::git::Forge::load(&config.state_dir, &env),
+            db: Arc::new(crate::db::Db::connect(&env)),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
@@ -163,6 +166,9 @@ impl App {
             let path = app.config.state_dir.join("treasury.json");
             let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
         }
+        // Postgres is the state of record: restore from it, then keep it current.
+        crate::db::restore_all(&app);
+        crate::db::spawn_writer(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.

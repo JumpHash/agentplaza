@@ -266,6 +266,19 @@ pub(crate) fn risk_class(tool: &str) -> &'static str {
     }
 }
 
+
+impl Laws {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D6
+    }
+
+    /// Replaces the state with a [`Laws::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D6
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

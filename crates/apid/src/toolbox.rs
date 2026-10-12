@@ -356,6 +356,19 @@ fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     Response::json(200, &app.toolbox.list())
 }
 
+
+impl Store {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D5
+    }
+
+    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D5
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

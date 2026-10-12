@@ -1192,6 +1192,19 @@ fn to_usize(count: u64) -> usize {
 /// same shape `tests/agent_tell.rs` drives the daemon against: the delivery is
 /// asserted from both ends — what the daemon asked for, and what the row says
 /// came back.
+
+impl Social {
+    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    pub fn snapshot(&self) -> String {
+        String::new() // contract: D4
+    }
+
+    /// Replaces the state with a [`Social::snapshot`]; a refusal changes nothing.
+    pub fn restore(&self, _json: &str) -> Result<(), String> {
+        Ok(()) // contract: D4
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
