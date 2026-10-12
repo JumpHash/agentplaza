@@ -133,16 +133,26 @@ where
         Err(message) => Response::error(400, message),
         Ok(mut request) => {
             request.peer = peer;
-            match request.header("host") {
-                Some(host) if !host_is_loopback(host) => {
-                    Response::error(403, "the Host header must name loopback")
-                }
-                _ => handler(&request),
+            if host_allowed(request.header("host"), peer) {
+                handler(&request)
+            } else {
+                Response::error(403, "the Host header must name loopback")
             }
         }
     };
     // A client that hung up has nobody left to tell.
     let _ = response.write_to(reader.get_mut());
+}
+
+/// The rebinding guard: a caller on this machine (loopback peer, or one not known) must name a
+/// loopback host, since loopback callers are trusted — a web page whose domain resolves to
+/// 127.0.0.1 is refused. A caller from another machine may name any host (a hub bound off
+/// loopback is reached by its own name); it has to authenticate anyway.
+fn host_allowed(host: Option<&str>, peer: Option<IpAddr>) -> bool {
+    match host {
+        None => true,
+        Some(host) => host_is_loopback(host) || peer.is_some_and(|peer| !peer.is_loopback()),
+    }
 }
 
 /// A serving [`Server`]. Dropping it stops the accept loop.
@@ -187,6 +197,17 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn a_foreign_host_is_refused_from_loopback_and_allowed_from_another_machine() {
+        let local: IpAddr = "127.0.0.1".parse().unwrap();
+        let remote: IpAddr = "203.0.113.7".parse().unwrap();
+        assert!(host_allowed(Some("127.0.0.1:7700"), Some(local)));
+        assert!(!host_allowed(Some("evil.example"), Some(local)));
+        assert!(!host_allowed(Some("evil.example"), None));
+        assert!(host_allowed(Some("hub.example.org:7700"), Some(remote)));
+        assert!(host_allowed(None, Some(local)));
+    }
     use std::sync::Mutex;
 
     /// Sends one `GET /x` over a plain socket and returns the whole reply.
