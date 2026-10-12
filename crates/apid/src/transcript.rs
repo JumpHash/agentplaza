@@ -21,7 +21,7 @@ pub struct Entry {
     pub at_ms: u64,
     pub cid: u64,
     pub work: u64,
-    pub kind: &'static str,
+    pub kind: String,
     pub data: Value,
 }
 
@@ -37,20 +37,36 @@ pub struct Store {
 
 impl Store {
     /// Every entry recorded from now on is also handed to `sink`.
-    pub fn set_sink(&self, _sink: Sink) {
-        // contract: D8
+    pub fn set_sink(&self, sink: Sink) {
+        *self.sink.lock().unwrap_or_else(PoisonError::into_inner) = Some(sink);
     }
 
     /// Loads stored entries back (oldest first) at start, and moves `seq` past the largest.
-    pub fn preload(&self, _cid: u64, _entries: Vec<(u64, u64, String, u64, Value)>) {
-        // contract: D8
+    pub fn preload(&self, cid: u64, entries: Vec<(u64, u64, String, u64, Value)>) {
+        let largest = entries.iter().map(|e| e.0).max();
+        {
+            let mut agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
+            let log = agents.entry(cid).or_default();
+            for (seq, work, kind, at_ms, data) in entries {
+                if log.len() == KEEP {
+                    log.pop_front();
+                }
+                log.push_back(Entry { seq, at_ms, cid, work, kind, data });
+            }
+        }
+        if let Some(largest) = largest {
+            self.seq.fetch_max(largest, Ordering::SeqCst);
+        }
     }
 
     /// Appends an entry and publishes it as a `transcript` event.
     pub fn record(&self, bus: &Bus, cid: u64, work: u64, kind: &'static str, data: Value) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let entry = Entry { seq, at_ms: apz_plaza::now_ms(), cid, work, kind, data };
+        let entry = Entry { seq, at_ms: apz_plaza::now_ms(), cid, work, kind: kind.to_string(), data };
         bus.publish("transcript", &entry);
+        if let Some(sink) = self.sink.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            sink(cid, seq, work, kind, entry.at_ms, &entry.data);
+        }
         let mut agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
         let log = agents.entry(cid).or_default();
         if log.len() == KEEP {
@@ -92,6 +108,28 @@ impl Store {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
+
+    #[test]
+    fn preload_then_record_continues_seq_and_feeds_the_sink() {
+        let (store, bus) = (Store::default(), Bus::default());
+        store.preload(
+            7,
+            vec![
+                (5, 1, "work_start".to_string(), 10, json!({})),
+                (6, 1, "model_request".to_string(), 11, json!({"prompt": "hi"})),
+            ],
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        store.set_sink(Box::new(move |cid: u64, seq: u64, work: u64, kind: &str, _at: u64, _data: &Value| {
+            sink_seen.lock().unwrap().push((cid, seq, work, kind.to_string()));
+        }));
+        let seq = store.record(&bus, 7, 1, "work_end", json!({"status": "done"}));
+        assert!(seq > 6, "new seq {seq} must exceed the preloaded max");
+        assert_eq!(store.after(7, 0, 10).len(), 3);
+        assert_eq!(*seen.lock().unwrap(), vec![(7, seq, 1, "work_end".to_string())]);
+    }
 
     #[test]
     fn entries_are_ordered_capped_and_searchable() {
