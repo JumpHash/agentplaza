@@ -40,7 +40,7 @@
   overflow: auto;
   margin: 0 0 12px;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 0;
   background: rgba(127, 127, 127, 0.12);
   font-size: 0.85em;
   white-space: pre-wrap;

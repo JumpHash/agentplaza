@@ -41,7 +41,7 @@
   padding: var(--s4);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 0;
 }
 
 .prov-head {
@@ -140,7 +140,7 @@
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 0;
   cursor: pointer;
 }
 

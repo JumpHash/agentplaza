@@ -6,34 +6,41 @@ body.floor-mode .view {
   height: calc(100vh - var(--topbar-h) - 48px); margin-bottom: 0;
   display: flex; flex-direction: column;
 }
+/* The canvas sits in a card like any other section: 1px rule, square, sheet behind it. */
 .floor-stage {
   position: relative; flex: 1; min-height: 0; overflow: hidden;
-  border: 1px solid var(--border); border-radius: var(--r-lg);
-  background:
-    radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
-    var(--bg);
+  border: 1px solid var(--rule); border-radius: 0; background: var(--sheet);
 }
 .floor-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 .floor-tip {
   position: absolute; z-index: 2; pointer-events: none; display: flex; flex-direction: column; gap: 2px;
-  max-width: 280px; padding: var(--s2) var(--s3); border-radius: var(--r-md);
-  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: var(--fs-sm);
+  max-width: 280px; padding: var(--s2) var(--s3); border-radius: 0;
+  background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print); font-size: var(--fs-sm);
+}
+/* Role tag: square, mono caps, the role colour as a 3px left stripe (set inline by floor.ts). */
+.floor-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; vertical-align: 1px; border-radius: 0;
+  font: 500 9.5px/1.4 var(--mono); letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ink); background: var(--sheet);
+  border: 1px solid var(--ink); border-left: 3px solid var(--ink);
 }
 .floor-legend {
   position: absolute; left: var(--s4); bottom: var(--s4); display: flex; gap: var(--s4);
-  padding: 6px var(--s3); border-radius: 999px; background: color-mix(in srgb, var(--surface) 85%, transparent);
-  border: 1px solid var(--border); font-size: var(--fs-xs); color: var(--text-2);
+  padding: 6px var(--s3); border-radius: 0; background: var(--sheet);
+  border: 1px solid var(--ink); font: 400 10px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .05em;
+  color: var(--ink-2);
 }
 .floor-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.floor-key { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.floor-key.working { background: var(--info); box-shadow: 0 0 0 3px var(--info-bg); }
+.floor-key { width: 6px; height: 6px; border-radius: 0; display: inline-block; }
+.floor-key.working { background: var(--info); }
 .floor-key.idle { background: var(--ok); }
-.floor-key.offline { background: var(--text-3); }
+.floor-key.offline { background: var(--ink-3); }
 .floor-card {
-  position: absolute; z-index: 3; width: 300px; padding: 14px; box-sizing: border-box;
-  background: var(--sheet); border: 1px solid var(--ink); box-shadow: 3px 3px 0 var(--ink);
+  position: absolute; z-index: 3; width: 300px; padding: 14px; box-sizing: border-box; border-radius: 0;
+  background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print);
   display: flex; flex-direction: column; gap: var(--s3); font-size: var(--fs-sm);
 }
 .floor-card[hidden] { display: none; }
 .floor-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s2); }
-.floor-card-activity { font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.floor-card-head strong { font: 600 11.5px/1.35 var(--mono); }
+.floor-card-activity { font: 400 10px/1.5 var(--mono); color: var(--ink-3); white-space: pre-wrap; overflow-wrap: anywhere; }
