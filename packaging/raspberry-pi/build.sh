@@ -3,7 +3,7 @@
 # arm64): a .deb made with fpm, and a .tar.gz of the same root tree.
 #
 # usage: build.sh <stage-dir> <version> <out-dir>
-#   <stage-dir>  the Linux root tree (usr/bin/noded, usr/share/agentplaza, icons)
+#   <stage-dir>  the stage (packaging/README.md): bin/, share/agentplaza/
 set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
@@ -20,7 +20,7 @@ out="$(mkdir -p "$3" && cd "$3" && pwd)"
 command -v fpm >/dev/null 2>&1 || { echo "fpm is needed: gem install fpm" >&2; exit 1; }
 
 for f in \
-    "$stage/usr/bin/noded" \
+    "$stage/bin/noded" \
     "$linux/agentplaza.desktop" \
     "$linux/agentplaza-hub.service" \
     "$linux/agentplaza-node.service" \
@@ -33,8 +33,13 @@ done
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 root="$work/root"
-mkdir -p "$root"
-cp -a "$stage/." "$root/"
+mkdir -p "$root/usr/bin" "$root/usr/share/agentplaza"
+cp -a "$stage/bin/." "$root/usr/bin/"
+cp -a "$stage/share/agentplaza/." "$root/usr/share/agentplaza/"
+for n in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "$stage/share/agentplaza/icons/agentplaza-$n.png" \
+        "$root/usr/share/icons/hicolor/${n}x${n}/apps/agentplaza.png"
+done
 
 install -Dm644 "$linux/agentplaza.desktop" "$root/usr/share/applications/agentplaza.desktop"
 mkdir -p "$root/usr/lib/systemd/user"
