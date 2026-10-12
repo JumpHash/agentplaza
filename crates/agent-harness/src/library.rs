@@ -79,8 +79,49 @@ pub fn deliver(workspace: &Workspace, input: &Value) -> Result<String, String> {
 /// unless `to` (agent cids) names who may read it, and returns its id and URL.
 ///
 /// Input: `path`, optionally `title` (default the file name) and `to` (an array of cids).
-pub fn share(_workspace: &Workspace, _input: &Value) -> Result<String, String> {
-    Err("share_file is not available yet".to_string())
+pub fn share(workspace: &Workspace, input: &Value) -> Result<String, String> {
+    share_via(workspace, input, PROXY_ADDR)
+}
+
+/// [`share`] through the egress proxy at `proxy`, so a test can stand in for it.
+fn share_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<String, String> {
+    let rel = str_field(input, "path")?;
+    let name = basename(rel)?;
+    let title = optional_str(input, "title")?.unwrap_or(name.as_str());
+    let cids: Vec<i64> = match input.get("to") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_i64()
+                    .ok_or_else(|| invalid("\"to\" must be an array of agent cids"))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(invalid("\"to\" must be an array of agent cids")),
+    };
+    let list = cids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut query = format!(
+        "/files?name={}&title={}&kind=shared",
+        encode_query(&name),
+        encode_query(title)
+    );
+    if !list.is_empty() {
+        query.push_str(&format!("&to={list}"));
+    }
+    let (id, url) = upload_via(workspace, rel, &query, proxy)?;
+    if list.is_empty() {
+        Ok(format!(
+            "shared \"{title}\" publicly: id {id}, {url} — attach the id to plaza_board_post / plaza_board_comment / plaza_send_message"
+        ))
+    } else {
+        Ok(format!(
+            "shared \"{title}\" with agents {list}: id {id}, {url} — attach the id to a plaza_send_message to them"
+        ))
+    }
 }
 
 /// [`deliver`] through the egress proxy at `proxy`, so a test can stand in for it.
@@ -92,6 +133,31 @@ fn deliver_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<Stri
     }
     let description = optional_str(input, "description")?;
     let task = optional_str(input, "task")?;
+    let name = basename(rel)?;
+    let mut query = format!(
+        "/files?name={}&title={}",
+        encode_query(&name),
+        encode_query(title)
+    );
+    if let Some(text) = description {
+        query.push_str(&format!("&description={}", encode_query(text)));
+    }
+    if let Some(text) = task {
+        query.push_str(&format!("&task={}", encode_query(text)));
+    }
+    let (id, url) = upload_via(workspace, rel, &query, proxy)?;
+    Ok(format!("delivered \"{title}\" to the Library: id {id}, {url}"))
+}
+
+/// Uploads the workspace file `rel` by a PUT to `query` (the path and query, starting
+/// `/files?`) through the egress proxy at `proxy`, and returns the id and URL the Library
+/// replies with.
+fn upload_via(
+    workspace: &Workspace,
+    rel: &str,
+    query: &str,
+    proxy: &str,
+) -> Result<(String, String), String> {
     let file = workspace_file(workspace, rel)?;
     let size = fs::metadata(&file)
         .map_err(|err| format!("cannot read {rel:?}: {err}"))?
@@ -102,27 +168,12 @@ fn deliver_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<Stri
             MAX_DELIVERABLE_BYTES / (1024 * 1024)
         )));
     }
-    let basename = Path::new(rel)
-        .file_name()
-        .ok_or_else(|| invalid(format!("{rel:?} has no file name")))?
-        .to_string_lossy()
-        .into_owned();
-    let mut query = format!(
-        "/files?name={}&title={}",
-        encode_query(&basename),
-        encode_query(title)
-    );
-    if let Some(text) = description {
-        query.push_str(&format!("&description={}", encode_query(text)));
-    }
-    if let Some(text) = task {
-        query.push_str(&format!("&task={}", encode_query(text)));
-    }
+    let name = basename(rel)?;
 
     let mut stream = connect(proxy)?;
     let head = format!(
         "PUT http://plaza.gateway{query} HTTP/1.1\r\nHost: plaza.gateway\r\nContent-Type: {}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n",
-        content_type_of(&basename)
+        content_type_of(&name)
     );
     stream
         .write_all(head.as_bytes())
@@ -146,7 +197,18 @@ fn deliver_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<Stri
     let url = value["url"]
         .as_str()
         .ok_or_else(|| format!("the Library's reply has no url: {}", excerpt(body)))?;
-    Ok(format!("delivered \"{title}\" to the Library: id {id}, {url}"))
+    Ok((id.to_string(), url.to_string()))
+}
+
+/// The name a workspace file is stored under in the Library: the last part of `rel`.
+fn basename(rel: &str) -> Result<String, String> {
+    if rel.is_empty() {
+        return Err(invalid("\"path\" must name a file inside the workspace"));
+    }
+    Path::new(rel)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| invalid(format!("{rel:?} has no file name")))
 }
 
 /// The workspace file `deliver` uploads: relative, inside the workspace, not the harness's
@@ -999,6 +1061,26 @@ mod tests {
             request
         });
         (addr, handle)
+    }
+
+    #[test]
+    fn a_shared_file_is_put_with_the_cids_it_is_shared_with() {
+        let ws = scratch("share-to-agents");
+        write(&ws.dir().join("hello.txt"), b"hello");
+        let body = r#"{"id":"f1","url":"http://plaza.gateway/files/f1","size":5}"#;
+        let (proxy, server) = serve_once(reply("201 Created", body));
+
+        let out = share_via(&ws, &json!({"path": "hello.txt", "to": [203, 207]}), &proxy)
+            .expect("shared");
+        assert!(out.contains("id f1"), "{out}");
+
+        let request = String::from_utf8_lossy(&server.join().expect("the server")).into_owned();
+        assert!(
+            request.starts_with(
+                "PUT http://plaza.gateway/files?name=hello.txt&title=hello.txt&kind=shared&to=203,207 HTTP/1.1\r\n"
+            ),
+            "{request}"
+        );
     }
 
     #[test]
