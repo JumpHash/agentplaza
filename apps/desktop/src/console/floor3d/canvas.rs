@@ -1,7 +1,8 @@
 //! The HTML canvas 2D context the web floor paints its textures and plaques with
 //! (`CanvasRenderingContext2D`), on tiny-skia, so `textures.ts` and friends port call for call.
 //! Colours are CSS strings (`#rrggbb`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, named basics).
-//! Text uses the system's DejaVu fonts (mono for `monospace`, sans otherwise), via ab_glyph.
+//! Text uses the system's fonts (DejaVu on Linux, Arial / Courier New on macOS, Arial / Consolas on
+//! Windows; mono for `monospace`, sans otherwise), else the bundled Martian Mono, via ab_glyph.
 
 use super::scene::{Tex, Texture};
 use ab_glyph::{Font, FontVec, OutlineCurve, Point as GlyphPoint, PxScale, ScaleFont};
@@ -772,22 +773,59 @@ fn parse_font(css: &str) -> Option<FontSpec> {
     Some(FontSpec { size, mono, bold })
 }
 
-/// DejaVu, indexed by `mono * 2 + bold`.
-const FONT_FILES: [&str; 4] = [
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+/// The faces, indexed by `mono * 2 + bold`: the first system font found (DejaVu where Linux keeps
+/// it, the platform's own sans and mono on macOS and Windows), else the bundled Martian Mono, so
+/// labels always draw.
+const FONT_FILES: [&[&str]; 4] = [
+    &[
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ],
+    &[
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+    ],
+    &[
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+        "/System/Library/Fonts/Supplemental/Courier New.ttf",
+        "C:\\Windows\\Fonts\\consola.ttf",
+    ],
+    &[
+        "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+        "C:\\Windows\\Fonts\\consolab.ttf",
+    ],
+];
+
+/// The bundled fallback (regular, bold), always present.
+const BUNDLED: [&[u8]; 2] = [
+    include_bytes!("../../../../../assets/fonts/MartianMono-Regular.ttf"),
+    include_bytes!("../../../../../assets/fonts/MartianMono-Bold.ttf"),
 ];
 
 const UNLOADED: OnceLock<Option<FontVec>> = OnceLock::new();
 static FONTS: [OnceLock<Option<FontVec>>; 4] = [UNLOADED; 4];
 
-/// The face for a font spec, loaded once; `None` when the file is missing.
+/// The face for a font spec, loaded once.
 fn font_for(spec: &FontSpec) -> Option<&'static FontVec> {
     let i = (spec.mono as usize) * 2 + spec.bold as usize;
     FONTS[i]
-        .get_or_init(|| std::fs::read(FONT_FILES[i]).ok().and_then(|d| FontVec::try_from_vec(d).ok()))
+        .get_or_init(|| {
+            FONT_FILES[i]
+                .iter()
+                .find_map(|path| std::fs::read(path).ok().and_then(|d| FontVec::try_from_vec(d).ok()))
+                .or_else(|| FontVec::try_from_vec(BUNDLED[spec.bold as usize].to_vec()).ok())
+        })
         .as_ref()
 }
 
