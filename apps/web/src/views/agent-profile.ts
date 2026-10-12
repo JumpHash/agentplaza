@@ -3,7 +3,7 @@
 // record, contacts and memories.
 
 import '../styles/profile.css';
-import { api, type Agent, type AgentProfile } from '../api';
+import { api, type Agent, type AgentProfile, type Infraction } from '../api';
 import { agentName, roleLabel } from '../roles';
 import { ago, badge, compact } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -55,7 +55,8 @@ export function profileCard(a: Agent): { el: HTMLElement; update: (a: Agent) => 
   const ident = h('div.profile-ident');
   const tiles = h('div.profile-tiles');
   const record = h('div.profile-record');
-  const el = h('section.profile-card', null, pic, h('div.profile-main', null, ident, tiles, record));
+  const inf = h('section.prof-inf', { 'aria-label': 'Infractions' });
+  const el = h('section.profile-card', null, pic, h('div.profile-main', null, ident, tiles, record, inf));
   let agent = a;
   let profile: AgentProfile | null = null;
 
@@ -114,13 +115,91 @@ export function profileCard(a: Agent): { el: HTMLElement; update: (a: Agent) => 
     render();
   };
 
+  // Infractions: loaded on creation, then refreshed by `update` at most once every 30 s.
+  const INF_SHOWN = 10;
+  let infractions: Infraction[] | null = null;
+  let infFailed = false;
+  let infAt = 0;
+  let infAll = false;
+
+  const infRow = (r: Infraction): HTMLElement =>
+    h(
+      'li.prof-inf-row',
+      { title: r.statement },
+      h(
+        'div.prof-inf-main',
+        null,
+        h('a.prof-inf-law', { href: `#/rules/${encodeURIComponent(r.law)}` }, r.law_title || r.law),
+        h('span.mono.faint.prof-inf-id', null, r.law),
+      ),
+      h('span.mono.prof-inf-tool', null, r.tool),
+      h('span.prof-inf-detail', null, r.detail),
+      h('span.faint.prof-inf-ago', null, ago(r.at_ms)),
+    );
+
+  const renderInfractions = (): void => {
+    const list = infractions ? [...infractions].sort((x, y) => y.at_ms - x.at_ms) : null;
+    const n = list ? list.length : 0;
+    const headline =
+      list === null
+        ? h('span.faint', null, infFailed ? 'Infractions unavailable' : 'Loading…')
+        : n === 0
+          ? badge('No infractions', 'ok', true)
+          : badge(`${n} infraction${n === 1 ? '' : 's'}`, 'danger', true);
+    const shown = list ? (infAll ? list : list.slice(0, INF_SHOWN)) : [];
+    replace(
+      inf,
+      h('h3', null, 'Infractions'),
+      headline,
+      shown.length ? h('ul.prof-inf-list', null, shown.map(infRow)) : null,
+      n > INF_SHOWN
+        ? h(
+            'button.prof-inf-more',
+            {
+              type: 'button',
+              onclick: () => {
+                infAll = !infAll;
+                renderInfractions();
+              },
+            },
+            infAll ? 'Show fewer' : 'Show all',
+          )
+        : null,
+    );
+  };
+
+  const loadInfractions = async (): Promise<void> => {
+    const cid = agent.cid;
+    infAt = Date.now();
+    try {
+      const list = await api.agentInfractions(cid);
+      if (cid !== agent.cid) return;
+      infractions = list;
+      infFailed = false;
+    } catch {
+      if (cid !== agent.cid) return;
+      infFailed = true;
+    }
+    renderInfractions();
+  };
+
   render();
+  renderInfractions();
   void refresh();
+  void loadInfractions();
   return {
     el,
     update: (next) => {
+      const switched = next.cid !== agent.cid;
       agent = next;
+      if (switched) {
+        infractions = null;
+        infFailed = false;
+        infAll = false;
+        renderInfractions();
+      }
       render();
+      if (switched || Date.now() - infAt >= 30_000) void loadInfractions();
     },
     refresh,
   };
