@@ -66,6 +66,9 @@ pub struct Upload {
     pub content_type: String,
     pub author_cid: u64,
     pub author: String,
+    pub kind: String,
+    pub audience: String,
+    pub allowed: Vec<u64>,
 }
 
 pub struct Store {
@@ -78,23 +81,52 @@ pub struct Store {
 
 impl Store {
     /// The file's record, if it exists.
-    pub fn meta(&self, _id: &str) -> Option<Deliverable> {
-        None
+    pub fn meta(&self, id: &str) -> Option<Deliverable> {
+        self.find(id)
     }
 
     /// Whether agent `cid` may read file `id` (its author, a public file, or one shared with it).
-    pub fn can_read(&self, _id: &str, _cid: u64) -> bool {
-        false
+    pub fn can_read(&self, id: &str, cid: u64) -> bool {
+        self.find(id)
+            .is_some_and(|d| d.audience == "public" || d.author_cid == cid || d.allowed.contains(&cid))
     }
 
     /// Makes file `id` public (attached to a board post or comment). Only its author may.
-    pub fn publish(&self, _id: &str, _by: u64) -> Result<(), String> {
-        Err("sharing is not available yet".to_string())
+    pub fn publish(&self, id: &str, by: u64) -> Result<(), String> {
+        let mut index = lock(&self.index);
+        let pos = index.iter().position(|d| d.id == id).ok_or_else(|| "no such file".to_string())?;
+        if index[pos].audience == "public" {
+            return Ok(());
+        }
+        if by != index[pos].author_cid {
+            return Err("only the file's author can make it public".to_string());
+        }
+        let mut next = index.to_vec();
+        next[pos].audience = "public".to_string();
+        self.save(&next).map_err(|e| format!("cannot save the index: {e}"))?;
+        *index = next;
+        Ok(())
     }
 
     /// Gives agents `to` access to file `id` (attached to a direct message). Only its author may.
-    pub fn grant(&self, _id: &str, _by: u64, _to: &[u64]) -> Result<(), String> {
-        Err("sharing is not available yet".to_string())
+    pub fn grant(&self, id: &str, by: u64, to: &[u64]) -> Result<(), String> {
+        let mut index = lock(&self.index);
+        let pos = index.iter().position(|d| d.id == id).ok_or_else(|| "no such file".to_string())?;
+        if index[pos].audience == "public" {
+            return Ok(());
+        }
+        if by != index[pos].author_cid {
+            return Err("only the file's author can share it".to_string());
+        }
+        let mut next = index.to_vec();
+        for cid in to {
+            if !next[pos].allowed.contains(cid) {
+                next[pos].allowed.push(*cid);
+            }
+        }
+        self.save(&next).map_err(|e| format!("cannot save the index: {e}"))?;
+        *index = next;
+        Ok(())
     }
 
     /// Loads `<state-dir>/files/index.json` (a missing file is an empty library) and picks
@@ -128,9 +160,9 @@ impl Store {
             created_ms: now_ms(),
             sha256: sha256_hex(body),
             store: store.to_string(),
-            kind: deliverable_kind(),
-            audience: public_audience(),
-            allowed: Vec::new(),
+            kind: upload.kind,
+            audience: upload.audience,
+            allowed: upload.allowed,
         };
         self.write_blob(&item, body)?;
         let mut index = lock(&self.index);
@@ -215,14 +247,30 @@ impl Store {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/files", list_route)
+        .get("/v1/files/{id}", meta_route)
         .get("/v1/files/{id}/content", content_route)
         .delete("/v1/files/{id}", delete_route)
         .route("PUT", "/internal/v1/agents/{cid}/gateway/files", put_route)
         .get("/internal/v1/agents/{cid}/gateway/files/{id}", agent_get_route)
 }
 
-fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
-    Response::json(200, &app.deliverables.list())
+/// Every deliverable, or only one `kind` when the query names it.
+fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let kind = query(req, "kind");
+    let items: Vec<Deliverable> = app
+        .deliverables
+        .list()
+        .into_iter()
+        .filter(|d| kind.as_deref().map_or(true, |k| d.kind == k))
+        .collect();
+    Response::json(200, &items)
+}
+
+fn meta_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    match app.deliverables.meta(p.get("id")) {
+        Some(item) => Response::json(200, &item),
+        None => Response::error(404, "no such file"),
+    }
 }
 
 fn content_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -248,10 +296,10 @@ fn put_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 fn agent_get_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    authorized(app, req, p.get("cid"), |_| {
+    authorized(app, req, p.get("cid"), |cid| {
         Ok(match app.deliverables.find(p.get("id")) {
-            Some(item) => serve(app, &item, false),
-            None => Response::error(404, "no such file"),
+            Some(item) if app.deliverables.can_read(&item.id, cid) => serve(app, &item, false),
+            _ => Response::error(404, "no such file"),
         })
     })
 }
@@ -269,7 +317,16 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
     if req.body.is_empty() {
         return Response::error(400, "the body is empty");
     }
+    let kind = if query(req, "kind").as_deref() == Some("shared") { "shared" } else { "deliverable" };
+    let to = match parse_cids(query(req, "to").as_deref()) {
+        Ok(to) => to,
+        Err(e) => return Response::error(400, &e),
+    };
+    let (audience, allowed) = if to.is_empty() { ("public", Vec::new()) } else { ("private", to) };
     let upload = Upload {
+        kind: kind.to_string(),
+        audience: audience.to_string(),
+        allowed,
         title: query(req, "title").unwrap_or_else(|| name.clone()),
         description: query(req, "description"),
         task: query(req, "task"),
@@ -283,7 +340,13 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
             app.bus.publish("file", &item);
             Response::json(
                 201,
-                &json!({ "id": item.id, "url": format!("http://plaza.gateway/files/{}", item.id), "size": item.size }),
+                &json!({
+                    "id": item.id,
+                    "url": format!("http://plaza.gateway/files/{}", item.id),
+                    "size": item.size,
+                    "kind": item.kind,
+                    "audience": item.audience,
+                }),
             )
         }
         Err(e) => Response::error(500, &e),
@@ -425,6 +488,14 @@ fn optional(value: Option<&str>) -> Option<String> {
     value.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
 }
 
+/// The agent cids a `to` query lists, comma-separated (`203,207`); absent is none.
+fn parse_cids(raw: Option<&str>) -> Result<Vec<u64>, String> {
+    let Some(raw) = raw else { return Ok(Vec::new()) };
+    raw.split(',')
+        .map(|s| s.trim().parse::<u64>().map_err(|_| "to must list agent cids".to_string()))
+        .collect()
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -456,6 +527,9 @@ mod tests {
             content_type: guess_type(name).to_string(),
             author_cid: 7,
             author: "7".to_string(),
+            kind: "deliverable".to_string(),
+            audience: "public".to_string(),
+            allowed: Vec::new(),
         }
     }
 
@@ -498,5 +572,27 @@ mod tests {
         assert_eq!(guess_type("notes.md"), "text/markdown; charset=utf-8");
         assert_eq!(guess_type("blob"), "application/octet-stream");
         assert_eq!(guess_type("data.unknownext"), "application/octet-stream");
+    }
+
+    #[test]
+    fn private_files_are_readable_by_author_and_grantees_only() {
+        let dir = scratch("access");
+        let store = Store::load(&dir, &BTreeMap::new()).unwrap();
+        let mut up = upload("secret.txt");
+        up.author_cid = 1;
+        up.audience = "private".to_string();
+        up.allowed = vec![2];
+        let item = store.add(up, b"private bytes").unwrap();
+        assert!(store.can_read(&item.id, 1));
+        assert!(store.can_read(&item.id, 2));
+        assert!(!store.can_read(&item.id, 3));
+        assert!(store.grant(&item.id, 3, &[3]).is_err());
+        store.grant(&item.id, 1, &[3]).unwrap();
+        assert!(store.can_read(&item.id, 3));
+        assert!(store.publish(&item.id, 2).is_err());
+        store.publish(&item.id, 1).unwrap();
+        assert!(store.can_read(&item.id, 9));
+        assert!(store.meta(&item.id).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
