@@ -18,6 +18,20 @@ use iced::Rectangle;
 use super::scene::{Draw, DrawKind, Frame, Shading, Side, Texture};
 
 const SAMPLES: u32 = 4;
+
+/// Light rendering for a software (CPU) adapter: no MSAA, no sun shadows, the 3D at half
+/// resolution, upscaled. Set from the adapter the app reports (`set_light`).
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches the light mode on (a software adapter) or off.
+pub fn set_light(on: bool) {
+    LIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the light mode is on.
+pub fn light() -> bool {
+    LIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
 const SHADOW_SIZE: u32 = 2048;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADER: &str = include_str!("floor.wgsl");
@@ -105,6 +119,7 @@ struct Key {
     blend: Blend,
     depth_write: bool,
     depth_test: bool,
+    samples: u32,
 }
 
 /// One draw call of the main pass.
@@ -129,7 +144,9 @@ struct GpuTex {
 /// The offscreen targets, sized to the widget in physical pixels.
 struct Targets {
     size: (u32, u32),
-    msaa: wgpu::TextureView,
+    samples: u32,
+    /// The multisampled colour target (None at one sample: draw straight into `resolve`).
+    msaa: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
     resolve: wgpu::TextureView,
     blit_group: wgpu::BindGroup,
@@ -506,7 +523,7 @@ impl Pipeline {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: false },
+            multisample: wgpu::MultisampleState { count: key.samples, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(wgpu::FragmentState {
                 module: &self.module,
                 entry_point: Some(fs),
@@ -519,8 +536,8 @@ impl Pipeline {
         self.pipelines.insert(key, pipeline);
     }
 
-    fn ensure_targets(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        if self.targets.as_ref().is_some_and(|t| t.size == size) {
+    fn ensure_targets(&mut self, device: &wgpu::Device, size: (u32, u32), samples: u32) {
+        if self.targets.as_ref().is_some_and(|t| t.size == size && t.samples == samples) {
             return;
         }
         let make = |label, format, samples, usage| {
@@ -537,8 +554,8 @@ impl Pipeline {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let msaa = make("floor msaa", self.format, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
-        let depth = make("floor depth", DEPTH, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let msaa = (samples > 1).then(|| make("floor msaa", self.format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT));
+        let depth = make("floor depth", DEPTH, samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let resolve = make("floor resolve", self.format, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
         let blit_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("floor blit"),
@@ -548,7 +565,7 @@ impl Pipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear_clamp) },
             ],
         });
-        self.targets = Some(Targets { size, msaa, depth, resolve, blit_group });
+        self.targets = Some(Targets { size, samples, msaa, depth, resolve, blit_group });
     }
 }
 
@@ -612,13 +629,13 @@ fn key_of(draw: &Draw) -> Key {
         Prog::Sky => false,
         _ => m.depth_write && !m.additive,
     };
-    Key { prog, cull, blend, depth_write, depth_test: m.depth_test }
+    Key { prog, cull, blend, depth_write, depth_test: m.depth_test, samples: SAMPLES }
 }
 
-fn rows_of(draw: &Draw, world_ink: [f32; 3]) -> Vec<Row> {
+fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool) -> Vec<Row> {
     let m = &draw.material;
     let mut flags = 0.0;
-    if draw.receive_shadow {
+    if draw.receive_shadow && shadows {
         flags += 1.0;
     }
     if m.map.is_some() {
@@ -655,9 +672,13 @@ impl shader::Primitive for Primitive {
 
     fn prepare(&self, p: &mut Pipeline, device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rectangle, viewport: &Viewport) {
         let scale = viewport.scale_factor();
-        let size = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
-        p.physical = Rectangle { x: bounds.x * scale, y: bounds.y * scale, width: size.0 as f32, height: size.1 as f32 };
-        p.ensure_targets(device, size);
+        let full = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
+        let light = light();
+        let (samples, shadows) = if light { (1, false) } else { (SAMPLES, true) };
+        // Light mode draws the 3D at half resolution; the blit stretches it over the widget.
+        let size = if light { ((full.0 / 2).max(1), (full.1 / 2).max(1)) } else { full };
+        p.physical = Rectangle { x: bounds.x * scale, y: bounds.y * scale, width: full.0 as f32, height: full.1 as f32 };
+        p.ensure_targets(device, size, samples);
 
         let f = &self.frame;
         let w = &f.world;
@@ -730,14 +751,14 @@ impl shader::Primitive for Primitive {
         p.cmds.clear();
         p.shadow_cmds.clear();
         for d in opaque.into_iter().chain(transparent.into_iter().map(|(d, _)| d)) {
-            let new_rows = rows_of(d, ink);
+            let new_rows = rows_of(d, ink, shadows);
             if new_rows.is_empty() {
                 continue;
             }
             let start = rows.len() as u32;
             rows.extend(new_rows);
             let range = start..rows.len() as u32;
-            let key = key_of(d);
+            let key = Key { samples, ..key_of(d) };
             p.ensure_pipeline(device, key);
             let mesh = match d.kind {
                 DrawKind::Points(_) => None,
@@ -759,7 +780,7 @@ impl shader::Primitive for Primitive {
                 }
                 None => 0,
             };
-            if d.cast_shadow {
+            if d.cast_shadow && shadows {
                 if let Some(id) = mesh {
                     p.shadow_cmds.push((id, range.clone()));
                 }
@@ -819,10 +840,13 @@ impl shader::Primitive for Primitive {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("floor"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.msaa,
+                    view: targets.msaa.as_ref().unwrap_or(&targets.resolve),
                     depth_slice: None,
-                    resolve_target: Some(&targets.resolve),
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(p.background), store: wgpu::StoreOp::Discard },
+                    resolve_target: targets.msaa.as_ref().map(|_| &targets.resolve),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(p.background),
+                        store: if targets.msaa.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth,

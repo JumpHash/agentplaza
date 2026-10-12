@@ -79,6 +79,10 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Animation frames from the window, while the Floor is the shown screen.
 pub fn subscription() -> Subscription<Msg> {
+    // On a software adapter, 30 frames a second: every frame costs the CPU the whole picture.
+    if crate::console::floor3d::render::light() {
+        return iced::time::every(std::time::Duration::from_millis(33)).map(Msg::Frame);
+    }
     iced::window::frames().map(Msg::Frame)
 }
 
@@ -91,6 +95,7 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
 pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Frame(now) => {
+            let started = Instant::now();
             let dt = state.last.map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32()).min(0.05);
             state.last = Some(now);
             state.floor.orbit.update();
@@ -99,6 +104,7 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
             if w > 0.0 && h > 0.0 {
                 state.frame = Arc::new(state.floor.frame(w / h));
             }
+            perf(started.elapsed(), now);
         }
         Msg::Agents(Ok(v)) => {
             state.error = None;
@@ -272,7 +278,9 @@ fn boxed_style(highlighted: bool) -> container::Style {
     container::Style {
         background: Some(ui::SHEET.into()),
         border: Border { color: if highlighted { ui::SIGNAL } else { ui::INK }, width: 1.0, radius: 0.0.into() },
-        shadow: Shadow { color: Color { a: 0.35, ..ui::INK }, offset: iced::Vector::new(2.0, 2.0), blur_radius: 0.0 },
+        // The print shadow (2px 2px 0 ink). iced drops the text of a box whose shadow has exactly
+        // zero blur, so a hair of blur keeps it crisp and the text drawn.
+        shadow: Shadow { color: ui::INK, offset: iced::Vector::new(2.0, 2.0), blur_radius: 0.6 },
         ..Default::default()
     }
 }
@@ -305,4 +313,26 @@ fn agent_list(v: &Value) -> Vec<AgentInfo> {
             })
         })
         .collect()
+}
+
+/// `APZ_PERF`: frames per second and the floor's CPU time per frame, every two seconds.
+fn perf(cpu: std::time::Duration, now: Instant) {
+    use std::sync::Mutex;
+    static STATS: Mutex<Option<(Instant, u32, std::time::Duration)>> = Mutex::new(None);
+    if std::env::var_os("APZ_PERF").is_none() {
+        return;
+    }
+    let mut stats = STATS.lock().unwrap_or_else(|p| p.into_inner());
+    let (since, frames, total) = stats.get_or_insert((now, 0, std::time::Duration::ZERO));
+    *frames += 1;
+    *total += cpu;
+    let span = now.saturating_duration_since(*since);
+    if span.as_secs_f32() >= 2.0 {
+        eprintln!(
+            "agentplaza-desktop: floor {:.1} fps, {:.2} ms CPU per frame (step + scene)",
+            *frames as f32 / span.as_secs_f32(),
+            total.as_secs_f64() * 1000.0 / f64::from(*frames)
+        );
+        *stats = None;
+    }
 }

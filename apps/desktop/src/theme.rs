@@ -292,12 +292,13 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
-/// The hard offset shadow the console prints boxed things with.
+/// The hard offset shadow the console prints boxed things with. iced drops the text of a box
+/// whose shadow has exactly zero blur, so a hair of blur keeps it crisp and the text drawn.
 fn print_shadow() -> Shadow {
     Shadow {
         color: INK,
         offset: Vector::new(2.0, 2.0),
-        blur_radius: 0.0,
+        blur_radius: 0.6,
     }
 }
 
