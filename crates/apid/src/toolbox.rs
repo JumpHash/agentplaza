@@ -114,9 +114,18 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 }
 
 /// Runs `plaza_toolbox` or `plaza_toolbox_share` for `agent`.
-pub fn run(_app: &App, _agent: &Agent, _name: &str, _input: &Value) -> Result<String, String> {
-    // contract: F-T2 (the live survey) and F-T1 (share)
-    Err("the toolbox is not available yet".to_string())
+pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
+    match name {
+        "plaza_toolbox_share" => {
+            let who = if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() };
+            let item = app.toolbox.share(agent.cid, &who, input)?;
+            serde_json::to_string(&item).map_err(|e| e.to_string())
+        }
+        _ => {
+            let query = input.get("query").and_then(Value::as_str).unwrap_or("").trim();
+            Ok(crate::toolbox_survey::survey(app, agent, query))
+        }
+    }
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
