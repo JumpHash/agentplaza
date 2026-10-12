@@ -42,6 +42,8 @@ mod control;
 mod lifecycle;
 mod roles_custom;
 mod agent_proposals;
+mod nodes;
+mod hub_auth;
 mod transcript;
 mod upstream;
 

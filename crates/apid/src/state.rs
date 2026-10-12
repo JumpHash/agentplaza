@@ -101,6 +101,10 @@ pub struct App {
     pub custom_roles: crate::roles_custom::Store,
     /// The orchestrator's proposals for new agents.
     pub agent_proposals: crate::agent_proposals::Store,
+    /// The hub's nodes, join codes and command queues.
+    pub nodes: crate::nodes::Store,
+    /// The hub's identity and the owner's access (see hub_auth).
+    pub hub_auth: crate::hub_auth::Hub,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -144,6 +148,8 @@ impl App {
             control: crate::control::Control::default(),
             custom_roles: crate::roles_custom::Store::default(),
             agent_proposals: crate::agent_proposals::Store::default(),
+            nodes: crate::nodes::Store::default(),
+            hub_auth: crate::hub_auth::Hub::local(),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
@@ -184,7 +190,11 @@ impl App {
         let server = apz_http::Server::bind(app.config.port)?
             .limits(apz_http::Limits { max_head: 16 << 10, max_body: 512 << 20 });
         let router = api::router();
-        server.spawn(move |request| router.handle(&app, request))
+        // The hub's front door first (owner token off loopback), then the routes.
+        server.spawn(move |request| match crate::hub_auth::gate(&app, &request) {
+            Some(refused) => refused,
+            None => router.handle(&app, request),
+        })
     }
 }
 

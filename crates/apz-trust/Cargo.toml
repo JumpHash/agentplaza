@@ -1,0 +1,18 @@
+[package]
+name = "apz-trust"
+description = "AgentPlaza trust: join tokens, node keys and signed requests, pinned TLS, owner tokens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2.workspace = true
+base64 = "0.22"
+serde.workspace = true
+serde_json.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
