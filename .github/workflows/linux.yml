@@ -76,12 +76,10 @@ jobs:
         if: inputs.package
         run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
       - uses: actions/download-artifact@v4
-        if: inputs.package
-        id: guest
-        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
+        if: inputs.package && github.event_name != 'workflow_dispatch'
         with: { name: "guest-${{ matrix.arch }}", path: "target/guest/${{ matrix.arch }}" }
-      - name: Build the guest (a hand-run package, no release job supplied one)
-        if: inputs.package && steps.guest.outcome != 'success'
+      - name: Build the guest (a hand-run package: no release job supplied one)
+        if: inputs.package && github.event_name == 'workflow_dispatch'
         run: scripts/mk-guest.sh ${{ matrix.arch }}
       - name: Stage and package
         if: inputs.package

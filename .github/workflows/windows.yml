@@ -68,8 +68,7 @@ jobs:
         if: inputs.package
         run: cargo build --release --locked ${{ matrix.bins }}
       - uses: actions/download-artifact@v4
-        if: inputs.package && matrix.garch != ''
-        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
+        if: inputs.package && matrix.garch != '' && github.event_name != 'workflow_dispatch'
         with: { name: "guest-${{ matrix.garch }}", path: "target/guest/${{ matrix.garch }}" }
       - name: Stage
         if: inputs.package

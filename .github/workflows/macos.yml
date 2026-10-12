@@ -63,8 +63,7 @@ jobs:
         if: inputs.package
         run: cargo build --release --locked ${{ matrix.bins }}
       - uses: actions/download-artifact@v4
-        if: inputs.package && matrix.arch == 'aarch64'
-        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
+        if: inputs.package && matrix.arch == 'aarch64' && github.event_name != 'workflow_dispatch'
         with: { name: guest-aarch64, path: target/guest/aarch64 }
       - name: Stage
         if: inputs.package
