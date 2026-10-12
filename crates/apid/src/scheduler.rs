@@ -376,6 +376,16 @@ impl Queues {
         paid
     }
 
+    /// Starts the next item for every idle, connected agent that has queued work and nothing
+    /// in flight — after a restart (restored queues) or anything else that left work waiting.
+    pub fn dispatch_idle(&self, app: &App) {
+        for agent in app.agents.list() {
+            if agent.status == Status::Idle && self.current(agent.cid).is_none() && !self.queued(agent.cid).is_empty() {
+                self.dispatch(app, agent.cid);
+            }
+        }
+    }
+
     /// Sends the next waiting item to `cid` if it is reachable and idle.
     fn dispatch(&self, app: &App, cid: u64) {
         if app.agents.get(cid).is_none_or(|a| a.status == Status::Offline) {
