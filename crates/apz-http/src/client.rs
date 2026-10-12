@@ -210,7 +210,7 @@ fn request_bytes(method: &str, path: &str, host: &str, headers: &[(&str, &str)],
 }
 
 /// The status code and the headers (names lower-cased).
-fn read_head(reader: &mut impl BufRead) -> io::Result<(u16, Vec<(String, String)>)> {
+pub(crate) fn read_head(reader: &mut impl BufRead) -> io::Result<(u16, Vec<(String, String)>)> {
     let mut line = Vec::new();
     let mut budget = MAX_HEAD;
     read_line(reader, &mut line, &mut budget)?;
@@ -460,7 +460,7 @@ pub fn request_json(target: &Target, method: &str, path: &str, body: Option<&Val
 
 /// Splits `http://host:port` or `https://host:port` (no path) into (is https, host without
 /// brackets, port). A missing port is 80 or 443.
-fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
+pub(crate) fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
     let bad = || io::Error::new(io::ErrorKind::InvalidInput, format!("{base:?} is not an http:// or https:// base of host:port"));
     let (tls, rest) = match (base.strip_prefix("https://"), base.strip_prefix("http://")) {
         (Some(rest), _) => (true, rest),
@@ -486,7 +486,7 @@ fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
 }
 
 /// A TCP connection to `host:port`, tried address by address; reads and writes time out after `timeout`.
-fn dial(host: &str, port: u16, timeout: Duration) -> io::Result<TcpStream> {
+pub(crate) fn dial(host: &str, port: u16, timeout: Duration) -> io::Result<TcpStream> {
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host} has no address"));
     for addr in (host, port).to_socket_addrs()? {
         match TcpStream::connect_timeout(&addr, timeout) {

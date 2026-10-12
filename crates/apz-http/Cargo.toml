@@ -11,6 +11,8 @@ serde.workspace = true
 serde_json.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 apz-trust = { path = "../apz-trust" }
+sha1 = "0.10"
+base64 = "0.22"
 
 [dev-dependencies]
 rcgen = "0.13"
