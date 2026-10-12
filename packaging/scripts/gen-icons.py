@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Draws the AgentPlaza app icon (the hive mark: three hexagonal cells in ink around the signal-
-orange core, on a paper tile) from the same geometry as apps/site/scripts/gen-assets.py, and
+orange core, on a paper tile) from the same geometry as the landing page's scripts/gen-assets.py (JumpHash/agentplaza-landing), and
 writes every size the platforms want: packaging/icons/agentplaza-<n>.png, agentplaza.ico
 (Windows), agentplaza.icns (macOS). Needs Pillow. Run: python3 packaging/scripts/gen-icons.py"""
 import math, pathlib
