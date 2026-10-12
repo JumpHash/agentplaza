@@ -11,7 +11,7 @@ const names = {
   chevronDown: 'ChevronDown', terminal: 'Terminal', wrench: 'Wrench', brain: 'Brain', user: 'User',
   society: 'Share2', memory: 'Brain', heart: 'Heart', link: 'Link',
   orchestrator: 'Network', search: 'Search', external: 'ExternalLink', clock: 'Clock', zap: 'Zap',
-  file: 'FileText', settings: 'SlidersHorizontal', ban: 'Ban', copy: 'Copy', sparkles: 'Sparkles', projects: 'FolderKanban', git: 'GitBranch', pull: 'GitPullRequest', commit: 'GitCommitHorizontal', loop: 'Repeat', harness: 'Gauge',
+  file: 'FileText', settings: 'SlidersHorizontal', ban: 'Ban', copy: 'Copy', sparkles: 'Sparkles', projects: 'FolderKanban', git: 'GitBranch', pull: 'GitPullRequest', commit: 'GitCommitHorizontal', loop: 'Repeat', harness: 'Gauge', rules: 'Scale',
 };
 const out = {};
 for (const [key, name] of Object.entries(names)) {

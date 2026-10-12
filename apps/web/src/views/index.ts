@@ -14,6 +14,7 @@ import { mount as machine } from './machine';
 import { mount as models } from './models';
 import { mount as overview } from './overview';
 import { mount as projects } from './projects';
+import { mount as rules } from './rules';
 import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
@@ -44,6 +45,7 @@ export const SCREENS: Screen[] = [
   { key: 'board', label: 'Board', icon: 'board', section: 'Social', mount: board },
   { key: 'council', label: 'Council', icon: 'council', section: 'Social', mount: council },
   { key: 'treasury', label: 'Treasury', icon: 'treasury', section: 'Social', mount: treasury },
+  { key: 'rules', label: 'Rules', icon: 'rules', section: 'Social', mount: rules },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
   { key: 'tools', label: 'Tools', icon: 'zap', section: 'Setup', mount: tools },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },

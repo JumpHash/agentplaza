@@ -42,6 +42,41 @@ pub struct Verdict {
     pub unpermitted: bool,
 }
 
+/// One law as the console's Rules view shows it.
+#[derive(Clone, Debug, Serialize)]
+pub struct LawInfo {
+    pub id: String,
+    pub title: String,
+    /// "constitution" | "statute" | "operations" (the law's tier, or its file's).
+    pub tier: String,
+    /// "preventive" (a refusal before the act) | "detective" (recorded after) | "".
+    pub enforcement: String,
+    /// "info" | "minor" | "major" | "critical" | "".
+    pub severity: String,
+    /// The law in one or two plain sentences, as its author wrote it.
+    pub statement: String,
+    /// Why the law exists, when the author said.
+    pub rationale: String,
+    /// "permit" | "forbid".
+    pub effect: String,
+    /// The actions it covers, e.g. "tool.exec", "plaza.pay".
+    pub ops: Vec<String>,
+    /// Who it applies to (`principal is Agent`, `principal in Role::"builder"`), as source text.
+    pub principal: String,
+    /// What it applies to, as source text.
+    pub resource: String,
+    /// Its `when` conditions, each as source text.
+    pub conditions: Vec<String>,
+    /// A generated plain-language sentence: who may/may not do what, on what, and when.
+    pub explanation: String,
+    /// The file it comes from, and the law's whole source.
+    pub file: String,
+    pub source: String,
+}
+
+/// Where each recorded violation is also written (Postgres): (cid, violation, tool).
+pub type InfractionSink = Box<dyn Fn(u64, &Violation, &str) + Send + Sync>;
+
 pub struct Laws {
     program: Program,
     /// Law id to its title, read from the law source.
@@ -134,6 +169,17 @@ impl Laws {
         let titles: Vec<&str> =
             verdict.forbid.iter().filter_map(|id| self.titles.get(id)).map(String::as_str).collect();
         Some(format!("refused by law {}: {}", verdict.forbid.join(", "), titles.join("; ")))
+    }
+
+    /// Every law, in file then source order, for the Rules view.
+    pub fn catalog(&self) -> Vec<LawInfo> {
+        let _ = &self.program;
+        Vec::new() // contract: J1
+    }
+
+    /// Every violation recorded from now on is also handed to `sink`.
+    pub fn set_sink(&self, _sink: InfractionSink) {
+        // contract: J2
     }
 
     /// The agent's violations within the last 30 days, newest first, as profile JSON.

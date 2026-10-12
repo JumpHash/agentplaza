@@ -37,6 +37,7 @@ mod projects;
 mod harness_control;
 mod git;
 mod db;
+mod rules;
 mod transcript;
 mod upstream;
 

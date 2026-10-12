@@ -295,6 +295,28 @@ impl Db {
     }
 }
 
+/// One infraction (a law refused an agent's act), as stored and as the console shows it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct Infraction {
+    pub cid: u64,
+    pub law: String,
+    pub at_ms: u64,
+    pub tool: String,
+    pub detail: String,
+}
+
+impl Db {
+    /// Appends one infraction (table `infraction`, created with the schema).
+    pub fn append_infraction(&self, _infraction: &Infraction) {
+        // contract: J2
+    }
+
+    /// Infractions, newest first: one agent's (`Some(cid)`) or the plaza's.
+    pub fn infractions(&self, _cid: Option<u64>, _limit: i64) -> Vec<Infraction> {
+        Vec::new() // contract: J2
+    }
+}
+
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {

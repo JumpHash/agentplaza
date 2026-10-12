@@ -144,6 +144,12 @@ export interface GitPull { number: number; title: string; state: string; author:
 export interface GitPullDetail extends GitPull { body: string; diff: string; reviews: { author: string; state: string; body: string; at: string }[]; comments_list?: never; files: { path: string; additions: number; deletions: number }[] }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
+export interface LawInfo {
+  id: string; title: string; tier: string; enforcement: string; severity: string; statement: string; rationale: string;
+  effect: 'permit' | 'forbid'; ops: string[]; principal: string; resource: string; conditions: string[]; explanation: string;
+  file: string; source: string; refusals: number; agents: { cid: number; name: string; count: number }[]; last_at_ms: number | null;
+}
+export interface Infraction { cid: number; law: string; at_ms: number; tool: string; detail: string; law_title: string; statement: string; agent_name: string }
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
@@ -327,6 +333,9 @@ export const api = {
   stopLoop: (id: string) => del<HarnessLoop>(`/v1/loops/${id}`),
   agentLimits: (cid: number) => get<HarnessLimits>(`/v1/agents/${cid}/limits`),
   agentControl: (cid: number, body: { action: 'compress' | 'steer' | 'extend_turns' | 'set_limits'; text?: string; turns?: number; max_turns?: number; compress_at?: number; keep_recent?: number }) => post<unknown>(`/v1/agents/${cid}/control`, body),
+  laws: () => get<LawInfo[]>('/v1/laws'),
+  infractions: (limit = 200) => get<Infraction[]>(`/v1/infractions?limit=${limit}`),
+  agentInfractions: (cid: number) => get<Infraction[]>(`/v1/agents/${cid}/infractions`),
   toolbox: () => get<Discovery[]>('/v1/toolbox'),
   removeDiscovery: (id: string) => del<Discovery>(`/v1/toolbox/${id}`),
   flagDiscovery: (id: string, reason: string | null) => post<Discovery>(`/v1/toolbox/${id}/flag`, { reason }),
