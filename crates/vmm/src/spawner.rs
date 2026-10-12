@@ -231,7 +231,7 @@ pub enum SpawnError {
         vms: Vec<u32>,
     },
     /// No backend is compiled in for this platform
-    #[error("no VM backend is compiled in for this platform")]
+    #[error("no VM backend on this platform yet (Windows: Windows Hypervisor Platform backend planned)")]
     NoBackend,
     /// The VM has no balloon, so its memory cannot be resized
     #[error("this VM has no balloon")]
@@ -1321,6 +1321,38 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
         let _ = (spec, runtime);
         Err(SpawnError::NoBackend)
     }
+}
+
+// Without unix the private-directory, sparse-copy and workspace helpers have no
+// implementation yet; these stubs keep their callers compiling and fail at use.
+#[cfg(not(unix))]
+fn no_unix_host() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no VM backend on this platform yet (Windows: Windows Hypervisor Platform backend planned)",
+    )
+}
+
+#[cfg(not(unix))]
+pub fn create_uds_dir(_path: &Path) -> std::io::Result<()> {
+    Err(no_unix_host())
+}
+
+#[cfg(not(unix))]
+pub fn copy_sparse(_from: &Path, _to: &Path) -> std::io::Result<u64> {
+    Err(no_unix_host())
+}
+
+#[cfg(not(unix))]
+pub fn materialize_workspaces(
+    _base: &Path,
+    dir: &Path,
+    _n: usize,
+) -> Result<Vec<PathBuf>, WorkspaceError> {
+    Err(WorkspaceError::Directory {
+        path: dir.to_path_buf(),
+        source: no_unix_host(),
+    })
 }
 
 #[cfg(test)]
