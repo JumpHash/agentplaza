@@ -51,11 +51,11 @@ const HUES: [f32; 10] = [8.0, 28.0, 46.0, 88.0, 140.0, 172.0, 198.0, 222.0, 262.
 /// Gap between two rooms' arcs on the ring.
 const GAP: f32 = 2.4;
 /// `--ink-2`, the plaque's ink. The web reads it from CSS; `Colors` does not carry it.
-const INK2: &str = "#4a4a4a";
+const INK2: &str = "#4c544d";
 
-/// The orchestrator: `tier === 'orchestrator'`. `AgentInfo` has no tier, so its role says so.
+/// The orchestrator: `tier === 'orchestrator'`.
 fn is_orchestrator(a: &AgentInfo) -> bool {
-    a.role == "orchestrator"
+    a.tier == "orchestrator"
 }
 
 fn top_of(d: &District) -> f32 {
@@ -343,7 +343,7 @@ fn district_mesh(floor: &mut Floor, d: &District) -> Obj {
         g.add(&room);
         for part in children(&room) {
             // Rugs and floor markings (`userData.walk`) do not block the floor.
-            if part.get().name == "walk" {
+            if part.get().walk {
                 continue;
             }
             let Some((lo, hi)) = bounds_of(&room, &part) else { continue };
@@ -376,7 +376,7 @@ fn district_mesh(floor: &mut Floor, d: &District) -> Obj {
         holder.add(&plaque);
         g.add(&holder);
     }
-    toon::outline(&g, 0.0);
+    toon::outline(&g, 0.12);
     g
 }
 
@@ -588,7 +588,7 @@ mod tests {
     use super::*;
 
     fn agent(cid: u64, role: &str) -> AgentInfo {
-        AgentInfo { cid, name: format!("agent {cid}"), role: role.into(), status: "idle".into(), model: String::new() }
+        AgentInfo { cid, name: format!("agent {cid}"), role: role.into(), status: "idle".into(), tier: if role == "orchestrator" { "orchestrator".into() } else { "worker".into() }, model: String::new() }
     }
 
     #[test]

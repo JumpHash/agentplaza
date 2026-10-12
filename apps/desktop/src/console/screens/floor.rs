@@ -300,6 +300,7 @@ fn agent_list(v: &Value) -> Vec<AgentInfo> {
                 name: text("name"),
                 role: text("role"),
                 status: if status.is_empty() { "idle".to_string() } else { status },
+                tier: text("tier"),
                 model: text("model"),
             })
         })

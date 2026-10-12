@@ -25,6 +25,8 @@ pub struct AgentInfo {
     pub role: String,
     /// "idle" | "working" | "offline".
     pub status: String,
+    /// "orchestrator" | "worker": the orchestrator gets the dais and the bigger robot.
+    pub tier: String,
     /// The model id, for the card.
     pub model: String,
 }
