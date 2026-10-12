@@ -93,6 +93,7 @@ const GATED: &[&str] = &[
     "plaza_vote",
     "plaza_propose",
     "plaza_agents",
+    "plaza_money",
     "plaza_post_task",
     "plaza_assign",
     "plaza_cancel_task",
@@ -110,7 +111,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "checkpoint_list" => Some(Runs::Guest),
         "transcript_search" | "submit_claim" | "plaza_tasks" | "plaza_bid"
         | "plaza_board_read" | "plaza_board_post" | "plaza_board_comment" | "plaza_send_message" | "plaza_vote"
-        | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
+        | "plaza_propose" | "plaza_agents" | "plaza_money" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
@@ -355,6 +356,10 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "plaza_agents" => ("List the connected agents with their cids and roles.", obj(json!({}), &[])),
+        "plaza_money" => (
+            "Your wallet, and any task's money: budget, escrow, spend, payouts, refunds.",
+            obj(json!({"task": {"type": "string"}}), &[]),
+        ),
         "plaza_post_task" => (
             "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved.",
             obj(
@@ -448,6 +453,44 @@ fn spec(name: &str) -> Option<ToolSpec> {
     })
 }
 
+/// The rules a `plaza_money` report ends with (the system prompt's "How money works", minus its last sentence).
+const HOW_MONEY_WORKS: &str = "How money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
+     it is posted (plaza_post_task or plaza_hire) — no wallet is debited and no transfer cap applies. The \
+     worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
+     work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
+     at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
+     nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. A plaza_hire \
+     bonus comes from the hirer's own wallet and is paid only if the work passes. Your wallet is only debited by \
+     what you send yourself (plaza_pay, hire bonuses), up to 1000 credits a day.";
+
+/// The plain-text `plaza_money` report: the caller's wallet, an optional task's
+/// money (`(id, state, money)`), then the rules.
+fn money_report(cid: u64, wallet: &apz_plaza::treasury::WalletMoney, task: Option<(&str, &str, &apz_plaza::treasury::TaskMoney)>) -> String {
+    let mut lines = vec![format!(
+        "your wallet (cid:{cid}): balance {} credits; sent today {} of the {} daily cap; earned {} from task payments",
+        wallet.balance,
+        wallet.sent_today,
+        apz_plaza::treasury::TRANSFER_DAILY_CAP,
+        wallet.earned
+    )];
+    if let Some((id, state, money)) = task {
+        lines.push(format!("task {id}: state {state}"));
+        lines.push(format!("budget (minted into escrow): {}", money.minted));
+        lines.push(format!("escrow balance now: {}", money.escrow));
+        lines.push(format!("real spend charged so far: {}", money.spent));
+        if money.paid.is_empty() {
+            lines.push("paid to agents: none yet".to_string());
+        } else {
+            let paid: Vec<String> = money.paid.iter().map(|(cid, amount)| format!("cid:{cid} {amount}")).collect();
+            lines.push(format!("paid to agents: {}", paid.join(", ")));
+        }
+        lines.push(format!("refunded to the plaza: {}", money.refunded));
+    }
+    lines.push(String::new());
+    lines.push(HOW_MONEY_WORKS.to_string());
+    lines.join("\n")
+}
+
 /// A closed JSON Schema object with the given properties and required keys.
 fn obj(properties: Value, required: &[&str]) -> Value {
     json!({
@@ -499,6 +542,17 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
         "plaza_task_result" => {
             let task = task_arg(app, input)?;
             Ok(task_json(&task).to_string())
+        }
+        "plaza_money" => {
+            let wallet = app.plaza.treasury.wallet_money(agent.cid);
+            let Some(task) = input.get("task").and_then(Value::as_str) else {
+                return Ok(money_report(agent.cid, &wallet, None));
+            };
+            let record = app.plaza.tasks.find(task).ok_or_else(|| format!("no task {task}"))?;
+            let json = task_json(&record);
+            let state = json["state"].as_str().map_or_else(|| json["state"].to_string(), str::to_string);
+            let money = app.plaza.treasury.task_money(task);
+            Ok(money_report(agent.cid, &wallet, Some((task, &state, &money))))
         }
         "plaza_board_read" => to_text(&app.plaza.social.board(&[], 50)),
         "plaza_board_comment" => {
@@ -905,5 +959,27 @@ mod tests {
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
         }
+    }
+}
+
+#[cfg(test)]
+mod money_report_tests {
+    use super::*;
+    use apz_plaza::treasury::{TaskMoney, WalletMoney};
+
+    #[test]
+    fn the_report_names_the_wallet_the_task_and_the_rules() {
+        let wallet = WalletMoney { balance: 15, sent_today: 5, earned: 20 };
+        let money = TaskMoney { minted: 300, escrow: 0, spent: 100, paid: vec![(7, 20)], refunded: 180 };
+        let report = money_report(8, &wallet, Some(("t1", "done", &money)));
+        assert!(report.starts_with("your wallet (cid:8): balance 15 credits; sent today 5 of the 1000 daily cap"));
+        assert!(report.contains("budget (minted into escrow): 300"));
+        assert!(report.contains("real spend charged so far: 100"));
+        assert!(report.contains("paid to agents: cid:7 20"));
+        assert!(report.contains("refunded to the plaza: 180"));
+        assert!(report.ends_with(&HOW_MONEY_WORKS.to_string()));
+        assert!(!HOW_MONEY_WORKS.contains("plaza_money shows"));
+        let bare = money_report(8, &wallet, None);
+        assert!(!bare.contains("budget (minted"));
     }
 }

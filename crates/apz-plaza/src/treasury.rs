@@ -614,6 +614,25 @@ impl std::fmt::Display for PostError {
 
 impl std::error::Error for PostError {}
 
+/// One agent's wallet as `plaza_money` reports it (see [`Treasury::wallet_money`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletMoney {
+    pub balance: i128,
+    pub sent_today: i64,
+    pub earned: i128,
+}
+
+/// One task's money as `plaza_money` reports it (see [`Treasury::task_money`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskMoney {
+    pub minted: i128,
+    pub escrow: i128,
+    pub spent: i128,
+    /// (cid, credits) per agent paid from the escrow.
+    pub paid: Vec<(u64, i128)>,
+    pub refunded: i128,
+}
+
 /// One account: the schema's `treasury.accounts` row, without a balance (the
 /// balance is derived from the postings).
 #[derive(Debug, Serialize, Deserialize)]
@@ -1247,6 +1266,74 @@ impl Treasury {
         inner
             .find_account(AccountKind::TaskEscrow, task_id)
             .map_or(0, |account| inner.balance(account.id))
+    }
+
+    /// Agent `cid`'s money as `plaza_money` reads it: the wallet balance, what
+    /// it has sent this UTC day (against [`TRANSFER_DAILY_CAP`]), and what task
+    /// payments have earned it in total.
+    pub fn wallet_money(&self, cid: u64) -> WalletMoney {
+        let inner = self.lock();
+        let day = now_ms() / DAY_MS;
+        let wallet = inner.find_account(AccountKind::AgentEarnings, &agent_owner(cid));
+        let wallet_id = wallet.map(|account| account.id);
+        let balance = wallet.map_or(0, |account| inner.balance(account.id));
+        let earned = inner
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Payment)
+            .flat_map(|entry| &entry.postings)
+            .filter(|posting| Some(posting.account_id) == wallet_id && posting.amount > 0)
+            .map(|posting| i128::from(posting.amount))
+            .sum();
+        WalletMoney {
+            balance,
+            sent_today: inner.transferred.get(&(cid, day)).copied().unwrap_or(0),
+            earned,
+        }
+    }
+
+    /// `task_id`'s money, read from its journal entries: the budget minted into
+    /// its escrow, the escrow balance now, the real cost charged to it, what it
+    /// paid each agent, and what went back to the plaza's budget.
+    pub fn task_money(&self, task_id: &str) -> TaskMoney {
+        let inner = self.lock();
+        let mut money = TaskMoney {
+            minted: 0,
+            escrow: inner
+                .find_account(AccountKind::TaskEscrow, task_id)
+                .map_or(0, |account| inner.balance(account.id)),
+            spent: 0,
+            paid: Vec::new(),
+            refunded: 0,
+        };
+        for entry in inner.entries.iter().filter(|entry| entry.task_id.as_deref() == Some(task_id)) {
+            for posting in &entry.postings {
+                let Some(account) = inner.accounts.iter().find(|account| account.id == posting.account_id) else {
+                    continue;
+                };
+                let amount = i128::from(posting.amount);
+                match (entry.kind, account.kind, posting.amount > 0) {
+                    // A task's budget arrives in its escrow by a fund entry (a subcontract from the plaza's budget).
+                    (EntryKind::Mint | EntryKind::Subcontract, AccountKind::TaskEscrow, true) => money.minted += amount,
+                    // A spend debits the escrow; a negative posting adds to the spend.
+                    (EntryKind::Spend, AccountKind::TaskEscrow, false) => money.spent -= amount,
+                    (EntryKind::Refund, AccountKind::TownBudget, true) => money.refunded += amount,
+                    (EntryKind::Payment, AccountKind::AgentEarnings, true) => {
+                        let cid = account
+                            .owner_ref
+                            .strip_prefix("cid:")
+                            .and_then(|cid| cid.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        match money.paid.iter_mut().find(|(paid_cid, _)| *paid_cid == cid) {
+                            Some((_, total)) => *total += amount,
+                            None => money.paid.push((cid, amount)),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        money
     }
 
     /// Every account, in creation order, with its derived balance.
@@ -2655,6 +2742,22 @@ mod economy_tests {
         assert!(restored.verify_journal().is_ok());
         assert_eq!(restored.view().totals.balance, 0);
         assert_eq!(restored.version(), 1);
+    }
+
+    #[test]
+    fn a_task_and_a_wallet_read_back_their_money() {
+        let ledger = treasury();
+        ledger.fund_task("t1", 300).expect("fund");
+        ledger.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        ledger.pay_agent("t1", 7, 20).expect("pay");
+        ledger.transfer(7, 8, 5, "share").expect("transfer");
+        ledger.refund_task_to_budget("t1").expect("refund");
+        assert_eq!(
+            ledger.task_money("t1"),
+            TaskMoney { minted: 300, escrow: 0, spent: 100, paid: vec![(7, 20)], refunded: 180 }
+        );
+        assert_eq!(ledger.wallet_money(7), WalletMoney { balance: 15, sent_today: 5, earned: 20 });
+        assert_eq!(ledger.wallet_money(9), WalletMoney { balance: 0, sent_today: 0, earned: 0 });
     }
 
     #[test]
