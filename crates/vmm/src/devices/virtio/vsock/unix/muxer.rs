@@ -866,12 +866,22 @@ impl Drop for VsockMuxer {
 mod tests {
     use super::*;
 
+    /// A socket path in the system's temporary directory (`/tmp` has no
+    /// counterpart on Windows, where AF_UNIX binds fail if the directory is
+    /// missing).
+    fn test_socket_path(what: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("plaza-test-muxer-{what}-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// A stale host socket file (what a `SIGTERM`ed daemon leaves — no `Drop`
     /// runs) is cleared so the next muxer over the same path binds; a LIVE
     /// listener on the path keeps it and the takeover is refused.
     #[test]
     fn a_stale_host_socket_is_cleared_but_a_live_one_is_kept() {
-        let path = format!("/tmp/plaza-test-muxer-stale-{}", std::process::id());
+        let path = test_socket_path("stale");
         let _ = std::fs::remove_file(&path);
 
         // Absent: the muxer binds and owns a live socket, and a CLEAN drop
@@ -923,7 +933,7 @@ mod tests {
     /// structurally impossible because no such packet ever leaves the muxer.
     #[test]
     fn a_packet_addressed_to_another_cid_is_dropped_not_routed() {
-        let path = format!("/tmp/plaza-test-muxer-{}", std::process::id());
+        let path = test_socket_path("cid");
         let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
 
         let mut pkt = VsockPacketTx::default();
@@ -992,7 +1002,7 @@ mod tests {
         const LOCAL_PORT: u32 = 1026;
         const PEER_PORT: u32 = 1025;
 
-        let path = format!("/tmp/plaza-test-muxer-backlog-{}", std::process::id());
+        let path = test_socket_path("backlog");
         let listener_path = format!("{path}_{LOCAL_PORT}");
         // A listener at `{uds_path}_{port}` is the host service the guest's
         // `connect(CID 2, LOCAL_PORT)` is translated into; it never accepts.

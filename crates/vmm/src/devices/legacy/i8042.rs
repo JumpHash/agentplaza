@@ -364,7 +364,10 @@ mod tests {
         // data.len() != 1
         let data = [CMD_RESET_CPU; 2];
         i8042.write(0x0, 1, &data);
-        assert_eq!(reset_evt.try_clone().unwrap().read().unwrap_err().raw_os_error(), Some(libc::EAGAIN));
+        assert_eq!(
+            reset_evt.try_clone().unwrap().read().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]

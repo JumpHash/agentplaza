@@ -142,3 +142,30 @@ unsafe extern "system" fn on_console_ctrl(ctrl_type: u32) -> i32 {
         _ => 0,
     }
 }
+
+/// The host's uptime and idle time in seconds, formatted like the first two
+/// fields of Linux's `/proc/uptime`: `GetTickCount64` for the uptime, and
+/// `GetSystemTimes`' idle time (summed over all processors, as Linux sums it).
+#[cfg(windows)]
+pub fn host_uptime() -> io::Result<String> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+
+    // SAFETY: no arguments; reads the system tick count.
+    let up_ms = unsafe { GetTickCount64() };
+    let mut idle = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let mut kernel = idle;
+    let mut user = idle;
+    // SAFETY: the three out-parameters are valid, writable FILETIMEs.
+    if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // FILETIME counts 100 ns intervals.
+    let idle_100ns = (u64::from(idle.dwHighDateTime) << 32) | u64::from(idle.dwLowDateTime);
+    Ok(format!(
+        "{:.2} {:.2}",
+        up_ms as f64 / 1000.0,
+        idle_100ns as f64 / 10_000_000.0
+    ))
+}

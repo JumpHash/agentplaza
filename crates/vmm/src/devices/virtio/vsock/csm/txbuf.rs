@@ -330,15 +330,14 @@ mod tests {
 
     #[test]
     fn test_flush_error() {
-        const EACCESS: i32 = 13;
-
         let mut txbuf = TxBuf::new();
         let mut sink = TestSink::new();
 
         txbuf
             .push(&VolatileSlice::from([1, 2, 3, 4].as_mut_slice()))
             .unwrap();
-        let io_err = IoError::from_raw_os_error(EACCESS);
+        // By kind, not by errno: 13 is EACCES on Unix but ERROR_INVALID_DATA on Windows.
+        let io_err = IoError::from(ErrorKind::PermissionDenied);
         sink.set_err(io_err);
         match txbuf.flush_to(&mut sink) {
             Err(VsockCsmError::TxBufFlush(ref err))

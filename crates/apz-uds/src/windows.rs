@@ -10,7 +10,7 @@ use std::net::Shutdown;
 use std::os::windows::io::{AsRawSocket, RawSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use vm_memory::bitmap::BitmapSlice;
@@ -87,29 +87,6 @@ impl Socket {
                 ws::SOCK_STREAM,
                 0,
                 std::ptr::null(),
-                0,
-                ws::WSA_FLAG_OVERLAPPED | ws::WSA_FLAG_NO_HANDLE_INHERIT,
-            )
-        };
-        if s == ws::INVALID_SOCKET {
-            Err(last_error())
-        } else {
-            Ok(Socket(s))
-        }
-    }
-
-    fn try_clone(&self) -> io::Result<Socket> {
-        // SAFETY: WSAPROTOCOL_INFOW is plain data, so all-zero is a valid starting value.
-        let mut info: ws::WSAPROTOCOL_INFOW = unsafe { zeroed() };
-        // SAFETY: self.0 is a live socket, info is valid and writable, and the target process is this one.
-        check(unsafe { ws::WSADuplicateSocketW(self.0, std::process::id(), &mut info) })?;
-        // SAFETY: info was filled in by WSADuplicateSocketW. FROM_PROTOCOL_INFO takes af, type and protocol from it.
-        let s = unsafe {
-            ws::WSASocketW(
-                ws::FROM_PROTOCOL_INFO,
-                ws::FROM_PROTOCOL_INFO,
-                ws::FROM_PROTOCOL_INFO,
-                &info,
                 0,
                 ws::WSA_FLAG_OVERLAPPED | ws::WSA_FLAG_NO_HANDLE_INHERIT,
             )
@@ -239,8 +216,14 @@ impl SocketAddr {
 }
 
 /// A connected Unix-domain stream socket.
+///
+/// Clones share one WinSock socket (closed when the last clone drops), like
+/// `dup`ed descriptors on Unix: a timeout, non-blocking mode or `shutdown` set
+/// through one clone applies to all of them. (A `WSADuplicateSocketW` handle
+/// would not carry the timeouts, so a reader blocked on a clone could neither
+/// time out nor be woken by a `shutdown` through another.)
 #[derive(Debug)]
-pub struct UnixStream(Socket);
+pub struct UnixStream(Arc<Socket>);
 
 impl UnixStream {
     /// Connects to the listener bound at `path`.
@@ -249,7 +232,7 @@ impl UnixStream {
         let (addr, len) = sockaddr_for(path.as_ref())?;
         // SAFETY: addr is a fully initialized SOCKADDR_UN and len is its size.
         check(unsafe { ws::connect(socket.0, sockaddr_ptr(&addr), len) })?;
-        Ok(UnixStream(socket))
+        Ok(UnixStream(Arc::new(socket)))
     }
 
     /// Connects, then switches the stream to non-blocking mode.
@@ -288,9 +271,9 @@ impl UnixStream {
         result
     }
 
-    /// Duplicates the handle; both handles refer to the same connection.
+    /// Another handle to the same socket (see the type's documentation).
     pub fn try_clone(&self) -> io::Result<UnixStream> {
-        Ok(UnixStream(self.0.try_clone()?))
+        Ok(UnixStream(Arc::clone(&self.0)))
     }
 
     /// Enables or disables non-blocking mode.
@@ -428,7 +411,7 @@ impl WriteVolatile for &UnixStream {
 
 /// A Unix-domain socket listening for connections.
 #[derive(Debug)]
-pub struct UnixListener(Socket, PathBuf);
+pub struct UnixListener(Arc<Socket>, PathBuf);
 
 impl UnixListener {
     /// Binds to `path` and starts listening. The socket file is left in place
@@ -441,7 +424,7 @@ impl UnixListener {
         check(unsafe { ws::bind(socket.0, sockaddr_ptr(&addr), len) })?;
         // SAFETY: socket is bound and not yet listening.
         check(unsafe { ws::listen(socket.0, 128) })?;
-        Ok(UnixListener(socket, path.to_path_buf()))
+        Ok(UnixListener(Arc::new(socket), path.to_path_buf()))
     }
 
     /// Accepts the next connection, blocking unless non-blocking mode is set.
@@ -455,7 +438,7 @@ impl UnixListener {
         if s == ws::INVALID_SOCKET {
             return Err(last_error());
         }
-        Ok((UnixStream(Socket(s)), SocketAddr::from_raw(&addr, len)))
+        Ok((UnixStream(Arc::new(Socket(s))), SocketAddr::from_raw(&addr, len)))
     }
 
     /// Iterates over incoming connections, blocking on each `next` call.
@@ -468,9 +451,9 @@ impl UnixListener {
         self.0.set_nonblocking(nonblocking)
     }
 
-    /// Duplicates the listening handle.
+    /// Another handle to the same listening socket.
     pub fn try_clone(&self) -> io::Result<UnixListener> {
-        Ok(UnixListener(self.0.try_clone()?, self.1.clone()))
+        Ok(UnixListener(Arc::clone(&self.0), self.1.clone()))
     }
 
     /// Returns the path this listener is bound to.

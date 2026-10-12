@@ -485,13 +485,22 @@ fn run_tool(name: &str, args: &serde_json::Value) -> (bool, String) {
         },
         "uptime" => match host_uptime() {
             Ok(uptime) => (true, uptime),
-            Err(err) => (false, format!("cannot read the host's /proc/uptime: {err}")),
+            Err(err) => (false, format!("cannot read the host's uptime: {err}")),
         },
         other => (false, format!("unknown tool: {other}")),
     }
 }
 
+/// The host's uptime and idle time in seconds, as `/proc/uptime` gives them
+/// (`"<up> <idle>"`). Windows has no `/proc`; [`crate::sys::host_uptime`]
+/// reads the same two numbers from the system there.
+#[cfg(windows)]
+fn host_uptime() -> io::Result<String> {
+    crate::sys::host_uptime()
+}
+
 /// The first two fields of `/proc/uptime`.
+#[cfg(not(windows))]
 fn host_uptime() -> io::Result<String> {
     let text = fs::read_to_string("/proc/uptime")?;
     match text.split_whitespace().take(2).collect::<Vec<_>>()[..] {

@@ -129,4 +129,32 @@ mod tests {
         a.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"cd");
     }
+
+    /// Clones behave like `dup`ed descriptors: a read timeout set before the
+    /// clone bounds a read through it, and a `shutdown` through one handle
+    /// ends a read blocked on another (how vsockd's relays stop each other).
+    #[test]
+    fn clones_share_timeouts_and_shutdown() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        let mut clone = a.try_clone().unwrap();
+        let mut buf = [0u8; 1];
+        let err = clone.read(&mut buf).unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "{err:?}"
+        );
+
+        let (c, _d) = UnixStream::pair().unwrap();
+        let mut reader = c.try_clone().unwrap();
+        let blocked = std::thread::spawn(move || reader.read(&mut [0u8; 1]));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        c.shutdown(std::net::Shutdown::Both).unwrap();
+        // EOF or an error: either way the reader is no longer blocked.
+        let _ = blocked.join().unwrap();
+    }
 }
