@@ -134,7 +134,15 @@ pub fn node_status() -> NodeStatus {
 /// Stops this machine's node services; with `forget`, also removes the node's identity directory
 /// (its key and CID range), so a later join starts afresh.
 pub fn leave(forget: bool) -> Result<(), String> {
-    stop(Mode::Node)?;
+    // With a local plaza running here (its own apid), noded and vsockd serve it too: only the link
+    // to the other network stops. Without one, the whole node goes down.
+    if find_pids("apid").is_empty() {
+        stop(Mode::Node)?;
+    } else {
+        for svc in plan(Mode::Node, None).iter().filter(|svc| svc.name == "apz-link") {
+            stop_one(svc);
+        }
+    }
     if forget {
         let dir = data_dir().join("node");
         match fs::remove_dir_all(&dir) {
