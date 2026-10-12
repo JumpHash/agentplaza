@@ -123,6 +123,10 @@ no way to reach the host at all, which is the point of the option.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("vmctl {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

@@ -16,6 +16,10 @@ usage: apz-link [--state DIR] join <token> [--name NAME]
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("apz-link {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     match dispatch(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

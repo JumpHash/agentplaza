@@ -45,6 +45,21 @@ impl Config {
             public_url: String::new(),
             tls: false,
         };
+        // Installed beside the binary: the flags below still override these.
+        if let Some(share) = apz_os::dirs::resources() {
+            let console = share.join("console");
+            let roles = share.join("roles").join("initial-roles.json");
+            let prompts = share.join("prompts");
+            if console.is_dir() {
+                config.console = console;
+            }
+            if roles.is_file() {
+                config.roles = roles;
+            }
+            if prompts.is_dir() {
+                config.prompts = prompts;
+            }
+        }
         let mut public_url = None;
         let mut tls = false;
         let mut args = args.into_iter();

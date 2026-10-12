@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 apz-http.workspace = true
+apz-os = { path = "../apz-os" }
 apz-proto.workspace = true
 libc.workspace = true
 serde.workspace = true

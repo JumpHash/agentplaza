@@ -66,15 +66,23 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
                      serves HTTPS
   --public-url URL   how nodes reach this hub (default http://127.0.0.1:PORT, https with TLS)
   --tls              serve HTTPS with the hub's self-signed certificate
-  --roles MANIFEST   roles manifest (default docs/agents/initial-roles.json)
-  --prompts DIR      role prompts, DIR/<role>/prompt.md (default docs/codex-draft/roles)
-  --console DIR      the web console's files (default apps/web/dist)
+  --roles MANIFEST   roles manifest (default share/roles/initial-roles.json beside the binary
+                     when installed, else docs/agents/initial-roles.json)
+  --prompts DIR      role prompts, DIR/<role>/prompt.md (default share/prompts when installed,
+                     else docs/codex-draft/roles)
+  --console DIR      the web console's files (default share/console when installed, else
+                     apps/web/dist)
+  -V, --version      print the version and exit
   --env-file FILE    KEY=VALUE lines loaded into the environment at start
                      (default ~/.config/agentplaza/keys.env, if present)
   --dev-models       relax the model policy (mock and local models; tests only)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("apid {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

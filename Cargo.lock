@@ -2799,6 +2799,7 @@ name = "noded"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-os",
  "serde",
  "serde_json",
  "vmm",
@@ -5028,6 +5029,7 @@ checksum = "503041e3dca68fbd5425c04e4c2ad63c57a31da5b6eb13aaafbcaaf2b9cdc74f"
 name = "vmctl"
 version = "0.1.0"
 dependencies = [
+ "apz-os",
  "vmm",
 ]
 
@@ -5036,6 +5038,7 @@ name = "vmm"
 version = "0.1.0"
 dependencies = [
  "acpi_tables",
+ "apz-os",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
@@ -5063,6 +5066,7 @@ name = "vsockd"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-os",
  "apz-proto",
  "libc",
  "serde",
