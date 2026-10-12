@@ -313,7 +313,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
     const el = h(
       'div',
-      { class: classes.join(' '), role: 'link', tabindex: 0 },
+      { class: classes.join(' '), role: 'link', tabindex: 0, 'data-key': `task-${t.id}` },
       h('div.task-top', null, h('span.task-id', null, t.id), h('span.task-role', null, t.role ? roleLabel(t.role) : 'Any role')),
       h('strong.task-title', null, titleOf(t.goal)),
       who,
@@ -341,7 +341,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
           const items = sorted.filter((t) => columnOf(t.state) === i);
           return h(
             'section.tk-lane',
-            { class: `lane-${i}` },
+            { class: `lane-${i}`, 'data-key': `lane-${i}` },
             h(
               'header.tk-lane-head',
               null,

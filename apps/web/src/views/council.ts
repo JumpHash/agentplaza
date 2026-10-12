@@ -58,7 +58,7 @@ function motionCard(m: Motion, changed: () => void): HTMLElement {
     ? h(
         'ul.votes',
         null,
-        m.votes.map((v) => h('li', null, h('span.muted', null, roleLabel(v.role)), badge(v.vote, VOTE_TONE[v.vote] ?? 'muted'), h('span', null, v.reason))),
+        m.votes.map((v) => h('li', { 'data-key': `v-${v.role}` }, h('span.muted', null, roleLabel(v.role)), badge(v.vote, VOTE_TONE[v.vote] ?? 'muted'), h('span', null, v.reason))),
       )
     : null;
   const actions = needsOwner(m)
@@ -69,7 +69,7 @@ function motionCard(m: Motion, changed: () => void): HTMLElement {
         button('Approve', () => decide(m, 'approve', changed), { kind: 'primary', icon: 'check' }),
       )
     : null;
-  return card(
+  const el = card(
     h('div.motion-head', null, badge(m.kind, 'accent'), badge(m.state, stateTone(m), true), h('span.faint', null, ago(m.created_at))),
     h(
       'div.stack',
@@ -81,6 +81,8 @@ function motionCard(m: Motion, changed: () => void): HTMLElement {
       actions,
     ),
   );
+  el.setAttribute('data-key', `m-${m.id}`);
+  return el;
 }
 
 function decide(m: Motion, decision: 'approve' | 'reject', changed: () => void): void {
