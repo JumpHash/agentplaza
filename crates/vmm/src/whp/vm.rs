@@ -125,12 +125,6 @@ impl Partition {
         unsafe { call!(self.api, WHvCreateVirtualProcessor(self.handle, index, 0)) }
     }
 
-    /// Deletes virtual processor `index`.
-    pub fn delete_vcpu(&self, index: u32) -> Result<(), WhpError> {
-        // SAFETY: plain call; WHP fails it for a processor that does not exist.
-        unsafe { call!(self.api, WHvDeleteVirtualProcessor(self.handle, index)) }
-    }
-
     /// Runs virtual processor `index` until its next exit.
     pub fn run_vcpu(&self, index: u32, exit: &mut WHV_RUN_VP_EXIT_CONTEXT) -> Result<(), WhpError> {
         // SAFETY: `exit` is a writable exit context of the size passed.

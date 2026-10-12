@@ -44,6 +44,14 @@ impl ReadTimeout for std::os::unix::net::UnixStream {
     }
 }
 
+/// The host side of the guest protocol on Windows: an AF_UNIX stream.
+#[cfg(windows)]
+impl ReadTimeout for apz_uds::UnixStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        apz_uds::UnixStream::set_read_timeout(self, timeout)
+    }
+}
+
 /// A line channel over a byte stream.
 #[derive(Debug)]
 pub struct Lines<S> {

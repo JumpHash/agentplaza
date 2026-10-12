@@ -299,6 +299,7 @@ dependencies = [
 name = "apz-proto"
 version = "0.1.0"
 dependencies = [
+ "apz-uds",
  "serde",
  "serde_json",
 ]

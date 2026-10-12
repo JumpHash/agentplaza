@@ -231,7 +231,7 @@ pub enum SpawnError {
         vms: Vec<u32>,
     },
     /// No backend is compiled in for this platform
-    #[error("no VM backend on this platform yet (Windows: Windows Hypervisor Platform backend planned)")]
+    #[error("no VM backend on this platform yet (Intel macOS and Windows on arm64 run no VMs)")]
     NoBackend,
     /// The VM has no balloon, so its memory cannot be resized
     #[error("this VM has no balloon")]
@@ -1323,7 +1323,16 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
         crate::hvf::boot(spec, runtime.id, runtime)
     }
 
-    #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        crate::whp::boot(spec, runtime)
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(windows, target_arch = "x86_64")
+    )))]
     {
         let _ = (spec, runtime);
         Err(SpawnError::NoBackend)

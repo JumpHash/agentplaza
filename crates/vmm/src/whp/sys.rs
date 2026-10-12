@@ -106,10 +106,8 @@ type WHvMapGpaRangeFn = unsafe extern "system" fn(
     u64,
     WHV_MAP_GPA_RANGE_FLAGS,
 ) -> HRESULT;
-type WHvUnmapGpaRangeFn = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u64, u64) -> HRESULT;
 type WHvCreateVirtualProcessorFn =
     unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32, u32) -> HRESULT;
-type WHvDeleteVirtualProcessorFn = unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32) -> HRESULT;
 type WHvRunVirtualProcessorFn =
     unsafe extern "system" fn(WHV_PARTITION_HANDLE, u32, *mut c_void, u32) -> HRESULT;
 type WHvCancelRunVirtualProcessorFn =
@@ -167,9 +165,7 @@ pub struct Api {
     pub WHvDeletePartition: WHvPartitionFn,
     pub WHvSetPartitionProperty: WHvSetPartitionPropertyFn,
     pub WHvMapGpaRange: WHvMapGpaRangeFn,
-    pub WHvUnmapGpaRange: WHvUnmapGpaRangeFn,
     pub WHvCreateVirtualProcessor: WHvCreateVirtualProcessorFn,
-    pub WHvDeleteVirtualProcessor: WHvDeleteVirtualProcessorFn,
     pub WHvRunVirtualProcessor: WHvRunVirtualProcessorFn,
     pub WHvCancelRunVirtualProcessor: WHvCancelRunVirtualProcessorFn,
     pub WHvGetVirtualProcessorRegisters: WHvGetVirtualProcessorRegistersFn,
@@ -250,9 +246,7 @@ impl Api {
             WHvDeletePartition: resolve!(platform, PLATFORM_DLL, "WHvDeletePartition"),
             WHvSetPartitionProperty: resolve!(platform, PLATFORM_DLL, "WHvSetPartitionProperty"),
             WHvMapGpaRange: resolve!(platform, PLATFORM_DLL, "WHvMapGpaRange"),
-            WHvUnmapGpaRange: resolve!(platform, PLATFORM_DLL, "WHvUnmapGpaRange"),
             WHvCreateVirtualProcessor: resolve!(platform, PLATFORM_DLL, "WHvCreateVirtualProcessor"),
-            WHvDeleteVirtualProcessor: resolve!(platform, PLATFORM_DLL, "WHvDeleteVirtualProcessor"),
             WHvRunVirtualProcessor: resolve!(platform, PLATFORM_DLL, "WHvRunVirtualProcessor"),
             WHvCancelRunVirtualProcessor: resolve!(
                 platform,

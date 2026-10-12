@@ -109,7 +109,7 @@ impl Segment {
 /// Firecracker's `gdt_entry(flags, base, limit)`: packs a 32-bit base and a 20-bit limit
 /// together with the access and flag bits of `flags` into one 8-byte descriptor.
 pub const fn gdt_entry(flags: u16, base: u32, limit: u32) -> u64 {
-    ((((base as u64) & 0xff00_0000) << (56 - 24)))
+    (((base as u64) & 0xff00_0000) << (56 - 24))
         | (((flags as u64) & 0x0000_f0ff) << 40)
         | (((limit as u64) & 0x000f_0000) << (48 - 16))
         | (((base as u64) & 0x00ff_ffff) << 16)
