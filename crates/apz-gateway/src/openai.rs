@@ -53,8 +53,15 @@ fn replays_reasoning(ctx: &Ctx) -> bool {
     ctx.p.options.get("replay_reasoning").and_then(Value::as_bool).unwrap_or(false)
 }
 
+/// Whether this provider is Mistral (`options.mistral_compat`): its tool-call
+/// ids must be nine alphanumerics, and it takes `max_tokens`.
+fn mistral_compat(ctx: &Ctx) -> bool {
+    ctx.p.options.get("mistral_compat").and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Value {
-    let mut body = json!({"model": model, "messages": messages(req, replays_reasoning(ctx)), "stream": true});
+    let compat = mistral_compat(ctx);
+    let mut body = json!({"model": model, "messages": messages(req, replays_reasoning(ctx), compat), "stream": true});
     if stream_options {
         body["stream_options"] = json!({"include_usage": true});
     }
@@ -68,7 +75,7 @@ fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Valu
     }
     if req.max_tokens > 0 {
         let field = ctx.p.option("max_tokens_field").unwrap_or(match ctx.p.kind {
-            ProviderKind::OpenAi => "max_completion_tokens",
+            ProviderKind::OpenAi if !compat => "max_completion_tokens",
             _ => "max_tokens",
         });
         body[field] = json!(req.max_tokens);
@@ -85,9 +92,10 @@ fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Valu
 /// The conversation as Chat Completions messages: tool results become `tool`
 /// messages (ahead of the user's text). Reasoning is dropped unless `replay`,
 /// in which case an assistant turn's reasoning text goes back as
-/// `reasoning_content`.
-fn messages(req: &ChatRequest, replay: bool) -> Vec<Value> {
+/// `reasoning_content`. With `compat`, tool-call ids are sent in Mistral's form.
+fn messages(req: &ChatRequest, replay: bool, compat: bool) -> Vec<Value> {
     let mut out = Vec::new();
+    let call_id = |id: &str| if compat { compat_id(id) } else { id.to_string() };
     if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
         out.push(json!({"role": "system", "content": system}));
     }
@@ -98,7 +106,7 @@ fn messages(req: &ChatRequest, replay: bool) -> Vec<Value> {
                 for b in &m.content {
                     if let Block::ToolResult { tool_use_id, content, is_error } = b {
                         let content = if *is_error { format!("Error: {content}") } else { content.clone() };
-                        out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": content}));
+                        out.push(json!({"role": "tool", "tool_call_id": call_id(tool_use_id), "content": content}));
                     }
                 }
                 if !text.is_empty() {
@@ -111,7 +119,7 @@ fn messages(req: &ChatRequest, replay: bool) -> Vec<Value> {
                     .iter()
                     .filter_map(|b| match b {
                         Block::ToolUse { id, name, input, .. } => Some(json!({
-                            "id": id, "type": "function",
+                            "id": call_id(id), "type": "function",
                             "function": {"name": name, "arguments": input.to_string()},
                         })),
                         _ => None,
@@ -133,6 +141,50 @@ fn messages(req: &ChatRequest, replay: bool) -> Vec<Value> {
         }
     }
     out
+}
+
+/// A tool-call id as Mistral wants it: its own id when that is nine ASCII
+/// letters or digits, else a deterministic nine-character stand-in (a hash of
+/// the id), so the same id always maps the same way and a call still pairs
+/// with its result.
+fn compat_id(id: &str) -> String {
+    if id.len() == 9 && id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return id.to_string();
+    }
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    // FNV-1a, 64 bit.
+    let hash = id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let mut n = hash;
+    (0..9)
+        .map(|_| {
+            let c = char::from(ALPHABET[(n % 62) as usize]);
+            n /= 62;
+            c
+        })
+        .collect()
+}
+
+/// A delta's `content`: a plain string, or Mistral's chunks, `text` parts
+/// (`{"type":"text","text"}`) and `thinking` parts (`{"type":"thinking",
+/// "thinking":[{"type":"text","text"}, …]}`). Returns (answer, reasoning).
+fn content_parts(content: &Value) -> (String, String) {
+    let (mut answer, mut reasoning) = (String::new(), String::new());
+    match content {
+        Value::String(s) => answer.push_str(s),
+        Value::Array(chunks) => {
+            for chunk in chunks {
+                if chunk["type"] == "thinking" {
+                    for part in chunk["thinking"].as_array().into_iter().flatten() {
+                        reasoning.push_str(part["text"].as_str().unwrap_or(""));
+                    }
+                } else {
+                    answer.push_str(chunk["text"].as_str().unwrap_or(""));
+                }
+            }
+        }
+        _ => {}
+    }
+    (answer, reasoning)
 }
 
 pub(crate) fn complete(
@@ -200,14 +252,19 @@ fn read_stream(
         for choice in v["choices"].as_array().into_iter().flatten() {
             let d = &choice["delta"];
             // DeepSeek / vLLM say `reasoning_content`; Ollama / OpenRouter say `reasoning`.
-            let reasoning = d["reasoning_content"].as_str().or(d["reasoning"].as_str()).unwrap_or("");
-            if !reasoning.is_empty() {
-                thinking.push_str(reasoning);
-                sink(Delta::Thinking { text: reasoning.to_string() });
+            let own = d["reasoning_content"].as_str().or(d["reasoning"].as_str()).unwrap_or("");
+            // Mistral's content may come as chunks, thinking ones included.
+            let (answer, chunk_reasoning) = content_parts(&d["content"]);
+            for reasoning in [own, chunk_reasoning.as_str()] {
+                if !reasoning.is_empty() {
+                    thinking.push_str(reasoning);
+                    sink(Delta::Thinking { text: reasoning.to_string() });
+                }
             }
-            for field in ["content", "refusal"] {
-                if let Some(t) = d[field].as_str().filter(|t| !t.is_empty()) {
-                    refused |= field == "refusal";
+            let refusal = d["refusal"].as_str().unwrap_or("");
+            for (is_refusal, t) in [(false, answer.as_str()), (true, refusal)] {
+                if !t.is_empty() {
+                    refused |= is_refusal;
                     text.push_str(t);
                     sink(Delta::Text { text: t.to_string() });
                 }
@@ -439,6 +496,71 @@ mod tests {
         let replayed = &sent[1].json()["messages"][1];
         assert_eq!((replayed["reasoning_content"].clone(), replayed["content"].clone()), (json!("think"), json!("Let me look.")));
         assert!(sent[2].json()["messages"][1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn mistral_tool_call_ids_are_mapped_consistently_and_valid_ones_kept() {
+        let done = sse_data(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let server = FakeServer::start(vec![Reply::sse(done.clone()), Reply::sse(done)]);
+        let mut mi = provider("mi", ProviderKind::OpenAiCompatible, &server, Auth::None);
+        mi.options = json!({"mistral_compat": true});
+        let gw = gateway(vec![mi, provider("plain", ProviderKind::OpenAiCompatible, &server, Auth::None)]);
+        let turn = |model: &str| ChatRequest {
+            model: model.into(),
+            messages: vec![
+                Message::user_text("hi"),
+                Message::assistant(vec![
+                    Block::ToolUse { id: "call_a1".into(), name: "bash".into(), input: json!({}), meta: None },
+                    Block::ToolUse { id: "Xy12Z9qLm".into(), name: "list".into(), input: json!({}), meta: None },
+                ]),
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        Block::ToolResult { tool_use_id: "call_a1".into(), content: "a".into(), is_error: false },
+                        Block::ToolResult { tool_use_id: "Xy12Z9qLm".into(), content: "b".into(), is_error: false },
+                    ],
+                },
+            ],
+            ..request("")
+        };
+        gw.complete(&turn("mi/mistral-large"), &mut |_| {}).unwrap();
+        gw.complete(&turn("plain/mistral-large"), &mut |_| {}).unwrap();
+        let sent = server.requests();
+        let mapped = compat_id("call_a1");
+        assert!(mapped.len() == 9 && mapped.bytes().all(|b| b.is_ascii_alphanumeric()));
+        let b = sent[0].json()["messages"].clone();
+        assert_eq!(b[1]["tool_calls"][0]["id"], json!(mapped));
+        assert_eq!(b[1]["tool_calls"][1]["id"], json!("Xy12Z9qLm"));
+        assert_eq!((b[2]["tool_call_id"].clone(), b[3]["tool_call_id"].clone()), (json!(mapped), json!("Xy12Z9qLm")));
+        // Without the flag, the ids go out as they are.
+        assert_eq!(sent[1].json()["messages"][1]["tool_calls"][0]["id"], json!("call_a1"));
+    }
+
+    #[test]
+    fn mistral_compat_sends_max_tokens() {
+        let done = sse_data(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let server = FakeServer::start(vec![Reply::sse(done)]);
+        let mut mi = provider("mi", ProviderKind::OpenAi, &server, Auth::None);
+        mi.options = json!({"mistral_compat": true});
+        let gw = gateway(vec![mi]);
+        gw.complete(&ChatRequest { model: "mi/mistral-large".into(), max_tokens: 300, ..request("hi") }, &mut |_| {}).unwrap();
+        let b = server.requests()[0].json();
+        assert_eq!((b["max_tokens"].clone(), b.get("max_completion_tokens").is_none()), (json!(300), true));
+    }
+
+    #[test]
+    fn mistral_content_chunks_decode_to_reasoning_and_text() {
+        let stream = sse_data(&[
+            r#"{"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Weigh "},{"type":"text","text":"it."}]}]}}]}"#,
+            r#"{"choices":[{"delta":{"content":[{"type":"text","text":"Answer."}]},"finish_reason":"stop"}]}"#,
+            "[DONE]",
+        ]);
+        let server = FakeServer::start(vec![Reply::sse(stream)]);
+        let gw = gateway(vec![provider("mi", ProviderKind::OpenAiCompatible, &server, Auth::None)]);
+        let mut deltas = Vec::new();
+        let resp = gw.complete(&ChatRequest { model: "mi/magistral".into(), ..request("hi") }, &mut |d| deltas.push(d)).unwrap();
+        assert_eq!(resp.content, vec![Block::Thinking { text: "Weigh it.".into() }, Block::Text { text: "Answer.".into() }]);
+        assert_eq!(deltas, vec![Delta::Thinking { text: "Weigh it.".into() }, Delta::Text { text: "Answer.".into() }]);
     }
 
     #[test]
