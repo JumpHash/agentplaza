@@ -72,15 +72,14 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .banner.danger { color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, var(--sheet)); }
 .banner.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--sheet)); }
 
-/* The view is one sheet: a ruled page with the red double margin rule. */
+/* The view is one sheet: the same width and padding on every screen, no gutter. */
 .view {
-  position: relative; margin: 26px 34px 0; max-width: var(--content-max);
+  position: relative; margin: 24px 28px 32px; max-width: var(--content-max);
   background: var(--sheet); border: 1px solid var(--rule);
-  padding: 0 28px 28px calc(var(--margin-w) + 22px);
+  padding: 0 28px 32px;
   display: flex; flex-direction: column; gap: 26px;
 }
-.view::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--margin-w); width: 3px; border-left: 1px solid var(--margin); border-right: 1px solid var(--margin); pointer-events: none; }
-.view-head { display: flex; align-items: flex-end; gap: var(--s4); flex-wrap: wrap; padding: 28px 0 16px; border-bottom: 2px solid var(--ink); margin: 0 -28px 0 calc(-22px); padding-left: 22px; padding-right: 28px; }
+.view-head { display: flex; align-items: flex-end; gap: var(--s4); flex-wrap: wrap; padding: 24px 28px 16px; border-bottom: 2px solid var(--ink); margin: 0 -28px; }
 .view-head .actions { margin-left: auto; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
 /* ---- Components ---------------------------------------------------------- */
@@ -190,10 +189,11 @@ input[type="checkbox"] { accent-color: var(--signal); }
 .form-actions { display: flex; justify-content: flex-end; gap: 12px; padding-top: 4px; }
 .error-text { font: italic 14px var(--serif); color: var(--crit); }
 
-.empty { padding: 36px 16px; text-align: left; color: var(--ink-2); display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-.empty .icon { display: none; }
-.empty h3 { font: italic 400 16px var(--serif); color: var(--ink-2); }
-.empty p { font: italic 14px var(--serif); color: var(--ink-3); }
+/* Empty state: icon, bold mono line, faint serif sentence, centred. */
+.empty { padding: 40px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.empty .icon { display: block; width: 16px; height: 16px; color: var(--ink-3); }
+.empty h3 { font: 700 13px var(--mono); color: var(--ink); margin: 0; }
+.empty p { font: 14px var(--serif); color: var(--ink-3); margin: 0; }
 
 .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--rule); }
 .tabs button {

@@ -127,7 +127,7 @@
 
 .pj-goal {
   margin: 0;
-  max-width: 80ch;
+  max-width: 72ch;
   white-space: pre-wrap;
   line-height: 1.5;
   color: var(--ink);
