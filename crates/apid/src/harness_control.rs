@@ -4,13 +4,15 @@
 //! schedule until it says it is done or a run count is reached).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use apz_http::{Params, Request, Response, Router};
+use apz_proto::wire::WorkKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agents::Agent;
+use crate::scheduler::Origin;
 use crate::state::App;
 
 /// The host tools this module serves (offered to the orchestrator tier and the mayor roles).
@@ -63,44 +65,221 @@ pub struct Loop {
     pub last_summary: Option<String>,
 }
 
+/// (loops oldest first, limits by cid).
+type Inner = (Vec<Loop>, std::collections::BTreeMap<u64, Limits>);
+
+/// The on-disk shape of `harness.json`.
+#[derive(Default, Serialize, Deserialize)]
+struct Saved {
+    #[serde(default)]
+    loops: Vec<Loop>,
+    #[serde(default)]
+    limits: std::collections::BTreeMap<u64, Limits>,
+}
+
 /// Loops and per-agent limits, kept in `<state>/harness.json`.
 pub struct Store {
     path: PathBuf,
-    inner: Mutex<(Vec<Loop>, std::collections::BTreeMap<u64, Limits>)>,
+    inner: Mutex<Inner>,
 }
 
 impl Store {
+    /// A missing or unreadable file starts empty.
     pub fn load(state_dir: &Path) -> Self {
-        // contract: H2
-        Self { path: state_dir.join("harness.json"), inner: Mutex::new((Vec::new(), Default::default())) }
+        let path = state_dir.join("harness.json");
+        let saved: Saved = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        Self { path, inner: Mutex::new((saved.loops, saved.limits)) }
     }
+
+    fn locked(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Writes the state to a temp file, then renames it over `harness.json`.
+    fn save(&self, loops: &[Loop], limits: &std::collections::BTreeMap<u64, Limits>) -> Result<(), String> {
+        let saved = Saved { loops: loops.to_vec(), limits: limits.clone() };
+        let bytes = serde_json::to_vec_pretty(&saved).map_err(|err| err.to_string())?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)
+            .and_then(|_| std::fs::rename(&tmp, &self.path))
+            .map_err(|err| format!("could not save the harness state: {err}"))
+    }
+
+    /// Newest first.
     pub fn loops(&self) -> Vec<Loop> {
-        let _ = &self.path;
-        self.inner.lock().map(|i| i.0.clone()).unwrap_or_default() // contract: H2
+        self.locked().0.iter().rev().cloned().collect()
     }
-    pub fn limits(&self, _cid: u64) -> Limits {
-        Limits::default() // contract: H2
+
+    pub fn limits(&self, cid: u64) -> Limits {
+        self.locked().1.get(&cid).cloned().unwrap_or_default()
     }
-    pub fn set_limits(&self, _cid: u64, _limits: Limits) -> Result<Limits, String> {
-        Err("harness controls are not available yet".into()) // contract: H2
+
+    /// Validates the given fields, merges them over the agent's stored limits, saves, and
+    /// returns the merged limits.
+    pub fn set_limits(&self, cid: u64, limits: Limits) -> Result<Limits, String> {
+        if let Some(v) = limits.max_turns {
+            if !(1..=500).contains(&v) {
+                return Err("max_turns must be 1 to 500".into());
+            }
+        }
+        if let Some(v) = limits.compress_at {
+            if v != 0 && !(20_000..=4_000_000).contains(&v) {
+                return Err("compress_at must be 0 (never) or 20000 to 4000000 bytes".into());
+            }
+        }
+        if let Some(v) = limits.keep_recent {
+            if !(1..=50).contains(&v) {
+                return Err("keep_recent must be 1 to 50".into());
+            }
+        }
+        let mut guard = self.locked();
+        let mut next = guard.1.get(&cid).cloned().unwrap_or_default();
+        if limits.max_turns.is_some() {
+            next.max_turns = limits.max_turns;
+        }
+        if limits.compress_at.is_some() {
+            next.compress_at = limits.compress_at;
+        }
+        if limits.keep_recent.is_some() {
+            next.keep_recent = limits.keep_recent;
+        }
+        let mut all = guard.1.clone();
+        all.insert(cid, next.clone());
+        self.save(&guard.0, &all)?;
+        guard.1 = all;
+        Ok(next)
     }
-    pub fn start_loop(&self, _cid: u64, _prompt: &str, _every_secs: u64, _max_runs: u32, _by: &str, _by_cid: u64) -> Result<Loop, String> {
-        Err("harness controls are not available yet".into()) // contract: H2
+
+    pub fn start_loop(&self, cid: u64, prompt: &str, every_secs: u64, max_runs: u32, by: &str, by_cid: u64) -> Result<Loop, String> {
+        let prompt = prompt.trim();
+        let chars = prompt.chars().count();
+        if chars == 0 || chars > 4000 {
+            return Err("a loop's prompt must be 1 to 4000 characters".into());
+        }
+        if every_secs < 60 {
+            return Err("a loop runs at most once a minute (every_minutes >= 1)".into());
+        }
+        let mut guard = self.locked();
+        let running = guard.0.iter().filter(|l| l.cid == cid && l.state == "running").count();
+        if running >= 20 {
+            return Err("this agent already has 20 running loops".into());
+        }
+        let now = now_ms();
+        let lp = Loop {
+            id: next_id(&guard.0),
+            cid,
+            prompt: prompt.to_string(),
+            every_secs,
+            max_runs,
+            runs: 0,
+            next_at_ms: now.saturating_add(every_secs.saturating_mul(1000)),
+            state: "running".into(),
+            by: by.into(),
+            by_cid,
+            created_ms: now,
+            last_work: None,
+            last_summary: None,
+        };
+        let mut loops = guard.0.clone();
+        loops.push(lp.clone());
+        self.save(&loops, &guard.1)?;
+        guard.0 = loops;
+        Ok(lp)
     }
-    pub fn stop_loop(&self, _id: &str) -> Result<Loop, String> {
-        Err("harness controls are not available yet".into()) // contract: H2
+
+    pub fn stop_loop(&self, id: &str) -> Result<Loop, String> {
+        let mut guard = self.locked();
+        let index = guard.0.iter().position(|l| l.id == id).ok_or_else(|| format!("no loop {id}"))?;
+        if guard.0[index].state != "running" {
+            return Ok(guard.0[index].clone());
+        }
+        let mut loops = guard.0.clone();
+        loops[index].state = "stopped".into();
+        let stopped = loops[index].clone();
+        self.save(&loops, &guard.1)?;
+        guard.0 = loops;
+        Ok(stopped)
     }
 }
 
+/// `l<n+1>` where n is the largest existing loop number.
+fn next_id(loops: &[Loop]) -> String {
+    let max = loops.iter().filter_map(|l| l.id.strip_prefix('l')?.parse::<u64>().ok()).max().unwrap_or(0);
+    format!("l{}", max + 1)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
 /// Called once a second by apid's ticker: sends each due loop's prompt to its agent.
-pub fn tick(_app: &App) {
-    // contract: H2
+pub fn tick(app: &App) {
+    let now = now_ms();
+    let due: Vec<Loop> = app.harness.locked().0.iter().filter(|l| l.state == "running" && l.next_at_ms <= now).cloned().collect();
+    for l in due {
+        // The agent is still busy with the previous run of this loop: wait for it.
+        if let Some(previous) = l.last_work {
+            if app.work.current(l.cid).is_some_and(|w| w.id == previous) {
+                continue;
+            }
+        }
+        let run = l.runs + 1;
+        let of = if l.max_runs > 0 { format!("/{}", l.max_runs) } else { String::new() };
+        let text = format!(
+            "[loop {id}, run {run}{of}] {prompt}\n\nWhen the loop's purpose is fulfilled, include the words {done} in your final answer.",
+            id = l.id,
+            prompt = l.prompt,
+            done = LOOP_DONE
+        );
+        // Enqueue without holding the store lock: the work may end synchronously.
+        let work = app.work.enqueue(app, l.cid, WorkKind::Message, format!("loop-{}", l.id), text, Origin::default());
+        let updated = {
+            let mut guard = app.harness.locked();
+            let Some(index) = guard.0.iter().position(|x| x.id == l.id) else { continue };
+            if guard.0[index].state != "running" {
+                continue;
+            }
+            let mut loops = guard.0.clone();
+            let lp = &mut loops[index];
+            lp.last_work = Some(work);
+            lp.runs += 1;
+            lp.next_at_ms = now.saturating_add(lp.every_secs.saturating_mul(1000));
+            let out = lp.clone();
+            let _ = app.harness.save(&loops, &guard.1);
+            guard.0 = loops;
+            out
+        };
+        app.bus.publish("loop", &updated);
+    }
 }
 
 /// Called when an agent's work ends: a loop whose last run this was records the summary,
 /// and ends itself when the summary contains LOOP_DONE or max_runs is reached.
-pub fn work_ended(_app: &App, _cid: u64, _work: u64, _summary: &str) {
-    // contract: H2
+pub fn work_ended(app: &App, cid: u64, work: u64, summary: &str) {
+    let ended = {
+        let mut guard = app.harness.locked();
+        let Some(index) = guard.0.iter().position(|l| l.cid == cid && l.last_work == Some(work)) else { return };
+        let mut loops = guard.0.clone();
+        let lp = &mut loops[index];
+        lp.last_summary = Some(summary.chars().take(2000).collect());
+        let finished = summary.contains(LOOP_DONE) || (lp.max_runs > 0 && lp.runs >= lp.max_runs);
+        if finished && lp.state == "running" {
+            lp.state = "done".into();
+        }
+        let out = lp.clone();
+        let _ = app.harness.save(&loops, &guard.1);
+        guard.0 = loops;
+        out
+    };
+    app.bus.publish("loop", &ended);
+}
+
+/// Starts the loop ticker: `tick` once a second, for the life of the process.
+pub fn spawn_ticker(app: Arc<App>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        tick(&app);
+    });
 }
 
 /// Sends a control to the agent's running work (Err when it has none).
@@ -151,15 +330,110 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/agents/{cid}/limits", |app, _, p| Response::json(200, &app.harness.limits(p.get("cid").parse().unwrap_or(0))))
 }
 
-fn start_route(_app: &App, _req: &Request, _: &Params<'_>) -> Response {
-    Response::error(501, "harness controls are not available yet") // contract: H2 — body {cid, prompt, every_minutes, max_runs}
+#[derive(Deserialize)]
+struct StartBody {
+    cid: u64,
+    prompt: String,
+    every_minutes: u64,
+    max_runs: u32,
 }
 
-fn stop_route(_app: &App, _req: &Request, _: &Params<'_>) -> Response {
-    Response::error(501, "harness controls are not available yet") // contract: H2
+/// Body: `{cid, prompt, every_minutes, max_runs}`; the owner acts.
+fn start_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let body: StartBody = match req.json() {
+        Ok(body) => body,
+        Err(err) => return Response::error(400, &format!("bad body: {err}")),
+    };
+    match app.harness.start_loop(body.cid, &body.prompt, body.every_minutes.saturating_mul(60), body.max_runs, "owner", 0) {
+        Ok(lp) => {
+            app.bus.publish("loop", &lp);
+            Response::json(200, &lp)
+        }
+        Err(err) => Response::error(400, &err),
+    }
+}
+
+fn stop_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
+    match app.harness.stop_loop(p.get("id")) {
+        Ok(lp) => {
+            app.bus.publish("loop", &lp);
+            Response::json(200, &lp)
+        }
+        Err(err) => Response::error(400, &err),
+    }
 }
 
 /// Body: the same as plaza_agent_control's input minus `cid`; the owner acts.
 fn control_route(_app: &App, _req: &Request, _: &Params<'_>) -> Response {
     Response::error(501, "harness controls are not available yet") // contract: H2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("harness-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn harness_limits_are_validated_and_merged() {
+        let dir = fresh_dir("limits");
+        let store = Store::load(&dir);
+        let first = store.set_limits(7, Limits { max_turns: Some(40), ..Default::default() }).unwrap();
+        assert_eq!(first, Limits { max_turns: Some(40), ..Default::default() });
+        let merged = store.set_limits(7, Limits { keep_recent: Some(3), ..Default::default() }).unwrap();
+        assert_eq!(merged, Limits { max_turns: Some(40), compress_at: None, keep_recent: Some(3) });
+        assert_eq!(store.limits(7), merged);
+        assert_eq!(store.limits(8), Limits::default());
+        assert!(store.set_limits(7, Limits { max_turns: Some(0), ..Default::default() }).is_err());
+        assert!(store.set_limits(7, Limits { max_turns: Some(501), ..Default::default() }).is_err());
+        assert!(store.set_limits(7, Limits { compress_at: Some(19_999), ..Default::default() }).is_err());
+        assert!(store.set_limits(7, Limits { compress_at: Some(4_000_001), ..Default::default() }).is_err());
+        assert!(store.set_limits(7, Limits { keep_recent: Some(51), ..Default::default() }).is_err());
+        assert_eq!(store.set_limits(7, Limits { compress_at: Some(0), ..Default::default() }).unwrap().compress_at, Some(0));
+        // Rejected values changed nothing; the accepted ones survive a reload.
+        let reloaded = Store::load(&dir);
+        assert_eq!(reloaded.limits(7), Limits { max_turns: Some(40), compress_at: Some(0), keep_recent: Some(3) });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn harness_loops_persist_across_load() {
+        let dir = fresh_dir("loops");
+        let store = Store::load(&dir);
+        let a = store.start_loop(5, "  check the build  ", 60, 3, "owner", 0).unwrap();
+        assert_eq!(a.id, "l1");
+        assert_eq!(a.prompt, "check the build");
+        assert_eq!(a.state, "running");
+        assert_eq!(a.next_at_ms, a.created_ms + 60_000);
+        assert!(store.start_loop(5, "too fast", 59, 0, "owner", 0).is_err());
+        assert!(store.start_loop(5, "   ", 60, 0, "owner", 0).is_err());
+        assert!(store.start_loop(5, &"x".repeat(4001), 60, 0, "owner", 0).is_err());
+        let b = store.start_loop(6, "second", 120, 0, "mayor", 9).unwrap();
+        assert_eq!(b.id, "l2");
+        assert_eq!(store.stop_loop("l1").unwrap().state, "stopped");
+        assert!(store.stop_loop("l99").is_err());
+
+        let reloaded = Store::load(&dir);
+        let loops = reloaded.loops();
+        assert_eq!(loops.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["l2", "l1"]);
+        assert_eq!(loops[1].state, "stopped");
+        assert_eq!(loops[0].by_cid, 9);
+        assert_eq!(reloaded.start_loop(6, "third", 60, 0, "owner", 0).unwrap().id, "l3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn harness_bad_file_loads_empty() {
+        let dir = fresh_dir("bad");
+        std::fs::write(dir.join("harness.json"), b"{not json").unwrap();
+        let store = Store::load(&dir);
+        assert!(store.loops().is_empty());
+        assert_eq!(store.limits(1), Limits::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
