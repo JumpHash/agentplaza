@@ -41,6 +41,7 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                         (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 1024)
   --agents-vcpus N      vCPUs per agent VM (default 1)
+  --run-cids A-B   guest CIDs runs draw from, inclusive (default 20-99; A >= 3)
   --agents-balloon-mib N  MiB of each agent VM's memory usable at boot; the rest
                         of --agents-memory-mib is a balloon it grows into
                         (default 32; 0, or at least the memory: no balloon)
@@ -48,8 +49,8 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
 
 Runs. Every VM of every run carries the agent harness (the guest's vsock
 client), so every run has guest CIDs. A create request that names no
-`vsock_cid` is given the first free span of the node's run range (CIDs
-20..=99, comfortably wider than a full-size run's 64) - held for the run's
+`vsock_cid` is given the first free span of the node's run range (the
+--run-cids range, default 20..=99, comfortably wider than a full-size run's 64) - held for the run's
 lifetime and released when the run ends, and refused before any VM boots
 when the range has no room. Which session the guests speak follows who chose
 the CIDs: a run whose `vsock_cid` the caller pinned keeps the demo task's
@@ -189,10 +190,30 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .parse()
                     .map_err(|err| format!("--agents-balloon-mib: {err}"))?;
             }
+            "--run-cids" => config.run_cids = parse_run_cids(&value("--run-cids")?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
     Ok(config)
+}
+
+/// Reads `A-B`, an inclusive CID range: both ends are numbers, `A` is at least
+/// the first CID a guest may have, and `A` does not exceed `B`.
+fn parse_run_cids(text: &str) -> Result<std::ops::RangeInclusive<u64>, String> {
+    let bad = || format!("--run-cids: {text:?} is not a range A-B of CIDs");
+    let (first, last) = text.split_once('-').ok_or_else(bad)?;
+    let first: u64 = first.parse().map_err(|_| bad())?;
+    let last: u64 = last.parse().map_err(|_| bad())?;
+    if first < vmm::spawner::MIN_GUEST_CID {
+        return Err(format!(
+            "--run-cids: {first} is below {} (1 and 2 are reserved)",
+            vmm::spawner::MIN_GUEST_CID
+        ));
+    }
+    if first > last {
+        return Err(format!("--run-cids: {first}-{last} is empty (A must not exceed B)"));
+    }
+    Ok(first..=last)
 }
 
 #[cfg(test)]
@@ -208,12 +229,13 @@ mod tests {
             config.initrd,
             PathBuf::from("target/guest/initrd.x86_64.gz")
         );
+        assert_eq!(config.run_cids, 20..=99);
     }
 
     #[test]
     fn flags_override_the_defaults() {
         let config = parse_args(
-            ["--port", "9000", "--kernel", "/k", "--initrd", "/i"]
+            ["--port", "9000", "--kernel", "/k", "--initrd", "/i", "--run-cids", "1000-1099"]
                 .map(String::from)
                 .to_vec(),
         )
@@ -221,6 +243,7 @@ mod tests {
         assert_eq!(config.port, 9000);
         assert_eq!(config.kernel, PathBuf::from("/k"));
         assert_eq!(config.initrd, PathBuf::from("/i"));
+        assert_eq!(config.run_cids, 1000..=1099);
     }
 
     #[test]
@@ -278,6 +301,10 @@ mod tests {
             vec!["--agents-memory-mib".to_string(), "x".to_string()],
             vec!["--agents-vcpus".to_string(), "x".to_string()],
             vec!["--agents-balloon-mib".to_string(), "x".to_string()],
+            vec!["--run-cids".to_string(), "1099-1000".to_string()],
+            vec!["--run-cids".to_string(), "2-50".to_string()],
+            vec!["--run-cids".to_string(), "a-b".to_string()],
+            vec!["--run-cids".to_string(), "1000".to_string()],
         ] {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }

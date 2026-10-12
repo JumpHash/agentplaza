@@ -79,6 +79,9 @@ pub struct Config {
     pub agents_vcpus: u32,
     /// MiB usable per agent VM at boot; `0`, or no less than the memory: no balloon.
     pub agents_balloon_mib: u32,
+    /// The guest CIDs runs draw from when their create request names no
+    /// `vsock_cid` (inclusive; `--run-cids`).
+    pub run_cids: std::ops::RangeInclusive<u64>,
 }
 
 impl Default for Config {
@@ -95,6 +98,7 @@ impl Default for Config {
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
             agents_vcpus: DEFAULT_AGENTS_VCPUS,
             agents_balloon_mib: DEFAULT_AGENTS_BALLOON_MIB,
+            run_cids: registry::RUN_CID_BASE..=registry::RUN_CID_END,
         }
     }
 }
@@ -127,7 +131,8 @@ impl Node {
         let images = VmImages { kernel: config.kernel, initrd: config.initrd, workspace: config.workspace };
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())
-                .with_persist_dir(config.persist_dir),
+                .with_persist_dir(config.persist_dir)
+                .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
         }

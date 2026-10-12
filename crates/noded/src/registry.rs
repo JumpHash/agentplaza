@@ -311,13 +311,26 @@ fn spawner_memory_mib(memory_mib: u32) -> Result<usize, String> {
 /// that cannot get a span is refused here - before any VM boots, and before
 /// the run is registered. A run releases its span when it ends, so a finished
 /// run's CIDs are the next run's to draw.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct CidBook {
+    /// The run range allocations are drawn from (inclusive).
+    range: std::ops::RangeInclusive<u64>,
     /// One entry per live run: its id and every CID it holds, in order.
     held: Mutex<Vec<(String, Vec<u64>)>>,
 }
 
+impl Default for CidBook {
+    fn default() -> Self {
+        Self::new(RUN_CID_BASE..=RUN_CID_END)
+    }
+}
+
 impl CidBook {
+    /// An empty book that allocates from `range`.
+    fn new(range: std::ops::RangeInclusive<u64>) -> Self {
+        Self { range, held: Mutex::new(Vec::new()) }
+    }
+
     /// The book, poison-proof: a panicking run must not take the node's other
     /// runs with it.
     fn held(&self) -> MutexGuard<'_, Vec<(String, Vec<u64>)>> {
@@ -346,10 +359,11 @@ impl CidBook {
     fn allocate(&self, run: &str, count: u32) -> Result<u64, String> {
         let mut held = self.held();
         let busy = busy(&held);
-        let free = (RUN_CID_BASE..=RUN_CID_END).find(|base| {
+        let (first, last) = (*self.range.start(), *self.range.end());
+        let free = (first..=last).find(|base| {
             (0..count).all(|offset| {
                 base.checked_add(u64::from(offset))
-                    .is_some_and(|cid| cid <= RUN_CID_END && !busy.contains(&cid))
+                    .is_some_and(|cid| cid <= last && !busy.contains(&cid))
             })
         });
         match free {
@@ -359,7 +373,7 @@ impl CidBook {
                 Ok(base)
             }
             None => Err(format!(
-                "the run range {RUN_CID_BASE}..={RUN_CID_END} has no free span of {count} \
+                "the run range {first}..={last} has no free span of {count} \
                  guest CIDs (in use: {})",
                 busy.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
             )),
@@ -825,6 +839,14 @@ impl Registry {
     /// own directory.
     pub fn with_persist_dir(mut self, persist_dir: Option<PathBuf>) -> Self {
         self.persist_dir = persist_dir;
+        self
+    }
+
+    /// Draws the runs' CIDs (those whose create request names none) from
+    /// `range` instead of [`RUN_CID_BASE`]..=[`RUN_CID_END`]: a node joined to a
+    /// hub uses the range the hub gave it.
+    pub fn with_run_cids(mut self, range: std::ops::RangeInclusive<u64>) -> Self {
+        self.cids = Arc::new(CidBook::new(range));
         self
     }
 
