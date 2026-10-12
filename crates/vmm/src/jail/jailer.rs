@@ -322,6 +322,15 @@ impl Jailer {
         let target = drop_target(euid, user_ns)?;
 
         if let Err(err) = sys::unshare(sys::CLONE_NEWNS) {
+            // Root without CAP_SYS_ADMIN (a container's root, under its seccomp profile and
+            // capability set) cannot make a mount namespace either: the same "cannot jail here"
+            // as an unprivileged process without user namespaces, not a broken setup.
+            if !user_ns && err.raw_os_error() == Some(libc::EPERM) {
+                return Ok(Entered::Unsupported(format!(
+                    "cannot create a mount namespace ({err}): this root has no CAP_SYS_ADMIN \
+                     (a container?) and user namespaces are refused"
+                )));
+            }
             return Err(JailerError::Setup {
                 step: "unshare(CLONE_NEWNS)",
                 source: err,

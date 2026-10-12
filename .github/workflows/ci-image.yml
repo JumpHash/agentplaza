@@ -23,6 +23,8 @@ jobs:
         include:
           - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
+    # Only on GitHub: the image lives in GitHub's registry (a local runner builds it with docker build).
+    if: github.server_url == 'https://github.com'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
