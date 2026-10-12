@@ -99,6 +99,53 @@ pub fn join(token: &str) -> Result<String, String> {
         .ok_or_else(|| "unexpected output from apz-link join".into())
 }
 
+/// This machine as a node: whether it has joined a hub, what the hub gave it, and whether its
+/// forwarder (apz-link) runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeStatus {
+    pub joined: bool,
+    pub hub: String,
+    pub node_id: String,
+    /// The guest CIDs as `A-B`; empty when not joined.
+    pub cids: String,
+    pub running: bool,
+}
+
+/// The node's identity (`node/node.json` under the data directory) and whether apz-link runs.
+pub fn node_status() -> NodeStatus {
+    let node: Option<serde_json::Value> = fs::read_to_string(data_dir().join("node/node.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    let field = |key: &str| node.as_ref().and_then(|n| n.get(key));
+    let text = |key: &str| field(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let cids = match (field("cid_base").and_then(|v| v.as_u64()), field("cid_count").and_then(|v| v.as_u64())) {
+        (Some(base), Some(count)) if count > 0 => cid_range(base, count),
+        _ => String::new(),
+    };
+    NodeStatus {
+        joined: node.is_some(),
+        hub: text("hub_url"),
+        node_id: text("node_id"),
+        cids,
+        running: !find_pids("apz-link").is_empty(),
+    }
+}
+
+/// Stops this machine's node services; with `forget`, also removes the node's identity directory
+/// (its key and CID range), so a later join starts afresh.
+pub fn leave(forget: bool) -> Result<(), String> {
+    stop(Mode::Node)?;
+    if forget {
+        let dir = data_dir().join("node");
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        }
+    }
+    Ok(())
+}
+
 fn start_with(mode: Mode, hub: Option<(&str, &str)>) -> Result<Vec<String>, String> {
     if mode == Mode::Node && node_identity().is_none() {
         return Err("join a hub first".into());
