@@ -50,6 +50,17 @@ pub struct Furniture {
     pub animate: Anim,
 }
 
+/// The street lamps' bulb colour.
+pub const LAMP: u32 = 0x7fe8ff;
+/// Dark hull metal, for benches, stalls and planters.
+const HULL: u32 = 0x56607e;
+
+/// A toon colour that also glows a little: the plaza's bioluminescence and crystals.
+pub fn glowing(color: u32, intensity: f32) -> Mat {
+    let c = Color::hex(color);
+    toon_mat(Material { color: c, emissive: c, emissive_intensity: intensity, ..Material::default() })
+}
+
 /// `toonMat({ color, roughness, metalness })`: toon.ts drops roughness and metalness.
 fn std_mat(color: Color) -> Mat {
     toon_mat(Material { color, ..Material::default() })
@@ -67,7 +78,7 @@ fn css(c: Color) -> String {
 }
 
 /// `part(parent, geo, mat, x, y, z)`: a mesh placed under `parent`.
-fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
+pub fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
     let m = Obj::mesh(geo, mat);
     m.set_position(x, y, z);
     parent.add(&m);
@@ -75,7 +86,7 @@ fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
 }
 
 /// `shadows(root)`: every mesh under `root` casts and receives shadows.
-fn shadows(root: &Obj) {
+pub fn shadows(root: &Obj) {
     let children = {
         let mut n = root.get();
         if matches!(n.kind, Kind::Mesh { .. }) {
@@ -103,7 +114,7 @@ fn no_cast(root: &Obj) {
 
 /// The footprint of `o`'s subtree, its world matrix being `parent` times its own local matrix.
 /// Like three's `Box3.setFromObject`, each mesh's local bounds are transformed corner by corner.
-fn footprint(o: &Obj, parent: Mat4) -> Box2 {
+pub fn footprint(o: &Obj, parent: Mat4) -> Box2 {
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     expand_box(o, parent, &mut lo, &mut hi);
@@ -158,13 +169,13 @@ fn ang_dist(a: f32, b: f32) -> f32 {
 }
 
 /// Distance from (px, pz) to the segment from the origin to (bx, bz).
-fn seg_dist(px: f32, pz: f32, bx: f32, bz: f32) -> f32 {
+pub fn seg_dist(px: f32, pz: f32, bx: f32, bz: f32) -> f32 {
     let len2 = (bx * bx + bz * bz).max(1e-6);
     let t = ((px * bx + pz * bz) / len2).clamp(0.0, 1.0);
     (px - bx * t).hypot(pz - bz * t)
 }
 
-/// A wooden bench at the origin, its seat facing +z and its back at -z.
+/// A bench at the origin, its seat facing +z and its back at -z.
 fn bench(mat: &Mat) -> Obj {
     let b = Obj::group();
     part(&b, &geometry::box_geo(1.3, 0.08, 0.42), mat, 0.0, 0.42, 0.0);
@@ -190,7 +201,7 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     let pave = part(
         &g,
         &geometry::cylinder(4.3, 4.45, 0.06, 64),
-        &textured(textures::paving(stone, 4.0)),
+        &std_mat(stone),
         0.0,
         0.03,
         0.0,
@@ -201,16 +212,16 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     let inlay = part(&g, &geometry::torus(3.3, 0.025, 6, 72, TAU), &std_mat(palette.rule), 0.0, 0.065, 0.0);
     inlay.set_rotation(PI / 2.0, 0.0, 0.0);
 
-    let bench_wood = toon_mat(Material {
-        map: Some(textures::wood()),
-        color: palette.rule.lerp(palette.ink3, 0.25),
+    let bench_metal = toon_mat(Material {
+        map: Some(textures::metal()),
+        color: Color::hex(HULL),
         ..Material::default()
     });
     for i in 0..4 {
         let a = (i as f32 / 4.0) * PI * 2.0;
         let x = a.cos() * 3.6;
         let z = a.sin() * 3.6;
-        let b = bench(&bench_wood);
+        let b = bench(&bench_metal);
         b.set_position(x, 0.0, z);
         b.set_rotation(0.0, (-x).atan2(-z), 0.0); // the seat faces the centre, the back faces out
         g.add(&b);
@@ -355,17 +366,23 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
     let stone_mat = textured(textures::polish(palette.sheet));
     let water_mat = toon_mat(Material {
         map: Some(Arc::clone(&water_base)),
+        emissive: Color::hex(0x2ad0ff),
+        emissive_intensity: 0.55,
         transparent: true,
         opacity: 0.9,
         ..Material::default()
     });
-    let counter_mat = textured(textures::wood());
+    let counter_mat = toon_mat(Material {
+        map: Some(textures::metal()),
+        color: Color::hex(HULL),
+        ..Material::default()
+    });
     let pole_mat = textured(textures::metal());
     let awning_key = format!("awning:{}:{}", css(palette.signal), css(palette.sheet));
-    let (signal, sheet) = (palette.signal, palette.sheet);
+    let signal = palette.signal;
     let awning_tex = textures::canvas_texture(&awning_key, 256, 64, 1.0, |cg, w, h, _| {
         for i in 0..8 {
-            let c = if i % 2 == 1 { signal } else { sheet };
+            let c = if i % 2 == 1 { signal } else { Color::hex(0xd8deef) };
             cg.set_fill(&css(c));
             cg.fill_rect(i as f32 * w / 8.0, 0.0, w / 8.0, h);
         }
@@ -382,7 +399,7 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
         let node = Obj::group();
         node.set_position(x, 0.0, z);
         if i == 0 {
-            // The fountain: a stone basin with a rippling pool and a spout.
+            // The fountain: a basin with a glowing pool and a spout of light.
             let basin = part(&node, &geometry::cylinder(0.62, 0.7, 0.26, 32), &stone_mat, 0.0, 0.13, 0.0);
             let pool = part(&node, &geometry::circle(0.55, 32, 0.0, TAU), &water_mat, 0.0, 0.27, 0.0);
             pool.set_rotation(-PI / 2.0, 0.0, 0.0);
@@ -390,7 +407,7 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
             part(&node, &geometry::sphere(0.11, 12, 8), &water_mat, 0.0, 0.92, 0.0);
             boxes.push(footprint(&basin, node.local_matrix()));
         } else {
-            // A market stall: a wooden counter under a striped awning, turned to face the plaza's centre.
+            // A market stall: a metal counter under a striped awning, turned to face the plaza's centre.
             node.set_rotation(0.0, (-x).atan2(-z), 0.0);
             let counter = part(&node, &geometry::box_geo(1.1, 0.72, 0.5), &counter_mat, 0.0, 0.36, 0.0);
             part(&node, &geometry::box_geo(0.26, 0.18, 0.26), &std_mat(palette.ok), 0.25, 0.81, 0.0);
@@ -417,11 +434,12 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
     Furniture { group: g, boxes, animate }
 }
 
-/// `buildPaths(from, palette)`: flat paved strips from the origin out to each point (y = 0), for
-/// the paths between the centre and the districts.
+/// `buildPaths(from, palette)`: plated strips from the origin out to each point (y = 0), for the
+/// paths between the centre and the districts, each with a light line down either edge.
 pub fn build_paths(from: &[Vec3], palette: &PropPalette) -> Obj {
     let g = Obj::group();
-    let mat = textured(textures::paving(palette.rule.lerp(palette.sheet, 0.35), 2.0));
+    let mat = std_mat(palette.rule.lerp(palette.sheet, 0.35));
+    let light = Mat::basic(palette.info);
     for to in from {
         let len = to.x.hypot(to.z);
         if len < 0.5 {
@@ -436,6 +454,11 @@ pub fn build_paths(from: &[Vec3], palette: &PropPalette) -> Obj {
         strip.set_position(to.x / 2.0, 0.015, to.z / 2.0);
         strip.set_rotation(0.0, -to.z.atan2(to.x), 0.0);
         strip.get().receive_shadow = true;
+        for side in [-0.41f32, 0.41] {
+            let line = Obj::mesh(&geometry::box_geo(len, 0.02, 0.05), &light);
+            line.set_position(0.0, 0.02, side);
+            strip.add(&line);
+        }
         g.add(&strip);
     }
     g
