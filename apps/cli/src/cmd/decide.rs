@@ -2,8 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::cmd::agents::text_arg;
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, text_arg, Ctx};
 
 /// One question about `--input`: a yes/no `--predicate`, a `--choice` among `--options`, or a
 /// `--score` on `--levels`. The answers are printed as probabilities.

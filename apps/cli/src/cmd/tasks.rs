@@ -1,11 +1,9 @@
 //! `agentplaza tasks`: Tasks: the work queue.
 
-use std::io::{IsTerminal, Read, Write};
-
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, Ctx};
 
 /// The board's lanes (the Tasks screen): open, in progress, done, failed or withdrawn.
 const LANES: [&str; 4] = ["open", "in-progress", "done", "failed"];
@@ -92,38 +90,6 @@ fn title_of(goal: &str) -> &str {
     goal.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled task")
 }
 
-/// A text flag's value; `-` reads it from stdin. Blank text is no text.
-fn text_arg(value: Option<String>) -> Result<Option<String>, String> {
-    let text = match value {
-        Some(v) if v == "-" => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
-            Some(buf)
-        }
-        other => other,
-    };
-    Ok(text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
-}
-
-/// Asks before a destructive action: on a terminal `Proceed? [y/N]`; `--yes` skips it; off a
-/// terminal without `--yes` the action is refused.
-fn confirm(yes: bool, what: &str) -> Result<(), String> {
-    if yes {
-        return Ok(());
-    }
-    if !std::io::stdin().is_terminal() {
-        return Err(format!("{what} Pass --yes to do it without a terminal."));
-    }
-    print!("{what} Proceed? [y/N] ");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Ok(()),
-        _ => Err("not done".into()),
-    }
-}
-
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List { lane } => {
@@ -161,8 +127,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("budget", ctx::text(t, "budget")),
                     ("agent", ctx::text(t, "agent_cid")),
                     ("assignee", ctx::text(t, "assignee_id")),
-                    ("created", ctx::text(t, "created_at")),
-                    ("updated", ctx::text(t, "updated_at")),
+                    ("created", ctx::when(&t["created_at"])),
+                    ("updated", ctx::when(&t["updated_at"])),
                 ]);
                 println!("\n{}", ctx::s(t, "goal"));
                 for (heading, key) in [("Acceptance", "acceptance"), ("Note", "note"), ("Outcome", "outcome")] {
@@ -199,12 +165,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if title.is_empty() {
                 return Err("a task needs a title".into());
             }
-            let goal = match text_arg(details)? {
+            let details = details.filter(|d| !d.trim().is_empty()).map(|d| ctx::text_arg(&d)).transpose()?;
+            let goal = match details {
                 Some(d) => format!("{title}\n\n{d}"),
                 None => title,
             };
             let mut body = json!({ "goal": goal, "budget": budget });
-            if let Some(a) = text_arg(acceptance)? {
+            let acceptance = acceptance.filter(|a| !a.trim().is_empty()).map(|a| ctx::text_arg(&a)).transpose()?;
+            if let Some(a) = acceptance {
                 body["acceptance"] = json!(a);
             }
             if let Some(r) = role {
@@ -223,7 +191,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Withdraw { id, yes } => {
-            confirm(yes, &format!("Withdraw task {id}."))?;
+            if !confirm(yes, &format!("Withdraw task {id}."))? {
+                return Err("not done".into());
+            }
             let t = ctx.client.delete(&format!("/v1/tasks/{}", ctx::seg(&id)))?;
             ctx.out(&t, |_| println!("withdrew task {id}"));
             Ok(())

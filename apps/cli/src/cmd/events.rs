@@ -1,4 +1,5 @@
-//! `agentplaza events`: Stream the plaza's live events, one line each (HH:MM:SS in UTC).
+//! `agentplaza events`: Stream the plaza's live events, one line each (HH:MM:SS in UTC). The VM
+//! console (`serial`) is left out unless `--kinds` names it or `--all` is given.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,6 +16,9 @@ pub struct Args {
     /// Only events about this agent (its CID).
     #[arg(long)]
     pub agent: Option<u64>,
+    /// Include the VM console (`serial`) events, which are noisy.
+    #[arg(long)]
+    pub all: bool,
 }
 
 /// Streams until Ctrl-C. A dropped socket reconnects with backoff (1s doubling to 30s).
@@ -60,9 +64,13 @@ fn session(ctx: &Ctx, args: &Args, backoff: &mut Duration) -> Result<(), String>
     }
 }
 
-/// Whether the event passes `--kinds` and `--agent`.
+/// Whether the event passes `--kinds`, `--agent` and the console filter.
 fn keep(args: &Args, kind: &str, data: &Value) -> bool {
-    if !args.kinds.is_empty() && !args.kinds.iter().any(|k| k.trim() == kind) {
+    let named = args.kinds.iter().any(|k| k.trim() == kind);
+    if !args.kinds.is_empty() && !named {
+        return false;
+    }
+    if kind == "serial" && !named && !args.all {
         return false;
     }
     match args.agent {
@@ -71,7 +79,7 @@ fn keep(args: &Args, kind: &str, data: &Value) -> bool {
     }
 }
 
-/// The event's scalar fields as `key=value` (at most six), cut to 160 characters.
+/// The event's scalar fields as `key=value` (at most six), on one line and cut to 160 characters.
 fn summary(data: &Value) -> String {
     let text = match data.as_object() {
         Some(map) => map
@@ -86,7 +94,8 @@ fn summary(data: &Value) -> String {
             .join(" "),
         None => data.to_string(),
     };
-    if text.chars().count() > 160 { text.chars().take(159).collect::<String>() + "…" } else { text }
+    let one_line = text.replace(['\n', '\r'], " ");
+    if one_line.chars().count() > 160 { one_line.chars().take(159).collect::<String>() + "…" } else { one_line }
 }
 
 /// The current time as HH:MM:SS (UTC).

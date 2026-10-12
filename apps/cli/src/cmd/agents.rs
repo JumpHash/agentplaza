@@ -1,13 +1,12 @@
 //! `agentplaza agents`: Agents: list, inspect, create, talk to, stop, restart, set models.
 
-use std::io::{IsTerminal, Read, Write};
 use std::thread;
 use std::time::Duration;
 
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, text_arg, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -130,38 +129,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Logs { cid, follow } => logs(ctx, cid, follow),
     }
-}
-
-/// Whether to go ahead with a destructive action: `--yes` says so; otherwise the owner answers
-/// `Proceed? [y/N]` on a terminal. Off a terminal the action is refused, never assumed.
-pub fn confirm(yes: bool, question: &str) -> Result<bool, String> {
-    if yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        return Err(format!("{question} Not on a terminal: pass --yes to go ahead"));
-    }
-    print!("{question} Proceed? [y/N] ");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES"))
-}
-
-/// A text flag's value, or stdin for "-". Empty text is refused.
-pub fn text_arg(text: &str) -> Result<String, String> {
-    let body = if text == "-" {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
-        buf
-    } else {
-        text.to_string()
-    };
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err("the text is empty".into());
-    }
-    Ok(trimmed.to_string())
 }
 
 fn cancelled() -> Result<(), String> {

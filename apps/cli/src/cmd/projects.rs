@@ -109,7 +109,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 for e in array_at(p, "history") {
                     let note = ctx::s(e, "note");
                     let note = if note.is_empty() { String::new() } else { format!(" ({note})") };
-                    println!("  {}  {} {}{}", ctx::text(e, "at_ms"), ctx::s(e, "by"), ctx::s(e, "what"), note);
+                    println!("  {}  {} {}{}", ctx::when(&e["at_ms"]), ctx::s(e, "by"), ctx::s(e, "what"), note);
                 }
             });
             Ok(())

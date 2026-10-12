@@ -52,7 +52,7 @@ fn list(ctx: &Ctx) -> Result<(), String> {
     ctx.out(&value, |v| {
         let rows: Vec<Vec<String>> = posts(v)
             .iter()
-            .map(|p| vec![ctx::text(p, "id"), ctx::text(p, "role"), ctx::text(p, "agent_cid"), ctx::text(p, "subject"), comment_count(p).to_string(), ctx::text(p, "created_at")])
+            .map(|p| vec![ctx::text(p, "id"), ctx::text(p, "role"), ctx::text(p, "agent_cid"), ctx::text(p, "subject"), comment_count(p).to_string(), ctx::when(&p["created_at"])])
             .collect();
         ctx::table(&["id", "role", "agent", "subject", "comments", "created at"], &rows);
     });
@@ -69,12 +69,12 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("agent", ctx::text(p, "agent_cid")),
             ("subject", ctx::text(p, "subject")),
             ("task", ctx::text(p, "task")),
-            ("created", ctx::text(p, "created_at")),
+            ("created", ctx::when(&p["created_at"])),
             ("attachments", ctx::text(p, "attachments")),
         ]);
         println!("\n{}", ctx::s(p, "body"));
         for c in p.get("comments").map(array).unwrap_or_default() {
-            println!("\n[{}] {}: {}", ctx::text(c, "created_at"), ctx::s(c, "author"), ctx::s(c, "body"));
+            println!("\n[{}] {}: {}", ctx::when(&c["created_at"]), ctx::s(c, "author"), ctx::s(c, "body"));
         }
     });
     Ok(())
