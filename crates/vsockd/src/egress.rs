@@ -814,20 +814,27 @@ mod tests {
         });
 
         let (mut client, server) = UnixStream::pair().unwrap();
+        // Every wait is bounded and reads a known length: on Windows a read already blocked on an
+        // AF_UNIX socket is not reliably woken when the peer closes, so waiting for the end of the
+        // stream could hang where the relay itself is done.
+        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let policy = Policy::new(vec![]);
-        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &apid));
+        let (finished, proxy) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = finished.send(serve_conn(server, 7, &policy, &apid));
+        });
         client
             .write_all(
                 b"POST http://plaza.gateway/v1/messages HTTP/1.1\r\nHost: plaza.gateway\r\n\
                   Authorization: Bearer guest\r\nContent-Length: 4\r\n\r\nping",
             )
             .unwrap();
-        let mut answer = Vec::new();
-        client.read_to_end(&mut answer).unwrap();
+        let mut answer = vec![0u8; ANSWER.len()];
+        client.read_exact(&mut answer).expect("apid's answer comes back");
         assert_eq!(answer, ANSWER);
 
         stand_in.join().unwrap();
-        let audit = proxy.join().unwrap();
+        let audit = proxy.recv_timeout(Duration::from_secs(20)).expect("the relay ends once apid has answered");
         let _ = std::fs::remove_file(&token_file);
         assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
     }
@@ -858,8 +865,13 @@ mod tests {
         });
 
         let (mut client, server) = UnixStream::pair().unwrap();
+        // Bounded waits of known lengths, as in the plain gateway test.
+        client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let policy = Policy::new(vec![]);
-        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &apid));
+        let (finished, proxy) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = finished.send(serve_conn(server, 7, &policy, &apid));
+        });
         client
             .write_all(
                 b"GET http://plaza.gateway/openai/v1/responses HTTP/1.1\r\nHost: plaza.gateway\r\n\
@@ -867,15 +879,16 @@ mod tests {
                   Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
             )
             .unwrap();
-        let (switching, _) = read_head(&mut client).unwrap();
+        let (switching, early) = read_head(&mut client).unwrap();
         assert!(switching.starts_with("HTTP/1.1 101 "), "{switching}");
+        assert!(early.is_empty(), "nothing follows the 101 before the guest speaks");
         client.write_all(b"ping").unwrap();
-        let mut pong = Vec::new();
-        client.read_to_end(&mut pong).unwrap();
-        assert_eq!(pong, b"pong");
+        let mut pong = [0u8; 4];
+        client.read_exact(&mut pong).expect("the pong comes back through the socket");
+        assert_eq!(&pong, b"pong");
 
         stand_in.join().unwrap();
-        let audit = proxy.join().unwrap();
+        let audit = proxy.recv_timeout(Duration::from_secs(20)).expect("the relay ends once apid has hung up");
         let _ = std::fs::remove_file(&token_file);
         assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
     }
