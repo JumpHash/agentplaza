@@ -144,7 +144,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .badge::before { content: ""; width: 8px; height: 8px; border: 1px solid currentColor; flex: none; }
 .badge > .dot { display: none; }
 .badge.ok { color: var(--ok); }
-.badge.ok::before { border-radius: 50%; background: currentColor; }
+.badge.ok::before { border-radius: 0; background: currentColor; }
 .badge.warn { color: var(--warn); }
 .badge.danger { color: var(--crit); }
 .badge.danger::before { background: currentColor; transform: rotate(45deg) scale(0.85); }
@@ -153,7 +153,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .badge.accent { color: var(--signal-ink); }
 .badge.accent::before { background: var(--signal); border-color: var(--signal); }
 .dot { width: 8px; height: 8px; border: 1px solid var(--ink-3); flex: none; display: inline-block; }
-.dot.ok { border-radius: 50%; background: var(--ok); border-color: var(--ok); }
+.dot.ok { border-radius: 0; background: var(--ok); border-color: var(--ok); }
 .dot.warn { border-color: var(--warn); }
 .dot.danger { background: var(--crit); border-color: var(--crit); transform: rotate(45deg) scale(0.85); }
 .dot.info { background: var(--info); border-color: var(--info); }

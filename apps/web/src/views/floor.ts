@@ -39,9 +39,9 @@ const ROBOT_R = 0.55; // robot footprint radius for collisions
 const STEER = [0, 30, -30, 60, -60].map((d) => (d * Math.PI) / 180); // headings tried when a step is blocked
 const DUST_N = 90;
 const LABEL_CSS =
-  'position:absolute;left:0;top:0;display:none;max-width:220px;padding:3px 6px;' +
-  'background:var(--sheet);border:1px solid var(--ink);color:var(--ink);' +
-  'font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;' +
+  'position:absolute;left:0;top:0;display:none;max-width:220px;padding:5px 8px;' +
+  'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--print);color:var(--ink);' +
+  'font:400 10px/1.35 var(--mono);white-space:nowrap;' +
   'pointer-events:none;will-change:transform';
 
 interface District {
@@ -407,7 +407,7 @@ export function mount(root: HTMLElement): Cleanup {
   root.classList.add('floor-view');
   document.body.classList.add('floor-mode');
   root.append(
-    h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { kind: 'ghost', icon: 'refresh' }))),
+    h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { icon: 'refresh' }))),
     stage,
   );
 
@@ -607,15 +607,13 @@ export function mount(root: HTMLElement): Cleanup {
     const labelName = document.createElement('strong');
     labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis';
     const labelLine = document.createElement('div');
-    labelLine.style.cssText = 'color:var(--ink-2);overflow:hidden;text-overflow:ellipsis';
+    labelLine.style.cssText = 'color:var(--ink-3);font:400 10px/1.35 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     // The role, as a small coloured tag beside the name.
     const labelRole = document.createElement('span');
-    labelRole.style.cssText =
-      `display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;font-weight:700;` +
-      `font-size:10px;line-height:1.3;letter-spacing:.05em;text-transform:uppercase;vertical-align:1px;` +
-      `color:#fff;background:hsl(${district.hue} 55% 34%)`;
+    labelRole.className = 'floor-tag';
+    labelRole.style.borderLeftColor = `hsl(${district.hue} 55% 34%)`;
     labelRole.textContent = roleLabel(agent.role);
-    labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 11.5px/1.35 var(--mono)';
     const nameText = document.createElement('span');
     labelName.append(nameText, labelRole);
     label.append(labelName, labelLine);
@@ -968,6 +966,15 @@ export function mount(root: HTMLElement): Cleanup {
     }
   }
 
+  /** The role as a square tag, striped in the district's colour as on the robot's label. */
+  function roleTag(role: string, hue: number): HTMLElement {
+    const t = document.createElement('span');
+    t.className = 'floor-tag';
+    t.style.borderLeftColor = `hsl(${hue} 55% 34%)`;
+    t.textContent = roleLabel(role);
+    return t;
+  }
+
   function renderCard(): void {
     if (!selected) {
       card.hidden = true;
@@ -981,7 +988,7 @@ export function mount(root: HTMLElement): Cleanup {
     if (sig === cardSig) return;
     cardSig = sig;
     card.replaceChildren(
-      h('header.floor-card-head', null, h('strong', null, a.name), h('span.faint', null, roleLabel(a.role))),
+      h('header.floor-card-head', null, h('strong', null, a.name), roleTag(a.role, selected.district.hue)),
       h('div.floor-card-activity', null, line),
     );
   }

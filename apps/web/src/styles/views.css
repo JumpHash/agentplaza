@@ -9,7 +9,7 @@
 .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s2); padding: var(--s4); }
 .fleet-tile {
   display: flex; flex-direction: column; gap: 2px; text-align: left; min-width: 0;
-  padding: var(--s3); border-radius: var(--r-md); border: 1px solid var(--border);
+  padding: var(--s3); border-radius: 0; border: 1px solid var(--border);
   background: var(--surface-2); color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer;
 }
 .fleet-tile:hover { border-color: var(--border-strong); background: var(--surface-3); }

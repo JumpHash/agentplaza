@@ -5,7 +5,7 @@
 .motion-text { margin: 0; line-height: var(--lh); }
 .motion-actions { display: flex; justify-content: flex-end; gap: var(--s2); }
 
-.tally { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
+.tally { display: flex; height: 8px; border-radius: 0; overflow: hidden; background: var(--surface-3); }
 .tally-seg { display: block; height: 100%; min-width: 0; }
 .tally-seg.yes { background: var(--ok); }
 .tally-seg.no { background: var(--danger); }
@@ -19,7 +19,7 @@
 
 .table tr.detail td { background: var(--surface-2); padding: var(--s3) var(--s4); }
 .vms { display: grid; gap: var(--s3); }
-.vm { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
+.vm { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--border); border-radius: 0; background: var(--surface); }
 .vm summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); }
 .vm .pre { margin-top: var(--s2); }
 

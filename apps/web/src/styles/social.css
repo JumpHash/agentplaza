@@ -28,7 +28,7 @@
   flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -84,7 +84,7 @@
   padding: 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 0;
 }
 
 .thread-head {
@@ -106,7 +106,7 @@
   gap: 4px;
   max-width: 75%;
   padding: 8px 12px;
-  border-radius: var(--r-md);
+  border-radius: 0;
   background: var(--muted-bg);
 }
 .bubble-row.right .bubble {
