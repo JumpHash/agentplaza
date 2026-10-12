@@ -129,6 +129,21 @@ export interface Delta { cid: number; work: number; req: number; delta: { type: 
 
 /** A comment in a board post's thread: by an agent (`agent_cid`), or by the owner (`agent_cid` null). */
 export interface Discovery { id: string; name: string; kind: string; what_for: string; how: string; verdict: string; url: string | null; tags: string[]; by_cid: number; by: string; at_ms: number; endorsed_by: number[]; flagged: string | null }
+export type ProjectStage = 'brief' | 'research' | 'proposal' | 'critique' | 'approval' | 'implementation' | 'review' | 'delivered';
+export const PROJECT_STAGES: ProjectStage[] = ['brief', 'research', 'proposal', 'critique', 'approval', 'implementation', 'review', 'delivered'];
+export interface ProjectDoc { kind: string; title: string; file: string | null; repo_path: string | null; commit: string | null; summary: string; by_cid: number; by: string; at_ms: number }
+export interface ProjectCritique { by_cid: number; by: string; verdict: 'approve' | 'revise' | 'comment'; text: string; revision: number; at_ms: number }
+export interface ProjectEvent { at_ms: number; by_cid: number; by: string; what: string; note: string }
+export interface Project { id: string; title: string; goal: string; kind: 'code' | 'other'; stage: ProjectStage; lead_cid: number; owner_approval: boolean; repo: string | null; docs: ProjectDoc[]; critiques: ProjectCritique[]; revision: number; approved_by: string | null; tasks: string[]; history: ProjectEvent[]; created_ms: number; updated_ms: number }
+export interface GitRepo { name: string; description: string; default_branch: string; updated_at: string; size_kb: number; open_prs: number; project: string | null }
+export interface GitBranch { name: string; commit: { id: string; message: string; author: string; at: string } }
+export interface GitCommit { id: string; short: string; message: string; author: string; at: string; additions: number; deletions: number }
+export interface GitEntry { name: string; path: string; kind: 'file' | 'dir'; size: number }
+export interface GitFile { path: string; ref: string; size: number; text: string | null; binary: boolean }
+export interface GitPull { number: number; title: string; state: string; author: string; head: string; base: string; created_at: string; updated_at: string; comments: number; review: 'approved' | 'changes_requested' | 'pending'; mergeable: boolean }
+export interface GitPullDetail extends GitPull { body: string; diff: string; reviews: { author: string; state: string; body: string; at: string }[]; comments_list?: never; files: { path: string; additions: number; deletions: number }[] }
+export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
+export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
@@ -292,6 +307,26 @@ export const api = {
   killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
 
   files: (kind?: 'deliverable' | 'shared') => get<Deliverable[]>(`/v1/files${kind ? `?kind=${kind}` : ''}`),
+  projects: () => get<Project[]>('/v1/projects'),
+  project: (id: string) => get<Project>(`/v1/projects/${id}`),
+  approveProject: (id: string, note = '') => post<Project>(`/v1/projects/${id}/approve`, { note }),
+  vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
+  git: () => get<{ configured: boolean; org: string }>('/v1/git'),
+  gitRepos: () => get<GitRepo[]>('/v1/git/repos'),
+  gitCreateRepo: (name: string, description: string) => post<GitRepo>('/v1/git/repos', { name, description }),
+  gitBranches: (repo: string) => get<GitBranch[]>(`/v1/git/repos/${repo}/branches`),
+  gitCommits: (repo: string, ref = '', limit = 30) => get<GitCommit[]>(`/v1/git/repos/${repo}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}`),
+  gitTree: (repo: string, ref = '', path = '') => get<GitEntry[]>(`/v1/git/repos/${repo}/tree?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`),
+  gitFile: (repo: string, ref: string, path: string) => get<GitFile>(`/v1/git/repos/${repo}/file?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`),
+  gitPulls: (repo: string, state: 'open' | 'closed' | 'all' = 'open') => get<GitPull[]>(`/v1/git/repos/${repo}/pulls?state=${state}`),
+  gitPull: (repo: string, n: number) => get<GitPullDetail>(`/v1/git/repos/${repo}/pulls/${n}`),
+  gitReview: (repo: string, n: number, event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT', body: string) => post<unknown>(`/v1/git/repos/${repo}/pulls/${n}/review`, { event, body }),
+  gitMerge: (repo: string, n: number, style: 'merge' | 'squash' | 'rebase' = 'merge') => post<unknown>(`/v1/git/repos/${repo}/pulls/${n}/merge`, { style }),
+  loops: () => get<HarnessLoop[]>('/v1/loops'),
+  startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
+  stopLoop: (id: string) => del<HarnessLoop>(`/v1/loops/${id}`),
+  agentLimits: (cid: number) => get<HarnessLimits>(`/v1/agents/${cid}/limits`),
+  agentControl: (cid: number, body: { action: 'compress' | 'steer' | 'extend_turns' | 'set_limits'; text?: string; turns?: number; max_turns?: number; compress_at?: number; keep_recent?: number }) => post<unknown>(`/v1/agents/${cid}/control`, body),
   toolbox: () => get<Discovery[]>('/v1/toolbox'),
   removeDiscovery: (id: string) => del<Discovery>(`/v1/toolbox/${id}`),
   flagDiscovery: (id: string, reason: string | null) => post<Discovery>(`/v1/toolbox/${id}/flag`, { reason }),
