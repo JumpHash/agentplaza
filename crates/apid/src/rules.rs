@@ -115,6 +115,7 @@ fn agent_name(app: &App, cid: u64) -> String {
     match app.agents.get(cid) {
         Some(agent) if !agent.name.is_empty() => agent.name,
         Some(agent) if !agent.role.is_empty() => crate::agents::role_label(&agent.role).to_string(),
-        _ => format!("agent {cid}"),
+        // An agent that is not connected now keeps the name it chose.
+        _ => app.names.get(cid).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("agent {cid}")),
     }
 }
