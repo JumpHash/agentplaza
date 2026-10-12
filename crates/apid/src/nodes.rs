@@ -26,6 +26,8 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, Router};
+use apz_trust::node::{H_NODE, H_NONCE, H_SIG, H_TS, MAX_SKEW_SECS, NONCE_TTL_SECS};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,6 +44,16 @@ pub const JOIN_RATE_PER_MINUTE: u32 = 5;
 pub const JOIN_TRIES_PER_CODE: u32 = 3;
 /// A node is offline when it has not polled for this long.
 pub const OFFLINE_AFTER_MS: u64 = 60_000;
+
+/// The one message every failed redemption gets, so a caller learns nothing about the code.
+const INVALID_CODE: &str = "this join code is not valid";
+const RATE_LIMITED: &str = "too many attempts; wait a minute";
+/// The rate-limit key of a request: its peer address (every caller without one shares a bucket).
+fn source_of(req: &Request) -> String {
+    req.peer.map(|ip| ip.to_string()).unwrap_or_else(|| "unknown".into())
+}
+const JOIN_WINDOW_MS: u64 = 60_000;
+const DEFAULT_TTL_MINUTES: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
@@ -172,32 +184,166 @@ impl Store {
     }
 
     /// Issues a code: returns its id, the token text (shown once) and its expiry.
-    pub fn issue_code(&self, _app: &App, _label: &str, _ttl_minutes: u64) -> Result<(String, String, u64), String> {
-        Err("contract: N1".into())
+    pub fn issue_code(&self, app: &App, label: &str, ttl_minutes: u64) -> Result<(String, String, u64), String> {
+        let ttl = match ttl_minutes {
+            0 => DEFAULT_TTL_MINUTES,
+            m => m.min(MAX_CODE_MINUTES),
+        };
+        let now = apz_plaza::now_ms();
+        let public_url = app.hub_auth.config.lock().map_err(|_| "hub config unavailable".to_string())?.public_url.clone();
+        let token = apz_trust::token::JoinToken::issue(&public_url, app.hub_auth.cert_sha256, now / 1000, ttl * 60);
+        let text = token.encode();
+        let expires_ms = now + ttl * 60_000;
+        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+        let id = format!("c{}", next_seq(p.codes.iter().map(|c| c.id.as_str()), 'c'));
+        p.codes.push(Code {
+            id: id.clone(),
+            label: label.trim().chars().take(64).collect(),
+            secret_sha256: hex(&token.secret_hash()),
+            created_ms: now,
+            expires_ms,
+            used_by: None,
+            revoked: false,
+            failures: 0,
+        });
+        Ok((id, text, expires_ms))
     }
-    pub fn codes(&self, _now_ms: u64) -> Vec<CodeView> {
-        Vec::new() // contract: N1
+    pub fn codes(&self, now_ms: u64) -> Vec<CodeView> {
+        self.inner
+            .lock()
+            .map(|p| {
+                p.codes
+                    .iter()
+                    .map(|c| CodeView {
+                        id: c.id.clone(),
+                        label: c.label.clone(),
+                        created_ms: c.created_ms,
+                        expires_ms: c.expires_ms,
+                        state: code_state(c, now_ms).to_string(),
+                        used_by: c.used_by.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
-    pub fn revoke_code(&self, _id: &str) -> Result<(), String> {
-        Err("contract: N1".into())
+    pub fn revoke_code(&self, id: &str) -> Result<(), String> {
+        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+        let code = p.codes.iter_mut().find(|c| c.id == id).ok_or("no such code")?;
+        if code.used_by.is_some() {
+            return Err("that code was already used".into());
+        }
+        code.revoked = true;
+        Ok(())
     }
     /// Redeems a secret for a new node (rate limits, expiry, single use, constant-time compare).
-    pub fn join(&self, _source: &str, _secret_b64: &str, _public_key: &str, _name: &str, _machine: Value, _now_ms: u64) -> Result<Node, String> {
-        Err("contract: N1".into())
+    pub fn join(&self, source: &str, secret_b64: &str, public_key: &str, name: &str, machine: Value, now_ms: u64) -> Result<Node, String> {
+        self.admit(source, now_ms)?;
+        let secret = apz_trust::unb64(secret_b64).ok().filter(|s| s.len() == 16).ok_or(INVALID_CODE)?;
+        let hash = hex(&apz_trust::sha256(&secret));
+
+        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+        let Persisted { nodes, codes } = &mut *p;
+        let mut found = None;
+        for (i, code) in codes.iter().enumerate() {
+            if apz_trust::ct_eq(code.secret_sha256.as_bytes(), hash.as_bytes()) {
+                found = Some(i);
+            }
+        }
+        let Some(i) = found else {
+            return Err(INVALID_CODE.to_string());
+        };
+        let code = &mut codes[i];
+        let usable = code.used_by.is_none() && !code.revoked && now_ms < code.expires_ms && code.failures < JOIN_TRIES_PER_CODE;
+        if !usable {
+            code.failures = code.failures.saturating_add(1);
+            return Err(INVALID_CODE.to_string());
+        }
+
+        // The secret matched, so these failures are the caller's own tries against this code.
+        let key_ok = apz_trust::unb64(public_key).map(|k| k.len() == 32).unwrap_or(false);
+        if !key_ok {
+            code.failures = code.failures.saturating_add(1);
+            return Err("the public key must be an Ed25519 key (32 bytes, base64url)".into());
+        }
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 64 || name.chars().any(|c| c.is_control()) {
+            code.failures = code.failures.saturating_add(1);
+            return Err("the name must be 1 to 64 printable characters".into());
+        }
+
+        let seq = next_seq(nodes.iter().map(|n| n.id.as_str()), 'n');
+        let node = Node {
+            id: format!("n{seq}"),
+            name: name.to_string(),
+            public_key: public_key.to_string(),
+            cid_base: REMOTE_CID_BASE + (seq - 1) * CIDS_PER_NODE,
+            cid_count: CIDS_PER_NODE,
+            joined_ms: now_ms,
+            last_seen_ms: now_ms,
+            machine,
+            draining: false,
+            revoked: false,
+            address: source.to_string(),
+        };
+        code.used_by = Some(node.id.clone());
+        nodes.push(node.clone());
+        Ok(node)
     }
-    pub fn revoke(&self, _id: &str) -> Result<Node, String> {
-        Err("contract: N1".into())
+    pub fn revoke(&self, id: &str) -> Result<Node, String> {
+        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+        let node = p.nodes.iter_mut().find(|n| n.id == id).ok_or("no such node")?;
+        node.revoked = true;
+        Ok(node.clone())
     }
-    pub fn drain(&self, _id: &str, _on: bool) -> Result<Node, String> {
-        Err("contract: N1".into())
+    pub fn drain(&self, id: &str, on: bool) -> Result<Node, String> {
+        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+        let node = p.nodes.iter_mut().find(|n| n.id == id).ok_or("no such node")?;
+        node.draining = on;
+        Ok(node.clone())
     }
     /// Checks a signed node request: known, not revoked, ts within skew, fresh nonce, valid
     /// signature. Records `last_seen_ms` and `address`. Returns the node.
-    pub fn authenticate(&self, _req: &Request, _now_ms: u64) -> Result<Node, String> {
-        Err("contract: N1".into())
+    pub fn authenticate(&self, req: &Request, now_ms: u64) -> Result<Node, String> {
+        let id = req.header(H_NODE).ok_or("missing node identity")?;
+        let node = self.get(id).filter(|n| !n.revoked).ok_or("unknown or revoked node")?;
+        let ts: u64 = req.header(H_TS).and_then(|t| t.parse().ok()).ok_or("missing or bad timestamp")?;
+        let nonce = req.header(H_NONCE).filter(|n| !n.is_empty()).ok_or("missing nonce")?;
+        let sig = req.header(H_SIG).ok_or("missing signature")?;
+        check_freshness(ts, now_ms)?;
+        let path = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
+        if !apz_trust::node::verify(&node.public_key, &req.method, &path, ts, nonce, &req.body, sig) {
+            return Err("bad signature".into());
+        }
+        {
+            // After the signature check, so a forged request cannot burn a real node's nonce.
+            let mut nonces = self.nonces.lock().map_err(|e| e.to_string())?;
+            record_nonce(&mut nonces, (node.id.clone(), nonce.to_string()), now_ms)?;
+        }
+        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+        let stored = p.nodes.iter_mut().find(|n| n.id == node.id).ok_or("unknown node")?;
+        stored.last_seen_ms = now_ms;
+        if let Some(ip) = req.peer {
+            stored.address = ip.to_string();
+        }
+        Ok(stored.clone())
     }
 
-    /// Queues a command for a node; the caller may wait for its result with `wait_result`.
+    /// Join attempts per source in the last minute; a refused attempt is not recorded.
+    fn admit(&self, source: &str, now_ms: u64) -> Result<(), String> {
+        let mut attempts = self.join_attempts.lock().map_err(|e| e.to_string())?;
+        let cutoff = now_ms.saturating_sub(JOIN_WINDOW_MS);
+        attempts.retain(|_, times| {
+            times.retain(|t| *t > cutoff);
+            !times.is_empty()
+        });
+        let times = attempts.entry(source.to_string()).or_default();
+        if times.len() >= JOIN_RATE_PER_MINUTE as usize {
+            return Err(RATE_LIMITED.into());
+        }
+        times.push(now_ms);
+        Ok(())
+    }
+
     pub fn enqueue(&self, node: &str, target: &str, method: &str, path: &str, body: Value) -> String {
         let id = format!("k{}", self.seq.fetch_add(1, Ordering::Relaxed) + 1);
         let command = Command {
@@ -267,6 +413,56 @@ impl Store {
     }
 }
 
+fn code_state(code: &Code, now_ms: u64) -> &'static str {
+    if code.revoked {
+        "revoked"
+    } else if code.used_by.is_some() {
+        "used"
+    } else if now_ms >= code.expires_ms {
+        "expired"
+    } else {
+        "active"
+    }
+}
+
+/// The request's timestamp (unix seconds) must be within the allowed skew of `now_ms`.
+pub fn check_freshness(ts_secs: u64, now_ms: u64) -> Result<(), String> {
+    if (now_ms / 1000).abs_diff(ts_secs) > MAX_SKEW_SECS {
+        return Err("request timestamp is outside the allowed window".into());
+    }
+    Ok(())
+}
+
+/// Records a nonce for `key` (node, nonce) until its TTL passes; refuses one already recorded.
+fn record_nonce(nonces: &mut BTreeMap<(String, String), u64>, key: (String, String), now_ms: u64) -> Result<(), String> {
+    nonces.retain(|_, expiry| *expiry > now_ms);
+    if nonces.contains_key(&key) {
+        return Err("nonce already used".into());
+    }
+    nonces.insert(key, now_ms + NONCE_TTL_SECS * 1000);
+    Ok(())
+}
+
+/// The next sequence number after the ids that start with `prefix` (`n3` → 4; none → 1).
+fn next_seq<'a>(ids: impl Iterator<Item = &'a str>, prefix: char) -> u64 {
+    ids.filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok()).max().unwrap_or(0) + 1
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn view(node: Node, agents: &[crate::agents::Agent], now_ms: u64) -> NodeView {
+    let online = !node.revoked && now_ms.saturating_sub(node.last_seen_ms) < OFFLINE_AFTER_MS;
+    let end = node.cid_base + node.cid_count;
+    let count = agents.iter().filter(|a| a.cid >= node.cid_base && a.cid < end).count();
+    NodeView { node, online, agents: u32::try_from(count).unwrap_or(u32::MAX) }
+}
+
+fn view_of(app: &App, node: Node) -> NodeView {
+    view(node, &app.agents.list(), apz_plaza::now_ms())
+}
+
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/nodes", |app, _, _| Response::json(200, &views(app)))
@@ -281,14 +477,106 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
 }
 
-fn views(_app: &App) -> Vec<NodeView> {
-    Vec::new() // contract: N1
+fn views(app: &App) -> Vec<NodeView> {
+    let now = apz_plaza::now_ms();
+    let agents = app.agents.list();
+    app.nodes.list().into_iter().map(|node| view(node, &agents, now)).collect()
 }
-fn issue_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
-fn revoke_code_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
-fn revoke_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
-fn drain_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
-fn join_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
+
+#[derive(Default, Deserialize)]
+struct IssueBody {
+    label: Option<String>,
+    ttl_minutes: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct JoinBody {
+    secret: String,
+    public_key: String,
+    name: String,
+    #[serde(default)]
+    machine: Value,
+}
+
+#[derive(Default, Deserialize)]
+struct DrainBody {
+    on: Option<bool>,
+}
+
+fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
+    req.json::<T>().map_err(|e| Response::error(400, &format!("bad body: {e}")))
+}
+
+fn parse_or_default<T: DeserializeOwned + Default>(req: &Request) -> Result<T, Response> {
+    if req.body.is_empty() {
+        Ok(T::default())
+    } else {
+        parse(req)
+    }
+}
+
+fn issue_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
+    let body: IssueBody = match parse_or_default(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match app.nodes.issue_code(app, &body.label.unwrap_or_default(), body.ttl_minutes.unwrap_or(0)) {
+        Ok((id, token, expires_ms)) => Response::json(201, &serde_json::json!({"id": id, "token": token, "expires_ms": expires_ms})),
+        Err(e) => Response::error(400, &e),
+    }
+}
+
+fn revoke_code_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    match app.nodes.revoke_code(id) {
+        Ok(()) => Response::json(200, &serde_json::json!({"id": id, "revoked": true})),
+        Err(e) => Response::error(404, &e),
+    }
+}
+
+fn revoke_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
+    match app.nodes.revoke(p.get("id")) {
+        Ok(node) => {
+            app.bus.publish("node", &node);
+            Response::json(200, &view_of(app, node))
+        }
+        Err(e) => Response::error(404, &e),
+    }
+}
+
+fn drain_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let body: DrainBody = match parse_or_default(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match app.nodes.drain(p.get("id"), body.on.unwrap_or(true)) {
+        Ok(node) => {
+            app.bus.publish("node", &node);
+            Response::json(200, &view_of(app, node))
+        }
+        Err(e) => Response::error(404, &e),
+    }
+}
+
+fn join_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
+    let body: JoinBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match app.nodes.join(&source_of(req), &body.secret, &body.public_key, &body.name, body.machine, apz_plaza::now_ms()) {
+        Ok(node) => {
+            app.bus.publish("node", &node);
+            let hub = app.hub_auth.config.lock().map(|c| c.name.clone()).unwrap_or_default();
+            Response::json(
+                201,
+                &serde_json::json!({"node_id": node.id, "cid_base": node.cid_base, "cid_count": node.cid_count, "hub": hub}),
+            )
+        }
+        Err(e) => Response::error(403, &e),
+    }
+}
+
+
 /// The node a signed request speaks for, provided it is the node named in the path.
 fn signed_node(app: &App, req: &Request, p: &Params<'_>) -> Result<Node, Response> {
     match app.nodes.authenticate(req, apz_plaza::now_ms()) {
@@ -341,6 +629,217 @@ fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    const NOW: u64 = 1_000_000_000;
+    const TTL_MS: u64 = 15 * 60_000;
+    const SECRET: [u8; 16] = [7; 16];
+    const OTHER_SECRET: [u8; 16] = [8; 16];
+    const KEY: [u8; 32] = [9; 32];
+
+    fn add_code(store: &Store, id: &str, secret: &[u8], expires_ms: u64) {
+        store.inner.lock().unwrap().codes.push(Code {
+            id: id.into(),
+            label: "test".into(),
+            secret_sha256: hex(&apz_trust::sha256(secret)),
+            created_ms: NOW,
+            expires_ms,
+            used_by: None,
+            revoked: false,
+            failures: 0,
+        });
+    }
+
+    fn redeem(store: &Store, source: &str, secret: &[u8], name: &str, now: u64) -> Result<Node, String> {
+        store.join(source, &apz_trust::b64(secret), &apz_trust::b64(&KEY), name, Value::Null, now)
+    }
+
+    #[test]
+    fn join_rate_limit_is_per_source_and_window() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+        for _ in 0..JOIN_RATE_PER_MINUTE {
+            assert_eq!(redeem(&store, "a", &[1; 16], "box", NOW).unwrap_err(), INVALID_CODE);
+        }
+        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(), RATE_LIMITED);
+        assert!(redeem(&store, "b", &SECRET, "box", NOW).is_ok(), "another source is not held back");
+    }
+
+    #[test]
+    fn join_rate_limit_window_reopens_after_a_minute() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+        for _ in 0..JOIN_RATE_PER_MINUTE {
+            let _ = redeem(&store, "a", &[1; 16], "box", NOW);
+        }
+        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW + 59_000).unwrap_err(), RATE_LIMITED);
+        assert!(redeem(&store, "a", &SECRET, "box", NOW + JOIN_WINDOW_MS + 1).is_ok());
+    }
+
+    #[test]
+    fn code_is_single_use_and_each_node_gets_its_own_cids() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+        add_code(&store, "c2", &OTHER_SECRET, NOW + TTL_MS);
+        let first = redeem(&store, "a", &SECRET, "box", NOW).unwrap();
+        assert_eq!((first.id.as_str(), first.cid_base, first.cid_count), ("n1", REMOTE_CID_BASE, CIDS_PER_NODE));
+        assert_eq!(redeem(&store, "b", &SECRET, "box", NOW).unwrap_err(), INVALID_CODE);
+        let codes = store.codes(NOW);
+        assert_eq!(codes[0].state, "used");
+        assert_eq!(codes[0].used_by.as_deref(), Some("n1"));
+        let second = redeem(&store, "b", &OTHER_SECRET, "box", NOW).unwrap();
+        assert_eq!((second.id.as_str(), second.cid_base), ("n2", REMOTE_CID_BASE + CIDS_PER_NODE));
+    }
+
+    #[test]
+    fn expired_code_is_refused() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + 1_000);
+        assert_eq!(store.codes(NOW + 1_000)[0].state, "expired");
+        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW + 1_000).unwrap_err(), INVALID_CODE);
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn revoked_code_is_refused_and_used_code_cannot_be_revoked() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+        store.revoke_code("c1").unwrap();
+        assert_eq!(store.codes(NOW)[0].state, "revoked");
+        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(), INVALID_CODE);
+        assert!(store.revoke_code("c9").is_err());
+
+        add_code(&store, "c2", &OTHER_SECRET, NOW + TTL_MS);
+        redeem(&store, "a", &OTHER_SECRET, "box", NOW).unwrap();
+        assert!(store.revoke_code("c2").is_err());
+    }
+
+    #[test]
+    fn failed_tries_against_a_code_burn_it() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+        for _ in 0..JOIN_TRIES_PER_CODE {
+            let err = redeem(&store, "a", &SECRET, "", NOW).unwrap_err();
+            assert!(err.contains("name"), "the matched secret reports the specific fault: {err}");
+        }
+        assert_eq!(redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(), INVALID_CODE);
+        assert!(store.list().is_empty());
+        assert!(store.inner.lock().unwrap().codes[0].failures >= JOIN_TRIES_PER_CODE);
+    }
+
+    #[test]
+    fn wrong_length_secret_is_refused_without_a_code_lookup() {
+        let store = Store::default();
+        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+        assert_eq!(redeem(&store, "a", &[7; 8], "box", NOW).unwrap_err(), INVALID_CODE);
+    }
+
+    #[test]
+    fn freshness_window_is_sixty_seconds_either_way() {
+        let now_s = NOW / 1000;
+        assert!(check_freshness(now_s, NOW).is_ok());
+        assert!(check_freshness(now_s - MAX_SKEW_SECS, NOW).is_ok());
+        assert!(check_freshness(now_s + MAX_SKEW_SECS, NOW).is_ok());
+        assert!(check_freshness(now_s - MAX_SKEW_SECS - 1, NOW).is_err());
+        assert!(check_freshness(now_s + MAX_SKEW_SECS + 1, NOW).is_err());
+    }
+
+    #[test]
+    fn nonces_are_single_use_within_their_ttl() {
+        let mut nonces = BTreeMap::new();
+        let key = ("n1".to_string(), "abc".to_string());
+        assert!(record_nonce(&mut nonces, key.clone(), NOW).is_ok());
+        assert!(record_nonce(&mut nonces, key.clone(), NOW + 1_000).is_err());
+        assert!(record_nonce(&mut nonces, ("n2".to_string(), "abc".to_string()), NOW).is_ok());
+        assert!(record_nonce(&mut nonces, key, NOW + NONCE_TTL_SECS * 1000 + 1).is_ok(), "pruned after its TTL");
+    }
+
+    fn node(id: &str) -> Node {
+        Node {
+            id: id.into(),
+            name: "box".into(),
+            public_key: apz_trust::b64(&KEY),
+            cid_base: REMOTE_CID_BASE,
+            cid_count: CIDS_PER_NODE,
+            joined_ms: NOW,
+            last_seen_ms: NOW,
+            machine: Value::Null,
+            draining: false,
+            revoked: false,
+            address: String::new(),
+        }
+    }
+
+    fn signed(node_id: &str, ts_secs: u64, nonce: &str) -> Request {
+        Request {
+            method: "GET".into(),
+            path: "/v1/nodes/n1/commands".into(),
+            query: "wait=25".into(),
+            headers: vec![
+                (H_NODE.into(), node_id.into()),
+                (H_TS.into(), ts_secs.to_string()),
+                (H_NONCE.into(), nonce.into()),
+                (H_SIG.into(), "AAAA".into()),
+            ],
+            body: Vec::new(),
+            peer: Some(std::net::IpAddr::from([203, 0, 113, 7])),
+        }
+    }
+
+    #[test]
+    fn authenticate_refuses_unknown_revoked_and_stale_requests() {
+        let store = Store::default();
+        store.inner.lock().unwrap().nodes.push(node("n1"));
+        let now_s = NOW / 1000;
+        assert!(store.authenticate(&signed("n9", now_s, "x"), NOW).unwrap_err().contains("unknown"));
+        assert!(store.authenticate(&signed("n1", now_s - 300, "x"), NOW).unwrap_err().contains("window"));
+        assert!(store.authenticate(&signed("n1", now_s + 300, "x"), NOW).unwrap_err().contains("window"));
+        store.revoke("n1").unwrap();
+        assert!(store.authenticate(&signed("n1", now_s, "x"), NOW).unwrap_err().contains("revoked"));
+    }
+
+    #[test]
+    fn views_count_agents_by_cid_range_and_mark_stale_nodes_offline() {
+        let fresh = node("n1");
+        let mut stale = node("n2");
+        stale.last_seen_ms = NOW - OFFLINE_AFTER_MS;
+        assert!(view(fresh.clone(), &[], NOW).online);
+        assert!(!view(stale, &[], NOW).online);
+        let mut revoked = fresh.clone();
+        revoked.revoked = true;
+        assert!(!view(revoked, &[], NOW).online);
+    }
+
+    /// End to end with real crypto: token → redeem → node. Needs apz-trust's `JoinToken` (T1),
+    /// so it is ignored until that lands; run with `--ignored`.
+    #[test]
+    fn end_to_end_token_redeems_once() {
+        let token = apz_trust::token::JoinToken {
+            hub_url: "https://hub.test:7700".into(),
+            cert_sha256: [3; 32],
+            secret: [5; 16],
+            expires: NOW / 1000 + 900,
+        };
+        let decoded = apz_trust::token::JoinToken::decode(&token.encode()).unwrap();
+        let store = Store::default();
+        store.inner.lock().unwrap().codes.push(Code {
+            id: "c1".into(),
+            label: "e2e".into(),
+            secret_sha256: hex(&token.secret_hash()),
+            created_ms: NOW,
+            expires_ms: token.expires * 1000,
+            used_by: None,
+            revoked: false,
+            failures: 0,
+        });
+        let node = redeem(&store, "a", &decoded.secret, "box", NOW).unwrap();
+        assert_eq!(node.id, "n1");
+        assert_eq!(redeem(&store, "a", &decoded.secret, "box", NOW).unwrap_err(), INVALID_CODE);
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
