@@ -15,7 +15,7 @@ use apz_plaza::council::is_seated;
 use apz_plaza::tasks::FinishOutcome;
 use apz_plaza::treasury::{PostError, MARGIN_CAP_PCT};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::agents::{connected_agent, Status};
@@ -29,7 +29,7 @@ const MOTION_SCAN_LIMIT: usize = 50;
 pub const REVIEWER_ROLE: &str = "reviewer";
 
 /// What a work item is about, beyond its prompt.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Origin {
     pub task: Option<String>,
     pub motion: Option<String>,
@@ -37,7 +37,7 @@ pub struct Origin {
     pub from_cid: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItem {
     pub id: u64,
     pub cid: u64,
@@ -50,14 +50,14 @@ pub struct WorkItem {
 }
 
 /// One agent's queue: the item in flight and the items waiting behind it.
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 struct Lane {
     queue: VecDeque<WorkItem>,
     current: Option<WorkItem>,
 }
 
 /// The queue logic, free of the app so it can be tested on its own.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Lanes {
     lanes: BTreeMap<u64, Lane>,
 }
@@ -524,15 +524,51 @@ fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
 }
 
 
+/// The saved form of the queues: the id counter and every lane (queue and item in flight).
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    next_id: u64,
+    lanes: BTreeMap<u64, Lane>,
+}
+
+/// Prefixed to work that was in flight when the plaza stopped, so the agent knows to pick it up.
+const RESUMED_PREFIX: &str = "[resumed after a plaza restart — continue from where you were; your workspace is as you left it]\n\n";
+
 impl Queues {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D7
+        let lanes = self.locked().clone();
+        let next_id = self.next_id.load(Ordering::Relaxed);
+        if next_id == 1 && lanes.lanes.values().all(|l| l.current.is_none() && l.queue.is_empty()) {
+            return String::new();
+        }
+        serde_json::to_string(&Saved { next_id, lanes: lanes.lanes }).expect("work queues serialize")
     }
 
     /// Replaces the state with a [`Queues::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D7
+    /// Work that was in flight goes back to the front of its agent's queue, marked
+    /// as resumed. Nothing is sent: the queues dispatch as agents are idle.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let (next_id, mut lanes) = if json.is_empty() {
+            (1, Lanes::default())
+        } else {
+            let saved: Saved = serde_json::from_str(json).map_err(|e| format!("work queues: {e}"))?;
+            (saved.next_id, Lanes { lanes: saved.lanes })
+        };
+        for lane in lanes.lanes.values_mut() {
+            if let Some(mut item) = lane.current.take() {
+                item.started_ms = None;
+                if !item.prompt.starts_with(RESUMED_PREFIX) {
+                    item.prompt = format!("{RESUMED_PREFIX}{}", item.prompt);
+                }
+                lane.queue.push_front(item);
+            }
+        }
+        let highest = lanes.lanes.values().flat_map(|l| l.queue.iter()).map(|i| i.id).max().unwrap_or(0);
+        let next_id = next_id.max(highest.saturating_add(1));
+        *self.locked() = lanes;
+        self.next_id.store(next_id, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -606,5 +642,38 @@ mod tests {
         let ids: Vec<u64> = lanes.drain(7).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![1, 2]);
         assert!(!lanes.holds_task("t1"));
+    }
+
+    #[test]
+    fn snapshot_restores_queues_and_resumes_in_flight_first() {
+        let queues = Queues::default();
+        {
+            let mut lanes = queues.locked();
+            for (id, cid) in [(1, 7), (2, 7), (3, 8)] {
+                let mut it = item(id, cid, None);
+                it.prompt = format!("work {id}");
+                lanes.push(it);
+            }
+            lanes.start_next(7, 0); // item 1 is in flight for agent 7
+        }
+        queues.next_id.store(4, Ordering::Relaxed);
+        let json = queues.snapshot();
+        assert!(!json.is_empty());
+
+        let fresh = Queues::default();
+        fresh.restore(&json).expect("restores");
+        assert_eq!(fresh.queued(7).len(), 2, "in-flight item goes back to the queue");
+        assert!(fresh.current(7).is_none(), "nothing is in flight after restore");
+        assert_eq!(fresh.queued(8).len(), 1);
+        let first = &fresh.queued(7)[0];
+        assert_eq!(first.id, 1);
+        assert_eq!(first.prompt, format!("{RESUMED_PREFIX}work 1"));
+        assert_eq!(fresh.queued(7)[1].prompt, "work 2");
+        assert!(fresh.next_id.load(Ordering::Relaxed) >= 4);
+
+        // A refusal changes nothing.
+        assert!(fresh.restore("not json").is_err());
+        assert_eq!(fresh.queued(7).len(), 2);
+        assert_eq!(fresh.queued(8).len(), 1);
     }
 }
