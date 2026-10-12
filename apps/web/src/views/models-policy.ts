@@ -134,7 +134,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       },
       { kind: 'ghost', size: 'sm', icon: 'x', title: `Remove ${entry}` },
     );
-    return h('li.policy-row', null, availability, h('span.mono', { title: entry }, base), pinned, remove);
+    return h('li.policy-row', { 'data-key': `policy-${tier}-${entry}` }, availability, h('span.mono', { title: entry }, base), pinned, remove);
   }
 
   function defaultsCard(): HTMLElement {
