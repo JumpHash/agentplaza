@@ -1,5 +1,7 @@
 // The console: the shell (sidebar, top bar, banners) and the screen mount.
 
+import { brandBlock } from './ui/brand';
+import { heldBanner, plazaControl } from './ui/plaza-control';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/views.css';
@@ -29,8 +31,7 @@ function sidebar(): HTMLElement {
   });
   const foot = h('div.sidebar-foot');
   onConnection((up) => replace(foot, h('span.row', null, dot(up ? 'ok' : 'danger'), up ? 'Live' : 'Reconnecting…')));
-  const brand = h('div.brand', null, h('span.brand-mark'), 'AgentPlaza', h('small', null, 'the plaza register'));
-  return h('aside.sidebar', null, brand, nav, foot);
+  return h('aside.sidebar', null, brandBlock(), nav, foot);
 }
 
 function topbar(title: HTMLElement): HTMLElement {
@@ -44,7 +45,7 @@ function topbar(title: HTMLElement): HTMLElement {
       h('span', null, dot(o.agents.working ? 'info' : 'muted'), `${o.agents.working} working · ${o.agents.idle} idle`),
     );
   });
-  return h('header.topbar', null, title, h('span.spacer'), health);
+  return h('header.topbar', null, title, h('span.spacer'), health, plazaControl());
 }
 
 function banner(): HTMLElement {
@@ -61,7 +62,7 @@ function main(): void {
   startShared();
   const title = h('span.title');
   const content = h('main.view-host');
-  const app = h('div.app', null, sidebar(), h('div.main', null, topbar(title), banner(), content));
+  const app = h('div.app', null, sidebar(), h('div.main', null, topbar(title), heldBanner(), banner(), content));
   document.body.replaceChildren(app);
 
   agents.watch((list) => {

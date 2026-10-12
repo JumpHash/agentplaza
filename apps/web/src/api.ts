@@ -150,6 +150,16 @@ export interface LawInfo {
   file: string; source: string; refusals: number; agents: { cid: number; name: string; count: number }[]; last_at_ms: number | null;
 }
 export interface Infraction { cid: number; law: string; at_ms: number; tool: string; detail: string; law_title: string; statement: string; agent_name: string }
+export interface RoleDef {
+  id: string; title: string; purpose: string; responsibilities: string[]; deliverables: string[]; collaboration: string;
+  boundaries: string[]; tools: string[]; budget: number; model: string; prompt: string; created_by: string; created_ms: number;
+}
+export interface RoleView { id: string; title: string; source: 'builtin' | 'custom'; def: RoleDef; agents: number }
+export interface AgentProposal {
+  id: string; role: RoleDef; new_role: boolean; count: number; model: string; reason: string; instruction: string;
+  by_cid: number; by: string; created_ms: number; state: 'pending' | 'approved' | 'rejected'; decided_ms: number; note: string; spawned: number[];
+}
+export interface PlazaState { paused: boolean; since_ms: number; by: string; reason: string; cancelled: number }
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
@@ -336,6 +346,18 @@ export const api = {
   laws: () => get<LawInfo[]>('/v1/laws'),
   infractions: (limit = 200) => get<Infraction[]>(`/v1/infractions?limit=${limit}`),
   agentInfractions: (cid: number) => get<Infraction[]>(`/v1/agents/${cid}/infractions`),
+  plazaState: () => get<PlazaState>('/v1/plaza/state'),
+  stopAll: (reason = '') => post<PlazaState>('/v1/plaza/stop', { reason }),
+  resumeAll: () => post<PlazaState>('/v1/plaza/resume', {}),
+  restartAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/restart`, {}),
+  wipeAgent: (cid: number, opts: { memory?: boolean; transcript?: boolean; identity?: boolean }) => post<{ ok: boolean; wiped: string[] }>(`/v1/agents/${cid}/wipe`, opts),
+  retireAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/retire`, {}),
+  roles: () => get<RoleView[]>('/v1/roles'),
+  saveRole: (def: RoleDef) => post<RoleDef>('/v1/roles', def),
+  deleteRole: (id: string) => del<unknown>(`/v1/roles/${id}`),
+  agentProposals: () => get<AgentProposal[]>('/v1/agent-proposals'),
+  approveAgentProposal: (id: string, edits: { role?: RoleDef; count?: number; model?: string } = {}) => post<AgentProposal>(`/v1/agent-proposals/${id}/approve`, edits),
+  rejectAgentProposal: (id: string, reason: string) => post<AgentProposal>(`/v1/agent-proposals/${id}/reject`, { reason }),
   toolbox: () => get<Discovery[]>('/v1/toolbox'),
   removeDiscovery: (id: string) => del<Discovery>(`/v1/toolbox/${id}`),
   flagDiscovery: (id: string, reason: string | null) => post<Discovery>(`/v1/toolbox/${id}/flag`, { reason }),
