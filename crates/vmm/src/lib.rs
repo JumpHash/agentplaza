@@ -20,6 +20,8 @@
 //!   and serial capture
 //! - [`hvf`] — Apple Silicon Hypervisor.framework backend (macOS; written for
 //!   this port, absent upstream)
+//! - [`whp`] — Windows Hypervisor Platform backend (Windows x64; written for
+//!   this port, absent upstream)
 
 // This crate is safe Rust only. `deny(unsafe_code)` makes any `unsafe` in a
 // module that is not on the allowlist below a compile error, so every
@@ -50,6 +52,8 @@
 //   * `devices::virtio::vsock::packet` — the `ByteValued` packet header and the
 //     descriptor-chain loads into it.
 //   * `devices::virtio::vhost` — the `/dev/vhost-vsock` ioctl family.
+//   * `whp::{sys,vm,vcpu}` and `pal::windows` (Windows only) — the WHP and
+//     WinSock FFI, the guest memory allocation and the exit-context reads.
 //   * `hvf::{sys,vm,vcpu}` (macOS only) — the Hypervisor.framework FFI
 //     declarations, the framework calls, and the exit-structure reads.
 //   * `jail::sys` — the seccomp-bpf install path: the two `prctl(2)` calls that
@@ -92,3 +96,13 @@ pub mod vstate;
 /// compiles and runs on any target, the FFI/vm/vcpu backend only on
 /// macOS/Apple Silicon.
 pub mod hvf;
+/// The Windows Hypervisor Platform backend. Like [`hvf`], its pure half (the
+/// I/O APIC model, the x86_64 boot state, the zero page and the kernel loader)
+/// compiles and is tested on any target; the FFI half only on Windows.
+pub mod whp;
+
+/// The event primitives the virtio devices are built on (`EventFd`, `Epoll`),
+/// as one API on every platform: `vmm-sys-util`'s on Linux, a WinSock
+/// (`WSAPoll`) implementation with the same surface on Windows.
+#[cfg(any(target_os = "linux", windows))]
+pub mod pal;

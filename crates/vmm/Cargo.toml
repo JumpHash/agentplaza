@@ -24,6 +24,20 @@ linux-loader.workspace = true
 vm-superio.workspace = true
 vmm-sys-util.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# The WHP backend (loaded at run time: only the types and constants come from
+# here), guest memory (VirtualAlloc) and the WinSock event shim in `pal`.
+vm-superio.workspace = true
+apz-uds.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_Hypervisor",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-bindings.workspace = true
 kvm-ioctls.workspace = true
