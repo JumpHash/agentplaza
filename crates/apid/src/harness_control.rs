@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use apz_http::{Params, Request, Response, Router};
-use apz_proto::wire::WorkKind;
+use apz_proto::wire::{Control, WorkKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -283,8 +283,65 @@ pub fn spawn_ticker(app: Arc<App>) {
 }
 
 /// Sends a control to the agent's running work (Err when it has none).
-pub fn control(_app: &App, _cid: u64, _control: apz_proto::wire::Control) -> Result<u64, String> {
-    Err("harness controls are not available yet".into()) // contract: H2
+pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
+    let item = app.work.current(cid).ok_or_else(|| format!("agent {cid} has no running work"))?;
+    let data = json!({ "control": control.clone() });
+    let message = apz_proto::wire::HostMessage::Control { work: item.id, control };
+    match app.hub.post(&format!("/v1/agents/{cid}/send"), &json!({ "message": message })) {
+        Ok((code, _)) if (200..300).contains(&code) => {}
+        Ok((code, _)) => return Err(format!("agent {cid} refused the control (HTTP {code})")),
+        Err(e) => return Err(format!("agent {cid} is unreachable: {e}")),
+    }
+    app.transcripts.record(&app.bus, cid, item.id, "control", data);
+    Ok(item.id)
+}
+
+/// One harness action, shared by the tool (`by` is the calling agent's name) and the owner's
+/// route (`by` is "owner"). `input` carries `action` and the action's fields.
+fn act(app: &App, cid: u64, input: &Value, by: &str) -> Result<String, String> {
+    let agent = app.agents.get(cid).ok_or_else(|| format!("no agent {cid}"))?;
+    match input["action"].as_str().unwrap_or("") {
+        "compress" => control(app, cid, Control::Compress).map(|w| format!("compression queued for work {w}")),
+        "steer" => {
+            let text = input["text"].as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or("steer needs text")?;
+            if text.chars().count() > 2000 {
+                return Err("steer text is over 2000 characters".into());
+            }
+            let note = Control::Steer { from: by.to_string(), text: text.to_string() };
+            control(app, cid, note).map(|w| format!("steer queued for work {w}"))
+        }
+        "extend_turns" => {
+            let turns = input["turns"].as_u64().filter(|t| (1..=200).contains(t)).ok_or("extend_turns needs turns from 1 to 200")?;
+            control(app, cid, Control::ExtendTurns { turns: turns as u32 }).map(|w| format!("work {w} may take {turns} more turns"))
+        }
+        "set_limits" => {
+            let max_turns = input["max_turns"].as_u64().and_then(|v| u32::try_from(v).ok());
+            let compress_at = input["compress_at"].as_u64();
+            let keep_recent = input["keep_recent"].as_u64().and_then(|v| u32::try_from(v).ok());
+            if max_turns.is_none() && compress_at.is_none() && keep_recent.is_none() {
+                return Err("set_limits needs max_turns, compress_at or keep_recent".into());
+            }
+            let mut limits = app.harness.limits(cid);
+            if max_turns.is_some() {
+                limits.max_turns = max_turns;
+            }
+            if compress_at.is_some() {
+                limits.compress_at = compress_at;
+            }
+            if keep_recent.is_some() {
+                limits.keep_recent = keep_recent;
+            }
+            let saved = app.harness.set_limits(cid, limits)?;
+            crate::agents::push_profile(app, &agent);
+            Ok(json!(saved).to_string())
+        }
+        "show" => {
+            let running_work = app.work.current(cid).map(|w| w.id);
+            let loops: Vec<Loop> = app.harness.loops().into_iter().filter(|l| l.cid == cid).collect();
+            Ok(json!({ "limits": app.harness.limits(cid), "running_work": running_work, "loops": loops }).to_string())
+        }
+        other => Err(format!("unknown action {other:?}; use compress, steer, extend_turns, set_limits or show")),
+    }
 }
 
 pub fn spec(name: &str) -> Option<(&'static str, Value)> {
@@ -317,8 +374,68 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     })
 }
 
-pub fn run(_app: &App, _agent: &Agent, _name: &str, _input: &Value) -> Result<String, String> {
-    Err("harness controls are not available yet".into()) // contract: H2
+pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
+    if !may_control(&agent.role) {
+        return Err("only the orchestrator and the mayor manage harnesses".into());
+    }
+    match name {
+        "plaza_agent_control" => {
+            let cid = cid_of(input)?;
+            if cid == agent.cid {
+                return Err("an agent may not control itself".into());
+            }
+            act(app, cid, input, caller(agent))
+        }
+        "plaza_loop" => run_loop(app, agent, input),
+        other => Err(format!("unknown harness tool {other:?}")),
+    }
+}
+
+fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
+    match input["action"].as_str().unwrap_or("") {
+        "start" => {
+            let cid = cid_of(input)?;
+            if cid == agent.cid {
+                return Err("an agent may not loop itself".into());
+            }
+            app.agents.get(cid).ok_or_else(|| format!("no agent {cid}"))?;
+            let prompt = input["prompt"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("start needs a prompt")?;
+            let minutes = input["every_minutes"].as_u64().filter(|m| *m >= 1).ok_or("every_minutes must be at least 1")?;
+            let max_runs = u32::try_from(input["max_runs"].as_u64().unwrap_or(0)).map_err(|_| "max_runs is too large".to_string())?;
+            let looped = app.harness.start_loop(cid, prompt, minutes.saturating_mul(60), max_runs, caller(agent), agent.cid)?;
+            app.bus.publish("loop", &looped);
+            Ok(format!("loop {} started: every {minutes} minutes for agent {cid}", looped.id))
+        }
+        "stop" => {
+            let id = input["id"].as_str().filter(|s| !s.is_empty()).ok_or("stop needs the loop id")?;
+            let stopped = app.harness.stop_loop(id)?;
+            app.bus.publish("loop", &stopped);
+            Ok(format!("loop {} stopped after {} runs", stopped.id, stopped.runs))
+        }
+        "list" => {
+            let lines: Vec<String> = app
+                .harness
+                .loops()
+                .iter()
+                .map(|l| json!({ "id": l.id, "cid": l.cid, "state": l.state, "runs": l.runs, "max_runs": l.max_runs, "every_secs": l.every_secs, "prompt": l.prompt }).to_string())
+                .collect();
+            Ok(if lines.is_empty() { "no loops".to_string() } else { lines.join("\n") })
+        }
+        other => Err(format!("unknown loop action {other:?}; use start, stop or list")),
+    }
+}
+
+/// The name a tool call acts under (the role when the agent has no name).
+fn caller(agent: &Agent) -> &str {
+    if agent.name.is_empty() {
+        &agent.role
+    } else {
+        &agent.name
+    }
+}
+
+fn cid_of(input: &Value) -> Result<u64, String> {
+    input["cid"].as_u64().ok_or_else(|| "cid is required".to_string())
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -364,8 +481,18 @@ fn stop_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 }
 
 /// Body: the same as plaza_agent_control's input minus `cid`; the owner acts.
-fn control_route(_app: &App, _req: &Request, _: &Params<'_>) -> Response {
-    Response::error(501, "harness controls are not available yet") // contract: H2
+fn control_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let Ok(cid) = p.get("cid").parse::<u64>() else {
+        return Response::error(400, "bad agent id");
+    };
+    let body: Value = match req.json() {
+        Ok(body) => body,
+        Err(e) => return Response::error(400, &format!("bad body: {e}")),
+    };
+    match act(app, cid, &body, "owner") {
+        Ok(result) => Response::json(200, &json!({ "ok": true, "result": result })),
+        Err(e) => Response::error(409, &e),
+    }
 }
 
 #[cfg(test)]
