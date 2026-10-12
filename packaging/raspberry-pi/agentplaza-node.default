@@ -1,0 +1,17 @@
+# Defaults for the AgentPlaza node (noded), read by agentplaza-node.service.
+# Installed as /etc/default/agentplaza-node. After editing, restart the node:
+#   systemctl --user restart agentplaza-node
+#
+# APZ_NODE_ARGS is passed to /usr/bin/noded as it is. Flags noded knows:
+#   --agents-vcpus N          vCPUs per agent VM (default 1)
+#   --agents-memory-mib N     guest memory per agent VM, MiB (default 1024)
+#   --agents-balloon-mib N    MiB of that memory usable at boot (default 32)
+#   --run-cids A-B            guest CIDs for runs, inclusive (default 20-99)
+#
+# Memory: the agents' memory comes out of the board's RAM, and the OS, the
+# hub and the desktop need some too. A Raspberry Pi 4 with 4 GB runs about
+# 4 agents at 512 MiB each; a Raspberry Pi 5 with 8 GB about 10. Add
+# --agents-memory-mib 512 to the arguments below to run agents that size
+# (the noded default of 1024 MiB is too large for a Pi).
+
+APZ_NODE_ARGS="--agents-vcpus 1"
