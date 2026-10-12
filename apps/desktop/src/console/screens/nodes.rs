@@ -4,12 +4,13 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{column, container, row, text_input, Space};
+use iced::widget::{checkbox, column, container, row, text_input, Space};
 use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
+use crate::console::services::{self, Mode, NodeStatus};
 use crate::console::{client, ui, Ctx};
 use crate::theme::WARN;
 
@@ -126,6 +127,16 @@ pub struct State {
     pub notice: Option<String>,
     /// The open dialog, if any.
     pub dialog: Option<Dialog>,
+    /// This machine as a node (loaded on open and on the poll).
+    pub node: Option<NodeStatus>,
+    /// The join code being typed; the node's action running; its progress lines and error.
+    pub code: String,
+    pub node_busy: bool,
+    pub progress: Vec<String>,
+    pub node_error: Option<String>,
+    /// The leave confirmation is open, and whether the network is forgotten too.
+    pub leaving: bool,
+    pub forget: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +164,22 @@ pub enum Msg {
     /// Copy a value to the clipboard.
     Copy(String),
     Close,
+    /// This machine's node status, read from its identity files.
+    NodeLoaded(NodeStatus),
+    CodeEdit(String),
+    /// Join the network the code names, then start the node.
+    Join,
+    /// The join finished: its progress lines, or its error.
+    Joined(Result<Vec<String>, String>),
+    NodeStart,
+    NodeStop,
+    /// The node service started or stopped: its progress lines, or its error.
+    NodeRan(Result<Vec<String>, String>),
+    AskLeave,
+    CancelLeave,
+    ToggleForget(bool),
+    Leave,
+    Left(Result<(), String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -170,6 +197,7 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
         client::task(move || nodes.get::<Vec<NodeView>>("/v1/nodes"), Msg::NodesLoaded),
         client::task(move || codes.get::<Vec<JoinCode>>("/v1/nodes/codes"), Msg::CodesLoaded),
         client::task(move || hub.get::<HubIdentity>("/v1/hub/identity"), Msg::HubLoaded),
+        Task::perform(async { services::node_status() }, Msg::NodeLoaded),
     ])
 }
 
@@ -300,7 +328,122 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = None;
             Task::none()
         }
+        Msg::NodeLoaded(status) => {
+            state.node = Some(status);
+            Task::none()
+        }
+        Msg::CodeEdit(value) => {
+            state.code = value;
+            Task::none()
+        }
+        Msg::Join => {
+            let token = state.code.trim().to_string();
+            if state.node_busy {
+                return Task::none();
+            }
+            if token.is_empty() {
+                state.node_error = Some("Paste the join code from the hub first.".to_string());
+                return Task::none();
+            }
+            state.node_busy = true;
+            state.node_error = None;
+            state.progress = vec!["Joining the network…".to_string()];
+            Task::perform(async move { join_and_start(&token) }, Msg::Joined)
+        }
+        Msg::Joined(result) => {
+            state.node_busy = false;
+            match result {
+                Ok(lines) => {
+                    state.code.clear();
+                    state.progress = lines;
+                }
+                Err(error) => {
+                    state.progress.clear();
+                    state.node_error = Some(error);
+                }
+            }
+            load(state, ctx)
+        }
+        Msg::NodeStart => node_run(state, true),
+        Msg::NodeStop => node_run(state, false),
+        Msg::NodeRan(result) => {
+            state.node_busy = false;
+            match result {
+                Ok(lines) => state.progress = lines,
+                Err(error) => state.node_error = Some(error),
+            }
+            load(state, ctx)
+        }
+        Msg::AskLeave => {
+            state.leaving = true;
+            state.forget = false;
+            state.node_error = None;
+            Task::none()
+        }
+        Msg::CancelLeave => {
+            state.leaving = false;
+            state.forget = false;
+            Task::none()
+        }
+        Msg::ToggleForget(on) => {
+            state.forget = on;
+            Task::none()
+        }
+        Msg::Leave => {
+            if state.node_busy {
+                return Task::none();
+            }
+            state.node_busy = true;
+            state.node_error = None;
+            let forget = state.forget;
+            Task::perform(async move { services::leave(forget) }, Msg::Left)
+        }
+        Msg::Left(result) => {
+            state.node_busy = false;
+            let forgot = state.forget;
+            state.leaving = false;
+            state.forget = false;
+            match result {
+                Ok(()) => {
+                    state.progress = vec![if forgot {
+                        "Left the network and forgot it.".to_string()
+                    } else {
+                        "Left the network. Its node is stopped.".to_string()
+                    }];
+                }
+                Err(error) => state.node_error = Some(error),
+            }
+            load(state, ctx)
+        }
     }
+}
+
+/// Joins the network the code names, then starts the node; returns the progress lines.
+fn join_and_start(token: &str) -> Result<Vec<String>, String> {
+    let node = services::join(token)?;
+    let mut lines = vec![format!("joined as node {node}")];
+    lines.extend(services::start(Mode::Node)?);
+    Ok(lines)
+}
+
+/// Starts or stops the node service in a task.
+fn node_run(state: &mut State, start: bool) -> Task<Msg> {
+    if state.node_busy {
+        return Task::none();
+    }
+    state.node_busy = true;
+    state.node_error = None;
+    state.progress = vec![if start { "Starting the node…" } else { "Stopping the node…" }.to_string()];
+    Task::perform(
+        async move {
+            if start {
+                services::start(Mode::Node)
+            } else {
+                services::stop(Mode::Node)
+            }
+        },
+        Msg::NodeRan,
+    )
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
@@ -315,6 +458,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(dialog_view(dialog));
     }
     parts.push(ui::card("Machines in this plaza", nodes_view(&state.nodes)));
+    parts.push(network_view(state));
     parts.push(ui::card("Join codes", codes_view(&state.codes)));
     parts.push(ui::card("This hub", hub_view(&state.hub)));
 
@@ -563,6 +707,91 @@ fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
         .map(|(portion, cell)| container(cell).width(Length::FillPortion(portion)).into())
         .collect();
     row(laid).spacing(12).align_y(Alignment::Center).into()
+}
+
+/// The "Join a network" card: the join form while this machine is no node, else the network it
+/// joined, with its services and Leave. Progress and errors show under either.
+fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::prose(
+        "Lend this computer to another network: its agents run here in sealed machines. Your own plaza keeps running.",
+    )
+    .into()];
+    parts.push(match &state.node {
+        None => ui::loading(),
+        Some(node) if node.joined => joined_view(node, state),
+        Some(_) => join_form(state),
+    });
+    for line in &state.progress {
+        parts.push(ui::mono(line.as_str(), 11.0, ui::INK_3).into());
+    }
+    if let Some(error) = &state.node_error {
+        parts.push(ui::error_line(error.as_str()));
+    }
+    ui::card("Join a network", column(parts).spacing(12).width(Length::Fill).into())
+}
+
+/// The join form: the code (monospace) and the Join button.
+fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
+    let busy = state.node_busy;
+    column![
+        ui::label("Join code"),
+        text_input("paste the join code", &state.code)
+            .font(crate::theme::MONO)
+            .style(crate::theme::input)
+            .padding(8.0)
+            .on_input(Msg::CodeEdit)
+            .on_submit(Msg::Join),
+        ui::faint("The code is made on the hub, under Add a node. It is single use and expires."),
+        ui::btn(if busy { "Joining…" } else { "Join" }, None, ui::Kind::Primary, (!busy).then_some(Msg::Join)),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// The joined network: its hub, node and CIDs, the node service's state with Start or Stop, and
+/// Leave (confirmed, with the choice to forget the network).
+fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
+    let busy = state.node_busy;
+    let (badge_text, tone) = if node.running { ("running", ui::Tone::Ok) } else { ("stopped", ui::Tone::Muted) };
+    let toggle: Element<'a, Msg> = if node.running {
+        ui::btn("Stop", None, ui::Kind::Secondary, (!busy).then_some(Msg::NodeStop))
+    } else {
+        ui::btn("Start", None, ui::Kind::Secondary, (!busy).then_some(Msg::NodeStart))
+    };
+    let leave: Element<'a, Msg> = if state.leaving {
+        column![
+            ui::faint("This computer stops lending itself to that network, and the agents it runs here stop."),
+            checkbox(state.forget).label("Forget this network (remove its identity and key)").on_toggle(Msg::ToggleForget),
+            row![
+                ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::CancelLeave)),
+                ui::btn("Leave", None, ui::Kind::Danger, (!busy).then_some(Msg::Leave)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .into()
+    } else {
+        ui::btn("Leave", None, ui::Kind::Danger, (!busy).then_some(Msg::AskLeave))
+    };
+    let service: Element<'a, Msg> = row![ui::badge(badge_text, tone), toggle].spacing(10).align_y(Alignment::Center).into();
+    column![
+        fact("Hub", ui::mono(or_dash(&node.hub), 12.0, ui::INK).into()),
+        fact("Node", ui::mono(or_dash(&node.node_id), 12.0, ui::INK).into()),
+        fact("CIDs", ui::mono(or_dash(&node.cids), 12.0, ui::INK).into()),
+        service,
+        leave,
+    ]
+    .spacing(12)
+    .into()
+}
+
+/// A value, or a dash when there is none.
+fn or_dash(value: &str) -> &str {
+    if value.is_empty() {
+        "—"
+    } else {
+        value
+    }
 }
 
 /// The state a node shows, most urgent first.
