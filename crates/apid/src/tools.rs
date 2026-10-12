@@ -73,6 +73,9 @@ const ALWAYS: &[&str] = &[
     "memory_list",
 ];
 
+/// The guest tools that act only inside the agent's own VM, offered to every role.
+const IN_VM: &[&str] = &["bash", "read_file", "write_file", "edit_file", "list", "search"];
+
 /// Host tools offered only by tier or seat (see [`permitted`]).
 const GATED: &[&str] = &[
     "plaza_bid",
@@ -159,9 +162,11 @@ fn refusal(role: &str, name: &str) -> Option<String> {
 /// The sorted, de-duplicated tool names offered to `role` given its manifest
 /// `granted` list. Guest tools appear only when granted.
 fn offered(role: &str, granted: &[String]) -> Vec<String> {
+    // Every role gets every in-VM tool: inside its own VM an agent may do anything.
     let mut names: Vec<String> = granted
         .iter()
         .map(String::as_str)
+        .chain(IN_VM.iter().copied())
         .chain(ALWAYS.iter().copied())
         .chain(GATED.iter().copied())
         .filter(|name| runs(name).is_some() && permitted(role, name))
@@ -705,10 +710,13 @@ mod tests {
     }
 
     #[test]
-    fn ungranted_guest_tool_is_not_offered() {
-        assert!(!offered("worker", &[]).iter().any(|n| n == "bash"));
-        let granted = offered("worker", &["bash".to_string()]);
-        assert!(granted.iter().any(|n| n == "bash"));
+    fn every_role_gets_the_in_vm_tools() {
+        for role in ["worker", "reviewer", "mayor"] {
+            let offered = offered(role, &[]);
+            for name in IN_VM {
+                assert!(offered.iter().any(|n| n == name), "{role} lacks {name}");
+            }
+        }
         assert!(runs("bash") == Some(Runs::Guest));
     }
 

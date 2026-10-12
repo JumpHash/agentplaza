@@ -27,6 +27,13 @@ pub(crate) const SHELL: &str = "/bin/sh";
 /// The agent's PATH: the system bins, then what it installs for itself (pip
 /// `--user`, `go install`, npm's global prefix under its home).
 const USER_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/workspace/.local/bin:/workspace/go/bin:/workspace/.npm-global/bin";
+/// Whether agent commands run as root inside the VM. The VM itself (no NIC, vsock only,
+/// egress through the hub, keys held by apid) is what keeps agents off the host and away
+/// from each other; inside it, the agent may do anything.
+pub(crate) const AGENT_RUNS_AS_ROOT: bool = true;
+/// The agent's PATH as root: the system and admin bins, then what it installs for itself.
+const AGENT_PATH: &str =
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/workspace/.local/bin:/workspace/go/bin:/workspace/.npm-global/bin";
 /// PATH for package installs, which run as root inside the VM.
 const ADMIN_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// A package install may take a while (toolchains are large).
@@ -117,14 +124,20 @@ pub(crate) fn command(program: &str, args: &[&str], dir: &std::path::Path, privi
         .current_dir(dir)
         .env_clear()
         .env("HOME", if privilege == Privilege::Root { std::path::Path::new("/root") } else { dir })
-        .env("PATH", if privilege == Privilege::Root { ADMIN_PATH } else { USER_PATH })
+        .env("PATH", match privilege {
+            Privilege::Root => ADMIN_PATH,
+            Privilege::Agent if AGENT_RUNS_AS_ROOT => AGENT_PATH,
+            Privilege::Agent => USER_PATH,
+        })
         .env("http_proxy", PROXY_URL)
         .env("https_proxy", PROXY_URL)
         .env("HTTP_PROXY", PROXY_URL)
         .env("HTTPS_PROXY", PROXY_URL)
         .stdin(Stdio::null())
         .process_group(0);
-    if privilege == Privilege::Agent && runs_as_root()? {
+    // The agent is root in its own VM (the owner's choice): the VM is the boundary, so
+    // nothing is dropped. Set `AGENT_RUNS_AS_ROOT` to false to run commands as uid 1000.
+    if privilege == Privilege::Agent && !AGENT_RUNS_AS_ROOT && runs_as_root()? {
         builder.uid(UNPRIVILEGED).gid(UNPRIVILEGED);
     }
     Ok(builder)
@@ -232,7 +245,7 @@ mod tests {
         let workspace = scratch("env");
         let script = "echo \"$HOME\"; echo \"$PATH\"; cat; echo hi";
         let output = run(&workspace, &json!({ "command": script })).expect("exit 0");
-        assert_eq!(output, format!("{}\n{USER_PATH}\nhi\nexit 0", workspace.dir().display()));
+        assert_eq!(output, format!("{}\n{AGENT_PATH}\nhi\nexit 0", workspace.dir().display()));
     }
 
     #[test]

@@ -87,11 +87,10 @@ impl Engine {
     /// The arguments of one headless run; the prompt is a single argument.
     fn args(self, prompt: &str) -> Vec<String> {
         let words: Vec<&str> = match self {
-            // Headless engines can't ask a human for approval, so their own per-command prompts
-            // are off. That never widens what the agent can reach: the engine runs inside the
-            // agent's own microVM (no NIC, vsock only, internet only via the hub's audited
-            // egress, keys held by apid), the same place the agent's bash tool runs. Codex keeps
-            // its own kernel sandbox on top (writes confined to the workspace).
+            // Inside its own VM an agent may do anything (the owner's choice), so the engines run
+            // without their own approval prompts or sandboxes. That never widens what the agent
+            // can reach: the engine runs inside the agent's microVM (no NIC, vsock only, internet
+            // only via the hub's audited egress, keys held by apid), where bash runs as root too.
             Self::Claude => vec![
                 "-p",
                 prompt,
@@ -100,7 +99,7 @@ impl Engine {
                 "--permission-mode",
                 "bypassPermissions",
             ],
-            Self::Codex => vec!["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", prompt],
+            Self::Codex => vec!["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", prompt],
             Self::OpenCode => vec!["run", prompt],
         };
         words.into_iter().map(str::to_string).collect()
@@ -265,7 +264,7 @@ mod tests {
             Engine::Claude.args("fix the bug"),
             ["-p", "fix the bug", "--output-format", "json", "--permission-mode", "bypassPermissions"]
         );
-        assert_eq!(Engine::Codex.args("fix the bug"), ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "fix the bug"]);
+        assert_eq!(Engine::Codex.args("fix the bug"), ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "fix the bug"]);
         assert_eq!(Engine::OpenCode.args("fix the bug"), ["run", "fix the bug"]);
     }
 
