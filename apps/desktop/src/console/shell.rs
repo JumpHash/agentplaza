@@ -169,7 +169,7 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
 }
 
 fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
-    let mark = ui::icon("orchestrator", 18.0, ui::SIGNAL);
+    let mark = ui::hive(26.0);
     let head: Element<'a, M> = if open {
         row![mark, ui::mono("AgentPlaza", 14.0, ui::INK)].spacing(10).align_y(Alignment::Center).into()
     } else {

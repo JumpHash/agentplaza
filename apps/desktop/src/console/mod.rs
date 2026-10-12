@@ -7,6 +7,7 @@
 //! register (fleet, runs, map, telemetry) stays reachable with `--legacy`.
 
 pub mod boot;
+pub mod brands;
 pub mod client;
 pub mod icons;
 pub mod screens;

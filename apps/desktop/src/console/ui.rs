@@ -64,6 +64,26 @@ pub fn icon<'a, M: 'a>(name: &str, size: f32, color: Color) -> Element<'a, M> {
     }
 }
 
+/// A provider's mark (`brands.rs`) in its own colours, `size` px square; an empty square for an
+/// unknown key.
+pub fn brand_logo<'a, M: 'a>(key: &str, size: f32) -> Element<'a, M> {
+    match crate::console::brands::get(key) {
+        Some(brand) => svg(svg::Handle::from_memory(brand.svg.as_bytes().to_vec()))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
+            .into(),
+        None => Space::new().width(Length::Fixed(size)).height(Length::Fixed(size)).into(),
+    }
+}
+
+/// The AgentPlaza mark: the hive (three ink cells around the signal-orange core).
+pub fn hive<'a, M: 'a>(size: f32) -> Element<'a, M> {
+    svg(svg::Handle::from_memory(HIVE.as_bytes().to_vec())).width(Length::Fixed(size)).height(Length::Fixed(size)).into()
+}
+
+/// The hive's SVG, from `apps/site/assets/hive.svg` (the console's geometry).
+const HIVE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M21.20 7.85L18.60 12.35L13.40 12.35L10.80 7.85L13.40 3.35L18.60 3.35Z" fill="none" stroke="#121613" stroke-width="2.1" stroke-linejoin="miter"/><path d="M11.76 24.20L9.16 28.70L3.96 28.70L1.36 24.20L3.96 19.70L9.16 19.70Z" fill="none" stroke="#121613" stroke-width="2.1" stroke-linejoin="miter"/><path d="M30.64 24.20L28.04 28.70L22.84 28.70L20.24 24.20L22.84 19.70L28.04 19.70Z" fill="none" stroke="#121613" stroke-width="2.1" stroke-linejoin="miter"/><path class="core" fill="#e8590c" d="M21.60 18.75L18.80 23.60L13.20 23.60L10.40 18.75L13.20 13.90L18.80 13.90Z"/></svg>"##;
+
 /// A screen's sheet: the page's one bordered surface, uniform padding, full width.
 pub fn sheet<'a, M: 'a>(head: Element<'a, M>, body: Element<'a, M>) -> Element<'a, M> {
     container(column![head, body].spacing(22))

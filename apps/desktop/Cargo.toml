@@ -1,13 +1,10 @@
 [package]
 name = "agentplaza-desktop"
-description = "AgentPlaza fleet dashboard: an iced + wgpu desktop client for the apid's API"
+description = "AgentPlaza console: the native desktop app (iced + wgpu), at parity with the web console"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-
-# This app is deliberately its own workspace: it builds with its own Cargo.lock
-# and the root workspace (`members = ["crates/*"]`) never picks it up.
 
 [dependencies]
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
@@ -22,12 +19,17 @@ iced = { version = "0.14", default-features = false, features = [
     "web-colors",
     "x11",
     "wayland",
-    # The fleet map is drawn with iced's own canvas (`iced::widget::canvas`).
     "canvas",
     # The console's icons (the web console's lucide set) and agent portraits.
     "svg",
     "image",
 ] }
+# The Floor's 3D world, drawn with our own wgpu pipelines inside iced's shader widget
+# (`console/floor3d`): matrices, vertex data, and its painted textures and plaques.
+glam = { version = "0.30", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+tiny-skia = "0.11"
+ab_glyph = "0.2"
 # The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
 apz-http = { path = "../../crates/apz-http" }
 serde.workspace = true
