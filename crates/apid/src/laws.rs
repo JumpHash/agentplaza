@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
+use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
 use jhrl::authz::{authorize, Decision, Entity, EntityStore, Request};
+use jhrl::span::SourceMap;
 use jhrl::value::Value;
 use jhrl::Program;
 use serde::{Deserialize, Serialize};
@@ -173,8 +175,17 @@ impl Laws {
 
     /// Every law, in file then source order, for the Rules view.
     pub fn catalog(&self) -> Vec<LawInfo> {
-        let _ = &self.program;
-        Vec::new() // contract: J1
+        let sources = &self.program.sources;
+        let mut out = Vec::new();
+        for module in &self.program.modules {
+            let file = sources.files[module.file as usize].path.clone();
+            for item in &module.items {
+                if let Item::Law(law) = item {
+                    out.push(law_info(law, &file, sources));
+                }
+            }
+        }
+        out
     }
 
     /// Every violation recorded from now on is also handed to `sink`.
@@ -330,6 +341,144 @@ impl Laws {
     }
 }
 
+/// One law as the Rules view shows it: its fields, its source text and a generated sentence.
+fn law_info(law: &Law, file: &str, sources: &SourceMap) -> LawInfo {
+    let principal = law.principal.as_ref().map(|s| scope_text("principal", s, sources)).unwrap_or_default();
+    let resource = law.resource.as_ref().map(|s| scope_text("resource", s, sources)).unwrap_or_default();
+    let conditions: Vec<String> = law.when.iter().map(|e| sources.snippet(e.span).trim().to_string()).collect();
+    let tier = law.tier.clone().unwrap_or_else(|| file_tier(file).to_string());
+    let explanation = explain(law, &principal, &conditions);
+    LawInfo {
+        id: law.id.clone(),
+        title: law.title.clone(),
+        tier,
+        enforcement: law.enforcement.clone().unwrap_or_default(),
+        severity: law.severity.clone().unwrap_or_default(),
+        statement: law.statement.clone().unwrap_or_default(),
+        rationale: law.rationale.clone().unwrap_or_default(),
+        effect: match law.effect {
+            Effect::Permit => "permit",
+            Effect::Forbid => "forbid",
+        }
+        .to_string(),
+        ops: law.ops.clone(),
+        principal,
+        resource,
+        conditions,
+        explanation,
+        file: file.to_string(),
+        source: sources.snippet(law.span).to_string(),
+    }
+}
+
+/// The tier a law gets from its file when it names none.
+fn file_tier(file: &str) -> &'static str {
+    match file {
+        "constitution.jhrl" => "constitution",
+        "statutes.jhrl" => "statute",
+        "operations.jhrl" => "operations",
+        _ => "",
+    }
+}
+
+/// A scope as source text, e.g. `principal is Agent` or `resource == x`.
+fn scope_text(subject: &str, scope: &Scope, sources: &SourceMap) -> String {
+    match scope {
+        Scope::Is(t) => format!("{subject} is {}", type_name(t)),
+        Scope::Eq(e) => format!("{subject} == {}", sources.snippet(e.span).trim()),
+        Scope::In(e) => format!("{subject} in {}", sources.snippet(e.span).trim()),
+    }
+}
+
+fn type_name(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Named(name, _, _) => name.clone(),
+        _ => String::new(),
+    }
+}
+
+/// The plain sentence: who may (not) do what, on what, and under which conditions.
+fn explain(law: &Law, principal: &str, conditions: &[String]) -> String {
+    let verb = if law.ops.is_empty() {
+        "act".to_string()
+    } else {
+        law.ops.iter().map(|op| verb_of(op)).collect::<Vec<_>>().join(" or ")
+    };
+    let own = conditions.iter().any(|c| c.contains("resource.agent == principal"));
+    let object = match &law.resource {
+        Some(Scope::Is(t)) => {
+            let name = type_name(t).to_lowercase();
+            if own {
+                format!(" its own {name}")
+            } else {
+                format!(" {}", with_article(&name))
+            }
+        }
+        _ => String::new(),
+    };
+    let who = who_of(law, principal, conditions);
+    let tail = if conditions.is_empty() { "" } else { " under the conditions below" };
+    match law.effect {
+        Effect::Permit => format!("{} may {verb}{object}{tail}.", capitalized(&who)),
+        Effect::Forbid if who == "any agent" => format!("No agent may {verb}{object}{tail}."),
+        Effect::Forbid => format!("{} may not {verb}{object}{tail}.", capitalized(&who)),
+    }
+}
+
+/// Who the law applies to, as a noun phrase: a role when one is named, else the principal's type.
+fn who_of(law: &Law, principal: &str, conditions: &[String]) -> String {
+    let role = std::iter::once(principal).chain(conditions.iter().map(String::as_str)).find_map(role_named);
+    if let Some(role) = role {
+        return with_article(&role.to_lowercase());
+    }
+    match &law.principal {
+        None => "anyone".to_string(),
+        Some(Scope::Is(t)) => match type_name(t).as_str() {
+            "Agent" => "any agent".to_string(),
+            "Owner" => "the owner".to_string(),
+            other => with_article(&other.to_lowercase()),
+        },
+        Some(_) => "anyone".to_string(),
+    }
+}
+
+/// The role a scope or condition names: `principal.role == "builder"` or `Role::"builder"`.
+fn role_named(text: &str) -> Option<String> {
+    let start = ["principal.role == \"", "Role::\""].iter().find_map(|marker| text.find(marker).map(|i| i + marker.len()))?;
+    let rest = &text[start..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// The plain verb for an operation name.
+fn verb_of(op: &str) -> String {
+    match op {
+        "tool.exec" => "run commands in".to_string(),
+        "tool.call" => "call".to_string(),
+        "message.send" => "message".to_string(),
+        "plan.approve" => "approve plans for".to_string(),
+        "vault.read" => "read the vault of".to_string(),
+        "egress.connect" => "connect out to".to_string(),
+        "artifact.publish" => "publish".to_string(),
+        "memory.change" => "change the memory of".to_string(),
+        "device.actuate" => "operate".to_string(),
+        "any" => "act on".to_string(),
+        other => other.replace('.', " "),
+    }
+}
+
+fn with_article(noun: &str) -> String {
+    let article = if noun.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    format!("{article} {noun}")
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +488,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("apid-laws-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_catalog_explains_each_law() {
+        let laws = Laws::load(&scratch("catalog"));
+        let catalog = laws.catalog();
+        assert!(!catalog.is_empty());
+        assert!(catalog.iter().all(|l| !l.id.is_empty() && !l.title.is_empty() && !l.effect.is_empty()));
+        assert!(catalog.iter().any(|l| l.effect == "permit"));
+        assert!(catalog.iter().any(|l| l.effect == "forbid"));
+        let s000a = catalog.iter().find(|l| l.id == "S-000a").expect("S-000a is in the catalog");
+        assert!(s000a.source.starts_with("law \"S-000a\""), "{}", s000a.source);
+        assert_eq!(s000a.tier, "statute");
+        assert!(s000a.explanation.contains("sandbox"), "{}", s000a.explanation);
     }
 
     #[test]
