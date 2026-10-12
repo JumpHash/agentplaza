@@ -88,7 +88,7 @@ pub const MAX_TEXT: usize = 4096;
 pub const MAX_ROLE: usize = 64;
 
 /// The states noded v0 gives a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
     /// Created and claimable.
     Open,
@@ -798,15 +798,143 @@ impl TaskLedger {
 }
 
 
-impl TaskLedger {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        String::new() // contract: D2
+/// The ledger's state as a snapshot holds it: the id counter and every task's
+/// record, oldest first. The `Arc`s a live task holds (the bus and the treasury)
+/// are not state, so they are not in it; restore hands them back.
+#[derive(Debug, Serialize, Deserialize)]
+struct LedgerSnapshot {
+    next_seq: u64,
+    tasks: Vec<TaskRecord>,
+}
+
+/// One task as a snapshot holds it. The outcome is not stored: it is the
+/// state's own (see [`TaskState::outcome`]), so a record cannot disagree with
+/// its state.
+#[derive(Debug, Serialize, Deserialize)]
+struct TaskRecord {
+    id: String,
+    goal: String,
+    acceptance: Option<String>,
+    budget: u64,
+    role: Option<String>,
+    escrow_entry: Option<u64>,
+    created_at: u64,
+    state: TaskState,
+    assignee_id: Option<String>,
+    verifier_id: Option<String>,
+    agent_cid: Option<u64>,
+    note: Option<String>,
+    updated_at: u64,
+}
+
+impl Task {
+    /// The task's state as a snapshot record.
+    fn record(&self) -> TaskRecord {
+        let inner = self.lock();
+        TaskRecord {
+            id: self.id.clone(),
+            goal: self.goal.clone(),
+            acceptance: self.acceptance.clone(),
+            budget: self.budget,
+            role: self.role.clone(),
+            escrow_entry: self.escrow_entry,
+            created_at: self.created_at,
+            state: inner.state,
+            assignee_id: inner.assignee_id.clone(),
+            verifier_id: inner.verifier_id.clone(),
+            agent_cid: inner.agent_cid,
+            note: inner.note.clone(),
+            updated_at: inner.updated_at,
+        }
     }
 
-    /// Replaces the state with a [`TaskLedger::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D2
+    /// Rebuilds a live task from its record, over the given bus and treasury.
+    fn from_record(record: TaskRecord, events: &Arc<EventBus>, treasury: &Arc<Treasury>) -> Self {
+        Self {
+            id: record.id,
+            goal: record.goal,
+            acceptance: record.acceptance,
+            budget: record.budget,
+            role: record.role,
+            escrow_entry: record.escrow_entry,
+            created_at: record.created_at,
+            events: Arc::clone(events),
+            treasury: Arc::clone(treasury),
+            inner: Mutex::new(TaskInner {
+                state: record.state,
+                outcome: record.state.outcome(),
+                assignee_id: record.assignee_id,
+                agent_cid: record.agent_cid,
+                verifier_id: record.verifier_id,
+                note: record.note,
+                updated_at: record.updated_at,
+            }),
+        }
+    }
+}
+
+/// The invariants a ledger snapshot must hold before it may replace a ledger:
+/// at most [`MAX_TASKS`] tasks, each with the canonical id `t<n>` and no id
+/// repeated, and an id counter at least the largest `n`, so the next create
+/// cannot hand out an id that is already taken.
+fn check_ledger_snapshot(snapshot: &LedgerSnapshot) -> Result<(), String> {
+    if snapshot.tasks.len() > MAX_TASKS {
+        return Err(format!(
+            "the snapshot holds {} tasks, over the cap of {MAX_TASKS}",
+            snapshot.tasks.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut largest = 0;
+    for record in &snapshot.tasks {
+        let seq = record
+            .id
+            .strip_prefix('t')
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .filter(|seq| record.id == format!("t{seq}"))
+            .ok_or_else(|| format!("the snapshot's task id {:?} is not t<n>", record.id))?;
+        if !seen.insert(seq) {
+            return Err(format!("the snapshot repeats task id {}", record.id));
+        }
+        largest = largest.max(seq);
+    }
+    if largest > snapshot.next_seq {
+        return Err(format!(
+            "the snapshot's id counter {} is behind its largest id t{largest}",
+            snapshot.next_seq
+        ));
+    }
+    Ok(())
+}
+
+impl TaskLedger {
+    /// The whole state as JSON: the id counter and every task's record. Restore
+    /// reads it back with [`TaskLedger::restore`].
+    pub fn snapshot(&self) -> String {
+        let inner = self.lock();
+        let snapshot = LedgerSnapshot {
+            next_seq: inner.next_seq,
+            tasks: inner.tasks.iter().map(|task| task.record()).collect(),
+        };
+        serde_json::to_string(&snapshot).expect("the ledger state serializes")
+    }
+
+    /// Replaces the state with a [`TaskLedger::snapshot`]; a refusal changes
+    /// nothing. The tasks are rebuilt over this ledger's own bus and treasury,
+    /// and neither is touched: a restore posts nothing and publishes nothing.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let snapshot: LedgerSnapshot = serde_json::from_str(json)
+            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+        check_ledger_snapshot(&snapshot)?;
+        let tasks: Vec<Arc<Task>> = snapshot
+            .tasks
+            .into_iter()
+            .map(|record| Arc::new(Task::from_record(record, &self.events, &self.treasury)))
+            .collect();
+        let mut inner = self.lock();
+        inner.next_seq = snapshot.next_seq;
+        inner.tasks = tasks;
+        Ok(())
     }
 }
 
@@ -1355,5 +1483,78 @@ mod tests {
         assert!(ledger.list().is_empty());
         assert_eq!(ledger.treasury().view().totals.entries, 1);
         assert_eq!(create(&ledger, "free").id(), "t1");
+    }
+
+    /// The task views a ledger lists, as JSON: the API's own shape, compared whole.
+    fn views(ledger: &TaskLedger) -> Vec<serde_json::Value> {
+        ledger
+            .list()
+            .iter()
+            .map(|task| serde_json::to_value(task.view()).expect("a view serializes"))
+            .collect()
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_same_task_views_over_the_same_treasury() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        let open = budgeted(&ledger, "still open", 10);
+        assert_eq!(open.id(), "t1");
+        let claimed = budgeted(&ledger, "claimed", 20);
+        claimed.claim(&agent(100, "builder")).expect("open -> claimed");
+        let done = budgeted(&ledger, "done", 30);
+        done.claim(&agent(101, "builder")).expect("open -> claimed");
+        done.finish(FinishOutcome::Done, Some("shipped".to_string()))
+            .expect("claimed -> done");
+        let failed = create(&ledger, "failed");
+        failed.claim(&agent(102, "tester")).expect("open -> claimed");
+        failed.finish(FinishOutcome::Failed, None).expect("claimed -> failed");
+        let withdrawn = create(&ledger, "withdrawn");
+        withdrawn.withdraw().expect("open -> withdrawn");
+
+        let before = views(&ledger);
+        assert_eq!(before.len(), 5);
+        let json = ledger.snapshot();
+
+        // Restored over the same treasury, as the daemon does: the treasury is
+        // restored first and the ledger keeps its link to it.
+        let treasury = Arc::clone(ledger.treasury());
+        let version = treasury.version();
+        let restored = TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(&treasury));
+        restored.restore(&json).expect("a snapshot of a ledger restores");
+        assert_eq!(views(&restored), before);
+        assert_eq!(treasury.version(), version, "a restore posts nothing to the treasury");
+        assert!(Arc::ptr_eq(restored.treasury(), &treasury));
+        // The id counter came back too: the next task is t6, never a reused id.
+        assert_eq!(create(&restored, "next").id(), "t6");
+    }
+
+    #[test]
+    fn a_garbage_snapshot_is_refused_and_changes_nothing() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let kept = create(&ledger, "keep me");
+        kept.claim(&agent(100, "builder")).expect("open -> claimed");
+        let before = views(&ledger);
+        let value: serde_json::Value =
+            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
+
+        let mut duplicated = value.clone();
+        let first = duplicated["tasks"][0].clone();
+        duplicated["tasks"]
+            .as_array_mut()
+            .expect("a task list")
+            .push(first);
+        let mut behind = value.clone();
+        behind["next_seq"] = serde_json::json!(0);
+
+        for garbage in [
+            "not json".to_string(),
+            "{\"tasks\": 3}".to_string(),
+            duplicated.to_string(),
+            behind.to_string(),
+        ] {
+            assert!(ledger.restore(&garbage).is_err(), "{garbage}");
+            assert_eq!(views(&ledger), before, "a refused restore changes nothing");
+        }
     }
 }
