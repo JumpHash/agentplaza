@@ -12,7 +12,7 @@ use super::Id;
 use crate::console::floor3d::scene::{Color as SceneColor, Frame};
 use crate::console::floor3d::world::view::{FloorProgram, Label};
 use crate::console::floor3d::world::{AgentInfo, Floor};
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, events, ui, Ctx};
 use crate::theme::OK;
 
 /// The card's width and the field of view the orbit pans with (degrees, as the camera has it).
@@ -55,6 +55,8 @@ pub enum Msg {
     Frame(Instant),
     /// The agent list from `GET /v1/agents`.
     Agents(Result<Value, String>),
+    /// One event from the hub's stream: it moves the robots.
+    Event(events::Event),
     /// The stage changed size.
     Resized(f32, f32),
     /// Left drag: orbit, by pixels, in a view `height` tall.
@@ -87,6 +89,11 @@ pub fn subscription() -> Subscription<Msg> {
         return iced::time::every(std::time::Duration::from_millis(33)).map(Msg::Frame);
     }
     iced::window::frames().map(Msg::Frame)
+}
+
+/// The hub's events, while the Floor is open.
+pub fn events(ctx: &Ctx) -> Subscription<Msg> {
+    events::subscription(&ctx.client).map(Msg::Event)
 }
 
 /// Loads the agents (called when the screen opens and on every poll tick, every 4 s).
@@ -135,6 +142,7 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
             let hit = at.and_then(|p| state.floor.pick(p.x, p.y, w, h));
             state.floor.selected = hit;
         }
+        Msg::Event(e) => state.floor.on_event(&e.kind, &e.data),
         Msg::ResetView => state.floor.reset_view(),
         Msg::Go(_) => {}
     }
