@@ -281,8 +281,13 @@ impl Store {
             if p.stage == "delivered" {
                 return Err("the project is delivered".into());
             }
+            // One revision per set of plan documents: the first plan document after the current
+            // revision was critiqued (or the very first one) opens the next revision.
             if is_plan_doc(&doc.kind) && matches!(p.stage.as_str(), "proposal" | "critique" | "approval") {
-                p.revision += 1;
+                let critiqued = p.critiques.iter().any(|c| c.revision == p.revision);
+                if p.revision == 0 || critiqued {
+                    p.revision += 1;
+                }
             }
             if doc.kind == "revision" && p.stage == "approval" {
                 p.stage = "critique".into();
@@ -356,20 +361,37 @@ impl Store {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             let owner = by.role == "owner";
-            let awaiting = p.stage == "approval" || (p.stage == "critique" && owner);
+            // The mayor decides once the plan has been critiqued: approval does not wait for every
+            // reviewer to agree. Open "revise" items are recorded with the approval and carried
+            // into the tasks' acceptance.
+            let awaiting = matches!(p.stage.as_str(), "approval" | "critique");
             if !awaiting {
                 return Err(format!("the plan is at {}, not awaiting approval", p.stage));
             }
             if p.owner_approval && !owner {
                 return Err("this project waits for the owner's approval".into());
             }
-            if !owner && by.role != "mayor" {
+            if !owner && by.role != "mayor" && by.role != "mayor-office" {
                 return Err("only the mayor or the owner can approve a plan".into());
+            }
+            let author = p.docs.iter().rev().find(|d| is_plan_doc(&d.kind)).map(|d| d.by_cid);
+            if !owner && !p.critiques.iter().any(|c| Some(c.by_cid) != author) {
+                return Err("the plan needs at least one critique by an agent other than its author first".into());
+            }
+            let open: Vec<String> = p
+                .critiques
+                .iter()
+                .filter(|c| c.revision == p.revision && c.verdict == "revise")
+                .map(|c| format!("{}: {}", c.by, c.text.chars().take(300).collect::<String>()))
+                .collect();
+            let mut record = note.trim().to_string();
+            if !open.is_empty() {
+                record.push_str(&format!("\nOpen items carried into the tasks' acceptance:\n- {}", open.join("\n- ")));
             }
             let now = now_ms();
             p.stage = "implementation".into();
             p.approved_by = Some(by.name.clone());
-            p.history.push(event(by, "approved", note.trim(), now));
+            p.history.push(event(by, "approved", record.trim(), now));
             p.updated_ms = now;
             Ok(p.clone())
         })

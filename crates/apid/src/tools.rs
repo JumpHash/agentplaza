@@ -607,7 +607,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let title = str_arg(input, "title")?;
             let body = str_arg(input, "body")?;
             // An unfunded task would stop at its first model call: give it a working default.
-            let budget = input.get("budget").and_then(Value::as_u64).filter(|b| *b > 0).unwrap_or(DEFAULT_TASK_BUDGET);
+            let budget = budget_arg(input)?;
             let role = input.get("role").and_then(Value::as_str).map(str::to_string);
             // A project's task is refused until the project's plan is approved.
             let project = input.get("project").and_then(Value::as_str).filter(|p| !p.trim().is_empty());
@@ -760,6 +760,22 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("missing integer `{key}`"))
+}
+
+/// The smallest task budget: a budget is the escrow that pays the worker's model calls and
+/// tool steps, and a few credits stop the work at its first call.
+pub const MIN_TASK_BUDGET: u64 = 200;
+
+/// A task's `budget` argument: absent or 0 → the default; under MIN_TASK_BUDGET → refused with
+/// what a budget is.
+pub fn budget_arg(input: &Value) -> Result<u64, String> {
+    match input.get("budget").and_then(Value::as_u64).filter(|b| *b > 0) {
+        None => Ok(DEFAULT_TASK_BUDGET),
+        Some(b) if b < MIN_TASK_BUDGET => Err(format!(
+            "a budget of {b} credits would stop the work at its first model call: a task's budget is the escrow that pays the worker's model calls and tool steps (not a fee). Use at least {MIN_TASK_BUDGET}; typical work needs 1000–5000. It is minted from the plaza's budget — your wallet is not debited."
+        )),
+        Some(b) => Ok(b),
+    }
 }
 
 /// The optional `attachments` argument: at most 8 shared files the caller may read.

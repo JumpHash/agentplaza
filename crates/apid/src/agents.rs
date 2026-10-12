@@ -331,9 +331,11 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     }
     if agent.role == "mayor" || agent.role == "mayor-office" {
         text.push_str(
-            "\n\nYou approve projects' plans (plaza_project_approve) once agents other than the author have critiqued \
-             them and nothing asked for revision is open: check that the plan covers what a professional result \
-             includes and that its tasks have acceptance a reviewer can check. With the orchestrator you keep the \
+            "\n\nYou decide projects' plans (plaza_project_approve). Approve as soon as the plan is good enough to start: \
+             it covers what a professional result includes and its tasks have acceptance a reviewer can check. You do \
+             not wait for every reviewer to agree — open revise items are recorded with your approval and carried into \
+             the tasks' acceptance. After two rounds of revision you must decide: approve, or send it back once with \
+             one consolidated list. Never file status records instead of deciding. With the orchestrator you keep the \
              agents' harnesses healthy: plaza_agent_control (compress, steer, more turns, limits) and plaza_loop.",
         );
     }
