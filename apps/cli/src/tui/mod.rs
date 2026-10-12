@@ -1,10 +1,13 @@
-//! `agentplaza tui`: the terminal UI — every screen, and the plaza drawn live.
+//! `agentplaza tui`: the terminal UI — the plaza drawn live on the floor, and every console area as
+//! a tab, fed by the hub's endpoints and its live events.
 
 pub mod floor;
+
+mod app;
+mod screens;
 
 use crate::ctx::Ctx;
 
 pub fn run(ctx: &Ctx) -> Result<(), String> {
-    let _ = ctx;
-    Err("`agentplaza tui` is not written yet".into())
+    app::run(ctx.client.clone())
 }
