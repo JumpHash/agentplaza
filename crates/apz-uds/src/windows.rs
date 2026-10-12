@@ -9,11 +9,13 @@ use std::mem::{offset_of, size_of, zeroed};
 use std::net::Shutdown;
 use std::os::windows::io::{AsRawSocket, RawSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use vm_memory::bitmap::BitmapSlice;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::IO::CancelIoEx;
 use vm_memory::{ReadVolatile, VolatileMemoryError, VolatileSlice, WriteVolatile};
 use windows_sys::Win32::Networking::WinSock as ws;
 
@@ -68,16 +70,27 @@ fn sockaddr_ptr(addr: &ws::SOCKADDR_UN) -> *const ws::SOCKADDR {
 
 /// An owned WinSock socket, closed on drop.
 #[derive(Debug)]
-struct Socket(ws::SOCKET);
+struct Socket {
+    raw: ws::SOCKET,
+    /// Set by `shutdown(Read | Both)`: a read cancelled by it reports EOF.
+    read_shut: AtomicBool,
+}
 
 impl Drop for Socket {
     fn drop(&mut self) {
         // SAFETY: this handle is owned by Socket and is closed exactly once, here.
-        unsafe { ws::closesocket(self.0) };
+        unsafe { ws::closesocket(self.raw) };
     }
 }
 
 impl Socket {
+    fn from_raw(raw: ws::SOCKET) -> Socket {
+        Socket {
+            raw,
+            read_shut: AtomicBool::new(false),
+        }
+    }
+
     fn new() -> io::Result<Socket> {
         ensure_wsa()?;
         // SAFETY: a null protocol-info pointer is allowed, and the flags are valid WinSock values.
@@ -94,14 +107,14 @@ impl Socket {
         if s == ws::INVALID_SOCKET {
             Err(last_error())
         } else {
-            Ok(Socket(s))
+            Ok(Socket::from_raw(s))
         }
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         let mut mode = u32::from(nonblocking);
         // SAFETY: mode is a valid u32 that lives for the duration of the call.
-        check(unsafe { ws::ioctlsocket(self.0, ws::FIONBIO, &mut mode) })
+        check(unsafe { ws::ioctlsocket(self.raw, ws::FIONBIO, &mut mode) })
     }
 
     fn set_timeout(&self, option: i32, dur: Option<Duration>) -> io::Result<()> {
@@ -118,7 +131,7 @@ impl Socket {
         // SAFETY: optval points at a u32 that lives for the call, and optlen is its size.
         check(unsafe {
             ws::setsockopt(
-                self.0,
+                self.raw,
                 ws::SOL_SOCKET,
                 option,
                 (&ms as *const u32).cast(),
@@ -133,8 +146,20 @@ impl Socket {
             Shutdown::Write => ws::SD_SEND,
             Shutdown::Both => ws::SD_BOTH,
         };
-        // SAFETY: self.0 is a live socket and how is a valid shutdown mode.
-        check(unsafe { ws::shutdown(self.0, how) })
+        // SAFETY: self.raw is a live socket and how is a valid shutdown mode.
+        check(unsafe { ws::shutdown(self.raw, how) })?;
+        // A Unix shutdown(SHUT_RD) makes a read blocked on the socket (through
+        // any dup'ed descriptor) return EOF; a WinSock shutdown does not wake a
+        // recv already waiting in another thread. Cancelling the socket's
+        // pending I/O does, and `recv` reports the cancelled read as EOF.
+        if how != ws::SD_SEND {
+            self.read_shut.store(true, Ordering::SeqCst);
+            // SAFETY: a SOCKET is a kernel handle; CancelIoEx with a null
+            // OVERLAPPED cancels every pending I/O request on it, from any
+            // thread. Failure (nothing pending) is not an error here.
+            unsafe { CancelIoEx(self.raw as HANDLE, std::ptr::null()) };
+        }
+        Ok(())
     }
 
     fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -143,9 +168,14 @@ impl Socket {
         }
         let len = buf.len().min(i32::MAX as usize) as i32;
         // SAFETY: buf is valid for writes of len bytes, and len fits in an i32.
-        let n = unsafe { ws::recv(self.0, buf.as_mut_ptr(), len, 0) };
+        let n = unsafe { ws::recv(self.raw, buf.as_mut_ptr(), len, 0) };
         if n == ws::SOCKET_ERROR {
-            Err(last_error())
+            let err = last_error();
+            if self.read_shut.load(Ordering::SeqCst) {
+                // Shut down for reading: EOF, as on Unix (see `shutdown`).
+                return Ok(0);
+            }
+            Err(err)
         } else {
             Ok(n as usize)
         }
@@ -154,7 +184,7 @@ impl Socket {
     fn send(&self, buf: &[u8]) -> io::Result<usize> {
         let len = buf.len().min(i32::MAX as usize) as i32;
         // SAFETY: buf is valid for reads of len bytes, and len fits in an i32.
-        let n = unsafe { ws::send(self.0, buf.as_ptr(), len, 0) };
+        let n = unsafe { ws::send(self.raw, buf.as_ptr(), len, 0) };
         if n == ws::SOCKET_ERROR {
             Err(last_error())
         } else {
@@ -170,9 +200,9 @@ impl Socket {
         // SAFETY: name is writable for len bytes, and len holds that size.
         let ret = unsafe {
             if peer {
-                ws::getpeername(self.0, name, &mut len)
+                ws::getpeername(self.raw, name, &mut len)
             } else {
-                ws::getsockname(self.0, name, &mut len)
+                ws::getsockname(self.raw, name, &mut len)
             }
         };
         check(ret)?;
@@ -231,7 +261,7 @@ impl UnixStream {
         let socket = Socket::new()?;
         let (addr, len) = sockaddr_for(path.as_ref())?;
         // SAFETY: addr is a fully initialized SOCKADDR_UN and len is its size.
-        check(unsafe { ws::connect(socket.0, sockaddr_ptr(&addr), len) })?;
+        check(unsafe { ws::connect(socket.raw, sockaddr_ptr(&addr), len) })?;
         Ok(UnixStream(Arc::new(socket)))
     }
 
@@ -341,7 +371,7 @@ impl Write for &UnixStream {
 
 impl AsRawSocket for UnixStream {
     fn as_raw_socket(&self) -> RawSocket {
-        self.0 .0 as RawSocket
+        self.0.raw as RawSocket
     }
 }
 
@@ -421,9 +451,9 @@ impl UnixListener {
         let socket = Socket::new()?;
         let (addr, len) = sockaddr_for(path)?;
         // SAFETY: addr is a fully initialized SOCKADDR_UN and len is its size.
-        check(unsafe { ws::bind(socket.0, sockaddr_ptr(&addr), len) })?;
+        check(unsafe { ws::bind(socket.raw, sockaddr_ptr(&addr), len) })?;
         // SAFETY: socket is bound and not yet listening.
-        check(unsafe { ws::listen(socket.0, 128) })?;
+        check(unsafe { ws::listen(socket.raw, 128) })?;
         Ok(UnixListener(Arc::new(socket), path.to_path_buf()))
     }
 
@@ -434,11 +464,11 @@ impl UnixListener {
         let mut len = size_of::<ws::SOCKADDR_UN>() as i32;
         let out: *mut ws::SOCKADDR = (&mut addr as *mut ws::SOCKADDR_UN).cast();
         // SAFETY: out is writable for len bytes, and len holds that size.
-        let s = unsafe { ws::accept(self.0 .0, out, &mut len) };
+        let s = unsafe { ws::accept(self.0.raw, out, &mut len) };
         if s == ws::INVALID_SOCKET {
             return Err(last_error());
         }
-        Ok((UnixStream(Arc::new(Socket(s))), SocketAddr::from_raw(&addr, len)))
+        Ok((UnixStream(Arc::new(Socket::from_raw(s))), SocketAddr::from_raw(&addr, len)))
     }
 
     /// Iterates over incoming connections, blocking on each `next` call.
@@ -466,7 +496,7 @@ impl UnixListener {
 
 impl AsRawSocket for UnixListener {
     fn as_raw_socket(&self) -> RawSocket {
-        self.0 .0 as RawSocket
+        self.0.raw as RawSocket
     }
 }
 

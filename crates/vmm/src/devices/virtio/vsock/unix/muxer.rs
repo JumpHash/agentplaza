@@ -1017,9 +1017,12 @@ mod tests {
             match VsockMuxer::connect_nonblocking(&listener_path) {
                 Ok(stream) => pending.push(stream),
                 Err(err) => {
-                    assert_eq!(
-                        err.kind(),
-                        std::io::ErrorKind::WouldBlock,
+                    // Windows refuses a connect into a full AF_UNIX queue at
+                    // once too, but with WSAENOBUFS rather than EAGAIN.
+                    let full_queue = err.kind() == std::io::ErrorKind::WouldBlock
+                        || (cfg!(windows) && err.raw_os_error() == Some(10055));
+                    assert!(
+                        full_queue,
                         "filling the accept queue must end in EAGAIN, not {err:?}"
                     );
                     break;

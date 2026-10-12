@@ -131,30 +131,44 @@ mod tests {
     }
 
     /// Clones behave like `dup`ed descriptors: a read timeout set before the
-    /// clone bounds a read through it, and a `shutdown` through one handle
-    /// ends a read blocked on another (how vsockd's relays stop each other).
+    /// clone bounds a read through it.
     #[test]
-    fn clones_share_timeouts_and_shutdown() {
+    fn a_read_timeout_set_before_cloning_bounds_the_clone() {
         let (a, _b) = UnixStream::pair().unwrap();
         a.set_read_timeout(Some(std::time::Duration::from_millis(50)))
             .unwrap();
         let mut clone = a.try_clone().unwrap();
-        let mut buf = [0u8; 1];
-        let err = clone.read(&mut buf).unwrap_err();
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(clone.read(&mut [0u8; 1]).map_err(|err| err.kind()));
+        });
+        let result = waited
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the read through the clone timed out");
         assert!(
             matches!(
-                err.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                result,
+                Err(std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
             ),
-            "{err:?}"
+            "{result:?}"
         );
+    }
 
-        let (c, _d) = UnixStream::pair().unwrap();
-        let mut reader = c.try_clone().unwrap();
-        let blocked = std::thread::spawn(move || reader.read(&mut [0u8; 1]));
+    /// A `shutdown` through one handle ends a read blocked on another, as EOF
+    /// (how vsockd's egress relays stop each other).
+    #[test]
+    fn a_shutdown_through_one_clone_ends_a_read_blocked_on_another() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let mut reader = a.try_clone().unwrap();
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(reader.read(&mut [0u8; 1]).map_err(|err| err.kind()));
+        });
         std::thread::sleep(std::time::Duration::from_millis(100));
-        c.shutdown(std::net::Shutdown::Both).unwrap();
-        // EOF or an error: either way the reader is no longer blocked.
-        let _ = blocked.join().unwrap();
+        a.shutdown(std::net::Shutdown::Both).unwrap();
+        let result = waited
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the blocked read was not woken by the shutdown");
+        assert_eq!(result, Ok(0));
     }
 }
