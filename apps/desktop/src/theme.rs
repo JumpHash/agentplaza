@@ -1,42 +1,42 @@
-//! The register's visual language: the "Plaza" palette from
-//! `docs/ux-draft/owner-console.html`, a mono/serif pairing, ruled sheets and
+//! The register's visual language: the night-navy "Plaza" palette, the same
+//! tokens as the web console (`apps/web/src/styles/tokens.css`), a mono/serif pairing, ruled sheets and
 //! stamps — as far as iced's widgets carry it (no rotation, no dot leaders:
 //! the rules and the space between them stand in).
 
 use iced::widget::{button, container, rule, text_input};
 use iced::{Background, Border, Color, Font, Shadow, Theme, Vector, theme::Palette};
 
-/// The page behind everything.
-pub const PAPER: Color = Color::from_rgb8(0xe9, 0xec, 0xe5);
+/// The page behind everything: the console's night navy.
+pub const PAPER: Color = Color::from_rgb8(0x0a, 0x0e, 0x19);
 /// A sheet laid on the page.
-pub const SHEET: Color = Color::from_rgb8(0xf4, 0xf6, 0xf1);
+pub const SHEET: Color = Color::from_rgb8(0x11, 0x17, 0x26);
 /// A ruled line.
-pub const RULE: Color = Color::from_rgb8(0xc7, 0xcf, 0xc3);
+pub const RULE: Color = Color::from_rgb8(0x26, 0x30, 0x49);
 /// A fainter rule, for the space between fields.
-pub const RULE_FAINT: Color = Color::from_rgb8(0xdb, 0xe1, 0xd7);
+pub const RULE_FAINT: Color = Color::from_rgb8(0x1a, 0x21, 0x35);
 /// The red margin rule.
-pub const MARGIN: Color = Color::from_rgb8(0xd0, 0x7a, 0x72);
-/// The ink.
-pub const INK: Color = Color::from_rgb8(0x15, 0x19, 0x16);
+pub const MARGIN: Color = Color::from_rgb8(0x6e, 0x3a, 0x55);
+/// The ink: light type on the dark page.
+pub const INK: Color = Color::from_rgb8(0xe3, 0xe8, 0xf4);
 /// Secondary ink.
-pub const INK_2: Color = Color::from_rgb8(0x4c, 0x54, 0x4d);
+pub const INK_2: Color = Color::from_rgb8(0xa3, 0xad, 0xc4);
 /// Tertiary ink, for labels.
-pub const INK_3: Color = Color::from_rgb8(0x7d, 0x86, 0x7e);
+pub const INK_3: Color = Color::from_rgb8(0x6c, 0x77, 0x90);
 /// The one hot signal.
-pub const SIGNAL: Color = Color::from_rgb8(0xe8, 0x59, 0x0c);
+pub const SIGNAL: Color = Color::from_rgb8(0xff, 0x7a, 0x2e);
 /// A refusal, a kill, a failure.
-pub const CRIT: Color = Color::from_rgb8(0xa3, 0x18, 0x2b);
+pub const CRIT: Color = Color::from_rgb8(0xff, 0x7c, 0x86);
 /// A caution.
-pub const WARN: Color = Color::from_rgb8(0x85, 0x64, 0x0e);
+pub const WARN: Color = Color::from_rgb8(0xe2, 0xbd, 0x5a);
 /// Something finished well.
-pub const OK: Color = Color::from_rgb8(0x2e, 0x6a, 0x40);
-/// A stamped, held state.
-pub const TAINT: Color = Color::from_rgb8(0xef, 0xe2, 0xbd);
+pub const OK: Color = Color::from_rgb8(0x5f, 0xe0, 0xa0);
+/// A stamped, held state: a dark amber fill.
+pub const TAINT: Color = Color::from_rgb8(0x2e, 0x2a, 0x17);
 /// A hovered row.
-pub const HOVER: Color = Color::from_rgb8(0xe6, 0xea, 0xe2);
+pub const HOVER: Color = Color::from_rgb8(0x18, 0x20, 0x36);
 /// The machine's substrate region on the fleet map: a hair off the sheet, so
 /// the bounded region reads as bounded without becoming a filled block.
-pub const SUBSTRATE: Color = Color::from_rgb8(0xee, 0xf1, 0xe9);
+pub const SUBSTRATE: Color = Color::from_rgb8(0x0e, 0x13, 0x21);
 
 /// The monospace voice: ids, states, counts, serial. Martian Mono, embedded by
 /// the console (`console::run`).
@@ -74,8 +74,8 @@ impl Tone {
     }
 }
 
-/// The application theme: the Plaza paper and ink, so default-styled widgets
-/// (icons, selections, scroll rails) do not fall back to iced's dark palette.
+/// The application theme: the Plaza night palette, dark by default, so
+/// default-styled widgets (icons, selections, scroll rails) match the register.
 pub fn theme() -> Theme {
     Theme::custom(
         "AgentPlaza register",
@@ -297,7 +297,7 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
 /// whose shadow has exactly zero blur, so a hair of blur keeps it crisp and the text drawn.
 fn print_shadow() -> Shadow {
     Shadow {
-        color: INK,
+        color: Color::BLACK,
         offset: Vector::new(2.0, 2.0),
         blur_radius: 0.6,
     }
