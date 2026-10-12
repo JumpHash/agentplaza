@@ -149,61 +149,279 @@ pub struct Store {
     items: Mutex<Vec<Project>>,
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// The trimmed text, if it is between `min` and `max` characters long.
+fn bounded(field: &str, value: &str, min: usize, max: usize) -> Result<String, String> {
+    let v = value.trim();
+    let n = v.chars().count();
+    if n < min || n > max {
+        return Err(format!("{field} must be {min} to {max} characters"));
+    }
+    Ok(v.to_string())
+}
+
+fn need(ok: bool, what: &str) -> Result<(), String> {
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("needs {what}"))
+    }
+}
+
+fn event(by: &Actor, what: &str, note: &str, at_ms: u64) -> Event {
+    Event { at_ms, by_cid: by.cid, by: by.name.clone(), what: what.into(), note: note.into() }
+}
+
+/// The actor for the plaza's own bookkeeping, when no agent or owner acted.
+fn system() -> Actor {
+    Actor { cid: 0, name: "plaza".into(), role: "plaza".into() }
+}
+
+fn find_mut<'a>(items: &'a mut [Project], id: &str) -> Result<&'a mut Project, String> {
+    items.iter_mut().find(|p| p.id == id).ok_or_else(|| format!("no such project: {id}"))
+}
+
+fn is_plan_doc(kind: &str) -> bool {
+    matches!(kind, "proposal" | "design" | "spec" | "tasks" | "revision")
+}
+
+/// The cid that wrote the newest plan document: the planner whose revision is up for critique.
+fn plan_author(project: &Project) -> Option<u64> {
+    project.docs.iter().rev().find(|d| is_plan_doc(&d.kind)).map(|d| d.by_cid)
+}
+
 impl Store {
     pub fn load(state_dir: &Path) -> Self {
-        // contract: P1 reads the file (missing or bad → empty).
-        Self { path: state_dir.join("projects.json"), items: Mutex::new(Vec::new()) }
+        let path = state_dir.join("projects.json");
+        let items: Vec<Project> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { path, items: Mutex::new(items) }
+    }
+
+    fn save(&self, items: &[Project]) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(items).map_err(|e| e.to_string())?;
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
+    }
+
+    /// Runs `change` on a copy of the projects and saves it; only then is the copy kept. A refusal
+    /// or a failed save leaves the store as it was.
+    fn mutate<T>(&self, change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>) -> Result<T, String> {
+        let mut items = self.items.lock().map_err(|_| "projects are unavailable".to_string())?;
+        let mut next: Vec<Project> = items.clone();
+        let out = change(&mut next)?;
+        self.save(&next)?;
+        *items = next;
+        Ok(out)
     }
 
     pub fn list(&self) -> Vec<Project> {
-        // contract: P1 (newest first)
-        let _ = &self.path;
-        self.items.lock().map(|i| i.clone()).unwrap_or_default()
+        let mut out = self.items.lock().map(|i| i.clone()).unwrap_or_default();
+        out.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+        out
     }
 
-    pub fn get(&self, _id: &str) -> Option<Project> {
-        None // contract: P1
+    pub fn get(&self, id: &str) -> Option<Project> {
+        self.items.lock().ok()?.iter().find(|p| p.id == id).cloned()
     }
 
     /// Opens a project at stage "brief". `kind` is "code" or "other".
-    pub fn open(&self, _by: &Actor, _title: &str, _goal: &str, _kind: &str, _owner_approval: bool) -> Result<Project, String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn open(&self, by: &Actor, title: &str, goal: &str, kind: &str, owner_approval: bool) -> Result<Project, String> {
+        let title = bounded("title", title, 1, 120)?;
+        let goal = bounded("goal", goal, 1, 8000)?;
+        if kind != "code" && kind != "other" {
+            return Err("kind must be code or other".into());
+        }
+        self.mutate(|items| {
+            let now = now_ms();
+            let seq = items.iter().filter_map(|p| p.id.strip_prefix("pr")?.parse::<u64>().ok()).max().unwrap_or(0) + 1;
+            let project = Project {
+                id: format!("pr{seq}"),
+                title: title.clone(),
+                goal: goal.clone(),
+                kind: kind.into(),
+                stage: "brief".into(),
+                lead_cid: by.cid,
+                owner_approval,
+                repo: None,
+                docs: Vec::new(),
+                critiques: Vec::new(),
+                revision: 0,
+                approved_by: None,
+                tasks: Vec::new(),
+                history: vec![event(by, "opened", &title, now)],
+                created_ms: now,
+                updated_ms: now,
+            };
+            items.push(project.clone());
+            Ok(project)
+        })
     }
 
     /// Attaches a document. Its kind must be in DOC_KINDS; exactly one of file / repo_path.
-    pub fn attach(&self, _id: &str, _by: &Actor, _doc: Doc) -> Result<Project, String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn attach(&self, id: &str, by: &Actor, doc: Doc) -> Result<Project, String> {
+        if !DOC_KINDS.iter().any(|(k, _)| *k == doc.kind) {
+            return Err(format!("unknown document kind: {}", doc.kind));
+        }
+        if doc.file.is_some() == doc.repo_path.is_some() {
+            return Err("a document needs exactly one of file or repo_path".into());
+        }
+        let title = bounded("title", &doc.title, 1, 160)?;
+        let summary = bounded("summary", &doc.summary, 1, 2000)?;
+        let now = now_ms();
+        let doc = Doc { title, summary, by_cid: by.cid, by: by.name.clone(), at_ms: now, ..doc };
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.stage == "delivered" {
+                return Err("the project is delivered".into());
+            }
+            if is_plan_doc(&doc.kind) && matches!(p.stage.as_str(), "proposal" | "critique" | "approval") {
+                p.revision += 1;
+            }
+            if doc.kind == "revision" && p.stage == "approval" {
+                p.stage = "critique".into();
+            }
+            let note = format!("{}: {}", doc.kind, doc.title);
+            p.history.push(event(by, "attached", &note, now));
+            p.docs.push(doc);
+            p.updated_ms = now;
+            Ok(p.clone())
+        })
     }
 
     /// Records a critique of the current revision. The author of the latest proposal-stage doc
     /// may not critique their own revision.
-    pub fn critique(&self, _id: &str, _by: &Actor, _verdict: &str, _text: &str) -> Result<Project, String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn critique(&self, id: &str, by: &Actor, verdict: &str, text: &str) -> Result<Project, String> {
+        if !matches!(verdict, "approve" | "revise" | "comment") {
+            return Err("verdict must be approve, revise or comment".into());
+        }
+        let body = bounded("text", text, 1, 4000)?;
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if !matches!(p.stage.as_str(), "proposal" | "critique" | "approval") {
+                return Err(format!("a plan is critiqued at proposal, critique or approval, not at {}", p.stage));
+            }
+            if plan_author(p) == Some(by.cid) {
+                return Err("you cannot critique your own revision".into());
+            }
+            let now = now_ms();
+            let revision = p.revision;
+            p.critiques.push(Critique {
+                by_cid: by.cid,
+                by: by.name.clone(),
+                verdict: verdict.into(),
+                text: body.clone(),
+                revision,
+                at_ms: now,
+            });
+            p.history.push(event(by, "critiqued", &format!("{verdict} on revision {revision}"), now));
+            p.updated_ms = now;
+            Ok(p.clone())
+        })
     }
 
     /// Moves to the next stage when its gate holds (see `gate`), else says what is missing.
-    pub fn advance(&self, _id: &str, _by: &Actor, _note: &str) -> Result<Project, String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn advance(&self, id: &str, by: &Actor, note: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            match p.stage.as_str() {
+                "approval" => return Err("the plan needs approval: plaza_project_approve".into()),
+                "delivered" => return Err("the project is already delivered".into()),
+                _ => {}
+            }
+            let idx = STAGES.iter().position(|s| *s == p.stage).ok_or_else(|| format!("unknown stage: {}", p.stage))?;
+            let next = *STAGES.get(idx + 1).ok_or_else(|| "the project is already delivered".to_string())?;
+            gate(p, p.stage == "implementation")?;
+            let now = now_ms();
+            let from = std::mem::replace(&mut p.stage, next.into());
+            let detail = match note.trim() {
+                "" => format!("{from} to {next}"),
+                n => format!("{from} to {next}: {n}"),
+            };
+            p.history.push(event(by, "advanced", &detail, now));
+            p.updated_ms = now;
+            Ok(p.clone())
+        })
     }
 
     /// Approves the plan (stage "approval" → "implementation"): the mayor or the owner, or only
     /// the owner when `owner_approval`. The owner may also approve from "critique".
-    pub fn approve(&self, _id: &str, _by: &Actor, _note: &str) -> Result<Project, String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn approve(&self, id: &str, by: &Actor, note: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            let owner = by.role == "owner";
+            let awaiting = p.stage == "approval" || (p.stage == "critique" && owner);
+            if !awaiting {
+                return Err(format!("the plan is at {}, not awaiting approval", p.stage));
+            }
+            if p.owner_approval && !owner {
+                return Err("this project waits for the owner's approval".into());
+            }
+            if !owner && by.role != "mayor" {
+                return Err("only the mayor or the owner can approve a plan".into());
+            }
+            let now = now_ms();
+            p.stage = "implementation".into();
+            p.approved_by = Some(by.name.clone());
+            p.history.push(event(by, "approved", note.trim(), now));
+            p.updated_ms = now;
+            Ok(p.clone())
+        })
     }
 
     /// The owner sends a project back to `stage` (any earlier stage) with a reason.
-    pub fn veto(&self, _id: &str, _stage: &str, _reason: &str) -> Result<Project, String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn veto(&self, id: &str, stage: &str, reason: &str) -> Result<Project, String> {
+        let target = STAGES.iter().position(|s| *s == stage).ok_or_else(|| format!("unknown stage: {stage}"))?;
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            let current = STAGES.iter().position(|s| *s == p.stage).unwrap_or(0);
+            if target >= current {
+                return Err(format!("a veto sends a project to an earlier stage than {}", p.stage));
+            }
+            let implementation = STAGES.iter().position(|s| *s == "implementation").unwrap_or(usize::MAX);
+            if target < implementation {
+                p.approved_by = None;
+            }
+            let now = now_ms();
+            p.stage = stage.into();
+            p.history.push(event(&Actor::owner(), "vetoed", &format!("back to {stage}: {}", reason.trim()), now));
+            p.updated_ms = now;
+            Ok(p.clone())
+        })
     }
 
     /// Links a posted task to the project (stage must be "implementation" or later).
-    pub fn link_task(&self, _id: &str, _task: &str) -> Result<(), String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn link_task(&self, id: &str, task: &str) -> Result<(), String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            need(matches!(p.stage.as_str(), "implementation" | "review" | "delivered"), "an approved plan before tasks are linked")?;
+            if p.tasks.iter().any(|t| t == task) {
+                return Ok(());
+            }
+            let now = now_ms();
+            p.tasks.push(task.to_string());
+            p.history.push(event(&system(), "attached", &format!("task {task}"), now));
+            p.updated_ms = now;
+            Ok(())
+        })
     }
 
-    pub fn set_repo(&self, _id: &str, _repo: &str) -> Result<(), String> {
-        Err("projects are not available yet".into()) // contract: P1
+    pub fn set_repo(&self, id: &str, repo: &str) -> Result<(), String> {
+        let repo = bounded("repo", repo, 1, 512)?;
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            let now = now_ms();
+            p.history.push(event(&system(), "attached", &format!("repo {repo}"), now));
+            p.repo = Some(repo.clone());
+            p.updated_ms = now;
+            Ok(())
+        })
     }
 }
 
@@ -216,8 +434,30 @@ impl Store {
 /// approval → implementation: only through `approve`.
 /// implementation → review: every linked task is done (checked by the caller, which passes `tasks_done`).
 /// review → delivered: a "deliverable" doc.
-pub fn gate(_project: &Project, _tasks_done: bool) -> Result<(), String> {
-    Err("projects are not available yet".into()) // contract: P1
+pub fn gate(project: &Project, tasks_done: bool) -> Result<(), String> {
+    let has = |kind: &str| project.docs.iter().any(|d| d.kind == kind);
+    match project.stage.as_str() {
+        "brief" => need(has("brief"), "a brief document"),
+        "research" => need(has("research"), "a research document"),
+        "proposal" => {
+            need(has("proposal"), "a proposal document")?;
+            need(has("tasks"), "a tasks document")?;
+            need(project.kind != "code" || has("spec"), "a spec document (the OpenSpec change)")
+        }
+        "critique" => {
+            let author = plan_author(project);
+            let current: Vec<&Critique> = project.critiques.iter().filter(|c| c.revision == project.revision).collect();
+            if current.iter().any(|c| c.verdict == "revise") {
+                return Err("needs a revised plan: a critic asked for changes to this revision".into());
+            }
+            need(current.iter().any(|c| Some(c.by_cid) != author), "a critique of this revision by another agent")
+        }
+        "approval" => Err("the plan needs approval: plaza_project_approve".into()),
+        "implementation" => need(tasks_done, "every linked task done"),
+        "review" => need(has("deliverable"), "a deliverable document"),
+        "delivered" => Err("the project is already delivered".into()),
+        other => Err(format!("unknown stage: {other}")),
+    }
 }
 
 /// The tools' specs, in the same shape as `society::spec`.
@@ -294,5 +534,173 @@ fn reply(app: &App, result: Result<Project, String>) -> Response {
             Response::json(200, &project)
         }
         Err(e) => Response::error(409, &e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh(tag: &str) -> (PathBuf, Store) {
+        let dir = std::env::temp_dir().join(format!("apid-projects-{tag}-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::load(&dir);
+        (dir, store)
+    }
+
+    fn who(cid: u64, name: &str, role: &str) -> Actor {
+        Actor { cid, name: name.into(), role: role.into() }
+    }
+
+    fn lead() -> Actor {
+        who(1, "lead", "orchestrator")
+    }
+
+    fn researcher() -> Actor {
+        who(2, "scout", "researcher")
+    }
+
+    fn planner() -> Actor {
+        who(3, "planner", "planner")
+    }
+
+    fn critic() -> Actor {
+        who(4, "critic", "critic")
+    }
+
+    fn mayor() -> Actor {
+        who(5, "mayor", "mayor")
+    }
+
+    fn doc(kind: &str, title: &str) -> Doc {
+        Doc {
+            kind: kind.into(),
+            title: title.into(),
+            file: Some("file-1".into()),
+            repo_path: None,
+            commit: None,
+            summary: format!("the {kind}"),
+            by_cid: 0,
+            by: String::new(),
+            at_ms: 0,
+        }
+    }
+
+    /// Walks a project from brief to critique, with no critique yet.
+    fn to_critique(store: &Store, kind: &str, owner_approval: bool) -> String {
+        let p = store.open(&lead(), "Ship the thing", "Make the thing work", kind, owner_approval).unwrap();
+        store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+        store.advance(&p.id, &lead(), "").unwrap();
+        store.attach(&p.id, &researcher(), doc("research", "Research")).unwrap();
+        store.advance(&p.id, &lead(), "").unwrap();
+        store.attach(&p.id, &planner(), doc("proposal", "Proposal")).unwrap();
+        store.attach(&p.id, &planner(), doc("tasks", "Tasks")).unwrap();
+        if kind == "code" {
+            store.attach(&p.id, &planner(), doc("spec", "Spec")).unwrap();
+        }
+        store.advance(&p.id, &lead(), "").unwrap();
+        p.id
+    }
+
+    #[test]
+    fn open_attach_and_advance_to_research() {
+        let (_dir, store) = fresh("open");
+        let p = store.open(&lead(), "Ship the thing", "Make the thing work", "other", false).unwrap();
+        assert_eq!(p.id, "pr1");
+        assert_eq!(p.stage, "brief");
+        assert_eq!(p.lead_cid, 1);
+        let p = store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+        assert_eq!(p.docs[0].by, "lead");
+        let p = store.advance(&p.id, &lead(), "").unwrap();
+        assert_eq!(p.stage, "research");
+        assert_eq!(p.history.last().unwrap().what, "advanced");
+    }
+
+    #[test]
+    fn advance_refused_without_research() {
+        let (_dir, store) = fresh("gate");
+        let p = store.open(&lead(), "Ship", "Goal", "other", false).unwrap();
+        store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+        store.advance(&p.id, &lead(), "").unwrap();
+        let err = store.advance(&p.id, &lead(), "").unwrap_err();
+        assert!(err.contains("research"), "{err}");
+        assert_eq!(store.get(&p.id).unwrap().stage, "research");
+    }
+
+    #[test]
+    fn other_project_runs_to_implementation() {
+        let (_dir, store) = fresh("full");
+        let id = to_critique(&store, "other", false);
+        store.critique(&id, &critic(), "approve", "Good to go.").unwrap();
+        assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
+        let err = store.advance(&id, &lead(), "").unwrap_err();
+        assert!(err.contains("plaza_project_approve"), "{err}");
+        let p = store.approve(&id, &mayor(), "").unwrap();
+        assert_eq!(p.stage, "implementation");
+        assert_eq!(p.approved_by.as_deref(), Some("mayor"));
+    }
+
+    #[test]
+    fn author_cannot_critique_own_revision() {
+        let (_dir, store) = fresh("author");
+        let id = to_critique(&store, "other", false);
+        let err = store.critique(&id, &planner(), "approve", "I like it").unwrap_err();
+        assert!(err.contains("own revision"), "{err}");
+    }
+
+    #[test]
+    fn revise_blocks_until_revision_is_approved() {
+        let (_dir, store) = fresh("revise");
+        let id = to_critique(&store, "other", false);
+        store.critique(&id, &critic(), "revise", "The tasks miss the tests.").unwrap();
+        assert!(store.advance(&id, &lead(), "").is_err());
+        store.attach(&id, &planner(), doc("revision", "Revision")).unwrap();
+        assert!(store.advance(&id, &lead(), "").is_err());
+        store.critique(&id, &critic(), "approve", "Fixed.").unwrap();
+        assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
+        // A revision attached at approval sends the plan back to critique.
+        let p = store.attach(&id, &planner(), doc("revision", "Second revision")).unwrap();
+        assert_eq!(p.stage, "critique");
+    }
+
+    #[test]
+    fn owner_approval_refuses_a_mayor() {
+        let (_dir, store) = fresh("owner");
+        let id = to_critique(&store, "other", true);
+        store.critique(&id, &critic(), "approve", "Fine.").unwrap();
+        store.advance(&id, &lead(), "").unwrap();
+        let err = store.approve(&id, &mayor(), "").unwrap_err();
+        assert!(err.contains("owner's approval"), "{err}");
+        assert_eq!(store.approve(&id, &Actor::owner(), "").unwrap().stage, "implementation");
+    }
+
+    #[test]
+    fn code_needs_a_spec_to_leave_proposal() {
+        let (_dir, store) = fresh("code");
+        let p = store.open(&lead(), "Code thing", "Goal", "code", false).unwrap();
+        store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+        store.advance(&p.id, &lead(), "").unwrap();
+        store.attach(&p.id, &researcher(), doc("research", "Research")).unwrap();
+        store.advance(&p.id, &lead(), "").unwrap();
+        store.attach(&p.id, &planner(), doc("proposal", "Proposal")).unwrap();
+        store.attach(&p.id, &planner(), doc("tasks", "Tasks")).unwrap();
+        let err = store.advance(&p.id, &lead(), "").unwrap_err();
+        assert!(err.contains("spec"), "{err}");
+        store.attach(&p.id, &planner(), doc("spec", "Spec")).unwrap();
+        assert_eq!(store.advance(&p.id, &lead(), "").unwrap().stage, "critique");
+    }
+
+    #[test]
+    fn projects_persist_across_load() {
+        let (dir, store) = fresh("persist");
+        let p = store.open(&lead(), "Keep me", "Goal", "other", false).unwrap();
+        store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+        drop(store);
+        let reloaded = Store::load(&dir);
+        let all = reloaded.list();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].title, "Keep me");
+        assert_eq!(all[0].docs.len(), 1);
+        assert_eq!(reloaded.open(&lead(), "Second", "Goal", "other", false).unwrap().id, "pr2");
     }
 }
