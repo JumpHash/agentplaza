@@ -63,7 +63,11 @@ async function draw(c: Ctx): Promise<void> {
     else if (c.tab === 'pulls' && c.num) await pullView(c, Number(c.num));
     else await repoView(c, git.org);
   } catch (err) {
-    if (c.live()) replace(c.root, wrap(head('Git'), empty('git', 'The git host did not answer', errMsg(err))));
+    if (c.live()) {
+      const offline = empty('git', 'The git host is offline', 'Start the Forgejo container to browse repositories.');
+      offline.title = errMsg(err);
+      replace(c.root, wrap(head('Git'), offline));
+    }
   }
 }
 

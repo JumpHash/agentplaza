@@ -3,7 +3,7 @@
 
 import '../styles/agent-wizard.css';
 import { api, type AgentProposal, type ModelInfo, type RoleDef, type RoleView, type Settings } from '../api';
-import { attempt, badge, button, clip, input, modal, select, textarea, toast } from '../ui/components';
+import { attempt, badge, button, clip, input, modal, select, textarea } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { modelPicker, type ModelChoice, type ModelPicker } from '../ui/model-picker';
 import { renderMarkdown } from '../ui/markdown';
@@ -200,6 +200,7 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
   let models: ModelInfo[] = [];
   let modelChoices: ModelChoice[] = [];
   let picker: ModelPicker | null = null;
+  let loadError: string | null = null;
 
   const stepsHost = h('div');
   const bodyHost = h('div.wiz-body');
@@ -228,7 +229,12 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
   function render(focus?: string): void {
     replace(stepsHost, stepper());
     if (!loaded || !picker) {
-      replace(bodyHost, h('p.wiz-muted', null, 'Loading roles and models…'));
+      replace(
+        bodyHost,
+        loadError
+          ? h('div.wiz-ro', null, h('p', null, `Could not load roles and models: ${loadError}`), button('Retry', () => { loadError = null; render(); void load(); }, { kind: 'ghost' }))
+          : h('p.wiz-muted', null, 'Loading roles…'),
+      );
       replace(navHost);
       return;
     }
@@ -671,8 +677,8 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
       loaded = true;
       render();
     } catch (err) {
-      toast(err instanceof Error ? err.message : String(err), 'error');
-      close();
+      loadError = err instanceof Error ? err.message : String(err);
+      render();
     }
   }
 

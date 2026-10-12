@@ -522,15 +522,21 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const refresh = async (): Promise<void> => {
     try {
-      const [o, nodes, agentList] = await Promise.all([
+      const [o, fetched, agentList] = await Promise.all([
         api.overview().catch(() => null),
         api.machines(),
         api.agents().catch((): Agent[] => []),
       ]);
       if (!alive) return;
+      // A partial reply (a machine without its gpus, runs or vms) renders as empty, never as an error.
+      const nodes: MachineNode[] = (fetched ?? []).map((m) => ({
+        ...m,
+        gpus: m.gpus ?? [],
+        runs: (m.runs ?? []).map((r) => ({ ...r, vms: r.vms ?? [] })),
+      }));
       overview = o;
       machines = nodes;
-      agentsByCid = new Map<number, Agent>(agentList.map((a): [number, Agent] => [a.cid, a]));
+      agentsByCid = new Map<number, Agent>((agentList ?? []).map((a): [number, Agent] => [a.cid, a]));
       if (!nodes.some((m) => m.id === selectedId)) selectedId = nodes[0]?.id ?? null;
       const runIds = new Set(nodes.flatMap((m) => (m.runs ?? []).map((r) => r.id)));
       for (const id of Array.from(expanded)) if (!runIds.has(id)) expanded.delete(id);
@@ -539,7 +545,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     } catch (err) {
       if (!alive) return;
       replace(topoBox);
-      replace(sectionsBox, empty('alert', 'Machines unreachable', err instanceof Error ? err.message : String(err)));
+      const offline = empty('machine', 'The node is offline', 'Start the node daemon to see its machines and VMs.');
+      offline.title = err instanceof Error ? err.message : String(err);
+      replace(sectionsBox, offline);
     }
   };
 
