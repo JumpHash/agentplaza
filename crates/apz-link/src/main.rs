@@ -79,8 +79,8 @@ fn flag<'a>(args: &[&'a str], name: &str) -> Result<Option<&'a str>, String> {
 }
 
 fn default_state() -> PathBuf {
-    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
-    home.join(".local/share/agentplaza/node")
+    // The node's identity sits in the data directory the desktop app reads it from.
+    apz_os::dirs::data().join("node")
 }
 
 fn hostname() -> String {

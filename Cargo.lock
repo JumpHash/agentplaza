@@ -53,6 +53,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "apz-http",
+ "apz-os",
  "bytemuck",
  "glam 0.30.10",
  "iced",
@@ -193,6 +194,7 @@ name = "apz-link"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-os",
  "apz-trust",
  "rcgen",
  "serde",

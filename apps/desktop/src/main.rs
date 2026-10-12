@@ -1,10 +1,13 @@
 //! The desktop app: the console, opening on the startup chooser.
 
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 
 fn main() -> iced::Result {
+    #[cfg(target_os = "linux")]
     snapshot_off_screen();
     // Mid NVIDIA update (old kernel module, new libraries on disk): restart on the matching ones.
+    #[cfg(target_os = "linux")]
     agentplaza_desktop::gpu::use_matching_driver();
     agentplaza_desktop::console::run()
 }
@@ -12,6 +15,7 @@ fn main() -> iced::Result {
 /// `APZ_SNAPSHOT` captures the app's own frame from a hidden window. Wayland has no hidden
 /// windows (winit maps them anyway), so a snapshot run restarts itself on X11, where it can stay
 /// unmapped and never shows on the owner's screen.
+#[cfg(target_os = "linux")]
 fn snapshot_off_screen() {
     if std::env::var_os("APZ_SNAPSHOT").is_none() || std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return;

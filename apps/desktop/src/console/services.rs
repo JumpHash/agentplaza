@@ -4,7 +4,6 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -85,7 +84,7 @@ pub fn local_owner_token() -> Option<String> {
 
 /// Joins a hub as a node with a join token (runs `apz-link join`); returns the node id.
 pub fn join(token: &str) -> Result<String, String> {
-    let bin = bin_path("apz-link").unwrap_or_else(|| PathBuf::from("apz-link"));
+    let bin = bin_path("apz-link").unwrap_or_else(|| PathBuf::from(apz_os::process::exe("apz-link")));
     let out = Command::new(&bin)
         .arg("join")
         .arg(token)
@@ -288,17 +287,7 @@ fn stop_one(svc: &Svc) -> String {
             if pids.is_empty() {
                 return format!("{name}: not running");
             }
-            let signalled: Vec<bool> = pids
-                .iter()
-                .map(|pid| {
-                    Command::new("kill")
-                        .arg(pid.to_string())
-                        .stdin(Stdio::null())
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                })
-                .collect();
+            let signalled: Vec<bool> = pids.iter().map(|pid| signal(*pid)).collect();
             let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
             if signalled.iter().all(|ok| *ok) {
                 format!("{name}: stopped (pid {list})")
@@ -307,6 +296,20 @@ fn stop_one(svc: &Svc) -> String {
             }
         }
     }
+}
+
+/// Asks process `pid` to stop: `kill` on Unix, `taskkill` on Windows.
+fn signal(pid: u32) -> bool {
+    let mut cmd = if cfg!(windows) {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/F"]);
+        cmd
+    } else {
+        let mut cmd = Command::new("kill");
+        cmd.arg(pid.to_string());
+        cmd
+    };
+    cmd.stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Starts a detached process: stdin closed, output appended to its log, its own process group.
@@ -320,11 +323,8 @@ fn spawn(name: &str, bin: &Path, args: &[String], env: Option<(&str, &str)>) -> 
         .map_err(|e| e.to_string())?;
     let errors = log.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(errors))
-        .process_group(0);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(errors));
+    apz_os::process::detach(&mut cmd);
     if let Some((key, value)) = env {
         cmd.env(key, value);
     }
@@ -350,7 +350,9 @@ fn container_state(name: &str) -> &'static str {
     }
 }
 
-/// The pids whose argv[0] is `name` or ends in `/<name>`, found by scanning /proc.
+/// The pids whose argv[0] is `name` or ends in `/<name>`, found by scanning /proc (Linux; other
+/// systems have no such listing, so none are found there).
+#[cfg(target_os = "linux")]
 fn find_pids(name: &str) -> Vec<u32> {
     let Ok(entries) = fs::read_dir("/proc") else {
         return Vec::new();
@@ -370,6 +372,11 @@ fn find_pids(name: &str) -> Vec<u32> {
     pids
 }
 
+#[cfg(not(target_os = "linux"))]
+fn find_pids(_name: &str) -> Vec<u32> {
+    Vec::new()
+}
+
 /// The first line of `apz-link join` stdout: "joined <hub> as <node id> (agents …)".
 fn parse_join_output(text: &str) -> Option<String> {
     text.lines().find_map(|line| {
@@ -379,25 +386,14 @@ fn parse_join_output(text: &str) -> Option<String> {
     })
 }
 
-fn home() -> PathBuf {
-    env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
-}
-
-fn xdg(var: &str, fallback: &str) -> PathBuf {
-    env::var_os(var)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(fallback))
-}
-
-/// `$XDG_STATE_HOME/agentplaza` (`~/.local/state/agentplaza`).
+/// The plaza's state directory (`apz_os::dirs::state`).
 fn state_dir() -> PathBuf {
-    xdg("XDG_STATE_HOME", ".local/state").join("agentplaza")
+    apz_os::dirs::state()
 }
 
-/// `$XDG_DATA_HOME/agentplaza` (`~/.local/share/agentplaza`).
+/// The plaza's data directory (`apz_os::dirs::data`).
 fn data_dir() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join("agentplaza")
+    apz_os::dirs::data()
 }
 
 /// The repository: `APZ_REPO`, or the directory three levels above this executable.
@@ -413,16 +409,17 @@ fn repo_dir() -> PathBuf {
 
 /// `<repo>/target/debug/<name>` when built, else the first `<name>` on `$PATH`.
 fn bin_path(name: &str) -> Option<PathBuf> {
+    let file = apz_os::process::exe(name);
     let repo = repo_dir();
     if !repo.as_os_str().is_empty() {
-        let built = repo.join("target/debug").join(name);
+        let built = repo.join("target/debug").join(&file);
         if built.is_file() {
             return Some(built);
         }
     }
     env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths)
-            .map(|dir| dir.join(name))
+            .map(|dir| dir.join(&file))
             .find(|candidate| candidate.is_file())
     })
 }

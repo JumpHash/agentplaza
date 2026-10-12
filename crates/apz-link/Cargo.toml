@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 apz-http = { path = "../apz-http" }
+apz-os = { path = "../apz-os" }
 apz-trust = { path = "../apz-trust" }
 serde.workspace = true
 serde_json.workspace = true

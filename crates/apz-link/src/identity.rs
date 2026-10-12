@@ -3,10 +3,8 @@
 //! - `node.key` (0600): the Ed25519 seed (32 raw bytes). It never leaves this machine.
 //! - `internal-token` (0600): the secret the local vsockd presents to the forwarder.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::client::Target;
@@ -103,23 +101,12 @@ pub fn internal_token(dir: &Path) -> Result<String, String> {
 
 /// Creates `dir` (and parents) with mode 0700; an existing directory is accepted.
 fn ensure_dir(dir: &Path) -> Result<(), String> {
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("{}: {e}", dir.display()))
+    apz_os::private::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-/// Writes `bytes` to `path` with mode 0600: a fresh `<name>.tmp` beside it, then a rename.
+/// Writes `bytes` to `path` privately (0600 on Unix, the profile's ACL on Windows), atomically.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut tmp_name = path.as_os_str().to_owned();
-    tmp_name.push(".tmp");
-    let tmp = PathBuf::from(tmp_name);
-    let _ = fs::remove_file(&tmp);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    apz_os::private::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn now_secs() -> Result<u64, String> {
@@ -129,8 +116,11 @@ fn now_secs() -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     use super::*;
 
@@ -151,6 +141,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -165,9 +156,12 @@ mod tests {
         let (loaded, loaded_key) = load(&dir).unwrap();
         assert_eq!(loaded, identity);
         assert_eq!(loaded_key.to_bytes(), key.to_bytes());
-        assert_eq!(mode(&dir), 0o700);
-        assert_eq!(mode(&dir.join("node.json")), 0o600);
-        assert_eq!(mode(&dir.join("node.key")), 0o600);
+        #[cfg(unix)]
+        {
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&dir.join("node.json")), 0o600);
+            assert_eq!(mode(&dir.join("node.key")), 0o600);
+        }
         assert!(!dir.join("node.json.tmp").exists());
         let _ = fs::remove_dir_all(&root);
     }
@@ -179,6 +173,7 @@ mod tests {
         let second = internal_token(&dir).unwrap();
         assert_eq!(first, second);
         assert_eq!(apz_trust::unb64(&first).unwrap().len(), 32);
+        #[cfg(unix)]
         assert_eq!(mode(&dir.join("internal-token")), 0o600);
         let _ = fs::remove_dir_all(&dir);
     }
