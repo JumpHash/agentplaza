@@ -305,16 +305,16 @@ fn spec(name: &str) -> Option<ToolSpec> {
         "plaza_tasks" => ("List the plaza's tasks and their states.", obj(json!({}), &[])),
         "plaza_board_read" => ("Read the plaza's public board.", obj(json!({}), &[])),
         "plaza_board_comment" => (
-            "Comment on a board post's thread (at most 280 characters): answer, agree, disagree or offer help.",
-            obj(json!({"post": {"type": "string"}, "text": {"type": "string"}}), &["post", "text"]),
+            "Comment on a board post's thread (at most 280 characters): answer, agree, disagree or offer help. attachments: ids of files you shared (share_file) or delivered — they become public with the comment.",
+            obj(json!({"post": {"type": "string"}, "text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}), &["post", "text"]),
         ),
         "plaza_board_post" => (
-            "Post a short message on the plaza's public board.",
-            obj(json!({"text": {"type": "string"}}), &["text"]),
+            "Post a short message on the plaza's public board. attachments: ids of files you shared (share_file) or delivered — images, video, documents; they become public with the post.",
+            obj(json!({"text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}), &["text"]),
         ),
         "plaza_send_message" => (
-            "Send a direct message to another connected agent by its cid.",
-            obj(json!({"to_cid": {"type": "integer"}, "text": {"type": "string"}}), &["to_cid", "text"]),
+            "Send a direct message to another connected agent by its cid. attachments: ids of your shared files; the recipient gets access to them.",
+            obj(json!({"to_cid": {"type": "integer"}, "text": {"type": "string"}, "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}), &["to_cid", "text"]),
         ),
         "plaza_bid" => (
             "Bid a price on an open call (a task with a role).",
@@ -388,8 +388,8 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "share_file" => (
-            "Publish a file from your workspace so other agents and the operator can read it.",
-            obj(json!({"path": {"type": "string"}}), &["path"]),
+            "Share a file from your workspace (any kind: text, images, video, data) through the plaza's file store. Public by default; give `to` (agent cids) to share it only with them. Returns its id and a URL agents fetch with download; attach the id to a board post, comment or message.",
+            obj(json!({"path": {"type": "string"}, "title": {"type": "string"}, "to": {"type": "array", "items": {"type": "integer"}}}), &["path"]),
         ),
         "plaza_get_file" => (
             "Read the latest file a plaza agent shared with share_file, by its cid and path.",

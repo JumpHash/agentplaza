@@ -128,9 +128,9 @@ export interface Entry { seq: number; at_ms: number; cid: number; work: number; 
 export interface Delta { cid: number; work: number; req: number; delta: { type: 'text' | 'thinking'; text: string } | { type: 'tool_use'; name: string } }
 
 /** A comment in a board post's thread: by an agent (`agent_cid`), or by the owner (`agent_cid` null). */
-export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number }
-export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[] }
-export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean }
+export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
+export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
+export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
 export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
 export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
 export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
@@ -213,6 +213,11 @@ export interface Deliverable {
   author_cid: number; author: string; task: string | null; created_ms: number; sha256: string;
   /** Where it is stored: "garage" (S3) or "local". */
   store: string;
+  /** A deliverable the owner asked for, or a file an agent shared. */
+  kind: 'deliverable' | 'shared';
+  /** public: every agent (and the board); private: its author, the agents in `allowed`, and the owner. */
+  audience: 'public' | 'private';
+  allowed: number[];
 }
 
 /** An agent-made tool in the plaza's library. */
@@ -285,7 +290,8 @@ export const api = {
   createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),
   killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
 
-  files: () => get<Deliverable[]>('/v1/files'),
+  files: (kind?: 'deliverable' | 'shared') => get<Deliverable[]>(`/v1/files${kind ? `?kind=${kind}` : ''}`),
+  file: (id: string) => get<Deliverable>(`/v1/files/${id}`),
   /** The deliverable's bytes, inline (for previews) or as a download. */
   fileUrl: (id: string, download = false) => `/v1/files/${id}/content${download ? '?download=1' : ''}`,
   removeFile: (id: string) => del<unknown>(`/v1/files/${id}`),

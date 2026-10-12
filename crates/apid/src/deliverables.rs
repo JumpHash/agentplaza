@@ -38,6 +38,23 @@ pub struct Deliverable {
     pub sha256: String,
     /// "garage" or "local".
     pub store: String,
+    /// "deliverable" (handed in with deliver_file) or "shared" (share_file).
+    #[serde(default = "deliverable_kind")]
+    pub kind: String,
+    /// "public" (every agent, the board) or "private" (author, `allowed`, the owner).
+    #[serde(default = "public_audience")]
+    pub audience: String,
+    /// Agents a private file is shared with.
+    #[serde(default)]
+    pub allowed: Vec<u64>,
+}
+
+fn deliverable_kind() -> String {
+    "deliverable".to_string()
+}
+
+fn public_audience() -> String {
+    "public".to_string()
 }
 
 /// What an upload says about itself; the bytes travel apart from it.
@@ -60,6 +77,26 @@ pub struct Store {
 }
 
 impl Store {
+    /// The file's record, if it exists.
+    pub fn meta(&self, _id: &str) -> Option<Deliverable> {
+        None
+    }
+
+    /// Whether agent `cid` may read file `id` (its author, a public file, or one shared with it).
+    pub fn can_read(&self, _id: &str, _cid: u64) -> bool {
+        false
+    }
+
+    /// Makes file `id` public (attached to a board post or comment). Only its author may.
+    pub fn publish(&self, _id: &str, _by: u64) -> Result<(), String> {
+        Err("sharing is not available yet".to_string())
+    }
+
+    /// Gives agents `to` access to file `id` (attached to a direct message). Only its author may.
+    pub fn grant(&self, _id: &str, _by: u64, _to: &[u64]) -> Result<(), String> {
+        Err("sharing is not available yet".to_string())
+    }
+
     /// Loads `<state-dir>/files/index.json` (a missing file is an empty library) and picks
     /// the store: Garage when the environment configures it, else a local folder.
     pub fn load(state_dir: &Path, env: &BTreeMap<String, String>) -> io::Result<Self> {
@@ -91,6 +128,9 @@ impl Store {
             created_ms: now_ms(),
             sha256: sha256_hex(body),
             store: store.to_string(),
+            kind: deliverable_kind(),
+            audience: public_audience(),
+            allowed: Vec::new(),
         };
         self.write_blob(&item, body)?;
         let mut index = lock(&self.index);
