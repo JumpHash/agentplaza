@@ -12,9 +12,7 @@
 //! Configuration comes from keys.env: FORGEJO_URL, FORGEJO_TOKEN (the admin's API token).
 
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -220,17 +218,7 @@ impl Forge {
     fn save(&self, users: &BTreeMap<u64, Identity>) -> Result<(), String> {
         let list: Vec<&Identity> = users.values().collect();
         let bytes = serde_json::to_vec_pretty(&list).map_err(|e| e.to_string())?;
-        let path = self.path.display();
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&self.path)
-            .map_err(|e| format!("opening {path}: {e}"))?;
-        file.write_all(&bytes).map_err(|e| format!("writing {path}: {e}"))?;
-        std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("protecting {path}: {e}"))
+        apz_os::private::write(&self.path, &bytes).map_err(|e| format!("writing {}: {e}", self.path.display()))
     }
 
     /// Creates `ORG/<name>` (private, default branch main, auto-init with a README holding
@@ -348,13 +336,9 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// A 32-character random password from /dev/urandom (the agent never logs in with it).
+/// A 32-character random password from the OS random source (the agent never logs in with it).
 fn random_password() -> Result<String, String> {
-    let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(|e| format!("reading /dev/urandom: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    apz_os::random::hex(16).map_err(|e| e.to_string())
 }
 
 fn now_ms() -> u64 {

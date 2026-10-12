@@ -29,11 +29,8 @@ pub struct Config {
 
 impl Config {
     pub fn from_args(args: Vec<String>) -> Result<Self, String> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| Path::new(&home).join(".local/state"))
-            .join("agentplaza");
+        let home = apz_os::dirs::home().unwrap_or_else(|| PathBuf::from("."));
+        let state_dir = apz_os::dirs::state();
         let mut config = Config {
             port: 7700,
             state_dir,
@@ -280,15 +277,8 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// A fresh random token in `<state-dir>/internal.token`, mode 0600.
 fn write_token(dir: &Path) -> std::io::Result<String> {
-    use std::io::{Read, Write};
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut bytes = [0u8; 24];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    let path = dir.join("internal.token");
-    let _ = std::fs::remove_file(&path);
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
-    file.write_all(token.as_bytes())?;
+    let token = apz_os::random::hex(24)?;
+    apz_os::private::write(&dir.join("internal.token"), token.as_bytes())?;
     Ok(token)
 }
 

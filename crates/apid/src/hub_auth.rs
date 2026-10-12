@@ -15,7 +15,6 @@
 //! Saved: `<state>/hub.json` (owner token hash, public URL, name), mode 0600.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -283,17 +282,7 @@ fn save(state_dir: &Path, config: &HubConfig) -> Result<(), String> {
 
 /// Writes `path` with mode 0600 (the owner token, the hub's record and the key are private).
 fn write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let fail = |err: std::io::Error| format!("{}: {err}", path.display());
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(fail)?;
-    file.write_all(contents).map_err(fail)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(fail)
+    apz_os::private::write(path, contents).map_err(|err| format!("{}: {err}", path.display()))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

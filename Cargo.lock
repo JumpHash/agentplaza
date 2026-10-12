@@ -148,6 +148,7 @@ version = "0.1.0"
 dependencies = [
  "apz-gateway",
  "apz-http",
+ "apz-os",
  "apz-plaza",
  "apz-proto",
  "apz-trust",

@@ -59,7 +59,7 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
 
   --port PORT        the API port on 127.0.0.1 (default 7700)
   --state-dir DIR    providers, settings, secrets, internal token
-                     (default $XDG_STATE_HOME/agentplaza)
+                     (default: the platform's state directory, see apz-os)
   --noded-port PORT  the node daemon (default 8899)
   --hub-port PORT    the hub (default 19080)
   --bind ADDR        the address to serve on (default 127.0.0.1); off loopback the hub

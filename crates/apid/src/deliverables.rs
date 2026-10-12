@@ -2,7 +2,7 @@
 //! plaza's object store — Garage over S3 when configured, a local folder otherwise.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -437,7 +437,7 @@ fn s3_from(env: &BTreeMap<String, String>) -> Option<S3> {
 /// `f` and twelve hex digits from the OS random source (the clock if that is unreadable).
 fn new_id() -> String {
     let mut bytes = [0u8; 6];
-    let random = std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes));
+    let random = apz_os::random::fill(&mut bytes);
     if random.is_err() {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         bytes.copy_from_slice(&nanos.to_be_bytes()[10..]);

@@ -512,14 +512,28 @@ fn views(app: &App) -> Vec<NodeView> {
 }
 
 /// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
+/// `memory_mib` comes from /proc on Linux; elsewhere it is the text "not available on this platform".
 fn local_summary() -> Value {
-    let cpus = std::fs::read_to_string("/proc/cpuinfo").map(|t| t.lines().filter(|l| l.starts_with("processor")).count()).unwrap_or(0);
-    let memory_mib = std::fs::read_to_string("/proc/meminfo")
+    let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let host = std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")).ok())
+        .map(|h| h.trim().to_string())
+        .unwrap_or_default();
+    serde_json::json!({"cpus": cpus, "memory_mib": memory_mib(), "host": host, "version": env!("CARGO_PKG_VERSION")})
+}
+
+#[cfg(target_os = "linux")]
+fn memory_mib() -> Value {
+    std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|t| t.lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok()))
-        .map_or(0, |kb| kb / 1024);
-    let host = std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
-    serde_json::json!({"cpus": cpus, "memory_mib": memory_mib, "host": host, "version": env!("CARGO_PKG_VERSION")})
+        .map_or(Value::from(0), |kb| Value::from(kb / 1024))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_mib() -> Value {
+    Value::from("not available on this platform")
 }
 
 #[derive(Default, Deserialize)]

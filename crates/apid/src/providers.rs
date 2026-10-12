@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -424,14 +423,19 @@ fn io_failure(e: io::Error) -> Failure {
 }
 
 /// Writes `bytes` to `path` through a temporary file created with `mode`.
+/// A private mode (no group or other bits, 0600) goes through [`apz_os::private::write`]; any other
+/// mode is applied to the new file on Unix (ignored on Windows).
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    if mode & 0o077 == 0 {
+        return apz_os::private::write(path, bytes);
+    }
     let tmp = path.with_extension("json.tmp");
     let _ = std::fs::remove_file(&tmp);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    let mut file = options.open(&tmp)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
