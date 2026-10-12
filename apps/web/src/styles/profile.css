@@ -1,41 +1,43 @@
-/* Agent profile: a cartoon ID card with the robot's portrait. */
+/* Agent profile: the agent's record — its portrait, role and standing — in the console's
+   sheet language (square, ink rules, mono labels). */
 .avatar {
   position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center;
-  overflow: hidden; border-radius: 0; border: 2px solid var(--ink);
-  background: hsl(var(--hue) 70% 84%); box-shadow: 2px 2px 0 var(--ink);
+  overflow: hidden; border-radius: 0; border: 1px solid var(--ink);
+  /* The role's hue only tints the portrait's backdrop. */
+  background: color-mix(in srgb, hsl(var(--hue) 60% 75%) 45%, var(--sheet));
 }
 .avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .avatar.offline img { filter: grayscale(0.85) opacity(0.75); }
-.avatar-initial { font: 700 1.1em/1 var(--mono); color: #2b2420; }
+.avatar-initial { font: 700 1.1em/1 var(--mono); color: var(--ink); }
 
 .profile-card {
   display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: start;
   padding: 20px; margin-bottom: 20px;
-  background:
-    repeating-linear-gradient(-45deg, transparent 0 14px, color-mix(in srgb, var(--rule) 30%, transparent) 14px 15px),
-    var(--sheet);
-  border: 2px solid var(--ink); border-radius: 0; box-shadow: 5px 5px 0 var(--ink);
+  background: var(--sheet);
+  border: 1px solid var(--ink); border-radius: 0; box-shadow: var(--print);
 }
 .profile-portrait { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; }
-.profile-portrait .avatar { border-width: 3px; border-radius: 0; box-shadow: 4px 4px 0 var(--ink); transform: rotate(-2deg); }
+.profile-portrait .avatar { border-width: 1px; border-radius: 0; box-shadow: var(--print); }
 .profile-stamp {
   font: 700 11px/1 var(--mono); letter-spacing: 0.14em; color: var(--signal);
-  border: 2px solid var(--signal); border-radius: 0; padding: 4px 8px; transform: rotate(3deg);
-  background: color-mix(in srgb, var(--sheet) 85%, transparent);
+  border: 1px solid var(--signal); border-radius: 0; padding: 4px 8px;
+  background: var(--sheet);
 }
 .profile-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .profile-name { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .profile-name h1 { margin: 0; font-size: 34px; line-height: 1.05; }
 .profile-tags { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font: 400 12px var(--mono); color: var(--ink-2); }
 .role-chip {
-  font: 700 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
-  padding: 7px 12px; border-radius: 0; border: 2px solid #2b2420;
-  background: hsl(var(--hue) 55% 32%); color: #fff; box-shadow: 2px 2px 0 #2b2420;
+  font: 700 11.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 6px 10px 6px 9px; border-radius: 0; border: 1px solid var(--ink);
+  /* The role's colour is a 3px stripe, as on the floor's labels. */
+  border-left: 4px solid hsl(var(--hue) 55% 40%);
+  background: var(--sheet); color: var(--ink);
 }
 .profile-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .ptile {
   display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; min-width: 0;
-  background: var(--paper); border: 2px solid var(--ink); border-radius: 0; box-shadow: 3px 3px 0 var(--ink);
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 0;
 }
 .ptile-label { font: 600 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
 .ptile-value { font: 700 22px/1.1 var(--mono); font-stretch: 78%; letter-spacing: -0.01em; color: var(--ink); min-height: 26px; display: flex; align-items: center; }
@@ -60,7 +62,7 @@
 .prof-inf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .prof-inf-row {
   display: grid; grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 2fr) auto; gap: 4px 12px; align-items: baseline;
-  padding: 8px 10px; background: var(--paper); border: 2px solid var(--ink); border-radius: 0; box-shadow: 2px 2px 0 var(--ink);
+  padding: 8px 10px; background: var(--paper); border: 1px solid var(--ink); border-radius: 0;
   font: 400 12px var(--mono);
 }
 .prof-inf-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
