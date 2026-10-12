@@ -24,6 +24,8 @@ use crate::state::App;
 
 /// How much of a response body `call` returns.
 const BODY_CAP: usize = 256 * 1024;
+/// The most bytes of a binary reply (audio, images, video) kept; it goes to the file store, not a prompt.
+const BINARY_CAP: usize = 100 * 1024 * 1024;
 /// The timeout of one upstream request.
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// The vault file: `{connector: {field: value}}`.
@@ -979,18 +981,18 @@ fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: 
     response
         .into_body()
         .into_reader()
-        .take(BODY_CAP as u64 + 1)
+        .take(BINARY_CAP as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    let truncated = bytes.len() > BODY_CAP;
-    bytes.truncate(BODY_CAP);
     if (200..300).contains(&status) && !is_text(&content_type) {
         // A cut-off file would be stored as if whole, so an oversized binary body is refused.
-        if truncated {
-            return Err(format!("{}.{} returned a binary body over 256 KiB; not stored", c.id, a.name));
+        if bytes.len() > BINARY_CAP {
+            return Err(format!("{}.{} returned a binary body over 100 MiB; not stored", c.id, a.name));
         }
         return Ok(Reply::Binary { content_type, bytes });
     }
+    let truncated = bytes.len() > BODY_CAP;
+    bytes.truncate(BODY_CAP);
     let mut text = if is_text(&content_type) {
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
