@@ -776,6 +776,10 @@ impl Social {
         };
         let slot = slot.ok_or_else(|| SocialError::Unknown(format!("no {on} {id}")))?;
         *slot = files.to_vec();
+        if on != "message" {
+            // A board view refetches on any board frame, so the files show without a reload.
+            self.events.publish(Event::Board { kind: "attach", post: None, agent_cid: 0, role: String::new(), read_up_to: None });
+        }
         Ok(())
     }
 
