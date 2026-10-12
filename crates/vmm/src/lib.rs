@@ -86,7 +86,9 @@ pub mod spawner;
 #[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]
 pub mod acpi;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+// On Windows only x86_64 guests are built (the WHP backend); arm64 Windows
+// hosts run the hub, the apps and the node daemons but no VM yet.
+#[cfg(any(target_os = "linux", target_os = "macos", all(windows, target_arch = "x86_64")))]
 pub mod arch;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

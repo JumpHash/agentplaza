@@ -51,3 +51,8 @@ pub mod boot_state;
 pub mod ioapic;
 pub mod kernel;
 pub mod zero_page;
+
+#[cfg(windows)]
+pub(crate) mod sys;
+#[cfg(windows)]
+mod vm;

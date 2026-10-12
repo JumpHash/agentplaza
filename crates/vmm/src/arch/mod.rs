@@ -19,6 +19,8 @@ pub mod x86_64 {
     /// Layout for the x86_64 system.
     pub mod layout;
     pub(crate) mod mptable;
+    mod regions;
+    pub use regions::arch_memory_regions;
 }
 
 #[cfg(target_arch = "aarch64")]
