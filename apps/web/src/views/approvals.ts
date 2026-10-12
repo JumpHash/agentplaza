@@ -1,14 +1,16 @@
 // The approvals queue: tool calls an agent has asked to make and is waiting on
 // the owner's yes or no. Pending ones sit on top as cards, longest wait first;
 // decided ones follow as a compact history. Refetches on each `approval` frame.
+// Above them, the agents the orchestrator has proposed to spawn, to review or reject.
 
 import '../styles/approvals.css';
-import { api, type Approval } from '../api';
+import { api, type AgentProposal, type Approval } from '../api';
 import { href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, card, empty, textarea } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
@@ -25,12 +27,24 @@ const LABEL: Record<Approval['state'], string> = {
   denied: 'Denied',
   used: 'Used',
 };
+const PROPOSAL_TONE: Record<AgentProposal['state'], 'warn' | 'ok' | 'danger'> = {
+  pending: 'warn',
+  approved: 'ok',
+  rejected: 'danger',
+};
+const PROPOSAL_LABEL: Record<AgentProposal['state'], string> = {
+  pending: 'Waiting',
+  approved: 'Approved',
+  rejected: 'Rejected',
+};
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
+  const proposals = h('section.proposals', { style: 'display:none' });
   const pending = h('div.approvals-pending');
   const decided = h('div.approvals-history');
   root.append(
     h('div.view-head', null, h('h1', null, 'Approvals')),
+    proposals,
     pending,
     h('h2.approvals-subhead', null, 'Decided'),
     decided,
@@ -39,6 +53,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let items: Approval[] = [];
   let loaded = false;
   let failed = false;
+  let agentProposals: AgentProposal[] = [];
   let alive = true;
   let timer: number | undefined;
   // Reasons typed but not yet sent survive a re-render, keyed by approval id.
@@ -108,6 +123,74 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       h('time.approval-row-age', null, ago(a.created_ms)),
     );
 
+  // One proposed agent, waiting: what it is for, why the orchestrator wants it, and the owner's call.
+  const proposalCard = (p: AgentProposal): HTMLElement => {
+    const title = p.role.title || p.role.id;
+    const review = button('Review…', () => openAgentWizard({ proposal: p, prefill: p.role, onDone: () => void loadProposals() }), { kind: 'primary' });
+    const reject = button('Reject', () => void rejectProposal(p), { kind: 'danger' });
+    const el = card(
+      null,
+      h(
+        'div.stack',
+        null,
+        h(
+          'header.approval-head',
+          null,
+          h('strong', null, title),
+          p.new_role ? badge('new role', 'accent') : null,
+          badge(`${p.count} ${p.count === 1 ? 'agent' : 'agents'}`, 'info'),
+          h('time.approval-age', null, ago(p.created_ms)),
+        ),
+        h('p', null, p.reason),
+        p.instruction ? h('blockquote.proposal-instruction', null, `“${p.instruction}”`) : null,
+        h('p.faint', null, `Proposed by ${p.by}`),
+        h('div.approval-buttons', null, reject, review),
+      ),
+    );
+    el.classList.add('approval-card');
+    el.setAttribute('data-key', `pp-${p.id}`);
+    return el;
+  };
+
+  // One decided proposal, as a line of the collapsed history.
+  const proposalRow = (p: AgentProposal): HTMLElement =>
+    h(
+      'div.approval-row',
+      { 'data-key': `pp-${p.id}` },
+      badge(PROPOSAL_LABEL[p.state], PROPOSAL_TONE[p.state]),
+      h('strong', null, p.role.title || p.role.id),
+      p.note ? h('span.approval-row-reason', null, p.note) : null,
+      h('time.approval-row-age', null, ago(p.decided_ms || p.created_ms)),
+    );
+
+  const renderProposals = (): void => {
+    proposals.style.display = agentProposals.length ? '' : 'none';
+    const waiting = agentProposals.filter((p) => p.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
+    const past = agentProposals.filter((p) => p.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
+    replace(
+      proposals,
+      h('h2.approvals-subhead', null, 'New agents proposed by the orchestrator'),
+      waiting.length ? waiting.map((p) => proposalCard(p)) : h('p.approvals-none', null, 'No proposals waiting.'),
+      past.length ? h('details.proposals-decided', null, h('summary', null, `Decided (${past.length})`), past.map((p) => proposalRow(p))) : null,
+    );
+  };
+
+  const rejectProposal = async (p: AgentProposal): Promise<void> => {
+    const reason = window.prompt(`Reject ${p.role.title || p.role.id}? Give a reason.`);
+    if (reason === null) return;
+    await attempt(() => api.rejectAgentProposal(p.id, reason.trim()), 'Rejected');
+    void loadProposals();
+  };
+
+  const loadProposals = async (): Promise<void> => {
+    try {
+      agentProposals = await api.agentProposals();
+    } catch {
+      agentProposals = [];
+    }
+    if (alive) renderProposals();
+  };
+
   const load = async (): Promise<void> => {
     try {
       items = await api.approvals();
@@ -124,8 +207,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     timer = window.setTimeout(() => void load(), DEBOUNCE_MS);
   };
 
-  const offs: (() => void)[] = [on('approval', refetch), agents.watch(() => render())];
+  const offs: (() => void)[] = [on('approval', refetch), on('agent_proposal', () => void loadProposals()), agents.watch(() => render())];
   void load();
+  void loadProposals();
 
   return () => {
     alive = false;

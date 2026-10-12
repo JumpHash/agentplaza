@@ -2,9 +2,10 @@
 
 import '../styles/agent.css';
 import { api, ApiError, type Agent, type Block, type Delta, type Entry, type ModelInfo, type Settings } from '../api';
-import { href } from '../router';
+import { go, href } from '../router';
+import { agentName } from '../roles';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, clip, compact, empty, field, tabs, textarea } from '../ui/components';
+import { ago, attempt, badge, button, card, clip, compact, empty, field, modal, tabs, textarea } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountMemory } from './memory';
@@ -258,6 +259,74 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     syncModel(current);
   };
 
+  // Head actions share one busy state: while a request runs every head button is disabled,
+  // and a render during the request keeps them disabled.
+  let busy = false;
+  const setHeadBusy = (on: boolean): void => {
+    head.querySelectorAll<HTMLButtonElement>('.agent-actions button').forEach((b) => (b.disabled = on));
+  };
+  const act = async (run: () => Promise<unknown>): Promise<void> => {
+    busy = true;
+    setHeadBusy(true);
+    try {
+      await run();
+    } finally {
+      busy = false;
+      setHeadBusy(false);
+    }
+  };
+  const restart = (a: Agent): void => {
+    if (!window.confirm(`Restart ${agentName(a)}? Its VM restarts.`)) return;
+    void act(() => attempt(() => api.restartAgent(cid), 'Restarting'));
+  };
+  const retire = (a: Agent): void => {
+    if (!window.confirm(`Retire ${agentName(a)}? Its VM stops for good and it leaves the roster.`)) return;
+    void act(async () => {
+      const ok = await attempt(async () => {
+        await api.retireAgent(cid);
+        return true;
+      }, 'Retired');
+      if (ok) go('agents');
+    });
+  };
+  // One labelled checkbox for the wipe dialog: the box (read on confirm) and its row.
+  const checkRow = (label: string, checked: boolean, disabled = false): [HTMLInputElement, HTMLElement] => {
+    const box = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    box.checked = checked;
+    box.disabled = disabled;
+    return [box, h('label.check', null, box, h('span', null, label))];
+  };
+  const wipe = (a: Agent): void => {
+    const [, workspaceRow] = checkRow('Workspace (always)', true, true);
+    const [memoryBox, memoryRow] = checkRow('Memory notes', false);
+    const [transcriptBox, transcriptRow] = checkRow('Conversation transcript', false);
+    const [identityBox, identityRow] = checkRow('Name and reputation', false);
+    let close: () => void = () => {};
+    const confirmBtn = button('Wipe', () => void run(), { kind: 'danger' });
+    const run = async (): Promise<void> => {
+      confirmBtn.disabled = true;
+      const ok = await attempt(async () => {
+        await api.wipeAgent(cid, { memory: memoryBox.checked, transcript: transcriptBox.checked, identity: identityBox.checked });
+        return true;
+      }, 'Wiped');
+      confirmBtn.disabled = false;
+      if (ok) close();
+    };
+    close = modal(
+      `Wipe ${agentName(a)}`,
+      h(
+        'div.stack',
+        null,
+        h('p.muted', null, "The agent's VM restarts with a fresh workspace. This cannot be undone."),
+        workspaceRow,
+        memoryRow,
+        transcriptRow,
+        identityRow,
+        h('div.row.modal-actions', null, confirmBtn),
+      ),
+    );
+  };
+
   const renderAgent = (): void => {
     const a = agent;
     if (!a) return;
@@ -274,8 +343,11 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       h(
         'div.row.agent-actions',
         null,
-        a.status === 'working' ? button('Cancel work', () => void attempt(() => api.cancel(cid), 'Cancelled'), { icon: 'ban' }) : null,
-        button('Stop', () => void attempt(() => api.stop(cid), 'Stopped'), { kind: 'danger', icon: 'stop' }),
+        a.status === 'working' ? button('Cancel work', () => void act(() => attempt(() => api.cancel(cid), 'Cancelled')), { icon: 'ban', disabled: busy }) : null,
+        button('Restart', () => restart(a), { disabled: busy }),
+        button('Stop', () => void act(() => attempt(() => api.stop(cid), 'Stopped')), { kind: 'danger', icon: 'stop', disabled: busy }),
+        button('Wipe…', () => wipe(a), { disabled: busy }),
+        button('Retire', () => retire(a), { kind: 'danger', disabled: busy }),
       ),
     );
 

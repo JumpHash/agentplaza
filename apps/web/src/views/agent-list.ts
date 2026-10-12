@@ -2,7 +2,7 @@ import { agentName, roleLabel } from '../roles';
 // The roster: every agent the plaza holds, filterable by role and status, with
 // each row's own actions. Live through the agents cell; it fetches nothing itself.
 
-import { api, type Agent, type AgentStatus, type ModelInfo, type Settings, type WorkKind } from '../api';
+import { api, type Agent, type AgentStatus, type WorkKind } from '../api';
 import { go } from '../router';
 import { agents, refreshAgents } from '../store';
 import {
@@ -14,25 +14,19 @@ import {
   compact,
   dot,
   empty,
-  field,
-  input,
-  modal,
   select,
   table,
-  toast,
   type Column,
   type Tone,
 } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { avatar } from './agent-profile';
-import { tierChoices } from './agent-detail';
-import { modelPicker } from '../ui/model-picker';
+import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 import '../styles/agents.css';
 
 const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted' };
 const WORK_TONE: Record<WorkKind, Tone> = { task: 'accent', chat: 'info', message: 'muted', motion: 'warn' };
-const MAX_COUNT = 16;
 
 export function mountAgentList(root: HTMLElement): Cleanup {
   let roleFilter = '';
@@ -47,7 +41,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     { value: 'offline', label: 'Offline' },
   ]);
   const body = h('div');
-  const spawnHead = button('Spawn agents', () => openSpawn(), { kind: 'primary', icon: 'plus' });
+  const spawnHead = button('Spawn agents', () => openWizard(), { kind: 'primary', icon: 'plus' });
 
   roleSel.addEventListener('change', () => {
     roleFilter = roleSel.value;
@@ -135,7 +129,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
   function render(list: Agent[]): void {
     syncRoles(list);
     if (!list.length) {
-      replace(body, empty('agents', 'No agents connected', 'Spawn agents to fill the roster.', button('Spawn agents', () => openSpawn(), { kind: 'primary', icon: 'plus' })));
+      replace(body, empty('agents', 'No agents connected', 'Spawn agents to fill the roster.', button('Spawn agents', () => openWizard(), { kind: 'primary', icon: 'plus' })));
       return;
     }
     const rows = list.filter(
@@ -165,50 +159,8 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     render(agents.get());
   }
 
-  function openSpawn(): void {
-    const roleChoice = select(roles.map((r) => ({ value: r, label: r })));
-    const count = input({ type: 'number', min: 1, max: MAX_COUNT, value: 1 });
-    // The model list follows the role's tier: a worker role may run any model, an orchestrator role only its policy list.
-    let settings: Settings | null = null;
-    let models: ModelInfo[] = [];
-    const model = modelPicker({ choices: [], label: 'Model', placeholder: 'Default for the role' });
-    const syncModels = (): void => {
-      if (!settings) return;
-      const tier = agents.get().find((a) => a.role === roleChoice.value)?.tier ?? 'worker';
-      model.setChoices(tierChoices(tier, settings, models, { label: 'Default for the role' }));
-    };
-    roleChoice.addEventListener('change', syncModels);
-    const send = button('Spawn', () => void submit(), { kind: 'primary', icon: 'plus' });
-    let close: () => void = () => {};
-
-    const submit = async (): Promise<void> => {
-      const n = Math.trunc(Number(count.value));
-      if (!roleChoice.value) {
-        toast('Pick a role', 'error');
-        return;
-      }
-      if (!(n >= 1 && n <= MAX_COUNT)) {
-        toast(`Count must be 1 to ${MAX_COUNT}`, 'error');
-        return;
-      }
-      send.disabled = true;
-      const ok = await attempt(() => api.spawnAgents(roleChoice.value, n, model.value || undefined), 'Spawning…');
-      send.disabled = false;
-      if (ok === undefined) return;
-      close();
-      void refreshAgents();
-    };
-
-    void Promise.all([attempt(() => api.models()), attempt(() => api.settings())]).then(([view, loaded]) => {
-      if (!view || !loaded) return;
-      models = view.models;
-      settings = loaded;
-      syncModels();
-    });
-
-    close = modal(
-      'Spawn agents',
-      h('div.stack', null, field('Role', roleChoice), field('Count', count), field('Model', model.el), h('div.row.modal-actions', null, send)),
-    );
+  // Spawning goes through the agent wizard: pick or define a role, then spawn of it.
+  function openWizard(): void {
+    openAgentWizard({ onDone: () => void refreshAgents() });
   }
 }
