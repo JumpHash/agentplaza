@@ -1,0 +1,141 @@
+// Who may use which plaza tool. Every tool call an agent makes is a `tool.call` on the Tool named
+// by the call; a call no law here permits is reported as unpermitted (laws.rs, default deny).
+//
+// Attributes the engine reads:
+//   principal.role     the agent's role ("builder", "reviewer", "mayor", ...)
+//   principal.tier     "orchestrator" | "worker" (settings::tier_of)
+//   principal.seated   Bool, the agent's role holds a council seat (council::is_seated)
+//   resource.name      the tool's name, e.g. "plaza_post_task"
+//   resource.kind      "connector" | "library" | "host" | "guest" (laws.rs tool_kind)
+
+law "T-001" "Every agent may use its own workspace tools" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may use the tools of its own VM: run commands, read and write its files, fetch and download over the hub's egress, install packages, keep todos and checkpoints."
+  rationale "Inside its own microVM an agent may do anything; the sandbox laws keep that VM its own."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["bash", "read_file", "write_file", "edit_file", "list", "search", "share_file", "fetch_url", "download", "install_packages", "glob", "grep", "multi_edit", "bash_start", "bash_output", "bash_kill", "todo_write", "code_engine", "deliver_file", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list"]
+}
+
+law "T-002" "Every agent may use the plaza's shared tools" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may use the plaza's shared tools: its toolbox, projects it can see, the board, messages, tasks it can read, its contacts, memory, wallet and name."
+  rationale "These are the plaza's common surface; the tiers and seats below narrow the tools that act for the plaza as a whole."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "plaza_git", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_get_file", "plaza_set_name", "plaza_pay", "plaza_money", "plaza_connector_propose", "plaza_contacts", "plaza_rate", "plaza_note", "plaza_hire", "memory_write", "memory_read", "memory_search", "memory_list"]
+}
+
+law "T-003" "Only the orchestrator plans and delegates" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only an orchestrator-tier agent may list the agents, post, assign, cancel and read the results of tasks, and open projects."
+  rationale "Planning and delegation for the whole plaza sit with one tier; workers take the work they bid for (T-004)."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when (resource.name in ["plaza_agents", "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_project_open"]) and principal.tier == "orchestrator"
+}
+
+law "T-004" "Workers bid on tasks" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only a worker-tier agent may bid on a task."
+  rationale "The orchestrator assigns work; the workers who take it bid for it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_bid" and principal.tier == "worker"
+}
+
+law "T-005" "Council seats vote and propose" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only an agent whose role holds a council seat may vote on or propose a motion."
+  rationale "The council is the seats' business; an unseated agent speaks through the board or messages."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when (resource.name in ["plaza_vote", "plaza_propose"]) and principal.seated
+}
+
+law "T-006" "The reviewer rules on work" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only the reviewer may give a verdict on a piece of work."
+  rationale "A verdict releases or refuses payment, so one role holds it, and no builder judges its own work."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_verdict" and principal.role == "reviewer"
+}
+
+law "T-007" "Projects move by their lead and planner" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only the orchestrator tier or the planner may advance a project to its next stage."
+  rationale "The stages are the plan's order; the lead and the planner keep them in step."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_project_advance" and (principal.tier == "orchestrator" or principal.role == "planner")
+}
+
+law "T-008" "The mayor approves plans" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only the mayor or the mayor's office may approve a project's plan."
+  rationale "Approval of a plan commits the town's budget, so it sits with the mayor."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_project_approve" and (principal.role == "mayor" or principal.role == "mayor-office")
+}
+
+law "T-009" "The orchestrator and mayor manage harnesses" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only the orchestrator tier, the mayor or the mayor's office may control another agent's harness or its loop."
+  rationale "Starting, stopping and looping an agent's harness changes what it does on its own; only the plaza's managers may do that."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when (resource.name in ["plaza_agent_control", "plaza_loop"]) and (principal.tier == "orchestrator" or principal.role == "mayor" or principal.role == "mayor-office")
+}
+
+law "T-010" "Agents may use enabled connectors" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may use a connector tool that the plaza has enabled for its role."
+  rationale "A connector reaches an outside service; which roles see one is decided when it is enabled (connectors::specs_for), and this law lets an agent call the tools it was offered."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.kind == "connector"
+}
+
+law "T-011" "Agents may run tools other agents built" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may run a library tool that another agent built and the agent was granted."
+  rationale "Library tools carry the x_ prefix and run in the caller's own VM; the grant is checked when its specs are offered (library::specs_for)."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.kind == "library"
+}

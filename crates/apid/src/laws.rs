@@ -8,17 +8,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
+use apz_plaza::council;
 use jhrl::authz::{authorize, Decision, Entity, EntityStore, Request};
 use jhrl::value::Value;
 use jhrl::Program;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+use crate::settings::{tier_of, Tier};
+use crate::tools::{runs, Runs};
+
 /// The law files, compiled into the binary. `cases.jhrl` is the test fixture set, not law.
-const LAW_FILES: [(&str, &str); 3] = [
+const LAW_FILES: [(&str, &str); 4] = [
     ("operations.jhrl", include_str!("../../jhrl/specs/laws/operations.jhrl")),
     ("constitution.jhrl", include_str!("../../jhrl/specs/laws/constitution.jhrl")),
     ("statutes.jhrl", include_str!("../../jhrl/specs/laws/statutes.jhrl")),
+    ("tools.jhrl", include_str!("../../jhrl/specs/laws/tools.jhrl")),
 ];
 /// Violations kept per agent; the oldest go first.
 const KEEP: usize = 200;
@@ -118,10 +123,26 @@ impl Laws {
         let sandbox = Entity { ty: "Sandbox".into(), id: format!("vm-{agent_cid}") };
         let mut store = EntityStore::default();
         let member = |role: &str| {
-            BTreeMap::from([("role".to_string(), Value::str(role)), ("town".to_string(), Value::str("plaza"))])
+            let tier = match tier_of(role) {
+                Tier::Orchestrator => "orchestrator",
+                Tier::Worker => "worker",
+            };
+            BTreeMap::from([
+                ("role".to_string(), Value::str(role)),
+                ("town".to_string(), Value::str("plaza")),
+                ("tier".to_string(), Value::str(tier)),
+                ("seated".to_string(), Value::Bool(council::is_seated(role))),
+            ])
         };
         store.insert(&agent, member(role));
-        store.insert(&tool_entity, BTreeMap::from([("risk_class".to_string(), Value::str(risk_class(tool)))]));
+        store.insert(
+            &tool_entity,
+            BTreeMap::from([
+                ("name".to_string(), Value::str(tool)),
+                ("kind".to_string(), Value::str(tool_kind(tool))),
+                ("risk_class".to_string(), Value::str(risk_class(tool))),
+            ]),
+        );
         store.insert(&sandbox, BTreeMap::from([("agent".to_string(), jhrl::authz::entity_value(&agent))]));
         let context = Value::record(BTreeMap::from([(
             "flags".to_string(),
@@ -298,6 +319,20 @@ const GUEST_EXEC: &[&str] = &[
     "checkpoint_restore",
 ];
 
+/// Where a tool comes from, as the tool laws (`tools.jhrl`) read it: a connector's action, a
+/// library tool another agent built, a host tool apid runs, or a guest tool in the agent's VM.
+fn tool_kind(tool: &str) -> &'static str {
+    if crate::connectors::by_tool(tool).is_some() {
+        "connector"
+    } else if tool.starts_with(crate::library::PREFIX) {
+        "library"
+    } else if runs(tool) == Some(Runs::Host) {
+        "host"
+    } else {
+        "guest"
+    }
+}
+
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. No tool is `irreversible` yet: payments are capped transfers and verdicts are reviewable, and
 /// owner approvals are not threaded through tool calls, so marking them would refuse them outright.
@@ -383,5 +418,26 @@ mod tests {
         let found = again.recent(7, apz_plaza::now_ms());
         assert!(!found.is_empty());
         assert!(found[0]["law"].as_str().unwrap_or_default().starts_with("C-"));
+    }
+
+    #[test]
+    fn every_tool_offered_to_a_role_is_permitted_by_a_law() {
+        let laws = Laws::load(&scratch("offered"));
+        let mut roles = vec!["builder", "reviewer", "mayor", "planner", "finance"];
+        roles.push(crate::settings::ORCHESTRATOR_ROLE);
+        for role in roles {
+            for tool in crate::tools::offered_names(role) {
+                let verdict = laws.check("7", role, &tool, &json!({}));
+                assert!(!verdict.unpermitted, "{role} is offered {tool}, but no law permits it");
+                assert!(verdict.forbid.is_empty(), "{role} calling {tool}: {verdict:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_builder_may_not_post_a_task() {
+        let laws = Laws::load(&scratch("builder-post"));
+        let verdict = laws.check("7", "builder", "plaza_post_task", &json!({}));
+        assert!(verdict.unpermitted, "{verdict:?}");
     }
 }
