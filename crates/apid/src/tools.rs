@@ -356,7 +356,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "plaza_agents" => ("List the connected agents with their cids and roles.", obj(json!({}), &[])),
         "plaza_post_task" => (
-            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is the escrow that pays the worker's model calls and tool steps — work stops when it runs out — so size it to the job (default 2000; a substantial build or media job may need 5000+). For a project's work give `project`; tasks can be posted only once its plan is approved.",
+            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved.",
             obj(
                 json!({
                     "title": {"type": "string"},
@@ -364,6 +364,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
                     "role": {"type": "string"},
                     "assignee": {"type": "integer"},
                     "budget": {"type": "integer", "minimum": 0},
+                    "acceptance": {"type": "string"},
                     "project": {"type": "string"}
                 }),
                 &["title", "body"],
@@ -621,7 +622,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 .tasks
                 .create(&CreateTask {
                     goal: format!("{title}\n\n{body}"),
-                    acceptance: None,
+                    acceptance: input.get("acceptance").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).map(str::to_string),
                     budget: Some(budget),
                     role,
                 })

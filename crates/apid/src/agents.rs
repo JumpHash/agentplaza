@@ -347,6 +347,17 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              revision.",
         );
     }
+    text.push_str(
+        "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
+         it is posted (plaza_post_task or plaza_hire) — no wallet is debited and no transfer cap applies. The \
+         worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
+         work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
+         at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
+         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. A plaza_hire \
+         bonus comes from the hirer's own wallet and is paid only if the work passes. Your wallet is only debited by \
+         what you send yourself (plaza_pay, hire bonuses), up to 1000 credits a day. plaza_money shows your wallet \
+         and any task's escrow, spend and payouts.",
+    );
     text.push_str("\n\n");
     text.push_str(crate::society::PROMPT);
     let role_prompt = role_prompt.trim();
