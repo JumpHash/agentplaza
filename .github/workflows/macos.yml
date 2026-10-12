@@ -1,7 +1,8 @@
 # macOS: one job on the org's self-hosted Mac (Intel) tests the Intel build natively, builds the
 # Apple Silicon one alongside it (cross-compiled; its tests are built, not run) and, with `package`,
 # makes a DMG for each: AgentPlaza-<v>-macos-x86_64.dmg and AgentPlaza-<v>-macos-arm64.dmg.
-# Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+# CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
+# request builds); it also runs by hand.
 #
 # The runner's labels come from the repository variable MACOS_RUNNER (a JSON list; default
 # ["self-hosted","macOS","X64"]); APZ_MACOS=off skips macOS, and a release then ships without it.
@@ -10,7 +11,6 @@
 name: macos
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       version: { type: string, default: "" }
@@ -22,7 +22,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-macos-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

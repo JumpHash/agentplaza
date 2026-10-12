@@ -1,7 +1,8 @@
 # Linux (x86_64, arm64): one job per architecture tests and, with `package`, builds the deb
 # (Ubuntu, Debian), rpm (Fedora), pacman (Arch, Arch Linux ARM) packages and tarballs from the same
 # optimised build, then installs and runs them in Ubuntu, Debian, Fedora and Arch containers.
-# Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+# CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
+# request builds); it also runs by hand.
 #
 # Where: the org's self-hosted Linux runner (an x86_64 Ubuntu host with Docker). Every build runs
 # inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on every
@@ -14,7 +15,6 @@
 name: linux
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       version: { type: string, default: "" }
@@ -26,7 +26,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-linux-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

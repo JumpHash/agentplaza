@@ -1,14 +1,14 @@
 # Windows (x64, arm64): one job per architecture tests and, with `package`, builds an MSI and a zip
 # from the same optimised build, then installs the MSI and runs what it installed. The x64 package
 # carries the VM node (the Windows Hypervisor Platform backend) and the x86_64 guest.
-# Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+# CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
+# request builds); it also runs by hand.
 # Where: the org's self-hosted Windows runner (x64). arm64 is cross-compiled there: its tests are
 # built, not run, and its MSI is not installed. Speed: cargo's build directory persists on the
 # runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest.
 name: windows
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       version: { type: string, default: "" }
@@ -20,7 +20,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-windows-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
