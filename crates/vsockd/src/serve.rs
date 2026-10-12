@@ -330,7 +330,8 @@ impl Session<'_> {
                 message @ (GuestMessage::ModelCall { .. }
                 | GuestMessage::ToolRequest { .. }
                 | GuestMessage::ToolReport { .. }
-                | GuestMessage::WorkDone { .. }) => self.forward(lines, &bridge, &line, message)?,
+                | GuestMessage::WorkDone { .. }
+                | GuestMessage::Compressed { .. }) => self.forward(lines, &bridge, &line, message)?,
             }
         }
     }
@@ -471,6 +472,7 @@ fn guest_kind(message: &GuestMessage) -> &'static str {
         GuestMessage::ToolRequest { .. } => "tool_request",
         GuestMessage::ToolReport { .. } => "tool_report",
         GuestMessage::WorkDone { .. } => "work_done",
+        GuestMessage::Compressed { .. } => "compressed",
     }
 }
 

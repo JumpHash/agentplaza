@@ -169,6 +169,7 @@ pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
         HostMessage::ToolDecision { .. } => "tool_decision",
         HostMessage::Cancel { .. } => "cancel",
         HostMessage::Profile { .. } => "profile",
+        HostMessage::Control { .. } => "control",
     }
 }
 

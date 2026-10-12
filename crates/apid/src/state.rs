@@ -89,6 +89,8 @@ pub struct App {
     pub toolbox: crate::toolbox::Store,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
+    /// Loops and per-agent harness limits.
+    pub harness: crate::harness_control::Store,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -126,6 +128,7 @@ impl App {
             society: crate::society::Society::default(),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
+            harness: crate::harness_control::Store::load(&config.state_dir),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,

@@ -274,6 +274,8 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         system: system_prompt(agent, role_prompt),
         tools: crate::tools::specs_for_agent(app, agent),
         max_turns: app.settings.get().max_turns,
+        compress_at: crate::harness_control::DEFAULT_COMPRESS_AT,
+        keep_recent: crate::harness_control::DEFAULT_KEEP_RECENT,
     }
 }
 

@@ -66,6 +66,9 @@ pub enum GuestMessage {
     ToolReport { work: u64, call: String, ok: bool, output: String },
     /// v3: the work item is over.
     WorkDone { work: u64, status: WorkStatus, summary: String },
+    /// v3: the harness compressed work item `work`'s conversation: its size in bytes before
+    /// and after, how many messages were folded into the summary, and why ("auto" or "asked").
+    Compressed { work: u64, before: u64, after: u64, folded: u32, reason: String },
 }
 
 /// An agent-made tool from the plaza's library, as the guest runs it: its files are
@@ -146,6 +149,20 @@ pub enum HostMessage {
     Cancel { work: u64, reason: String },
     /// v3: replace the agent's profile (model, tools, limits).
     Profile { profile: AgentProfile },
+    /// v3: steer the running work item `work` (the orchestrator, the mayor or the owner).
+    Control { work: u64, control: Control },
+}
+
+/// What a [`HostMessage::Control`] asks of a running work item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum Control {
+    /// Fold the older part of the conversation into a summary before the next model call.
+    Compress,
+    /// Add a note to the conversation before the next model call: `from` says who (a name).
+    Steer { from: String, text: String },
+    /// Allow `turns` more model calls for this work item.
+    ExtendTurns { turns: u32 },
 }
 
 /// What the agent is, as `apid` configured it.
@@ -161,6 +178,14 @@ pub struct AgentProfile {
     pub tools: Vec<ToolSpec>,
     /// Model calls per work item before the agent stops as over budget.
     pub max_turns: u32,
+    /// Compress the conversation once it is larger than this many bytes (serialized);
+    /// 0 never compresses on its own.
+    #[serde(default)]
+    pub compress_at: u64,
+    /// The most recent turns (an assistant message and the results after it) kept verbatim
+    /// when compressing; older ones are folded into a summary.
+    #[serde(default)]
+    pub keep_recent: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

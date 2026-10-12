@@ -172,6 +172,17 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 let _ = app.memory.journal(cid, &line, apz_plaza::now_ms());
             }
             app.work.complete(app, cid, work, status, &summary);
+            crate::harness_control::work_ended(app, cid, work, &summary);
+            None
+        }
+        GuestMessage::Compressed { work, before, after, folded, reason } => {
+            app.transcripts.record(
+                &app.bus,
+                cid,
+                work,
+                "compressed",
+                json!({ "before": before, "after": after, "folded": folded, "reason": reason }),
+            );
             None
         }
         _ => None,

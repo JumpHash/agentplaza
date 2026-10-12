@@ -39,6 +39,7 @@ pub fn router() -> Router<App> {
     let router = crate::deliverables::routes(router);
     let router = crate::toolbox::routes(router);
     let router = crate::projects::routes(router);
+    let router = crate::harness_control::routes(router);
     let router = memory::routes(router);
     router
         .get("/", |app, _, _| static_file(&app.config.console, "index.html"))
