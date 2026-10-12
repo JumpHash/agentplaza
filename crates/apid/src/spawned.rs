@@ -174,12 +174,36 @@ pub fn spawn_respawn(app: Arc<App>) {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        serde_json::to_string_pretty(&*self.guard()).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let registry: Registry = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        self.mutate(|current| *current = registry).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_restores_into_a_fresh_store() {
+        let dir = std::env::temp_dir().join(format!("apid-spawned-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::load(dir.join("spawned.json"));
+        store.expect("worker", Some("model-a".into()));
+        store.hello(42, "worker");
+        store.set_name(42, "Ada").unwrap();
+        let json = store.snapshot();
+
+        let other = Store::load(dir.join("other.json"));
+        other.restore(&json).unwrap();
+        assert_eq!(other.snapshot(), json);
+        assert_eq!(other.model_for(42).as_deref(), Some("model-a"));
+        assert_eq!(other.entries()[0].name, "Ada");
+        assert!(other.restore("not json").is_err());
     }
 }
 

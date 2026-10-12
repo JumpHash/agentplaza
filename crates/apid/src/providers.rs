@@ -431,13 +431,40 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<(
 
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    /// A command credential and extra-header values may hold literal tokens, so they are blanked.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        let mut providers = self.gateway.providers();
+        for p in &mut providers {
+            if let Auth::Command(command) = &mut p.auth {
+                command.clear();
+            }
+            for value in p.extra_headers.values_mut() {
+                value.clear();
+            }
+        }
+        to_json(&providers).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing. Blanked
+    /// credentials keep their live values.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let _guard = lock(&self.write);
+        let mut providers: Vec<ProviderConfig> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let live = self.gateway.providers();
+        for p in &mut providers {
+            let Some(old) = live.iter().find(|o| o.id == p.id) else { continue };
+            if let (Auth::Command(command), Auth::Command(live_command)) = (&mut p.auth, &old.auth) {
+                if command.is_empty() {
+                    command.clone_from(live_command);
+                }
+            }
+            for (name, value) in p.extra_headers.iter_mut() {
+                if let (true, Some(live_value)) = (value.is_empty(), old.extra_headers.get(name)) {
+                    value.clone_from(live_value);
+                }
+            }
+        }
+        self.commit(providers).map_err(|(_, message)| message)
     }
 }
 
