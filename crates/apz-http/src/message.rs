@@ -7,6 +7,8 @@ use std::net::IpAddr;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::ws;
+
 /// The JSON content type every daemon answers with.
 pub const JSON: &str = "application/json; charset=utf-8";
 
@@ -182,15 +184,24 @@ pub fn host_is_loopback(host: &str) -> bool {
 /// Writes a streamed body to the connection.
 pub type StreamFn = Box<dyn FnOnce(&mut dyn Write) -> io::Result<()> + Send>;
 
-/// A response body: bytes, or a stream written straight to the connection.
+/// Runs an upgraded connection (a WebSocket) on its own thread.
+pub type UpgradeFn = Box<dyn FnOnce(Box<dyn ws::Duplex>) + Send>;
+
+/// A response body: bytes, a stream written straight to the connection, or an upgrade: the 101
+/// head goes out, then the connection itself is handed to the closure.
 pub enum Body {
     Bytes(Vec<u8>),
     Stream(StreamFn),
+    Upgrade(UpgradeFn),
 }
 
 impl fmt::Debug for Body {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(if matches!(self, Body::Bytes(_)) { "Bytes" } else { "Stream" })
+        f.write_str(match self {
+            Body::Bytes(_) => "Bytes",
+            Body::Stream(_) => "Stream",
+            Body::Upgrade(_) => "Upgrade",
+        })
     }
 }
 
@@ -248,11 +259,14 @@ impl Response {
     pub fn bytes(&self) -> &[u8] {
         match &self.body {
             Body::Bytes(bytes) => bytes,
-            Body::Stream(_) => &[],
+            Body::Stream(_) | Body::Upgrade(_) => &[],
         }
     }
 
-    pub fn write_to(self, out: &mut impl Write) -> io::Result<()> {
+    /// Writes the response. An upgrade writes its 101 head (no `Connection: close`: the upgrade
+    /// headers say `Connection: Upgrade`) and returns its closure, which the caller runs on the
+    /// connection; every other body returns `None`.
+    pub fn write_to(self, out: &mut impl Write) -> io::Result<Option<UpgradeFn>> {
         let mut head = format!("HTTP/1.1 {} {}\r\n", self.status, reason(self.status));
         for (name, value) in &self.headers {
             head.push_str(&format!("{name}: {value}\r\n"));
@@ -260,24 +274,35 @@ impl Response {
         if let Body::Bytes(bytes) = &self.body {
             head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
         }
-        head.push_str("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+        if matches!(self.body, Body::Upgrade(_)) {
+            head.push_str("Cache-Control: no-store\r\n\r\n");
+        } else {
+            head.push_str("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+        }
         out.write_all(head.as_bytes())?;
-        match self.body {
-            Body::Bytes(bytes) => out.write_all(&bytes)?,
+        let upgrade = match self.body {
+            Body::Bytes(bytes) => {
+                out.write_all(&bytes)?;
+                None
+            }
             Body::Stream(stream) => {
                 out.flush()?;
                 stream(out)?;
+                None
             }
-        }
-        out.flush()
+            Body::Upgrade(run) => Some(run),
+        };
+        out.flush()?;
+        Ok(upgrade)
     }
 }
 
 fn reason(status: u16) -> &'static str {
-    const REASONS: [(u16, &str); 14] = [
-        (200, "OK"), (201, "Created"), (202, "Accepted"), (400, "Bad Request"), (403, "Forbidden"),
-        (404, "Not Found"), (405, "Method Not Allowed"), (409, "Conflict"), (413, "Content Too Large"),
-        (422, "Unprocessable Content"), (500, "Internal Server Error"), (502, "Bad Gateway"),
+    const REASONS: [(u16, &str); 16] = [
+        (101, "Switching Protocols"), (200, "OK"), (201, "Created"), (202, "Accepted"),
+        (400, "Bad Request"), (403, "Forbidden"), (404, "Not Found"), (405, "Method Not Allowed"),
+        (409, "Conflict"), (413, "Content Too Large"), (422, "Unprocessable Content"),
+        (426, "Upgrade Required"), (500, "Internal Server Error"), (502, "Bad Gateway"),
         (503, "Service Unavailable"), (504, "Gateway Timeout"),
     ];
     REASONS.iter().find(|(code, _)| *code == status).map_or("Unknown", |(_, text)| text)

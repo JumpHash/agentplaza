@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
-use crate::{Limits, Request, Response, host_is_loopback};
+use crate::{Limits, Request, Response, host_is_loopback, ws};
 
 /// The most connections served at once; the next one is answered 503.
 const MAX_CONNECTIONS: usize = 256;
@@ -122,10 +122,12 @@ where
     serve_connection(tls, peer, handler, limits);
 }
 
-/// One request, one response, close. `peer` is the connection's remote address.
+/// One request, one response, close. `peer` is the connection's remote address. An upgrade keeps
+/// the connection: its closure gets the connection with whatever the request reading had already
+/// buffered still to be read.
 fn serve_connection<S, H>(stream: S, peer: Option<IpAddr>, handler: &H, limits: Limits)
 where
-    S: Read + Write,
+    S: ws::Duplex + 'static,
     H: Fn(&Request) -> Response,
 {
     let mut reader = BufReader::new(stream);
@@ -140,8 +142,37 @@ where
             }
         }
     };
+    let mut connection = Buffered(reader);
     // A client that hung up has nobody left to tell.
-    let _ = response.write_to(reader.get_mut());
+    if let Ok(Some(run)) = response.write_to(&mut connection) {
+        run(Box::new(connection));
+    }
+}
+
+/// A connection whose reads first drain what the request reading had buffered ahead; writes go
+/// straight to the connection.
+struct Buffered<S: Read>(BufReader<S>);
+
+impl<S: Read> Read for Buffered<S> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl<S: Read + Write> Write for Buffered<S> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.get_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.get_mut().flush()
+    }
+}
+
+impl<S: ws::Duplex> ws::Duplex for Buffered<S> {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.0.get_ref().set_read_timeout(timeout)
+    }
 }
 
 /// The rebinding guard: a caller on this machine (loopback peer, or one not known) must name a
