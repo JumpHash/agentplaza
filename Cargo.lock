@@ -147,6 +147,8 @@ dependencies = [
 name = "apz-http"
 version = "0.1.0"
 dependencies = [
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
 ]

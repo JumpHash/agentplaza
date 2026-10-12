@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::io::{self, BufRead, Read, Write};
+use std::net::IpAddr;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -35,6 +36,9 @@ pub struct Request {
     /// Header names lower-cased, values trimmed, in arrival order.
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// The connection's remote address; `None` when the request was read
+    /// from a plain buffer rather than a connection.
+    pub peer: Option<IpAddr>,
 }
 
 impl Request {
