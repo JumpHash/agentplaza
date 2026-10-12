@@ -11,10 +11,10 @@ import { href } from '../router';
 import { agents, on } from '../store';
 import { ago, attempt, button, empty } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
-const CLAMP_LINES = '3';
 const THREAD_PREVIEW = 3;
 const REPLY_MAX = 1000;
 
@@ -165,11 +165,11 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
 function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
   const extra = p.body.trim();
-  const body = extra && extra !== p.subject.trim() ? h('p.board-body', null, extra) : null;
+  const body = extra && extra !== p.subject.trim() ? h('div.board-body', null, renderMarkdown(extra)) : null;
   const show = (open: boolean): void => {
     if (!body) return;
     body.classList.toggle('open', open);
-    body.style.setProperty('-webkit-line-clamp', open ? 'none' : CLAMP_LINES);
+    body.classList.toggle('clamped', !open);
     more.textContent = open ? 'Show less' : 'Show more';
   };
   // The open state lives in `ui.opened`, so a redraw (any board event) keeps it.
@@ -342,7 +342,7 @@ function commentRow(c: BoardComment, ui: Ui): HTMLElement {
       'div.board-comment-main',
       null,
       h('div.board-comment-by', null, h('span.board-comment-author', null, name), h('time.board-comment-time', null, ago(c.created_at))),
-      h('p.board-comment-body', null, c.body),
+      h('div.board-comment-body', null, renderMarkdown(c.body)),
       attachmentsOf(c.id, c.attachments),
     ),
   );

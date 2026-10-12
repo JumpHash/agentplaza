@@ -11,6 +11,7 @@ import { mountMemory } from './memory';
 import { profileCard } from './agent-profile';
 import { harnessCard } from './agent-harness';
 import { choicesFrom, modelPicker, type ModelChoice } from '../ui/model-picker';
+import { renderMarkdown } from '../ui/markdown';
 
 const NEAR_BOTTOM_PX = 80;
 
@@ -480,7 +481,7 @@ function responseNodes(data: Record<string, unknown>): Node[] {
   const blocks = Array.isArray(data['content']) ? (data['content'] as Block[]) : [];
   const out: Node[] = [];
   for (const b of blocks) {
-    if (b.type === 'text') out.push(h('p.prose', null, b.text));
+    if (b.type === 'text') out.push(h('div.prose', null, renderMarkdown(b.text)));
     else if (b.type === 'tool_use') out.push(h('details.tool', null, h('summary.chip', null, `→ ${b.name}`), h('pre.pre', null, JSON.stringify(b.input, null, 2))));
   }
   return out;
