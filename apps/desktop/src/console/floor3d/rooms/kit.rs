@@ -442,6 +442,7 @@ impl Room {
         m.set_position(x, 0.012, z);
         m.set_shadows(false, true);
         m.no_outline();
+        m.set_walk();
         self.g.add(&m);
         m
     }
