@@ -143,7 +143,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
       replace(body, empty('search', 'No agents match', 'Clear the filters to see the roster.', button('Clear filters', clearFilters, { kind: 'ghost' })));
       return;
     }
-    replace(body, h('div.table-scroll', null, table(columns, rows, (a) => go('agents', a.cid))));
+    replace(body, h('div.table-scroll', null, table(columns, rows, (a) => go('agents', a.cid), (a) => `ag-${a.cid}`)));
   }
 
   function syncRoles(list: Agent[]): void {

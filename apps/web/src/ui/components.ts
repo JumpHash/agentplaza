@@ -47,7 +47,8 @@ export interface Column<T> {
   width?: string;
 }
 
-export function table<T>(columns: Column<T>[], rows: T[], onRow?: (row: T) => void): HTMLTableElement {
+/** `key` gives each row a stable `data-key`, so a redraw keeps its state when rows move. */
+export function table<T>(columns: Column<T>[], rows: T[], onRow?: (row: T) => void, key?: (row: T) => string): HTMLTableElement {
   return h(
     'table.table',
     null,
@@ -56,7 +57,7 @@ export function table<T>(columns: Column<T>[], rows: T[], onRow?: (row: T) => vo
       'tbody',
       null,
       rows.map((row) => {
-        const tr = h('tr', { class: onRow ? 'clickable' : '' }, columns.map((c) => h('td', { class: c.num ? 'num' : '' }, c.cell(row))));
+        const tr = h('tr', { class: onRow ? 'clickable' : '', 'data-key': key?.(row) }, columns.map((c) => h('td', { class: c.num ? 'num' : '' }, c.cell(row))));
         if (onRow) tr.addEventListener('click', () => onRow(row));
         return tr;
       }),
