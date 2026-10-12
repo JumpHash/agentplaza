@@ -161,6 +161,56 @@
   .mach-tallies { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+/* ---- Where the resources go: a machine's CPU and memory, split four ways, then its services and agents' VMs. ---- */
+
+.res { display: grid; gap: 16px; margin-bottom: 24px; }
+.res-sub { margin: 12px 0 0; }
+.res-row { display: grid; gap: 6px; min-width: 0; }
+.res-title {
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.res-bar { display: flex; height: 14px; border: 1px solid var(--rule); background: var(--paper); overflow: hidden; }
+.res-seg { display: block; height: 100%; min-width: 0; flex: none; }
+.res-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: 400 11.5px/1.4 var(--mono);
+  color: var(--ink-2);
+}
+.res-legend li { display: flex; align-items: center; gap: 6px; }
+.res-legend strong { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.res-swatch { display: inline-block; width: 10px; height: 10px; flex: none; border: 1px solid var(--ink-3); }
+.res-services { background: var(--signal); border-color: var(--signal); }
+.res-agents { background: var(--info, #3b6fd4); border-color: var(--info, #3b6fd4); }
+.res-rest { background: var(--ink-3); border-color: var(--ink-3); }
+.res-free { background: var(--paper); }
+.res-scroll { overflow-x: auto; max-width: 100%; }
+.res-table { width: 100%; }
+.res-table td, .res-table th { white-space: nowrap; }
+.res-table td:first-child { white-space: normal; }
+.res-pid { font: 400 11.5px var(--mono); color: var(--ink-3); }
+.res-sort {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.res-sort:hover { text-decoration: underline; }
+.res-guest { display: grid; gap: 4px; justify-items: end; font-variant-numeric: tabular-nums; }
+.res-mini { width: 72px; }
+.res-total td { border-top: 1px solid var(--ink); font-weight: 600; }
+
 /* ---- Treasury: the register of the plaza budget. Ruled rows, big condensed mono figures, square boxes. ---- */
 
 .tr-tallies { grid-template-columns: repeat(5, minmax(0, 1fr)); }
