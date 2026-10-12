@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use apz_gateway::{presets, Auth, Gateway, ProviderConfig, SecretSource};
+use apz_gateway::{presets, Auth, Gateway, ModelInfo, ProviderConfig, SecretSource};
 use apz_http::{Params, Request, Response, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,14 +19,15 @@ use serde_json::{json, Value};
 use crate::state::App;
 
 /// The providers a fresh state directory starts with.
-const SEED_IDS: [&str; 10] = [
+const SEED_IDS: [&str; 13] = [
     "anthropic", "openai", "xai", "deepseek", "gemini", "zai", "moonshot", "ollama", "llamacpp", "mock",
+    "mistral", "openai-decisions", "typesafe",
 ];
 /// How long `GET /v1/models` answers from its cache.
 const MODEL_CACHE: Duration = Duration::from_secs(60);
 
 /// A failed mutation: the HTTP status and a message that never names a secret's value.
-type Failure = (u16, String);
+pub(crate) type Failure = (u16, String);
 
 /// Adapts the shared secret map to the gateway's `SecretSource`.
 struct Secrets(Arc<Mutex<BTreeMap<String, String>>>);
@@ -37,7 +38,7 @@ impl SecretSource for Secrets {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -50,6 +51,8 @@ pub struct Store {
     write: Mutex<()>,
     /// The last `GET /v1/models` answer and when it was computed.
     models: Mutex<Option<(Instant, Value)>>,
+    /// The saved default decision model (`/v1/decisions/default`).
+    pub decisions: crate::decisions::DefaultStore,
 }
 
 impl Store {
@@ -94,6 +97,7 @@ impl Store {
             secrets,
             write: Mutex::new(()),
             models: Mutex::new(None),
+            decisions: Default::default(),
         })
     }
 
@@ -126,6 +130,7 @@ impl Store {
         json!({
             "id": p.id,
             "kind": p.kind.as_str(),
+            "group": p.kind.group(),
             "base_url": p.base_url,
             "auth": auth,
             "models": p.models,
@@ -256,7 +261,7 @@ impl Store {
         for p in self.gateway.providers() {
             match self.gateway.list_models(&p.id) {
                 Ok(list) => models.extend(
-                    list.into_iter().map(|m| json!({ "provider": p.id, "id": m.id, "name": m.name })),
+                    list.into_iter().map(|m| model_entry(&p, m)),
                 ),
                 Err(e) => errors.push(json!({ "provider": p.id, "error": e.to_string() })),
             }
@@ -377,7 +382,12 @@ fn all_models_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     Response::json(200, &app.providers.all_models())
 }
 
-fn failure((status, message): Failure) -> Response {
+/// One `/v1/models` entry: the model, its provider and the provider's group.
+fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
+    json!({ "provider": p.id, "group": p.kind.group(), "id": m.id, "name": m.name })
+}
+
+pub(crate) fn failure((status, message): Failure) -> Response {
     Response::json(status, &json!({ "error": message }))
 }
 
@@ -517,6 +527,21 @@ mod tests {
         store.set_secret("mock", "value").unwrap();
         let mode = std::fs::metadata(dir.join("secrets.json")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn views_and_model_entries_carry_the_group() {
+        let dir = scratch("group");
+        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let views = store.views();
+        let group_of = |id: &str| views.iter().find(|v| v["id"] == id).map(|v| v["group"].clone());
+        assert_eq!(group_of("openai-decisions"), Some(json!("decisions")));
+        assert_eq!(group_of("typesafe"), Some(json!("decisions")));
+        assert_eq!(group_of("openai"), Some(json!("chat")));
+        assert_eq!(group_of("mistral"), Some(json!("chat")));
+        let typesafe = ProviderConfig::new("typesafe", ProviderKind::SystemOne);
+        assert_eq!(model_entry(&typesafe, ModelInfo::new("jev-latest"))["group"], "decisions");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

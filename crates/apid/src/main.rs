@@ -21,6 +21,7 @@ mod llm_proxy;
 mod laws;
 mod library;
 mod memory;
+mod decisions;
 mod plaza;
 mod providers;
 mod role;

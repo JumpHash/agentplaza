@@ -88,6 +88,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({})))
             })
         })
+        .post("/internal/decisions", |app, req, _| {
+            // The agent's cid rides in `x-apz-cid`: this route has no path to carry it.
+            let cid = req.header("x-apz-cid").unwrap_or_default();
+            authorized(app, req, cid, |cid| Ok(crate::decisions::agent_decision(app, cid, req)))
+        })
 }
 
 /// Checks who is calling and the CID, then runs `f`. The local gateway presents the internal
@@ -266,7 +271,7 @@ fn model_call(
 /// debating motions cost the plaza's budget nothing (their tokens are still
 /// counted in their usage). An exhausted escrow is recorded and the task's work
 /// is cancelled.
-fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(), String> {
+pub(crate) fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(), String> {
     let Some(task) = app.work.current(cid).and_then(|item| item.origin.task) else {
         return Ok(());
     };

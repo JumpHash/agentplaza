@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::agents::Status;
 use crate::state::App;
-use crate::{agents, events, internal, memory, plaza, providers, settings};
+use crate::{agents, decisions, events, internal, memory, plaza, providers, settings};
 
 pub fn router() -> Router<App> {
     let router = Router::<App>::new()
@@ -27,6 +27,7 @@ pub fn router() -> Router<App> {
     let router = events::routes(router);
     let router = settings::routes(router);
     let router = providers::routes(router);
+    let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);
     let router = internal::routes(router);
