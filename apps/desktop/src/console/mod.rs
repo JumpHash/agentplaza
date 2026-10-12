@@ -107,6 +107,7 @@ fn subscription(console: &Console) -> Subscription<Msg> {
     Subscription::batch([
         iced::time::every(std::time::Duration::from_secs(4)).map(|_| Msg::Tick),
         shell::subscription(&console.shell).map(Msg::Shell),
+        screens::subscription(&console.screens, &console.shell.current).map(Msg::Screen),
     ])
 }
 
