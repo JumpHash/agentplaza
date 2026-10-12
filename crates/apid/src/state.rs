@@ -164,6 +164,7 @@ impl App {
             let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
         }
         spawn_treasury_saver(Arc::clone(&app));
+        crate::harness_control::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
         let server = apz_http::Server::bind(app.config.port)?
             .limits(apz_http::Limits { max_head: 16 << 10, max_body: 512 << 20 });
