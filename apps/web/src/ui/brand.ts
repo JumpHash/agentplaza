@@ -1,4 +1,4 @@
-// The AgentPlaza brand: its mark (an inline SVG) and the sidebar's brand block.
+// The AgentPlaza brand: the hive mark (an inline SVG) and the sidebar's brand block.
 
 import { h } from './dom';
 
@@ -11,11 +11,26 @@ function svgEl(tag: string, attrs: Record<string, string>): SVGElement {
   return el;
 }
 
+/** A flat-top hexagon's outline path, centred at (cx, cy) with circumradius r. */
+function hex(cx: number, cy: number, r: number): string {
+  const pts = [0, 60, 120, 180, 240, 300].map((deg) => {
+    const a = (deg * Math.PI) / 180;
+    return `${(cx + r * Math.cos(a)).toFixed(2)} ${(cy + r * Math.sin(a)).toFixed(2)}`;
+  });
+  return `M${pts.join('L')}Z`;
+}
+
+/** The hive's geometry: cell circumradius, the gap between cells, and the centre cell. */
+const CELL_R = 5.6;
+const CELL_GAP = 1.2;
+const CENTRE = { x: 16, y: 18.75 };
+
 /**
- * The mark: a plaza seen from above. An outer ring, eight radial spokes running in to the
- * centre, four agents in their rooms on the ring, and the xenon atom at the heart: a
- * signal-coloured core with its orbit. Ink is currentColor; the signal parts are coloured
- * by the .brand-core and .brand-orbit rules (presentation attributes cannot take var()).
+ * The mark: a hive. Agents are cells that work as one — three ink cells (one above, two
+ * below) around the plaza's heart, the filled signal-coloured cell at the centre. Flat-top
+ * hexagons on a true honeycomb (neighbours √3·r + gap apart), so the gaps are equal and the
+ * mark stays crisp at 20–64px. Ink is currentColor; the centre is coloured by `.brand-core`
+ * (a presentation attribute cannot take var()).
  */
 export function brandMark(size = 32): SVGSVGElement {
   const svg = svgEl('svg', {
@@ -26,38 +41,27 @@ export function brandMark(size = 32): SVGSVGElement {
     'aria-hidden': 'true',
     focusable: 'false',
   }) as SVGSVGElement;
-  svg.appendChild(
-    svgEl('circle', { cx: '16', cy: '16', r: '13', fill: 'none', stroke: 'currentColor', 'stroke-width': '2.25' }),
-  );
-  svg.appendChild(
-    svgEl('path', {
-      d: 'M29 16H23.5M25.25 25.25L21.25 21.25M16 29V23.5M6.75 25.25L10.75 21.25M3 16H8.5M6.75 6.75L10.75 10.75M16 3V8.5M25.25 6.75L21.25 10.75',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': '1.75',
-      'stroke-linecap': 'square',
-    }),
-  );
-  for (const [x, y] of [
-    [24, 24],
-    [5.5, 24],
-    [5.5, 5.5],
-    [24, 5.5],
-  ]) {
-    svg.appendChild(svgEl('rect', { x: String(x), y: String(y), width: '2.6', height: '2.6', fill: 'currentColor' }));
+  const d = Math.sqrt(3) * CELL_R + CELL_GAP;
+  // Neighbours of a flat-top cell lie straight up and at ±30° below the horizontal.
+  const ring = [
+    { x: CENTRE.x, y: CENTRE.y - d },
+    { x: CENTRE.x - d * Math.cos(Math.PI / 6), y: CENTRE.y + d * Math.sin(Math.PI / 6) },
+    { x: CENTRE.x + d * Math.cos(Math.PI / 6), y: CENTRE.y + d * Math.sin(Math.PI / 6) },
+  ];
+  // Thinner strokes at small sizes would vanish; thicker at large sizes look clumsy.
+  const stroke = size <= 24 ? '2.4' : '2.1';
+  for (const c of ring) {
+    svg.appendChild(
+      svgEl('path', {
+        d: hex(c.x, c.y, CELL_R - 0.4),
+        fill: 'none',
+        stroke: 'currentColor',
+        'stroke-width': stroke,
+        'stroke-linejoin': 'miter',
+      }),
+    );
   }
-  svg.appendChild(
-    svgEl('circle', {
-      class: 'brand-orbit',
-      cx: '16',
-      cy: '16',
-      r: '5.6',
-      fill: 'none',
-      'stroke-width': '1.25',
-      'stroke-dasharray': '2 2.4',
-    }),
-  );
-  svg.appendChild(svgEl('circle', { class: 'brand-core', cx: '16', cy: '16', r: '3.6' }));
+  svg.appendChild(svgEl('path', { class: 'brand-core', d: hex(CENTRE.x, CENTRE.y, CELL_R) }));
   return svg;
 }
 
@@ -66,11 +70,11 @@ export function brandBlock(): HTMLElement {
   return h(
     'a.brand',
     { href: '#/overview' },
-    brandMark(30),
+    brandMark(34),
     h(
       'div.brand-text',
       null,
-      h('div.brand-name', null, h('span.brand-agent', null, 'Agent'), h('span.brand-plaza', null, 'Plaza')),
+      h('div.brand-name', null, h('span.brand-agent', null, 'agent'), h('span.brand-plaza', null, 'plaza')),
       h('small.brand-tag', null, 'the plaza register'),
     ),
   );
