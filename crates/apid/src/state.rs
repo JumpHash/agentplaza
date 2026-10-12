@@ -87,6 +87,8 @@ pub struct App {
     pub society: crate::society::Society,
     /// What agents found on the internet and judged, for every agent to use.
     pub toolbox: crate::toolbox::Store,
+    /// Projects: every goal's flow from brief to delivery.
+    pub projects: crate::projects::Store,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -123,6 +125,7 @@ impl App {
             deliverables: crate::deliverables::Store::load(&config.state_dir, &env)?,
             society: crate::society::Society::default(),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
+            projects: crate::projects::Store::load(&config.state_dir),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,

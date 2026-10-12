@@ -33,6 +33,7 @@ mod state;
 mod tools;
 mod toolbox;
 mod toolbox_survey;
+mod projects;
 mod transcript;
 mod upstream;
 
