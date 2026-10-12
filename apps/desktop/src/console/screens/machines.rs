@@ -92,7 +92,6 @@ struct Overview {
 #[derive(Debug, Clone)]
 struct AgentRef {
     name: String,
-    role: String,
     role_label: String,
 }
 
@@ -986,8 +985,8 @@ fn parse_agent(a: &Value) -> Option<(u64, AgentRef)> {
     let cid = a.get("cid").and_then(Value::as_u64)?;
     let role = text(a, "role");
     let label = text(a, "role_label");
-    let role_label = if label.is_empty() { role.clone() } else { label };
-    Some((cid, AgentRef { name: text(a, "name"), role, role_label }))
+    let role_label = if label.is_empty() { role } else { label };
+    Some((cid, AgentRef { name: text(a, "name"), role_label }))
 }
 
 fn parse_machine(m: &Value) -> Option<Machine> {
