@@ -16,6 +16,8 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   const text = await res.text();
   const data = text ? (JSON.parse(text) as unknown) : null;
   if (!res.ok) {
+    // Off loopback the hub wants the owner's sign-in; the shell shows the sign-in screen.
+    if (res.status === 401 && path !== '/v1/auth/session') window.dispatchEvent(new CustomEvent('apz-auth-required'));
     const message = (data as { error?: string } | null)?.error ?? `${method} ${path}: ${res.status}`;
     throw new ApiError(res.status, message);
   }
@@ -383,7 +385,37 @@ export const api = {
   decideApproval: (id: string, approve: boolean, reason?: string) => post<unknown>(`/v1/approvals/${id}`, { approve, reason }),
   permissions: (cid: number) => get<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`),
   setPermissions: (cid: number, mode: PermissionMode) => put<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`, { mode }),
+
+  /** 200 when this browser may use the console (loopback, or signed in); 401 otherwise. */
+  authCheck: () => get<{ ok: boolean }>('/v1/auth/check'),
+  /** Trades the owner token for this browser's session cookie (HttpOnly; the token is not kept). */
+  signIn: (token: string) => post<{ ok: boolean }>('/v1/auth/session', { token }),
+  signOut: () => del<{ ok: boolean }>('/v1/auth/session'),
+  hubIdentity: () => get<HubIdentity>('/v1/hub/identity'),
+  /** A new owner token, shown once; every signed-in browser must sign in again. */
+  rotateOwnerToken: () => post<{ token: string }>('/v1/hub/owner-token/rotate'),
+
+  nodes: () => get<NodeView[]>('/v1/nodes'),
+  /** A join code: its token is in this answer only. `ttl_minutes` ≤ 60 (0: the default 15). */
+  issueJoinCode: (label: string, ttl_minutes: number) => post<{ id: string; token: string; expires_ms: number }>('/v1/nodes/codes', { label, ttl_minutes }),
+  joinCodes: () => get<JoinCode[]>('/v1/nodes/codes'),
+  revokeJoinCode: (id: string) => del<unknown>(`/v1/nodes/codes/${id}`),
+  revokeNode: (id: string) => post<NodeView>(`/v1/nodes/${id}/revoke`),
+  drainNode: (id: string, on: boolean) => post<NodeView>(`/v1/nodes/${id}/drain`, { on }),
+  nodeMachine: (id: string) => get<Machine>(`/v1/nodes/${id}/machine`),
+  nodeRuns: (id: string) => get<unknown>(`/v1/nodes/${id}/runs`),
 };
+
+/** What the hub says about itself: anyone may ask. `fingerprint` is its TLS certificate's SHA-256 (base64url), null without TLS. */
+export interface HubIdentity { name: string; version: string; url: string; fingerprint: string | null; nodes: number }
+/** A machine in the plaza: `n0` is the hub's own. Agents on it have CIDs `cid_base` … `cid_base + cid_count - 1`. */
+export interface NodeView {
+  id: string; name: string; public_key: string; cid_base: number; cid_count: number;
+  joined_ms: number; last_seen_ms: number; machine: { cpus?: number; memory_mib?: number; host?: string; version?: string } | null;
+  draining: boolean; revoked: boolean; address: string; online: boolean; agents: number;
+}
+export type JoinCodeState = 'active' | 'used' | 'expired' | 'revoked';
+export interface JoinCode { id: string; label: string; created_ms: number; expires_ms: number; state: JoinCodeState; used_by: string | null }
 
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used';
 /** A tool call an agent asked to make, waiting on (or recording) the owner's decision. */
