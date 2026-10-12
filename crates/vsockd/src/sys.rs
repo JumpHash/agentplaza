@@ -169,3 +169,25 @@ pub fn host_uptime() -> io::Result<String> {
         idle_100ns as f64 / 10_000_000.0
     ))
 }
+
+/// Ends a read blocked on `stream` in another thread after `stream` was shut
+/// down. On Unix the shutdown itself does that, so this does nothing.
+#[cfg(unix)]
+pub fn wake_readers(_stream: &std::net::TcpStream) {}
+
+/// Ends a read blocked on `stream` in another thread after `stream` was shut
+/// down. A WinSock shutdown does not complete a `recv` already waiting (and
+/// after `SD_RECEIVE` the peer's FIN may never complete it), so the socket's
+/// pending I/O is cancelled: the waiting read returns an error, which a relay
+/// treats as the end of its direction.
+#[cfg(windows)]
+pub fn wake_readers(stream: &std::net::TcpStream) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::IO::CancelIoEx;
+
+    // SAFETY: a SOCKET is a kernel handle, live for as long as `stream` is
+    // borrowed; CancelIoEx with a null OVERLAPPED only cancels its pending
+    // I/O requests (failing harmlessly when there are none).
+    unsafe { CancelIoEx(stream.as_raw_socket() as HANDLE, std::ptr::null()) };
+}

@@ -493,6 +493,9 @@ fn pump_ws(mut from: impl Read, mut to: impl Write, clock: &WsClock, hangup: &Ar
     }
     let _ = hangup.0.shutdown(Shutdown::Both);
     let _ = hangup.1.shutdown(Shutdown::Both);
+    // The other pump may be blocked reading the upstream socket; on Windows a
+    // shutdown does not wake it (the guest stream's own shutdown does).
+    super::sys::wake_readers(&hangup.1);
     total
 }
 
@@ -545,6 +548,9 @@ fn pump(mut from: impl Read, mut to: impl Write, hangup: &Arc<Hangup>) -> u64 {
     }
     let _ = hangup.0.shutdown(Shutdown::Both);
     let _ = hangup.1.shutdown(Shutdown::Both);
+    // The other pump may be blocked reading the upstream socket; on Windows a
+    // shutdown does not wake it (the guest stream's own shutdown does).
+    super::sys::wake_readers(&hangup.1);
     total
 }
 
