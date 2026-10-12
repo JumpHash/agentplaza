@@ -35,6 +35,8 @@ pub enum Runs {
 /// Tools every agent is offered: host tools, plus the guest internet tools,
 /// which run in the agent's VM and reach the internet through the hub's egress proxy.
 const ALWAYS: &[&str] = &[
+    "plaza_toolbox",
+    "plaza_toolbox_share",
     "submit_claim",
     "transcript_search",
     "plaza_tasks",
@@ -102,6 +104,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_propose" | "plaza_agents" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
         name if name.starts_with(crate::library::PREFIX) => Some(Runs::Guest),
@@ -415,7 +418,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
         ),
         other => {
-            let (description, input_schema) = crate::society::spec(other)?;
+            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other))?;
             return Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema });
         }
     };
@@ -649,6 +652,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             app.work.verdict(app, task, work, pass, notes)
         }
         other if crate::society::TOOLS.contains(&other) => crate::society::run(app, agent, work, other, input),
+        other if crate::toolbox::TOOLS.contains(&other) => crate::toolbox::run(app, agent, other, input),
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
             let (connector, action) = crate::connectors::by_tool(other).ok_or("unknown connector tool")?;

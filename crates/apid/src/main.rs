@@ -31,6 +31,7 @@ mod society;
 mod spawned;
 mod state;
 mod tools;
+mod toolbox;
 mod transcript;
 mod upstream;
 
