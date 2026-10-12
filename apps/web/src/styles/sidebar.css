@@ -1,0 +1,95 @@
+/* The sidebar: the brand, the screen index with its counts, the connection foot and the
+   resize handle. The state is a mode class on .app (sb-open, sb-rail, sb-hidden) and
+   --sidebar-w on the root. Under 900px it is an overlay drawer (.app.sb-drawer). */
+
+.app {
+  display: grid; min-height: 100vh;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  transition: grid-template-columns 150ms ease;
+}
+.app.sb-dragging { transition: none; }
+
+.sidebar {
+  position: sticky; top: 0; height: 100vh; min-width: 0; overflow-x: hidden; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 18px;
+  padding: 0 14px 20px; border-right: 1px solid var(--rule); background: var(--sheet);
+}
+.brand {
+  display: flex; align-items: center; gap: 12px; white-space: nowrap;
+  margin: 0 -14px; padding: 20px 14px 16px; border-bottom: 1px solid var(--rule);
+}
+.brand .brand-mark { flex: none; color: var(--ink); overflow: visible; }
+.brand-mark-core { fill: var(--signal); }
+.brand-text { display: grid; gap: 4px; min-width: 0; }
+.brand-name { font: 700 17px/1.1 var(--mono); font-stretch: 80%; letter-spacing: 0.04em; color: var(--ink); }
+.brand-tag { font: 400 11px/1.3 var(--mono); color: var(--ink-3); }
+
+.nav { display: grid; gap: 2px; }
+.nav-section {
+  font: 500 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
+  padding: 14px 10px 6px;
+}
+.nav-section:first-child { padding-top: 0; }
+.nav a {
+  position: relative; display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 8px 10px; color: var(--ink-2); text-decoration: none; font: 400 14px/1.3 var(--mono); white-space: nowrap;
+}
+.nav a .icon { color: var(--ink-3); }
+.nav a .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nav a .count {
+  flex: none; min-width: 22px; padding: 1px 6px; border: 1px solid var(--rule); text-align: center;
+  font: 500 11px/1.4 var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2);
+}
+.nav a .count:empty { display: none; }
+.nav a:hover { color: var(--ink); background: var(--rule-faint); }
+.nav a[aria-current="page"] { color: var(--ink); background: var(--hover); box-shadow: inset 3px 0 0 var(--signal); }
+.nav a[aria-current="page"] .icon { color: var(--signal); }
+
+.sidebar-foot { margin-top: auto; font: 11px/1.6 var(--mono); color: var(--ink-3); display: grid; gap: 4px; }
+.sidebar-foot .row { gap: 8px; }
+
+/* The resize handle: a 6px strip on the right edge; a 2px signal line on hover or drag. */
+.sb-resize { display: none; position: absolute; top: 0; bottom: 0; right: 0; width: 6px; cursor: col-resize; touch-action: none; z-index: 2; }
+.sb-resize::after { content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: 2px; background: transparent; }
+.sb-resize:hover::after, .sb-resize.on::after { background: var(--signal); }
+
+.sb-toggle { flex: none; }
+.sb-backdrop { display: none; }
+
+/* Desktop: the rail and the hidden state. */
+@media (min-width: 900px) {
+  .app.sb-open .sb-resize { display: block; }
+
+  .app.sb-rail .sidebar { padding: 0; }
+  .app.sb-rail .brand { margin: 0; padding: 18px 0 16px; justify-content: center; }
+  .app.sb-rail .brand-text { display: none; }
+  .app.sb-rail .nav { padding: 0 8px; }
+  .app.sb-rail .nav-section { font-size: 0; padding: 0; height: 0; margin: 8px 6px; border-top: 1px solid var(--rule); }
+  .app.sb-rail .nav-section:first-child { margin-top: 0; }
+  .app.sb-rail .nav a { justify-content: center; padding: 9px 0; }
+  .app.sb-rail .nav a .lbl { display: none; }
+  .app.sb-rail .nav a .count {
+    position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; min-width: 0; padding: 0;
+    border: 0; background: var(--ink-2); font-size: 0;
+  }
+  .app.sb-rail .sidebar-foot { justify-items: center; }
+  .app.sb-rail .sidebar-foot .lbl { display: none; }
+
+  .app.sb-hidden .sidebar { overflow: hidden; border-right-width: 0; }
+}
+
+/* Under 900px: an overlay drawer, closed by default. */
+@media (max-width: 899px) {
+  .app, .app.sb-open, .app.sb-rail, .app.sb-hidden { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 40; width: 280px; height: auto;
+    box-shadow: var(--shadow);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform 150ms ease, visibility 150ms ease;
+  }
+  .app.sb-drawer .sidebar { transform: none; visibility: visible; }
+  .app.sb-drawer .sb-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 39;
+    background: color-mix(in srgb, var(--paper) 70%, transparent);
+  }
+}

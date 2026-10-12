@@ -1,38 +1,19 @@
 // The console: the shell (sidebar, top bar, banners) and the screen mount.
 
-import { brandBlock } from './ui/brand';
 import { heldBanner, plazaControl } from './ui/plaza-control';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/views.css';
+import { applySidebar, sidebar, sidebarToggle } from './ui/sidebar';
 
-import { onRoute, href, type Route } from './router';
-import { agents, onConnection, overview, startShared } from './store';
+import { onRoute, type Route } from './router';
+import { agents, overview, startShared } from './store';
 import { dot } from './ui/components';
 import { h, icon, replace } from './ui/dom';
 import { SCREENS, type Cleanup } from './views';
 
-const navLinks = new Map<string, HTMLAnchorElement>();
+const navLinks = new Map<string, HTMLElement>();
 const counts = new Map<string, HTMLElement>();
-
-function sidebar(): HTMLElement {
-  const nav = h('nav.nav', { 'aria-label': 'Screens' });
-  let section = '';
-  SCREENS.forEach((s, i) => {
-    if (s.section !== section) {
-      section = s.section;
-      nav.appendChild(h('div.nav-section', null, section));
-    }
-    const count = h('span.count');
-    counts.set(s.key, count);
-    const link = h('a', { href: href(s.key) }, h('span.k', null, String(i + 1)), s.label, h('span.dots'), count);
-    navLinks.set(s.key, link);
-    nav.appendChild(link);
-  });
-  const foot = h('div.sidebar-foot');
-  onConnection((up) => replace(foot, h('span.row', null, dot(up ? 'ok' : 'danger'), up ? 'Live' : 'Reconnecting…')));
-  return h('aside.sidebar', null, brandBlock(), nav, foot);
-}
 
 function topbar(title: HTMLElement): HTMLElement {
   const health = h('div.health');
@@ -45,7 +26,7 @@ function topbar(title: HTMLElement): HTMLElement {
       h('span', null, dot(o.agents.working ? 'info' : 'muted'), `${o.agents.working} working · ${o.agents.idle} idle`),
     );
   });
-  return h('header.topbar', null, title, h('span.spacer'), health, plazaControl());
+  return h('header.topbar', null, sidebarToggle(), title, h('span.spacer'), health, plazaControl());
 }
 
 function banner(): HTMLElement {
@@ -62,8 +43,9 @@ function main(): void {
   startShared();
   const title = h('span.title');
   const content = h('main.view-host');
-  const app = h('div.app', null, sidebar(), h('div.main', null, topbar(title), heldBanner(), banner(), content));
+  const app = h('div.app', null, sidebar({ counts, navLinks }), h('div.main', null, topbar(title), heldBanner(), banner(), content));
   document.body.replaceChildren(app);
+  applySidebar();
 
   agents.watch((list) => {
     const working = list.filter((a) => a.status === 'working').length;
