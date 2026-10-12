@@ -1,0 +1,51 @@
+/* The top bar's STOP ALL / RESUME control, its held pill, the held banner under the top bar,
+   and the two confirmation modals. Square corners throughout. */
+
+.plaza-control { display: inline-flex; align-items: center; gap: var(--s2); }
+
+.btn.plaza-stop {
+  background: var(--crit);
+  border-color: var(--crit);
+  color: #fff;
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-radius: 0;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, #000); color: #fff; }
+
+.btn.plaza-resume {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--sheet);
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-radius: 0;
+}
+.btn.plaza-resume:hover { background: color-mix(in srgb, var(--ok) 80%, #000); color: var(--sheet); }
+
+.held-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s4);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--crit);
+  background: color-mix(in srgb, var(--crit) 7%, var(--sheet));
+  color: var(--crit);
+  font: 600 12px/1.5 var(--mono);
+}
+.held-banner[hidden] { display: none; }
+.held-banner > svg { flex: none; width: 14px; height: 14px; }
+.held-banner .held-text { flex: 1 1 320px; min-width: 0; }
+.held-banner .btn { flex: none; }
+
+.plaza-confirm p { margin: 0 0 var(--s3); }
+.plaza-actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s4); }
+
+@media (max-width: 640px) {
+  .held-banner { padding: 10px 12px; }
+  .plaza-actions .btn { flex: 1 1 0; }
+}
