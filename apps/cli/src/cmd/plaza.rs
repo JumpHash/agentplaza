@@ -3,8 +3,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cmd::agents::confirm;
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -52,7 +51,7 @@ fn print_state(s: &Value) {
     let stopped = s["paused"].as_bool().unwrap_or(false);
     ctx::fields(&[
         ("state", if stopped { "STOPPED" } else { "running" }.to_string()),
-        ("since", format!("{} (epoch ms)", ctx::text(s, "since_ms"))),
+        ("since", ctx::when(&s["since_ms"])),
         ("by", ctx::s(s, "by").to_string()),
         ("reason", ctx::s(s, "reason").to_string()),
         ("cancelled", ctx::text(s, "cancelled")),

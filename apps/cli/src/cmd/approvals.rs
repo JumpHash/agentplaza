@@ -95,7 +95,7 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("agent", ctx::text(a, "cid")),
             ("tool", ctx::text(a, "tool")),
             ("state", ctx::text(a, "state")),
-            ("created", ctx::text(a, "created_ms")),
+            ("created", ctx::when(&a["created_ms"])),
             ("reason", ctx::text(a, "reason")),
             ("input", serde_json::to_string_pretty(a.get("input").unwrap_or(&Value::Null)).unwrap_or_default()),
         ]);

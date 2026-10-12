@@ -78,7 +78,7 @@ fn list(ctx: &Ctx) -> Result<(), String> {
                     count.to_string(),
                     format!("{} {}", ctx::s(last, "from_role"), ctx::text(last, "from_cid")),
                     format!("{} {}", ctx::s(last, "to_role"), ctx::text(last, "to_cid")),
-                    ctx::text(last, "created_at"),
+                    ctx::when(&last["created_at"]),
                     ctx::text(last, "text"),
                 ]
             })
@@ -102,7 +102,7 @@ fn show(ctx: &Ctx, pair: &str) -> Result<(), String> {
             let delivered = if m.get("delivered").and_then(Value::as_bool) == Some(false) { " (not delivered yet)" } else { "" };
             println!(
                 "[{}] {} {} -> {} {}{delivered}\n{}\n",
-                ctx::text(m, "created_at"),
+                ctx::when(&m["created_at"]),
                 ctx::s(m, "from_role"),
                 ctx::text(m, "from_cid"),
                 ctx::s(m, "to_role"),

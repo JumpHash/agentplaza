@@ -1,11 +1,11 @@
 //! `agentplaza models`: Model providers, keys, policy, decision models.
 
-use std::io::{IsTerminal, Read, Write};
+use std::io::Read;
 
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, Ctx};
 
 /// The provider kinds whose models are decision models (as the console decides it).
 const DECISION_KINDS: [&str; 3] = ["openai-decisions", "systemone", "azure-decisions"];
@@ -288,7 +288,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Remove { id, yes } => {
-            confirm(&format!("Remove provider {id}."), yes)?;
+            if !confirm(yes, &format!("Remove provider {id}."))? {
+                return Err("cancelled".into());
+            }
             let gone = ctx.client.delete(&format!("/v1/providers/{}", ctx::seg(&id)))?;
             ctx.out(&gone, |_| println!("removed provider {id}"));
             Ok(())
@@ -448,25 +450,6 @@ pub(crate) fn none_if_empty(text: String) -> String {
 /// Splits a comma-separated flag, dropping blanks.
 pub(crate) fn split_list(text: &str) -> Vec<String> {
     text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
-}
-
-/// Asks `Proceed? [y/N]` on a terminal; `--yes` skips the question. Without a terminal and without
-/// `--yes` nothing is done.
-pub(crate) fn confirm(question: &str, yes: bool) -> Result<(), String> {
-    if yes {
-        return Ok(());
-    }
-    if !std::io::stdin().is_terminal() {
-        return Err(format!("{question} Not done: run it again with --yes."));
-    }
-    print!("{question} Proceed? [y/N] ");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-    match answer.trim() {
-        "y" | "Y" | "yes" | "Yes" => Ok(()),
-        _ => Err("cancelled".into()),
-    }
 }
 
 /// The key on stdin, trimmed. Never an argument, never echoed.

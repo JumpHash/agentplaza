@@ -3,8 +3,8 @@
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cmd::models::{confirm, items, none_if_empty};
-use crate::ctx::{self, Ctx};
+use crate::cmd::models::{items, none_if_empty};
+use crate::ctx::{self, confirm, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -59,7 +59,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Kill { run, yes } => {
-            confirm(&format!("Kill run {run}: its VMs stop."), yes)?;
+            if !confirm(yes, &format!("Kill run {run}: its VMs stop."))? {
+                return Err("cancelled".into());
+            }
             let killed = ctx.client.delete(&format!("/v1/runs/{}", ctx::seg(&run)))?;
             ctx.out(&killed, |_| println!("killed run {run}"));
             Ok(())

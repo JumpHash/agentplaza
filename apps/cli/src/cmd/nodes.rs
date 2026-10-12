@@ -1,12 +1,9 @@
 //! `agentplaza nodes`: The network's nodes: list, one node, join codes, drain, revoke.
 
-use std::io::{self, BufRead, IsTerminal, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -81,7 +78,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("address", ctx::s(n, "address").to_string()),
                     ("cids", cids(n)),
                     ("agents", ctx::text(n, "agents")),
-                    ("last seen", ago(n)),
+                    ("last seen", last_seen(n)),
                     ("machine", machine_line),
                 ]);
             });
@@ -104,7 +101,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&node, |v| println!("{} is back in service", name_or(v, &id)));
         }
         Cmd::Revoke { id, yes } => {
-            if !yes && !confirm(&format!("Revoke node {id}? It leaves the network for good."))? {
+            if !confirm(yes, &format!("Revoke node {id}? It leaves the network for good."))? {
                 println!("not revoked");
                 return Ok(());
             }
@@ -115,26 +112,13 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     Ok(())
 }
 
-/// Asks a yes/no question on a terminal (`[y/N]`, default no). Off a terminal it refuses: the
-/// caller must pass `--yes`.
-pub fn confirm(question: &str) -> Result<bool, String> {
-    if !io::stdin().is_terminal() {
-        return Err("this asks first on a terminal; pass --yes to go ahead".into());
-    }
-    print!("{question} Proceed? [y/N] ");
-    io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    io::stdin().lock().read_line(&mut answer).map_err(|e| e.to_string())?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
-}
-
 fn name_or(v: &Value, id: &str) -> String {
     let name = ctx::s(v, "name");
     if name.is_empty() { id.to_string() } else { name.to_string() }
 }
 
 fn row(n: &Value) -> Vec<String> {
-    vec![ctx::s(n, "id").to_string(), host(n), state(n).to_string(), cids(n), ctx::text(n, "agents"), ago(n)]
+    vec![ctx::s(n, "id").to_string(), host(n), state(n).to_string(), cids(n), ctx::text(n, "agents"), last_seen(n)]
 }
 
 /// The machine's host name as the node reports it, else the node's name.
@@ -163,18 +147,10 @@ fn cids(n: &Value) -> String {
     if count == 0 { "-".to_string() } else { format!("{}-{}", base, base + count - 1) }
 }
 
-/// "5s ago", "3m ago", "2h ago", "4d ago" from `last_seen_ms`.
-fn ago(n: &Value) -> String {
-    let Some(seen) = n.get("last_seen_ms").and_then(Value::as_i64) else {
-        return "never".to_string();
-    };
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-    let secs = (now - seen) / 1000;
-    match secs {
-        s if s < 5 => "just now".to_string(),
-        s if s < 60 => format!("{s}s ago"),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86400),
+/// "just now", "5 min ago" from `last_seen_ms`; "never" when the node has not been seen.
+fn last_seen(n: &Value) -> String {
+    match n.get("last_seen_ms") {
+        None | Some(Value::Null) => "never".to_string(),
+        Some(seen) => ctx::ago(seen),
     }
 }

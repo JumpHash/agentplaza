@@ -1,12 +1,12 @@
 //! `agentplaza library`: The library: shared files and images.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -86,7 +86,7 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
             ("allowed", ctx::text(v, "allowed")),
             ("store", ctx::text(v, "store")),
             ("sha256", ctx::text(v, "sha256")),
-            ("created", ctx::text(v, "created_ms")),
+            ("created", ctx::when(&v["created_ms"])),
         ]);
     });
     Ok(())
@@ -126,20 +126,8 @@ fn download(ctx: &Ctx, id: &str, to: Option<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// Asks on a terminal; without one, the caller must pass `--yes`.
-fn confirm(question: &str) -> Result<bool, String> {
-    if !std::io::stdin().is_terminal() {
-        return Err(format!("{question} Pass --yes to confirm without a terminal."));
-    }
-    print!("{question} Proceed? [y/N] ");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
-}
-
 fn delete(ctx: &Ctx, id: &str, yes: bool) -> Result<(), String> {
-    if !yes && !confirm(&format!("Delete file {id} from the library."))? {
+    if !confirm(yes, &format!("Delete file {id} from the library."))? {
         println!("kept file {id}");
         return Ok(());
     }

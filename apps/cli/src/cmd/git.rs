@@ -1,11 +1,9 @@
 //! `agentplaza git`: Git: repositories, branches, changes.
 
-use std::io::{IsTerminal, Read, Write};
-
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::ctx::{self, Ctx};
+use crate::ctx::{self, confirm, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -165,38 +163,6 @@ fn repo_info(ctx: &Ctx, repo: &str) -> Result<Value, String> {
         .ok_or_else(|| format!("no repository named {repo}"))
 }
 
-/// A text flag's value; `-` reads it from stdin. Blank text is no text.
-fn text_arg(value: Option<String>) -> Result<Option<String>, String> {
-    let text = match value {
-        Some(v) if v == "-" => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf).map_err(|e| format!("reading stdin: {e}"))?;
-            Some(buf)
-        }
-        other => other,
-    };
-    Ok(text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
-}
-
-/// Asks before a destructive action: on a terminal `Proceed? [y/N]`; `--yes` skips it; off a
-/// terminal without `--yes` the action is refused.
-fn confirm(yes: bool, what: &str) -> Result<(), String> {
-    if yes {
-        return Ok(());
-    }
-    if !std::io::stdin().is_terminal() {
-        return Err(format!("{what} Pass --yes to do it without a terminal."));
-    }
-    print!("{what} Proceed? [y/N] ");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Ok(()),
-        _ => Err("not done".into()),
-    }
-}
-
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Status => {
@@ -235,7 +201,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             if name.is_empty() {
                 return Err("name the repository".into());
             }
-            let description = text_arg(description)?.unwrap_or_default();
+            let description = description.filter(|d| !d.trim().is_empty()).map(|d| ctx::text_arg(&d)).transpose()?.unwrap_or_default();
             let repo = ctx.client.post("/v1/git/repos", &json!({ "name": name, "description": description }))?;
             ctx.out(&repo, |r| println!("created repository {}", ctx::s(r, "name")));
             Ok(())
@@ -273,7 +239,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         vec![
                             ctx::s(c, "short").to_string(),
                             ctx::s(c, "author").to_string(),
-                            ctx::s(c, "at").to_string(),
+                            ctx::when(&c["at"]),
                             format!("+{} -{}", ctx::text(c, "additions"), ctx::text(c, "deletions")),
                             ctx::s(c, "message").lines().next().unwrap_or("").to_string(),
                         ]
@@ -364,7 +330,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 "request-changes" => "REQUEST_CHANGES",
                 _ => "COMMENT",
             };
-            let body = text_arg(body)?.unwrap_or_default();
+            let body = body.filter(|b| !b.trim().is_empty()).map(|b| ctx::text_arg(&b)).transpose()?.unwrap_or_default();
             if event != "APPROVE" && body.is_empty() {
                 return Err("write the review's text first (--body)".into());
             }
@@ -373,7 +339,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Merge { repo, number, style, yes } => {
-            confirm(yes, &format!("Merge #{number} in {repo} ({style})."))?;
+            if !confirm(yes, &format!("Merge #{number} in {repo} ({style})."))? {
+                return Err("not done".into());
+            }
             let r = ctx.client.post(&pull_path(&repo, number, "/merge"), &json!({ "style": style }))?;
             ctx.out(&r, |_| println!("merged #{number} in {repo} ({style})"));
             Ok(())

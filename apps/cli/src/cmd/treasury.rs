@@ -93,7 +93,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         vec![
                             ctx::text(e, "id"),
                             ctx::s(e, "kind").to_string(),
-                            ctx::text(e, "at"),
+                            ctx::when(&e["at"]),
                             postings(e),
                             ctx::s(e, "memo").to_string(),
                             ctx::text(e, "task"),

@@ -3,8 +3,8 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cmd::models::{confirm, expect_stdin_marker, items, joined, read_secret_from_stdin, split_list};
-use crate::ctx::{self, Ctx};
+use crate::cmd::models::{expect_stdin_marker, items, joined, read_secret_from_stdin, split_list};
+use crate::ctx::{self, confirm, Ctx};
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -100,7 +100,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 if value.is_some() {
                     return Err("--clear takes no --value".into());
                 }
-                confirm(&format!("Clear the stored key of {id}."), yes)?;
+                if !confirm(yes, &format!("Clear the stored key of {id}."))? {
+                    return Err("cancelled".into());
+                }
                 let query = field.as_deref().map(|f| format!("?field={}", ctx::seg(f))).unwrap_or_default();
                 ctx.client.delete(&format!("{path}{query}"))?;
                 format!("cleared the stored key of {id}")

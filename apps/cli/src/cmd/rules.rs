@@ -99,7 +99,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     .iter()
                     .map(|i| {
                         vec![
-                            ctx::text(i, "at_ms"),
+                            ctx::when(&i["at_ms"]),
                             ctx::s(i, "agent_name").to_string(),
                             ctx::s(i, "law").to_string(),
                             ctx::s(i, "tool").to_string(),

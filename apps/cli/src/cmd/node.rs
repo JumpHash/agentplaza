@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cmd::nodes::confirm;
+use crate::ctx::confirm;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -164,7 +164,7 @@ fn leave(forget: bool, yes: bool) -> Result<(), String> {
         println!("not joined; nothing to forget");
         return Ok(());
     }
-    if !yes && !confirm("Forget this machine's node identity? It can rejoin only with a new code.")? {
+    if !confirm(yes, "Forget this machine's node identity? It can rejoin only with a new code.")? {
         println!("kept the node identity");
         return Ok(());
     }
