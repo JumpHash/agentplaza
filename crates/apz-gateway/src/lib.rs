@@ -8,6 +8,8 @@
 //! * `anthropic` — Messages API, direct and on Vertex AI;
 //! * `openai` — Chat Completions: OpenAI, Azure OpenAI, every compatible server;
 //! * `responses` — the OpenAI Responses API;
+//! * `decisions` — decision models (OpenAI Decisions, System One): not chats,
+//!   see [`Gateway::decide`];
 //! * `gemini` — Gemini API and Gemini on Vertex AI;
 //! * `bedrock` — Bedrock Converse (with a SigV4 signer);
 //! * `mock` — deterministic and offline.
@@ -20,6 +22,7 @@
 mod anthropic;
 mod bedrock;
 mod config;
+mod decisions;
 mod error;
 mod gemini;
 mod http;
@@ -41,6 +44,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use config::{Auth, Preset, ProviderConfig, ProviderKind, presets};
+pub use decisions::{
+    Answer, ChoiceOption, ChoiceProbability, DecisionRequest, DecisionResponse, Level, LevelProbability, Question, Usage,
+};
 pub use error::GatewayError;
 
 use crate::error::truncate;
@@ -242,6 +248,9 @@ impl Gateway {
             ProviderKind::Gemini | ProviderKind::VertexGemini => gemini::complete(&ctx, req, model, sink),
             ProviderKind::Bedrock => bedrock::complete(&ctx, req, model, sink),
             ProviderKind::Mock => Ok(mock::complete(req, model, sink)),
+            ProviderKind::OpenAiDecisions | ProviderKind::SystemOne | ProviderKind::AzureDecisions => Err(
+                GatewayError::Config(format!("{provider_id} is a decision model; it answers questions, not chats")),
+            ),
         }?;
         if resp.model.is_empty() {
             resp.model = model.to_string();
@@ -263,7 +272,12 @@ impl Gateway {
             ProviderKind::Gemini => gemini::list_models(&ctx)?,
             ProviderKind::Bedrock => bedrock::list_models(&ctx)?,
             ProviderKind::Mock => mock::MODELS.iter().map(|m| ModelInfo::new(*m)).collect(),
-            ProviderKind::AzureOpenAi | ProviderKind::VertexAnthropic | ProviderKind::VertexGemini => Vec::new(),
+            ProviderKind::AzureOpenAi
+            | ProviderKind::VertexAnthropic
+            | ProviderKind::VertexGemini
+            | ProviderKind::OpenAiDecisions
+            | ProviderKind::SystemOne
+            | ProviderKind::AzureDecisions => Vec::new(),
         };
         for id in &p.models {
             if !models.iter().any(|m| &m.id == id) {
@@ -271,6 +285,19 @@ impl Gateway {
             }
         }
         Ok(models)
+    }
+
+    /// One decision call: the decision model `model` of `provider_id` answers
+    /// `req`'s questions. A chat provider is refused; the request is validated
+    /// before anything is sent.
+    pub fn decide(&self, provider_id: &str, model: &str, req: &DecisionRequest) -> Result<DecisionResponse, GatewayError> {
+        let p = self.provider(provider_id)?;
+        if p.kind.group() != "decisions" {
+            return Err(GatewayError::Config(format!("{provider_id} is a chat model; it does not answer decisions")));
+        }
+        req.validate().map_err(|e| GatewayError::Config(format!("invalid decision request: {e}")))?;
+        let ctx = Ctx { gw: &self.inner, p: &p };
+        decisions::decide(&ctx, model, req)
     }
 
     /// One tiny call to check a provider works. `model` defaults to the
