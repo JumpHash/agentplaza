@@ -429,20 +429,37 @@ fn router() -> Router<Node> {
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/restart` → 200 with the run's summary view.
-fn restart_vm(_node: &Node, _id: &str, _index: &str) -> Response {
-    Response::error(501, "contract: N1")
+fn restart_vm(node: &Node, id: &str, index: &str) -> Response {
+    vm_op(node, id, index, Registry::restart_vm)
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/wipe`: stop the VM, replace its workspace image with a fresh
 /// copy of the base image (the persistent image too, for a keepalive run), boot it again.
-fn wipe_vm(_node: &Node, _id: &str, _index: &str) -> Response {
-    Response::error(501, "contract: N1")
+fn wipe_vm(node: &Node, id: &str, index: &str) -> Response {
+    vm_op(node, id, index, Registry::wipe_vm)
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/stop`: stop the VM and do not restart it (the run keeps its
 /// other VMs; a keepalive VM stopped this way is not brought back).
-fn stop_vm(_node: &Node, _id: &str, _index: &str) -> Response {
-    Response::error(501, "contract: N1")
+fn stop_vm(node: &Node, id: &str, index: &str) -> Response {
+    vm_op(node, id, index, Registry::stop_vm)
+}
+
+/// Runs one per-VM operation on VM `index` of run `id`. An index that is not a
+/// number is a 404, like an unknown run or VM; the answer is the run's summary.
+fn vm_op(
+    node: &Node,
+    id: &str,
+    index: &str,
+    op: fn(&Registry, &str, u32) -> Result<Arc<crate::registry::Run>, crate::registry::VmOpError>,
+) -> Response {
+    let Ok(vm) = index.parse::<u32>() else {
+        return Response::error(404, &format!("no VM {index} in run {id}"));
+    };
+    match op(node.registry(), id, vm) {
+        Ok(run) => Response::json(200, &run.view(Detail::Summary)),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
 }
 
 /// `GET /v1/machine/stats`: the latest host sample, the last minute of samples,
