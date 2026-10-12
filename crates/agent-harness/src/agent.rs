@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Message, Role, StopReason, blocks_text};
 use apz_proto::line::{Lines, ReadTimeout, Recv};
 use apz_proto::wire::{
-    AgentProfile, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind, WorkStatus, cap_output,
+    AgentProfile, Control, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind, WorkStatus, cap_output,
 };
 use serde_json::{Value, json};
 
@@ -107,6 +107,13 @@ struct Agent<'a, S, W> {
     current: Option<u64>,
     /// A cancel for the work item in progress, taken at its next step.
     cancelled: Option<String>,
+    /// Steering notes (from, text) for the work item in progress, added to the
+    /// conversation before its next model call.
+    steers: Vec<(String, String)>,
+    /// The operator asked for the work item in progress to be compressed.
+    compress_requested: bool,
+    /// Model calls the operator allowed beyond the profile's turn budget.
+    extra_turns: u32,
 }
 
 /// Serves one keepalive connection's agent loop until the host's `stop`;
@@ -133,6 +140,9 @@ pub fn serve<S: Read + Write + ReadTimeout, W: Write>(
         clock: 0,
         current: None,
         cancelled: None,
+        steers: Vec::new(),
+        compress_requested: false,
+        extra_turns: 0,
     };
     agent.clock = agent.threads.values().map(|thread| thread.at).max().unwrap_or(0);
     loop {
@@ -213,6 +223,18 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             }
             HostMessage::Profile { profile } => {
                 self.profile = Some(profile);
+                Incoming::Handled
+            }
+            HostMessage::Control { work, control } => {
+                if self.current == Some(work) {
+                    match control {
+                        Control::Compress => self.compress_requested = true,
+                        Control::Steer { from, text } => self.steers.push((from, text)),
+                        Control::ExtendTurns { turns } => self.extra_turns = self.extra_turns.saturating_add(turns),
+                    }
+                } else {
+                    note(self.log, &format!("agent-harness: ignoring control for work {work}, which is not running"));
+                }
                 Incoming::Handled
             }
             other => Incoming::Message(other),
@@ -319,6 +341,9 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         let _ = crate::checkpoints::snapshot(self.workspace, &format!("work-{}", job.work));
         self.current = Some(job.work);
         self.cancelled = None;
+        self.steers.clear();
+        self.compress_requested = false;
+        self.extra_turns = 0;
         let result = self.drive(job.work, &profile, &mut messages);
         self.current = None;
         let (status, summary) = result?;
@@ -350,7 +375,20 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             if let Some(reason) = self.cancelled.take() {
                 return Ok((WorkStatus::Stopped, reason));
             }
-            if turns >= profile.max_turns {
+            for (from, text) in std::mem::take(&mut self.steers) {
+                let note_text = format!("[note from {from}]: {text}");
+                match messages.last_mut() {
+                    Some(last) if last.role == Role::User => last.content.push(Block::Text { text: note_text }),
+                    _ => messages.push(Message::user_text(note_text)),
+                }
+            }
+            let auto = profile.compress_at > 0 && serialized_len(messages.as_slice()) as u64 > profile.compress_at;
+            if self.compress_requested || auto {
+                let reason = if self.compress_requested { "asked" } else { "auto" };
+                self.compress_requested = false;
+                self.compress(work, profile, messages, reason)?;
+            }
+            if turns >= profile.max_turns.saturating_add(self.extra_turns) {
                 return Ok((WorkStatus::Stopped, "turn budget reached".to_string()));
             }
             turns += 1;
@@ -411,6 +449,67 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
                 _ => {}
             }
         }
+    }
+
+    /// Folds the conversation's older turns into a summary the model writes: the
+    /// first message (the task) stays, the `keep_recent` latest turns stay verbatim,
+    /// and the summary is added to the first message. A failed summary is logged
+    /// and the conversation goes on uncompressed.
+    fn compress(
+        &mut self,
+        work: u64,
+        profile: &AgentProfile,
+        messages: &mut Vec<Message>,
+        reason: &str,
+    ) -> Result<(), Halt> {
+        let Some(cut) = compress_cut(messages.as_slice(), profile.keep_recent) else {
+            return Ok(());
+        };
+        if cut <= 1 {
+            return Ok(());
+        }
+        let before = serialized_len(messages.as_slice()) as u64;
+        let mut transcript = String::new();
+        for message in &messages[1..cut] {
+            let role = if message.role == Role::User { "user" } else { "assistant" };
+            for block in &message.content {
+                let line = match block {
+                    Block::Text { text } => text.clone(),
+                    Block::ToolUse { name, input, .. } => format!("→ {name} {input}"),
+                    Block::ToolResult { content, .. } => format!("← {}", cap_output(content, 2000)),
+                    _ => continue,
+                };
+                transcript.push_str(&format!("{role}: {line}\n"));
+            }
+        }
+        let request = format!(
+            "Summarize this work so far for yourself, so you can continue it without the transcript: the goal, what you did, what you found, files you created or changed (paths), decisions, what failed, and the next steps. Be specific and complete; at most 600 words.\n\n{transcript}"
+        );
+        let mut summary_profile = profile.clone();
+        summary_profile.tools.clear();
+        let summary_msgs = vec![Message::user_text(request)];
+        let response = match self.model_call(work, &summary_profile, &summary_msgs)? {
+            Ok(response) => response,
+            Err(reason) => {
+                note(self.log, &format!("agent-harness: work {work} not compressed: {}", escape_for_transcript(&reason)));
+                return Ok(());
+            }
+        };
+        let summary = blocks_text(&response.content);
+        messages[0].content.push(Block::Text {
+            text: format!("Summary of the work so far (earlier turns were compressed):\n{summary}"),
+        });
+        messages.drain(1..cut);
+        let after = serialized_len(messages.as_slice()) as u64;
+        note(self.log, &format!("agent-harness: work {work} compressed ({reason}): {before} -> {after} bytes"));
+        self.say(&GuestMessage::Compressed {
+            work,
+            before,
+            after,
+            folded: (cut - 1) as u32,
+            reason: reason.to_string(),
+        })?;
+        Ok(())
     }
 
     /// One model call on the conversation so far. The inner `Err` is the host's
@@ -560,6 +659,20 @@ fn edit_args(input: &Value) -> Result<Value, String> {
 /// The size of a conversation as it is sent, in bytes.
 fn serialized_len(messages: &[Message]) -> usize {
     serde_json::to_vec(messages).map_or(0, |bytes| bytes.len())
+}
+
+/// Where a compression cuts the conversation: the index of the `keep_recent`-th
+/// most recent assistant message (at least the latest), from which on the turns
+/// stay verbatim. None when there is no such message.
+fn compress_cut(messages: &[Message], keep_recent: u32) -> Option<usize> {
+    let keep = keep_recent.max(1) as usize;
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, message)| message.role == Role::Assistant)
+        .nth(keep - 1)
+        .map(|(index, _)| index)
 }
 
 /// The file, under the workspace's state directory, that holds the operator's
@@ -794,6 +907,86 @@ mod tests {
             expect_type(host, "work_done");
             stop(host);
         });
+    }
+
+    fn control(work: u64, body: Value) -> String {
+        json!({"type": "control", "work": work, "control": body}).to_string()
+    }
+
+    /// A profile that compresses whenever there is something older to fold.
+    fn compressing_welcome() -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "tools": [{"name": "search", "description": "find", "input_schema": {"type": "object"}}],
+                "max_turns": 10, "compress_at": 1, "keep_recent": 1,
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_steer_control_reaches_the_next_model_call_as_a_note() {
+        let workspace = scratch("steer");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&control(1, json!({"action": "steer", "from": "mayor", "text": "focus on the parser"})))
+                .unwrap();
+            host.send(&answer(1, json!([tool_use("s1", "search", json!({"pattern": "x"}))]), "tool_use")).unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("s1", "done", "3 hits", false)).unwrap();
+            let next = expect_type(host, "model_call");
+            let results = &next["request"]["messages"][2]["content"];
+            assert_eq!(results[1]["text"], "[note from mayor]: focus on the parser", "{results}");
+            host.send(&answer(2, json!([text("found")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_long_conversation_is_compressed_before_the_next_model_call() {
+        let workspace = scratch("compress");
+        run_hub(&workspace, |host| {
+            host.send(&compressing_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            for (req, id) in [(1, "s1"), (2, "s2")] {
+                expect_type(host, "model_call");
+                host.send(&answer(req, json!([tool_use(id, "search", json!({"pattern": id}))]), "tool_use")).unwrap();
+                expect_type(host, "tool_request");
+                host.send(&decision(id, "done", "hits", false)).unwrap();
+            }
+            let summary_call = expect_type(host, "model_call");
+            let asked = &summary_call["request"]["messages"][0]["content"][0]["text"];
+            assert!(asked.as_str().is_some_and(|text| text.starts_with("Summarize")), "{asked}");
+            host.send(&answer(3, json!([text("the summary")]), "end_turn")).unwrap();
+            let compressed = expect_type(host, "compressed");
+            assert_eq!(
+                (compressed["work"].clone(), compressed["folded"].clone(), compressed["reason"].clone()),
+                (json!(1), json!(2), json!("auto"))
+            );
+            let next = expect_type(host, "model_call");
+            let messages = &next["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(3), "{messages}");
+            assert!(messages[0]["content"][1]["text"].as_str().is_some_and(|text| text.contains("the summary")));
+            host.send(&answer(4, json!([text("done")]), "end_turn")).unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn the_compression_cut_keeps_the_latest_assistant_turns() {
+        let user = || Message::user_text("u");
+        let assistant = || Message::assistant(vec![Block::Text { text: "a".to_string() }]);
+        let messages = vec![user(), assistant(), user(), assistant(), user()];
+        assert_eq!(compress_cut(&messages, 1), Some(3));
+        assert_eq!(compress_cut(&messages, 0), Some(3));
+        assert_eq!(compress_cut(&messages, 2), Some(1));
+        assert_eq!(compress_cut(&messages, 3), None);
     }
 
     #[test]
