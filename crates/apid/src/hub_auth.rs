@@ -1,8 +1,11 @@
 //! The hub's front door: who may call it, and how the hub proves who it is.
 //!
 //! - Loopback callers (the console on this machine, the local agent gateway) are trusted as today.
-//! - Any other caller of an owner route must send `Authorization: Bearer <owner token>`; the hub
-//!   stores only the token's SHA-256 (`apz_trust::owner`). The token is made on the hub's first
+//! - Any other caller of an owner route must send `Authorization: Bearer <owner token>` or the
+//!   session cookie a sign-in gave it (`POST /v1/auth/session` with the owner token: an HttpOnly,
+//!   Secure, SameSite=Strict cookie, so the browser console's event stream and downloads carry it;
+//!   the hub keeps only each session's SHA-256, for [`SESSION_MS`]). The hub stores only the
+//!   owner token's SHA-256 (`apz_trust::owner`). The token is made on the hub's first
 //!   start (printed once, and written to `<state>/owner-token` mode 0600 for the desktop app to
 //!   read on this machine) and can be rotated.
 //! - Node routes are public but rate-limited (`/v1/nodes/join`) or signed by the node's key
@@ -11,6 +14,7 @@
 //!   (`<state>/tls/cert.pem`, `key.pem`); its SHA-256 is the pin join tokens carry.
 //! Saved: `<state>/hub.json` (owner token hash, public URL, name), mode 0600.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -22,6 +26,10 @@ use crate::state::App;
 
 const HUB_FILE: &str = "hub.json";
 const OWNER_TOKEN_FILE: &str = "owner-token";
+/// The console's session cookie.
+pub const SESSION_COOKIE: &str = "apz_session";
+/// How long a console session lasts.
+pub const SESSION_MS: u64 = 12 * 3_600_000;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HubConfig {
@@ -37,6 +45,8 @@ pub struct Hub {
     pub config: Mutex<HubConfig>,
     /// The TLS certificate's SHA-256 (all zero when the hub has no certificate yet).
     pub cert_sha256: [u8; 32],
+    /// Console sessions: SHA-256 of the session id → expiry (ms). In memory only.
+    sessions: Mutex<BTreeMap<[u8; 32], u64>>,
 }
 
 impl Hub {
@@ -59,7 +69,7 @@ impl Hub {
         }
         save(state_dir, &config)?;
         let cert_sha256 = if tls { certificate(state_dir, public_url) } else { [0; 32] };
-        Ok(Hub { config: Mutex::new(config), cert_sha256 })
+        Ok(Hub { config: Mutex::new(config), cert_sha256, sessions: Mutex::default() })
     }
 
     /// Whether `token` is the owner's.
@@ -76,8 +86,32 @@ impl Hub {
         next.owner_token_sha256 = hex_encode(&apz_trust::owner::hash(&token));
         save(state_dir, &next)?;
         *config = next;
+        // A new owner token ends every console session made with the old one.
+        self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
         write_private(&owner_token_path(state_dir), token.as_bytes())?;
         Ok(token)
+    }
+
+    /// A new console session for the owner: returns the session id (only its hash is kept).
+    pub fn open_session(&self, now_ms: u64) -> String {
+        let id = apz_trust::b64(&apz_trust::random::<32>());
+        let mut sessions = self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        sessions.retain(|_, expires| *expires > now_ms);
+        sessions.insert(apz_trust::sha256(id.as_bytes()), now_ms + SESSION_MS);
+        id
+    }
+
+    /// Whether `id` is a live session.
+    pub fn session_ok(&self, id: &str, now_ms: u64) -> bool {
+        let hash = apz_trust::sha256(id.as_bytes());
+        let sessions = self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        sessions.get(&hash).is_some_and(|expires| *expires > now_ms)
+    }
+
+    /// Ends the session `id` (a no-op when unknown).
+    pub fn close_session(&self, id: &str) {
+        let hash = apz_trust::sha256(id.as_bytes());
+        self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&hash);
     }
 
     pub fn fingerprint_b64(&self) -> String {
@@ -91,7 +125,7 @@ impl Hub {
 
 /// Routes anyone may call without the owner token.
 pub fn is_public(method: &str, path: &str) -> bool {
-    matches!((method, path), ("GET", "/v1/hub/identity") | ("POST", "/v1/nodes/join"))
+    matches!((method, path), ("GET", "/v1/hub/identity") | ("POST", "/v1/nodes/join") | ("POST" | "DELETE", "/v1/auth/session"))
         || (path.starts_with("/v1/nodes/n") && (path.ends_with("/commands") || path.ends_with("/results") || path.ends_with("/heartbeat")))
         || path.starts_with("/internal/")
         || !path.starts_with("/v1/")
@@ -113,6 +147,9 @@ pub fn gate(app: &App, req: &Request) -> Option<Response> {
     if presented.is_some_and(|token| app.hub_auth.owner_ok(token)) {
         return None;
     }
+    if session_of(req).is_some_and(|id| app.hub_auth.session_ok(id, apz_plaza::now_ms())) {
+        return None;
+    }
     Some(Response::json(401, &serde_json::json!({ "error": "sign in with the owner token" })).with_header("www-authenticate", "Bearer"))
 }
 
@@ -121,6 +158,45 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/hub/identity", identity_route)
         .post("/v1/hub/owner-token/rotate", rotate_route)
         .get("/v1/auth/check", |_, _, _| Response::json(200, &serde_json::json!({ "ok": true })))
+        .post("/v1/auth/session", sign_in_route)
+        .delete("/v1/auth/session", sign_out_route)
+}
+
+/// The session id in the request's `Cookie` header, if any.
+fn session_of(req: &Request) -> Option<&str> {
+    req.header("cookie")?
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == SESSION_COOKIE)
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+#[derive(Deserialize)]
+struct SignIn {
+    token: String,
+}
+
+/// `POST /v1/auth/session {token}`: the owner token for a session cookie. One generic refusal.
+fn sign_in_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
+    let Ok(SignIn { token }) = req.json::<SignIn>() else {
+        return Response::error(400, "send {\"token\": \"…\"}");
+    };
+    if !app.hub_auth.owner_ok(&token) {
+        return Response::error(401, "that is not the owner token");
+    }
+    let id = app.hub_auth.open_session(apz_plaza::now_ms());
+    let cookie = format!("{SESSION_COOKIE}={id}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={}", SESSION_MS / 1000);
+    Response::json(200, &serde_json::json!({ "ok": true })).with_header("set-cookie", &cookie)
+}
+
+/// `DELETE /v1/auth/session`: ends this browser's session and clears its cookie.
+fn sign_out_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
+    if let Some(id) = session_of(req) {
+        app.hub_auth.close_session(id);
+    }
+    let cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
+    Response::json(200, &serde_json::json!({ "ok": true })).with_header("set-cookie", &cookie)
 }
 
 /// `{name, version, url, fingerprint, nodes}` — what a joining node and a signing-in console see.
@@ -252,6 +328,43 @@ mod tests {
 
     fn token_of(dir: &Path) -> String {
         std::fs::read_to_string(owner_token_path(dir)).unwrap()
+    }
+
+    #[test]
+    fn sessions_open_check_close_expire_and_end_on_rotation() {
+        let dir = scratch("sessions");
+        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let now = 1_000_000;
+        let a = hub.open_session(now);
+        let b = hub.open_session(now);
+        assert_ne!(a, b);
+        assert!(hub.session_ok(&a, now + 1));
+        assert!(!hub.session_ok("not-a-session", now));
+        assert!(!hub.session_ok(&a, now + SESSION_MS));
+        hub.close_session(&b);
+        assert!(!hub.session_ok(&b, now + 1));
+        let c = hub.open_session(now);
+        hub.rotate_owner_token(&dir).unwrap();
+        assert!(!hub.session_ok(&c, now + 1));
+    }
+
+    #[test]
+    fn session_cookie_is_read_among_others_and_sign_in_is_public() {
+        let req = |cookie: &str| Request {
+            method: "GET".into(),
+            path: "/v1/agents".into(),
+            query: String::new(),
+            headers: vec![("cookie".into(), cookie.into())],
+            body: Vec::new(),
+            peer: None,
+        };
+        assert_eq!(session_of(&req("theme=dark; apz_session=abc ; x=1")), Some("abc"));
+        assert_eq!(session_of(&req("apz_session=")), None);
+        assert_eq!(session_of(&req("apz_sessionx=abc")), None);
+        assert!(is_public("POST", "/v1/auth/session"));
+        assert!(is_public("DELETE", "/v1/auth/session"));
+        assert!(!is_public("GET", "/v1/auth/check"));
+        assert!(!is_public("GET", "/v1/nodes/n1/runs"));
     }
 
     #[test]
