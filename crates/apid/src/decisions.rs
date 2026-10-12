@@ -7,8 +7,8 @@
 //! POST /v1/decisions          body {provider?, model?, input, questions} → {provider, model,
 //!                             answers, usage}; provider and model default to the saved one
 //!
-//! The owner's calls and the agents' (`POST /internal/decisions`, see `internal`) are refused
-//! with 409 while STOP ALL holds the plaza. The saved default lives in Postgres under the
+//! The owner's calls and the agents' (`POST /internal/v1/agents/{cid}/gateway/decisions`, which
+//! an agent reaches as `http://plaza.gateway/decisions`) are refused with 409 while STOP ALL holds the plaza. The saved default lives in Postgres under the
 //! "decisions_default" key, next to the other plaza state.
 
 use std::sync::Mutex;
@@ -134,7 +134,7 @@ fn default_json(pick: Option<&Pick>) -> Value {
     json!({ "provider": pick.map(|p| p.provider.as_str()), "model": pick.map(|p| p.model.as_str()) })
 }
 
-/// `POST /internal/decisions` for agent `cid`: always the saved default. The hold applies, and
+/// `POST /internal/v1/agents/{cid}/gateway/decisions` for agent `cid`: always the saved default. The hold applies, and
 /// the call is metered as a model call is: tokens are unpriced, so it costs one credit.
 pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
     if app.agents.get(cid).is_none() {

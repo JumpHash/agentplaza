@@ -88,10 +88,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({})))
             })
         })
-        .post("/internal/decisions", |app, req, _| {
-            // The agent's cid rides in `x-apz-cid`: this route has no path to carry it.
-            let cid = req.header("x-apz-cid").unwrap_or_default();
-            authorized(app, req, cid, |cid| Ok(crate::decisions::agent_decision(app, cid, req)))
+        // An agent's decision (from its VM: `POST http://plaza.gateway/decisions`, which vsockd
+        // forwards here with the agent's CID).
+        .post("/internal/v1/agents/{cid}/gateway/decisions", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| Ok(crate::decisions::agent_decision(app, cid, req)))
         })
 }
 
