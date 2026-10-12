@@ -27,13 +27,11 @@ cat <<EOF
 | **Windows** arm64 | [MSI installer]($dl/AgentPlaza-$version-windows-arm64.msi) · [zip]($dl/AgentPlaza-$version-windows-arm64.zip) |
 | **macOS** Apple Silicon | [DMG]($dl/AgentPlaza-$version-macos-arm64.dmg) |
 | **macOS** Intel | [DMG]($dl/AgentPlaza-$version-macos-x86_64.dmg) |
-| **Ubuntu / Debian** x86_64 | [.deb]($dl/agentplaza_${version}_amd64.deb) |
-| **Ubuntu / Debian** arm64 | [.deb]($dl/agentplaza_${version}_arm64.deb) |
-| **Fedora** x86_64 | [.rpm]($dl/agentplaza-$version-1.x86_64.rpm) |
-| **Fedora** aarch64 | [.rpm]($dl/agentplaza-$version-1.aarch64.rpm) |
+| **Ubuntu, Debian, Mint, Pop!_OS** (double-click to install) | [.deb x86_64]($dl/agentplaza_${version}_amd64.deb) · [.deb arm64]($dl/agentplaza_${version}_arm64.deb) |
+| **Fedora, openSUSE** (double-click to install) | [.rpm x86_64]($dl/agentplaza-$version-1.x86_64.rpm) · [.rpm aarch64]($dl/agentplaza-$version-1.aarch64.rpm) |
 | **Arch Linux** x86_64 | [.pkg.tar.zst]($dl/agentplaza-$version-1-x86_64.pkg.tar.zst) |
 | **Arch Linux ARM** aarch64 | [.pkg.tar.zst]($dl/agentplaza-$version-1-aarch64.pkg.tar.zst) |
-| **Linux** AppImage (any distribution: download, make executable, double-click) | [x86_64]($dl/AgentPlaza-$version-linux-x86_64.AppImage) · [aarch64]($dl/AgentPlaza-$version-linux-aarch64.AppImage) |
+| **Linux** AppImage (portable, any distribution) | [x86_64]($dl/AgentPlaza-$version-linux-x86_64.AppImage) · [aarch64]($dl/AgentPlaza-$version-linux-aarch64.AppImage) |
 | **Linux** tarball | [x86_64]($dl/agentplaza-$version-linux-x86_64.tar.gz) · [aarch64]($dl/agentplaza-$version-linux-aarch64.tar.gz) |
 | **Raspberry Pi 4/5** (Raspberry Pi OS 64-bit) | [.deb]($dl/agentplaza_${version}_arm64-raspberrypi.deb) · [AppImage]($dl/AgentPlaza-$version-linux-aarch64.AppImage) · [tarball]($dl/agentplaza-$version-raspberrypi-arm64.tar.gz) |
 

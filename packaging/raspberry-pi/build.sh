@@ -42,6 +42,9 @@ for n in 16 24 32 48 64 128 256 512; do
 done
 
 install -Dm644 "$linux/agentplaza.desktop" "$root/usr/share/applications/agentplaza.desktop"
+# AppStream metadata, as in the Linux packages: the software installers show it as an app.
+sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%F)/" "$linux/io.agentplaza.AgentPlaza.metainfo.xml" \
+    | install -Dm644 /dev/stdin "$root/usr/share/metainfo/io.agentplaza.AgentPlaza.metainfo.xml"
 mkdir -p "$root/usr/lib/systemd/user"
 install -m644 "$linux"/*.service "$root/usr/lib/systemd/user/"
 install -Dm644 "$here/agentplaza-node.default" "$root/etc/default/agentplaza-node"
@@ -61,6 +64,9 @@ fpm -s dir -t deb \
     --url https://github.com/JumpHash/agentplaza-mvp \
     --maintainer "JUMPHASH <hello@jumphash.com>" \
     --description "AgentPlaza for Raspberry Pi 4/5 (64-bit)" \
+    --vendor JUMPHASH \
+    --category devel \
+    --deb-priority optional \
     .
 
 tarball="$out/agentplaza-${version}-raspberrypi-arm64.tar.gz"

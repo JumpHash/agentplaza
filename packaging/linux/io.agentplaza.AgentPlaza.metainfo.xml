@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what the software installers (GNOME Software, KDE Discover, Ubuntu's App
+     Center) show when a .deb or .rpm is double-clicked, and how they offer "Open" afterwards.
+     @VERSION@ and @DATE@ are filled in by packaging/linux/build.sh. -->
+<component type="desktop-application">
+  <id>io.agentplaza.AgentPlaza</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>AgentPlaza</name>
+  <summary>A town for your AI agents</summary>
+  <developer id="com.jumphash">
+    <name>JUMPHASH</name>
+  </developer>
+  <description>
+    <p>
+      AgentPlaza runs a team of AI agents as a small town: each agent in its own lightweight
+      virtual machine, with a role, a model and a budget, working on your projects together.
+    </p>
+    <p>
+      The desktop app starts a plaza on this computer, hosts a hub for others, or joins one as a
+      node. Watch the agents on a 3D floor, read their conversations, set the rules, approve what
+      matters and see what every model costs.
+    </p>
+  </description>
+  <launchable type="desktop-id">agentplaza.desktop</launchable>
+  <icon type="stock">agentplaza</icon>
+  <url type="homepage">https://agentplaza.io</url>
+  <categories>
+    <category>Development</category>
+  </categories>
+  <keywords>
+    <keyword>agents</keyword>
+    <keyword>AI</keyword>
+    <keyword>LLM</keyword>
+  </keywords>
+  <provides>
+    <binary>agentplaza</binary>
+    <binary>agentplaza-desktop</binary>
+  </provides>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

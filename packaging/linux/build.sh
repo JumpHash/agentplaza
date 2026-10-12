@@ -44,6 +44,13 @@ for n in 16 24 32 48 64 128 256 512; do
     "$TREE/usr/share/icons/hicolor/${n}x${n}/apps/agentplaza.png"
 done
 
+# AppStream metadata: the software installers show the package as an app (name, icon, summary)
+# when a .deb or .rpm is double-clicked, and offer "Open" once it is installed.
+sed -e "s/@VERSION@/$VERSION/" -e "s/@DATE@/$(date -u +%F)/" "$HERE/io.agentplaza.AgentPlaza.metainfo.xml" \
+  > "$WORK/io.agentplaza.AgentPlaza.metainfo.xml"
+install -Dm644 "$WORK/io.agentplaza.AgentPlaza.metainfo.xml" \
+  "$TREE/usr/share/metainfo/io.agentplaza.AgentPlaza.metainfo.xml"
+
 # systemd user units.
 install -Dm644 "$HERE/agentplaza-hub.service" "$TREE/usr/lib/systemd/user/agentplaza-hub.service"
 install -Dm644 "$HERE/agentplaza-node.service" "$TREE/usr/lib/systemd/user/agentplaza-node.service"
@@ -85,6 +92,8 @@ FPM_COMMON=(
   --url https://github.com/JumpHash/agentplaza-mvp
   --maintainer "JUMPHASH <hello@jumphash.com>"
   --description "$DESC"
+  --vendor JUMPHASH
+  --category devel
   --after-install "$HERE/postinstall.sh"
 )
 
@@ -92,7 +101,7 @@ FPM_COMMON=(
 rm -f "$OUT"/agentplaza_"$VERSION"_* "$OUT"/agentplaza-"$VERSION"-*
 
 DEB="$OUT/agentplaza_${VERSION}_${DEB_ARCH}.deb"
-fpm "${FPM_COMMON[@]}" -t deb --architecture "$DEB_ARCH" \
+fpm "${FPM_COMMON[@]}" -t deb --architecture "$DEB_ARCH" --deb-priority optional \
   --deb-recommends docker.io --package "$DEB" .
 echo "built: $DEB"
 
