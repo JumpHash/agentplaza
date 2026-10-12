@@ -21,3 +21,6 @@ crossterm = "0.29"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[build-dependencies]
+winresource = "0.1.34"
