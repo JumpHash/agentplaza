@@ -11,6 +11,19 @@
 use std::sync::{Mutex, MutexGuard, Once};
 
 pub type RawFd = u64;
+
+/// A scatter/gather element with the layout of POSIX `struct iovec`. WinSock
+/// has no `readv`/`writev` for these; the virtio buffers use them in-process
+/// only, as (pointer, length) pairs over guest memory.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct iovec {
+    /// Start of the buffer.
+    pub iov_base: *mut std::ffi::c_void,
+    /// Length of the buffer in bytes.
+    pub iov_len: usize,
+}
 pub trait AsRawFd {
     fn as_raw_fd(&self) -> RawFd;
 }
@@ -214,6 +227,16 @@ pub mod epoll {
             }
         }
 
+        /// Adds the flags in `other` (bitflags' `insert`, as vmm-sys-util's
+        /// `EventSet` has).
+        pub fn insert(&mut self, other: EventSet) {
+            self.0 |= other.0;
+        }
+        /// Removes the flags in `other`.
+        pub fn remove(&mut self, other: EventSet) {
+            self.0 &= !other.0;
+        }
+        /// Whether every flag in `other` is set.
         pub fn contains(&self, other: EventSet) -> bool {
             self.0 & other.0 == other.0
         }

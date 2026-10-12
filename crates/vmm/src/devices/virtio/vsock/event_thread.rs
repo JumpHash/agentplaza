@@ -80,6 +80,7 @@ where
             // the allowlist. A real install error is fail-closed; a platform
             // with no seccomp at all is reported and tolerated (see
             // `crate::jail`).
+            #[cfg(target_os = "linux")]
             if let Err(err) = crate::jail::Jail::arm_thread() {
                 eprintln!("vsock: cannot arm the seccomp jail: {err}");
                 return;

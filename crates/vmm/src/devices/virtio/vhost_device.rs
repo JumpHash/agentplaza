@@ -221,47 +221,9 @@ fn read_guest_cid_config(guest_cid: u64, offset: u64, data: &mut [u8]) {
     }
 }
 
-/// Records the features the driver acknowledged for one page.
-///
-/// `offered` is the device's full feature set, `acked` what the driver has
-/// acknowledged so far, and `page`/`value` what it just wrote to the feature
-/// registers. Bits that were not offered are an error: a driver and a device
-/// that disagree about the features in use are undefined, so the device is not
-/// allowed to accept them and carry on.
-///
-/// The page is whatever the driver selected, so it is not trusted here: a
-/// 64-bit feature set has two pages, and a driver asking about any other one
-/// reads no features at all, which makes acknowledging zero there a no-op and
-/// acknowledging anything there an error (this is also what keeps the shifts
-/// below in range for a page a guest chooses arbitrarily).
-pub(crate) fn ack_feature_page(
-    offered: u64,
-    acked: u64,
-    page: u32,
-    value: u32,
-) -> Result<u64, VirtioError> {
-    if page > 1 {
-        return if value == 0 {
-            Ok(acked)
-        } else {
-            Err(VirtioError::UnsupportedFeatures {
-                flags: u64::from(value),
-            })
-        };
-    }
-    let offered_page = if page == 0 {
-        offered as u32
-    } else {
-        (offered >> 32) as u32
-    };
-    if value & !offered_page != 0 {
-        return Err(VirtioError::UnsupportedFeatures {
-            flags: u64::from(value) << (32 * page),
-        });
-    }
-    let mask = 0xffff_ffff_u64 << (32 * page);
-    Ok((acked & !mask) | (u64::from(value) << (32 * page)))
-}
+/// Moved to the transport-neutral virtio module (the userspace devices use it
+/// on every platform); re-exported for this device and its tests.
+pub(crate) use crate::devices::virtio::ack_feature_page;
 
 #[cfg(test)]
 mod tests {

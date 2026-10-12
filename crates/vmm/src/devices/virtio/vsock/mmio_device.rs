@@ -18,7 +18,7 @@ use crate::pal::eventfd::EventFd;
 use super::device::Vsock;
 use super::VsockBackend;
 use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
-use crate::devices::virtio::vhost_device::ack_feature_page;
+use crate::devices::virtio::ack_feature_page;
 use crate::devices::virtio::VirtioError;
 use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
 

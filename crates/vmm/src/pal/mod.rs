@@ -23,8 +23,12 @@
 pub use std::os::fd::{AsRawFd, RawFd};
 #[cfg(target_os = "linux")]
 pub use vmm_sys_util::{epoll, eventfd};
+/// The scatter/gather element the virtio buffers are built from (`readv`/`writev`
+/// layout on Linux; the same layout, used only in-process, on Windows).
+#[cfg(target_os = "linux")]
+pub use libc::iovec;
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{AsRawFd, RawFd, epoll, eventfd};
+pub use windows::{AsRawFd, RawFd, epoll, eventfd, iovec};

@@ -27,7 +27,7 @@ use crate::devices::virtio::mmio::{
     QueueConfig, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtioDevice,
 };
 use crate::devices::virtio::queue::{DescriptorChain, Queue};
-use crate::devices::virtio::vhost_device::ack_feature_page;
+use crate::devices::virtio::ack_feature_page;
 use crate::vstate::memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
 /// `VIRTIO_F_VERSION_1` (feature bit 32): the device conforms to virtio 1.0.

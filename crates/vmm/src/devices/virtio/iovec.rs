@@ -13,7 +13,11 @@
 
 use std::io::ErrorKind;
 
-use libc::{c_void, iovec, size_t};
+use std::ffi::c_void;
+
+use crate::pal::iovec;
+#[allow(non_camel_case_types)]
+type size_t = usize;
 use vm_memory::bitmap::Bitmap;
 use vm_memory::{
     GuestMemoryBackend, GuestMemoryError, ReadVolatile, VolatileMemoryError, VolatileSlice,

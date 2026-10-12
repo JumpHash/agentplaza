@@ -20,5 +20,5 @@ pub mod legacy;
 /// guest's vsock traffic over host Unix-domain sockets — there is no
 /// `/dev/vhost-vsock` on the boot path. (The Hypervisor.framework backend on
 /// Apple Silicon has no vsock device at all.)
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod virtio;

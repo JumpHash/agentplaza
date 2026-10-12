@@ -15,39 +15,39 @@
 //! ride on `EventFd`, which does not exist on macOS. The Hypervisor.framework
 //! backend wraps `vm_superio` directly with its own portable trigger instead
 //! of these modules.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod i8042;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod pm1_cnt;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod serial;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::io;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::ops::Deref;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use vm_superio::Trigger;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use crate::pal::eventfd::EventFd;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use self::i8042::{I8042Device, I8042Error as I8042DeviceError};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use self::pm1_cnt::{
     PM1_CNT_SIZE, Pm1CntDevice, RESET_PORT, RESET_VALUE, SLEEP_CONTROL_PORT, SLEEP_STATUS_PORT,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use self::serial::{SerialDevice, SerialEventsWrapper, SerialOut, SerialOutInner, SerialWrapper};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 /// Wrapper for implementing the trigger functionality for `EventFd`.
 ///
 /// The trigger is used for handling events in the legacy devices.
 #[derive(Debug)]
 pub struct EventFdTrigger(EventFd);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Trigger for EventFdTrigger {
     type E = io::Error;
 
@@ -56,7 +56,7 @@ impl Trigger for EventFdTrigger {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Deref for EventFdTrigger {
     type Target = EventFd;
     fn deref(&self) -> &Self::Target {
@@ -64,7 +64,7 @@ impl Deref for EventFdTrigger {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl EventFdTrigger {
     /// Clone an `EventFdTrigger`.
     pub fn try_clone(&self) -> io::Result<Self> {

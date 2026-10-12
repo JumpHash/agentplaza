@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 apz-os = { path = "../apz-os" }
+# Host-side Unix-domain sockets of the vsock muxer (std on Unix, AF_UNIX on Windows).
+apz-uds.workspace = true
 libc.workspace = true
 thiserror.workspace = true
 vm-memory.workspace = true
@@ -28,7 +30,6 @@ vmm-sys-util.workspace = true
 # The WHP backend (loaded at run time: only the types and constants come from
 # here), guest memory (VirtualAlloc) and the WinSock event shim in `pal`.
 vm-superio.workspace = true
-apz-uds.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Networking_WinSock",

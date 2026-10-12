@@ -17,7 +17,7 @@ use super::device::VirtioBlock;
 use super::{BLOCK_QUEUE_NUM, BLOCK_QUEUE_SIZE, VIRTIO_ID_BLOCK, VirtioBlockError};
 use crate::devices::virtio::VirtioError;
 use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
-use crate::devices::virtio::vhost_device::ack_feature_page;
+use crate::devices::virtio::ack_feature_page;
 use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
 
 /// The virtio-mmio device that hands the block device to the transport.

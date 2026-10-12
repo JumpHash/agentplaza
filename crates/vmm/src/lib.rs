@@ -83,13 +83,13 @@ pub mod devices;
 pub mod spawner;
 
 /// ACPI table generation (`x86_64` guests only; aarch64 uses FDT).
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]
 pub mod acpi;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod arch;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod vstate;
 /// The `hvf` module declares itself on every target; its own `mod.rs` gates the
 /// platform halves: the pure decode/PSCI/GIC model (and its unit tests)

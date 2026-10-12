@@ -12,7 +12,7 @@ pub mod kvm;
 /// Module with GuestMemory implementation.
 pub mod memory;
 /// Resource manager for devices.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod resources;
 /// Module with Vcpu implementation.
 #[cfg(target_os = "linux")]

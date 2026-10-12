@@ -11,7 +11,7 @@
 // (`pub use crate::arch::x86_64::{layout::*, ...}` in its `arch/mod.rs`); this
 // tree's `arch/mod.rs` declares the per-arch modules only, so select the
 // current arch's `layout` module here.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(any(target_os = "linux", windows), target_arch = "x86_64"))]
 use crate::arch::x86_64::layout as arch_layout;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 use crate::arch::aarch64::layout as arch_layout;
