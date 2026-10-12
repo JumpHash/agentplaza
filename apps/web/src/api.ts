@@ -439,7 +439,15 @@ export const api = {
   drainNode: (id: string, on: boolean) => post<NodeView>(`/v1/nodes/${id}/drain`, { on }),
   nodeMachine: (id: string) => get<Machine>(`/v1/nodes/${id}/machine`),
   nodeRuns: (id: string) => get<unknown>(`/v1/nodes/${id}/runs`),
+  nodeLink: () => get<NodeLink>('/v1/node-link'),
+  /** Joins the network whose Nodes screen issued `code`. 400 `{error}` on a bad code, 409 when already joined. */
+  joinNodeLink: (code: string) => post<NodeLink>('/v1/node-link/join', { code }),
+  /** Leaves that network; `forget` also drops its saved hub details. */
+  leaveNodeLink: (forget: boolean) => post<NodeLink>('/v1/node-link/leave', { forget }),
 };
+
+/** This hub as a node of another network. `cids` is the CID range its agents hold there (null until joined); `pid` is set while `running`. */
+export interface NodeLink { joined: boolean; hub: string | null; node_id: string | null; cids: { base: number; count: number } | null; running: boolean; pid: number | null }
 
 /** What the hub says about itself: anyone may ask. `fingerprint` is its TLS certificate's SHA-256 (base64url), null without TLS. */
 export interface HubIdentity { name: string; version: string; url: string; fingerprint: string | null; nodes: number }

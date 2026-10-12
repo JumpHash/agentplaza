@@ -1,8 +1,9 @@
 // The Nodes screen: the machines that make up the plaza, the join codes that
-// bring new ones in (each token shown once), and this hub's own identity with
-// the owner-token rotation. Refreshes every few seconds.
+// bring new ones in (each token shown once), this hub's own identity with the
+// owner-token rotation, and this hub joined to another network as a node.
+// Refreshes every few seconds.
 
-import { api, type HubIdentity, type JoinCode, type NodeView } from '../api';
+import { api, type HubIdentity, type JoinCode, type NodeLink, type NodeView } from '../api';
 import { ago, attempt, badge, button, card, empty, field, input, modal, select, table, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
@@ -31,6 +32,11 @@ function cids(n: NodeView): string {
   return n.cid_count > 0 ? `${n.cid_base}–${n.cid_base + n.cid_count - 1}` : '—';
 }
 
+/** The CID range this node's agents hold in the network it joined, first to last. */
+function linkCids(c: NodeLink['cids']): string {
+  return c && c.count > 0 ? `${c.base}–${c.base + c.count - 1}` : '—';
+}
+
 /** cpus · memory GiB · host, as the node reported them. */
 function machineText(m: NodeView['machine']): string {
   if (!m) return '—';
@@ -52,9 +58,11 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const nodesBody = h('div');
   const codesBody = h('div');
   const hubBody = h('div');
+  const linkBody = h('div.node-link');
   root.append(
     h('div.view-head.node-head', null, h('h1', null, 'Nodes'), button('Add a node', () => openAdd(), { kind: 'primary' })),
     card('Machines in this plaza', nodesBody, { flush: true }),
+    card('Join another network', linkBody),
     card('Join codes', codesBody, { flush: true }),
     card('This hub', hubBody),
   );
@@ -65,6 +73,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let nodes: NodeView[] | null = null;
   let codes: JoinCode[] | null = null;
   let hub: HubIdentity | null = null;
+  let link: NodeLink | null = null;
   // The countdown in the open dialog, and the dialog's closer.
   let tick: number | undefined;
   let closeOpen: (() => void) | null = null;
@@ -90,19 +99,22 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   const load = async (): Promise<void> => {
-    const [n, c, id] = await Promise.all([
+    const [n, c, id, ln] = await Promise.all([
       api.nodes().catch(() => null),
       api.joinCodes().catch(() => null),
       api.hubIdentity().catch(() => null),
+      api.nodeLink().catch(() => null),
     ]);
     if (!alive) return;
     nodes = n;
     codes = c;
     hub = id;
+    link = ln;
     ready = true;
     renderNodes();
     renderCodes();
     renderHub();
+    renderLink();
   };
 
   const drain = async (n: NodeView): Promise<void> => {
@@ -179,7 +191,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         ? empty('alert', 'Could not load the machines.')
         : nodes.length
           ? table(columns, nodes, undefined, (n) => n.id)
-          : empty('link', 'No machines yet.'),
+          : empty('link', 'No machines yet', 'Add a node here to bring a machine into this network, or join this hub to another network below.'),
     );
   };
 
@@ -257,6 +269,113 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         null,
         button('Cancel', () => close()),
         button('Rotate', () => void rotate(slot), { kind: 'danger' }),
+      ),
+    );
+  };
+
+  // ---- Join another network: this hub lends its machine to that network ----
+
+  const linkLede = h(
+    'p.node-link-lede',
+    null,
+    "Make this hub's machine a node of another network: it lends its machine to that network's agents. Its own plaza keeps running.",
+  );
+  const joinCode = input({ placeholder: 'Paste the join code', maxlength: 200, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Join code', class: 'node-code' });
+  const joinError = h('p.error-text');
+  const joinButton = button('Join', () => void join(), { kind: 'primary' });
+  const joinPane = h(
+    'div.stack.node-link-join',
+    null,
+    field('Join code', joinCode, "Get a code from the other network's Nodes screen (Add a node)."),
+    h('div.node-buttons', null, joinButton),
+    joinError,
+  );
+  const joinedPane = h('div.stack');
+  linkBody.append(linkLede, joinPane, joinedPane);
+
+  const linkFacts = (l: NodeLink): HTMLElement =>
+    h(
+      'div.stack',
+      null,
+      h(
+        'dl.node-facts',
+        null,
+        h('dt', null, 'Hub'),
+        h('dd', null, l.hub ?? '—'),
+        h('dt', null, 'This node'),
+        h('dd', null, l.node_id ?? '—'),
+        h('dt', null, 'CIDs'),
+        h('dd', null, linkCids(l.cids)),
+        h('dt', null, 'Status'),
+        h('dd', null, badge(l.running ? 'running' : 'stopped', l.running ? 'ok' : 'muted', true), l.running && l.pid ? h('span.faint', null, ` pid ${l.pid}`) : null),
+      ),
+      h('div.node-buttons', null, button('Leave', () => confirmLeave(), { kind: 'danger' })),
+    );
+
+  const renderLink = (): void => {
+    if (!ready) return;
+    const l = link;
+    if (!l) {
+      joinPane.hidden = true;
+      joinedPane.hidden = false;
+      replace(joinedPane, empty('alert', 'Could not load the network link.'));
+      return;
+    }
+    joinPane.hidden = l.joined;
+    joinedPane.hidden = !l.joined;
+    if (l.joined) replace(joinedPane, linkFacts(l));
+  };
+
+  const join = async (): Promise<void> => {
+    const code = joinCode.value.trim();
+    joinError.textContent = '';
+    if (!code) {
+      joinError.textContent = 'Paste the join code first.';
+      return;
+    }
+    joinButton.disabled = true;
+    try {
+      link = await api.joinNodeLink(code);
+      joinCode.value = '';
+      toast('Joined the network');
+      renderLink();
+    } catch (err) {
+      joinError.textContent = err instanceof Error ? err.message : String(err);
+      void load();
+    } finally {
+      joinButton.disabled = false;
+    }
+  };
+
+  const leave = async (forget: boolean): Promise<void> => {
+    const status = await attempt(() => api.leaveNodeLink(forget), 'Left the network');
+    if (!status) return;
+    link = status;
+    renderLink();
+  };
+
+  const confirmLeave = (): void => {
+    const forget = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    const close = show(
+      'Leave this network?',
+      h(
+        'div.stack',
+        null,
+        h('p', null, 'This node stops lending its machine to that network, and its agents there go offline.'),
+        h('label.node-forget', null, forget, h('span', null, 'Forget this network: remove the saved hub, so joining again needs a new code.')),
+        h(
+          'div.node-buttons',
+          null,
+          button('Cancel', () => close()),
+          button(
+            'Leave',
+            () => {
+              close();
+              void leave(forget.checked);
+            },
+            { kind: 'danger' },
+          ),
+        ),
       ),
     );
   };

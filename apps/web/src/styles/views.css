@@ -63,3 +63,9 @@
 .dec-track { height: 8px; background: var(--surface-3); border: 1px solid var(--border); }
 .dec-fill { display: block; height: 100%; background: var(--text); }
 .dec-pct { text-align: right; font-size: var(--fs-xs); }
+
+/* nodes: join another network */
+.node-link [hidden] { display: none; }
+.node-link-lede { margin: 0 0 var(--s3); max-width: 72ch; font-family: var(--serif); font-size: 16px; line-height: 1.55; color: var(--ink-2); }
+.node-link-join .node-code { width: 100%; font-family: var(--mono); }
+.node-forget { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--fs-sm); }
