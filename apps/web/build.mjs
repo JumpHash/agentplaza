@@ -10,7 +10,7 @@
 // same file names, so `npm run build` twice produces an identical dist.
 
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, copyFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -21,6 +21,12 @@ const dist = join(root, 'dist');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
+// The fonts (assets/fonts, OFL) sit at the root of dist too: noded serves bare file names only.
+const fontsDir = join(root, '../../assets/fonts');
+for (const file of readdirSync(fontsDir).filter((f) => f.endsWith('.ttf'))) {
+  copyFileSync(join(fontsDir, file), join(dist, file));
+}
+
 const result = await esbuild.build({
   entryPoints: [join(root, 'src/main.ts')],
   bundle: true,
@@ -29,6 +35,8 @@ const result = await esbuild.build({
   target: ['es2022'],
   format: 'esm',
   outdir: dist,
+  // The @font-face urls name the copied font files; leave them as written.
+  external: ['*.ttf'],
   entryNames: '[name]-[hash]',
   metafile: true,
   logLevel: 'silent',

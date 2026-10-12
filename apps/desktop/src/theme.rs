@@ -38,12 +38,13 @@ pub const HOVER: Color = Color::from_rgb8(0xe6, 0xea, 0xe2);
 /// the bounded region reads as bounded without becoming a filled block.
 pub const SUBSTRATE: Color = Color::from_rgb8(0xee, 0xf1, 0xe9);
 
-/// The monospace voice: ids, states, counts, serial.
-pub const MONO: Font = Font::MONOSPACE;
+/// The monospace voice: ids, states, counts, serial. Martian Mono, embedded by
+/// the console (`console::run`).
+pub const MONO: Font = Font::with_name("Martian Mono");
 
-/// The serif voice: prose and the sheet's lede. Falls back to the default face
-/// on a host without DejaVu Serif.
-pub const SERIF: Font = Font::with_name("DejaVu Serif");
+/// The serif voice: prose and the sheet's lede. Source Serif 4, embedded by the
+/// console (`console::run`).
+pub const SERIF: Font = Font::with_name("Source Serif 4");
 
 /// How a stamp reads: what colour it is pressed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

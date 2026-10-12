@@ -161,6 +161,13 @@ pub fn run() -> iced::Result {
         .title(|_: &Console| "AgentPlaza".to_string())
         .theme(|_: &Console| crate::theme::theme())
         .subscription(subscription)
+        // The register's faces (assets/fonts, SIL OFL 1.1): embedded, so the app needs no install.
+        .font(include_bytes!("../../../../assets/fonts/MartianMono-Regular.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/MartianMono-Medium.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/MartianMono-Bold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Regular.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Semibold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Italic.ttf").as_slice())
         // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
         .window(iced::window::Settings {
             size: iced::Size::new(1360.0, 880.0),
