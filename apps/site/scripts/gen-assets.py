@@ -27,7 +27,7 @@ hive = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">{cells}<pat
 src = (ROOT / "apps/web/src/ui/brands.gen.ts").read_text()
 body = src[src.index("{", src.index("BRAND_ICONS")) : src.rindex("}") + 1]
 icons = json.loads(re.sub(r",\s*}", "}", body))
-WANT = ["anthropic", "openai", "google", "xai", "deepseek", "moonshot", "mistral", "openrouter", "perplexity",
+WANT = ["anthropic", "openai", "google", "xai", "deepseek", "zai", "moonshot", "mistral", "openrouter", "perplexity",
         "nvidia", "ollama", "lmstudio", "huggingface", "replicate", "elevenlabs", "cloudflare", "github"]
 symbols = []
 for key in WANT:

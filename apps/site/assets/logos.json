@@ -19,6 +19,10 @@
   "title": "DeepSeek",
   "hex": "#5786FE"
  },
+ "zai": {
+  "title": "Z.ai",
+  "hex": "#2D2D2D"
+ },
  "moonshot": {
   "title": "Moonshot AI",
   "hex": "#000000"

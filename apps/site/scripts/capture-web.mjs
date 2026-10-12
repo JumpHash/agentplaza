@@ -1,16 +1,15 @@
 #!/usr/bin/env node
-// Captures the console for the site: screenshots of screens and a short recording of the floor,
-// through a headless Chromium driven over the DevTools protocol (no extra packages).
+// Captures the console's screens for the site, through a headless Chromium driven over the
+// DevTools protocol (no extra packages). Motion for the site comes from the desktop app itself.
 //
 //   node apps/site/scripts/capture-web.mjs --base http://127.0.0.1:7700 --out apps/site/assets \
-//        [--screens floor,agents,society,board,nodes] [--record floor:12] [--wait 6] [--css '…']
+//        [--screens floor,agents/209,board] [--wait 6] [--css '…']
 //
-// Screens are the console's hash routes (`#/floor`). The recording is rendered frame by frame on
-// virtual time and encoded by ffmpeg to VP9 WebM. Point it at a plaza held by STOP ALL: it only reads.
+// Screens are the console's hash routes (`#/floor`, `#/agents/209`). Point it at a plaza held by STOP ALL: it only reads.
 // `--css` is injected into every page; the default hides the hold's banner and buttons, so the
 // pictures show the console as it looks while the plaza runs.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +20,6 @@ const args = Object.fromEntries(
 const BASE = args.base ?? 'http://127.0.0.1:7700';
 const OUT = args.out ?? 'apps/site/assets';
 const SCREENS = (args.screens ?? 'floor,agents,society,board,nodes').split(',').filter(Boolean);
-const RECORD = args.record ?? 'floor:12';
 const WAIT = Number(args.wait ?? 6);
 const CSS = args.css ?? '.held-banner, .plaza-control { display: none !important; }';
 const W = 1600, H = 1000, SCALE = 2;
@@ -87,41 +85,8 @@ async function open(screen) {
 for (const screen of SCREENS) {
   await open(screen);
   const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-  writeFileSync(join(OUT, `capture-${screen}.png`), Buffer.from(data, 'base64'));
-  console.log(`capture-${screen}.png`);
-}
-
-if (RECORD) {
-  // Frame by frame on virtual time: the page's clock advances exactly 1/FPS per frame and each
-  // frame is captured whole, so a slow (software) renderer still yields a smooth, real-time video.
-  const [screen, secs] = RECORD.split(':');
-  const FPS = 30;
-  const total = Math.round(Number(secs || 12) * FPS);
-  const frames = mkdtempSync(join(tmpdir(), 'apz-frames-'));
-  await open(screen);
-  await send('Emulation.setVirtualTimePolicy', { policy: 'pause' });
-  for (let n = 0; n < total; n++) {
-    const expired = new Promise((r) => {
-      const l = (msg) => {
-        if (msg.method === 'Emulation.virtualTimeBudgetExpired') {
-          listeners.splice(listeners.indexOf(l), 1);
-          r();
-        }
-      };
-      listeners.push(l);
-    });
-    await send('Emulation.setVirtualTimePolicy', { policy: 'advance', budget: 1000 / FPS });
-    await expired;
-    const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: 94 });
-    writeFileSync(join(frames, `f${String(n).padStart(5, '0')}.jpg`), Buffer.from(data, 'base64'));
-    if (n % FPS === 0) process.stdout.write(`\r  frame ${n}/${total}`);
-  }
-  process.stdout.write('\n');
-  const out = join(OUT, `capture-${screen}.webm`);
-  const enc = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', join(frames, 'f%05d.jpg'),
-    '-vf', `scale=${W}:-2:flags=lanczos`, '-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '33', '-row-mt', '1', '-pix_fmt', 'yuv420p', '-an', out], { stdio: 'inherit' });
-  rmSync(frames, { recursive: true, force: true });
-  console.log(enc.status === 0 ? `capture-${screen}.webm (${total} frames, ${FPS} fps)` : 'ffmpeg failed');
+  writeFileSync(join(OUT, `capture-${screen.replaceAll('/', '-')}.png`), Buffer.from(data, 'base64'));
+  console.log(`capture-${screen.replaceAll('/', '-')}.png`);
 }
 
 ws.close();

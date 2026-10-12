@@ -146,7 +146,7 @@ export async function attempt<T>(action: () => Promise<T>, success?: string): Pr
 // ---- Brand logos -----------------------------------------------------------
 
 const MONOGRAMS: Record<string, string> = {
-  zai: 'Z', groq: 'Gq', together: 'Tg', fireworks: 'Fw', cerebras: 'Cb', llamacpp: 'll', mock: 'M',
+  groq: 'Gq', together: 'Tg', fireworks: 'Fw', cerebras: 'Cb', llamacpp: 'll', mock: 'M',
 };
 
 /** A provider's logo tile: the brand mark in its colour, or a monogram. */

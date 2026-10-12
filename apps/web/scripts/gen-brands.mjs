@@ -8,7 +8,7 @@ import { writeFileSync } from 'node:fs';
 // Our brand key → simple-icons export name.
 const map = {
   anthropic: 'siAnthropic', openai: 'siOpenai', google: 'siGooglegemini', aws: 'siAmazonaws',
-  azure: 'siMicrosoftazure', xai: 'siX', deepseek: 'siDeepseek', moonshot: 'siMoonshotai', mistral: 'siMistralai',
+  azure: 'siMicrosoftazure', xai: 'siX', deepseek: 'siDeepseek', zai: 'siZdotai', moonshot: 'siMoonshotai', mistral: 'siMistralai',
   openrouter: 'siOpenrouter', perplexity: 'siPerplexity', nvidia: 'siNvidia', ollama: 'siOllama',
   lmstudio: 'siLmstudio', vllm: 'siVllm', huggingface: 'siHuggingface',
   // External-tool connectors (Firecrawl, Higgsfield and Magnific have no simple-icons entry: monograms).

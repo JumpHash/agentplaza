@@ -215,8 +215,8 @@ pub fn presets() -> Vec<Preset> {
           "Reasoning content is replayed, which DeepSeek requires once tools are in use. Effort goes out as reasoning_effort.")
             .with(&["deepseek-flash", "deepseek-v4-pro"], serde_json::json!({"replay_reasoning": true, "reasoning_effort": true})),
         p("zai", OpenAiCompatible, "Z.ai GLM", "zai", Some("https://api.z.ai/api/paas/v4"), env("ZAI_API_KEY"),
-          "Coding-plan keys use https://api.z.ai/api/coding/paas/v4.")
-            .with(&["glm-5.3"], Value::Null),
+          "Coding-plan keys use https://api.z.ai/api/coding/paas/v4. Effort goes out as reasoning_effort.")
+            .with(&["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5v-turbo"], serde_json::json!({"reasoning_effort": true})),
         p("moonshot", OpenAiCompatible, "Moonshot Kimi", "moonshot", Some("https://api.moonshot.ai/v1"), env("MOONSHOT_API_KEY"),
           "Mainland China accounts use https://api.moonshot.cn/v1.")
             .with(&["kimi-k3"], Value::Null),
