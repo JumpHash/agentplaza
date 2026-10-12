@@ -4,7 +4,9 @@
 # CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
 # request builds); it also runs by hand.
 # Where: the org's self-hosted Windows runner (x64). arm64 is cross-compiled there: its tests are
-# built, not run, and its MSI is not installed. Speed: cargo's build directory persists on the
+# built, not run, and its MSI is not installed. That needs LLVM (ring builds its arm64 code with
+# clang) and Visual Studio's "MSVC v143 ARM64 build tools" on the runner, so the arm64 leg runs
+# only when the repository variable APZ_WINDOWS_ARM64 is `on`; without it a release ships x64. Speed: cargo's build directory persists on the
 # runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest.
 name: windows
 
@@ -44,11 +46,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { arch: x64, triple: x86_64-pc-windows-msvc, garch: x86_64, run_tests: true,
-              bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmctl" }
-          - { arch: arm64, triple: aarch64-pc-windows-msvc, garch: "", run_tests: false,
-              bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop" }
+        arch: ${{ fromJSON(vars.APZ_WINDOWS_ARM64 == 'on' && '["x64","arm64"]' || '["x64"]') }}
+    # Per architecture: the target, the guest (x64 carries the VM node and the x86_64 guest),
+    # whether its tests can run here, and the binaries it ships.
+    env:
+      TRIPLE: ${{ matrix.arch == 'x64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}
+      GARCH: ${{ matrix.arch == 'x64' && 'x86_64' || '' }}
+      BINS: >-
+        -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop
+        ${{ matrix.arch == 'x64' && '-p noded -p vsockd -p vmctl' || '' }}
     runs-on: [self-hosted, Windows, X64, hetzner]
     # A cold build directory compiles everything once on the runner's 4 cores; after that a run
     # rebuilds only what changed. A hung test is killed by nextest after 2 minutes.
@@ -61,31 +67,31 @@ jobs:
       - name: The runner's build directory
         run: echo "CARGO_TARGET_DIR=$(cygpath -m "$USERPROFILE")/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ matrix.triple }}" }
+        with: { targets: "${{ env.TRIPLE }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: nextest }
       - name: Test (the guest harness runs only inside Linux VMs)
-        if: matrix.run_tests
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ matrix.triple }}
+        if: matrix.arch == 'x64'
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }}
       - name: Build the tests (arm64 cannot run here)
-        if: ${{ !matrix.run_tests }}
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ matrix.triple }} --no-run
+        if: matrix.arch != 'x64'
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }} --no-run
       - name: Build the binaries
         if: inputs.package
-        run: cargo build --release --locked --target ${{ matrix.triple }} ${{ matrix.bins }}
+        run: cargo build --release --locked --target ${{ env.TRIPLE }} ${{ env.BINS }}
       - name: The guest (cached by guest.yml; built on Linux)
-        if: inputs.package && matrix.garch != ''
+        if: inputs.package && env.GARCH != ''
         uses: actions/cache/restore@v4
         with:
-          path: target/guest/${{ matrix.garch }}
-          key: "guest-${{ matrix.garch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+          path: target/guest/${{ env.GARCH }}
+          key: "guest-${{ env.GARCH }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
           enableCrossOsArchive: true
       - name: Stage
         if: inputs.package
         env:
           # A hand-run package (no release job built the guest) may go without it.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
-        run: packaging/scripts/stage.sh ${{ matrix.triple }} "$CARGO_TARGET_DIR/${{ matrix.triple }}/release" stage "$VERSION"
+        run: packaging/scripts/stage.sh ${{ env.TRIPLE }} "$CARGO_TARGET_DIR/${{ env.TRIPLE }}/release" stage "$VERSION"
       - uses: actions/setup-dotnet@v4
         if: inputs.package
         with: { dotnet-version: 8.0.x }

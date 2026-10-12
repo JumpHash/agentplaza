@@ -27,7 +27,8 @@ permissions:
 
 # The release's critical path: guest (seconds on a cache hit) → the platform jobs (test and
 # package in one build each, in parallel across the org's self-hosted Linux, Windows and Mac
-# runners) → publish. macOS may be switched off (APZ_MACOS=off): the release then ships without it.
+# runners) → publish. macOS may be switched off (APZ_MACOS=off), and Windows arm64 is on only with
+# APZ_WINDOWS_ARM64=on (its runner needs LLVM and the VS ARM64 tools): a release ships without them.
 jobs:
   version:
     runs-on: [self-hosted, Linux, X64, hetzner]
@@ -111,6 +112,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with: { path: out-windows-x64, key: "pkg-windows-x64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
       - uses: actions/cache/restore@v4
+        if: vars.APZ_WINDOWS_ARM64 == 'on'
         with: { path: out-windows-arm64, key: "pkg-windows-arm64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
       - name: CI image
         run: .github/ci/image.sh
