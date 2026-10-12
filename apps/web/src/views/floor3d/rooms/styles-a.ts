@@ -42,6 +42,7 @@ export const STYLES_A: Record<string, RoomStyle> = {
       const gear = new THREE.Group();
       gear.position.set(0, 1.0, 0);
       stand.add(gear);
+      gear.userData.dynamic = true;
       room.cyl(gear, 0.38, 0.38, 0.12, k.gold, 0, -0.06, 0, 24).rotation.x = Math.PI / 2;
       for (let i = 0; i < 10; i++) {
         const a = (i / 10) * Math.PI * 2;
@@ -74,6 +75,7 @@ export const STYLES_A: Record<string, RoomStyle> = {
       room.cyl(bench, 0.05, 0.05, 0.14, k.info, 0.6, 1.16, 0, 10);
       const bubbles: THREE.Mesh[] = [];
       for (let i = 0; i < 3; i++) bubbles.push(room.ball(bench, 0.04, k.white, 0.6, 1.3, 0));
+      for (const b of bubbles) b.userData.dynamic = true; // they drift and shrink
       room.anim.push((t) => bubbles.forEach((b, i) => {
         const p = (t * 0.6 + i / 3) % 1;
         b.position.set(0.6 + Math.sin(p * 9 + i) * 0.04, 1.3 + p * 0.5, 0);
@@ -85,16 +87,18 @@ export const STYLES_A: Record<string, RoomStyle> = {
       room.cyl(light, 0.05, 0.05, 1.3, k.metal, 0, 0, 0, 8);
       room.box(light, 0.3, 0.75, 0.25, k.dark, 0, 1.3, 0);
       const lamps = [k.glowRed, k.glowWarm, k.glowOk].map((m, i) => room.ball(light, 0.08, m, 0, 1.88 - i * 0.22, 0.13));
+      for (const l of lamps) l.userData.dynamic = true; // visibility cycles
       room.anim.push((t) => lamps.forEach((l, i) => (l.visible = Math.floor(t / 1.5) % 3 === i)));
 
       // A test rig: a cube on a pedestal under a scanner arch.
       const rig = room.item(-s + 0.8, 0.2);
       room.cyl(rig, 0.35, 0.4, 0.3, k.metal, 0, 0, 0, 20);
       const cube = room.box(rig, 0.25, 0.25, 0.25, k.accent, 0, 0.42, 0);
+      cube.userData.dynamic = true;
       room.anim.push((t) => (cube.rotation.y = t));
       for (const x of [-0.35, 0.35]) room.box(rig, 0.06, 1.0, 0.06, k.dark, x, 0.3, 0);
       room.box(rig, 0.76, 0.06, 0.12, k.dark, 0, 1.3, 0);
-      room.box(rig, 0.5, 0.02, 0.06, k.glowOk, 0, 1.28, 0);
+      room.box(rig, 0.5, 0.02, 0.06, k.glowOk, 0, 1.28, 0).userData.dynamic = true; // its glow colour is animated
 
       room.desk(s - 1.0, s - 0.9, -Math.PI / 2);
       room.plant(-s + 0.5, s - 0.5, 0.8);

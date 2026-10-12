@@ -15,6 +15,7 @@ export const STYLES_C: Record<string, RoomStyle> = {
       const { k } = room;
       // A big telescope on a splayed tripod: the whole scope sweeps slowly and the tube nods.
       const scope = room.item(0, -2.4);
+      scope.userData.dynamic = true; // the whole scope sweeps; its tube nods
       room.cyl(scope, 0.2, 0.2, 0.05, k.dark, 0, 0, 0, 16);
       for (let i = 0; i < 3; i++) {
         const a = (i / 3) * Math.PI * 2;
@@ -61,6 +62,7 @@ export const STYLES_C: Record<string, RoomStyle> = {
       const globe = new THREE.Group();
       globe.position.set(0, 1.3, 0);
       globeStand.add(globe);
+      globe.userData.dynamic = true;
       room.ball(globe, 0.4, k.blue, 0, 0, 0);
       room.ball(globe, 0.16, k.green, 0.2, 0.1, 0.32);
       room.ball(globe, 0.13, k.green, -0.25, -0.12, 0.25);
@@ -121,6 +123,7 @@ export const STYLES_C: Record<string, RoomStyle> = {
         const w = new THREE.Group();
         w.position.set(x, 0.07, z);
         cart.add(w);
+        w.userData.dynamic = true;
         room.cyl(w, 0.07, 0.07, 0.04, k.dark, 0, -0.02, 0, 10).rotation.z = Math.PI / 2;
         wheels.push(w);
       }
@@ -163,6 +166,7 @@ export const STYLES_C: Record<string, RoomStyle> = {
       ];
       for (const [x, y, m] of notes) room.box(kb, 0.42, 0.18, 0.02, m, x, y, 0.05);
       const mover = room.box(kb, 0.42, 0.18, 0.02, k.gold, -0.62, 0.96, 0.06);
+      mover.userData.dynamic = true;
       const path = [-0.62, 0, 0.62, 0];
       room.anim.push((t) => {
         const p = (t * 0.2) % 4;
@@ -203,6 +207,7 @@ export const STYLES_C: Record<string, RoomStyle> = {
         const flag = new THREE.Group();
         flag.position.set(0, y, 0);
         pole.add(flag);
+        flag.userData.dynamic = true;
         room.box(flag, 0.36, 0.2, 0.02, m, 0.2, -0.1, 0);
         room.anim.push((t) => (flag.rotation.y = Math.sin(t * 1.5 + y * 2) * 0.35));
       }
@@ -244,6 +249,7 @@ export const STYLES_C: Record<string, RoomStyle> = {
       const glass = new THREE.Group();
       glass.position.set(0, 1.5, 0);
       mag.add(glass);
+      glass.userData.dynamic = true;
       const rim = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.06, 12, 32), k.gold);
       rim.castShadow = true;
       glass.add(rim);

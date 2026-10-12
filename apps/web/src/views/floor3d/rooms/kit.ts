@@ -105,7 +105,8 @@ export class Room {
     this.box(it, 0.08, 0.5, 0.5, wood, 0.42, 0, 0);
     this.box(it, 0.3, 0.02, 0.18, metal, 0, 0.56, -0.12);
     this.box(it, 0.07, 0.18, 0.05, metal, 0, 0.58, -0.12);
-    this.box(it, 0.62, 0.38, 0.04, screen, 0, 0.74, -0.14);
+    // The monitor lights up while agents work (its emissive is animated).
+    this.box(it, 0.62, 0.38, 0.04, screen, 0, 0.74, -0.14).userData.dynamic = true;
     this.chair(0, 0.55, Math.PI, it);
     return it;
   }
