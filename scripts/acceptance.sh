@@ -10,7 +10,7 @@
 # plus the guest images (target/guest/initrd.x86_64.gz), so build the workspace
 # first:
 #
-#   cargo build --workspace && scripts/mk-initrd-x86_64.sh
+#   cargo build --workspace && scripts/mk-initrd.sh
 #
 # The budgets suite's `--workspace` cells additionally need the base image of
 # the guests' writable workspace volume (target/guest/workspace.ext4); the

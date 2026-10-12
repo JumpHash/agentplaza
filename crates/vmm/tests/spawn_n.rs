@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Two more tests use the guest userspace built by
-//! `scripts/mk-initrd-x86_64.sh` and skip unless their initramfs is named:
+//! `scripts/mk-initrd.sh` and skip unless their initramfs is named:
 //!
 //! * `kill_stops_a_halted_vm` needs `APZ_VMM_HALT_INITRD` (a guest whose
 //!   `PID 1` parks forever, `plaza.halt=1`), and
@@ -55,7 +55,7 @@ fn image_from_env(name: &str) -> Option<PathBuf> {
 ///
 /// `cargo test` gives the test binary the *crate* directory as its working
 /// directory, while the paths an operator sets have been written from the
-/// workspace root (`scripts/mk-initrd-x86_64.sh` builds
+/// workspace root (`scripts/mk-initrd.sh` builds
 /// `target/guest/initrd.x86_64.gz` there), so a relative path is tried from
 /// both. A path that exists in neither is passed on as it was given, so the
 /// failure names the file the operator asked for.

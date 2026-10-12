@@ -243,7 +243,7 @@ def _workspace_image(ctx) -> tuple[Path | None, str | None]:
     Returns ``(image, None)`` or ``(None, reason)``. The ``conversation`` tool
     appends to the agent's own ``/workspace/messages.log`` and the dispatcher's
     drive writes into the guest's ``/workspace``, and a guest mounts that volume
-    only when the VMM gave it a block device (``scripts/mk-initrd-x86_64.sh``'s
+    only when the VMM gave it a block device (``scripts/mk-initrd.sh``'s
     ``mount_workspace``) — so a fleet booted without ``noded --workspace`` has
     no volume and both answer ``unavailable``. The builder is the repository's
     own ``scripts/mk-workspace-image.sh`` (the budgets suite's), run with the cwd

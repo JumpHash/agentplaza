@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds a minimal x86_64 guest initramfs for the AgentPlaza VMM demo: a static
+# Builds the AgentPlaza guest initramfs for one architecture (x86_64 or aarch64): a static
 # PID 1 that mounts the pseudo-filesystems, prints a heartbeat to the serial
 # console every 5 s and accepts simple commands over the serial console.
 #
@@ -77,14 +77,32 @@
 # Without flags the guest heartbeats and serves commands forever
 # (console=ttyS0 gives PID 1 stdin/stdout on the serial line).
 #
-# Output: target/guest/initrd.x86_64.gz   (usage: vmctl --initrd <path> [--console])
+# Usage:  scripts/mk-initrd.sh [x86_64|aarch64]   (default: this machine's architecture)
+# Output: target/guest/initrd.<arch>.gz   (usage: vmctl --initrd <path> [--console])
 #         (the workspace image itself is built by scripts/mk-workspace-image.sh
 #          and handed to the VMM with --workspace)
 #
 # Env overrides: APZ_HARNESS_BIN=/path/to/agent-harness  skip the cargo build.
-#                APZ_KERNEL_RELEASE=7.2.9-arch1-1  take the guest's modules from
+#                APZ_GUEST_MODULES=builtin  the guest kernel has every driver built
+#                in (scripts/mk-guest-kernel.sh, the packaged guest): no modules.
+#                APZ_GUEST_MODULES=host (default)  the guest boots the host's own
+#                kernel, so its virtio modules come from the host:
+#                APZ_KERNEL_RELEASE=7.2.9-arch1-1  take them from
 #                /lib/modules/<release> (default: the running kernel, uname -r).
+#                APZ_BUSYBOX=/path/to/busybox  the agent's shell (default: the
+#                first busybox for <arch> found on this machine).
+#                CROSS_COMPILE=aarch64-linux-gnu-  build init for another arch.
 set -eu
+
+arch="${1:-$(uname -m)}"
+case "$arch" in
+    x86_64|amd64) arch=x86_64 ;;
+    aarch64|arm64) arch=aarch64 ;;
+    *) echo "mk-initrd: unknown architecture $arch (x86_64 or aarch64)" >&2; exit 1 ;;
+esac
+host_arch="$(uname -m)"
+[ "$host_arch" = arm64 ] && host_arch=aarch64
+modules_mode="${APZ_GUEST_MODULES:-host}"
 
 out_dir="target/guest"
 root="$out_dir/initroot"
@@ -107,125 +125,135 @@ mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root" "$root/lib/modules"
 # volume right after loading the modules.
 # ---------------------------------------------------------------------------
 modules_dir="$root/lib/modules"
-want="vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport virtio_mmio"
-
-if [ ! -r "$mod_root/modules.dep" ]; then
-    echo "mk-initrd: $mod_root/modules.dep not found: cannot resolve the guest's virtio modules" >&2
+if [ "$modules_mode" = builtin ]; then
+    # Every driver is built into the guest kernel: nothing to load.
+    : > "$modules_dir/load-order"
+    echo "guest modules: none (the guest kernel has its drivers built in)"
+elif [ "$arch" != "$host_arch" ]; then
+    echo "mk-initrd: a $arch guest cannot borrow this $host_arch host's modules; use APZ_GUEST_MODULES=builtin with the guest kernel" >&2
     exit 1
-fi
+else
+    modules_dir="$root/lib/modules"
+    want="vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport virtio_mmio"
 
-# A kernel feature is either built in (no module to load) or a module that must
-# load before the guest can use it. `modules.builtin` lists the built-ins by
-# path, so an entry ending in `/<name>.ko` is exactly that feature.
-for feature in virtio_blk ext4; do
-    if grep -q "/${feature}\.ko\$" "$mod_root/modules.builtin" 2>/dev/null; then
-        echo "guest kernel feature: $feature is built in"
-    else
-        echo "guest kernel feature: $feature is a module; adding it to the load order"
-        want="$want $feature"
+    if [ ! -r "$mod_root/modules.dep" ]; then
+        echo "mk-initrd: $mod_root/modules.dep not found: cannot resolve the guest's virtio modules" >&2
+        exit 1
     fi
-done
 
-# The balloon driver, optional. noded boots the agent VMs with a balloon
-# (--agents-balloon-mib), so a guest that has the driver can hand its unused
-# pages back and grow later. Built in: nothing to load. A module: it joins the
-# load order with the virtio modules it stands on (the ones that are modules; a
-# built-in one needs no entry). Neither: skipped with a message, and the build
-# goes on - the balloon is then inert in the guest.
-if grep -q "/virtio_balloon\.ko\$" "$mod_root/modules.builtin" 2>/dev/null; then
-    echo "guest kernel feature: virtio_balloon is built in"
-elif grep -q "/virtio_balloon\.ko\(\.zst\)\?:" "$mod_root/modules.dep" 2>/dev/null; then
-    balloon_wanted="virtio_balloon"
-    for dep in virtio virtio_ring; do
-        if grep -q "/${dep}\.ko\(\.zst\)\?:" "$mod_root/modules.dep" 2>/dev/null; then
-            balloon_wanted="$balloon_wanted $dep"
+    # A kernel feature is either built in (no module to load) or a module that must
+    # load before the guest can use it. `modules.builtin` lists the built-ins by
+    # path, so an entry ending in `/<name>.ko` is exactly that feature.
+    for feature in virtio_blk ext4; do
+        if grep -q "/${feature}\.ko\$" "$mod_root/modules.builtin" 2>/dev/null; then
+            echo "guest kernel feature: $feature is built in"
+        else
+            echo "guest kernel feature: $feature is a module; adding it to the load order"
+            want="$want $feature"
         fi
     done
-    echo "guest kernel feature: virtio_balloon is a module; adding it to the load order"
-    want="$want $balloon_wanted"
-else
-    echo "mk-initrd: skipping virtio_balloon: not built in and not in $mod_root/modules.dep (the guest's balloon stays inert)"
-fi
 
-order=$(awk -v want="$want" -v dep_file="$mod_root/modules.dep" '
-function visit(m,   k, j, d) {
-    if (state[m] == 2) return
-    if (state[m] == 1) { print "mk-initrd: module dependency cycle at " m > "/dev/stderr"; bad = 1; return }
-    state[m] = 1
-    k = split(dep[m], d, " ")
-    for (j = 1; j <= k; j++) if (d[j] != "") visit(d[j])
-    state[m] = 2
-    printf "%s\n", found[m]
-}
-BEGIN {
-    n = split(want, w, " ")
-    for (i = 1; i <= n; i++) wanted[w[i]] = 1
-}
-{
-    path = $0
-    sub(/:.*/, "", path)
-    base = path
-    sub(/.*\//, "", base)
-    sub(/\.ko(\.zst)?$/, "", base)
-    if (!(base in wanted)) next
-    found[base] = path
-    count = split(substr($0, length(path) + 2), d, " ")
-    for (i = 1; i <= count; i++) {
-        if (d[i] == "") continue
-        db = d[i]
-        sub(/.*\//, "", db)
-        sub(/\.ko(\.zst)?$/, "", db)
-        if (db in wanted) dep[base] = dep[base] " " db
+    # The balloon driver, optional. noded boots the agent VMs with a balloon
+    # (--agents-balloon-mib), so a guest that has the driver can hand its unused
+    # pages back and grow later. Built in: nothing to load. A module: it joins the
+    # load order with the virtio modules it stands on (the ones that are modules; a
+    # built-in one needs no entry). Neither: skipped with a message, and the build
+    # goes on - the balloon is then inert in the guest.
+    if grep -q "/virtio_balloon\.ko\$" "$mod_root/modules.builtin" 2>/dev/null; then
+        echo "guest kernel feature: virtio_balloon is built in"
+    elif grep -q "/virtio_balloon\.ko\(\.zst\)\?:" "$mod_root/modules.dep" 2>/dev/null; then
+        balloon_wanted="virtio_balloon"
+        for dep in virtio virtio_ring; do
+            if grep -q "/${dep}\.ko\(\.zst\)\?:" "$mod_root/modules.dep" 2>/dev/null; then
+                balloon_wanted="$balloon_wanted $dep"
+            fi
+        done
+        echo "guest kernel feature: virtio_balloon is a module; adding it to the load order"
+        want="$want $balloon_wanted"
+    else
+        echo "mk-initrd: skipping virtio_balloon: not built in and not in $mod_root/modules.dep (the guest's balloon stays inert)"
+    fi
+
+    order=$(awk -v want="$want" -v dep_file="$mod_root/modules.dep" '
+    function visit(m,   k, j, d) {
+        if (state[m] == 2) return
+        if (state[m] == 1) { print "mk-initrd: module dependency cycle at " m > "/dev/stderr"; bad = 1; return }
+        state[m] = 1
+        k = split(dep[m], d, " ")
+        for (j = 1; j <= k; j++) if (d[j] != "") visit(d[j])
+        state[m] = 2
+        printf "%s\n", found[m]
     }
-}
-END {
-    for (m in found) {
-        visit(m)
-        if (bad) exit 1
+    BEGIN {
+        n = split(want, w, " ")
+        for (i = 1; i <= n; i++) wanted[w[i]] = 1
     }
-    for (m in wanted) {
-        if (!(m in found)) {
-            printf "mk-initrd: guest module %s is not in %s\n", m, dep_file > "/dev/stderr"
-            bad = 1
+    {
+        path = $0
+        sub(/:.*/, "", path)
+        base = path
+        sub(/.*\//, "", base)
+        sub(/\.ko(\.zst)?$/, "", base)
+        if (!(base in wanted)) next
+        found[base] = path
+        count = split(substr($0, length(path) + 2), d, " ")
+        for (i = 1; i <= count; i++) {
+            if (d[i] == "") continue
+            db = d[i]
+            sub(/.*\//, "", db)
+            sub(/\.ko(\.zst)?$/, "", db)
+            if (db in wanted) dep[base] = dep[base] " " db
         }
     }
-    if (bad) exit 1
-}
-' "$mod_root/modules.dep")
+    END {
+        for (m in found) {
+            visit(m)
+            if (bad) exit 1
+        }
+        for (m in wanted) {
+            if (!(m in found)) {
+                printf "mk-initrd: guest module %s is not in %s\n", m, dep_file > "/dev/stderr"
+                bad = 1
+            }
+        }
+        if (bad) exit 1
+    }
+    ' "$mod_root/modules.dep")
 
-: > "$modules_dir/load-order"
-for module in $order; do
-    name=${module##*/}
-    name=${name%.zst}
-    src="$mod_root/$module"
-    case "$name" in
-        *.ko) ;;
-        *)
-            echo "mk-initrd: $src is not a .ko file" >&2
-            exit 1
-            ;;
-    esac
-    case "$module" in
-        *.zst)
-            if ! command -v zstd >/dev/null 2>&1; then
-                echo "mk-initrd: $src is zstd-compressed and zstd is not installed" >&2
+    : > "$modules_dir/load-order"
+    for module in $order; do
+        name=${module##*/}
+        name=${name%.zst}
+        src="$mod_root/$module"
+        case "$name" in
+            *.ko) ;;
+            *)
+                echo "mk-initrd: $src is not a .ko file" >&2
                 exit 1
-            fi
-            zstd -q -d -c "$src" > "$modules_dir/$name"
-            ;;
-        *)
-            cp "$src" "$modules_dir/$name"
-            ;;
-    esac
-    printf '%s\n' "$name" >> "$modules_dir/load-order"
-done
+                ;;
+        esac
+        case "$module" in
+            *.zst)
+                if ! command -v zstd >/dev/null 2>&1; then
+                    echo "mk-initrd: $src is zstd-compressed and zstd is not installed" >&2
+                    exit 1
+                fi
+                zstd -q -d -c "$src" > "$modules_dir/$name"
+                ;;
+            *)
+                cp "$src" "$modules_dir/$name"
+                ;;
+        esac
+        printf '%s\n' "$name" >> "$modules_dir/load-order"
+    done
 
-echo "guest modules (load order):"
-sed 's/^/  /' "$modules_dir/load-order"
+    echo "guest modules (load order):"
+    sed 's/^/  /' "$modules_dir/load-order"
+fi
 
 # ---------------------------------------------------------------------------
 # The agent harness: the guest end of the plaza's core loop. Built for
-# x86_64-unknown-linux-gnu with +crt-static so the initramfs needs no dynamic
+# <arch>-unknown-linux-gnu with +crt-static so the initramfs needs no dynamic
 # loader and no shared libraries. The explicit --target matters: without it the
 # RUSTFLAGS reach the proc-macro crates too (serde_derive), which cannot be
 # built static.
@@ -233,8 +261,8 @@ sed 's/^/  /' "$modules_dir/load-order"
 harness="${APZ_HARNESS_BIN:-}"
 if [ -z "$harness" ]; then
     RUSTFLAGS="-C target-feature=+crt-static" \
-        cargo build --release -p agent-harness --target x86_64-unknown-linux-gnu
-    harness="target/x86_64-unknown-linux-gnu/release/agent-harness"
+        cargo build --release -p agent-harness --target "$arch-unknown-linux-gnu"
+    harness="target/$arch-unknown-linux-gnu/release/agent-harness"
 fi
 if [ ! -x "$harness" ]; then
     echo "mk-initrd: no agent harness binary at $harness" >&2
@@ -264,25 +292,44 @@ echo "agent harness: $harness -> /agent-harness"
 # symlinks to busybox, and only names `busybox --list` prints are linked.
 # /workspace is made by init (own_workspace), not here.
 # ---------------------------------------------------------------------------
-bb="/usr/lib/initcpio/busybox"
-if [ ! -x "$bb" ]; then
-    echo "mk-initrd: no busybox at $bb (the agent's shell needs it)" >&2
+# The first busybox for <arch> on this machine: Debian/Ubuntu's busybox-static
+# (/bin/busybox), Arch's initcpio busybox, or $APZ_BUSYBOX.
+case "$arch" in
+    x86_64) elf_arch="x86-64" ;;
+    aarch64) elf_arch="ARM aarch64" ;;
+esac
+bb=""
+for candidate in ${APZ_BUSYBOX:-} /bin/busybox /usr/bin/busybox /usr/lib/initcpio/busybox; do
+    [ -x "$candidate" ] || continue
+    if command -v file >/dev/null 2>&1 && ! file -bL "$candidate" | grep -q "$elf_arch"; then
+        continue
+    fi
+    bb="$candidate"
+    break
+done
+if [ -z "$bb" ]; then
+    echo "mk-initrd: no busybox for $arch (install busybox-static, or set APZ_BUSYBOX)" >&2
     exit 1
 fi
 mkdir -p "$root/bin" "$root/etc" "$root/tmp"
 cp "$bb" "$root/bin/busybox"
 chmod 755 "$root/bin/busybox"
-libs="$(ldd "$bb" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' | sort -u)"
+libs="$(ldd "$bb" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' | sort -u)"
 for lib in $libs; do
     mkdir -p "$root$(dirname "$lib")"
     cp -L "$lib" "$root$lib"
 done
-applets="$("$bb" --list)"
+applets="$("$bb" --list 2>/dev/null || true)"
+if [ -z "$applets" ]; then
+    # A busybox for another architecture cannot run here to list its applets: link the
+    # usual set and let busybox report a missing one at run time.
+    echo "mk-initrd: cannot run $bb here to list its applets; linking the usual set" >&2
+fi
 for applet in sh ash cat ls cp mv rm mkdir rmdir touch echo printf grep sed awk \
     head tail wc sort uniq cut tr find xargs diff tee date sleep env pwd \
     basename dirname stat chmod test '[' true false gzip tar md5sum sha256sum \
     which seq expr; do
-    if printf '%s\n' "$applets" | grep -Fxq "$applet"; then
+    if [ -z "$applets" ] || printf '%s\n' "$applets" | grep -Fxq "$applet"; then
         ln -sf busybox "$root/bin/$applet"
     else
         echo "mk-initrd: busybox has no $applet applet; not linked" >&2
@@ -311,14 +358,17 @@ echo "agent shell: $bb -> /bin/busybox, $(ls "$root/bin" | wc -l) entries in /bi
 # the guest on the busybox root alone.
 # ---------------------------------------------------------------------------
 alpine_version="3.24.2"
-alpine_sha256="c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677"
-alpine_file="alpine-minirootfs-$alpine_version-x86_64.tar.gz"
+case "$arch" in
+    x86_64) alpine_sha256="c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677" ;;
+    aarch64) alpine_sha256="9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773" ;;
+esac
+alpine_file="alpine-minirootfs-$alpine_version-$arch.tar.gz"
 if [ "${APZ_NO_ALPINE:-0}" != "1" ]; then
     alpine_tar="${APZ_ALPINE_TARBALL:-$out_dir/$alpine_file}"
     if [ ! -f "$alpine_tar" ]; then
         echo "mk-initrd: fetching $alpine_file"
         curl -fsSL --max-time 120 -o "$alpine_tar.part" \
-            "https://dl-cdn.alpinelinux.org/alpine/v${alpine_version%.*}/releases/x86_64/$alpine_file"
+            "https://dl-cdn.alpinelinux.org/alpine/v${alpine_version%.*}/releases/$arch/$alpine_file"
         mv "$alpine_tar.part" "$alpine_tar"
     fi
     if [ -z "${APZ_ALPINE_TARBALL:-}" ]; then
@@ -336,7 +386,7 @@ fi
 # PID 1
 # ---------------------------------------------------------------------------
 cat > "$out_dir/init.c" <<'EOF'
-// Minimal static PID 1 for the AgentPlaza guest (x86_64). Public domain.
+// Minimal static PID 1 for the AgentPlaza guest (x86_64 and aarch64). Public domain.
 //
 // Mounts the pseudo-filesystems, beats a heartbeat to the serial console every
 // 5 s, serves the serial command loop and - when the kernel command line says
@@ -364,6 +414,7 @@ cat > "$out_dir/init.c" <<'EOF'
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -552,7 +603,10 @@ static void do_command(const char *cmd)
     } else if (!strcmp(cmd, "cpu")) {
         do_cpu();
     } else if (!strcmp(cmd, "uname")) {
-        put("Linux plaza-vm 7.2.8-arch1-2 #1 SMP PREEMPT_DYNAMIC x86_64\n");
+        struct utsname u;
+        if (uname(&u) == 0) {
+            put(u.sysname); put(" plaza-vm "); put(u.release); put(" "); put(u.machine); put("\n");
+        }
     } else if (!strcmp(cmd, "uptime")) {
         read_file_head("/proc/uptime", 1);
     } else if (!strcmp(cmd, "mem")) {
@@ -665,6 +719,11 @@ static void load_guest_modules(int verbose)
 {
     char params[256];
     char line[160];
+    // An empty load order: every driver is built into the kernel (the packaged
+    // guest, on x86_64 and aarch64 alike), so there is nothing to load.
+    struct stat order_st;
+    if (stat("/lib/modules/load-order", &order_st) == 0 && order_st.st_size == 0)
+        return;
     const int published = virtio_mmio_params(params, sizeof params);
     if (published <= 0) {
         if (verbose)
@@ -1083,10 +1142,10 @@ int main(void)
 }
 EOF
 
-gcc -static -Os -Wall -Wextra -o "$root/init" "$out_dir/init.c"
-strip "$root/init"
+"${CROSS_COMPILE:-}gcc" -static -Os -Wall -Wextra -o "$root/init" "$out_dir/init.c"
+"${CROSS_COMPILE:-}strip" "$root/init"
 
-(cd "$root" && find . | cpio -o -H newc --quiet) | gzip -9 > "$out_dir/initrd.x86_64.gz"
+(cd "$root" && find . | cpio -o -H newc --quiet) | gzip -9 > "$out_dir/initrd.$arch.gz"
 
-echo "built $out_dir/initrd.x86_64.gz"
-ls -la "$out_dir/initrd.x86_64.gz"
+echo "built $out_dir/initrd.$arch.gz"
+ls -la "$out_dir/initrd.$arch.gz"

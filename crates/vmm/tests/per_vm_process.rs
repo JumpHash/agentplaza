@@ -10,7 +10,7 @@
 // Skipped unless `APZ_VMM_SMOKE_KERNEL` names a bootable x86_64 kernel, because
 // the test needs `/dev/kvm` and a guest (the same gate `tests/spawn_n.rs`
 // uses). The guest userspace is the initramfs built by
-// `scripts/mk-initrd-x86_64.sh` (it carries `/agent-harness`), named by
+// `scripts/mk-initrd.sh` (it carries `/agent-harness`), named by
 // `APZ_VMM_HARNESS_INITRD` or taken from the repository's `target/guest/`.
 //
 // ```text
@@ -70,7 +70,7 @@ fn harness_initrd() -> Option<PathBuf> {
 
 /// Resolves an image path an operator set in the environment: a relative path
 /// is tried from the crate directory (a test binary's working directory) and
-/// then from the repository root (where `scripts/mk-initrd-x86_64.sh` writes),
+/// then from the repository root (where `scripts/mk-initrd.sh` writes),
 /// and the answer is canonicalised — a path with a `..` in it is refused by the
 /// jailer (its mirrors must stay inside the root), so the test must hand it a
 /// real path, exactly as a deployment would.

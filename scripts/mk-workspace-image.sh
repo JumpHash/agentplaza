@@ -7,7 +7,7 @@
 #
 # The volume is the only writable device a guest has. The guest's kernel and
 # root filesystem live in the read-only initramfs this repo also builds
-# (scripts/mk-initrd-x86_64.sh), and there is no NIC by design (plaza rule
+# (scripts/mk-initrd.sh), and there is no NIC by design (plaza rule
 # 0010), so `/workspace` is where an agent's work is written. The guest's init
 # mounts the volume at /workspace and `wspace <text>` appends to
 # /workspace/notes.txt there.

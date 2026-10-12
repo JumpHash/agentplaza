@@ -39,8 +39,12 @@ cargo test -p vmm -p noded -p vmctl -p vsockd -p agent-harness -p acpi_tables -p
 # The boot smoke (needs a guest kernel; any uncompressed x86_64 vmlinux works)
 APZ_VMM_SMOKE_KERNEL=/path/to/vmlinux cargo test -p vmm --test spawn_n
 
-# The guest initramfs (the harness rides inside it)
-sh scripts/mk-initrd-x86_64.sh
+# The guest the agents' VMs boot: a pinned LTS kernel with every driver built in, and the
+# initramfs (the harness rides inside it) -> target/guest/<arch>/{vmlinux,initrd.gz}
+# (packages ship these; noded finds them next to its binary)
+scripts/mk-guest.sh x86_64          # or aarch64 (natively, or with aarch64-linux-gnu-gcc)
+# Development against the host's own kernel and its modules instead:
+sh scripts/mk-initrd.sh
 
 # aarch64 (cross + qemu-user) and the macOS build check
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \

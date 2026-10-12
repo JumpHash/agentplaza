@@ -228,7 +228,7 @@ keepalive?, beats?, balloon_usable_mib?}`), `GET/DELETE /v1/runs/{id}`, `POST /v
 
 Agent fleet balloon: `noded --agents-balloon-mib N` (default 32) boots each agent VM with N MiB usable and a virtio balloon holding the rest of `--agents-memory-mib`, so the agent can grow to its full memory; `0`, or at least the memory, boots without one.
 
-Guest driver: `scripts/mk-initrd-x86_64.sh` puts the guest's `virtio_balloon` (with the virtio modules it needs) in the initramfs when the host kernel ships it as a module, and skips it with a message when the kernel builds it in or lacks it.
+Guest driver: `scripts/mk-initrd.sh` puts the guest's `virtio_balloon` (with the virtio modules it needs) in the initramfs when the host kernel ships it as a module, and skips it with a message when the kernel builds it in or lacks it.
 
 ## State
 

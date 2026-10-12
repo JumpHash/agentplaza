@@ -250,7 +250,7 @@ def _workspace_image(ctx) -> tuple[Path | None, str | None]:
     Returns ``(image, None)`` or ``(None, reason)``. The artifact read-through
     drives the guest's own ``write_file``/``read_file`` inside its ``/workspace``
     volume; the guest's init mounts that volume only when the VMM gave it a
-    block device (``scripts/mk-initrd-x86_64.sh``'s ``mount_workspace``), so a
+    block device (``scripts/mk-initrd.sh``'s ``mount_workspace``), so a
     fleet booted without ``noded --workspace`` has no volume and the file tools
     answer ``unavailable``. The builder is the repository's own
     ``scripts/mk-workspace-image.sh`` (the budgets suite's), run with the cwd at

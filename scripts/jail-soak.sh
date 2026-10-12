@@ -14,7 +14,7 @@
 #
 # Exit status: 0 survived with no refusal, 1 died or was refused, 2 the
 # environment is not ready (build the workspace first:
-# `cargo build --workspace && scripts/mk-initrd-x86_64.sh`).
+# `cargo build --workspace && scripts/mk-initrd.sh`).
 #
 # Env:
 #   APZ_SOAK_JAIL      the daemon's jail mode: kill (default), log or off
@@ -39,7 +39,7 @@ bin_dir="${APZ_SOAK_BIN:-target/debug}"
 
 for f in "$bin_dir/noded" "$bin_dir/vsockd" "$kernel" "$initrd"; do
     if [ ! -e "$f" ]; then
-        echo "jail-soak: missing $f (cargo build --workspace && scripts/mk-initrd-x86_64.sh)" >&2
+        echo "jail-soak: missing $f (cargo build --workspace && scripts/mk-initrd.sh)" >&2
         exit 2
     fi
 done

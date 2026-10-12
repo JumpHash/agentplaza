@@ -49,7 +49,7 @@ v2 adds, on the same port and framing (JSON lines):
 - The transcript lines stay: `[vsock->]` / `[vsock<-]` per frame, plus
   `agent-harness: role <role> accepted` and `agent-harness: heartbeat N`.
 
-## 3. The guest init (scripts/mk-initrd-x86_64.sh's init.c)
+## 3. The guest init (scripts/mk-initrd.sh's init.c)
 
 - `plaza.keepalive=1` sets `plaza.harness=1` implicitly.
 - In keepalive mode the init **does not reboot** when the harness exits: the
