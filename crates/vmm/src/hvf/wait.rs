@@ -319,14 +319,13 @@ mod tests {
         // is not serialized with that lock lands here and is gone, and the VM
         // then never stops: `kill` reports a timeout while `wait` blocks.
         let slot = Arc::new(WaitSlot::new(false));
+        // Hold the lock for the whole window — taken before the waker starts, so the wake cannot
+        // slip in first — then release it: the wake is deferred, not lost.
+        let guard = lock(&slot.state);
         let (finished, waker) = {
             let slot = Arc::clone(&slot);
             background(move || slot.wake())
         };
-
-        // Hold the lock for the whole window, then release it: the wake is
-        // deferred, not lost.
-        let guard = lock(&slot.state);
         assert!(
             finished.recv_timeout(NOT_YET).is_err(),
             "a wake must not run while the slot's lock is held"

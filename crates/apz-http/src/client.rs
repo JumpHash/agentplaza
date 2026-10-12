@@ -51,8 +51,7 @@ pub fn send_with(
 ) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
     let stream = connect(port, method, path, headers, body, timeout)?;
-    let socket = stream.try_clone()?;
-    read_reply(BufReader::new(Timed { stream, socket, deadline }))
+    read_reply(BufReader::new(Timed { stream, deadline }))
 }
 
 /// Reads one whole answer: the head, then a Content-Length body or everything to the close.
@@ -257,22 +256,39 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// A stream whose every read waits only for what is left of a deadline. `socket` is another handle
-/// on the same connection, whose read timeout is set before each read.
+/// A stream whose every read waits only for what is left of a deadline: the read timeout is set
+/// on the connection's own socket before each read. (Not on a `try_clone`d handle: on Windows a
+/// duplicated socket handle does not carry its timeout to the original, which would then block.)
 struct Timed<R> {
     stream: R,
-    socket: TcpStream,
     deadline: Instant,
 }
 
-impl<R: Read> Read for Timed<R> {
+/// The TCP socket under a stream, plain or TLS.
+trait Socket {
+    fn tcp(&self) -> &TcpStream;
+}
+
+impl Socket for TcpStream {
+    fn tcp(&self) -> &TcpStream {
+        self
+    }
+}
+
+impl<C> Socket for rustls::StreamOwned<C, TcpStream> {
+    fn tcp(&self) -> &TcpStream {
+        &self.sock
+    }
+}
+
+impl<R: Read + Socket> Read for Timed<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "the server did not answer in time");
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(timed_out());
         }
-        self.socket.set_read_timeout(Some(left))?;
+        self.stream.tcp().set_read_timeout(Some(left))?;
         self.stream.read(buf).map_err(|err| match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
             _ => err,
@@ -453,13 +469,11 @@ pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, t
     let wire = request_bytes(method, path, &host_header, &headers, body)?;
     if !tls {
         let stream = dial(&host, port, timeout)?;
-        let socket = stream.try_clone()?;
-        return exchange(stream, socket, deadline, &wire);
+        return exchange(stream, deadline, &wire);
     }
     let session = tls_session(target.pin, &host)?;
     let stream = dial(&host, port, timeout)?;
-    let socket = stream.try_clone()?;
-    exchange(rustls::StreamOwned::new(session, stream), socket, deadline, &wire)
+    exchange(rustls::StreamOwned::new(session, stream), deadline, &wire)
 }
 
 /// [`request`] with a JSON body and a JSON answer (Null when empty).
@@ -547,8 +561,8 @@ fn public_client_config() -> Arc<ClientConfig> {
 }
 
 /// Writes the request, then reads the answer through [`Timed`], bounded by `deadline`.
-fn exchange<S: Read + Write>(mut stream: S, socket: TcpStream, deadline: Instant, wire: &[u8]) -> io::Result<Reply> {
+fn exchange<S: Read + Write + Socket>(mut stream: S, deadline: Instant, wire: &[u8]) -> io::Result<Reply> {
     stream.write_all(wire)?;
     stream.flush()?;
-    read_reply(BufReader::new(Timed { stream, socket, deadline }))
+    read_reply(BufReader::new(Timed { stream, deadline }))
 }
