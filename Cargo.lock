@@ -172,6 +172,7 @@ dependencies = [
 name = "apz-http"
 version = "0.1.0"
 dependencies = [
+ "apz-trust",
  "rcgen",
  "rustls",
  "serde",

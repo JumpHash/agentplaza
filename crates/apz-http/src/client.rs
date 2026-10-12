@@ -4,8 +4,10 @@
 //! an answer that is not well-formed HTTP/1.x.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
+
+use rustls::pki_types::ServerName;
 
 use serde_json::Value;
 
@@ -47,7 +49,12 @@ pub fn send_with(
 ) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
     let stream = connect(port, method, path, headers, body, timeout)?;
-    let mut reader = BufReader::new(Timed { stream, deadline });
+    let socket = stream.try_clone()?;
+    read_reply(BufReader::new(Timed { stream, socket, deadline }))
+}
+
+/// Reads one whole answer: the head, then a Content-Length body or everything to the close.
+fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
     let (status, headers) = read_head(&mut reader)?;
     let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
     if header("transfer-encoding").is_some() {
@@ -58,7 +65,13 @@ pub fn send_with(
         .map(|length| length.parse::<usize>().map_err(|_| invalid(format!("Content-Length {length:?}"))))
         .transpose()?;
     let mut body = Vec::new();
-    reader.take(length.unwrap_or(MAX_BODY + 1).min(MAX_BODY + 1) as u64).read_to_end(&mut body)?;
+    match reader.take(length.unwrap_or(MAX_BODY + 1).min(MAX_BODY + 1) as u64).read_to_end(&mut body) {
+        // A TLS peer may close without its close_notify; a body with no length ends there too.
+        Err(err) if length.is_none() && err.kind() == io::ErrorKind::UnexpectedEof => {}
+        result => {
+            result?;
+        }
+    }
     if body.len() > MAX_BODY || length.is_some_and(|length| length != body.len()) {
         return Err(invalid(format!("the answer's body is {} bytes, not {length:?}", body.len())));
     }
@@ -171,7 +184,16 @@ fn connect(
     let mut stream = TcpStream::connect_timeout(&addr, timeout)
         .map_err(|err| io::Error::new(err.kind(), format!("cannot connect to {addr}: {err}")))?;
     stream.set_write_timeout(Some(timeout))?;
-    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+    let wire = request_bytes(method, path, &format!("127.0.0.1:{port}"), headers, body)?;
+    stream.write_all(&wire)?;
+    stream.flush()?;
+    Ok(stream)
+}
+
+/// The request's bytes: the request line, `Host`, `Connection: close`, the extra headers (a name
+/// with a colon or a line break, or a value with a line break, is refused), then a JSON body.
+fn request_bytes(method: &str, path: &str, host: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> io::Result<Vec<u8>> {
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     for (name, value) in headers {
         if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("header {name:?} has a line break or colon")));
@@ -184,9 +206,7 @@ fn connect(
     head.push_str("\r\n");
     let mut wire = head.into_bytes();
     wire.extend_from_slice(body.unwrap_or_default());
-    stream.write_all(&wire)?;
-    stream.flush()?;
-    Ok(stream)
+    Ok(wire)
 }
 
 /// The status code and the headers (names lower-cased).
@@ -235,20 +255,22 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// A stream whose every read waits only for what is left of a deadline.
-struct Timed {
-    stream: TcpStream,
+/// A stream whose every read waits only for what is left of a deadline. `socket` is another handle
+/// on the same connection, whose read timeout is set before each read.
+struct Timed<R> {
+    stream: R,
+    socket: TcpStream,
     deadline: Instant,
 }
 
-impl Read for Timed {
+impl<R: Read> Read for Timed<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "the server did not answer in time");
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(timed_out());
         }
-        self.stream.set_read_timeout(Some(left))?;
+        self.socket.set_read_timeout(Some(left))?;
         self.stream.read(buf).map_err(|err| match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
             _ => err,
@@ -263,6 +285,10 @@ mod tests {
     use std::net::TcpListener;
 
     fn server() -> crate::Handle {
+        serve(Server::bind(0).expect("an ephemeral port"))
+    }
+
+    fn serve(server: Server) -> crate::Handle {
         let router: Router<()> = Router::new()
             .post("/v1/echo/{name}", |_, request, params| {
                 let body: Value = request.json().unwrap_or(Value::Null);
@@ -275,7 +301,7 @@ mod tests {
                     sse.event("vm", r#"{"vm":0}"#)
                 })
             });
-        Server::bind(0).expect("an ephemeral port").spawn(move |request| router.handle(&(), request)).expect("serves")
+        server.spawn(move |request| router.handle(&(), request)).expect("serves")
     }
 
     #[test]
@@ -324,6 +350,61 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(listener);
     }
+
+    #[test]
+    fn a_target_over_plain_http_round_trips_json() {
+        let server = server();
+        let target = Target { base: format!("http://127.0.0.1:{}", server.port()), ..Target::default() };
+        let (status, body) = request_json(
+            &target,
+            "POST",
+            "/v1/echo/ada",
+            Some(&serde_json::json!({ "n": 1 })),
+            Duration::from_secs(5),
+        )
+        .expect("the server answers");
+        assert_eq!(status, 200);
+        assert_eq!(body, serde_json::json!({ "name": "ada", "body": { "n": 1 } }));
+        let missing = request(&target, "GET", "/nope", None, Duration::from_secs(5)).expect("answers");
+        assert_eq!(missing.status, 404);
+        let ftp = Target { base: "ftp://127.0.0.1:1".to_string(), ..Target::default() };
+        assert!(request(&ftp, "GET", "/", None, Duration::from_secs(5)).is_err());
+    }
+
+    /// An https server with a fresh self-signed certificate, and that certificate's pin.
+    fn tls_server() -> (crate::Handle, [u8; 32]) {
+        let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
+        let config = apz_trust::tls::server_config(&pair).expect("a server config");
+        let pin = apz_trust::tls::fingerprint(&pair.cert_pem).expect("a pin");
+        (serve(Server::bind(0).expect("an ephemeral port").tls(config)), pin)
+    }
+
+    #[test]
+    fn a_target_over_https_answers_to_the_pinned_certificate() {
+        let (server, pin) = tls_server();
+        let target =
+            Target { base: format!("https://localhost:{}", server.port()), pin: Some(pin), ..Target::default() };
+        let (status, body) = request_json(
+            &target,
+            "POST",
+            "/v1/echo/ada",
+            Some(&serde_json::json!({ "n": 1 })),
+            Duration::from_secs(5),
+        )
+        .expect("the server answers over TLS");
+        assert_eq!(status, 200);
+        assert_eq!(body, serde_json::json!({ "name": "ada", "body": { "n": 1 } }));
+    }
+
+    #[test]
+    fn a_target_over_https_with_a_wrong_or_no_pin_fails() {
+        let (server, _pin) = tls_server();
+        let base = format!("https://localhost:{}", server.port());
+        let wrong = Target { base: base.clone(), pin: Some([0; 32]), ..Target::default() };
+        assert!(request(&wrong, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
+        let unpinned = Target { base, pin: None, ..Target::default() };
+        assert!(request(&unpinned, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
+    }
 }
 
 /// Where a URL-based request goes: `http(s)://host:port` (a base, no path), the hub certificate's
@@ -339,11 +420,90 @@ pub struct Target {
 
 /// One request to `target.base + path`, over plain TCP (http) or pinned TLS (https). Same reply
 /// handling as [`send_with`] (no chunked bodies; Content-Length or read to close).
-pub fn request(_target: &Target, _method: &str, _path: &str, _body: Option<&[u8]>, _timeout: Duration) -> io::Result<Reply> {
-    Err(io::Error::other("contract: H2"))
+pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
+    let deadline = Instant::now() + timeout;
+    let (tls, host, port) = split_base(&target.base)?;
+    let host_header = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    let bearer = target.bearer.as_ref().map(|token| format!("Bearer {token}"));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(bearer) = &bearer {
+        headers.push(("Authorization", bearer.as_str()));
+    }
+    headers.extend(target.headers.iter().map(|(name, value)| (name.as_str(), value.as_str())));
+    let wire = request_bytes(method, path, &host_header, &headers, body)?;
+    if !tls {
+        let stream = dial(&host, port, timeout)?;
+        let socket = stream.try_clone()?;
+        return exchange(stream, socket, deadline, &wire);
+    }
+    let pin = target
+        .pin
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "https needs the hub's certificate pin"))?;
+    // The pin is the identity, so the name only has to be a valid one for the handshake.
+    let name = ServerName::try_from(host.clone())
+        .or_else(|_| ServerName::try_from("hub".to_string()))
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{host:?} as a TLS name: {err}")))?;
+    let session = rustls::ClientConnection::new(apz_trust::tls::pinned_client_config(pin), name)
+        .map_err(|err| io::Error::other(format!("TLS setup: {err}")))?;
+    let stream = dial(&host, port, timeout)?;
+    let socket = stream.try_clone()?;
+    exchange(rustls::StreamOwned::new(session, stream), socket, deadline, &wire)
 }
 
 /// [`request`] with a JSON body and a JSON answer (Null when empty).
-pub fn request_json(_target: &Target, _method: &str, _path: &str, _body: Option<&Value>, _timeout: Duration) -> io::Result<(u16, Value)> {
-    Err(io::Error::other("contract: H2"))
+pub fn request_json(target: &Target, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> io::Result<(u16, Value)> {
+    let bytes = body.map(|body| body.to_string().into_bytes());
+    let reply = request(target, method, path, bytes.as_deref(), timeout)?;
+    let value = if reply.body.is_empty() { Value::Null } else { reply.json()? };
+    Ok((reply.status, value))
+}
+
+/// Splits `http://host:port` or `https://host:port` (no path) into (is https, host without
+/// brackets, port). A missing port is 80 or 443.
+fn split_base(base: &str) -> io::Result<(bool, String, u16)> {
+    let bad = || io::Error::new(io::ErrorKind::InvalidInput, format!("{base:?} is not an http:// or https:// base of host:port"));
+    let (tls, rest) = match (base.strip_prefix("https://"), base.strip_prefix("http://")) {
+        (Some(rest), _) => (true, rest),
+        (None, Some(rest)) => (false, rest),
+        _ => return Err(bad()),
+    };
+    let (host, port) = match rest.strip_prefix('[') {
+        Some(v6) => {
+            let (host, after) = v6.split_once(']').ok_or_else(bad)?;
+            if after.is_empty() {
+                (host, "")
+            } else {
+                (host, after.strip_prefix(':').ok_or_else(bad)?)
+            }
+        }
+        None => rest.split_once(':').unwrap_or((rest, "")),
+    };
+    if host.is_empty() || host.contains('/') {
+        return Err(bad());
+    }
+    let port = if port.is_empty() { if tls { 443 } else { 80 } } else { port.parse::<u16>().map_err(|_| bad())? };
+    Ok((tls, host.to_string(), port))
+}
+
+/// A TCP connection to `host:port`, tried address by address; reads and writes time out after `timeout`.
+fn dial(host: &str, port: u16, timeout: Duration) -> io::Result<TcpStream> {
+    let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host} has no address"));
+    for addr in (host, port).to_socket_addrs()? {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(timeout))?;
+                stream.set_write_timeout(Some(timeout))?;
+                return Ok(stream);
+            }
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
+}
+
+/// Writes the request, then reads the answer through [`Timed`], bounded by `deadline`.
+fn exchange<S: Read + Write>(mut stream: S, socket: TcpStream, deadline: Instant, wire: &[u8]) -> io::Result<Reply> {
+    stream.write_all(wire)?;
+    stream.flush()?;
+    read_reply(BufReader::new(Timed { stream, socket, deadline }))
 }
