@@ -37,7 +37,8 @@ const side = (a: SocietyAgent): number => 46 + 12 * reputation(a);
 export function mount(root: HTMLElement): Cleanup {
   const graph = h('div.soc-graph');
   const aside = h('aside.soc-panel', { 'aria-label': 'Selected agent' });
-  root.append(h('div.view-head', null, h('h1', null, 'Society')), h('div.soc', null, graph, aside));
+  const soc = h('div.soc', null, graph, aside);
+  root.append(h('div.view-head', null, h('h1', null, 'Society')), soc);
   // Like the Floor, the Society fills the window and never scrolls the page.
   document.body.classList.add('floor-mode');
 
@@ -50,13 +51,14 @@ export function mount(root: HTMLElement): Cleanup {
   const render = (): void => {
     if (!loaded || !alive) return;
     const d = data;
-    if (!d) {
-      replace(graph, empty('alert', 'Could not load the society.'));
-      replace(aside);
+    // With no agents, one empty state replaces the two panels (and their borders).
+    if (d && !d.agents.length) {
+      replace(soc, empty('society', 'No agents yet', 'Spawn agents and they show up here, with what they think of one another.'));
       return;
     }
-    if (!d.agents.length) {
-      replace(graph, empty('agents', 'No agents yet.', 'Spawn some and they will show up here, knowing one another.'));
+    replace(soc, graph, aside);
+    if (!d) {
+      replace(graph, empty('alert', 'Could not load the society.'));
       replace(aside);
       return;
     }

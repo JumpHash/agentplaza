@@ -73,7 +73,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       pending,
       waiting.length
         ? waiting.map((a) => entry(a))
-        : empty('alert', 'Nothing is waiting.', 'Agents ask here before a change when their mode is Ask.'),
+        : empty('approval', 'Nothing is waiting', 'Agents ask here before acts that need your approval, and the orchestrator proposes new agents here.'),
     );
     replace(decided, past.length ? past.map((a) => row(a)) : h('p.approvals-none', null, 'No decisions yet.'));
   };

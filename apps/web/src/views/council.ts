@@ -31,7 +31,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     try {
       const motions = await api.motions();
       if (!alive) return;
-      replace(list, motions.length ? motions.map((m) => motionCard(m, () => void refresh())) : empty('council', 'No motions.'));
+      replace(list, motions.length ? motions.map((m) => motionCard(m, () => void refresh())) : empty('council', 'No motions', 'Council seats propose and vote on changes to how the plaza runs.'));
     } catch (err) {
       if (alive) replace(list, empty('alert', 'Council unreachable', err instanceof Error ? err.message : String(err)));
     }
