@@ -112,6 +112,9 @@ struct Agent<'a, S, W> {
     steers: Vec<(String, String)>,
     /// The operator asked for the work item in progress to be compressed.
     compress_requested: bool,
+    /// The conversation's size right after the last compression of this work item: an automatic
+    /// compression waits until it has grown by a quarter of `compress_at` since.
+    compressed_size: u64,
     /// Model calls the operator allowed beyond the profile's turn budget.
     extra_turns: u32,
 }
@@ -142,6 +145,7 @@ pub fn serve<S: Read + Write + ReadTimeout, W: Write>(
         cancelled: None,
         steers: Vec::new(),
         compress_requested: false,
+        compressed_size: 0,
         extra_turns: 0,
     };
     agent.clock = agent.threads.values().map(|thread| thread.at).max().unwrap_or(0);
@@ -343,6 +347,7 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         self.cancelled = None;
         self.steers.clear();
         self.compress_requested = false;
+        self.compressed_size = 0;
         self.extra_turns = 0;
         let result = self.drive(job.work, &profile, &mut messages);
         self.current = None;
@@ -382,7 +387,10 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
                     _ => messages.push(Message::user_text(note_text)),
                 }
             }
-            let auto = profile.compress_at > 0 && serialized_len(messages.as_slice()) as u64 > profile.compress_at;
+            let size = serialized_len(messages.as_slice()) as u64;
+            let auto = profile.compress_at > 0
+                && size > profile.compress_at
+                && size > self.compressed_size.saturating_add(profile.compress_at / 4);
             if self.compress_requested || auto {
                 let reason = if self.compress_requested { "asked" } else { "auto" };
                 self.compress_requested = false;
@@ -462,14 +470,28 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
         messages: &mut Vec<Message>,
         reason: &str,
     ) -> Result<(), Halt> {
-        let Some(cut) = compress_cut(messages.as_slice(), profile.keep_recent) else {
+        let budget = if profile.compress_at > 0 { (profile.compress_at / 2) as usize } else { usize::MAX };
+        let Some(cut) = compress_cut(messages.as_slice(), profile.keep_recent, budget) else {
             return Ok(());
         };
         if cut <= 1 {
             return Ok(());
         }
         let before = serialized_len(messages.as_slice()) as u64;
-        let mut transcript = String::new();
+        // The previous summary is folded into the new one, so the conversation carries exactly one.
+        let previous: Vec<String> = messages[0]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                Block::Text { text } if text.starts_with(SUMMARY_HEAD) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        messages[0].content.retain(|block| !matches!(block, Block::Text { text } if text.starts_with(SUMMARY_HEAD)));
+        let mut transcript = previous.join("\n");
+        if !transcript.is_empty() {
+            transcript.push('\n');
+        }
         for message in &messages[1..cut] {
             let role = if message.role == Role::User { "user" } else { "assistant" };
             for block in &message.content {
@@ -496,11 +518,11 @@ impl<S: Read + Write + ReadTimeout, W: Write> Agent<'_, S, W> {
             }
         };
         let summary = blocks_text(&response.content);
-        messages[0].content.push(Block::Text {
-            text: format!("Summary of the work so far (earlier turns were compressed):\n{summary}"),
-        });
+        messages[0].content.push(Block::Text { text: format!("{SUMMARY_HEAD}\n{summary}") });
         messages.drain(1..cut);
+        clip_old_results(messages);
         let after = serialized_len(messages.as_slice()) as u64;
+        self.compressed_size = after;
         note(self.log, &format!("agent-harness: work {work} compressed ({reason}): {before} -> {after} bytes"));
         self.say(&GuestMessage::Compressed {
             work,
@@ -661,18 +683,45 @@ fn serialized_len(messages: &[Message]) -> usize {
     serde_json::to_vec(messages).map_or(0, |bytes| bytes.len())
 }
 
-/// Where a compression cuts the conversation: the index of the `keep_recent`-th
-/// most recent assistant message (at least the latest), from which on the turns
-/// stay verbatim. None when there is no such message.
-fn compress_cut(messages: &[Message], keep_recent: u32) -> Option<usize> {
+/// The head of the one summary block a compressed conversation carries in its first message.
+const SUMMARY_HEAD: &str = "Summary of the work so far (earlier turns were compressed):";
+/// The most a tool result kept after a compression may hold, except in the latest turn.
+const KEPT_RESULT_BYTES: usize = 8 * 1024;
+
+/// Where a compression cuts the conversation: an assistant message from which on the turns
+/// stay verbatim. It starts at the `keep_recent`-th most recent assistant message (at least
+/// the latest) and moves later while the kept tail is larger than `budget` bytes, so a
+/// compression always brings the conversation well under its threshold. None when there is
+/// no such message (fewer assistant messages than `keep_recent`).
+fn compress_cut(messages: &[Message], keep_recent: u32, budget: usize) -> Option<usize> {
     let keep = keep_recent.max(1) as usize;
-    messages
+    let assistants: Vec<usize> = messages
         .iter()
         .enumerate()
-        .rev()
         .filter(|(_, message)| message.role == Role::Assistant)
-        .nth(keep - 1)
         .map(|(index, _)| index)
+        .collect();
+    let last = *assistants.last()?;
+    let mut position = assistants.len().checked_sub(keep)?;
+    while assistants[position] < last && serialized_len(&messages[assistants[position]..]) > budget {
+        position += 1;
+    }
+    Some(assistants[position])
+}
+
+/// Clips every tool result before the latest turn to KEPT_RESULT_BYTES: what was read long
+/// ago is in the summary; the latest results stay whole.
+fn clip_old_results(messages: &mut [Message]) {
+    let latest = messages.iter().rposition(|message| message.role == Role::Assistant).unwrap_or(0);
+    for message in &mut messages[..latest] {
+        for block in &mut message.content {
+            if let Block::ToolResult { content, .. } = block {
+                if content.len() > KEPT_RESULT_BYTES {
+                    *content = cap_output(content, KEPT_RESULT_BYTES);
+                }
+            }
+        }
+    }
 }
 
 /// The file, under the workspace's state directory, that holds the operator's
@@ -983,10 +1032,12 @@ mod tests {
         let user = || Message::user_text("u");
         let assistant = || Message::assistant(vec![Block::Text { text: "a".to_string() }]);
         let messages = vec![user(), assistant(), user(), assistant(), user()];
-        assert_eq!(compress_cut(&messages, 1), Some(3));
-        assert_eq!(compress_cut(&messages, 0), Some(3));
-        assert_eq!(compress_cut(&messages, 2), Some(1));
-        assert_eq!(compress_cut(&messages, 3), None);
+        assert_eq!(compress_cut(&messages, 1, usize::MAX), Some(3));
+        assert_eq!(compress_cut(&messages, 0, usize::MAX), Some(3));
+        assert_eq!(compress_cut(&messages, 2, usize::MAX), Some(1));
+        assert_eq!(compress_cut(&messages, 3, usize::MAX), None);
+        // A tight budget moves the cut later, keeping less, but always the latest turn.
+        assert_eq!(compress_cut(&messages, 2, 1), Some(3));
     }
 
     #[test]
