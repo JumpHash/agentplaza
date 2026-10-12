@@ -201,6 +201,14 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// The shown screen's own subscriptions: the Floor's animation frames while it is open.
+pub fn subscription(_screens: &Screens, id: &Id) -> iced::Subscription<Msg> {
+    match id {
+        Id::Floor => floor::subscription().map(Msg::Floor),
+        _ => iced::Subscription::none(),
+    }
+}
+
 pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg> {
     match id {
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
