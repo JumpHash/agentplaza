@@ -8,7 +8,8 @@
 //! * `GET /v1/runs/{id}` · `DELETE /v1/runs/{id}` — one run with its serial captures · kill it
 //! * `POST /v1/runs/{id}/input` — write to one VM's serial console
 //! * `POST /v1/runs/{id}/vms/{index}/memory` — resize one VM's balloon
-//! * `GET /v1/events` — SSE: `run`, `vm`, `serial`
+//! * `GET /v1/ws` — a WebSocket (`apz.noded.v1`): one text message per event,
+//!   `{"event":"run"|"vm"|"serial","data":{…}}`; read-only, no browsers
 //!
 //! With `--agents <roles manifest>` it also boots the role fleet at start:
 //! one long-lived, harnessed VM per role. The plaza itself (agents, tasks,
@@ -413,9 +414,19 @@ struct InputRequest {
 fn router() -> Router<Node> {
     Router::<Node>::new()
         .get("/v1/machine", |node, _, _| Response::json(200, &node.machine()))
-        .get("/v1/events", |node, _, _| {
-            let receiver = node.events().subscribe();
-            Response::sse(move |sse| events::stream(&receiver, sse))
+        .get("/v1/ws", |node, request, _| {
+            // Subscribed before the handshake answers, so no event between the
+            // 101 and the socket's first read is lost.
+            let subscription = node.events().subscribe();
+            apz_http::ws::accept(
+                request,
+                apz_http::ws::Origins::None,
+                Some("apz.noded.v1"),
+                apz_http::ws::Limits::default(),
+                move |mut socket| {
+                    let _ = events::ws_stream(&subscription, &mut socket);
+                },
+            )
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
         .get("/v1/runs", |node, _, _| list_runs(node))

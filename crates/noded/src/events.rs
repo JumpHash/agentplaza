@@ -4,25 +4,18 @@
 //! The node's event bus: the live half of the console's data layer.
 //!
 //! The registry publishes run and VM state transitions and each VM's serial
-//! deltas as they happen, to `GET /v1/events`, which streams every event to a
-//! connected console as server-sent events, so a console sees a run's life
-//! between its polls. Polling stays the source of truth for a full snapshot (a
-//! run's whole serial capture); the stream is the deltas.
+//! deltas as they happen, to `GET /v1/ws`, a WebSocket that sends every event
+//! to a connected client as one text message. The socket is read-only and no
+//! browser may open it (its origin policy refuses any `Origin` header). Polling
+//! stays the source of truth for a full snapshot (a run's whole serial
+//! capture); the stream is the deltas.
 //!
-//! The frames:
+//! The messages:
 //!
 //! ```text
-//! event: run
-//! data: {"id":"r1","state":"running"}
-//!
-//! event: vm
-//! data: {"run":"r1","vm":0,"state":"exited"}
-//!
-//! event: serial
-//! data: {"run":"r1","vm":0,"offset":120,"text":"[    0.000000] Linux version…"}
-//!
-//! : heartbeat
-//!
+//! {"event":"run","data":{"id":"r1","state":"running"}}
+//! {"event":"vm","data":{"run":"r1","vm":0,"state":"exited"}}
+//! {"event":"serial","data":{"run":"r1","vm":0,"offset":120,"text":"[    0.000000] Linux version…"}}
 //! ```
 //!
 //! `serial`'s `offset` is the byte offset the `text` starts at in the VM's
@@ -32,11 +25,22 @@
 //! capture is bounded (its head only), and so are the events: once the
 //! capture stops growing, no further `serial` events fire for it.
 
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-/// One event, as `GET /v1/events` frames it.
+use apz_http::ws::{Message, Socket};
+
+/// The events a socket may have queued before it is cut off (closed 1013):
+/// a client that cannot keep up loses its stream rather than growing the node.
+pub const QUEUE_BOUND: usize = 256;
+
+/// How long one wait for client data lasts before the queue is drained again,
+/// so an event reaches its socket within this.
+const TICK: Duration = Duration::from_millis(50);
+
+/// One event, as `GET /v1/ws` sends it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A run's state changed (or the run was registered, as `starting`).
@@ -58,7 +62,7 @@ pub enum Event {
 }
 
 impl Event {
-    /// The frame's one-line JSON `data`.
+    /// The message's `data`: one line of JSON.
     pub fn data(&self) -> String {
         match self {
             Event::Run { id, state } => {
@@ -85,7 +89,7 @@ impl Event {
         }
     }
 
-    /// The frame's `event` name.
+    /// The message's `event` name.
     pub fn kind(&self) -> &'static str {
         match self {
             Event::Run { .. } => "run",
@@ -94,9 +98,9 @@ impl Event {
         }
     }
 
-    /// The whole server-sent frame.
-    pub fn frame(&self) -> String {
-        format!("event: {}\ndata: {}\n\n", self.kind(), self.data())
+    /// The whole WebSocket text message: `{"event": kind, "data": data}`.
+    pub fn message(&self) -> String {
+        format!("{{\"event\":\"{}\",\"data\":{}}}", self.kind(), self.data())
     }
 }
 
@@ -114,7 +118,7 @@ fn quote(value: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             // Every other control character takes the short escape so no
-            // control byte ever reaches a frame line raw.
+            // control byte ever reaches a message raw.
             c if (c as u32) < 0x20 => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
@@ -125,19 +129,37 @@ fn quote(value: &str) -> String {
     out
 }
 
-/// How long a stream waits for an event before it writes a heartbeat
-/// comment, so a dead connection is noticed (the write fails) instead of
-/// sitting in the channel's wait forever.
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+/// One subscriber's end of the bus: its bounded queue, and the flag the bus
+/// raises when it cut the subscriber off for a full queue.
+#[derive(Debug)]
+pub struct Subscription {
+    events: Receiver<Event>,
+    overflowed: Arc<AtomicBool>,
+}
 
-/// The bus the registry publishes to and the events endpoint subscribes to.
+impl Subscription {
+    /// Whether the bus cut this subscriber off because its queue was full.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
+    }
+}
+
+/// The bus's side of one subscriber.
+#[derive(Debug)]
+struct Subscriber {
+    sender: SyncSender<Event>,
+    overflowed: Arc<AtomicBool>,
+}
+
+/// The bus the registry publishes to and the socket endpoint subscribes to.
 ///
 /// Publishing to a subscriber that went away fails silently and drops it, so
-/// a console that closed its stream never holds a slot; a bus with no
-/// subscribers publishes to nobody, which is a no-op.
+/// a socket that closed never holds a slot; a subscriber whose queue is full
+/// is cut off (dropped, and flagged). A bus with no subscribers publishes to
+/// nobody, which is a no-op.
 #[derive(Debug, Default)]
 pub struct EventBus {
-    subscribers: Mutex<Vec<Sender<Event>>>,
+    subscribers: Mutex<Vec<Subscriber>>,
 }
 
 impl EventBus {
@@ -146,35 +168,67 @@ impl EventBus {
         Arc::new(Self::default())
     }
 
-    /// Registers a subscriber and returns its receiving end.
-    pub fn subscribe(&self) -> Receiver<Event> {
-        let (sender, receiver) = std::sync::mpsc::channel();
+    /// Registers a subscriber with a queue of [`QUEUE_BOUND`] events.
+    pub fn subscribe(&self) -> Subscription {
+        let (sender, events) = sync_channel(QUEUE_BOUND);
+        let overflowed = Arc::new(AtomicBool::new(false));
         self.subscribers
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(sender);
-        receiver
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Subscriber {
+                sender,
+                overflowed: Arc::clone(&overflowed),
+            });
+        Subscription { events, overflowed }
     }
 
     /// Publishes one event to every subscriber, dropping the ones that went
-    /// away.
+    /// away and the ones whose queue is full.
     pub fn publish(&self, event: Event) {
         self.subscribers
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|sender| sender.send(event.clone()).is_ok());
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|subscriber| match subscriber.sender.try_send(event.clone()) {
+                Ok(()) => true,
+                // The flag is raised before the sender is dropped (the drop
+                // is what ends the subscription's queue).
+                Err(TrySendError::Full(_)) => {
+                    subscriber.overflowed.store(true, Ordering::Release);
+                    false
+                }
+                Err(TrySendError::Disconnected(_)) => false,
+            });
     }
 }
 
-/// Streams `receiver`'s events, with a heartbeat after every quiet
-/// [`HEARTBEAT_INTERVAL`], until the bus is dropped or a write fails (the
-/// console went away).
-pub fn stream(receiver: &Receiver<Event>, sse: &mut apz_http::Sse<'_>) -> std::io::Result<()> {
+/// Streams `subscription`'s events to `socket`, one text message each, until
+/// the bus is dropped (the node is shutting down: closed 1001), the subscriber
+/// is cut off for a full queue (closed 1013), or the socket ends. The stream
+/// is read-only: a data message from the client closes it (1008). Liveness is
+/// the socket's own: its pings, and the close of a peer that stopped answering.
+pub fn ws_stream(subscription: &Subscription, socket: &mut Socket) -> std::io::Result<()> {
     loop {
-        match receiver.recv_timeout(HEARTBEAT_INTERVAL) {
-            Ok(event) => sse.event(event.kind(), &event.data())?,
-            Err(RecvTimeoutError::Timeout) => sse.heartbeat()?,
-            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        if socket.recv(TICK)?.is_some() {
+            socket.close(1008, "this socket takes no messages");
+            return Ok(());
+        }
+        loop {
+            if subscription.overflowed() {
+                socket.close(1013, "the event queue is full");
+                return Ok(());
+            }
+            match subscription.events.try_recv() {
+                Ok(event) => socket.send(&Message::Text(event.message()))?,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    if subscription.overflowed() {
+                        socket.close(1013, "the event queue is full");
+                    } else {
+                        socket.close(1001, "the node is shutting down");
+                    }
+                    return Ok(());
+                }
+            }
         }
     }
 }
@@ -184,14 +238,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_frames_carry_their_events() {
+    fn the_messages_carry_their_events() {
         assert_eq!(
             Event::Run {
                 id: "r1".to_string(),
                 state: "running"
             }
-            .frame(),
-            "event: run\ndata: {\"id\":\"r1\",\"state\":\"running\"}\n\n"
+            .message(),
+            "{\"event\":\"run\",\"data\":{\"id\":\"r1\",\"state\":\"running\"}}"
         );
         assert_eq!(
             Event::Vm {
@@ -199,8 +253,8 @@ mod tests {
                 vm: 2,
                 state: "exited"
             }
-            .frame(),
-            "event: vm\ndata: {\"run\":\"r1\",\"vm\":2,\"state\":\"exited\"}\n\n"
+            .message(),
+            "{\"event\":\"vm\",\"data\":{\"run\":\"r1\",\"vm\":2,\"state\":\"exited\"}}"
         );
         assert_eq!(
             Event::Serial {
@@ -209,28 +263,30 @@ mod tests {
                 offset: 120,
                 text: "hello".to_string(),
             }
-            .frame(),
-            "event: serial\ndata: {\"run\":\"r1\",\"vm\":0,\"offset\":120,\"text\":\"hello\"}\n\n"
+            .message(),
+            "{\"event\":\"serial\",\"data\":{\"run\":\"r1\",\"vm\":0,\"offset\":120,\"text\":\"hello\"}}"
         );
     }
 
     #[test]
     fn guest_text_is_escaped_into_the_json_string() {
         // A quote, a backslash, a newline and a control byte: none of these
-        // may break out of the string or the frame.
-        let frame = Event::Serial {
+        // may break out of the string or the message.
+        let message = Event::Serial {
             run: "r1".to_string(),
             vm: 0,
             offset: 0,
             text: "a\"b\\c\nd\u{1}e".to_string(),
         }
-        .frame();
+        .message();
         assert!(
-            frame.contains("\"text\":\"a\\\"b\\\\c\\nd\\u0001e\""),
-            "the frame escapes the guest text: {frame}"
+            message.chars().all(|c| c as u32 >= 0x20),
+            "no control byte reaches the message raw: {message:?}"
         );
-        // Exactly one data line: no raw newline ever breaks the frame.
-        assert_eq!(frame.matches("data: ").count(), 1);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&message).expect("the message is one JSON document");
+        assert_eq!(parsed["event"], "serial");
+        assert_eq!(parsed["data"]["text"], "a\"b\\c\nd\u{1}e");
     }
 
     #[test]
@@ -245,7 +301,7 @@ mod tests {
             state: "starting",
         });
         assert_eq!(
-            live.recv_timeout(Duration::from_secs(1)),
+            live.events.recv_timeout(Duration::from_secs(1)),
             Ok(Event::Run {
                 id: "r1".to_string(),
                 state: "starting"
@@ -255,25 +311,48 @@ mod tests {
         assert_eq!(
             bus.subscribers
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .len(),
             1
+        );
+        assert!(!live.overflowed());
+    }
+
+    #[test]
+    fn a_full_queue_cuts_its_subscriber_off() {
+        let bus = EventBus::new();
+        let slow = bus.subscribe();
+        let event = || Event::Run {
+            id: "r1".to_string(),
+            state: "running",
+        };
+        for _ in 0..QUEUE_BOUND {
+            bus.publish(event());
+        }
+        assert!(!slow.overflowed(), "a queue that fits is not cut off");
+
+        bus.publish(event());
+        assert!(slow.overflowed(), "one event past the bound cuts it off");
+        assert_eq!(
+            bus.subscribers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            0
         );
     }
 
     #[test]
-    fn a_stream_ends_when_its_channel_ends() {
+    fn a_closed_bus_is_a_disconnect_not_an_overflow() {
         let bus = EventBus::new();
-        let receiver = bus.subscribe();
-        // Dropping the bus drops every sender, which is how a daemon's
-        // shutdown ends its streams.
+        let subscription = bus.subscribe();
+        // Dropping the bus drops every sender: how a daemon's shutdown ends
+        // its streams. That is not an overflow.
         drop(bus);
-        let mut out = Vec::new();
-        let response = apz_http::Response::sse(move |sse| stream(&receiver, sse));
-        assert!(response.write_to(&mut out).is_ok());
-        assert!(
-            out.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"),
-            "the stream head is written: {out:?}"
+        assert_eq!(
+            subscription.events.try_recv(),
+            Err(TryRecvError::Disconnected)
         );
+        assert!(!subscription.overflowed());
     }
 }
