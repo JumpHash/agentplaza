@@ -30,6 +30,8 @@ const VERDICT_MAX: usize = 1000;
 /// A verdict grows by one line per endorsing agent; past this, its oldest text goes.
 const VERDICT_KEEP: usize = 4000;
 const TAGS_MAX: usize = 8;
+/// The most characters of the owner's reason for flagging a discovery.
+pub const REASON_MAX: usize = 500;
 const KINDS: &[&str] = &["cli", "library", "service", "api", "technique"];
 
 /// One thing an agent found and judged: a CLI, a library, a service, an API or a technique.
@@ -285,13 +287,27 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
 
 impl Store {
     /// Removes a discovery (the owner). Err when there is none.
-    pub fn remove(&self, _id: &str) -> Result<Discovery, String> {
-        Err("not available yet".into()) // contract: T5
+    pub fn remove(&self, id: &str) -> Result<Discovery, String> {
+        let mut items = self.items.lock().map_err(|_| "the toolbox is locked".to_string())?;
+        let i = items.iter().position(|d| d.id == id).ok_or_else(|| format!("no discovery {id}"))?;
+        let removed = items.remove(i);
+        self.save(&items);
+        Ok(removed)
     }
 
-    /// Flags a discovery with the owner's reason, or clears the flag with None.
-    pub fn flag(&self, _id: &str, _reason: Option<String>) -> Result<Discovery, String> {
-        Err("not available yet".into()) // contract: T5
+    /// Flags a discovery with the owner's reason (trimmed), or clears the flag with None or a
+    /// blank reason. Err when there is no such discovery or the reason is over `REASON_MAX`.
+    pub fn flag(&self, id: &str, reason: Option<String>) -> Result<Discovery, String> {
+        let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+        if reason.as_deref().is_some_and(|r| r.chars().count() > REASON_MAX) {
+            return Err(format!("reason is over {REASON_MAX} characters"));
+        }
+        let mut items = self.items.lock().map_err(|_| "the toolbox is locked".to_string())?;
+        let d = items.iter_mut().find(|d| d.id == id).ok_or_else(|| format!("no discovery {id}"))?;
+        d.flagged = reason;
+        let flagged = d.clone();
+        self.save(&items);
+        Ok(flagged)
     }
 }
 
@@ -302,13 +318,38 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/toolbox/{id}/flag", flag_route)
 }
 
-fn remove_route(_app: &App, _: &Request, _p: &Params<'_>) -> Response {
-    Response::error(501, "contract: T5") // 200 with the removed item; publish "toolbox" on the bus
+/// The owner's body for a flag: `{reason: string | null}`; null or blank clears the flag.
+#[derive(Deserialize)]
+struct FlagBody {
+    reason: Option<String>,
 }
 
-/// Body `{reason: string | null}`; null clears the flag.
-fn flag_route(_app: &App, _: &Request, _p: &Params<'_>) -> Response {
-    Response::error(501, "contract: T5") // 200 with the item; publish "toolbox" on the bus
+fn remove_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    match app.toolbox.remove(p.get("id")) {
+        Ok(item) => {
+            app.bus.publish("toolbox", &item);
+            Response::json(200, &item)
+        }
+        Err(e) => Response::error(404, &e),
+    }
+}
+
+fn flag_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    let body: FlagBody = match req.json::<FlagBody>() {
+        Ok(body) => body,
+        Err(e) => return Response::error(400, &format!("bad body: {e}")),
+    };
+    if !app.toolbox.list().iter().any(|d| d.id == id) {
+        return Response::error(404, &format!("no discovery {id}"));
+    }
+    match app.toolbox.flag(id, body.reason) {
+        Ok(item) => {
+            app.bus.publish("toolbox", &item);
+            Response::json(200, &item)
+        }
+        Err(e) => Response::error(400, &e),
+    }
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
@@ -382,6 +423,25 @@ mod tests {
         let err = store.share(1, "alpha", &input("Dance", "dance")).unwrap_err();
         assert!(err.contains("kind"), "error names the field: {err}");
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn owner_flags_unflags_and_removes() {
+        let dir = temp_dir("owner");
+        let store = Store::load(&dir);
+        store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
+        let d = store.flag("d1", Some("  leaks keys  ".into())).unwrap();
+        assert_eq!(d.flagged.as_deref(), Some("leaks keys"), "reason is trimmed");
+        assert_eq!(Store::load(&dir).list()[0].flagged.as_deref(), Some("leaks keys"), "flag persists");
+        assert_eq!(store.flag("d1", Some("   ".into())).unwrap().flagged, None, "a blank reason clears");
+        store.flag("d1", Some("again".into())).unwrap();
+        assert_eq!(store.flag("d1", None).unwrap().flagged, None, "null clears");
+        assert!(store.flag("d1", Some("x".repeat(REASON_MAX + 1))).is_err(), "over 500 is refused");
+        assert_eq!(store.flag("d9", None).unwrap_err(), "no discovery d9");
+        assert_eq!(store.remove("d1").unwrap().name, "FFmpeg");
+        assert!(store.list().is_empty(), "removed from the list");
+        assert_eq!(Store::load(&dir).list().len(), 0, "removal persists");
+        assert_eq!(store.remove("d1").unwrap_err(), "no discovery d1");
     }
 
     #[test]
