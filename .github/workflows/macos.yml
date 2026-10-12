@@ -49,6 +49,25 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+      # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
+      # save theirs (the aarch64 guest) with zstd; without it here they are not found, and what
+      # this job saves is not found on Linux. Homebrew's if there, else built once into the cache.
+      - name: zstd
+        run: |
+          if ! command -v zstd >/dev/null; then
+            dir=$HOME/.cache/agentplaza-ci/zstd-1.5.7
+            if [ ! -x "$dir/zstd" ]; then
+              tmp=$(mktemp -d)
+              curl -fsSL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar -xz -C "$tmp"
+              make -s -C "$tmp/zstd-1.5.7/programs" zstd -j"$(sysctl -n hw.ncpu)"
+              mkdir -p "$dir" && cp "$tmp/zstd-1.5.7/programs/zstd" "$dir/"
+              rm -rf "$tmp"
+            fi
+            echo "$dir" >> "$GITHUB_PATH"
+            "$dir/zstd" --version
+          else
+            zstd --version
+          fi
       - name: The runner's build directory
         run: echo "CARGO_TARGET_DIR=$HOME/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable

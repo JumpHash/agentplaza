@@ -64,6 +64,23 @@ jobs:
       # cache key guest.yml saved it under, and the shell scripts run as written.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
+      # save theirs (the guest) with zstd; without it here they are not found, and what this job
+      # saves is not found on Linux. Kept in the runner user's profile.
+      - name: zstd
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE '.cache\agentplaza-ci\zstd-1.5.7'
+          if (-not (Test-Path (Join-Path $dir 'zstd.exe'))) {
+            $zip = Join-Path $env:RUNNER_TEMP 'zstd.zip'
+            Invoke-WebRequest https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-v1.5.7-win64.zip -OutFile $zip
+            $tmp = Join-Path $env:RUNNER_TEMP 'zstd'
+            Expand-Archive $zip -DestinationPath $tmp -Force
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            Copy-Item (Join-Path $tmp 'zstd-v1.5.7-win64\zstd.exe') $dir
+          }
+          Add-Content $env:GITHUB_PATH $dir
+          & (Join-Path $dir 'zstd.exe') --version
       # The runner's user is not an administrator: everything lives in its profile, the build
       # directory (kept between runs) and .NET (for WiX) included.
       - name: The runner's build directory and .NET
