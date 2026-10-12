@@ -9,11 +9,13 @@
 //! agent's model calls go to. Its plain-HTTP requests are relayed to apid's
 //! gateway for the agent's CID ([`gateway`]); nothing is resolved for it.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,16 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 const COPY_BUF: usize = 16 * 1024;
+/// The gateway paths a guest may upgrade to a WebSocket (the model streaming paths).
+const UPGRADE_PATHS: &[&str] = &["/openai/v1/responses", "/anthropic/v1/messages"];
+/// Upgraded sockets one agent may hold open at once.
+const MAX_UPGRADES_PER_CID: usize = 4;
+/// How often a relayed WebSocket checks its idle and lifetime limits.
+const WS_POLL: Duration = Duration::from_secs(1);
+/// A relayed WebSocket with no bytes either way for this long is closed.
+const WS_IDLE: Duration = Duration::from_secs(120);
+/// A relayed WebSocket is closed after this long, whatever its traffic.
+const WS_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60);
 /// The destination whose plain-HTTP requests are relayed to apid's gateway.
 const GATEWAY_HOST: &str = "plaza.gateway";
 /// The only port the gateway answers on.
@@ -140,6 +152,8 @@ enum Stop {
     Forbidden,
     /// The destination did not resolve or did not accept the connection.
     Unreachable,
+    /// The agent already holds its maximum number of upgraded sockets.
+    TooMany,
 }
 
 impl Stop {
@@ -148,6 +162,7 @@ impl Stop {
             Stop::Bad => &b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
             Stop::Forbidden => &b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
             Stop::Unreachable => &b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+            Stop::TooMany => &b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
         }
     }
 }
@@ -300,6 +315,11 @@ fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: 
 /// streams apid's answer back unchanged. `request` is the method and the path
 /// (origin form); `head` and `rest` are the guest's head and the bytes after
 /// it. Nothing is written to the guest before apid is reached.
+///
+/// A WebSocket upgrade ([`is_websocket_upgrade`]) is checked against
+/// [`UPGRADE_PATHS`] and the per-CID cap first. When apid answers `101`, the
+/// tunnel is relayed both ways by [`pump_ws`]; any other answer is relayed as a
+/// normal response.
 fn gateway(
     guest: &mut UnixStream,
     cid: u32,
@@ -310,20 +330,26 @@ fn gateway(
     audit: &mut Audit,
 ) -> Result<(), Stop> {
     let (method, path) = request;
+    let upgrade = is_websocket_upgrade(method, head);
+    if upgrade && !upgrade_path_allowed(path) {
+        return Err(Stop::Forbidden);
+    }
+    // Held until the tunnel ends, so the cap counts open sockets, not requests.
+    let _slot = if upgrade { Some(UpgradeSlot::take(cid).ok_or(Stop::TooMany)?) } else { None };
     let token = apid.token().map_err(|_| Stop::Unreachable)?;
-    let upstream = apid.connect(CONNECT_TIMEOUT).map_err(|_| Stop::Unreachable)?;
+    let mut upstream = apid.connect(CONNECT_TIMEOUT).map_err(|_| Stop::Unreachable)?;
     guest.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
     upstream.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
 
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
-    let guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
+    let mut guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut upstream_write = upstream.try_clone().map_err(|_| Stop::Unreachable)?;
     let hangup = Arc::new((
         guest.try_clone().map_err(|_| Stop::Unreachable)?,
         upstream.try_clone().map_err(|_| Stop::Unreachable)?,
     ));
 
-    let out = gateway_head(method, cid, path, head, &token);
+    let out = gateway_head(method, cid, path, head, &token, upgrade);
     upstream_write.write_all(out.as_bytes()).map_err(|_| Stop::Unreachable)?;
     let mut sent = out.len() as u64;
     if upstream_write.write_all(&rest).is_ok() {
@@ -331,11 +357,144 @@ fn gateway(
     }
     audit.allowed = true;
 
+    let mut switched = false;
+    let mut answered = 0u64;
+    if upgrade {
+        let (answer, answer_rest) = read_head(&mut upstream).map_err(|_| Stop::Unreachable)?;
+        switched = answer.starts_with("HTTP/1.1 101 ");
+        answered = (answer.len() + answer_rest.len()) as u64;
+        let _ = guest_write.write_all(answer.as_bytes());
+        let _ = guest_write.write_all(&answer_rest);
+    }
+
+    if switched {
+        println!("vsockd: egress websocket cid={cid} path={} upgraded", path.split('?').next().unwrap_or(""));
+        guest.set_read_timeout(Some(WS_POLL)).map_err(|_| Stop::Unreachable)?;
+        upstream.set_read_timeout(Some(WS_POLL)).map_err(|_| Stop::Unreachable)?;
+        let clock = Arc::new(WsClock::new());
+        let up_clock = Arc::clone(&clock);
+        let up_hangup = Arc::clone(&hangup);
+        let up = thread::spawn(move || pump_ws(guest_read, upstream_write, &up_clock, &up_hangup));
+        audit.down = answered + pump_ws(upstream, guest_write, &clock, &hangup);
+        audit.up = sent + up.join().unwrap_or(0);
+        return Ok(());
+    }
+
     let up_hangup = Arc::clone(&hangup);
     let up = thread::spawn(move || pump(guest_read, upstream_write, &up_hangup));
-    audit.down = pump(upstream, guest_write, &hangup);
+    audit.down = answered + pump(upstream, guest_write, &hangup);
     audit.up = sent + up.join().unwrap_or(0);
     Ok(())
+}
+
+/// Whether a guest request asks for a WebSocket upgrade: a `GET` with
+/// `Upgrade: websocket`, a `Connection` header listing `upgrade`, and a
+/// `Sec-WebSocket-Key`.
+fn is_websocket_upgrade(method: &str, head: &str) -> bool {
+    if method != "GET" {
+        return false;
+    }
+    let (mut upgrade, mut connection, mut key) = (false, false, false);
+    for line in head.split("\r\n").skip(1).take_while(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "upgrade" => upgrade |= value.eq_ignore_ascii_case("websocket"),
+            "connection" => connection |= value.split(',').any(|item| item.trim().eq_ignore_ascii_case("upgrade")),
+            "sec-websocket-key" => key |= !value.is_empty(),
+            _ => {}
+        }
+    }
+    upgrade && connection && key
+}
+
+/// Whether an upgrade may go to this gateway path (the query string is ignored).
+fn upgrade_path_allowed(path: &str) -> bool {
+    UPGRADE_PATHS.contains(&path.split('?').next().unwrap_or(""))
+}
+
+/// One upgraded socket counted against its agent's cap. Dropping it frees the slot.
+#[derive(Debug)]
+struct UpgradeSlot(u32);
+
+/// Open upgraded sockets per CID, shared by every connection thread.
+static UPGRADES: Mutex<BTreeMap<u32, usize>> = Mutex::new(BTreeMap::new());
+
+impl UpgradeSlot {
+    /// A slot for `cid`, or `None` when it already holds [`MAX_UPGRADES_PER_CID`].
+    fn take(cid: u32) -> Option<Self> {
+        let mut open = UPGRADES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = open.entry(cid).or_insert(0);
+        if *count >= MAX_UPGRADES_PER_CID {
+            return None;
+        }
+        *count += 1;
+        Some(Self(cid))
+    }
+}
+
+impl Drop for UpgradeSlot {
+    fn drop(&mut self) {
+        let mut open = UPGRADES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = open.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                open.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// When a relayed WebSocket last carried bytes, shared by both of its pumps.
+struct WsClock {
+    start: Instant,
+    last_ms: AtomicU64,
+}
+
+impl WsClock {
+    fn new() -> Self {
+        Self { start: Instant::now(), last_ms: AtomicU64::new(0) }
+    }
+
+    fn touch(&self) {
+        self.last_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// True once the tunnel is past its lifetime or has been idle too long.
+    fn expired(&self) -> bool {
+        let now = self.start.elapsed();
+        let last = Duration::from_millis(self.last_ms.load(Ordering::Relaxed));
+        now >= WS_MAX_LIFETIME || now.saturating_sub(last) >= WS_IDLE
+    }
+}
+
+/// Copies one direction of a relayed WebSocket. The reads wake every
+/// [`WS_POLL`] so the clock is checked; a tunnel with bytes flowing either way
+/// keeps its idle timer reset. When this direction ends, both sockets are shut
+/// down so the other direction ends too. Returns the bytes copied.
+fn pump_ws(mut from: impl Read, mut to: impl Write, clock: &WsClock, hangup: &Arc<Hangup>) -> u64 {
+    use std::io::ErrorKind::{Interrupted, TimedOut, WouldBlock};
+    let mut buf = vec![0u8; COPY_BUF];
+    let mut total = 0u64;
+    while !clock.expired() {
+        match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if to.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+                clock.touch();
+                total += n as u64;
+            }
+            Err(err) if matches!(err.kind(), WouldBlock | TimedOut | Interrupted) => {}
+            Err(_) => break,
+        }
+    }
+    let _ = hangup.0.shutdown(Shutdown::Both);
+    let _ = hangup.1.shutdown(Shutdown::Both);
+    total
 }
 
 /// The head apid receives: the guest's head with its request line moved under
@@ -343,24 +502,29 @@ fn gateway(
 /// the guest listed in `Connection` dropped, the internal token added, and
 /// `Connection: close` so apid ends its answer when it is done. Framing headers
 /// (`Content-Length`, `Transfer-Encoding`) stay, because the body is relayed as bytes.
-fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str) -> String {
+/// For an `upgrade`, the `Upgrade` header stays and the connection is `Upgrade`
+/// instead of `close`, so apid can switch protocols.
+fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str, upgrade: bool) -> String {
     let lines: Vec<&str> = head.split("\r\n").skip(1).take_while(|line| !line.is_empty()).collect();
     let listed: Vec<String> = lines
         .iter()
         .filter_map(|line| line.split_once(':'))
         .filter(|(name, _)| name.trim().eq_ignore_ascii_case("connection"))
         .flat_map(|(_, value)| value.split(',').map(|item| item.trim().to_ascii_lowercase()))
+        .filter(|item| !(upgrade && item == "upgrade"))
         .collect();
     let mut out = format!("{method} /internal/v1/agents/{cid}/gateway{path} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
     for line in lines {
         let name = line.split_once(':').map_or(String::new(), |(name, _)| name.trim().to_ascii_lowercase());
-        if GATEWAY_DROPPED.contains(&name.as_str()) || listed.contains(&name) {
+        let kept_upgrade = upgrade && name == "upgrade";
+        if (GATEWAY_DROPPED.contains(&name.as_str()) && !kept_upgrade) || listed.contains(&name) {
             continue;
         }
         out.push_str(line);
         out.push_str("\r\n");
     }
-    out.push_str(&format!("{TOKEN_HEADER}: {token}\r\nConnection: close\r\n\r\n"));
+    let connection = if upgrade { "Upgrade" } else { "close" };
+    out.push_str(&format!("{TOKEN_HEADER}: {token}\r\nConnection: {connection}\r\n\r\n"));
     out
 }
 
@@ -554,7 +718,7 @@ mod tests {
                     Proxy-Connection: keep-alive\r\nConnection: keep-alive, X-Hop\r\nX-Hop: 1\r\n\
                     Keep-Alive: 5\r\nContent-Type: application/json\r\nContent-Length: 4\r\n\r\n";
         assert_eq!(
-            gateway_head("POST", 7, "/v1/messages?stream=1", head, "s3cret"),
+            gateway_head("POST", 7, "/v1/messages?stream=1", head, "s3cret", false),
             "POST /internal/v1/agents/7/gateway/v1/messages?stream=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\
              Content-Type: application/json\r\nContent-Length: 4\r\nx-apz-internal: s3cret\r\n\
              Connection: close\r\n\r\n"
@@ -623,6 +787,84 @@ mod tests {
         let audit = proxy.join().unwrap();
         let _ = std::fs::remove_file(&token_file);
         assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
+    }
+
+    #[test]
+    fn a_websocket_upgrade_to_a_model_path_is_relayed_and_bytes_flow_both_ways() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token_file = std::env::temp_dir().join(format!("vsockd-upgrade-test-{}", std::process::id()));
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let apid = Apid::new(&format!("http://127.0.0.1:{port}"), Some(token_file.clone())).unwrap();
+
+        // The stand-in for apid: checks the rewritten upgrade head, switches protocols,
+        // then echoes one message the other way.
+        let stand_in = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let (head, _) = read_head(&mut conn).unwrap();
+            assert!(head.starts_with("GET /internal/v1/agents/7/gateway/openai/v1/responses HTTP/1.1\r\n"), "{head}");
+            assert!(head.contains("\r\nx-apz-internal: test-token\r\n"), "{head}");
+            assert!(head.contains("\r\nUpgrade: websocket\r\n"), "{head}");
+            assert!(head.contains("\r\nConnection: Upgrade\r\n"), "{head}");
+            assert!(!head.to_ascii_lowercase().contains("authorization"), "{head}");
+            conn.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+            let mut ping = [0u8; 4];
+            conn.read_exact(&mut ping).unwrap();
+            assert_eq!(&ping, b"ping");
+            conn.write_all(b"pong").unwrap();
+        });
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let policy = Policy::new(vec![]);
+        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &apid));
+        client
+            .write_all(
+                b"GET http://plaza.gateway/openai/v1/responses HTTP/1.1\r\nHost: plaza.gateway\r\n\
+                  Authorization: Bearer guest\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\n\
+                  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            )
+            .unwrap();
+        let (switching, _) = read_head(&mut client).unwrap();
+        assert!(switching.starts_with("HTTP/1.1 101 "), "{switching}");
+        client.write_all(b"ping").unwrap();
+        let mut pong = Vec::new();
+        client.read_to_end(&mut pong).unwrap();
+        assert_eq!(pong, b"pong");
+
+        stand_in.join().unwrap();
+        let audit = proxy.join().unwrap();
+        let _ = std::fs::remove_file(&token_file);
+        assert!(audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80, "{audit:?}");
+    }
+
+    #[test]
+    fn an_upgrade_to_another_path_is_refused_without_contacting_apid() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let policy = Policy::new(vec![]);
+        // Apid is off: were the request sent on, the answer would be 502, not 403.
+        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &Apid::off()));
+        client
+            .write_all(
+                b"GET http://plaza.gateway/v1/messages HTTP/1.1\r\nHost: plaza.gateway\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .unwrap();
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer:?}");
+        let audit = proxy.join().unwrap();
+        assert!(!audit.allowed, "{audit:?}");
+    }
+
+    #[test]
+    fn a_fifth_upgraded_socket_for_one_agent_is_refused_with_429() {
+        const CID: u32 = 9_001;
+        let held: Vec<UpgradeSlot> = (0..MAX_UPGRADES_PER_CID).map(|_| UpgradeSlot::take(CID).unwrap()).collect();
+        assert!(UpgradeSlot::take(CID).is_none(), "the fifth socket must be refused");
+        assert!(UpgradeSlot::take(CID + 1).is_some(), "the cap is per agent");
+        drop(held);
+        assert!(UpgradeSlot::take(CID).is_some(), "a closed socket frees its slot");
+        assert!(Stop::TooMany.answer().starts_with(b"HTTP/1.1 429 "));
     }
 
     #[test]
