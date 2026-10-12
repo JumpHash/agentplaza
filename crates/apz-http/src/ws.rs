@@ -26,11 +26,10 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, ServerConnection, StreamOwned};
 use sha1::{Digest, Sha1};
 
-use crate::client::{Target, dial, read_head, split_base};
+use crate::client::{Target, dial, read_head, split_base, tls_session};
 use crate::{Body, Request, Response};
 
 /// The connection a socket runs on: plain TCP or TLS, both ways.
@@ -575,8 +574,8 @@ fn split_authority(authority: &str, default: u16) -> Option<(String, u16)> {
     }
 }
 
-/// The client side: opens `target.base + path` (ws over http, wss over pinned TLS, with the
-/// target's bearer and headers), sends the handshake with a random key and `protocol` if any, and
+/// The client side: opens `target.base + path` (ws over http, wss over TLS as [`Target`] says: pinned
+/// for the hub, CA-verified for a public host; with the target's bearer and headers), sends the handshake with a random key and `protocol` if any, and
 /// checks `101`, `Sec-WebSocket-Accept`, no extension and the protocol before returning the socket.
 pub fn connect(target: &Target, path: &str, protocol: Option<&str>, timeout: Duration, limits: Limits) -> io::Result<Socket> {
     let (tls, host, port) = split_base(&target.base)?;
@@ -609,15 +608,7 @@ pub fn connect(target: &Target, path: &str, protocol: Option<&str>, timeout: Dur
     head.push_str("\r\n");
 
     let mut stream: Box<dyn Duplex> = if tls {
-        let pin = target
-            .pin
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "wss needs the hub's certificate pin"))?;
-        // The pin is the identity, so the name only has to be a valid one for the handshake.
-        let name = ServerName::try_from(host.clone())
-            .or_else(|_| ServerName::try_from("hub".to_string()))
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{host:?} as a TLS name: {err}")))?;
-        let session = ClientConnection::new(apz_trust::tls::pinned_client_config(pin), name)
-            .map_err(|err| io::Error::other(format!("TLS setup: {err}")))?;
+        let session = tls_session(target.pin, &host)?;
         Box::new(StreamOwned::new(session, dial(&host, port, timeout)?))
     } else {
         Box::new(dial(&host, port, timeout)?)
@@ -975,6 +966,17 @@ mod tests {
             ..Target::default()
         };
         round_trip(&target);
+    }
+
+    #[test]
+    fn an_unpinned_wss_target_refuses_a_self_signed_certificate() {
+        // No pin means a public host: the Mozilla roots must sign the certificate, and a self-signed one is refused.
+        let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
+        let config = apz_trust::tls::server_config(&pair).expect("a server config");
+        let server = Server::bind(0).expect("bind").tls(config).spawn(echo).expect("spawn");
+        let target = Target { base: format!("https://localhost:{}", server.port()), pin: None, ..Target::default() };
+        let refused = connect(&target, "/ws", None, Duration::from_secs(5), Limits::default());
+        assert!(refused.is_err(), "a self-signed certificate must not open a wss socket without a pin");
     }
 
     #[test]

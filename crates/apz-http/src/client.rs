@@ -5,9 +5,11 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, RootCertStore};
 
 use serde_json::Value;
 
@@ -405,11 +407,28 @@ mod tests {
         let unpinned = Target { base, pin: None, ..Target::default() };
         assert!(request(&unpinned, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
     }
+
+    #[test]
+    fn an_unpinned_https_target_refuses_a_self_signed_certificate() {
+        // No pin means a public host: the Mozilla roots must sign it, and a self-signed hub cert is not signed by them.
+        let (server, pin) = tls_server();
+        let target = Target { base: format!("https://localhost:{}", server.port()), pin: None, ..Target::default() };
+        let err = request(&target, "GET", "/v1/echo/ada", None, Duration::from_secs(5)).expect_err("no CA signs it");
+        assert_ne!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+        // The same server still answers its own pin, so the refusal is the CA check, not a dead server.
+        let pinned = Target { base: target.base.clone(), pin: Some(pin), ..Target::default() };
+        assert_eq!(request(&pinned, "GET", "/v1/nope", None, Duration::from_secs(5)).expect("answers").status, 404);
+    }
 }
 
-/// Where a URL-based request goes: `http(s)://host:port` (a base, no path), the hub certificate's
-/// pin for https (SHA-256 of its DER; required for https — there is no CA trust), an owner bearer
-/// token, and extra headers (e.g. a node's signature headers).
+/// Where a URL-based request goes: `http(s)://host:port` (a base, no path), an owner bearer token,
+/// extra headers (e.g. a node's signature headers), and the TLS trust for https:
+/// - `pin: Some(sha256)`: the plaza's own hub, whose self-signed certificate is pinned (SHA-256 of
+///   its DER). No CA is consulted.
+/// - `pin: None` with `https`: a public host, verified the normal way. The Mozilla root store
+///   (webpki-roots) must sign the certificate, and it must name the host (an IP base is checked as
+///   an IP address).
+/// - `http`: plain TCP, for loopback daemons and tests only.
 #[derive(Debug, Clone, Default)]
 pub struct Target {
     pub base: String,
@@ -418,7 +437,8 @@ pub struct Target {
     pub headers: Vec<(String, String)>,
 }
 
-/// One request to `target.base + path`, over plain TCP (http) or pinned TLS (https). Same reply
+/// One request to `target.base + path`, over plain TCP (http) or TLS (https: pinned for the hub,
+/// CA-verified for a public host; see [`Target`]). Same reply
 /// handling as [`send_with`] (no chunked bodies; Content-Length or read to close).
 pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
@@ -436,15 +456,7 @@ pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, t
         let socket = stream.try_clone()?;
         return exchange(stream, socket, deadline, &wire);
     }
-    let pin = target
-        .pin
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "https needs the hub's certificate pin"))?;
-    // The pin is the identity, so the name only has to be a valid one for the handshake.
-    let name = ServerName::try_from(host.clone())
-        .or_else(|_| ServerName::try_from("hub".to_string()))
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{host:?} as a TLS name: {err}")))?;
-    let session = rustls::ClientConnection::new(apz_trust::tls::pinned_client_config(pin), name)
-        .map_err(|err| io::Error::other(format!("TLS setup: {err}")))?;
+    let session = tls_session(target.pin, &host)?;
     let stream = dial(&host, port, timeout)?;
     let socket = stream.try_clone()?;
     exchange(rustls::StreamOwned::new(session, stream), socket, deadline, &wire)
@@ -499,6 +511,39 @@ pub(crate) fn dial(host: &str, port: u16, timeout: Duration) -> io::Result<TcpSt
         }
     }
     Err(last)
+}
+
+/// The TLS session to `host`, shared by [`request`] and `ws::connect`. `Some(pin)` is the plaza's
+/// own hub: its self-signed certificate, pinned, with no CA; the name only has to be valid for the
+/// handshake. `None` is a public host: the Mozilla roots must sign the certificate and it must name
+/// `host` (an IP address is checked as an IP address; there is no fallback name).
+pub(crate) fn tls_session(pin: Option<[u8; 32]>, host: &str) -> io::Result<ClientConnection> {
+    let (config, name) = match pin {
+        Some(pin) => {
+            let name = ServerName::try_from(host.to_string()).or_else(|_| ServerName::try_from("hub".to_string()));
+            (apz_trust::tls::pinned_client_config(pin), name)
+        }
+        None => (public_client_config(), ServerName::try_from(host.to_string())),
+    };
+    let name = name.map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{host:?} as a TLS name: {err}")))?;
+    ClientConnection::new(config, name).map_err(|err| io::Error::other(format!("TLS setup: {err}")))
+}
+
+/// The CA-verified configuration for public hosts, built once: the Mozilla root store, ring, the
+/// default protocol versions, no client certificate.
+fn public_client_config() -> Arc<ClientConfig> {
+    static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("the ring provider supports the default protocol versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            Arc::new(config)
+        })
+        .clone()
 }
 
 /// Writes the request, then reads the answer through [`Timed`], bounded by `deadline`.
