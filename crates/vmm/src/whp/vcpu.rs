@@ -189,12 +189,16 @@ impl ExitSignals {
 /// Everything the vCPU threads share. Owns the partition (through `Arc`) and
 /// the guest memory it maps: both outlive every vCPU thread because each
 /// thread holds an `Arc<WhpVm>`.
+///
+/// Field order is drop order: the partition (and the I/O APIC, which holds
+/// the partition's other reference) goes before the guest memory it maps, so
+/// RAM is never freed while a partition still has it mapped.
 pub struct WhpVm {
     pub partition: Arc<Partition>,
+    pub interrupts: Arc<Interrupts>,
     pub memory: GuestMemoryMmap,
     pub pio: Bus,
     pub mmio: Bus,
-    pub interrupts: Arc<Interrupts>,
     pub vcpu_count: u32,
     pub exit: ExitSignals,
     /// The vCPU loops stop at their next exit (set by [`WhpVm::stop`]).
@@ -212,10 +216,10 @@ impl WhpVm {
     ) -> Self {
         Self {
             partition,
+            interrupts,
             memory,
             pio: Bus::new(),
             mmio: Bus::new(),
-            interrupts,
             vcpu_count,
             exit,
             stopping: AtomicBool::new(false),
