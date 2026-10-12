@@ -24,7 +24,12 @@ iced = { version = "0.14", default-features = false, features = [
     "wayland",
     # The fleet map is drawn with iced's own canvas (`iced::widget::canvas`).
     "canvas",
+    # The console's icons (the web console's lucide set) and agent portraits.
+    "svg",
+    "image",
 ] }
+# The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
+apz-http = { path = "../../crates/apz-http" }
 serde.workspace = true
 serde_json.workspace = true
 
