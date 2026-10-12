@@ -2,11 +2,21 @@
 # Writes a release's notes (Markdown) to stdout: the downloads for every platform and the changes
 # since the previous tag, grouped by the part of the system they touch (the commit subject's
 # "<scope>:" prefix).
-#   changelog.sh <version> <previous-tag or ""> <owner/repo>
+#   changelog.sh <version> <previous-tag or ""> <owner/repo> [auto|file|manual]
+# The last argument says how the version was chosen (next-version.sh's `source`); the notes open
+# with it.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-version=$1 previous=$2 repo=$3
+version=$1 previous=$2 repo=$3 source=${4:-auto}
 dl="https://github.com/$repo/releases/download/v$version"
+
+case $source in
+  file) how='set by the merged change (the `VERSION` file)' ;;
+  manual) how="set by hand when the release was run" ;;
+  *) how="numbered automatically${previous:+, the next after $previous}" ;;
+esac
+echo "**Version $version**, $how."
+echo
 
 cat <<EOF
 ## Downloads

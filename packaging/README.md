@@ -58,13 +58,19 @@ hub, the desktop app and the node link.
 
 ## Versions
 
-Semantic versioning, from the commits since the last `v*` tag (`release.yml`):
+Every merge to `main` is a release `v<major>.<minor>.<patch>`, tagged on the merged commit; the
+repository's `VERSION` file holds the last released version (`release.yml` writes it back to
+`main` after each release). The version is chosen by `packaging/scripts/next-version.sh`:
 
-- **major**: a commit marks a breaking change (`BREAKING CHANGE:` in its body, or `<scope>!:` in
-  its subject); while the major version is 0 this bumps the minor version instead.
-- **minor**: a commit carries the trailer `Release: minor`.
-- **patch**: everything else.
-- `Release: major|minor|patch` in a commit forces that bump; a manual run of `release.yml` can too.
+- **Automatic** (the default): the last release plus one, each place rolling over past 9 into the
+  next one: 0.0.1 → 0.0.2 … 0.0.9 → 0.1.0 … 0.1.9 → 0.2.0 … 0.9.9 → 1.0.0 … 9.9.9 → 10.0.0.
+  The first release is 0.0.1.
+- **Set by a pull request**: change `VERSION` in the PR to any version above the last release
+  (say `1.0.0`); when it is merged, that is the release. A value that is not above the last
+  release is ignored and the automatic one is used.
+- **By hand**: run `release.yml` from the Actions tab with a `version` input.
+
+The release page opens with the version and how it was chosen.
 
 The binaries report the version (`--version`) from the shipped `share/agentplaza/VERSION`
 (`apz_os::version()`; `CARGO_PKG_VERSION` in a development build). It is read at run time, not

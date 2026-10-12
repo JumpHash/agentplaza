@@ -1,42 +1,64 @@
 #!/usr/bin/env bash
-# Prints the next release version (no "v") and the previous tag, from the commits since the last
-# `v<semver>` tag (packaging/README.md, "Versions"):
-#   major  a commit body has "BREAKING CHANGE:", or a subject reads "<scope>!: …"
-#          (while the major version is 0, a breaking change bumps the minor version)
-#   minor  a commit carries the trailer "Release: minor"
-#   patch  everything else
-#   A "Release: major|minor|patch" trailer forces at least that bump; $FORCE_BUMP (a manual run's
-#   input) overrides everything. With no tag yet, the workspace version (Cargo.toml) is released.
-# Output (also appended to $GITHUB_OUTPUT when set): version=<x.y.z> previous=<tag or empty>
+# Prints the next release version (no "v"), the previous release tag, and where the version came
+# from (packaging/README.md, "Versions"). The repository's VERSION file holds the current release;
+# releases are tagged v<major>.<minor>.<patch>.
+#
+#   manual  $OVERRIDE (a manual run's `version` input), if set
+#   file    VERSION holds a version above the last release: a merged change raised it (the release
+#           job writes each released version back to VERSION, so otherwise it equals the last one)
+#   auto    otherwise: the last release plus one, each place rolling over past 9 into the next:
+#           0.0.1 → 0.0.2 … 0.0.9 → 0.1.0 … 0.9.9 → 1.0.0 … 9.9.9 → 10.0.0 (major never rolls)
+#
+# With no release yet the last release counts as 0.0.0, so the first automatic one is 0.0.1.
+# Output (also appended to $GITHUB_OUTPUT when set): version=… previous=… source=…
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-workspace=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml | head -1)
-previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)
+semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+die() { echo "next-version: $*" >&2; exit 1; }
 
-if [ -z "$previous" ]; then
-  version=$workspace
+# "a > b" for x.y.z versions.
+greater() {
+  local a b
+  IFS=. read -ra a <<< "$1"
+  IFS=. read -ra b <<< "$2"
+  for i in 0 1 2; do
+    if (( a[i] != b[i] )); then (( a[i] > b[i] )); return; fi
+  done
+  return 1
+}
+
+previous=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+last=${previous#v}
+last=${last:-0.0.0}
+
+file=""
+if [ -f VERSION ]; then
+  file=$(tr -d '[:space:]' < VERSION)
+fi
+if [ -n "${OVERRIDE:-}" ]; then
+  version=${OVERRIDE#v}
+  [[ "$version" =~ $semver ]] || die "the version '$OVERRIDE' is not <major>.<minor>.<patch>"
+  greater "$version" "$last" || die "the version $version is not above the last release $last"
+  source=manual
+elif [[ "$file" =~ $semver ]] && greater "$file" "$last"; then
+  version=$file
+  source=file
 else
-  IFS=. read -r major minor patch <<< "${previous#v}"
-  patch=${patch%%[-+]*}
-  log=$(git log --format='%s%n%b%n--end--' "$previous..HEAD")
-  bump=patch
-  if grep -qiE '^Release: *minor' <<< "$log"; then bump=minor; fi
-  if grep -qiE '^Release: *major' <<< "$log" \
-     || grep -qE '^BREAKING[ -]CHANGE:' <<< "$log" \
-     || grep -qE '^[A-Za-z0-9_./-]+(\([^)]*\))?!:' <<< "$log"; then bump=major; fi
-  bump=${FORCE_BUMP:-$bump}
-  if [ "$bump" = major ] && [ "$major" = 0 ]; then bump=minor; fi
-  case $bump in
-    major) version="$((major + 1)).0.0" ;;
-    minor) version="$major.$((minor + 1)).0" ;;
-    patch) version="$major.$minor.$((patch + 1))" ;;
-    *) echo "next-version: unknown bump '$bump'" >&2; exit 1 ;;
-  esac
+  if [ -n "$file" ] && ! [[ "$file" =~ $semver ]]; then
+    echo "next-version: VERSION holds '$file', not <major>.<minor>.<patch>; releasing the next one" >&2
+  fi
+  IFS=. read -r major minor patch <<< "$last"
+  patch=$((patch + 1))
+  if (( patch > 9 )); then patch=0; minor=$((minor + 1)); fi
+  if (( minor > 9 )); then minor=0; major=$((major + 1)); fi
+  version="$major.$minor.$patch"
+  source=auto
 fi
 
 echo "version=$version"
 echo "previous=$previous"
+echo "source=$source"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  { echo "version=$version"; echo "previous=$previous"; } >> "$GITHUB_OUTPUT"
+  { echo "version=$version"; echo "previous=$previous"; echo "source=$source"; } >> "$GITHUB_OUTPUT"
 fi

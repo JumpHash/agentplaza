@@ -1,7 +1,9 @@
-# The release pipeline: every push to main is a release. It picks the next semantic version
-# (packaging/scripts/next-version.sh), runs the four platform workflows with packaging on (their
-# tests gate everything), and publishes GitHub Release v<version> — the tag, the changelog and
-# every deliverable (packaging/README.md lists them) with SHA256SUMS.
+# The release pipeline: every push to main is a release. It picks the next version
+# (packaging/scripts/next-version.sh: automatic, 0.0.9 → 0.1.0 … 0.9.9 → 1.0.0, unless a merged
+# change raised the VERSION file or a manual run names one), runs the four platform workflows with
+# packaging on (their tests gate everything), publishes GitHub Release v<version> — the tag, the
+# changelog and every deliverable (packaging/README.md lists them) with SHA256SUMS — and writes the
+# version back to main's VERSION file.
 name: release
 
 on:
@@ -10,11 +12,10 @@ on:
     paths-ignore: ["docs/**", "**/*.md"]
   workflow_dispatch:
     inputs:
-      bump:
-        description: "Version bump (auto: from the commits)"
-        type: choice
-        options: [auto, patch, minor, major]
-        default: auto
+      version:
+        description: "Release this version (x.y.z, above the last release); empty: the automatic one"
+        type: string
+        default: ""
 
 # One release at a time, in push order; a newer push waits rather than cancelling a release.
 concurrency:
@@ -34,12 +35,13 @@ jobs:
     outputs:
       version: ${{ steps.next.outputs.version }}
       previous: ${{ steps.next.outputs.previous }}
+      source: ${{ steps.next.outputs.source }}
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - id: next
         env:
-          FORCE_BUMP: ${{ (inputs.bump && inputs.bump != 'auto') && inputs.bump || '' }}
+          OVERRIDE: ${{ inputs.version }}
         run: packaging/scripts/next-version.sh
 
   guest:
@@ -91,6 +93,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PREVIOUS: ${{ needs.version.outputs.previous }}
+      SOURCE: ${{ needs.version.outputs.source }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
@@ -119,7 +122,7 @@ jobs:
       - name: Changelog
         # Download rows whose files this release does not have (macOS switched off) are dropped.
         run: |
-          packaging/scripts/changelog.sh "$VERSION" "$PREVIOUS" "$GITHUB_REPOSITORY" | awk -v dir=dist '{
+          packaging/scripts/changelog.sh "$VERSION" "$PREVIOUS" "$GITHUB_REPOSITORY" "$SOURCE" | awk -v dir=dist '{
             keep = 1; s = $0
             while (match(s, /\/releases\/download\/v[^\/]*\/[^)]*\)/)) {
               f = substr(s, RSTART, RLENGTH - 1); sub(/.*\//, "", f)
@@ -136,6 +139,24 @@ jobs:
             --title "AgentPlaza $VERSION" \
             --notes-file notes.md \
             --latest'
+      # The released version becomes main's VERSION (unless a later change already raised it), so
+      # the next automatic release counts on from it. GITHUB_TOKEN's push starts no workflow.
+      - name: Write v${{ needs.version.outputs.version }} back to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch -q origin main
+            git checkout -q -B version origin/main
+            current=$(tr -d '[:space:]' < VERSION 2>/dev/null || true)
+            if [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" != "$VERSION" ] || [ "$current" = "$VERSION" ]; then
+              echo "main's VERSION is $current: nothing to write"; break
+            fi
+            echo "$VERSION" > VERSION
+            git commit -q -m "release: v$VERSION [skip ci]" -- VERSION
+            git push -q origin HEAD:main && { echo "main's VERSION is now $VERSION"; break; }
+            echo "main moved; trying again ($attempt)"; sleep 5
+          done
       - name: Drop this run's handoff caches
         if: always()
         run: |
