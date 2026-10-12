@@ -147,7 +147,9 @@ h1 .w.hl > span { color: var(--signal); }
 
 /* The provider rail: floating chips on the left, each opening a popup on hover or focus. */
 .rail { order: 2; }
-@media (min-width: 1000px) { .rail { order: 0; padding-top: 6px; } }
+/* Wide screens: the rail sits closer to the margin rule and takes no height of its own, so the
+   app window rises beside it instead of below it; the rail's chips and popups stay above it. */
+@media (min-width: 1000px) { .rail { order: 0; padding-top: 6px; margin-left: -24px; height: 0; position: relative; z-index: 3; } }
 .rail-k { margin: 0 0 16px; font: 500 11px/1.3 var(--mono); color: var(--ink-3); }
 .rail ul + .rail-k { margin-top: 28px; }
 .rail ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 12px; }
@@ -195,7 +197,12 @@ h1 .w.hl > span { color: var(--signal); }
 
 /* The app window rises out of a tilt as the page scrolls. */
 .showcase { padding-bottom: 96px; perspective: 1600px; }
-@media (min-width: 1000px) { .showcase { padding-left: calc(var(--gutter) + 56px + 156px + 56px - 120px); } }
+/* Wide screens: the window starts just right of the rail and reaches past the frame's right edge
+   when the viewport has room for it. */
+@media (min-width: 1000px) {
+  .showcase { padding-left: calc(var(--gutter) + 56px + 156px + 16px); }
+  .showcase .stage { margin-right: calc(-1 * min(48px, max(0px, (100vw - var(--frame)) / 2 - 8px))); }
+}
 .stage { transform-origin: 50% 0; transform: rotateX(calc(var(--tilt, 1) * 16deg)) translateY(calc(var(--tilt, 1) * 24px)) scale(calc(1 - var(--tilt, 1) * 0.05)); will-change: transform; }
 .window { border: 1px solid var(--ink); background: var(--sheet); box-shadow: 10px 10px 0 var(--ink); animation: fadeup 1000ms var(--ease) 500ms both; }
 .window-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--ink); background: var(--paper); }
