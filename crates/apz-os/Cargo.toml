@@ -1,0 +1,10 @@
+[package]
+name = "apz-os"
+description = "What differs between Linux, macOS and Windows for AgentPlaza: where state lives, private files, OS randomness, detached processes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+getrandom = "0.3"
