@@ -48,6 +48,11 @@ fi
 # The configuration: tinyconfig, then our fragments, then defaults for whatever they imply.
 rm -rf "$build"
 mkdir -p "$build"
+# The kernel stamps its version with the builder's user and host name. Fixed ones make that stamp
+# the same on every machine, and spare `whoami`, which fails in a container whose user has no
+# name (CI runs the build as the runner's uid).
+export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-agentplaza}"
+export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-agentplaza}"
 kmake() { make -s -C "$src" O="$(pwd)/$build" ARCH="$karch" ${CROSS_COMPILE:+CROSS_COMPILE=$CROSS_COMPILE} "$@"; }
 kmake tinyconfig
 "$src/scripts/kconfig/merge_config.sh" -m -O "$build" "$build/.config" scripts/guest/common.config "scripts/guest/$arch.config" >/dev/null
