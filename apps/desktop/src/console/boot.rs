@@ -11,6 +11,7 @@ use std::time::Duration;
 use iced::widget::{button, column, container, row, text_input, Space};
 use iced::{Alignment, Border, Color, Element, Length, Subscription, Task, Theme};
 
+use super::cli_link::{self, CliLink};
 use super::client::{self, Client};
 use super::services::{self, Mode};
 use super::ui::{self, Kind, Tone};
@@ -72,6 +73,10 @@ pub struct State {
     pub remembered: Option<Choice>,
     /// The local services, listed on the "Start locally" form.
     pub services: Vec<services::Service>,
+    /// The `agentplaza` command: offered on the chooser when it can be linked onto PATH here.
+    pub cli: CliLink,
+    /// The outcome of the last "Add" press, shown under the command row.
+    pub cli_note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +93,10 @@ pub enum Msg {
     Started(Result<Vec<String>, String>),
     /// The hub answered (or not) — Ok carries the client to use.
     Connected(Result<Client, String>),
+    /// Link the `agentplaza` command onto PATH.
+    LinkCli,
+    /// The command was linked (or not).
+    CliLinked(Result<(), String>),
 }
 
 /// The remembered choice, as stored in `desktop.json`.
@@ -102,6 +111,7 @@ pub fn init() -> (State, Task<Msg>) {
             bind: "0.0.0.0".into(),
             url: LOCAL_HUB.into(),
             remembered: load_remembered(),
+            cli: cli_link::status(),
             ..Default::default()
         },
         Task::none(),
@@ -145,6 +155,15 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             (Task::none(), None)
         }
         Msg::Go => go(state),
+        Msg::LinkCli => link_cli(state),
+        Msg::CliLinked(result) => {
+            state.cli_note = Some(match result {
+                Ok(()) => "The agentplaza command is ready: open a new terminal.".into(),
+                Err(error) => format!("Could not add the agentplaza command: {error}"),
+            });
+            state.cli = cli_link::status();
+            (Task::none(), None)
+        }
         Msg::Started(result) => started(state, result),
         Msg::Connected(result) => match result {
             Ok(client) => {
@@ -205,6 +224,15 @@ fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
         }
     };
     (task, None)
+}
+
+/// Links the `agentplaza` command in the background (macOS asks for a password).
+fn link_cli(state: &mut State) -> (Task<Msg>, Option<Client>) {
+    let CliLink::Linkable { target, link } = state.cli.clone() else {
+        return (Task::none(), None);
+    };
+    state.cli_note = None;
+    (Task::perform(async move { cli_link::link(&target, &link) }, Msg::CliLinked), None)
 }
 
 /// Services came up (or not). Local and Host wait for their hub to answer; Join stops here.
@@ -294,6 +322,22 @@ fn chooser(state: &State) -> Element<'_, Msg> {
         .spacing(12)
         .into(),
     );
+    if let CliLink::Linkable { link, .. } = &state.cli {
+        let line = format!("Command line: add the `agentplaza` command ({})", link.display());
+        page.push(
+            row![
+                ui::faint(line),
+                Space::new().width(Length::Fill),
+                ui::btn("Add", None, Kind::Ghost, (!busy).then_some(Msg::LinkCli)),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    if let Some(note) = &state.cli_note {
+        page.push(ui::faint(note.clone()).into());
+    }
     column(page).spacing(20).into()
 }
 
