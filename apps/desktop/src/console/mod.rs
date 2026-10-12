@@ -8,6 +8,7 @@
 
 pub mod boot;
 pub mod brands;
+pub mod floor3d;
 pub mod client;
 pub mod icons;
 pub mod screens;
