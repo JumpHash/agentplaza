@@ -83,7 +83,7 @@ impl Config {
 /// Everything the handlers and background threads share.
 pub struct App {
     pub config: Config,
-    /// The SSE bus every module publishes on.
+    /// The event bus every module publishes on (the sockets at `/v1/ws` subscribe to it).
     pub bus: events::Bus,
     /// Linked-note memory libraries, under <state-dir>/memory.
     pub memory: crate::memory::Memory,

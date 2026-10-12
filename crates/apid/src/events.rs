@@ -1,26 +1,59 @@
-//! The event stream: `GET /v1/events`, fed by every module and by relays of
-//! the plaza's domain events and noded's VM events.
+//! The event stream: `GET /v1/ws`, a WebSocket fed by every module and by relays of the plaza's
+//! domain events and noded's VM events. One text message per event, `{"event": <kind>, "data":
+//! <data>}`. The socket is read-only and bounded: a client that falls [`QUEUE`] events behind is
+//! closed (1013, too slow), and the caps are [`PER_PEER`] sockets per peer address and [`TOTAL`]
+//! in all, refused with 429 before the upgrade.
 
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::collections::BTreeMap;
+use std::net::IpAddr;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use apz_http::client::Target;
+use apz_http::ws::{self, Limits, Message, Origins, Socket};
 use apz_http::{Response, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::App;
 
-/// One SSE frame: `event: <kind>` + one-line JSON `data`.
+/// The subprotocol a console asks for.
+const PROTOCOL: &str = "apz.events.v1";
+/// The subprotocol noded speaks.
+const NODED_PROTOCOL: &str = "apz.noded.v1";
+/// Events a subscriber may hold unsent before it is too slow.
+pub const QUEUE: usize = 1024;
+/// Sockets one peer address may hold open.
+pub const PER_PEER: usize = 8;
+/// Sockets the hub holds open in all.
+pub const TOTAL: usize = 64;
+/// How long a socket waits for a client message between batches of events.
+const POLL: Duration = Duration::from_millis(250);
+/// How long the relay waits for noded to answer the handshake.
+const CONNECT: Duration = Duration::from_secs(10);
+
+/// One event on the bus: its kind and its one-line JSON data.
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub kind: String,
     pub data: String,
 }
 
-/// Fan-out to every live subscriber; no backlog.
+impl Frame {
+    /// The socket's text message: `{"event": <kind>, "data": <data>}`. Data that is not JSON goes
+    /// out as `null`, so a message is always one valid JSON object.
+    pub fn wire(&self) -> String {
+        let data = serde_json::from_str::<serde_json::Value>(&self.data).unwrap_or(serde_json::Value::Null);
+        let kind = serde_json::to_string(&self.kind).unwrap_or_else(|_| "\"\"".into());
+        format!("{{\"event\":{kind},\"data\":{data}}}")
+    }
+}
+
+/// Fan-out to every live subscriber; no backlog. A subscriber whose queue is full is dropped: its
+/// socket then closes as too slow, after the events it already holds.
 #[derive(Default)]
 pub struct Bus {
-    subscribers: Mutex<Vec<Sender<Frame>>>,
+    subscribers: Mutex<Vec<SyncSender<Frame>>>,
 }
 
 impl Bus {
@@ -35,33 +68,126 @@ impl Bus {
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|s| s.send(frame.clone()).is_ok());
+            .retain(|s| s.try_send(frame.clone()).is_ok());
     }
 
+    /// A subscription with a queue of [`QUEUE`] events.
     pub fn subscribe(&self) -> Receiver<Frame> {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE);
         self.subscribers.lock().unwrap_or_else(PoisonError::into_inner).push(tx);
         rx
     }
 }
 
-const HEARTBEAT: Duration = Duration::from_secs(15);
+/// The sockets open now, per peer and in all. A [`Slot`] holds one place until it drops.
+pub struct Slots {
+    open: Mutex<Open>,
+}
+
+struct Open {
+    total: usize,
+    per_peer: BTreeMap<Option<IpAddr>, usize>,
+}
+
+impl Slots {
+    pub const fn new() -> Self {
+        Slots { open: Mutex::new(Open { total: 0, per_peer: BTreeMap::new() }) }
+    }
+
+    /// A place for a socket from `peer`, or `None` when that peer or the hub is at its cap.
+    pub fn take(&'static self, peer: Option<IpAddr>) -> Option<Slot> {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = open.per_peer.get(&peer).copied().unwrap_or(0);
+        if held >= PER_PEER || open.total >= TOTAL {
+            return None;
+        }
+        open.total += 1;
+        *open.per_peer.entry(peer).or_insert(0) += 1;
+        Some(Slot { slots: self, peer })
+    }
+
+    /// How many sockets are open now.
+    #[cfg(test)]
+    pub fn open_count(&self) -> usize {
+        self.open.lock().unwrap_or_else(PoisonError::into_inner).total
+    }
+
+    fn release(&self, peer: Option<IpAddr>) {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        open.total = open.total.saturating_sub(1);
+        let now = match open.per_peer.get_mut(&peer) {
+            Some(held) => {
+                *held = held.saturating_sub(1);
+                *held
+            }
+            None => 0,
+        };
+        if now == 0 {
+            open.per_peer.remove(&peer);
+        }
+    }
+}
+
+/// One socket's place in the caps; it frees the place when it drops.
+pub struct Slot {
+    slots: &'static Slots,
+    peer: Option<IpAddr>,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.slots.release(self.peer);
+    }
+}
+
+/// The hub's sockets.
+static SOCKETS: Slots = Slots::new();
 
 pub fn routes(router: Router<App>) -> Router<App> {
-    router.get("/v1/events", |app, _, _| {
-        let rx = app.bus.subscribe();
-        Response::sse(move |sse| loop {
-            match rx.recv_timeout(HEARTBEAT) {
-                Ok(frame) => sse.event(&frame.kind, &frame.data)?,
-                Err(RecvTimeoutError::Timeout) => sse.heartbeat()?,
-                Err(RecvTimeoutError::Disconnected) => return Ok(()),
-            }
+    router.get("/v1/ws", |app, req, _| {
+        let Some(slot) = SOCKETS.take(req.peer) else {
+            return Response::error(429, "too many open event sockets; close one first");
+        };
+        let events = app.bus.subscribe();
+        ws::accept(req, Origins::SameHost, Some(PROTOCOL), Limits::default(), move |socket| {
+            let _slot = slot;
+            serve(socket, events);
         })
     })
 }
 
-/// Starts the relays: the plaza's domain events, and noded's `/v1/events`
-/// (reconnecting with backoff while noded is down).
+/// Forwards the bus's events to `socket` until it ends: a client message closes it (read-only,
+/// 1008), a queue that overflowed closes it (too slow, 1013), and a dead connection just ends.
+fn serve(mut socket: Socket, events: Receiver<Frame>) {
+    loop {
+        loop {
+            match events.try_recv() {
+                Ok(frame) => {
+                    if socket.send(&Message::Text(frame.wire())).is_err() {
+                        return;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                // Only the bus drops a subscriber, and it does so when the queue is full.
+                Err(TryRecvError::Disconnected) => {
+                    socket.close(1013, "too slow; reconnect");
+                    return;
+                }
+            }
+        }
+        match socket.recv(POLL) {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                socket.close(1008, "this socket is read-only");
+                return;
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+/// Starts the relays: the plaza's domain events, and noded's `/v1/ws` (reconnecting with backoff
+/// while noded is down).
 pub fn spawn_relays(app: Arc<App>) {
     let plaza = app.plaza.events.subscribe();
     let relay = Arc::clone(&app);
@@ -71,16 +197,95 @@ pub fn spawn_relays(app: Arc<App>) {
         }
     });
     std::thread::spawn(move || {
+        let target = Target { base: format!("http://127.0.0.1:{}", app.noded.port), ..Default::default() };
         let mut backoff = Duration::from_secs(1);
         loop {
-            if let Ok(mut stream) = apz_http::client::events(app.noded.port, "/v1/events", HEARTBEAT * 2) {
+            if let Ok(mut socket) = ws::connect(&target, "/v1/ws", Some(NODED_PROTOCOL), CONNECT, Limits::default()) {
                 backoff = Duration::from_secs(1);
-                while let Ok(Some(event)) = stream.next_event() {
-                    app.bus.publish_raw(&event.event, event.data);
-                }
+                relay_noded(&app.bus, &mut socket);
             }
             std::thread::sleep(backoff);
             backoff = (backoff * 2).min(Duration::from_secs(30));
         }
     });
+}
+
+/// Republishes noded's `{"event", "data"}` text messages on the bus until the socket ends. A
+/// message that is not one, or a binary one, is not an event: a binary one closes the socket.
+fn relay_noded(bus: &Bus, socket: &mut Socket) {
+    #[derive(Deserialize)]
+    struct Wire {
+        event: String,
+        data: serde_json::Value,
+    }
+    loop {
+        match socket.recv(POLL) {
+            Ok(Some(Message::Text(text))) => {
+                if let Ok(wire) = serde_json::from_str::<Wire>(&text) {
+                    bus.publish_raw(&wire.event, wire.data.to_string());
+                }
+            }
+            Ok(Some(Message::Binary(_))) => {
+                socket.close(1003, "text messages only");
+                return;
+            }
+            Ok(None) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaked() -> &'static Slots {
+        Box::leak(Box::new(Slots::new()))
+    }
+
+    #[test]
+    fn the_ninth_socket_from_one_peer_is_refused() {
+        let slots = leaked();
+        let peer: Option<IpAddr> = Some("10.0.0.5".parse().unwrap());
+        let held: Vec<Slot> = (0..PER_PEER).map(|_| slots.take(peer).expect("under the cap")).collect();
+        assert!(slots.take(peer).is_none(), "a ninth socket from one peer is refused");
+        assert!(slots.take(Some("10.0.0.6".parse().unwrap())).is_some(), "another peer still gets one");
+        drop(held);
+        assert!(slots.take(peer).is_some(), "a closed socket frees its place");
+    }
+
+    #[test]
+    fn the_hub_holds_sixty_four_sockets_in_all() {
+        let slots = leaked();
+        let mut held = Vec::new();
+        for n in 0..(TOTAL / PER_PEER) {
+            let ip = IpAddr::from([10, 0, 0, n as u8]);
+            for _ in 0..PER_PEER {
+                held.push(slots.take(Some(ip)).expect("under the cap"));
+            }
+        }
+        assert_eq!(slots.open_count(), TOTAL);
+        assert!(slots.take(Some(IpAddr::from([10, 0, 1, 1]))).is_none(), "a 65th socket is refused");
+    }
+
+    #[test]
+    fn a_bus_event_is_one_text_message_with_its_kind_and_data() {
+        let bus = Bus::default();
+        let rx = bus.subscribe();
+        let event = apz_plaza::events::Event::Run { id: "r1".to_string(), state: "running" };
+        bus.publish_raw(event.kind(), event.data());
+        let frame = rx.try_recv().expect("the subscriber got the event");
+        assert_eq!(frame.wire(), r#"{"event":"run","data":{"id":"r1","state":"running"}}"#);
+    }
+
+    #[test]
+    fn a_subscriber_a_queue_behind_is_dropped_after_what_it_holds() {
+        let bus = Bus::default();
+        let rx = bus.subscribe();
+        for _ in 0..=QUEUE {
+            bus.publish_raw("run", "null".to_string());
+        }
+        assert_eq!(rx.try_iter().count(), QUEUE);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+    }
 }
