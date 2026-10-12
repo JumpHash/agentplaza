@@ -149,6 +149,7 @@ h1 .w.hl > span { color: var(--signal); }
 .rail { order: 2; }
 @media (min-width: 1000px) { .rail { order: 0; padding-top: 6px; } }
 .rail-k { margin: 0 0 16px; font: 500 11px/1.3 var(--mono); color: var(--ink-3); }
+.rail ul + .rail-k { margin-top: 28px; }
 .rail ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 12px; }
 @media (min-width: 1000px) {
   .rail ul { display: grid; grid-template-columns: 64px 64px; gap: 14px 18px; }
@@ -267,6 +268,9 @@ h2 .dim { color: var(--ink-3); }
 @media (max-width: 459px) { .provider { grid-template-columns: 1fr; row-gap: 10px; } .provider .mark { grid-row: auto; } }
 @media (min-width: 700px) { .providers { grid-template-columns: repeat(3, 1fr); } }
 @media (min-width: 1000px) { .providers { grid-template-columns: repeat(4, 1fr); } }
+.decisions-note { margin: 64px 0 0; }
+.providers.trio { margin-top: 20px; }
+@media (min-width: 1000px) { .providers.trio { grid-template-columns: repeat(3, 1fr); } }
 .provider { min-width: 0; display: grid; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 14px; align-items: center; padding: 22px 20px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); background: var(--sheet); transition: background 200ms; }
 .provider:hover { background: #fff; }
 .provider .mark { grid-row: 1 / 3; width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--rule); background: #fff; transition: transform 300ms var(--ease); }

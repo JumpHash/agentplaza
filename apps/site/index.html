@@ -64,6 +64,17 @@
           <div class="pop" id="pop-zai" role="tooltip"><b>Z.ai</b><span>GLM-5.3, GLM-5.3-Flash, GLM-5V-Turbo</span><em>1M context, with reasoning effort</em></div></li>
         <li class="chip" data-logo="ollama" style="--o:7;--z:1.2"><button type="button" aria-describedby="pop-ollama"></button>
           <div class="pop" id="pop-ollama" role="tooltip"><b>Ollama</b><span>Local models</span><em>Runs on your hardware; no key at all</em></div></li>
+        <li class="chip" data-logo="mistral" style="--o:8;--z:1.0"><button type="button" aria-describedby="pop-mistral"></button>
+          <div class="pop" id="pop-mistral" role="tooltip"><b>Mistral</b><span>Medium, Large, Magistral, Devstral</span></div></li>
+      </ul>
+      <p class="rail-k">Decisions</p>
+      <ul>
+        <li class="chip" data-logo="openai" style="--o:9;--z:1.1"><button type="button" aria-describedby="pop-decide-openai"></button>
+          <div class="pop" id="pop-decide-openai" role="tooltip"><b>OpenAI Decisions</b><span>GPT-6 Luna</span><em>typed answers</em></div></li>
+        <li class="chip" data-logo="microsoft" style="--o:10;--z:0.9"><button type="button" aria-describedby="pop-decide-microsoft"></button>
+          <div class="pop" id="pop-decide-microsoft" role="tooltip"><b>Microsoft Decision 1</b><span>Azure AI Foundry</span></div></li>
+        <li class="chip" data-logo="typesafe" style="--o:11;--z:1.2"><button type="button" aria-describedby="pop-decide-typesafe"></button>
+          <div class="pop" id="pop-decide-typesafe" role="tooltip"><b>TypeSafe Jev</b><span>calibrated decisions</span></div></li>
       </ul>
     </aside>
 
@@ -221,6 +232,12 @@
       <div class="provider" data-logo="huggingface"><span class="pname">Hugging Face</span><span class="pnote">inference</span></div>
     </div>
     <p class="fine center">Pick per agent: <code>anthropic/claude-…@high</code> · <code>openai/gpt-…@medium</code> · <code>deepseek/…</code>. The model picker groups them by provider.</p>
+    <p class="aside decisions-note">Decisions are a different kind of model. They answer typed questions (yes or no, a choice, a score) with calibrated probabilities instead of text. The plaza uses them to decide things, such as whether an agent is stuck or how risky an approval is. Agents never chat with them.</p>
+    <div class="providers trio">
+      <div class="provider" data-logo="openai"><span class="pname">OpenAI</span><span class="pnote">Decisions API, GPT-6 Luna</span></div>
+      <div class="provider" data-logo="microsoft"><span class="pname">Microsoft</span><span class="pnote">Microsoft-Decision-1, Azure AI Foundry</span></div>
+      <div class="provider" data-logo="typesafe"><span class="pname">TypeSafe</span><span class="pnote">Jev, calibrated decisions</span></div>
+    </div>
   </div>
 </section>
 
