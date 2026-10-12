@@ -303,6 +303,7 @@ fn hex_decode(text: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(name: &str) -> PathBuf {
@@ -311,6 +312,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -363,8 +365,12 @@ mod tests {
         let token = token_of(&dir);
         assert!(token.starts_with(apz_trust::owner::PREFIX));
         assert!(hub.owner_ok(&token));
-        assert_eq!(mode(&owner_token_path(&dir)), 0o600);
-        assert_eq!(mode(&dir.join(HUB_FILE)), 0o600);
+        // Unix: mode 0600. Windows has no mode bits (the profile's ACL keeps the files private).
+        #[cfg(unix)]
+        {
+            assert_eq!(mode(&owner_token_path(&dir)), 0o600);
+            assert_eq!(mode(&dir.join(HUB_FILE)), 0o600);
+        }
         let first = hub.lock().owner_token_sha256.clone();
         drop(hub);
 

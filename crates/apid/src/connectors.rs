@@ -1226,6 +1226,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(name: &str) -> PathBuf {
@@ -1273,8 +1274,8 @@ mod tests {
         let listed = serde_json::to_string(&store.views()).unwrap();
         assert!(!listed.contains("KEY-SECRET-987"));
         assert!(listed.contains("\"configured\":true"));
-        let mode = std::fs::metadata(dir.join(VAULT)).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        #[cfg(unix)]
+        assert_eq!(std::fs::metadata(dir.join(VAULT)).unwrap().permissions().mode() & 0o777, 0o600);
         let reloaded = Store::load(&dir, BTreeMap::new()).unwrap();
         assert_eq!(
             reloaded.values(connector("unsplash")).get("access_key").map(String::as_str),

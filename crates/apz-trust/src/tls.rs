@@ -121,13 +121,21 @@ pub fn pinned_client_config(pin: [u8; 32]) -> Arc<ClientConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixStream;
+    use std::net::{TcpListener, TcpStream};
+
+    /// A connected loopback pair (portable: Windows has no `UnixStream::pair`).
+    fn socket_pair() -> std::io::Result<(TcpStream, TcpStream)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let client = TcpStream::connect(listener.local_addr()?)?;
+        let (server, _) = listener.accept()?;
+        Ok((client, server))
+    }
 
     /// Runs a handshake over a connected socket pair; `Ok` only if the client completes it.
     fn handshake(pair: &CertPair, pin: [u8; 32]) -> Result<(), String> {
         let server_cfg = server_config(pair)?;
         let client_cfg = pinned_client_config(pin);
-        let (mut client_sock, mut server_sock) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let (mut client_sock, mut server_sock) = socket_pair().map_err(|e| e.to_string())?;
 
         let server = std::thread::spawn(move || -> Result<(), String> {
             let mut conn = rustls::ServerConnection::new(server_cfg).map_err(|e| e.to_string())?;

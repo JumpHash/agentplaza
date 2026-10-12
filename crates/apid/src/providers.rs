@@ -486,6 +486,7 @@ impl Store {
 mod tests {
     use super::*;
     use apz_gateway::ProviderKind;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(name: &str) -> PathBuf {
@@ -529,8 +530,9 @@ mod tests {
         let dir = scratch("mode");
         let store = Store::load(&dir, BTreeMap::new()).unwrap();
         store.set_secret("mock", "value").unwrap();
-        let mode = std::fs::metadata(dir.join("secrets.json")).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        #[cfg(unix)]
+        assert_eq!(std::fs::metadata(dir.join("secrets.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(dir.join("secrets.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
