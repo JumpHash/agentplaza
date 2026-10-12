@@ -34,7 +34,7 @@ function cids(n: NodeView): string {
 
 /** The CID range this node's agents hold in the network it joined, first to last. */
 function linkCids(c: NodeLink['cids']): string {
-  return c && c.count > 0 ? `${c.base}–${c.base + c.count - 1}` : '—';
+  return c ? c.replace('-', '–') : '—';
 }
 
 /** cpus · memory GiB · host, as the node reported them. */

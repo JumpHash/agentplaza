@@ -446,8 +446,8 @@ export const api = {
   leaveNodeLink: (forget: boolean) => post<NodeLink>('/v1/node-link/leave', { forget }),
 };
 
-/** This hub as a node of another network. `cids` is the CID range its agents hold there (null until joined); `pid` is set while `running`. */
-export interface NodeLink { joined: boolean; hub: string | null; node_id: string | null; cids: { base: number; count: number } | null; running: boolean; pid: number | null }
+/** This hub as a node of another network. `cids` is the CID range its agents hold there, "first-last" (null until joined); `pid` is set while `running`. */
+export interface NodeLink { joined: boolean; hub: string | null; node_id: string | null; cids: string | null; running: boolean; pid: number | null }
 
 /** What the hub says about itself: anyone may ask. `fingerprint` is its TLS certificate's SHA-256 (base64url), null without TLS. */
 export interface HubIdentity { name: string; version: string; url: string; fingerprint: string | null; nodes: number }
