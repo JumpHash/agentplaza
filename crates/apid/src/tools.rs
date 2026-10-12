@@ -180,6 +180,11 @@ fn refusal(role: &str, name: &str) -> Option<String> {
     }
 }
 
+/// The tool names offered to `role` with no manifest grants; the law tests check each one.
+pub(crate) fn offered_names(role: &str) -> Vec<String> {
+    offered(role, &[])
+}
+
 /// The sorted, de-duplicated tool names offered to `role` given its manifest
 /// `granted` list. Guest tools appear only when granted.
 fn offered(role: &str, granted: &[String]) -> Vec<String> {
