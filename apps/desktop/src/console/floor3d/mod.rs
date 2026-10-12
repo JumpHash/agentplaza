@@ -5,12 +5,13 @@
 //!
 //! Module ↔ web source: `geometry` ↔ three's geometries; `canvas` ↔ the 2D canvas the textures
 //! paint on; `textures` ↔ `floor3d/textures.ts`; `toon` ↔ `floor3d/toon.ts`; `robot` ↔
-//! `floor3d/robot.ts`; `props` ↔ `floor3d/props.ts`; `rooms` ↔ `floor3d/rooms/*`; `controls` ↔
-//! three's OrbitControls; `world` ↔ `floor.ts`.
+//! `floor3d/robot.ts`; `props` ↔ `floor3d/props.ts`; `outskirts` ↔ `floor3d/outskirts.ts`; `rooms` ↔
+//! `floor3d/rooms/*`; `controls` ↔ three's OrbitControls; `world` ↔ `floor.ts`.
 
 pub mod canvas;
 pub mod controls;
 pub mod geometry;
+pub mod outskirts;
 pub mod props;
 pub mod render;
 pub mod robot;
