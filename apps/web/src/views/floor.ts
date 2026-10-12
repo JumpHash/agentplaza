@@ -14,9 +14,10 @@ import { button, clip } from '../ui/components';
 import { roleLabel } from '../roles';
 import { h } from '../ui/dom';
 import { makeRobot, ROBOT_PALETTE, robotVariant, type Robot, type RobotState } from './floor3d/robot';
-import { buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
+import { buildPaths, buildPlaza, buildPlazaFurniture } from './floor3d/props';
+import { buildBackdrop, buildScatter } from './floor3d/outskirts';
 import { buildRoom, roomStyle } from './floor3d/rooms';
-import { deck, paving, rng, slabSide } from './floor3d/textures';
+import { ground as groundTex, rng, slabSide } from './floor3d/textures';
 import { outline, sky, starfield, toonMat } from './floor3d/toon';
 import { bakeStatic } from './floor3d/bake';
 import { mountFloor2d } from './floor2d';
@@ -340,12 +341,14 @@ export function mount(root: HTMLElement): Cleanup {
   sc.updateProjectionMatrix();
   scene.add(sun);
 
-  // Ground: hull plating out to the horizon.
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: deck() }));
+  // Ground: one smooth sheet out to the horizon, lighter round the plaza.
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: groundTex() }));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.01;
   ground.receiveShadow = true;
   scene.add(ground);
+  const backdrop = buildBackdrop();
+  scene.add(backdrop);
 
   // Shared resources.
   const districtGroup = new THREE.Group();
@@ -464,7 +467,7 @@ export function mount(root: HTMLElement): Cleanup {
     if (orch) {
       const dais = new THREE.Mesh(
         new THREE.CylinderGeometry(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48),
-        toonMat({ map: paving(new THREE.Color(0x3a4670), 3) }),
+        toonMat({ color: 0x4a5690 }),
       );
       dais.position.set(d.cx, DAIS_H / 2, d.cy);
       dais.castShadow = true;
@@ -1153,6 +1156,7 @@ export function mount(root: HTMLElement): Cleanup {
     disposeTree(plaza);
     disposeTree(ground);
     disposeTree(skyLayer.group);
+    disposeTree(backdrop);
     dustGeo.dispose();
     dustMat.dispose();
     padGeo.dispose();

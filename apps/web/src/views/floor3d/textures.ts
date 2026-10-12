@@ -64,59 +64,25 @@ function rrect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: 
 }
 
 /**
- * The deck: the plaza's ground, dark hull plating in big square panels, each with a bevel, corner
- * bolts and a seam of faint light, and every so often a glowing guide light in the seam.
+ * The ground: one smooth sheet under the whole floor, lighter where the plaza stands and fading
+ * darker toward the horizon, with a few faint survey rings round the centre. Not repeated: it
+ * spans the ground plane once, centred on the plaza.
  */
-export function deck(): THREE.CanvasTexture {
-  return canvasTexture('deck', 512, 512, 36, (g, w, h, r) => {
-    g.fillStyle = '#0c101c';
+export function ground(): THREE.CanvasTexture {
+  return canvasTexture('ground', 1024, 1024, 1, (g, w, h) => {
+    const fade = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    fade.addColorStop(0, '#3d4680');
+    fade.addColorStop(0.12, '#353d72');
+    fade.addColorStop(0.35, '#272d58');
+    fade.addColorStop(1, '#161a36');
+    g.fillStyle = fade;
     g.fillRect(0, 0, w, h);
-    const n = 4;
-    const p = w / n;
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        const x = i * p;
-        const y = j * p;
-        const l = 15 + r() * 4;
-        g.fillStyle = `hsl(226, 26%, ${l}%)`;
-        rrect(g, x + 3, y + 3, p - 6, p - 6, 6);
-        g.fill();
-        // The bevel: a lit top-left edge and a shaded bottom-right one.
-        g.fillStyle = 'rgba(150,175,255,0.10)';
-        g.fillRect(x + 6, y + 5, p - 12, 3);
-        g.fillStyle = 'rgba(0,0,0,0.25)';
-        g.fillRect(x + 6, y + p - 8, p - 12, 3);
-        // A recessed inner plate on some panels, a vent grille on others.
-        if (r() < 0.35) {
-          g.strokeStyle = 'rgba(0,0,0,0.35)';
-          g.lineWidth = 2;
-          rrect(g, x + p * 0.22, y + p * 0.22, p * 0.56, p * 0.56, 5);
-          g.stroke();
-        } else if (r() < 0.25) {
-          g.fillStyle = 'rgba(0,0,0,0.3)';
-          for (let k = 0; k < 5; k++) g.fillRect(x + p * 0.3, y + p * 0.32 + k * 9, p * 0.4, 4);
-        }
-        g.fillStyle = 'rgba(160,180,220,0.22)';
-        for (const [bx, by] of [[10, 10], [p - 10, 10], [10, p - 10], [p - 10, p - 10]] as const) {
-          g.beginPath();
-          g.arc(x + bx, y + by, 2.2, 0, Math.PI * 2);
-          g.fill();
-        }
-      }
-    }
-    // Light in the seams: a faint cyan grid, brighter guide lights here and there.
-    g.fillStyle = 'rgba(70,200,255,0.28)';
-    for (let i = 0; i <= n; i++) {
-      g.fillRect(i * p - 1, 0, 2, h);
-      g.fillRect(0, i * p - 1, w, 2);
-    }
-    for (let k = 0; k < 10; k++) {
-      const along = r() < 0.5;
-      const a = Math.floor(r() * n) * p;
-      const b = r() * (w - 40);
-      g.fillStyle = r() < 0.7 ? 'rgba(90,220,255,0.85)' : 'rgba(190,120,255,0.85)';
-      if (along) g.fillRect(a - 2, b, 4, 26);
-      else g.fillRect(b, a - 2, 26, 4);
+    g.strokeStyle = 'rgba(160,180,255,0.07)';
+    g.lineWidth = 2;
+    for (const r of [44, 66, 92, 124]) {
+      g.beginPath();
+      g.arc(w / 2, h / 2, r, 0, Math.PI * 2);
+      g.stroke();
     }
   });
 }
