@@ -807,13 +807,29 @@ impl shader::Primitive for Primitive {
                 queue.write_buffer(buffer, 0, bytes);
             }
         }
+        record(p, device, queue);
     }
 
-    fn render(&self, p: &Pipeline, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, clip_bounds: &Rectangle<u32>) {
-        let (Some(targets), Some((rows, _))) = (&p.targets, &p.rows) else {
-            return;
-        };
-        {
+    fn draw(&self, p: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
+        // iced has set the viewport and scissor to the widget: copy the finished picture in.
+        if let Some(targets) = &p.targets {
+            pass.set_pipeline(&p.blit_pipeline);
+            pass.set_bind_group(0, &targets.blit_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        true
+    }
+}
+
+/// The shadow and scene passes, on the floor's own encoder, submitted at once: they run before iced's
+/// frame, which then only copies the finished picture (`Primitive::draw`). No pass of iced's is split.
+fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
+    let (Some(targets), Some((rows, _))) = (&p.targets, &p.rows) else {
+        return;
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("floor") });
+    // No shadow casters (light mode): the shadow map is not read, so its pass is skipped.
+    if !p.shadow_cmds.is_empty() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("floor shadow"),
                 color_attachments: &[],
@@ -836,7 +852,7 @@ impl shader::Primitive for Primitive {
                 }
             }
         }
-        {
+    {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("floor"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -882,25 +898,7 @@ impl shader::Primitive for Primitive {
                 }
             }
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("floor blit"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        let r = p.physical;
-        pass.set_viewport(r.x, r.y, r.width, r.height, 0.0, 1.0);
-        pass.set_scissor_rect(clip_bounds.x, clip_bounds.y, clip_bounds.width, clip_bounds.height);
-        pass.set_pipeline(&p.blit_pipeline);
-        pass.set_bind_group(0, &targets.blit_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
+    queue.submit([encoder.finish()]);
 }
 
 #[cfg(test)]
