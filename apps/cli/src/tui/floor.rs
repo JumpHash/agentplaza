@@ -21,7 +21,7 @@ const BLINK_HZ: f32 = 1.5;
 /// Width of one agent's slot in the gateway: a glyph, a space, a short name.
 const SLOT_W: u16 = 8;
 /// The widest a room gets, in cells; a longer role name is cut to fit.
-const ROOM_MAX_W: usize = 22;
+const ROOM_MAX_W: usize = 26;
 /// The gateway's hue, as on the web floor.
 const HUB_HUE: f32 = 25.0;
 /// Tools that hand a message or a task to another agent (`to_cid`, or `assignee`).
