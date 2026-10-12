@@ -1397,12 +1397,15 @@ mod tests {
         );
         // The run's directory is private, exactly as the vsock sockets' is: a
         // workspace is an agent's own data.
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&run_dir)
-            .expect("the run's directory")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o700, "the run's directory is 0700");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&run_dir)
+                .expect("the run's directory")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "the run's directory is 0700");
+        }
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }

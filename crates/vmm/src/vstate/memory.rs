@@ -498,12 +498,14 @@ pub(crate) mod tests {
 
     /// Creates a [`GuestMemoryMmap`] with a single region of the given size starting at guest
     /// physical address 0 and without dirty tracking.
+    #[allow(dead_code, reason = "used by the KVM backends' tests; HVF has its own")]
     pub(crate) fn single_region_mem(region_size: usize) -> GuestMemoryMmap {
         single_region_mem_at(0, region_size)
     }
 
     /// Creates a [`GuestMemoryMmap`] with a single region of the given size starting at the given
     /// guest physical address `at` and without dirty tracking.
+    #[allow(dead_code, reason = "used by the KVM backends' tests; HVF has its own")]
     pub(crate) fn single_region_mem_at(at: u64, size: usize) -> GuestMemoryMmap {
         multi_region_mem(&[(GuestAddress(at), size)])
     }
