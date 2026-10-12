@@ -36,6 +36,11 @@ impl Control {
     pub fn paused(&self) -> bool {
         self.state().paused
     }
+    pub fn set(&self, state: PlazaState) {
+        if let Ok(mut guard) = self.state.lock() {
+            *guard = state;
+        }
+    }
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&self.state()).unwrap_or_default()
     }
@@ -46,14 +51,34 @@ impl Control {
     }
 }
 
+#[derive(Deserialize)]
+struct StopBody {
+    reason: Option<String>,
+}
+
 /// Cancels every agent's running work and holds the plaza.
-pub fn stop_all(_app: &App, _by: &str, _reason: &str) -> PlazaState {
-    PlazaState::default() // contract: B1
+pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
+    // Hold first, so work that the cancels finish cannot dispatch the next item.
+    let mut state = PlazaState { paused: true, since_ms: apz_plaza::now_ms(), by: by.into(), reason: reason.into(), cancelled: 0 };
+    app.control.set(state.clone());
+    for agent in app.agents.list() {
+        if app.work.current(agent.cid).is_some() && app.work.cancel(app, agent.cid, "STOP ALL by the owner") {
+            state.cancelled += 1;
+        }
+    }
+    app.control.set(state.clone());
+    app.bus.publish("plaza", &state);
+    state
 }
 
 /// Releases the hold; queued work dispatches again.
-pub fn resume(_app: &App, _by: &str) -> PlazaState {
-    PlazaState::default() // contract: B1
+pub fn resume(app: &App, by: &str) -> PlazaState {
+    let previous = app.control.state();
+    let state = PlazaState { paused: false, since_ms: apz_plaza::now_ms(), by: by.into(), reason: String::new(), cancelled: previous.cancelled };
+    app.control.set(state.clone());
+    app.bus.publish("plaza", &state);
+    app.work.dispatch_idle(app);
+    state
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -63,10 +88,41 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/plaza/resume", resume_route)
 }
 
-fn stop_route(_app: &App, _req: &Request, _: &Params<'_>) -> Response {
-    Response::error(501, "contract: B1")
+/// Body `{reason?}` is optional; the owner acts.
+fn stop_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let reason = if req.body.is_empty() {
+        String::new()
+    } else {
+        match req.json::<StopBody>() {
+            Ok(body) => body.reason.unwrap_or_default(),
+            Err(e) => return Response::error(400, &format!("bad body: {e}")),
+        }
+    };
+    Response::json(200, &stop_all(app, "owner", &reason))
 }
 
-fn resume_route(_app: &App, _req: &Request, _: &Params<'_>) -> Response {
-    Response::error(501, "contract: B1")
+fn resume_route(app: &App, _req: &Request, _: &Params<'_>) -> Response {
+    Response::json(200, &resume(app, "owner"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hold_survives_snapshot_and_restore() {
+        let control = Control::default();
+        assert!(!control.paused());
+        control.set(PlazaState { paused: true, since_ms: 5, by: "owner".into(), reason: "bad loop".into(), cancelled: 2 });
+        let json = control.snapshot();
+
+        let restored = Control::default();
+        restored.restore(&json).unwrap();
+        assert!(restored.paused());
+        assert_eq!(restored.state().cancelled, 2);
+        assert_eq!(restored.state().reason, "bad loop");
+
+        assert!(restored.restore("not json").is_err());
+        assert!(restored.paused(), "a refused restore changes nothing");
+    }
 }

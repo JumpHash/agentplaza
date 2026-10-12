@@ -388,7 +388,8 @@ impl Queues {
 
     /// Sends the next waiting item to `cid` if it is reachable and idle.
     fn dispatch(&self, app: &App, cid: u64) {
-        if app.agents.get(cid).is_none_or(|a| a.status == Status::Offline) {
+        // Held by STOP ALL: queued work waits until the owner resumes.
+        if app.control.paused() || app.agents.get(cid).is_none_or(|a| a.status == Status::Offline) {
             return;
         }
         let Some(item) = self.locked().start_next(cid, apz_plaza::now_ms()) else {
@@ -455,11 +456,14 @@ pub fn spawn(app: Arc<App>) {
     let spawned = thread::Builder::new().name("apid-scheduler".into()).spawn(move || {
         let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
         loop {
-            ask_names(&app);
-            crate::society::outreach(&app);
+            // While STOP ALL holds the plaza, nothing new starts; usage still drains.
+            if !app.control.paused() {
+                ask_names(&app);
+                crate::society::outreach(&app);
+                assign_tasks(&app);
+                offer_motions(&app, &mut motions_seen);
+            }
             crate::llm_proxy::drain_usage(&app);
-            assign_tasks(&app);
-            offer_motions(&app, &mut motions_seen);
             thread::sleep(Duration::from_secs(2));
         }
     });

@@ -214,6 +214,9 @@ fn now_ms() -> u64 {
 
 /// Called once a second by apid's ticker: sends each due loop's prompt to its agent.
 pub fn tick(app: &App) {
+    if app.control.paused() {
+        return; // held by STOP ALL: loops wait until the owner resumes
+    }
     app.work.dispatch_idle(app);
     let now = now_ms();
     let due: Vec<Loop> = app.harness.locked().0.iter().filter(|l| l.state == "running" && l.next_at_ms <= now).cloned().collect();
