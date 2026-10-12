@@ -20,8 +20,7 @@ pub struct WipeRequest {
     pub memory: bool,
     #[serde(default)]
     pub transcript: bool,
-    /// Forget its chosen name (it picks a new one). Its bonds are kept: the bond store
-    /// has no forget operation yet.
+    /// Forget its chosen name (it picks a new one), its contacts and its reputation.
     #[serde(default)]
     pub identity: bool,
 }
@@ -80,6 +79,9 @@ fn wipe_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if wipe.identity {
         if let Err(err) = app.names.forget(cid) {
             return Response::error(500, &format!("could not forget the name of agent {cid}: {err}"));
+        }
+        if let Err(err) = app.bonds.forget(cid) {
+            return Response::error(500, &format!("could not forget the bonds of agent {cid}: {err:?}"));
         }
         wiped.push("identity");
     }

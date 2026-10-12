@@ -261,6 +261,15 @@ impl Bonds {
         self.persist(&st)
     }
 
+    /// Forgets everything about `cid`: its contacts and opinions, and everyone's contacts with
+    /// and opinions of it (a wiped agent starts with no network and no reputation).
+    pub fn forget(&self, cid: u64) -> Result<(), BondError> {
+        let mut st = self.lock();
+        st.contacts.retain(|(from, to), _| *from != cid && *to != cid);
+        st.opinions.retain(|(from, to), _| *from != cid && *to != cid);
+        self.persist(&st)
+    }
+
     /// Sets or clears the private note on an existing contact.
     pub fn set_note(&self, from: u64, to: u64, note: Option<String>) -> Result<(), BondError> {
         if from == to {
