@@ -597,29 +597,37 @@ fn spawn(app: &App, req: &Request) -> Response {
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    if !crate::roles_custom::exists(app, &b.role) {
-        return Response::error(400, &format!("unknown role {}", b.role));
+    match spawn_agents(app, &b.role, b.count.unwrap_or(1), b.model.as_deref()) {
+        Ok(value) => Response::json(200, &value),
+        Err(e) if e.starts_with("noded") => Response::error(502, &e),
+        Err(e) => Response::error(400, &e),
     }
-    let count = b.count.unwrap_or(1);
+}
+
+/// Spawns `count` agents of `role`: checks the role, the count and the model's tier, asks noded
+/// for the runs and records them. Returns noded's reply; errors are the message for the caller.
+pub fn spawn_agents(app: &App, role: &str, count: u32, model: Option<&str>) -> Result<Value, String> {
+    if !crate::roles_custom::exists(app, role) {
+        return Err(format!("unknown role {role}"));
+    }
     if !(1..=16).contains(&count) {
-        return Response::error(400, "count must be 1..=16");
+        return Err("count must be 1..=16".into());
     }
-    if let Some(model) = &b.model {
-        if let Err(e) = app.settings.allowed(tier_of(&b.role), model) {
-            return Response::error(400, &e);
-        }
+    if let Some(model) = model {
+        app.settings.allowed(tier_of(role), model)?;
     }
-    let payload = json!({"n": count, "role": b.role, "vcpus": 1, "memory_mib": 256});
+    let payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 256});
     match app.noded.post("/v1/runs", &payload) {
         Ok((status, value)) => {
-            if status < 300 {
-                for _ in 0..count {
-                    app.spawned.expect(&b.role, b.model.clone());
-                }
+            if status >= 300 {
+                return Err(format!("noded: status {status}: {value}"));
             }
-            Response::json(status, &value)
+            for _ in 0..count {
+                app.spawned.expect(role, model.map(str::to_string));
+            }
+            Ok(value)
         }
-        Err(e) => Response::error(502, &format!("noded: {e}")),
+        Err(e) => Err(format!("noded: {e}")),
     }
 }
 
@@ -715,7 +723,7 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
         return Response::error(400, &e);
     }
     let thread = format!("op-{}", agent.cid);
-    let work = app.work.enqueue(app, agent.cid, WorkKind::Chat, thread, b.text, Origin::default());
+    let work = app.work.enqueue(app, agent.cid, WorkKind::Chat, thread, b.text, Origin { owner: true, ..Origin::default() });
     Response::json(200, &json!({"work": work}))
 }
 

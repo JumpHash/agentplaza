@@ -603,7 +603,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let to = agents::connected_agent(&recipient);
             let deliver = |from: &ConnectedAgent, to: &ConnectedAgent, body: &str| -> (bool, Option<String>) {
                 let (low, high) = if from.cid < to.cid { (from.cid, to.cid) } else { (to.cid, from.cid) };
-                let origin = Origin { task: None, motion: None, from_cid: Some(from.cid) };
+                let origin = Origin { task: None, motion: None, from_cid: Some(from.cid), owner: false };
                 let _ = app.work.enqueue(app, to.cid, WorkKind::Message, format!("dm-{low}-{high}"), format!("{body}{suffix}"), origin);
                 (true, None)
             };
@@ -762,7 +762,7 @@ pub fn post_and_assign(app: &App, poster: u64, goal: &str, acceptance: Option<St
 fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
     let target = app.agents.get(cid).ok_or_else(|| format!("no connected agent {cid}"))?;
     task.claim(&agents::connected_agent(&target)).map_err(|e| format!("{e:?}"))?;
-    let origin = Origin { task: Some(task.id().to_string()), motion: None, from_cid: None };
+    let origin = Origin { task: Some(task.id().to_string()), motion: None, from_cid: None, owner: false };
     let _ = app.work.enqueue(app, cid, WorkKind::Task, format!("task-{}", task.id()), task_text(task), origin);
     Ok(())
 }
