@@ -159,13 +159,18 @@ impl Store {
     }
 
     /// Whether `model` may run for `tier` (always in dev mode); the error
-    /// names the allowed list.
+    /// names the allowed list. Workers may run any well-formed model: their
+    /// list is the presets offered first, not a limit. The orchestrator tier
+    /// stays limited to its list.
     pub fn allowed(&self, tier: Tier, model: &str) -> Result<(), String> {
         // contract
         if self.dev_models {
             return Ok(());
         }
         let wanted = canonical(model)?;
+        if tier == Tier::Worker {
+            return Ok(());
+        }
         let policy = self.get().model_policy;
         let list = match tier {
             Tier::Orchestrator => policy.orchestrator,
@@ -275,8 +280,11 @@ mod tests {
         assert!(store.allowed(Tier::Worker, "anthropic/claude-opus-5-5@low").is_ok());
         assert!(store.allowed(Tier::Worker, "deepseek/deepseek-flash").is_ok());
         assert!(store.allowed(Tier::Worker, "  anthropic/claude-haiku-5-5 ").is_ok());
-        let err = store.allowed(Tier::Worker, "anthropic/claude-opus-5-5").unwrap_err();
-        assert!(err.contains("not allowed for the worker tier"), "{err}");
+        // Workers may run any model; their list only holds the presets.
+        assert!(store.allowed(Tier::Worker, "anthropic/claude-opus-5-5").is_ok());
+        assert!(store.allowed(Tier::Worker, "openai/gpt-4-turbo-2024-04-09").is_ok());
+        let err = store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").unwrap_err();
+        assert!(err.contains("not allowed for the orchestrator tier"), "{err}");
         assert!(err.contains("allowed: "), "{err}");
         // Orchestrator tier: only its own list.
         assert!(store.allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5").is_ok());
@@ -318,9 +326,12 @@ mod tests {
     fn put_validates_and_persists() {
         let dir = temp_dir("persist");
         let store = Store::load(&dir, false).unwrap();
-        // Orchestrator-only model is refused as a worker default.
+        // A worker default may be any model; an orchestrator model outside its list is refused.
+        let mut any = Settings::default();
+        any.default_model = "anthropic/claude-fable-5-1".into();
+        assert!(store.put(any).is_ok());
         let mut bad = Settings::default();
-        bad.default_model = "anthropic/claude-fable-5-1".into();
+        bad.orchestrator_model = "deepseek/deepseek-flash".into();
         assert!(store.put(bad).is_err());
         let mut zero = Settings::default();
         zero.max_turns = 0;

@@ -162,7 +162,8 @@ fn http_agent() -> ureq::Agent {
 fn relay(app: &App, req: &Request, cid: u64, provider: &str, path: &str) -> Result<Response, Response> {
     let agent = app.agents.get(cid).ok_or_else(|| Response::error(404, "unknown agent"))?;
     let mut body: Value = req.json().map_err(|e| Response::error(400, &e.to_string()))?;
-    if !app.settings.dev_models() {
+    // Workers may call any model; the orchestrator is held to its list.
+    if !app.settings.dev_models() && tier_of(&agent.role) == Tier::Orchestrator {
         let policy = app.settings.get().model_policy;
         let list = match tier_of(&agent.role) {
             Tier::Orchestrator => policy.orchestrator,
