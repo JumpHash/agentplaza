@@ -1,39 +1,1234 @@
-//! The Models screen (parity with the web console's `models` view).
+//! The Models screen (parity with the web console's `models` view). Two tabs. Providers: the
+//! hub's providers as cards grouped by how they are credentialed, with keys, tests, their models,
+//! edits, removal, and adding one from the catalogue. Policy & defaults: the orchestrator and
+//! worker allowlists, the defaults and per-role models, the limits and the prices, saved whole.
+//! A key is typed into a secure field and is never echoed or logged.
 
-use iced::Element;
-use iced::Task;
+use std::collections::{BTreeMap, BTreeSet};
+
+use iced::widget::{button, column, pick_list, row, text, text_input, Space};
+use iced::{Element, Length, Task};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 use super::Id;
+use crate::console::client::{self, Client};
+use crate::console::ui::{Kind, Tone};
 use crate::console::{ui, Ctx};
+
+const GROUPS: [&str; 3] = ["Configured with a key", "Needs a key", "Local"];
+const EFFORTS: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Providers,
+    Policy,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderKind {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub brand: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    pub auth: Value,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub options: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Provider {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    pub auth: Value,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub options: Option<Value>,
+    #[serde(default)]
+    pub extra_headers: Map<String, Value>,
+    pub credential: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListedModel {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestReport {
+    pub ok: bool,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub latency_ms: u64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelsView {
+    #[serde(default)]
+    pub models: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Allowlists {
+    #[serde(default)]
+    pub orchestrator: Vec<String>,
+    #[serde(default)]
+    pub worker: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+}
+
+/// apid's `/v1/settings`. Fields the screen does not show travel back untouched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    pub default_model: String,
+    pub orchestrator_model: String,
+    #[serde(default)]
+    pub role_models: BTreeMap<String, String>,
+    #[serde(default)]
+    pub model_policy: Allowlists,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub max_turns: i64,
+    #[serde(default)]
+    pub max_tokens: i64,
+    #[serde(default)]
+    pub fetch_allow: Vec<String>,
+    #[serde(default)]
+    pub prices: BTreeMap<String, Price>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_models: Option<bool>,
+    #[serde(flatten)]
+    pub rest: Map<String, Value>,
+}
+
+/// Which tier a list belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Orchestrator,
+    Worker,
+}
+
+/// Which default a model picker sets.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Slot {
+    Orchestrator,
+    Worker,
+    Role(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Input,
+    Output,
+}
+
+/// A numeric or price field of the policy.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Num {
+    MaxTurns,
+    MaxTokens,
+    Price(String, Side),
+}
+
+/// One choice in a model picker. An empty value means "inherit the tier default".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opt {
+    value: String,
+    label: String,
+}
+
+impl std::fmt::Display for Opt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// What an add or edit form is for.
+#[derive(Debug, Clone)]
+pub enum Target {
+    Edit(Provider),
+    Add(ProviderKind),
+}
+
+#[derive(Debug, Clone)]
+pub struct Form {
+    target: Target,
+    id: String,
+    id_editable: bool,
+    base_url: String,
+    /// The auth env var, when the provider authenticates from one.
+    env: Option<String>,
+    /// Comma-separated models; None hides the field.
+    models: Option<String>,
+    /// The optional key, add only.
+    key: Option<String>,
+    saving: bool,
+}
+
+/// The dialog open over the providers tab.
+#[derive(Debug, Clone, Default)]
+pub enum Dialog {
+    #[default]
+    Closed,
+    Key { provider: String, value: String, saving: bool },
+    Remove { provider: String, busy: bool },
+    Catalogue { search: String },
+    Form(Form),
+}
+
+impl Dialog {
+    fn unbusy(&mut self) {
+        match self {
+            Dialog::Key { saving, .. } => *saving = false,
+            Dialog::Remove { busy, .. } => *busy = false,
+            Dialog::Form(form) => form.saving = false,
+            Dialog::Closed | Dialog::Catalogue { .. } => {}
+        }
+    }
+}
+
+/// The policy being edited: the saved settings, the working copy, and what is in flight.
+#[derive(Debug)]
+pub struct Policy {
+    saved: Settings,
+    copy: Settings,
+    models: Vec<ModelInfo>,
+    known: BTreeSet<String>,
+    /// Fields that do not hold a valid value.
+    errors: BTreeSet<String>,
+    /// What the user typed into each text field, so a half-typed value stays on screen.
+    raw: BTreeMap<String, String>,
+    add_orchestrator: String,
+    add_worker: String,
+    saving: bool,
+}
+
+impl Policy {
+    fn new(settings: Settings, view: ModelsView) -> Policy {
+        let known: BTreeSet<String> = view.models.iter().map(|m| format!("{}/{}", m.provider, m.id)).collect();
+        Policy {
+            saved: settings.clone(),
+            copy: settings,
+            models: view.models,
+            known,
+            errors: BTreeSet::new(),
+            raw: BTreeMap::new(),
+            add_orchestrator: String::new(),
+            add_worker: String::new(),
+            saving: false,
+        }
+    }
+
+    fn dirty(&self) -> bool {
+        self.copy != self.saved
+    }
+
+    fn add_text(&self, tier: Tier) -> &str {
+        match tier {
+            Tier::Orchestrator => &self.add_orchestrator,
+            Tier::Worker => &self.add_worker,
+        }
+    }
+
+    fn add_mut(&mut self, tier: Tier) -> &mut String {
+        match tier {
+            Tier::Orchestrator => &mut self.add_orchestrator,
+            Tier::Worker => &mut self.add_worker,
+        }
+    }
+
+    /// The text a field shows: what the user typed, else the stored value.
+    fn shown(&self, key: &str, stored: String) -> String {
+        self.raw.get(key).cloned().unwrap_or(stored)
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct State {
     pub error: Option<String>,
+    pub notice: Option<String>,
+    tab: Tab,
+    kinds: Vec<ProviderKind>,
+    providers: Vec<Provider>,
+    expanded: BTreeSet<String>,
+    listed: BTreeMap<String, Vec<ListedModel>>,
+    dialog: Dialog,
+    policy: Option<Policy>,
+    prices_open: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
+    Tab(Tab),
+    Loaded(Result<(Vec<ProviderKind>, Vec<Provider>), String>),
+    Test(String),
+    Tested(Result<TestReport, String>),
+    ToggleModels(String),
+    Listed(String, Result<Vec<ListedModel>, String>),
+    OpenKey(String),
+    KeyInput(String),
+    SaveKey,
+    OpenEdit(String),
+    OpenRemove(String),
+    ConfirmRemove,
+    OpenCatalogue,
+    CatalogueSearch(String),
+    PickKind(String),
+    FormId(String),
+    FormUrl(String),
+    FormEnv(String),
+    FormModels(String),
+    FormKey(String),
+    FormSave,
+    Close,
+    /// A save or removal finished: its notice, or its error.
+    Done(Result<String, String>),
+    PolicyLoaded(Result<(Settings, ModelsView), String>),
+    PolicyAddInput(Tier, String),
+    PolicyAdd(Tier),
+    PolicyRemove(Tier, usize),
+    PolicyDefault(Slot, Opt),
+    PolicyEffort(String),
+    PolicyNumber(Num, String),
+    PolicyFetchAllow(String),
+    TogglePrices,
+    PolicySave,
+    PolicySaved(Result<Settings, String>),
 }
 
 /// The navigation this message asks for, if any.
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        _ => None,
     }
 }
 
-/// Loads the screen's data (called when it opens and on every poll tick).
-pub fn load(_state: &mut State, _ctx: &Ctx) -> Task<Msg> {
-    Task::none() // contract: W-models
+/// Loads the screen's data (called when it opens and on every poll tick). The providers tab
+/// reloads every time; the policy reloads only when there are no unsaved edits to lose.
+pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    match state.tab {
+        Tab::Providers => providers_task(ctx),
+        Tab::Policy => match &state.policy {
+            Some(p) if p.dirty() || p.saving => Task::none(),
+            _ => policy_task(ctx),
+        },
+    }
 }
 
-pub fn update(_state: &mut State, _msg: Msg, _ctx: &Ctx) -> Task<Msg> {
-    Task::none() // contract: W-models
+pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        Msg::Go(_) => Task::none(),
+        Msg::Tab(tab) => {
+            state.tab = tab;
+            load(state, ctx)
+        }
+        Msg::Loaded(Ok((kinds, providers))) => {
+            state.kinds = kinds;
+            state.providers = providers;
+            state.error = None;
+            Task::none()
+        }
+        Msg::Loaded(Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::Test(id) => {
+            let c = ctx.client.clone();
+            client::task(move || c.post::<TestReport>(&format!("/v1/providers/{id}/test"), &json!({})), Msg::Tested)
+        }
+        Msg::Tested(Ok(report)) => {
+            if report.ok {
+                state.notice = Some(format!("OK · {} ms · {}", report.latency_ms, report.model));
+                state.error = None;
+            } else {
+                state.error = Some(report.error.unwrap_or_else(|| "Test failed".to_string()));
+            }
+            Task::none()
+        }
+        Msg::Tested(Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::ToggleModels(id) => {
+            if state.expanded.remove(&id) {
+                return Task::none();
+            }
+            state.expanded.insert(id.clone());
+            if state.listed.contains_key(&id) {
+                Task::none()
+            } else {
+                listed_task(ctx, id)
+            }
+        }
+        Msg::Listed(id, Ok(list)) => {
+            state.listed.insert(id, list);
+            Task::none()
+        }
+        Msg::Listed(_, Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::OpenKey(id) => {
+            state.dialog = Dialog::Key { provider: id, value: String::new(), saving: false };
+            Task::none()
+        }
+        Msg::KeyInput(v) => {
+            if let Dialog::Key { value, .. } = &mut state.dialog {
+                *value = v;
+            }
+            Task::none()
+        }
+        Msg::SaveKey => {
+            let Dialog::Key { provider, value, saving } = &mut state.dialog else { return Task::none() };
+            let key = value.trim().to_string();
+            if key.is_empty() || *saving {
+                return Task::none();
+            }
+            *saving = true;
+            let path = format!("/v1/providers/{provider}/secret");
+            let c = ctx.client.clone();
+            client::task(move || c.call("PUT", &path, Some(&json!({ "value": key }))).map(|_| "Key saved".to_string()), Msg::Done)
+        }
+        Msg::OpenEdit(id) => {
+            if let Some(p) = state.providers.iter().find(|p| p.id == id).cloned() {
+                state.dialog = Dialog::Form(Form {
+                    id: p.id.clone(),
+                    id_editable: false,
+                    base_url: p.base_url.clone().unwrap_or_default(),
+                    env: auth_env(&p.auth),
+                    models: Some(p.models.join(", ")),
+                    key: None,
+                    saving: false,
+                    target: Target::Edit(p),
+                });
+            }
+            Task::none()
+        }
+        Msg::OpenRemove(id) => {
+            state.dialog = Dialog::Remove { provider: id, busy: false };
+            Task::none()
+        }
+        Msg::ConfirmRemove => {
+            let Dialog::Remove { provider, busy } = &mut state.dialog else { return Task::none() };
+            if *busy {
+                return Task::none();
+            }
+            *busy = true;
+            let path = format!("/v1/providers/{provider}");
+            let note = format!("Removed {provider}");
+            let c = ctx.client.clone();
+            client::task(move || c.delete(&path).map(|_| note), Msg::Done)
+        }
+        Msg::OpenCatalogue => {
+            state.dialog = Dialog::Catalogue { search: String::new() };
+            Task::none()
+        }
+        Msg::CatalogueSearch(s) => {
+            if let Dialog::Catalogue { search } = &mut state.dialog {
+                *search = s;
+            }
+            Task::none()
+        }
+        Msg::PickKind(id) => {
+            if let Some(k) = state.kinds.iter().find(|k| k.id == id).cloned() {
+                state.dialog = Dialog::Form(Form {
+                    id: k.id.clone(),
+                    id_editable: true,
+                    base_url: k.base_url.clone().unwrap_or_default(),
+                    env: auth_env(&k.auth),
+                    models: None,
+                    key: Some(String::new()),
+                    saving: false,
+                    target: Target::Add(k),
+                });
+            }
+            Task::none()
+        }
+        Msg::FormId(s) => {
+            if let Dialog::Form(f) = &mut state.dialog {
+                f.id = s;
+            }
+            Task::none()
+        }
+        Msg::FormUrl(s) => {
+            if let Dialog::Form(f) = &mut state.dialog {
+                f.base_url = s;
+            }
+            Task::none()
+        }
+        Msg::FormEnv(s) => {
+            if let Dialog::Form(f) = &mut state.dialog {
+                f.env = Some(s);
+            }
+            Task::none()
+        }
+        Msg::FormModels(s) => {
+            if let Dialog::Form(f) = &mut state.dialog {
+                f.models = Some(s);
+            }
+            Task::none()
+        }
+        Msg::FormKey(s) => {
+            if let Dialog::Form(f) = &mut state.dialog {
+                f.key = Some(s);
+            }
+            Task::none()
+        }
+        Msg::FormSave => {
+            let Dialog::Form(form) = &mut state.dialog else { return Task::none() };
+            if form.saving {
+                return Task::none();
+            }
+            let id = form.id.trim().to_string();
+            if id.is_empty() {
+                state.error = Some("Give the provider an id".to_string());
+                return Task::none();
+            }
+            form.saving = true;
+            let base = Some(form.base_url.trim().to_string()).filter(|s| !s.is_empty());
+            let auth = form.env.as_ref().map(|e| json!({ "env": e.trim() }));
+            let models = form.models.as_ref().map(|m| split_list(m));
+            let key = form.key.as_deref().unwrap_or("").trim().to_string();
+            let target = form.target.clone();
+            let c = ctx.client.clone();
+            match target {
+                Target::Edit(p) => {
+                    let mut body = json!({
+                        "id": p.id.clone(),
+                        "kind": p.kind.clone(),
+                        "base_url": base,
+                        "auth": auth.unwrap_or_else(|| p.auth.clone()),
+                        "models": models.unwrap_or_else(|| p.models.clone()),
+                        "extra_headers": p.extra_headers.clone(),
+                    });
+                    if let Some(o) = &p.options {
+                        body["options"] = o.clone();
+                    }
+                    let path = format!("/v1/providers/{}", p.id);
+                    client::task(move || c.call("PUT", &path, Some(&body)).map(|_| "Saved".to_string()), Msg::Done)
+                }
+                Target::Add(k) => {
+                    let mut body = json!({
+                        "id": id.clone(),
+                        "kind": k.kind.clone(),
+                        "base_url": base,
+                        "auth": auth.unwrap_or_else(|| k.auth.clone()),
+                        "models": k.models.clone(),
+                    });
+                    if let Some(o) = &k.options {
+                        body["options"] = o.clone();
+                    }
+                    let note = format!("Added {id}");
+                    client::task(
+                        move || -> Result<String, String> {
+                            c.post::<Value>("/v1/providers", &body)?;
+                            if !key.is_empty() {
+                                c.call("PUT", &format!("/v1/providers/{id}/secret"), Some(&json!({ "value": key })))?;
+                            }
+                            Ok(note)
+                        },
+                        Msg::Done,
+                    )
+                }
+            }
+        }
+        Msg::Close => {
+            state.dialog = Dialog::Closed;
+            Task::none()
+        }
+        Msg::Done(Ok(note)) => {
+            state.dialog = Dialog::Closed;
+            state.notice = Some(note);
+            state.error = None;
+            providers_task(ctx)
+        }
+        Msg::Done(Err(e)) => {
+            state.dialog.unbusy();
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::PolicyLoaded(Ok((settings, view))) => {
+            if state.policy.as_ref().map_or(true, |p| !p.dirty() && !p.saving) {
+                state.policy = Some(Policy::new(settings, view));
+            }
+            Task::none()
+        }
+        Msg::PolicyLoaded(Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::PolicyAddInput(tier, v) => {
+            if let Some(p) = state.policy.as_mut() {
+                *p.add_mut(tier) = v;
+            }
+            Task::none()
+        }
+        Msg::PolicyAdd(tier) => {
+            let Some(p) = state.policy.as_mut() else { return Task::none() };
+            let value = p.add_text(tier).trim().to_string();
+            if value.is_empty() {
+                return Task::none();
+            }
+            if !valid_entry(&value) {
+                state.error = Some("Use provider/model, with an optional @effort".to_string());
+                return Task::none();
+            }
+            let list = tier_list_mut(&mut p.copy, tier);
+            if !list.contains(&value) {
+                list.push(value);
+            }
+            p.add_mut(tier).clear();
+            state.error = None;
+            Task::none()
+        }
+        Msg::PolicyRemove(tier, index) => {
+            if let Some(p) = state.policy.as_mut() {
+                let list = tier_list_mut(&mut p.copy, tier);
+                if index < list.len() {
+                    list.remove(index);
+                }
+            }
+            Task::none()
+        }
+        Msg::PolicyDefault(slot, opt) => {
+            if let Some(p) = state.policy.as_mut() {
+                match slot {
+                    Slot::Orchestrator => p.copy.orchestrator_model = opt.value,
+                    Slot::Worker => p.copy.default_model = opt.value,
+                    Slot::Role(role) => {
+                        if opt.value.is_empty() {
+                            p.copy.role_models.remove(&role);
+                        } else {
+                            p.copy.role_models.insert(role, opt.value);
+                        }
+                    }
+                }
+            }
+            Task::none()
+        }
+        Msg::PolicyEffort(v) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.copy.effort = if v == "default" { None } else { Some(v) };
+            }
+            Task::none()
+        }
+        Msg::PolicyNumber(num, text) => {
+            let Some(p) = state.policy.as_mut() else { return Task::none() };
+            let key = match &num {
+                Num::MaxTurns => "max_turns".to_string(),
+                Num::MaxTokens => "max_tokens".to_string(),
+                Num::Price(k, side) => price_key(k, *side),
+            };
+            let ok = match &num {
+                Num::MaxTurns => match text.trim().parse::<i64>() {
+                    Ok(n) if (1..=200).contains(&n) => {
+                        p.copy.max_turns = n;
+                        true
+                    }
+                    _ => false,
+                },
+                Num::MaxTokens => match text.trim().parse::<i64>() {
+                    Ok(n) if (0..=1_000_000_000).contains(&n) => {
+                        p.copy.max_tokens = n;
+                        true
+                    }
+                    _ => false,
+                },
+                Num::Price(k, side) => match text.trim().parse::<f64>() {
+                    Ok(n) if n.is_finite() && n >= 0.0 => {
+                        let price = p.copy.prices.entry(k.clone()).or_default();
+                        match side {
+                            Side::Input => price.input = n,
+                            Side::Output => price.output = n,
+                        }
+                        true
+                    }
+                    _ => false,
+                },
+            };
+            p.raw.insert(key.clone(), text);
+            if ok {
+                p.errors.remove(&key);
+            } else {
+                p.errors.insert(key);
+            }
+            Task::none()
+        }
+        Msg::PolicyFetchAllow(text) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.copy.fetch_allow = split_list(&text);
+                p.raw.insert("fetch_allow".to_string(), text);
+            }
+            Task::none()
+        }
+        Msg::TogglePrices => {
+            state.prices_open = !state.prices_open;
+            Task::none()
+        }
+        Msg::PolicySave => {
+            let Some(p) = state.policy.as_mut() else { return Task::none() };
+            if p.saving || !p.errors.is_empty() || !p.dirty() {
+                return Task::none();
+            }
+            p.saving = true;
+            let s = p.copy.clone();
+            let c = ctx.client.clone();
+            client::task(move || save_settings(&c, &s), Msg::PolicySaved)
+        }
+        Msg::PolicySaved(Ok(saved)) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.copy = saved.clone();
+                p.saved = saved;
+                p.raw.clear();
+                p.errors.clear();
+                p.saving = false;
+            }
+            state.notice = Some("Policy saved".to_string());
+            state.error = None;
+            Task::none()
+        }
+        Msg::PolicySaved(Err(e)) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.saving = false;
+            }
+            state.error = Some(e);
+            Task::none()
+        }
+    }
 }
 
-pub fn view<'a>(_state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    // contract: W-models
-    ui::sheet(ui::view_head("Models", vec![]), ui::empty("models", "Not ported yet", "This screen is being brought to parity with the web console."))
+pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    let tabs: Element<'a, Msg> = row(vec![
+        ui::btn("Providers", None, tab_kind(state.tab == Tab::Providers), Some(Msg::Tab(Tab::Providers))),
+        ui::btn("Policy & defaults", None, tab_kind(state.tab == Tab::Policy), Some(Msg::Tab(Tab::Policy))),
+    ])
+    .spacing(8)
+    .into();
+    let mut parts: Vec<Element<'a, Msg>> = vec![tabs];
+    if let Some(e) = &state.error {
+        parts.push(ui::error_line(e));
+    }
+    if let Some(n) = &state.notice {
+        parts.push(ui::faint(n.as_str()).into());
+    }
+    parts.push(match state.tab {
+        Tab::Providers => providers_view(state),
+        Tab::Policy => policy_view(state),
+    });
+    ui::sheet(ui::view_head("Models", vec![]), column(parts).spacing(16).into())
+}
+
+fn tab_kind(active: bool) -> Kind {
+    if active {
+        Kind::Secondary
+    } else {
+        Kind::Ghost
+    }
+}
+
+fn providers_task(ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    client::task(
+        move || -> Result<(Vec<ProviderKind>, Vec<Provider>), String> {
+            let kinds = c.get::<Vec<ProviderKind>>("/v1/provider-kinds")?;
+            let providers = c.get::<Vec<Provider>>("/v1/providers")?;
+            Ok((kinds, providers))
+        },
+        Msg::Loaded,
+    )
+}
+
+fn policy_task(ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    client::task(
+        move || -> Result<(Settings, ModelsView), String> {
+            Ok((c.get::<Settings>("/v1/settings")?, c.get::<ModelsView>("/v1/models")?))
+        },
+        Msg::PolicyLoaded,
+    )
+}
+
+fn listed_task(ctx: &Ctx, id: String) -> Task<Msg> {
+    let c = ctx.client.clone();
+    let id2 = id.clone();
+    client::task(move || c.get::<Vec<ListedModel>>(&format!("/v1/providers/{id}/models")), move |r| Msg::Listed(id2.clone(), r))
+}
+
+fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
+    let body = serde_json::to_value(s).map_err(|e| e.to_string())?;
+    let v = c.call("PUT", "/v1/settings", Some(&body))?;
+    serde_json::from_value(v).map_err(|e| e.to_string())
+}
+
+/// The kind entry a configured provider was made from: same id, else the first of the same kind.
+fn kind_of<'a>(state: &'a State, p: &Provider) -> Option<&'a ProviderKind> {
+    state.kinds.iter().find(|k| k.id == p.id).or_else(|| state.kinds.iter().find(|k| k.kind == p.kind))
+}
+
+fn group_of(p: &Provider) -> &'static str {
+    match p.credential.as_str() {
+        "missing" => "Needs a key",
+        "none" => "Local",
+        _ => "Configured with a key",
+    }
+}
+
+fn credential_badge(credential: &str) -> (&'static str, Tone) {
+    match credential {
+        "env" | "secret" => ("Key set", Tone::Ok),
+        "none" => ("No key needed", Tone::Muted),
+        "command" => ("Command", Tone::Info),
+        "missing" => ("Key missing", Tone::Warn),
+        _ => ("Unknown", Tone::Muted),
+    }
+}
+
+fn auth_env(auth: &Value) -> Option<String> {
+    auth.get("env")?.as_str().map(str::to_string)
+}
+
+/// Comma- or newline-separated values, trimmed, without blanks.
+fn split_list(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c == '\n').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
+/// Splits `provider/model[@effort]` into its base id and its pinned effort.
+fn parse_entry(entry: &str) -> (&str, Option<&str>) {
+    match entry.rfind('@') {
+        Some(at) if at > 0 => (&entry[..at], Some(&entry[at + 1..])),
+        _ => (entry, None),
+    }
+}
+
+/// A policy entry must read `provider/model`, with no blanks.
+fn valid_entry(value: &str) -> bool {
+    let (base, _) = parse_entry(value);
+    match base.split_once('/') {
+        Some((p, m)) => !p.is_empty() && !m.is_empty() && !p.chars().any(char::is_whitespace) && !m.chars().any(char::is_whitespace),
+        None => false,
+    }
+}
+
+fn tier_list(s: &Settings, tier: Tier) -> &Vec<String> {
+    match tier {
+        Tier::Orchestrator => &s.model_policy.orchestrator,
+        Tier::Worker => &s.model_policy.worker,
+    }
+}
+
+fn tier_list_mut(s: &mut Settings, tier: Tier) -> &mut Vec<String> {
+    match tier {
+        Tier::Orchestrator => &mut s.model_policy.orchestrator,
+        Tier::Worker => &mut s.model_policy.worker,
+    }
+}
+
+fn price_key(model: &str, side: Side) -> String {
+    let side = match side {
+        Side::Input => "input",
+        Side::Output => "output",
+    };
+    format!("price:{model}:{side}")
+}
+
+/// The choices of a model picker: the tier's allowlist, the current value kept even if it has
+/// left the list, and an inherit choice first when the picker has one.
+fn model_options(p: &Policy, tier: Tier, current: &str, inherit: Option<&str>) -> Vec<Opt> {
+    let mut out = Vec::new();
+    if let Some(label) = inherit {
+        out.push(Opt { value: String::new(), label: label.to_string() });
+    }
+    let names: BTreeMap<String, String> = p
+        .models
+        .iter()
+        .map(|m| (format!("{}/{}", m.provider, m.id), m.name.clone().unwrap_or_else(|| m.id.clone())))
+        .collect();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for entry in tier_list(&p.copy, tier) {
+        let base = parse_entry(entry).0.to_string();
+        if seen.insert(base.clone()) {
+            let label = names.get(&base).cloned().unwrap_or_else(|| base.clone());
+            out.push(Opt { value: base, label });
+        }
+    }
+    if !current.is_empty() && !seen.contains(current) {
+        let label = names.get(current).cloned().unwrap_or_else(|| current.to_string());
+        out.push(Opt { value: current.to_string(), label });
+    }
+    out
+}
+
+fn spacer<'a>() -> Element<'a, Msg> {
+    Space::new().width(Length::Fill).into()
+}
+
+fn labelled<'a>(label: &str, input: Element<'a, Msg>) -> Element<'a, Msg> {
+    let items: Vec<Element<'a, Msg>> = vec![ui::label(label).into(), input];
+    column(items).spacing(4).into()
+}
+
+fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> {
+    let selected = options.iter().find(|o| o.value == current).cloned();
+    pick_list(options, selected, move |o: Opt| Msg::PolicyDefault(slot.clone(), o)).width(Length::Fill).into()
+}
+
+// ----- Providers tab -------------------------------------------------------------------------
+
+fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![row(vec![spacer(), ui::btn("Add provider", None, Kind::Primary, Some(Msg::OpenCatalogue))]).into()];
+    if let Some(d) = dialog_view(state) {
+        parts.push(d);
+    }
+    if state.providers.is_empty() {
+        parts.push(ui::empty("models", "No providers yet", ""));
+    }
+    for group in GROUPS {
+        let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| group_of(p) == group).map(|p| provider_card(state, p)).collect();
+        if cards.is_empty() {
+            continue;
+        }
+        let items: Vec<Element<'a, Msg>> = vec![ui::label(group).into(), column(cards).spacing(12).into()];
+        parts.push(column(items).spacing(8).into());
+    }
+    column(parts).spacing(16).into()
+}
+
+fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
+    let kind = kind_of(state, p);
+    let (credential, tone) = credential_badge(&p.credential);
+    let brand = kind.map_or("mock", |k| k.brand.as_str());
+    let title = kind.map_or(p.id.as_str(), |k| k.label.as_str());
+    let n = p.models.len();
+    let key_label = if p.credential == "missing" { "Add key" } else { "Key" };
+
+    let head: Element<'a, Msg> = row(vec![
+        ui::brand_logo::<Msg>(brand, 28.0),
+        column(vec![
+            ui::mono(p.id.clone(), 11.0, ui::INK_3).into(),
+            ui::mono(p.base_url.clone().unwrap_or_else(|| "—".to_string()), 11.0, ui::INK_3).into(),
+        ])
+        .spacing(2)
+        .into(),
+    ])
+    .spacing(12)
+    .into();
+    let meta: Element<'a, Msg> = row(vec![
+        ui::badge(credential, tone),
+        ui::faint(format!("{n} {}", if n == 1 { "model" } else { "models" })).into(),
+    ])
+    .spacing(10)
+    .into();
+    let actions: Element<'a, Msg> = row(vec![
+        ui::btn("Test", None, Kind::Secondary, Some(Msg::Test(p.id.clone()))),
+        ui::btn(key_label, None, Kind::Secondary, Some(Msg::OpenKey(p.id.clone()))),
+        spacer(),
+        ui::btn("", Some("models"), Kind::Ghost, Some(Msg::ToggleModels(p.id.clone()))),
+        ui::btn("", Some("edit"), Kind::Ghost, Some(Msg::OpenEdit(p.id.clone()))),
+        ui::btn("", Some("trash"), Kind::Ghost, Some(Msg::OpenRemove(p.id.clone()))),
+    ])
+    .spacing(8)
+    .into();
+
+    let mut body: Vec<Element<'a, Msg>> = vec![head, meta, actions];
+    if state.expanded.contains(&p.id) {
+        body.push(model_list(state, &p.id));
+    }
+    ui::card(title, column(body).spacing(12).into())
+}
+
+fn model_list<'a>(state: &'a State, id: &str) -> Element<'a, Msg> {
+    match state.listed.get(id) {
+        None => ui::faint("Loading…").into(),
+        Some(list) if list.is_empty() => ui::faint("No models listed").into(),
+        Some(list) => {
+            let items: Vec<Element<'a, Msg>> = list.iter().map(|m| ui::mono(m.id.clone(), 12.0, ui::INK).into()).collect();
+            column(items).spacing(4).into()
+        }
+    }
+}
+
+fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    match &state.dialog {
+        Dialog::Closed => None,
+        Dialog::Key { provider, value, saving } => {
+            let input: Element<'a, Msg> = text_input("API key", value).secure(true).on_input(Msg::KeyInput).on_submit(Msg::SaveKey).padding(8).into();
+            let save = ui::btn("Save key", None, Kind::Primary, (!*saving).then_some(Msg::SaveKey));
+            let actions: Element<'a, Msg> = row(vec![spacer(), ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)), save]).spacing(8).into();
+            let items: Vec<Element<'a, Msg>> = vec![input, actions];
+            Some(ui::card(&format!("Set key · {provider}"), column(items).spacing(12).into()))
+        }
+        Dialog::Remove { provider, busy } => {
+            let actions: Element<'a, Msg> = row(vec![
+                spacer(),
+                ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)),
+                ui::btn("Remove provider", None, Kind::Danger, (!*busy).then_some(Msg::ConfirmRemove)),
+            ])
+            .spacing(8)
+            .into();
+            Some(ui::card(&format!("Remove {provider}?"), actions))
+        }
+        Dialog::Catalogue { search } => {
+            let taken: BTreeSet<&str> = state.providers.iter().map(|p| p.id.as_str()).collect();
+            let free: Vec<&'a ProviderKind> = state.kinds.iter().filter(|k| !taken.contains(k.id.as_str())).collect();
+            let q = search.trim().to_lowercase();
+            let shown: Vec<&'a ProviderKind> = free
+                .iter()
+                .copied()
+                .filter(|k| q.is_empty() || format!("{} {} {}", k.label, k.id, k.kind).to_lowercase().contains(&q))
+                .collect();
+            let tiles: Vec<Element<'a, Msg>> = if shown.is_empty() {
+                let none = if free.is_empty() { "Every provider is already configured" } else { "No matches" };
+                vec![ui::faint(none).into()]
+            } else {
+                shown.into_iter().map(kind_tile).collect()
+            };
+            let items: Vec<Element<'a, Msg>> = vec![
+                text_input("Search providers", search).on_input(Msg::CatalogueSearch).padding(8).into(),
+                column(tiles).spacing(4).into(),
+            ];
+            Some(ui::card("Add provider", column(items).spacing(12).into()))
+        }
+        Dialog::Form(form) => Some(form_view(state, form)),
+    }
+}
+
+fn kind_tile<'a>(k: &'a ProviderKind) -> Element<'a, Msg> {
+    let content: Vec<Element<'a, Msg>> = vec![ui::brand_logo::<Msg>(&k.brand, 18.0), text(k.label.as_str()).into()];
+    button(row(content).spacing(8)).on_press(Msg::PickKind(k.id.clone())).width(Length::Fill).into()
+}
+
+/// The shared add and edit form.
+fn form_view<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
+    let (title, submit, notes) = match &form.target {
+        Target::Edit(p) => (format!("Edit {}", p.id), "Save", kind_of(state, p).map(|k| k.notes.clone())),
+        Target::Add(k) => (k.label.clone(), "Add provider", Some(k.notes.clone())),
+    };
+    let mut fields: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(n) = notes.filter(|n| !n.is_empty()) {
+        fields.push(ui::faint(n).into());
+    }
+    let mut id_input = text_input("provider id", &form.id).padding(8);
+    if form.id_editable {
+        id_input = id_input.on_input(Msg::FormId);
+    }
+    fields.push(labelled("Provider id", id_input.into()));
+    fields.push(labelled("Base URL", text_input("https://", &form.base_url).on_input(Msg::FormUrl).padding(8).into()));
+    if let Some(env) = &form.env {
+        fields.push(labelled("Auth env var", text_input("ENV_VAR_NAME", env).on_input(Msg::FormEnv).padding(8).into()));
+    }
+    if let Some(models) = &form.models {
+        fields.push(labelled("Models", text_input("Comma-separated", models).on_input(Msg::FormModels).padding(8).into()));
+    }
+    if let Some(key) = &form.key {
+        fields.push(labelled("API key", text_input("Optional", key).secure(true).on_input(Msg::FormKey).padding(8).into()));
+    }
+    let actions: Element<'a, Msg> = row(vec![
+        spacer(),
+        ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Close)),
+        ui::btn(submit, None, Kind::Primary, (!form.saving).then_some(Msg::FormSave)),
+    ])
+    .spacing(8)
+    .into();
+    fields.push(actions);
+    ui::card(&title, column(fields).spacing(12).into())
+}
+
+// ----- Policy & defaults tab -----------------------------------------------------------------
+
+fn policy_view<'a>(state: &'a State) -> Element<'a, Msg> {
+    let Some(p) = state.policy.as_ref() else {
+        return if state.error.is_some() {
+            ui::empty("alert", "Models unavailable", "apid did not answer. Reload to try again.")
+        } else {
+            ui::loading()
+        };
+    };
+    let save_enabled = !p.saving && p.errors.is_empty() && p.dirty();
+    let bar: Element<'a, Msg> = row(vec![spacer(), ui::btn("Save", Some("check"), Kind::Primary, save_enabled.then_some(Msg::PolicySave))]).into();
+    let items: Vec<Element<'a, Msg>> = vec![bar, policy_card(p), defaults_card(p), limits_card(p), prices_card(state, p)];
+    column(items).spacing(16).into()
+}
+
+fn policy_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
+    if p.saved.dev_models == Some(true) {
+        body.push(ui::badge("Development models enabled — policy relaxed", Tone::Warn));
+    }
+    body.push(ui::prose("Agents may only run the models on their tier's list.").into());
+    let cols: Vec<Element<'a, Msg>> = vec![tier_column(p, Tier::Orchestrator, "Orchestrator"), tier_column(p, Tier::Worker, "Workers")];
+    body.push(row(cols).spacing(16).into());
+    ui::card("Model policy", column(body).spacing(12).into())
+}
+
+fn tier_column<'a>(p: &'a Policy, tier: Tier, title: &str) -> Element<'a, Msg> {
+    let mut rows: Vec<Element<'a, Msg>> = tier_list(&p.copy, tier)
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| policy_row(p, tier, i, entry))
+        .collect();
+    if rows.is_empty() {
+        rows.push(ui::faint("No models").into());
+    }
+    let add: Element<'a, Msg> = text_input("provider/model", p.add_text(tier))
+        .on_input(move |v| Msg::PolicyAddInput(tier, v))
+        .on_submit(Msg::PolicyAdd(tier))
+        .padding(8)
+        .into();
+    let add_row: Element<'a, Msg> = row(vec![add, ui::btn("Add model", None, Kind::Secondary, Some(Msg::PolicyAdd(tier)))]).spacing(8).into();
+    let items: Vec<Element<'a, Msg>> = vec![ui::label(title).into(), column(rows).spacing(6).into(), add_row];
+    column(items).spacing(10).width(Length::FillPortion(1)).into()
+}
+
+fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> Element<'a, Msg> {
+    let (base, effort) = parse_entry(entry);
+    let listed = p.known.contains(base);
+    let dot_tone = if listed { Tone::Ok } else { Tone::Muted };
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::mono("●", 12.0, dot_tone.color()).into(), ui::mono(base.to_string(), 12.0, ui::INK).into()];
+    if effort.is_some() {
+        items.push(ui::badge("effort pinned", Tone::Signal));
+    }
+    items.push(spacer());
+    items.push(ui::btn("", Some("x"), Kind::Ghost, Some(Msg::PolicyRemove(tier, index))));
+    row(items).spacing(8).into()
+}
+
+fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
+    let s = &p.copy;
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        labelled("Orchestrator model", picker(model_options(p, Tier::Orchestrator, &s.orchestrator_model, None), &s.orchestrator_model, Slot::Orchestrator)),
+        labelled("Worker default", picker(model_options(p, Tier::Worker, &s.default_model, None), &s.default_model, Slot::Worker)),
+        ui::label("Per role").into(),
+    ];
+    if s.role_models.is_empty() {
+        items.push(ui::empty("agents", "No roles connected", ""));
+    }
+    for (role, current) in &s.role_models {
+        let orchestrator = role == "orchestrator";
+        let (tier, inherit) = if orchestrator {
+            (Tier::Orchestrator, "Orchestrator default")
+        } else {
+            (Tier::Worker, "Worker default")
+        };
+        let options = model_options(p, tier, current, Some(inherit));
+        let role_row: Element<'a, Msg> = row(vec![
+            ui::mono(role.clone(), 12.0, ui::INK).into(),
+            picker(options, current, Slot::Role(role.clone())),
+        ])
+        .spacing(12)
+        .into();
+        items.push(role_row);
+    }
+    ui::card("Defaults", column(items).spacing(12).into())
+}
+
+fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
+    let s = &p.copy;
+    let turns: Element<'a, Msg> = text_input("1–200", &p.shown("max_turns", s.max_turns.to_string()))
+        .on_input(|v| Msg::PolicyNumber(Num::MaxTurns, v))
+        .padding(8)
+        .into();
+    let tokens: Element<'a, Msg> = text_input("0", &p.shown("max_tokens", s.max_tokens.to_string()))
+        .on_input(|v| Msg::PolicyNumber(Num::MaxTokens, v))
+        .padding(8)
+        .into();
+    let effort_current = s.effort.clone().unwrap_or_else(|| "default".to_string());
+    let effort_options: Vec<String> = EFFORTS.iter().map(|e| e.to_string()).collect();
+    let effort: Element<'a, Msg> = pick_list(effort_options, Some(effort_current), |v: String| Msg::PolicyEffort(v))
+        .width(Length::Fill)
+        .into();
+    let allow: Element<'a, Msg> = text_input("api.example.com, …", &p.shown("fetch_allow", s.fetch_allow.join(", ")))
+        .on_input(Msg::PolicyFetchAllow)
+        .padding(8)
+        .into();
+    let items: Vec<Element<'a, Msg>> = vec![
+        labelled("Max turns", turns),
+        labelled("Max tokens (0 = provider default)", tokens),
+        labelled("Effort", effort),
+        labelled("Fetch allowlist", allow),
+    ];
+    ui::card("Limits", column(items).spacing(12).into())
+}
+
+fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
+    let s = &p.copy;
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for entry in s.model_policy.orchestrator.iter().chain(s.model_policy.worker.iter()) {
+        keys.insert(parse_entry(entry).0.to_string());
+    }
+    keys.extend(s.prices.keys().cloned());
+
+    let toggle = ui::btn(
+        if state.prices_open { "Hide models" } else { "Show models" },
+        None,
+        Kind::Ghost,
+        Some(Msg::TogglePrices),
+    );
+    if !state.prices_open {
+        return ui::card("Prices", toggle);
+    }
+    let header: Element<'a, Msg> = row(vec![
+        ui::label("Model").into(),
+        ui::label("Input (credits / 1M)").into(),
+        ui::label("Output (credits / 1M)").into(),
+    ])
+    .spacing(8)
+    .into();
+    let mut table: Vec<Element<'a, Msg>> = vec![header];
+    if keys.is_empty() {
+        table.push(ui::empty("models", "No models listed", ""));
+    }
+    for key in keys {
+        let price = s.prices.get(&key);
+        let side_input = |side: Side| -> Element<'a, Msg> {
+            let stored = price.map_or(0.0, |pr| match side {
+                Side::Input => pr.input,
+                Side::Output => pr.output,
+            });
+            let k = key.clone();
+            text_input("0", &p.shown(&price_key(&key, side), stored.to_string()))
+                .on_input(move |v| Msg::PolicyNumber(Num::Price(k.clone(), side), v))
+                .padding(6)
+                .into()
+        };
+        let line: Element<'a, Msg> = row(vec![
+            ui::mono(key.clone(), 12.0, ui::INK).into(),
+            side_input(Side::Input),
+            side_input(Side::Output),
+        ])
+        .spacing(8)
+        .into();
+        table.push(line);
+    }
+    let items: Vec<Element<'a, Msg>> = vec![toggle, column(table).spacing(8).into()];
+    ui::card("Prices", column(items).spacing(12).into())
 }
