@@ -344,8 +344,16 @@ h2 .dim { color: var(--ink-3); }
 .foot nav a { font-size: 15px; text-decoration: none; color: var(--ink-2); }
 .foot nav a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .foot .label { color: var(--ink-3); margin-bottom: 8px; }
-.jh { display: inline-block; font: 600 17px/1 var(--mono); letter-spacing: 0.1em; text-decoration: none; padding: 11px 13px; border: 1px solid var(--ink); background: var(--sheet); box-shadow: var(--print); transition: transform 160ms var(--ease), background 160ms; }
-.jh:hover { background: var(--signal); color: #fff; transform: translate(-2px, -2px); }
+/* The JUMPHASH lockup: its mark (three slabs, the hash cut in its own orange) and the wordmark
+   in IBM Plex Mono, as on jumphash.com; boxed in the register's print style. */
+.jh { --jh-signal: #ff4d00; display: inline-flex; align-items: center; gap: 12px; padding: 12px 16px 12px 12px; color: var(--ink); text-decoration: none; border: 1px solid var(--ink); background: var(--sheet); box-shadow: var(--print); transition: transform 160ms var(--ease), background 160ms, color 160ms, box-shadow 160ms; }
+.jh-mark { flex: none; display: block; fill: currentColor; }
+.jh-mark .jh-sig { fill: var(--jh-signal); }
+.jh-word { font: 600 17px/1 "IBM Plex Mono", var(--mono); letter-spacing: 0.14em; }
+.jh-ext { font: 400 13px/1 var(--mono); color: var(--ink-3); transition: color 160ms, transform 160ms var(--ease); }
+.jh:hover { background: var(--ink); color: var(--paper); transform: translate(-2px, -2px); }
+.jh:hover .jh-ext { color: var(--jh-signal); transform: translate(2px, -2px); }
+.jh:focus-visible { outline: 2px solid var(--jh-signal); outline-offset: 3px; }
 .foot-base { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding-top: 18px; padding-bottom: 28px; border-top: 1px solid var(--rule); font: 400 11.5px/1.4 var(--mono); color: var(--ink-3); }
 
 /* ---- Load: the hive assembles --------------------------------------------------------------- */
