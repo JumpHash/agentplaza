@@ -13,6 +13,7 @@
 //!               updated_at timestamptz not null default now())
 //!   transcript(cid bigint, seq bigint, work bigint, kind text, at_ms bigint, data jsonb,
 //!              primary key (cid, seq))
+//!   infraction(id bigserial, cid bigint, law text, at_ms bigint, tool text, detail text)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -45,11 +46,22 @@ CREATE TABLE IF NOT EXISTS transcript (
     at_ms bigint,
     data jsonb,
     PRIMARY KEY (cid, seq)
-);";
+);
+CREATE TABLE IF NOT EXISTS infraction (
+    id bigserial PRIMARY KEY,
+    cid bigint NOT NULL,
+    law text NOT NULL,
+    at_ms bigint NOT NULL,
+    tool text NOT NULL,
+    detail text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS infraction_cid ON infraction (cid, at_ms DESC);";
 
 const UPSERT: &str = "INSERT INTO plaza_state (component, data, hash, updated_at) VALUES ($1, $2::text::jsonb, $3, now()) ON CONFLICT (component) DO UPDATE SET data = EXCLUDED.data, hash = EXCLUDED.hash, updated_at = now()";
 
 const APPEND: &str = "INSERT INTO transcript (cid, seq, work, kind, at_ms, data) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING";
+
+const INFRACTION_APPEND: &str = "INSERT INTO infraction (cid, law, at_ms, tool, detail) VALUES ($1,$2,$3,$4,$5)";
 
 const MINUTE: Duration = Duration::from_secs(60);
 
@@ -139,6 +151,7 @@ pub struct Db {
     /// restore that was refused.
     held: Mutex<BTreeSet<String>>,
     append_logged: Mutex<Option<Instant>>,
+    infraction_logged: Mutex<Option<Instant>>,
 }
 
 impl Db {
@@ -149,6 +162,7 @@ impl Db {
             stored: Mutex::new(BTreeMap::new()),
             held: Mutex::new(BTreeSet::new()),
             append_logged: Mutex::new(None),
+            infraction_logged: Mutex::new(None),
         }
     }
 
@@ -306,14 +320,65 @@ pub struct Infraction {
 }
 
 impl Db {
-    /// Appends one infraction (table `infraction`, created with the schema).
-    pub fn append_infraction(&self, _infraction: &Infraction) {
-        // contract: J2
+    /// Appends one infraction (table `infraction`, created with the schema). A failed append is
+    /// dropped; the failure is logged at most once a minute.
+    pub fn append_infraction(&self, infraction: &Infraction) {
+        if !self.enabled() {
+            return;
+        }
+        let (cid, at_ms) = (infraction.cid as i64, infraction.at_ms as i64);
+        let law = &infraction.law;
+        let tool = &infraction.tool;
+        let detail = &infraction.detail;
+        if let Err(e) = self.run(|c| c.execute(INFRACTION_APPEND, &[&cid, law, &at_ms, tool, detail])) {
+            let mut logged = self.infraction_logged.lock().unwrap_or_else(PoisonError::into_inner);
+            if due(*logged) {
+                *logged = Some(Instant::now());
+                eprintln!("db: infraction append failed: {e} (dropped; logged once a minute)");
+            }
+        }
     }
 
     /// Infractions, newest first: one agent's (`Some(cid)`) or the plaza's.
-    pub fn infractions(&self, _cid: Option<u64>, _limit: i64) -> Vec<Infraction> {
-        Vec::new() // contract: J2
+    pub fn infractions(&self, cid: Option<u64>, limit: i64) -> Vec<Infraction> {
+        if !self.enabled() {
+            return Vec::new();
+        }
+        let rows = match cid {
+            Some(cid) => {
+                let cid = cid as i64;
+                self.run(|c| {
+                    c.query(
+                        "SELECT cid, law, at_ms, tool, detail FROM infraction WHERE cid = $1 ORDER BY at_ms DESC, id DESC LIMIT $2",
+                        &[&cid, &limit],
+                    )
+                })
+            }
+            None => self.run(|c| {
+                c.query("SELECT cid, law, at_ms, tool, detail FROM infraction ORDER BY at_ms DESC, id DESC LIMIT $1", &[&limit])
+            }),
+        };
+        match rows {
+            Ok(rows) => rows
+                .iter()
+                .map(|r| Infraction {
+                    cid: r.get::<_, i64>(0) as u64,
+                    law: r.get(1),
+                    at_ms: r.get::<_, i64>(2) as u64,
+                    tool: r.get(3),
+                    detail: r.get(4),
+                })
+                .collect(),
+            Err(e) => {
+                eprintln!("db: infraction read failed: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Whether Postgres holds no infraction at all (the one-time import of the files' violations).
+    fn no_infractions(&self) -> bool {
+        self.infractions(None, 1).is_empty()
     }
 }
 
@@ -349,6 +414,23 @@ pub fn restore_all(app: &App) {
     let db = Arc::clone(&app.db);
     app.transcripts.set_sink(Box::new(move |cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value| {
         db.append_transcript(cid, seq, work, kind, at_ms, data)
+    }));
+    // Infractions recorded before Postgres held any (from the laws' own file) are imported once.
+    if app.db.no_infractions() {
+        for (cid, v) in app.laws.all_violations() {
+            let tool = String::new();
+            app.db.append_infraction(&Infraction { cid, law: v.law, at_ms: v.at_ms, tool, detail: v.detail });
+        }
+    }
+    let db = Arc::clone(&app.db);
+    app.laws.set_sink(Box::new(move |cid: u64, v: &crate::laws::Violation, tool: &str| {
+        db.append_infraction(&Infraction {
+            cid,
+            law: v.law.clone(),
+            at_ms: v.at_ms,
+            tool: tool.to_string(),
+            detail: v.detail.clone(),
+        })
     }));
 }
 
