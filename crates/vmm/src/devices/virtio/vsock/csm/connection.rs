@@ -79,12 +79,12 @@ use std::fmt::Debug;
 //          Our implementation uses the proactive approach.
 use std::io::{ErrorKind, Write};
 use std::num::Wrapping;
-use std::os::unix::io::{AsRawFd, RawFd};
+use crate::pal::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
 
 use vm_memory::GuestMemoryError;
 use vm_memory::io::{ReadVolatile, WriteVolatile};
-use vmm_sys_util::epoll::EventSet;
+use crate::pal::epoll::EventSet;
 
 use super::super::defs::uapi;
 use super::super::{VsockChannel, VsockEpollListener, VsockError};
@@ -688,7 +688,7 @@ mod tests {
 
     use vm_memory::bitmap::BitmapSlice;
     use vm_memory::{VolatileMemoryError, VolatileSlice};
-    use vmm_sys_util::eventfd::EventFd;
+    use crate::pal::eventfd::EventFd;
 
     use super::super::super::defs::uapi;
     use super::*;
@@ -732,7 +732,7 @@ mod tests {
     impl TestStream {
         fn new() -> Self {
             Self {
-                fd: EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+                fd: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),
                 read_state: StreamState::Ready,
                 write_state: StreamState::Ready,
                 read_buf: Vec::new(),

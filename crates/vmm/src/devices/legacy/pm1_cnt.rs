@@ -22,7 +22,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
 
 use crate::vstate::bus::BusDevice;
 
@@ -163,10 +163,10 @@ impl BusDevice for Pm1CntDevice {
 
 #[cfg(test)]
 mod tests {
-    use libc::EFD_NONBLOCK;
+    use crate::pal::eventfd::EFD_NONBLOCK;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
-    use vmm_sys_util::eventfd::EventFd;
+    use crate::pal::eventfd::EventFd;
 
     use super::*;
 

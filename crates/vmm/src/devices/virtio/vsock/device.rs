@@ -24,7 +24,7 @@
 
 use std::fmt::Debug;
 
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
 
 use super::metrics::{IncMetric, METRICS};
 use super::packet::{VSOCK_PKT_HDR_SIZE, VsockPacketRx, VsockPacketTx};
@@ -126,7 +126,7 @@ where
     ) -> Result<Vsock<B>, VsockError> {
         let mut queue_events = Vec::new();
         for _ in 0..queues.len() {
-            queue_events.push(EventFd::new(libc::EFD_NONBLOCK).map_err(VsockError::EventFd)?);
+            queue_events.push(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).map_err(VsockError::EventFd)?);
         }
 
         Ok(Vsock {
@@ -136,7 +136,7 @@ where
             backend,
             avail_features: AVAIL_FEATURES,
             acked_features: 0,
-            activate_evt: EventFd::new(libc::EFD_NONBLOCK).map_err(VsockError::EventFd)?,
+            activate_evt: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).map_err(VsockError::EventFd)?,
             activated: false,
             mem: None,
             irq: None,
@@ -456,7 +456,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::{AsRawFd, RawFd};
+    use crate::pal::{AsRawFd, RawFd};
 
     use super::*;
     use crate::devices::virtio::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
@@ -503,11 +503,11 @@ mod tests {
     }
 
     impl VsockEpollListener for FakeBackend {
-        fn get_polled_evset(&self) -> vmm_sys_util::epoll::EventSet {
-            vmm_sys_util::epoll::EventSet::IN
+        fn get_polled_evset(&self) -> crate::pal::epoll::EventSet {
+            crate::pal::epoll::EventSet::IN
         }
 
-        fn notify(&mut self, _evset: vmm_sys_util::epoll::EventSet) {}
+        fn notify(&mut self, _evset: crate::pal::epoll::EventSet) {}
     }
 
     impl VsockBackend for FakeBackend {
@@ -539,7 +539,7 @@ mod tests {
         ];
         let queues = vqs.iter().map(|vq| vq.create_queue()).collect();
         let mut device = Vsock::with_queues(3, FakeBackend::default(), queues).unwrap();
-        let irq = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
         device.activate((*mem).clone(), irq).unwrap();
         (device, vqs)
     }

@@ -33,11 +33,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Read;
-use std::os::unix::io::{AsRawFd, RawFd};
+use crate::pal::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
-use vmm_sys_util::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 
 use super::super::csm::ConnState;
 use super::super::defs::uapi;

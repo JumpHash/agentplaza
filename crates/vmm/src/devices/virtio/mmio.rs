@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Barrier;
 
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
 
 use crate::devices::virtio::VirtioError;
 use crate::devices::virtio::device_status;
@@ -657,7 +657,7 @@ mod tests {
         let transport = VirtioMmioTransport::new(
             Box::new(device),
             single_region_mem(0x1000),
-            EventFd::new(libc::EFD_NONBLOCK).expect("event fd"),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
         );
         (transport, state)
     }
@@ -907,7 +907,7 @@ mod tests {
         let mut transport = VirtioMmioTransport::new(
             Box::new(FailingDevice(Box::new(device))),
             single_region_mem(0x1000),
-            EventFd::new(libc::EFD_NONBLOCK).expect("event fd"),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
         );
         negotiate(&mut transport);
         write_u32(&mut transport, 0x70, driver_ok());

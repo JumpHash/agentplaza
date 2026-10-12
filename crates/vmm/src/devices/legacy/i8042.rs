@@ -13,7 +13,7 @@ use std::num::Wrapping;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
 
 use crate::vstate::bus::BusDevice;
 
@@ -104,7 +104,7 @@ impl I8042Device {
         Ok(I8042Device {
             reset_evt,
             exit_signalled,
-            kbd_interrupt_evt: EventFd::new(libc::EFD_NONBLOCK)?,
+            kbd_interrupt_evt: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)?,
             control: CB_POST_OK | CB_KBD_INT,
             cmd: 0,
             outp: 0,
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_i8042_read_write_and_event() {
         let mut i8042 = I8042Device::new(
-            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_i8042_commands() {
         let mut i8042 = I8042Device::new(
-            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_i8042_buffer() {
         let mut i8042 = I8042Device::new(
-            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn test_i8042_kbd() {
         let mut i8042 = I8042Device::new(
-            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();

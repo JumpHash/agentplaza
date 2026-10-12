@@ -49,10 +49,10 @@ pub mod mmio_device;
 pub mod packet;
 pub mod unix;
 
-use std::os::unix::io::AsRawFd;
+use crate::pal::AsRawFd;
 
 use vm_memory::GuestMemoryError;
-use vmm_sys_util::epoll::EventSet;
+use crate::pal::epoll::EventSet;
 
 pub use self::defs::VSOCK_DEV_ID;
 pub use self::device::{ActivateError, Vsock};

@@ -13,7 +13,7 @@
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
 
 use super::device::Vsock;
 use super::VsockBackend;

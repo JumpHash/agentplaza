@@ -30,7 +30,7 @@ use std::ops::Deref;
 #[cfg(target_os = "linux")]
 use vm_superio::Trigger;
 #[cfg(target_os = "linux")]
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
 
 #[cfg(target_os = "linux")]
 pub use self::i8042::{I8042Device, I8042Error as I8042DeviceError};

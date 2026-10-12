@@ -18,12 +18,12 @@
 //! owns (the same one registered as the layout's KVM `irqfd`).
 
 use std::fmt::Debug;
-use std::os::fd::AsRawFd;
+use crate::pal::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use vmm_sys_util::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+use crate::pal::eventfd::EventFd;
 
 use super::device::{EVQ_INDEX, RXQ_INDEX, TXQ_INDEX, Vsock};
 use super::metrics::{IncMetric, METRICS};
@@ -94,13 +94,13 @@ fn lock<B>(device: &Arc<Mutex<Vsock<B>>>) -> std::sync::MutexGuard<'_, Vsock<B>>
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-fn register(epoll: &Epoll, fd: std::os::fd::RawFd, data: u64, evset: EventSet) {
+fn register(epoll: &Epoll, fd: crate::pal::RawFd, data: u64, evset: EventSet) {
     if let Err(err) = epoll.ctl(ControlOperation::Add, fd, EpollEvent::new(evset, data)) {
         eprintln!("vsock: failed to register fd {fd} in the event thread: {err}");
     }
 }
 
-fn unregister(epoll: &Epoll, fd: std::os::fd::RawFd) {
+fn unregister(epoll: &Epoll, fd: crate::pal::RawFd) {
     if let Err(err) = epoll.ctl(ControlOperation::Delete, fd, EpollEvent::default()) {
         eprintln!("vsock: failed to unregister fd {fd} in the event thread: {err}");
     }
@@ -317,7 +317,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::RawFd;
+    use crate::pal::RawFd;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -341,7 +341,7 @@ mod tests {
     impl Default for IdleBackend {
         fn default() -> Self {
             Self {
-                poll: EventFd::new(libc::EFD_NONBLOCK).expect("an idle backend event fd"),
+                poll: EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an idle backend event fd"),
             }
         }
     }
@@ -394,7 +394,7 @@ mod tests {
     fn activated_device(mem: &GuestMemoryMmap) -> Arc<Mutex<Vsock<IdleBackend>>> {
         let mut device = Vsock::with_queues(3, IdleBackend::default(), three_empty_queues(mem))
             .expect("an idle vsock device");
-        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an interrupt event fd");
         device
             .activate((*mem).clone(), irq)
             .expect("the idle device activates");
@@ -440,7 +440,7 @@ mod tests {
     fn exit_is_observed_when_the_event_fd_wakeup_is_lost() {
         let mem = default_mem();
         let device = idle_device(&mem);
-        let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
         let exit_signalled = Arc::new(AtomicBool::new(false));
         let handle = start_event_thread(
             device,
@@ -467,7 +467,7 @@ mod tests {
     fn the_event_fd_wakeup_ends_the_thread() {
         let mem = default_mem();
         let device = idle_device(&mem);
-        let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
         let exit_signalled = Arc::new(AtomicBool::new(false));
         let handle = start_event_thread(
             device,
@@ -504,7 +504,7 @@ mod tests {
     fn a_stale_queue_kick_after_a_device_reset_does_not_panic_the_event_thread() {
         let mem = default_mem();
         let device = activated_device(&mem);
-        let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
         let exit_signalled = Arc::new(AtomicBool::new(false));
         let handle = start_event_thread(
             Arc::clone(&device),
