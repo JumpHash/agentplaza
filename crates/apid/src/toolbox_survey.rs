@@ -112,6 +112,8 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
             .filter(|d| matches_any(&words, &discovery_text(d)))
             .collect();
     }
+    // Flagged discoveries go after the unflagged ones; the sort is stable, so each group keeps its order.
+    found.sort_by_key(|d| d.flagged.is_some());
     let found_lines: Vec<String> = found.iter().take(MAX_FOUND).flat_map(found_lines).collect();
 
     section(&mut out, "In your VM", vm);
@@ -145,14 +147,18 @@ fn section(out: &mut Vec<String>, title: &str, lines: Vec<String>) {
 
 /// The listing of one discovery: its header line, then how, verdict and url when known.
 fn found_lines(d: &Discovery) -> Vec<String> {
-    let mut lines = vec![format!(
+    let mut header = format!(
         "- {} [{}] — {} (by {}, {} endorsements)",
         d.name,
         d.kind,
         first_sentence(&d.what_for),
         d.by,
         d.endorsed_by.len()
-    )];
+    );
+    if let Some(reason) = d.flagged.as_deref() {
+        header.push_str(&format!(" ⚠ owner flagged: {reason}"));
+    }
+    let mut lines = vec![header];
     lines.push(format!("  how: {}", clip(&d.how, FIELD_MAX)));
     lines.push(format!("  verdict: {}", clip(&d.verdict, FIELD_MAX)));
     if let Some(url) = d.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
