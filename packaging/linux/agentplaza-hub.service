@@ -1,0 +1,13 @@
+[Unit]
+Description=AgentPlaza hub
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/apid
+EnvironmentFile=-%h/.config/agentplaza/hub.env
+Restart=on-failure
+NoNewPrivileges=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target
