@@ -344,14 +344,15 @@ fn spec(name: &str) -> Option<ToolSpec> {
         ),
         "plaza_agents" => ("List the connected agents with their cids and roles.", obj(json!({}), &[])),
         "plaza_post_task" => (
-            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is the escrow that pays the worker's model calls and tool steps — work stops when it runs out — so size it to the job (default 2000; a substantial build or media job may need 5000+).",
+            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is the escrow that pays the worker's model calls and tool steps — work stops when it runs out — so size it to the job (default 2000; a substantial build or media job may need 5000+). For a project's work give `project`; tasks can be posted only once its plan is approved.",
             obj(
                 json!({
                     "title": {"type": "string"},
                     "body": {"type": "string"},
                     "role": {"type": "string"},
                     "assignee": {"type": "integer"},
-                    "budget": {"type": "integer", "minimum": 0}
+                    "budget": {"type": "integer", "minimum": 0},
+                    "project": {"type": "string"}
                 }),
                 &["title", "body"],
             ),
@@ -595,6 +596,14 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             // An unfunded task would stop at its first model call: give it a working default.
             let budget = input.get("budget").and_then(Value::as_u64).filter(|b| *b > 0).unwrap_or(DEFAULT_TASK_BUDGET);
             let role = input.get("role").and_then(Value::as_str).map(str::to_string);
+            // A project's task is refused until the project's plan is approved.
+            let project = input.get("project").and_then(Value::as_str).filter(|p| !p.trim().is_empty());
+            if let Some(pid) = project {
+                let p = app.projects.get(pid).ok_or_else(|| format!("no project {pid}"))?;
+                if !matches!(p.stage.as_str(), "implementation" | "review") {
+                    return Err(format!("project {pid} is at {}: tasks can be posted only once its plan is approved", p.stage));
+                }
+            }
             let task = app
                 .plaza
                 .tasks
@@ -605,6 +614,9 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                     role,
                 })
                 .map_err(|e| format!("{e:?}"))?;
+            if let Some(pid) = project {
+                app.projects.link_task(pid, task.id())?;
+            }
             app.work.note_poster(task.id(), agent.cid);
             crate::society::note_posted(app, agent.cid);
             match input.get("assignee").and_then(Value::as_u64) {

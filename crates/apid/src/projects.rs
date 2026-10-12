@@ -493,8 +493,149 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 }
 
 /// Runs one of TOOLS for `agent`.
-pub fn run(_app: &App, _agent: &Agent, _name: &str, _input: &Value) -> Result<String, String> {
-    Err("projects are not available yet".into()) // contract: P2
+pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
+    let actor = Actor {
+        cid: agent.cid,
+        name: if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() },
+        role: agent.role.clone(),
+    };
+    match name {
+        "plaza_project_open" => {
+            if !matches!(crate::settings::tier_of(&agent.role), crate::settings::Tier::Orchestrator) {
+                return Err("only the orchestrator opens projects".into());
+            }
+            let project = app.projects.open(
+                &actor,
+                str_arg(input, "title")?,
+                str_arg(input, "goal")?,
+                str_arg(input, "kind")?,
+                false,
+            )?;
+            answer(app, &project, "write the brief (the goal restated, who it is for, what a professional result includes, constraints the operator stated, questions only the operator can answer), share it with share_file and attach it with plaza_project_attach kind=brief, then plaza_project_advance")
+        }
+        "plaza_projects" => match opt_str(input, "id") {
+            Some(id) => {
+                let project = app.projects.get(&id).ok_or_else(|| format!("no project {id}"))?;
+                serde_json::to_string_pretty(&project).map_err(|e| e.to_string())
+            }
+            None => {
+                let projects = app.projects.list();
+                if projects.is_empty() {
+                    return Ok("no projects".into());
+                }
+                Ok(projects.iter().map(project_line).collect::<Vec<_>>().join("\n"))
+            }
+        },
+        "plaza_project_attach" => {
+            let id = str_arg(input, "id")?;
+            let file = opt_str(input, "file");
+            if let Some(file) = &file {
+                if app.deliverables.meta(file).is_none() {
+                    return Err(format!("no file {file}"));
+                }
+                if !app.deliverables.can_read(file, agent.cid) {
+                    return Err(format!("you cannot read file {file}"));
+                }
+            }
+            let doc = Doc {
+                kind: str_arg(input, "kind")?.to_string(),
+                title: str_arg(input, "title")?.to_string(),
+                file,
+                repo_path: opt_str(input, "repo_path"),
+                commit: opt_str(input, "commit"),
+                summary: str_arg(input, "summary")?.to_string(),
+                // Filled by the store: the author and the time.
+                by_cid: 0,
+                by: String::new(),
+                at_ms: 0,
+            };
+            let project = app.projects.attach(id, &actor, doc)?;
+            answer(app, &project, stage_hint(&project.stage))
+        }
+        "plaza_project_critique" => {
+            let project = app.projects.critique(
+                str_arg(input, "id")?,
+                &actor,
+                str_arg(input, "verdict")?,
+                str_arg(input, "text")?,
+            )?;
+            answer(app, &project, stage_hint(&project.stage))
+        }
+        "plaza_project_advance" => {
+            let id = str_arg(input, "id")?;
+            let before = app.projects.get(id).ok_or_else(|| format!("no project {id}"))?;
+            if before.stage == "implementation" {
+                let unfinished = unfinished_tasks(app, &before);
+                if !unfinished.is_empty() {
+                    return Err(format!("tasks not done: {}", unfinished.join(", ")));
+                }
+            }
+            let note = opt_str(input, "note").unwrap_or_default();
+            let project = app.projects.advance(id, &actor, &note)?;
+            answer(app, &project, stage_hint(&project.stage))
+        }
+        "plaza_project_approve" => {
+            let id = str_arg(input, "id")?;
+            let note = opt_str(input, "note").unwrap_or_default();
+            let project = app.projects.approve(id, &actor, &note)?;
+            answer(app, &project, stage_hint(&project.stage))
+        }
+        other => Err(format!("not a project tool: {other}")),
+    }
+}
+
+/// A required, non-blank string argument.
+fn str_arg<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| format!("missing or empty string `{key}`"))
+}
+
+/// An optional, non-blank string argument.
+fn opt_str(input: &Value, key: &str) -> Option<String> {
+    input.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_string)
+}
+
+/// One line of the project listing.
+fn project_line(p: &Project) -> String {
+    format!("{} [{}] {} — lead {}, rev {}, {} docs, {} critiques", p.id, p.stage, p.title, p.lead_cid, p.revision, p.docs.len(), p.critiques.len())
+}
+
+/// Publishes the changed project and returns it as compact JSON, with the next step.
+fn answer(app: &App, project: &Project, hint: &str) -> Result<String, String> {
+    app.bus.publish("project", project);
+    let json = serde_json::to_string(project).map_err(|e| e.to_string())?;
+    Ok(if hint.is_empty() { json } else { format!("{json}\nNext: {hint}") })
+}
+
+/// What the agents of a stage do next.
+fn stage_hint(stage: &str) -> &'static str {
+    match stage {
+        "brief" => "plaza_project_advance moves it to research",
+        "research" => "researchers attach findings",
+        "proposal" => "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM)",
+        "critique" => "agents other than the author critique with plaza_project_critique",
+        "approval" => "the mayor approves with plaza_project_approve",
+        "implementation" => "the orchestrator posts tasks from the tasks document, each with its acceptance, and links them",
+        "review" => "QA and reviewers check the deliverables; attach a deliverable doc",
+        "delivered" => "report to the operator",
+        _ => "",
+    }
+}
+
+/// The project's linked tasks that are not done, as `id (state)`.
+fn unfinished_tasks(app: &App, project: &Project) -> Vec<String> {
+    let tasks = app.plaza.tasks.list();
+    project
+        .tasks
+        .iter()
+        .filter_map(|id| {
+            let state = tasks.iter().find(|t| t.id() == id.as_str()).map_or("missing", |t| t.state());
+            (state != "done").then(|| format!("{id} ({state})"))
+        })
+        .collect()
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
