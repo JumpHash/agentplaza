@@ -55,6 +55,30 @@
 .profile-violations li { display: flex; gap: 10px; align-items: center; }
 .profile-clean { margin: 0; font: 400 12px var(--mono); }
 
+.prof-inf { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.prof-inf h3 { margin: 0; font: 600 11.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
+.prof-inf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.prof-inf-row {
+  display: grid; grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 2fr) auto; gap: 4px 12px; align-items: baseline;
+  padding: 8px 10px; background: var(--paper); border: 2px solid var(--ink); border-radius: 0; box-shadow: 2px 2px 0 var(--ink);
+  font: 400 12px var(--mono);
+}
+.prof-inf-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.prof-inf-law { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prof-inf-id { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prof-inf-tool { color: var(--ink-2); white-space: nowrap; }
+.prof-inf-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.prof-inf-ago { white-space: nowrap; }
+.prof-inf-more {
+  align-self: flex-start; font: 600 12px var(--mono); color: var(--ink); background: var(--paper);
+  border: 2px solid var(--ink); border-radius: 0; padding: 4px 10px; cursor: pointer; box-shadow: 2px 2px 0 var(--ink);
+}
+.prof-inf-more:hover { color: var(--signal-ink); }
+@media (max-width: 600px) {
+  .prof-inf-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .prof-inf-detail { grid-column: 1 / -1; white-space: normal; }
+}
+
 @media (max-width: 900px) {
   .profile-card { grid-template-columns: 1fr; justify-items: center; }
   .profile-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
