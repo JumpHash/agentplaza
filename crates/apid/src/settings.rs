@@ -192,6 +192,12 @@ impl Store {
     /// Validates `new`, writes `settings.json` atomically and replaces the
     /// in-memory settings. Returns the saved value.
     pub fn put(&self, new: Settings) -> Result<Settings, String> {
+        self.check(&new)?;
+        self.replace(new)
+    }
+
+    /// The checks every saved settings value passes (`put` and `restore`).
+    fn check(&self, new: &Settings) -> Result<(), String> {
         self.allowed(Tier::Worker, &new.default_model)?;
         self.allowed(Tier::Orchestrator, &new.orchestrator_model)?;
         for (role, model) in &new.role_models {
@@ -209,7 +215,11 @@ impl Store {
         if let Some(bad) = new.fetch_allow.iter().find(|h| !is_bare_host(h)) {
             return Err(format!("fetch_allow entry {bad:?} is not a bare hostname"));
         }
+        Ok(())
+    }
 
+    /// Writes `settings.json` atomically and swaps the in-memory settings.
+    fn replace(&self, new: Settings) -> Result<Settings, String> {
         let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let bytes = serde_json::to_vec_pretty(&new).map_err(|e| e.to_string())?;
         let tmp = self.path.with_file_name("settings.json.tmp");
@@ -266,12 +276,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        serde_json::to_string_pretty(&self.get()).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let new: Settings = serde_json::from_str(json).map_err(|e| format!("bad settings snapshot: {e}"))?;
+        self.check(&new)?;
+        self.replace(new).map(|_| ())
     }
 }
 
@@ -322,6 +334,29 @@ mod tests {
         assert_eq!(s.default_model, "mock/agent");
         assert_eq!(s.orchestrator_model, "mock/agent");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_round_trips_and_a_refusal_changes_nothing() {
+        let dir = temp_dir("snapshot");
+        let store = Store::load(&dir, false).unwrap();
+        let mut s = Settings::default();
+        s.max_turns = 50;
+        store.put(s.clone()).unwrap();
+        let json = store.snapshot();
+
+        let other_dir = temp_dir("snapshot-other");
+        let other = Store::load(&other_dir, false).unwrap();
+        other.restore(&json).unwrap();
+        assert_eq!(other.get(), s);
+        assert_eq!(Store::load(&other_dir, false).unwrap().get(), s);
+
+        let mut bad = Settings::default();
+        bad.max_turns = 0;
+        assert!(other.restore(&serde_json::to_string(&bad).unwrap()).is_err());
+        assert_eq!(other.get(), s);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     #[test]

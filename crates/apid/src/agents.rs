@@ -115,10 +115,7 @@ impl Names {
         let mut names = self.guard();
         let mut next = names.clone();
         next.insert(cid, name.to_owned());
-        let text = serde_json::to_string_pretty(&next).map_err(std::io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)?;
+        self.save(&next)?;
         *names = next;
         Ok(())
     }
@@ -765,18 +762,49 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
 impl Names {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        serde_json::to_string(&*self.guard()).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Names::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let names: BTreeMap<u64, String> = serde_json::from_str(json).map_err(|e| format!("bad names snapshot: {e}"))?;
+        let mut current = self.guard();
+        self.save(&names).map_err(|e| format!("write names: {e}"))?;
+        *current = names;
+        Ok(())
+    }
+
+    /// Writes the map to `names.json` atomically (tmp file, then rename).
+    fn save(&self, names: &BTreeMap<u64, String>) -> std::io::Result<()> {
+        let text = serde_json::to_string_pretty(names).map_err(std::io::Error::other)?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &self.path)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_snapshot_round_trips() {
+        let dir = std::env::temp_dir().join(format!("apid-names-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let names = Names::load(a.join("names.json"));
+        names.set(3, "Ada").unwrap();
+
+        let other = Names::load(b.join("names.json"));
+        other.restore(&names.snapshot()).unwrap();
+        assert_eq!(other.get(3).as_deref(), Some("Ada"));
+        assert_eq!(Names::load(b.join("names.json")).get(3).as_deref(), Some("Ada"));
+        assert!(other.restore("not json").is_err());
+        assert_eq!(other.get(3).as_deref(), Some("Ada"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn model_source_prefers_agent_then_role_then_default() {

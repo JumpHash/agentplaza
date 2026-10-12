@@ -31,7 +31,7 @@ pub enum Mode {
     ReadOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Pending,
@@ -40,7 +40,7 @@ pub enum State {
     Used,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Approval {
     pub id: String,
     pub cid: u64,
@@ -290,15 +290,36 @@ fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 
+/// The snapshot's shape: the modes, the queue (`pending`, every item whatever its state) and the next id.
+#[derive(Serialize, Deserialize)]
+struct Snapshot {
+    modes: BTreeMap<u64, Mode>,
+    pending: Vec<Approval>,
+    #[serde(default)]
+    seq: u64,
+}
+
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        let inner = self.lock();
+        let snap = Snapshot { modes: inner.modes.clone(), pending: inner.queue.clone(), seq: inner.next };
+        serde_json::to_string(&snap).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let snap: Snapshot = serde_json::from_str(json).map_err(|e| format!("bad approvals snapshot: {e}"))?;
+        let bytes = serde_json::to_vec_pretty(&snap.modes).map_err(|e| e.to_string())?;
+        let mut pending = snap.pending;
+        let excess = pending.len().saturating_sub(QUEUE_CAP);
+        pending.drain(..excess);
+        let mut inner = self.lock();
+        write_atomic(&self.path, &bytes, 0o600).map_err(|e| format!("write permissions: {e}"))?;
+        inner.modes = snap.modes;
+        inner.queue = pending;
+        inner.next = snap.seq.max(1);
+        Ok(())
     }
 }
 
@@ -378,6 +399,25 @@ mod tests {
         }
         assert!(store.list().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_round_trips_modes_and_queue() {
+        let dir = scratch("snap");
+        let store = Store::load(&dir);
+        store.set_mode(5, Mode::Ask).unwrap();
+        let (_, created) = store.gate(5, "write_thing", "write", &json!({ "a": 1 }));
+        let id = created.unwrap().id;
+
+        let other_dir = scratch("snap-other");
+        let other = Store::load(&other_dir);
+        other.restore(&store.snapshot()).unwrap();
+        assert_eq!(other.mode(5), Mode::Ask);
+        assert_eq!(other.list().len(), 1);
+        assert_eq!(other.list()[0].id, id);
+        assert_eq!(Store::load(&other_dir).mode(5), Mode::Ask);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     #[test]

@@ -1194,15 +1194,32 @@ fn io_failure(e: io::Error) -> Failure {
 }
 
 
+/// The snapshot's shape: the operator settings and every proposal, whatever its state. The vault is not in it.
+#[derive(Serialize, Deserialize)]
+struct Snapshot {
+    settings: BTreeMap<String, Setting>,
+    proposals: Vec<Proposal>,
+}
+
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        let snap = Snapshot { settings: lock(&self.settings).clone(), proposals: lock(&self.proposals).clone() };
+        serde_json::to_string(&snap).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let snap: Snapshot = serde_json::from_str(json).map_err(|e| format!("bad connectors snapshot: {e}"))?;
+        let _guard = lock(&self.write);
+        save(&self.dir.join("connectors.json"), &snap.settings).map_err(|e| format!("write connectors: {e}"))?;
+        save_proposals(&self.dir.join(PROPOSALS), &snap.proposals).map_err(|e| format!("write proposals: {e}"))?;
+        for proposal in snap.proposals.iter().filter(|p| p.state == "approved") {
+            adopt(&proposal.spec);
+        }
+        *lock(&self.settings) = snap.settings;
+        *lock(&self.proposals) = snap.proposals;
+        Ok(())
     }
 }
 
