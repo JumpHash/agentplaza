@@ -1,7 +1,7 @@
 // Machines as 3D toon models: each kind of machine built from rounded boxes and cylinders in the
 // plaza's palette, inked like the Floor, and photographed once in a small studio. It follows the
 // agent portraits (portrait.ts): one offscreen renderer, a cached PNG data URL per picture, a key
-// light and a shadow catcher. The backdrop is a plain cream card with a soft dotted floor.
+// light and a shadow catcher, on a transparent background so it sits on the page.
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
@@ -13,7 +13,6 @@ type V = [number, number, number];
 
 const W = 384;
 const H = 288;
-const CREAM = 0xf5efe0;
 const SHEET = 0xfbf7ee;
 const PAPER = 0xe8dfcb;
 const INK = 0x2b2420;
@@ -27,45 +26,24 @@ type Studio = { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE
 let studio: Studio | null | undefined;
 const cache = new Map<string, string>();
 
-/** A cream floor printed with soft ink dots: one tile of dots, repeated across the floor. */
-function dottedFloor(): THREE.CanvasTexture {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = 64;
-  const g = cv.getContext('2d')!;
-  g.fillStyle = '#f5efe0';
-  g.fillRect(0, 0, 64, 64);
-  g.fillStyle = 'rgba(43, 36, 32, 0.22)';
-  g.beginPath();
-  g.arc(32, 32, 5, 0, Math.PI * 2);
-  g.fill();
-  const tex = new THREE.CanvasTexture(cv);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(28, 28);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 function openStudio(): Studio | null {
   if (studio !== undefined) return studio;
   try {
     const canvas = document.createElement('canvas');
     if (!(canvas.getContext('webgl2') ?? canvas.getContext('webgl'))) return (studio = null);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    // Transparent: the model and its shadow sit straight on the page.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+    renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(1);
     renderer.setSize(W, H, false);
     renderer.shadowMap.enabled = true;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(CREAM);
     scene.add(new THREE.HemisphereLight(0xfff8ec, 0x9c8f75, 1.4));
     const key = new THREE.DirectionalLight(0xfff1d6, 2.4);
     key.position.set(2.5, 4, 3);
     key.castShadow = true;
     key.shadow.mapSize.set(512, 512);
     scene.add(key);
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), new THREE.MeshBasicMaterial({ map: dottedFloor() }));
-    floor.rotation.x = -Math.PI / 2;
-    scene.add(floor);
     // The shadow catcher: a transparent floor just above the dots, so the model's shadow falls on them.
     const catcher = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), new THREE.ShadowMaterial({ opacity: 0.2 }));
     catcher.rotation.x = -Math.PI / 2;

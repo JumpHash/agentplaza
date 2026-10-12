@@ -235,3 +235,6 @@
   .tr-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .tr-n { display: none; }
 }
+
+/* A machine's 3D toon model (transparent PNG): sized to the column beside its stats. */
+.device-model { display: block; width: 200px; max-width: 100%; height: auto; margin-top: -8px; }

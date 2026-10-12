@@ -162,8 +162,5 @@ export function deviceVisual(kind: DeviceKind, opts: DeviceOpts): HTMLElement | 
   img.className = 'device-model';
   img.src = picture;
   img.alt = kind;
-  img.style.width = '220px';
-  img.style.height = 'auto';
-  img.style.display = 'block';
   return img;
 }
