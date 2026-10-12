@@ -258,12 +258,12 @@ fn system_one_body(model: &str, req: &DecisionRequest) -> Value {
     json!({"model": model, "state": req.input, "questions": questions})
 }
 
-/// One question in System One's terms: its instructions as `noul`; a choice's
+/// One question in System One's terms: a predicate is a `noul`; a choice's
 /// values as a `criteria` map (value to description or null); a score's
 /// levels as a `criteria` list of labels.
 fn system_one_question(q: &Question) -> Value {
     match q {
-        Question::Predicate { instructions, .. } => json!({"noul": instructions}),
+        Question::Predicate { instructions, .. } => json!({"type": "noul", "instructions": instructions}),
         Question::Choice {
             instructions,
             choices,
@@ -273,7 +273,7 @@ fn system_one_question(q: &Question) -> Value {
                 .iter()
                 .map(|c| (c.value.clone(), json!(c.description)))
                 .collect();
-            json!({"noul": instructions, "criteria": criteria})
+            json!({"type": "choice", "instructions": instructions, "criteria": criteria})
         }
         Question::Score {
             instructions,
@@ -281,7 +281,7 @@ fn system_one_question(q: &Question) -> Value {
             ..
         } => {
             let criteria: Vec<&str> = levels.iter().map(|l| l.label.as_str()).collect();
-            json!({"noul": instructions, "criteria": criteria})
+            json!({"type": "score", "instructions": instructions, "criteria": criteria})
         }
     }
 }
@@ -609,15 +609,15 @@ mod tests {
         assert_eq!(body["state"], "Customer asks for a refund after 40 days.");
         assert_eq!(
             body["questions"]["refund"],
-            json!({"noul": "Is a refund due?"})
+            json!({"type": "noul", "instructions": "Is a refund due?"})
         );
         assert_eq!(
             body["questions"]["route"],
-            json!({"noul": "Where does it go?", "criteria": {"billing": "money questions", "support": null}})
+            json!({"type": "choice", "instructions": "Where does it go?", "criteria": {"billing": "money questions", "support": null}})
         );
         assert_eq!(
             body["questions"]["urgency"],
-            json!({"noul": "How urgent?", "criteria": ["low", "high"]})
+            json!({"type": "score", "instructions": "How urgent?", "criteria": ["low", "high"]})
         );
     }
 
