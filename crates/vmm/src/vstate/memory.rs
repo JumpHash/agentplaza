@@ -515,6 +515,8 @@ pub(crate) mod tests {
         guest_memory_from_ranges(regions).expect("Cannot initialize memory")
     }
 
+    // Reads /proc/self/maps: Linux only.
+    #[cfg(target_os = "linux")]
     /// Returns the (start, end) of the VMA containing `addr` in `/proc/self/maps`, if any.
     fn find_vma_containing(addr: usize) -> Option<(usize, usize)> {
         use std::io::BufRead;
@@ -573,6 +575,8 @@ pub(crate) mod tests {
         ));
     }
 
+    // Reads /proc/self/maps: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_guest_region_alignment_and_size_normal() {
         let expected_alignment = GUEST_MEMORY_ALIGNMENT;
@@ -633,6 +637,8 @@ pub(crate) mod tests {
         }
     }
 
+    // Reads /proc/self/maps: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_guest_region_drop_reclaims_memory() {
         let size = mib_to_bytes(4);
