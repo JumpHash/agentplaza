@@ -9,6 +9,7 @@ import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountMemory } from './memory';
 import { profileCard } from './agent-profile';
+import { harnessCard } from './agent-harness';
 import { choicesFrom, modelPicker, type ModelChoice } from '../ui/model-picker';
 
 const NEAR_BOTTOM_PX = 80;
@@ -222,6 +223,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       profileHost.replaceChildren(profile.el);
     } else profile.update(a);
     const offline = a.status === 'offline';
+    harness.update(a.status === 'working');
     replace(
       head,
       h('a.back', { href: href('agents') }, 'Agents'),
@@ -302,6 +304,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     { mode: 'read_only', label: 'Read-only', hint: 'can look, not change' },
   ];
   const permissionHost = h('div.stack');
+  const harness = harnessCard(cid);
   let permission: PermissionMode | null = null;
   let permissionFailed = false;
   const renderPermission = (): void => {
@@ -389,6 +392,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
           'aside.agent-side',
           null,
           card('Model', h('div.stack', null, modelLine, field('Change model', picker.el))),
+          card('Harness', harness.el),
           card('Permissions', permissionHost),
           card('Details', details),
           card('Queue', queue),
@@ -421,6 +425,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
 
   return () => {
     alive = false;
+    harness.destroy();
     window.clearInterval(profileTimer);
     offs.forEach((off) => off());
     live.clear();
