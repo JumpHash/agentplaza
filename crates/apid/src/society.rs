@@ -4,7 +4,7 @@
 //! own social and memory tools, and idle outreach — an agent with nothing to
 //! do goes looking for people to work with.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
 use apz_http::{Response, Router};
@@ -457,12 +457,56 @@ pub const PROMPT: &str = "You are part of a society of agents. You keep your own
 
 impl Society {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    /// `{"bonuses": {task: [hirer, worker, bonus]}, "posted": {cid: task}, "outreach": {cid: ms}}`.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        let bonuses: BTreeMap<String, (u64, u64, i64)> = lock(&self.bonuses).iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let posted: BTreeMap<String, u64> = lock(&self.posted).iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        let outreach: BTreeMap<String, u64> = lock(&self.outreach).iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        json!({ "bonuses": bonuses, "posted": posted, "outreach": outreach }).to_string()
     }
 
     /// Replaces the state with a [`Society::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        #[derive(Deserialize)]
+        struct State {
+            bonuses: HashMap<String, (u64, u64, i64)>,
+            posted: HashMap<String, u64>,
+            outreach: HashMap<String, u64>,
+        }
+        fn by_cid(map: HashMap<String, u64>) -> Result<HashMap<u64, u64>, String> {
+            map.into_iter()
+                .map(|(k, v)| Ok((k.parse::<u64>().map_err(|e| e.to_string())?, v)))
+                .collect()
+        }
+        let state: State = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let posted = by_cid(state.posted)?;
+        let outreach = by_cid(state.outreach)?;
+        let mut bonuses_now = lock(&self.bonuses);
+        let mut posted_now = lock(&self.posted);
+        let mut outreach_now = lock(&self.outreach);
+        *bonuses_now = state.bonuses;
+        *posted_now = posted;
+        *outreach_now = outreach;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn society_snapshot_round_trips() {
+        let society = Society::default();
+        lock(&society.bonuses).insert("task-1".into(), (1, 2, 30));
+        lock(&society.posted).insert(7, 9);
+        lock(&society.outreach).insert(3, 1000);
+        let json = society.snapshot();
+
+        let other = Society::default();
+        other.restore(&json).unwrap();
+        assert_eq!(other.snapshot(), json);
+        assert_eq!(lock(&other.posted).get(&7), Some(&9));
+        assert!(other.restore("not json").is_err());
     }
 }

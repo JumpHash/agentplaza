@@ -270,12 +270,17 @@ pub(crate) fn risk_class(tool: &str) -> &'static str {
 impl Laws {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D6
+        let all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        serde_json::to_string_pretty(&*all).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Laws::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D6
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let violations: BTreeMap<String, Vec<Violation>> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        save(&self.path, &violations).map_err(|e| e.to_string())?;
+        *all = violations;
+        Ok(())
     }
 }
 
