@@ -636,7 +636,8 @@ pub fn spawn_agents(app: &App, role: &str, count: u32, model: Option<&str>) -> R
     if let Some(model) = model {
         app.settings.allowed(tier_of(role), model)?;
     }
-    let payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 256});
+    // The same shape as the starting fleet (noded --agents-memory-mib defaults to 1024).
+    let payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
     match app.noded.post("/v1/runs", &payload) {
         Ok((status, value)) => {
             if status >= 300 {
