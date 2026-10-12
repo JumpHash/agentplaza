@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +31,9 @@ const MAX_HEAD: usize = 8 * 1024;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// A tunnel with no traffic for this long is closed.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// How often a plain tunnel's blocked read wakes to check whether the other
+/// direction has ended (see [`Hangup`]).
+const PUMP_POLL: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 const COPY_BUF: usize = 16 * 1024;
@@ -66,8 +69,37 @@ const GATEWAY_DROPPED: &[&str] = &[
     TOKEN_HEADER,
 ];
 
-/// The two sockets of a tunnel, cloned so either pump can hang both up.
-type Hangup = (UnixStream, TcpStream);
+/// The two sockets of a tunnel, cloned so either pump can hang both up, and
+/// the flag that tells the other pump to stop. The flag is what ends the other
+/// direction: its reads wake every [`PUMP_POLL`] to check it, so no pump
+/// depends on a shutdown waking a read blocked in another thread (which
+/// WinSock does not do).
+struct Hangup {
+    guest: UnixStream,
+    upstream: TcpStream,
+    done: AtomicBool,
+}
+
+impl Hangup {
+    fn new(guest: UnixStream, upstream: TcpStream) -> Self {
+        Self { guest, upstream, done: AtomicBool::new(false) }
+    }
+
+    fn is_done(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    /// Stops both directions: the flag for the other pump, and both sockets
+    /// shut down so the guest and the upstream see the tunnel end.
+    fn hang_up(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        let _ = self.guest.shutdown(Shutdown::Both);
+        let _ = self.upstream.shutdown(Shutdown::Both);
+        // Ends a read already waiting on the upstream socket at once on
+        // Windows, rather than at its next poll.
+        super::sys::wake_readers(&self.upstream);
+    }
+}
 
 /// Which destinations and ports a guest may reach.
 #[derive(Debug, Clone)]
@@ -273,15 +305,15 @@ fn proxy(guest: &mut UnixStream, cid: u32, policy: &Policy, apid: &Apid, audit: 
         }
     }
     let upstream = upstream.ok_or(Stop::Unreachable)?;
-    guest.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
-    upstream.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(|_| Stop::Unreachable)?;
+    guest.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
+    upstream.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
 
     // Every clone is made before anything is written, so a failure here still
     // leaves the guest an error answer rather than half a tunnel.
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut upstream_write = upstream.try_clone().map_err(|_| Stop::Unreachable)?;
-    let hangup = Arc::new((
+    let hangup = Arc::new(Hangup::new(
         guest.try_clone().map_err(|_| Stop::Unreachable)?,
         upstream.try_clone().map_err(|_| Stop::Unreachable)?,
     ));
@@ -343,7 +375,7 @@ fn gateway(
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut upstream_write = upstream.try_clone().map_err(|_| Stop::Unreachable)?;
-    let hangup = Arc::new((
+    let hangup = Arc::new(Hangup::new(
         guest.try_clone().map_err(|_| Stop::Unreachable)?,
         upstream.try_clone().map_err(|_| Stop::Unreachable)?,
     ));
@@ -379,6 +411,8 @@ fn gateway(
         return Ok(());
     }
 
+    guest.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
+    upstream.set_read_timeout(Some(PUMP_POLL)).map_err(|_| Stop::Unreachable)?;
     let up_hangup = Arc::clone(&hangup);
     let up = thread::spawn(move || pump(guest_read, upstream_write, &up_hangup));
     audit.down = answered + pump(upstream, guest_write, &hangup);
@@ -477,7 +511,7 @@ fn pump_ws(mut from: impl Read, mut to: impl Write, clock: &WsClock, hangup: &Ar
     use std::io::ErrorKind::{Interrupted, TimedOut, WouldBlock};
     let mut buf = vec![0u8; COPY_BUF];
     let mut total = 0u64;
-    while !clock.expired() {
+    while !clock.expired() && !hangup.is_done() {
         match from.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -491,11 +525,7 @@ fn pump_ws(mut from: impl Read, mut to: impl Write, clock: &WsClock, hangup: &Ar
             Err(_) => break,
         }
     }
-    let _ = hangup.0.shutdown(Shutdown::Both);
-    let _ = hangup.1.shutdown(Shutdown::Both);
-    // The other pump may be blocked reading the upstream socket; on Windows a
-    // shutdown does not wake it (the guest stream's own shutdown does).
-    super::sys::wake_readers(&hangup.1);
+    hangup.hang_up();
     total
 }
 
@@ -530,27 +560,35 @@ fn gateway_head(method: &str, cid: u32, path: &str, head: &str, token: &str, upg
     out
 }
 
-/// Copies `from` to `to` until either side closes, then shuts down both
-/// sockets so the other direction ends too. Returns the bytes copied.
+/// Copies `from` to `to` until either side closes, this direction has been
+/// idle for [`IDLE_TIMEOUT`], or the other direction has ended; then hangs
+/// both up so the other direction ends too. `from` reads with a
+/// [`PUMP_POLL`] timeout, which is when the flag and the idle time are
+/// checked. Returns the bytes copied.
 fn pump(mut from: impl Read, mut to: impl Write, hangup: &Arc<Hangup>) -> u64 {
+    use std::io::ErrorKind::{Interrupted, TimedOut, WouldBlock};
     let mut buf = vec![0u8; COPY_BUF];
     let mut total = 0u64;
-    loop {
+    let mut last = Instant::now();
+    while !hangup.is_done() {
         match from.read(&mut buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(n) => {
                 if to.write_all(&buf[..n]).is_err() {
                     break;
                 }
                 total += n as u64;
+                last = Instant::now();
             }
+            Err(err) if matches!(err.kind(), WouldBlock | TimedOut | Interrupted) => {
+                if last.elapsed() >= IDLE_TIMEOUT {
+                    break;
+                }
+            }
+            Err(_) => break,
         }
     }
-    let _ = hangup.0.shutdown(Shutdown::Both);
-    let _ = hangup.1.shutdown(Shutdown::Both);
-    // The other pump may be blocked reading the upstream socket; on Windows a
-    // shutdown does not wake it (the guest stream's own shutdown does).
-    super::sys::wake_readers(&hangup.1);
+    hangup.hang_up();
     total
 }
 
