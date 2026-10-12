@@ -68,6 +68,24 @@ impl Partition {
             std::mem::size_of::<WHV_X64_LOCAL_APIC_EMULATION_MODE>(),
         )?;
 
+        // CPUID leaf 1 exits to this process (see `vcpu::cpuid`): the
+        // hypervisor's answer is passed through with x2APIC masked, since only
+        // the xAPIC is emulated.
+        let mut property = WHV_PARTITION_PROPERTY::default();
+        property.ExtendedVmExits.AsUINT64 = 1; // X64CpuidExit
+        partition.set_property(
+            WHvPartitionPropertyCodeExtendedVmExits,
+            &property,
+            std::mem::size_of::<u64>(),
+        )?;
+        let mut property = WHV_PARTITION_PROPERTY::default();
+        property.CpuidExitList = [1];
+        partition.set_property(
+            WHvPartitionPropertyCodeCpuidExitList,
+            &property,
+            std::mem::size_of::<u32>(),
+        )?;
+
         // SAFETY: the handle is a created, not yet set up partition.
         unsafe { call!(api, WHvSetupPartition(handle))? };
         Ok(partition)

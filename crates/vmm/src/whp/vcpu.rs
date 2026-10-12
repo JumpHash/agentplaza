@@ -495,6 +495,30 @@ fn vcpu_loop(vm: &WhpVm, index: u32) -> Result<(), WhpError> {
                 let vector = unsafe { exit.Anonymous.ApicEoi.InterruptVector };
                 vm.interrupts.end_of_interrupt(vector as u8);
             }
+            WHvRunVpExitReasonX64Cpuid => {
+                // SAFETY: the exit reason says the union holds the CPUID context.
+                let access = unsafe { exit.Anonymous.CpuidAccess };
+                let length = u64::from(exit.VpContext._bitfield & 0xf).max(2);
+                let (rax, rbx, rcx, rdx) = cpuid(access);
+                let reg64 = |value: u64| WHV_REGISTER_VALUE { Reg64: value };
+                vm.partition.set_registers(
+                    index,
+                    &[
+                        WHvX64RegisterRax,
+                        WHvX64RegisterRbx,
+                        WHvX64RegisterRcx,
+                        WHvX64RegisterRdx,
+                        WHvX64RegisterRip,
+                    ],
+                    &[
+                        reg64(rax),
+                        reg64(rbx),
+                        reg64(rcx),
+                        reg64(rdx),
+                        reg64(exit.VpContext.Rip + length),
+                    ],
+                )?;
+            }
             WHvRunVpExitReasonX64Halt => {
                 // A halt with interrupts disabled never ends: the guest
                 // stopped itself (a kernel that powered off without ACPI, or a
@@ -526,6 +550,26 @@ fn vcpu_loop(vm: &WhpVm, index: u32) -> Result<(), WhpError> {
         }
     }
     Ok(())
+}
+
+/// CPUID.1:ECX.x2APIC.
+const CPUID_1_ECX_X2APIC: u64 = 1 << 21;
+
+/// The answer to a CPUID that exited (leaf 1 only, see `vm::Partition::create`):
+/// the hypervisor's default result, with x2APIC hidden. WHP emulates the
+/// local APIC in xAPIC mode here, so a guest that switched to x2APIC would
+/// write MSRs nothing implements.
+fn cpuid(access: WHV_X64_CPUID_ACCESS_CONTEXT) -> (u64, u64, u64, u64) {
+    let mut rcx = access.DefaultResultRcx;
+    if access.Rax as u32 == 1 {
+        rcx &= !CPUID_1_ECX_X2APIC;
+    }
+    (
+        access.DefaultResultRax,
+        access.DefaultResultRbx,
+        rcx,
+        access.DefaultResultRdx,
+    )
 }
 
 /// The I/O APIC's window, for the MMIO bus.

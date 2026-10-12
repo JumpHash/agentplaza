@@ -35,6 +35,9 @@ pub const X86_CR0_PE: u64 = 0x1;
 pub const X86_CR0_ET: u64 = 0x10;
 /// CR0.PG: paging enable.
 pub const X86_CR0_PG: u64 = 0x8000_0000;
+/// CR0.NE: native x87 error reporting (required set under VMX; Linux sets it
+/// itself early, so entering with it set changes nothing for the guest).
+pub const X86_CR0_NE: u64 = 0x20;
 /// CR4.PAE: physical address extension, required for long mode.
 pub const X86_CR4_PAE: u64 = 0x20;
 /// EFER.LME: long mode enable.
@@ -200,7 +203,7 @@ pub fn long_mode_boot(entry: u64) -> (BootRegisters, Vec<MemoryWrite>) {
         rbp: BOOT_STACK_POINTER,
         rsi: ZERO_PAGE_START,
         rflags: 0x2,
-        cr0: X86_CR0_PE | X86_CR0_ET | X86_CR0_PG,
+        cr0: X86_CR0_PE | X86_CR0_ET | X86_CR0_NE | X86_CR0_PG,
         cr3: PML4_START,
         cr4: X86_CR4_PAE,
         efer: EFER_LME | EFER_LMA,
@@ -381,7 +384,7 @@ mod tests {
         assert_eq!(regs.rsi, 0x7000);
         assert_eq!(regs.rflags, 0x2);
         // PE | ET | PG
-        assert_eq!(regs.cr0, 0x8000_0011);
+        assert_eq!(regs.cr0, 0x8000_0031);
         assert_eq!(regs.cr3, 0x9000);
         assert_eq!(regs.cr4, 0x20);
         assert_eq!(regs.efer, 0x500);
