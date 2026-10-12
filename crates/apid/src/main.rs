@@ -11,7 +11,6 @@
 
 mod agents;
 mod approvals;
-mod artifacts;
 mod connectors;
 mod deliverables;
 mod autoscale;

@@ -85,8 +85,6 @@ pub struct App {
     pub config: Config,
     /// The SSE bus every module publishes on.
     pub bus: events::Bus,
-    /// Files agents shared through `share_file`.
-    pub artifacts: crate::artifacts::Artifacts,
     /// Linked-note memory libraries, under <state-dir>/memory.
     pub memory: crate::memory::Memory,
     /// Contacts and opinions between agents (AP-071/AP-072), at `<state-dir>/bonds.json`.
@@ -150,7 +148,6 @@ impl App {
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         let app = Arc::new(App {
             bus: events::Bus::default(),
-            artifacts: crate::artifacts::Artifacts::default(),
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
             laws: crate::laws::Laws::load(&config.state_dir),

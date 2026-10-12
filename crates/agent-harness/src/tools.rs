@@ -30,7 +30,7 @@ use crate::egress;
 use crate::files::{self, Workspace};
 
 /// The tools, by name.
-const TOOLS: [Tool; 12] = [
+const TOOLS: [Tool; 11] = [
     Tool {
         name: "echo",
         run: echo,
@@ -46,10 +46,6 @@ const TOOLS: [Tool; 12] = [
     Tool {
         name: "read_file",
         run: files::read_file,
-    },
-    Tool {
-        name: "share_file",
-        run: files::share_file,
     },
     Tool {
         name: "write_file",

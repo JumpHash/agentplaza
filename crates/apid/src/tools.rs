@@ -169,6 +169,7 @@ fn refusal(role: &str, name: &str) -> Option<String> {
 }
 
 /// The tool names offered to `role` with no manifest grants; the law tests check each one.
+#[cfg(test)]
 pub(crate) fn offered_names(role: &str) -> Vec<String> {
     offered(role, &[])
 }
@@ -412,8 +413,8 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"path": {"type": "string"}, "title": {"type": "string"}, "to": {"type": "array", "items": {"type": "integer"}}}), &["path"]),
         ),
         "plaza_get_file" => (
-            "Read a shared file by its id (text comes back whole; binaries return a URL), or the latest file an agent shared at a path.",
-            obj(json!({"id": {"type": "string"}, "agent": {"type": "integer"}, "path": {"type": "string"}}), &[]),
+            "Read a shared file by its id (text comes back whole; binaries return a URL).",
+            obj(json!({"id": {"type": "string"}}), &["id"]),
         ),
         "plaza_set_name" => (
             "Set your own name: 2 to 16 letters, at most one inner space or hyphen. Names are unique and cannot be role names.",
@@ -507,29 +508,18 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             to_text(&app.transcripts.search(agent.cid, query, 20))
         }
         "plaza_get_file" => {
-            if let Some(id) = input.get("id").and_then(Value::as_str) {
-                let meta = app.deliverables.meta(id).ok_or_else(|| format!("no shared file {id}"))?;
-                if !app.deliverables.can_read(id, agent.cid) {
-                    return Err(format!("you cannot read file {id}"));
-                }
-                let text = if meta.size <= 256 * 1024 {
-                    String::from_utf8(app.deliverables.read_blob(&meta)?).ok()
-                } else {
-                    None
-                };
-                return Ok(text.unwrap_or_else(|| {
-                    format!(
-                        "{}: {}, {} bytes — binary; fetch http://plaza.gateway/files/{id} with download",
-                        meta.title, meta.content_type, meta.size
-                    )
-                }));
+            let id = str_arg(input, "id")?;
+            let meta = app.deliverables.meta(id).ok_or_else(|| format!("no shared file {id}"))?;
+            if !app.deliverables.can_read(id, agent.cid) {
+                return Err(format!("you cannot read file {id}"));
             }
-            let cid = input.get("agent").and_then(Value::as_u64).ok_or("agent must be an integer")?;
-            let path = str_arg(input, "path")?;
-            app.artifacts
-                .latest(cid, path)
-                .map(|artifact| artifact.content)
-                .ok_or_else(|| "nothing shared at that path".to_string())
+            let text = if meta.size <= 256 * 1024 { String::from_utf8(app.deliverables.read_blob(&meta)?).ok() } else { None };
+            Ok(text.unwrap_or_else(|| {
+                format!(
+                    "{}: {}, {} bytes — binary; fetch http://plaza.gateway/files/{id} with download",
+                    meta.title, meta.content_type, meta.size
+                )
+            }))
         }
         "plaza_tasks" => Ok(Value::Array(app.plaza.tasks.list().iter().map(|t| task_json(t)).collect()).to_string()),
         "plaza_task_result" => {

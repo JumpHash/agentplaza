@@ -603,32 +603,6 @@ pub fn read_file(workspace: &Workspace, args: &Value) -> Result<String, ToolErro
     .to_string())
 }
 
-/// The largest file `share_file` returns whole.
-pub const MAX_SHARE_BYTES: u64 = 256 * 1024;
-
-/// `share_file`: the whole text of one file inside the workspace, so a guest can
-/// hand a document to the conversation in one call.
-///
-/// Arguments: `path` (required, relative). Output: `{"path", "size", "content"}`.
-/// A symlink is refused (a share never follows one), a file over
-/// [`MAX_SHARE_BYTES`] is refused naming its size, and a file that is not UTF-8
-/// text is refused, as `read_file` refuses it.
-pub fn share_file(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
-    let raw = string_arg(args, "path")?;
-    let (path, label) = workspace.resolve(&raw)?;
-    refuse_symlink_target(&path, &label)?;
-    let metadata =
-        fs::metadata(&path).map_err(|err| io_tool_error(err, format!("cannot read {label}")))?;
-    if metadata.len() > MAX_SHARE_BYTES {
-        return Err(limit(format!(
-            "{label} is {} bytes, over the {MAX_SHARE_BYTES}-byte share cap",
-            metadata.len()
-        )));
-    }
-    let content = read_text(&path, &label)?;
-    Ok(json!({ "path": label, "size": metadata.len(), "content": content }).to_string())
-}
-
 /// `download`: GETs an http(s) URL through the proxy and saves the body as one
 /// file inside the workspace.
 ///
@@ -1605,15 +1579,6 @@ mod tests {
     }
 
     // --- read_file ---------------------------------------------------------
-
-    #[test]
-    fn share_file_returns_a_written_file_and_refuses_a_missing_one() {
-        let (workspace, _outside) = scratch("share");
-        served(&workspace, "write_file", json!({ "path": "note.md", "content": "shared text" }));
-        let out = served(&workspace, "share_file", json!({ "path": "note.md" }));
-        assert_eq!(out["content"], "shared text");
-        let _ = refused(&workspace, "share_file", json!({ "path": "missing.md" }));
-    }
 
     #[test]
     fn read_file_numbers_its_lines_like_cat_n() {

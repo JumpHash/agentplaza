@@ -29,8 +29,6 @@ use crate::state::App;
 
 /// The org every plaza repo lives in.
 pub const ORG: &str = "agentplaza";
-/// The host tool this module serves.
-pub const TOOLS: &[&str] = &["plaza_git"];
 
 /// One agent's Forgejo identity. The token is the agent's own access token, used only by apid
 /// for the git relay; it never leaves the host.

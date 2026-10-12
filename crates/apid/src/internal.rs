@@ -2,9 +2,6 @@
 //!
 //! OWNER: slice "loop". `handle` is the agent loop's host half.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, PoisonError};
-
 use apz_http::{Request, Response, Router};
 use apz_proto::chat::{ChatRequest, Message, Role};
 use apz_proto::wire::{cap_output, Decision, GuestMessage, HostMessage};
@@ -140,14 +137,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
         GuestMessage::ToolReport { work, call, ok, output } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
-            let shared = pending().lock().unwrap_or_else(PoisonError::into_inner).remove(&(cid, call.clone()));
             if crate::library::take_package_call(cid, &call) && ok {
                 if let Err(err) = crate::library::accept(app, cid, &output) {
                     app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": format!("tool_package: {err}") }));
                 }
-            }
-            if let (Some((_, path)), true) = (shared, ok) {
-                app.artifacts.add(&app.bus, cid, work, &path, output.clone());
             }
             app.transcripts.record(
                 &app.bus,
@@ -280,15 +273,6 @@ fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(),
     }
 }
 
-/// Share requests allowed to run, keyed by (cid, call), until their report
-/// arrives: (tool name, requested path).
-type Pending = Mutex<HashMap<(u64, String), (String, String)>>;
-
-fn pending() -> &'static Pending {
-    static PENDING: OnceLock<Pending> = OnceLock::new();
-    PENDING.get_or_init(Pending::default)
-}
-
 /// Decides and, for host tools, runs one tool request from the model.
 fn tool_request(
     app: &App,
@@ -329,10 +313,6 @@ fn tool_request(
         Ok(Runs::Guest) => {
             if name == "tool_package" {
                 crate::library::remember_package_call(cid, &call);
-            }
-            if name == "share_file" {
-                let path = input.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-                pending().lock().unwrap_or_else(PoisonError::into_inner).insert((cid, call.clone()), (name.to_string(), path));
             }
             (Decision::Allow, String::new(), false)
         }
