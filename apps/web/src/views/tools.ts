@@ -6,7 +6,7 @@
 
 import '../styles/models.css';
 import '../styles/tools.css';
-import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorProposal, type ConnectorTest, type LibraryTool } from '../api';
+import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorProposal, type ConnectorTest, type Discovery, type LibraryTool } from '../api';
 import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
@@ -91,14 +91,16 @@ function checksBox(p: ConnectorProposal): HTMLElement {
 export function mount(root: HTMLElement): Cleanup {
   let connectors: Connector[] = [];
   let library: LibraryTool[] = [];
+  let discoveries: Discovery[] = [];
   let proposals: ConnectorProposal[] = [];
   let showDecided = false;
   const body = h('div.prov-body', null, h('p.faint', null, 'Loading tools…'));
   const propBody = h('div.prov-body', null);
   const libBody = h('div.prov-body', null, h('p.faint', null, 'Loading agent tools…'));
+  const discBody = h('div.prov-body', null, h('p.faint', null, 'Loading found tools…'));
   root.append(
     h('div.view-head', null, h('h1', null, 'Tools')),
-    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body, propBody, libBody),
+    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body, propBody, libBody, discBody),
   );
 
   const refresh = async (): Promise<void> => {
@@ -598,13 +600,60 @@ export function mount(root: HTMLElement): Cleanup {
     );
   };
 
+  // ---- Found by agents ------------------------------------------------------
+
+  const refreshToolbox = async (): Promise<void> => {
+    const list = await attempt(() => api.toolbox());
+    if (list) discoveries = list;
+    renderToolbox();
+  };
+
+  const renderToolbox = (): void => {
+    const heading = h('h2.prov-group-title', null, 'Found by agents');
+    const intro = h('p.faint', null, 'Software, services and techniques agents found on the internet, tried in their VMs and recommend to each other.');
+    if (!discoveries.length) {
+      replace(discBody, heading, intro, empty('models', 'Nothing yet. Agents record what they find with plaza_toolbox_share.'));
+      return;
+    }
+    replace(discBody, heading, intro, h('div.prov-grid', null, discoveries.map(discCard)));
+  };
+
+  const discCard = (d: Discovery): HTMLElement =>
+    h(
+      'article.prov-card',
+      { 'data-key': `disc-${d.id}` },
+      h(
+        'header.prov-head',
+        null,
+        h(
+          'div.prov-title',
+          null,
+          h('h3.truncate', null, d.name),
+          h('span.faint.truncate', null, `by ${d.by} · ${d.endorsed_by.length} endorsements`),
+        ),
+      ),
+      h('div.prov-meta', null, h('span.tool-chip', null, d.kind)),
+      h('p', null, d.what_for),
+      h('details', null, h('summary', null, 'How to use'), h('pre.lib-file', null, d.how)),
+      h('p', null, d.verdict),
+      // Agents write these URLs, so only web links become anchors (as the proposal review does).
+      d.url && /^https?:\/\//.test(d.url) ? h('a', { href: d.url, target: '_blank', rel: 'noopener noreferrer' }, d.url) : null,
+      d.tags.length ? h('ul.tool-actions', null, d.tags.map((t) => h('li', { 'data-key': `tag-${t}` }, h('span.tool-chip', null, t)))) : null,
+    );
+
   void refresh();
   void refreshProposals();
   void refreshLibrary();
-  const offLibrary = on('library', () => void refreshLibrary());
+  void refreshToolbox();
+  const offLibrary = on('library', () => {
+    void refreshLibrary();
+    void refreshToolbox();
+  });
   const offConnector = on('connector', () => void refreshAfterDecision());
+  const offToolbox = on('toolbox', () => void refreshToolbox());
   return () => {
     offLibrary();
     offConnector();
+    offToolbox();
   };
 }
