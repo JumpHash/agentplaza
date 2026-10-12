@@ -55,7 +55,7 @@ pub fn install_signal_handlers() {
     // handler stays alive for the process's lifetime.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = on_signal as usize;
+        action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as usize;
         libc::sigemptyset(&mut action.sa_mask);
         action.sa_flags = 0;
         for signal in [libc::SIGTERM, libc::SIGINT] {
