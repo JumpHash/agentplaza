@@ -12,6 +12,7 @@ import { mount as floor } from './floor';
 import { mount as git } from './git';
 import { mount as machine } from './machine';
 import { mount as models } from './models';
+import { mount as nodes } from './nodes';
 import { mount as overview } from './overview';
 import { mount as projects } from './projects';
 import { mount as rules } from './rules';
@@ -49,4 +50,5 @@ export const SCREENS: Screen[] = [
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
   { key: 'tools', label: 'Tools', icon: 'wrench', section: 'Setup', mount: tools },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
+  { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
 ];
