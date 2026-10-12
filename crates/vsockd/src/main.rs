@@ -143,12 +143,20 @@ stops the daemon.";
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn main() -> ExitCode {
+    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+        println!("vsockd {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     eprintln!("vsockd: the UDS muxer backend is Linux-only; this host cannot accept guests");
     ExitCode::FAILURE
 }
 
 #[cfg(not(unix))]
 fn main() -> ExitCode {
+    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+        println!("vsockd {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     eprintln!(
         "vsockd needs Unix sockets; on Windows the node runs without a guest socket bridge (planned)"
     );
@@ -158,6 +166,10 @@ fn main() -> ExitCode {
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("vsockd {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

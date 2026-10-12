@@ -7,6 +7,13 @@
 //! - [`random`]: bytes from the operating system's CSPRNG.
 //! - [`process`]: starting a service that outlives the app that started it.
 
+/// The version of this build: set at build time by the release workflow (`APZ_VERSION`), the
+/// crate's own version otherwise.
+pub const VERSION: &str = match option_env!("APZ_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod dirs {
     //! The plaza's directories:
     //!
@@ -68,6 +75,26 @@ pub mod dirs {
             .or_else(|| home().map(|h| h.join("AppData").join("Local")))
             .unwrap_or_else(|| PathBuf::from("."));
         base.join("AgentPlaza").join(kind)
+    }
+
+    /// The installed resources (the web console, the roles, the prompts, the guest images), found
+    /// beside the binary: `$APZ_SHARE` if set, else `<bin>/../share/agentplaza`, and on macOS also
+    /// `<bin>/../Resources/share/agentplaza` (inside an app bundle). `None` when none is a directory.
+    pub fn resources() -> Option<PathBuf> {
+        let exe = std::env::current_exe().unwrap_or_default();
+        resources_from(std::env::var_os("APZ_SHARE").as_deref(), &exe)
+    }
+
+    /// [`resources`] for a given `APZ_SHARE` value and binary path.
+    pub fn resources_from(share_env: Option<&std::ffi::OsStr>, exe: &std::path::Path) -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = share_env.filter(|v| !v.is_empty()).map(PathBuf::from).into_iter().collect();
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("..").join("share").join("agentplaza"));
+            if cfg!(target_os = "macos") {
+                candidates.push(dir.join("..").join("Resources").join("share").join("agentplaza"));
+            }
+        }
+        candidates.into_iter().find(|p| p.is_dir())
     }
 }
 
@@ -262,6 +289,22 @@ mod tests {
         private::create_dir(&dir).unwrap();
         assert!(private::check_dir(&dir).is_ok(), "create_dir narrows an existing directory");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resources_come_from_apz_share_then_beside_the_binary() {
+        let root = scratch("resources");
+        let share = root.join("share").join("agentplaza");
+        let elsewhere = root.join("elsewhere");
+        let bin = root.join("bin");
+        for dir in [&share, &elsewhere, &bin] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let exe = bin.join("apid");
+        assert_eq!(dirs::resources_from(Some(elsewhere.as_os_str()), &exe), Some(elsewhere.clone()));
+        assert_eq!(dirs::resources_from(None, &exe), Some(bin.join("..").join("share").join("agentplaza")));
+        assert_eq!(dirs::resources_from(None, std::path::Path::new("/nonexistent/bin/apid")), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

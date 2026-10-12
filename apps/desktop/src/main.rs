@@ -4,6 +4,10 @@
 use std::os::unix::process::CommandExt;
 
 fn main() -> iced::Result {
+    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+        println!("agentplaza-desktop {}", apz_os::VERSION);
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     snapshot_off_screen();
     // Mid NVIDIA update (old kernel module, new libraries on disk): restart on the matching ones.

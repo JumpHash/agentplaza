@@ -34,11 +34,19 @@ mod linux;
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
+    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+        println!("apz-vmm {}", apz_os::VERSION);
+        return std::process::ExitCode::SUCCESS;
+    }
     linux::main()
 }
 
 #[cfg(not(target_os = "linux"))]
 fn main() -> std::process::ExitCode {
+    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+        println!("apz-vmm {}", apz_os::VERSION);
+        return std::process::ExitCode::SUCCESS;
+    }
     eprintln!("apz-vmm: the per-VM process is Linux-only; there is no VM to boot here");
     std::process::ExitCode::from(2)
 }

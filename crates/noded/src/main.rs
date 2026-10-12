@@ -23,8 +23,11 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--agents-balloon-mib N]
 
   --port PORT      port to listen on, on 127.0.0.1 (default 8899)
-  --kernel PATH    guest kernel image (default /boot/vmlinuz-linux)
-  --initrd PATH    guest initrd (default target/guest/initrd.x86_64.gz)
+  --kernel PATH    guest kernel image (default guest/ARCH/vmlinux of the installed resources
+                   when present, else /boot/vmlinuz-linux)
+  --initrd PATH    guest initrd (default guest/ARCH/initrd.gz of the installed resources when
+                   present, else target/guest/initrd.x86_64.gz)
+  -V, --version    print the version and exit
   --uds-dir DIR    directory for the per-VM vsock Unix sockets and, with
                    --workspace, for the runs' image copies
                    (default /tmp/plaza-vsock; VM i's muxer binds DIR/vm{cid})
@@ -64,6 +67,10 @@ Serves the /v1 VM API (machine, runs, events); the plaza is apid's.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("noded {}", apz_os::VERSION);
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
@@ -152,9 +159,25 @@ fn boot_agents(node: &noded::Node, config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// The configuration before the flags: the installed guest images (`guest/<arch>/vmlinux` and
+/// `initrd.gz` under the installed resources) where they exist, else the built-in defaults.
+fn defaults() -> Config {
+    let mut config = Config::default();
+    if let Some(guest) = apz_os::dirs::resources().map(|share| share.join("guest").join(std::env::consts::ARCH)) {
+        let (kernel, initrd) = (guest.join("vmlinux"), guest.join("initrd.gz"));
+        if kernel.is_file() {
+            config.kernel = kernel;
+        }
+        if initrd.is_file() {
+            config.initrd = initrd;
+        }
+    }
+    config
+}
+
 /// Reads `--port`, `--kernel` and `--initrd`, leaving the rest at its default.
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
-    let mut config = Config::default();
+    let mut config = defaults();
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         let mut value = |flag: &str| args.next().ok_or_else(|| format!("missing value for {flag}"));
