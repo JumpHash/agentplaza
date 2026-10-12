@@ -493,6 +493,29 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 }
 
 /// Runs one of TOOLS for `agent`.
+/// Creates the project's repo (`<id>-<slug of the title>`) and records it; None when the
+/// git host is not configured or refuses (the project works without one).
+fn repo_for(app: &App, project: &Project) -> Option<String> {
+    if !app.forge.configured() {
+        return None;
+    }
+    let slug: String = project
+        .title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("-");
+    let name = format!("{}-{}", project.id, slug);
+    let repo = app.forge.create_repo(&name, &project.title).ok()?;
+    app.projects.set_repo(&project.id, &repo).ok()?;
+    Some(repo)
+}
+
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     let actor = Actor {
         cid: agent.cid,
@@ -511,6 +534,11 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
                 str_arg(input, "kind")?,
                 false,
             )?;
+            // Every project gets a repo on the plaza's git host, for its plan and its code.
+            let project = match repo_for(app, &project) {
+                Some(repo) => app.projects.get(&project.id).filter(|p| p.repo.as_deref() == Some(repo.as_str())).unwrap_or(project),
+                None => project,
+            };
             answer(app, &project, "write the brief (the goal restated, who it is for, what a professional result includes, constraints the operator stated, questions only the operator can answer), share it with share_file and attach it with plaza_project_attach kind=brief, then plaza_project_advance")
         }
         "plaza_projects" => match opt_str(input, "id") {
