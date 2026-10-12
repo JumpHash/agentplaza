@@ -69,7 +69,7 @@ Serves the /v1 VM API (machine, runs, events); the plaza is apid's.";
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
-        println!("noded {}", apz_os::VERSION);
+        println!("noded {}", apz_os::version());
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {

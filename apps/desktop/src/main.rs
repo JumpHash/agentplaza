@@ -5,7 +5,7 @@ use std::os::unix::process::CommandExt;
 
 fn main() -> iced::Result {
     if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
-        println!("agentplaza-desktop {}", apz_os::VERSION);
+        println!("agentplaza-desktop {}", apz_os::version());
         return Ok(());
     }
     #[cfg(target_os = "linux")]

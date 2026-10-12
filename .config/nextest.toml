@@ -1,0 +1,11 @@
+# cargo-nextest (CI runs the tests with it: one process per test, in parallel).
+# A test that runs longer than 30 s is reported; one still running after 2 minutes is killed and
+# fails, so a hang (like a socket read with no timeout) costs two minutes, not the job.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+fail-fast = false
+
+[profile.ci]
+slow-timeout = { period = "30s", terminate-after = 4 }
+fail-fast = false
+failure-output = "immediate-final"

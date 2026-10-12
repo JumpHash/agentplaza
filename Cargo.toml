@@ -45,7 +45,9 @@ opt-level = 2
 [profile.release]
 debug = false
 strip = "debuginfo"
-lto = "thin"
+# No LTO: CI builds every release on 2–4 cores within minutes, and link-time optimisation would
+# double that for little speed at run time.
+lto = false
 
 # The desktop app draws every frame on the CPU side too (scene walk, batching): its dev builds
 # stay fast with the app itself optimised (dependencies are, below).

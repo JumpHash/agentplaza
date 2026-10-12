@@ -1,11 +1,20 @@
-# Linux (x86_64, arm64): tests, and with `package` the deb (Ubuntu, Debian), rpm (Fedora),
-# pacman (Arch, Arch Linux ARM) packages and tarballs, each installed and run in its distribution.
+# Linux (x86_64, arm64): one job per architecture tests and, with `package`, builds the deb
+# (Ubuntu, Debian), rpm (Fedora), pacman (Arch, Arch Linux ARM) packages and tarballs from the same
+# optimised build; then each package is installed and run in its distribution.
 # Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+#
+# Speed (the whole release stays within minutes on standard runners): the jobs run in the prebuilt
+# CI image (.github/ci/Dockerfile: tools, Rust, nextest, fpm already installed); dependencies come
+# from rust-cache (saved from main) and unchanged workspace crates from sccache; tests and packages
+# share one release build (no LTO); lld links; nextest runs the tests in parallel and kills a hang.
 name: linux
 
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      version: { type: string, default: "" }
+      package: { type: boolean, default: false }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
@@ -15,90 +24,84 @@ concurrency:
   group: ${{ github.workflow }}-linux-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+  packages: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
-  # Speed: a shared compiler cache (sccache on the Actions cache), no debug info, and in test
-  # builds unoptimised dependencies (the workspace optimises them for local runs).
   RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
-  CARGO_PROFILE_DEV_DEBUG: "0"
-  CARGO_PROFILE_TEST_DEBUG: "0"
-  FAST_DEPS: --config profile.dev.package."*".opt-level=0 --config profile.dev.package.agentplaza-desktop.opt-level=0
+  # sccache keeps its cache in GitHub's Actions cache; under another runner (a local Forgejo), on disk.
+  SCCACHE_GHA_ENABLED: ${{ github.server_url == 'https://github.com' && 'true' || 'false' }}
+  RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+  VERSION: ${{ inputs.version || '0.0.0-ci' }}
 
 jobs:
-  test:
-    name: test (x86_64)
-    runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:17
-        env: { POSTGRES_USER: apz, POSTGRES_PASSWORD: apz, POSTGRES_DB: apz_test }
-        ports: ["5434:5432"]
-        options: --health-cmd "pg_isready -U apz" --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      APZ_TEST_DATABASE_URL: postgres://apz:apz@127.0.0.1:5434/apz_test
-      APZ_VERSION: 0.0.0-ci
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: rui314/setup-mold@v1
-      - uses: Swatinem/rust-cache@v2
-        with: { cache-targets: "false" }
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev
-      - name: Test (workspace)
-        run: cargo test --workspace --locked $FAST_DEPS
-
-  package:
-    name: package (${{ matrix.arch }})
-    if: inputs.package
-    needs: test
+  build:
+    name: ${{ inputs.package && 'test and package' || 'test' }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu }
-          - { arch: aarch64, runner: ubuntu-24.04-arm, triple: aarch64-unknown-linux-gnu }
+          - { arch: x86_64, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu, postgres: "postgres:17" }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, triple: aarch64-unknown-linux-gnu, postgres: "" }
     runs-on: ${{ matrix.runner }}
-    # Built on Ubuntu 22.04 (glibc 2.35): the binaries run on every distribution as new or newer.
-    container: ubuntu:22.04
-    env:
-      APZ_VERSION: ${{ inputs.version }}
-      DEBIAN_FRONTEND: noninteractive
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/jumphash/agentplaza-ci:${{ matrix.arch }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    services:
+      postgres:
+        image: ${{ matrix.postgres }}
+        env: { POSTGRES_USER: apz, POSTGRES_PASSWORD: apz, POSTGRES_DB: apz_test }
+        options: --health-cmd "pg_isready -U apz" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - name: Build tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends curl ca-certificates git build-essential pkg-config \
-            libxkbcommon-dev libwayland-dev ruby ruby-dev rpm zstd libarchive-tools
-          gem install --no-document fpm
       - uses: actions/checkout@v5
-      - name: Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: git config --global --add safe.directory '*'
+      - name: The Postgres-backed tests (x86_64)
+        if: matrix.postgres != ''
+        run: echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@postgres:5432/apz_test" >> "$GITHUB_ENV"
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build (release)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-${{ matrix.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test
+        run: cargo nextest run --workspace --locked --cargo-profile release --profile ci
+      - name: Build the binaries
+        if: inputs.package
         run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
       - uses: actions/download-artifact@v4
-        with: { pattern: "guest-*", path: target/guest, merge-multiple: false }
+        if: inputs.package
+        id: guest
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
+        with: { name: "guest-${{ matrix.arch }}", path: "target/guest/${{ matrix.arch }}" }
+      - name: Build the guest (a hand-run package, no release job supplied one)
+        if: inputs.package && steps.guest.outcome != 'success'
+        run: scripts/mk-guest.sh ${{ matrix.arch }}
       - name: Stage and package
+        if: inputs.package
         run: |
-          for d in target/guest/guest-*; do mv "$d" "target/guest/${d##*guest-}"; done
-          packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$APZ_VERSION"
-          packaging/linux/build.sh stage "$APZ_VERSION" ${{ matrix.arch }} out
+          packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$VERSION"
+          packaging/linux/build.sh stage "$VERSION" ${{ matrix.arch }} out
+          tar -czf stage-linux-${{ matrix.arch }}.tgz stage
       - uses: actions/upload-artifact@v4
-        with:
-          name: pkg-linux-${{ matrix.arch }}
-          path: out/*
-          if-no-files-found: error
+        if: inputs.package
+        with: { name: "pkg-linux-${{ matrix.arch }}", path: "out/*", if-no-files-found: error }
+      # The Raspberry Pi package is made from the arm64 build (raspberry-pi.yml).
+      - uses: actions/upload-artifact@v4
+        if: inputs.package && matrix.arch == 'aarch64'
+        with: { name: "stage-linux-aarch64", path: "stage-linux-aarch64.tgz", retention-days: 1 }
 
   verify:
     name: install on ${{ matrix.name }}
     if: inputs.package
-    needs: package
+    needs: build
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +115,7 @@ jobs:
           - { name: "Fedora 42 (aarch64)", runner: ubuntu-24.04-arm, image: "fedora:42", arch: aarch64,
               install: "dnf install -y ./agentplaza-*.aarch64.rpm" }
           - { name: "Arch Linux (x86_64)", runner: ubuntu-24.04, image: "archlinux:latest", arch: x86_64,
-              install: "pacman -Syu --noconfirm && pacman -U --noconfirm ./agentplaza-*-x86_64.pkg.tar.zst" }
+              install: "pacman -Sy --noconfirm && pacman -U --noconfirm ./agentplaza-*-x86_64.pkg.tar.zst" }
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
     steps:

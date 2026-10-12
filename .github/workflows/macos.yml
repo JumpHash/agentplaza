@@ -1,10 +1,16 @@
-# macOS (Apple Silicon, Intel): tests, and with `package` one universal DMG (arm64 + x86_64).
+# macOS: one job per architecture tests and builds natively (Apple Silicon on macos-15, Intel on
+# macos-15-intel, in parallel); with `package`, a small job joins them into one universal DMG.
 # Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+# Speed: rust-cache (dependencies, saved from main) + sccache (unchanged workspace crates), one
+# release build for tests and packages, nextest.
 name: macos
 
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      version: { type: string, default: "" }
+      package: { type: boolean, default: false }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
@@ -14,77 +20,94 @@ concurrency:
   group: ${{ github.workflow }}-macos-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
-  CARGO_PROFILE_DEV_DEBUG: "0"
-  CARGO_PROFILE_TEST_DEBUG: "0"
-  FAST_DEPS: --config profile.dev.package."*".opt-level=0 --config profile.dev.package.agentplaza-desktop.opt-level=0
+  # sccache keeps its cache in GitHub's Actions cache; under another runner (a local Forgejo), on disk.
+  SCCACHE_GHA_ENABLED: ${{ github.server_url == 'https://github.com' && 'true' || 'false' }}
   # The oldest macOS the app supports (Info.plist's LSMinimumSystemVersion): C code and Rust agree.
   MACOSX_DEPLOYMENT_TARGET: "12.0"
+  VERSION: ${{ inputs.version || '0.0.0-ci' }}
 
 jobs:
-  test:
-    name: test (${{ matrix.name }})
+  build:
+    name: ${{ inputs.package && 'test and build' || 'test' }} (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: Apple Silicon, runner: macos-15 }
-          - { name: Intel, runner: macos-15-intel }
+          - { name: Apple Silicon, arch: aarch64, runner: macos-15, triple: aarch64-apple-darwin,
+              bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl" }
+          - { name: Intel, arch: x86_64, runner: macos-15-intel, triple: x86_64-apple-darwin,
+              bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop" }
     runs-on: ${{ matrix.runner }}
-    env:
-      APZ_VERSION: 0.0.0-ci
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with: { tool: nextest }
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
-        with: { cache-targets: "false" }
-      - name: Test (workspace; the guest harness runs only inside Linux VMs)
-        run: cargo test --workspace --exclude agent-harness --locked $FAST_DEPS
+        with:
+          shared-key: macos-${{ matrix.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test (the guest harness runs only inside Linux VMs)
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci
+      - name: Build the binaries
+        if: inputs.package
+        run: cargo build --release --locked ${{ matrix.bins }}
+      - uses: actions/download-artifact@v4
+        if: inputs.package && matrix.arch == 'aarch64'
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
+        with: { name: guest-aarch64, path: target/guest/aarch64 }
+      - name: Stage
+        if: inputs.package
+        env:
+          # A hand-run package (no release job built the guest) may go without it.
+          APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+        run: |
+          packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$VERSION"
+          tar -czf stage-macos-${{ matrix.arch }}.tgz stage
+      - uses: actions/upload-artifact@v4
+        if: inputs.package
+        with: { name: "stage-macos-${{ matrix.arch }}", path: "stage-macos-${{ matrix.arch }}.tgz", retention-days: 1 }
 
-  package:
+  dmg:
     name: package (universal DMG)
     if: inputs.package
-    needs: test
+    needs: build
     runs-on: macos-15
-    env:
-      APZ_VERSION: ${{ inputs.version }}
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: "Build (release, Apple Silicon: hub, desktop and the VM node)"
-        run: cargo build --release --locked --target aarch64-apple-darwin -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
-      - name: "Build (release, Intel: hub and desktop)"
-        run: cargo build --release --locked --target x86_64-apple-darwin -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop
       - uses: actions/download-artifact@v4
-        with: { pattern: "guest-*", path: target/guest, merge-multiple: false }
-      - name: Stage and package
+        with: { pattern: "stage-macos-*", merge-multiple: true }
+      - name: Universal app and DMG
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
         run: |
-          for d in target/guest/guest-*; do mv "$d" "target/guest/${d##*guest-}"; done
-          packaging/scripts/stage.sh aarch64-apple-darwin target/aarch64-apple-darwin/release stage-arm64 "$APZ_VERSION"
-          packaging/scripts/stage.sh x86_64-apple-darwin target/x86_64-apple-darwin/release stage-x86_64 "$APZ_VERSION"
-          packaging/macos/build-dmg.sh stage-arm64 stage-x86_64 "$APZ_VERSION" out
+          mkdir arm64 x86_64
+          tar -xzf stage-macos-aarch64.tgz -C arm64
+          tar -xzf stage-macos-x86_64.tgz -C x86_64
+          packaging/macos/build-dmg.sh arm64/stage x86_64/stage "$VERSION" out
       - name: Verify the bundle
         run: |
           hdiutil attach out/*.dmg -mountpoint /tmp/apz -nobrowse
-          for b in apid apz-link agentplaza agentplaza-desktop noded; do /tmp/apz/AgentPlaza.app/Contents/MacOS/$b --version; done
-          lipo -archs /tmp/apz/AgentPlaza.app/Contents/MacOS/agentplaza-desktop
-          codesign -d --entitlements - /tmp/apz/AgentPlaza.app/Contents/MacOS/apz-vmm
-          test -s /tmp/apz/AgentPlaza.app/Contents/Resources/share/agentplaza/guest/aarch64/vmlinux
-          test -s /tmp/apz/AgentPlaza.app/Contents/Resources/share/agentplaza/guest/aarch64/initrd.gz
+          app=/tmp/apz/AgentPlaza.app/Contents
+          for b in apid apz-link agentplaza agentplaza-desktop noded; do "$app/MacOS/$b" --version; done
+          lipo -archs "$app/MacOS/agentplaza-desktop"
+          codesign -d --entitlements - "$app/MacOS/apz-vmm"
+          if [ "${{ github.event_name }}" != workflow_dispatch ]; then
+            test -s "$app/Resources/share/agentplaza/guest/aarch64/vmlinux"
+            test -s "$app/Resources/share/agentplaza/guest/aarch64/initrd.gz"
+          fi
           hdiutil detach /tmp/apz
       - uses: actions/upload-artifact@v4
-        with:
-          name: pkg-macos
-          path: out/*.dmg
-          if-no-files-found: error
+        with: { name: pkg-macos, path: "out/*.dmg", if-no-files-found: error }

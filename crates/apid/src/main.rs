@@ -81,7 +81,7 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("apid {}", apz_os::VERSION);
+        println!("apid {}", apz_os::version());
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {

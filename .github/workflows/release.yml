@@ -23,10 +23,14 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
 
+# The release's critical path: guest (seconds on a cache hit) → the platform jobs (test and
+# package in one build each, in parallel) → publish.
 jobs:
   version:
     runs-on: ubuntu-24.04
+    timeout-minutes: 3
     outputs:
       version: ${{ steps.next.outputs.version }}
       previous: ${{ steps.next.outputs.previous }}
@@ -39,7 +43,6 @@ jobs:
         run: packaging/scripts/next-version.sh
 
   guest:
-    needs: version
     uses: ./.github/workflows/guest.yml
   linux:
     needs: [version, guest]
@@ -56,8 +59,9 @@ jobs:
     uses: ./.github/workflows/windows.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
+  # Made from the Linux arm64 build.
   raspberry-pi:
-    needs: [version, guest]
+    needs: [version, linux]
     uses: ./.github/workflows/raspberry-pi.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
@@ -65,6 +69,7 @@ jobs:
   web:
     name: web console
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -75,6 +80,7 @@ jobs:
   publish:
     needs: [version, linux, macos, windows, raspberry-pi, web]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: write
     env:

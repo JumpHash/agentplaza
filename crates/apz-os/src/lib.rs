@@ -7,12 +7,20 @@
 //! - [`random`]: bytes from the operating system's CSPRNG.
 //! - [`process`]: starting a service that outlives the app that started it.
 
-/// The version of this build: set at build time by the release workflow (`APZ_VERSION`), the
-/// crate's own version otherwise.
-pub const VERSION: &str = match option_env!("APZ_VERSION") {
-    Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// The version of this installation: the `VERSION` file the packages ship in the resources
+/// directory (`share/agentplaza/VERSION`, written by packaging/scripts/stage.sh), else the crate's
+/// own version (a development build). Read at run time, not compiled in, so a release changes no
+/// compiled code and CI's caches stay warm across releases.
+pub fn version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        dirs::resources()
+            .and_then(|share| std::fs::read_to_string(share.join("VERSION")).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|v| !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+    })
+}
 
 pub mod dirs {
     //! The plaza's directories:

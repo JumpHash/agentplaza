@@ -1,7 +1,8 @@
-# The guest VM images (kernel + initrd per architecture, scripts/mk-guest.sh) that the agents run
-# in: each is built natively on its architecture on Ubuntu 22.04 (the same glibc as the packages),
-# cached until its sources change, and uploaded as guest-<arch> for the package jobs.
-# release.yml calls this once per release; it also runs by hand.
+# The guest VM images (kernel + initrd per architecture, scripts/mk-guest.sh) the agents run in.
+# Cached until their sources change: `check` restores the cache and, on a hit, uploads the images
+# in seconds (no container, no tools); on a miss `build` makes them natively in the CI image
+# (Ubuntu 22.04, the packages' glibc) and saves the cache. Uploaded as guest-<arch> for the
+# package jobs. release.yml calls this once per release; it also runs by hand.
 name: guest
 
 on:
@@ -10,42 +11,99 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
-  guest:
-    name: guest image (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { arch: x86_64, runner: ubuntu-24.04 }
-          - { arch: aarch64, runner: ubuntu-24.04-arm }
-    runs-on: ${{ matrix.runner }}
-    container: ubuntu:22.04
-    env:
-      DEBIAN_FRONTEND: noninteractive
+  check:
+    name: cached guests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      x86_64: ${{ steps.x86_64.outputs.cache-hit }}
+      aarch64: ${{ steps.aarch64.outputs.cache-hit }}
     steps:
-      - name: Build tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev \
-            cpio xz-utils curl ca-certificates busybox-static file git
       - uses: actions/checkout@v5
-      - name: Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Cache the guest
-        id: cache
-        uses: actions/cache@v4
+      - id: x86_64
+        uses: actions/cache/restore@v4
         with:
-          path: target/guest/${{ matrix.arch }}
-          key: "guest-${{ matrix.arch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
-      - name: Build the guest (cache miss)
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: scripts/mk-guest.sh ${{ matrix.arch }}
+          path: target/guest/x86_64
+          key: "guest-x86_64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+      - uses: actions/upload-artifact@v4
+        if: steps.x86_64.outputs.cache-hit == 'true'
+        with:
+          name: guest-x86_64
+          path: |
+            target/guest/x86_64/vmlinux
+            target/guest/x86_64/initrd.gz
+            target/guest/x86_64/guest.json
+          if-no-files-found: error
+      - id: aarch64
+        uses: actions/cache/restore@v4
+        with:
+          path: target/guest/aarch64
+          key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+      - uses: actions/upload-artifact@v4
+        if: steps.aarch64.outputs.cache-hit == 'true'
+        with:
+          name: guest-aarch64
+          path: |
+            target/guest/aarch64/vmlinux
+            target/guest/aarch64/initrd.gz
+            target/guest/aarch64/guest.json
+          if-no-files-found: error
+
+  build-x86_64:
+    name: build the guest (x86_64)
+    needs: check
+    if: needs.check.outputs.x86_64 != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/jumphash/agentplaza-ci:x86_64
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: git config --global --add safe.directory '*'
+      - run: scripts/mk-guest.sh x86_64
+      - uses: actions/cache/save@v4
+        with:
+          path: target/guest/x86_64
+          key: "guest-x86_64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: guest-${{ matrix.arch }}
-          path: target/guest/${{ matrix.arch }}/*
+          name: guest-x86_64
+          path: |
+            target/guest/x86_64/vmlinux
+            target/guest/x86_64/initrd.gz
+            target/guest/x86_64/guest.json
+          if-no-files-found: error
+
+  build-aarch64:
+    name: build the guest (aarch64)
+    needs: check
+    if: needs.check.outputs.aarch64 != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/jumphash/agentplaza-ci:aarch64
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: git config --global --add safe.directory '*'
+      - run: scripts/mk-guest.sh aarch64
+      - uses: actions/cache/save@v4
+        with:
+          path: target/guest/aarch64
+          key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-aarch64
+          path: |
+            target/guest/aarch64/vmlinux
+            target/guest/aarch64/initrd.gz
+            target/guest/aarch64/guest.json
           if-no-files-found: error

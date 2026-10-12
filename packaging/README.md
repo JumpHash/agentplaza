@@ -66,8 +66,9 @@ Semantic versioning, from the commits since the last `v*` tag (`release.yml`):
 - **patch**: everything else.
 - `Release: major|minor|patch` in a commit forces that bump; a manual run of `release.yml` can too.
 
-The binaries report the version (`--version`) from `APZ_VERSION`, set at build time
-(`apz_os::VERSION`; `CARGO_PKG_VERSION` in a local build).
+The binaries report the version (`--version`) from the shipped `share/agentplaza/VERSION`
+(`apz_os::version()`; `CARGO_PKG_VERSION` in a development build). It is read at run time, not
+compiled in, so a release changes no compiled code and CI's caches stay warm.
 
 ## Signing
 
