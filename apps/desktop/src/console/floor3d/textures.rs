@@ -1,10 +1,12 @@
 //! `floor3d/textures.ts`: the floor's painted textures (meadow, paving, tiles, wood, metal,
 //! polish, water) and the seeded random numbers everything procedural uses.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::f32::consts::{PI, TAU};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use super::canvas::Canvas;
-use super::scene::{Color, Mat, Tex};
+use super::scene::{next_id, Color, Mat, Tex, Texture};
 
 /// mulberry32, as `textures.ts`'s `rng(seed)`: the same seed gives the same sequence as the web.
 #[derive(Debug, Clone)]
@@ -16,32 +18,331 @@ impl Rng {
     }
     /// The next number in [0, 1).
     pub fn next(&mut self) -> f32 {
-        // contract: T — mulberry32 exactly as textures.ts.
-        let _ = self.0;
-        0.0
+        // `a = (a + 0x6d2b79f5) >>> 0`
+        self.0 = self.0.wrapping_add(0x6d2b_79f5);
+        let mut t = self.0;
+        // `t = Math.imul(t ^ (t >>> 15), t | 1)`
+        t = (t ^ (t >> 15)).wrapping_mul(t | 1);
+        // `t ^= t + Math.imul(t ^ (t >>> 7), t | 61)`
+        t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(t | 61));
+        // `((t ^ (t >>> 14)) >>> 0) / 4294967296`
+        ((t ^ (t >> 14)) as f64 / 4_294_967_296.0) as f32
     }
 }
 
-/// `canvasTexture(key, w, h, repeat, draw)`: painted once per key and cached; repeat-wrapped,
-/// sRGB, `repeat` × `repeat`. `draw` gets the canvas, its size and an `Rng` seeded from the key
-/// (FNV-1a like `seedOf`).
-pub fn canvas_texture(key: &str, w: u32, h: u32, repeat: f32, draw: impl FnOnce(&mut Canvas, f32, f32, &mut Rng)) -> Tex {
-    let _ = (key, repeat, draw);
-    Canvas::new(w, h).to_texture() // contract: T
+/// `seedOf(key)`: FNV-1a over the key's UTF-16 code units, as `charCodeAt` reads them.
+fn seed_of(key: &str) -> u32 {
+    let mut h: u32 = 2_166_136_261;
+    for c in key.encode_utf16() {
+        h = (h ^ c as u32).wrapping_mul(16_777_619);
+    }
+    h
 }
 
-pub fn grass() -> Tex { canvas_texture("grass", 4, 4, 1.0, |_, _, _, _| {}) } // contract: T
-pub fn paving(tint: Color, repeat: f32) -> Tex { let _ = (tint, repeat); grass() } // contract: T
-pub fn tiles(hue: f32, repeat: f32) -> Tex { let _ = (hue, repeat); grass() } // contract: T
-pub fn wood() -> Tex { grass() } // contract: T
-pub fn metal() -> Tex { grass() } // contract: T
-pub fn polish(tint: Color) -> Tex { let _ = tint; grass() } // contract: T
-pub fn water() -> Tex { grass() } // contract: T
-/// `slabSide(hue)`: the material of a district slab's sides.
-pub fn slab_side(hue: f32) -> Mat { let _ = hue; Mat::toon(Color::WHITE) } // contract: T
+/// JavaScript's `Math.round` (halves go up), for keys built from it.
+fn js_round(x: f32) -> f32 {
+    (x + 0.5).floor()
+}
+
+/// `c.getStyle()`: the colour as a CSS `rgb()` string.
+fn css_of(c: Color) -> String {
+    let [r, g, b] = c.to_srgb_u8();
+    format!("rgb({r},{g},{b})")
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn texture_cache() -> &'static Mutex<HashMap<String, Tex>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Tex>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn material_cache() -> &'static Mutex<HashMap<String, Mat>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Mat>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A repeat-wrapped canvas texture, drawn once per key and cached.
+/// `draw` gets the canvas, its size and an `Rng` seeded from the key.
+pub fn canvas_texture(key: &str, w: u32, h: u32, repeat: f32, draw: impl FnOnce(&mut Canvas, f32, f32, &mut Rng)) -> Tex {
+    let hit = lock(texture_cache()).get(key).cloned();
+    if let Some(hit) = hit {
+        return hit;
+    }
+    let mut canvas = Canvas::new(w, h);
+    draw(&mut canvas, w as f32, h as f32, &mut Rng::new(seed_of(key)));
+    let base = canvas.to_texture();
+    // repeat-wrapped, repeat × repeat, sRGB, as the TS sets on the CanvasTexture.
+    let tex: Tex = Arc::new(Texture { id: next_id(), repeat: [repeat, repeat], wrap: true, srgb: true, ..(*base).clone() });
+    lock(texture_cache()).insert(key.to_string(), tex.clone());
+    tex
+}
+
+/// Rounded rectangle path.
+fn rrect(g: &mut Canvas, x: f32, y: f32, w: f32, h: f32, radius: f32) {
+    g.begin_path();
+    g.move_to(x + radius, y);
+    g.arc_to(x + w, y, x + w, y + h, radius);
+    g.arc_to(x + w, y + h, x, y + h, radius);
+    g.arc_to(x, y + h, x, y, radius);
+    g.arc_to(x, y, x + w, y, radius);
+    g.close_path();
+}
+
+/// Grass: a flat cartoon meadow — soft lighter patches and little inked tufts.
+pub fn grass() -> Tex {
+    canvas_texture("grass", 512, 512, 24.0, |g, w, h, r| {
+        g.set_fill("#86c45e");
+        g.fill_rect(0.0, 0.0, w, h);
+        // Big soft patches in two close greens.
+        for _ in 0..14 {
+            g.set_fill(if r.next() < 0.5 { "#8fcb66" } else { "#7fbc58" });
+            g.begin_path();
+            let x = r.next() * w;
+            let y = r.next() * h;
+            let rx = 30.0 + r.next() * 60.0;
+            let ry = 20.0 + r.next() * 40.0;
+            let rot = r.next() * PI;
+            g.ellipse(x, y, rx, ry, rot, 0.0, TAU, false);
+            g.fill();
+        }
+        // Tufts: three-stroke "v"s, the classic cartoon grass mark.
+        g.set_line_cap("round");
+        for _ in 0..90 {
+            let x = r.next() * w;
+            let y = r.next() * h;
+            let s = 4.0 + r.next() * 5.0;
+            g.set_stroke(if r.next() < 0.7 { "rgba(70,128,52,0.55)" } else { "rgba(196,232,150,0.7)" });
+            g.set_line_width(1.6);
+            g.begin_path();
+            g.move_to(x - s * 0.6, y - s);
+            g.line_to(x, y);
+            g.line_to(x + s * 0.1, y - s * 1.3);
+            g.move_to(x, y);
+            g.line_to(x + s * 0.7, y - s * 0.9);
+            g.stroke();
+        }
+        // A few tiny flowers.
+        for _ in 0..12 {
+            let pick = (r.next() * 3.0).floor() as usize;
+            g.set_fill(["#fff6d8", "#ffd25e", "#ff9db5"][pick]);
+            g.begin_path();
+            let x = r.next() * w;
+            let y = r.next() * h;
+            let rad = 2.0 + r.next() * 1.5;
+            g.arc(x, y, rad, 0.0, TAU, false);
+            g.fill();
+        }
+    })
+}
+
+/// Cobblestones: rounded stones, each with a highlight and an inked edge, set in dark grout.
+pub fn paving(tint: Color, repeat: f32) -> Tex {
+    canvas_texture(&format!("paving:{}:{}", css_of(tint), repeat), 256, 256, repeat, move |g, w, h, r| {
+        let rows: i32 = 5;
+        let row_h = h / rows as f32;
+        let stone_w = w / 4.0;
+        g.set_fill(&css_of(tint.scale(0.55)));
+        g.fill_rect(0.0, 0.0, w, h);
+        for row in 0..rows {
+            let shift = (row % 2) as f32 * (stone_w / 2.0);
+            for col in -1..=4 {
+                let x = col as f32 * stone_w + shift + 3.0 + r.next() * 2.0;
+                let y = row as f32 * row_h + 3.0 + r.next() * 2.0;
+                let sw = stone_w - 7.0;
+                let sh = row_h - 7.0;
+                rrect(g, x, y, sw, sh, 9.0);
+                g.set_fill(&css_of(tint.scale(0.92 + r.next() * 0.14)));
+                g.fill();
+                g.set_line_width(2.0);
+                g.set_stroke("rgba(43,36,32,0.55)");
+                g.stroke();
+                rrect(g, x + 5.0, y + 4.0, sw * 0.45, 5.0, 2.5);
+                g.set_fill("rgba(255,255,255,0.45)");
+                g.fill();
+            }
+        }
+    })
+}
+
+/// A district's floor: big glazed tiles in its role hue, a highlight on each and inked grout.
+pub fn tiles(hue: f32, repeat: f32) -> Tex {
+    canvas_texture(&format!("tiles:{}:{}", js_round(hue), repeat), 256, 256, repeat, move |g, w, h, r| {
+        let grout = Color::hsl(hue / 360.0, 0.28, 0.66);
+        let base = Color::hsl(hue / 360.0, 0.5, 0.84);
+        g.set_fill(&css_of(grout));
+        g.fill_rect(0.0, 0.0, w, h);
+        let n: usize = 4;
+        let t = w / n as f32;
+        for j in 0..n {
+            for i in 0..n {
+                let (fi, fj) = (i as f32, j as f32);
+                let alt = if (i + j) % 2 == 0 { 1.0 } else { 0.9 };
+                rrect(g, fi * t + 3.0, fj * t + 3.0, t - 6.0, t - 6.0, 6.0);
+                g.set_fill(&css_of(base.scale(alt * (0.97 + r.next() * 0.06))));
+                g.fill();
+                g.begin_path();
+                g.move_to(fi * t + 10.0, fj * t + 14.0);
+                g.line_to(fi * t + 22.0, fj * t + 9.0);
+                g.set_stroke("rgba(255,255,255,0.6)");
+                g.set_line_width(3.0);
+                g.set_line_cap("round");
+                g.stroke();
+            }
+        }
+    })
+}
+
+/// Cartoon planks: warm, flat bands with inked seams and a few knots.
+pub fn wood() -> Tex {
+    canvas_texture("wood", 256, 256, 1.0, |g, w, h, r| {
+        let planks: usize = 4;
+        let ph = h / planks as f32;
+        for p in 0..planks {
+            let top = p as f32 * ph;
+            let hue = 28.0 + r.next() * 6.0;
+            let sat = 55.0 + r.next() * 10.0;
+            let light = 50.0 + r.next() * 8.0;
+            g.set_fill(&format!("hsl({hue}, {sat}%, {light}%)"));
+            g.fill_rect(0.0, top, w, ph);
+            g.set_fill("rgba(255,255,255,0.18)");
+            g.fill_rect(0.0, top + 4.0, w, 5.0);
+            for _ in 0..2 {
+                g.set_stroke("rgba(90,50,20,0.45)");
+                g.set_line_width(2.0);
+                g.begin_path();
+                let x = r.next() * w;
+                let rx = 7.0 + r.next() * 5.0;
+                g.ellipse(x, top + ph / 2.0, rx, 3.0, 0.0, 0.0, TAU, false);
+                g.stroke();
+            }
+            g.set_fill("rgba(60,32,14,0.8)");
+            g.fill_rect(0.0, top, w, 3.0);
+        }
+    })
+}
+
+/// Painted metal: a flat cool grey with one bright stripe.
+pub fn metal() -> Tex {
+    canvas_texture("metal", 64, 64, 1.0, |g, w, h, _| {
+        g.set_fill("#8f9bab");
+        g.fill_rect(0.0, 0.0, w, h);
+        g.set_fill("rgba(255,255,255,0.35)");
+        g.fill_rect(0.0, h * 0.2, w, h * 0.12);
+    })
+}
+
+/// Polished stone: the tint, a little warmer, with a few soft cartoon sparkles.
+pub fn polish(tint: Color) -> Tex {
+    canvas_texture(&format!("polish:{}", css_of(tint)), 256, 256, 2.0, move |g, w, h, r| {
+        g.set_fill(&css_of(tint));
+        g.fill_rect(0.0, 0.0, w, h);
+        for _ in 0..14 {
+            g.set_fill("rgba(255,255,255,0.35)");
+            let x = r.next() * w;
+            let y = r.next() * h;
+            let sw = 18.0 + r.next() * 30.0;
+            rrect(g, x, y, sw, 5.0, 2.5);
+            g.fill();
+        }
+        for _ in 0..10 {
+            g.set_fill("rgba(120,100,80,0.12)");
+            g.begin_path();
+            let x = r.next() * w;
+            let y = r.next() * h;
+            let rad = 8.0 + r.next() * 14.0;
+            g.arc(x, y, rad, 0.0, TAU, false);
+            g.fill();
+        }
+    })
+}
+
+/// Water: flat cartoon teal with white wave squiggles. Scrolled over time by the fountain.
+pub fn water() -> Tex {
+    canvas_texture("water", 256, 256, 2.0, |g, w, h, r| {
+        g.set_fill("#3cc0d6");
+        g.fill_rect(0.0, 0.0, w, h);
+        g.set_fill("#5fd3e3");
+        for _ in 0..10 {
+            g.begin_path();
+            let x = r.next() * w;
+            let y = r.next() * h;
+            let rx = 30.0 + r.next() * 30.0;
+            let ry = 12.0 + r.next() * 10.0;
+            g.ellipse(x, y, rx, ry, 0.0, 0.0, TAU, false);
+            g.fill();
+        }
+        g.set_line_cap("round");
+        for _ in 0..26 {
+            let x = r.next() * w;
+            let y = r.next() * h;
+            g.set_stroke("rgba(255,255,255,0.85)");
+            g.set_line_width(3.0);
+            g.begin_path();
+            g.move_to(x, y);
+            g.quadratic_curve_to(x + 8.0, y - 6.0, x + 16.0, y);
+            g.quadratic_curve_to(x + 24.0, y + 6.0, x + 32.0, y);
+            g.stroke();
+        }
+    })
+}
+
+/// A slab's sides: a darker band of its district hue, so the tiled top stands out.
+pub fn slab_side(hue: f32) -> Mat {
+    let key = format!("side:{}", js_round(hue));
+    let hit = lock(material_cache()).get(&key).cloned();
+    if let Some(hit) = hit {
+        return hit;
+    }
+    let m = Mat::toon(Color::hsl(hue / 360.0, 0.35, 0.66));
+    lock(material_cache()).insert(key, m.clone());
+    m
+}
 
 /// The cache `canvas_texture` keeps (exposed for tests).
 pub fn cached() -> usize {
-    let _ = Arc::<()>::default;
-    0 // contract: T
+    lock(texture_cache()).len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rng_is_mulberry32() {
+        // Independent reference: the same steps with the 32-bit multiply done in u64.
+        fn imul(a: u32, b: u32) -> u32 {
+            ((a as u64 * b as u64) & 0xffff_ffff) as u32
+        }
+        let mut a: u32 = 31;
+        let mut want = Vec::new();
+        for _ in 0..3 {
+            a = a.wrapping_add(0x6d2b_79f5);
+            let mut t = a;
+            t = imul(t ^ (t >> 15), t | 1);
+            t ^= t.wrapping_add(imul(t ^ (t >> 7), t | 61));
+            want.push(((t ^ (t >> 14)) as f64 / 4_294_967_296.0) as f32);
+        }
+        let mut r = Rng::new(31);
+        for w in want {
+            assert_eq!(r.next(), w);
+        }
+    }
+
+    #[test]
+    fn canvas_texture_same_key_same_arc() {
+        let a = canvas_texture("test:same-key", 8, 8, 1.0, |_, _, _, _| {});
+        let b = canvas_texture("test:same-key", 8, 8, 1.0, |_, _, _, _| {});
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert!(cached() >= 1);
+    }
+
+    #[test]
+    fn grass_is_repeat_wrapped() {
+        let t = grass();
+        assert!(t.wrap);
+        assert_eq!(t.repeat, [24.0, 24.0]);
+    }
 }
