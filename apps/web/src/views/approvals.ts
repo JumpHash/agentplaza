@@ -92,6 +92,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       h('div.approval-decide', null, reason, h('div.approval-buttons', null, no, yes)),
     ]);
     el.classList.add('approval-card');
+    el.setAttribute('data-key', `ap-${a.id}`);
     return el;
   };
 
@@ -99,7 +100,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const row = (a: Approval): HTMLElement =>
     h(
       'div.approval-row',
-      null,
+      { 'data-key': `ap-${a.id}` },
       badge(LABEL[a.state], TONE[a.state]),
       h('code.approval-row-tool', null, a.tool),
       h('span.approval-row-agent', null, nameOf(a.cid)),

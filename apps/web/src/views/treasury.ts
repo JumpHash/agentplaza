@@ -171,7 +171,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const rows = shown.map((e) =>
       h(
         'div.tr-row',
-        null,
+        { 'data-key': `j-${e.id}` },
         h('span.tr-n', null, `#${e.id}`),
         h('span.tr-at', null, ago(e.at)),
         badge(e.kind, KIND_TONE[e.kind] ?? 'muted'),
