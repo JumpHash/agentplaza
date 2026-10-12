@@ -141,9 +141,17 @@ Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
 after 300 s without one); otherwise the one-shot v1 session. SIGTERM or SIGINT
 stops the daemon.";
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn main() -> ExitCode {
     eprintln!("vsockd: the UDS muxer backend is Linux-only; this host cannot accept guests");
+    ExitCode::FAILURE
+}
+
+#[cfg(not(unix))]
+fn main() -> ExitCode {
+    eprintln!(
+        "vsockd needs Unix sockets; on Windows the node runs without a guest socket bridge (planned)"
+    );
     ExitCode::FAILURE
 }
 

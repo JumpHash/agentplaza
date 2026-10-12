@@ -8,12 +8,20 @@ license.workspace = true
 [dependencies]
 libc.workspace = true
 thiserror.workspace = true
-linux-loader.workspace = true
 vm-memory.workspace = true
-vm-superio.workspace = true
-vmm-sys-util.workspace = true
 acpi_tables.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# rawfd (vm-memory's default, enabled here so unix builds are unchanged) is
+# not supported on Windows; linux-loader enables vm-memory's defaults itself,
+# so it is unix-only too.
+vm-memory = { workspace = true, features = ["rawfd"] }
+linux-loader.workspace = true
+# vmm-sys-util 0.15 does not build for non-x86_64 Windows (its timer falls back
+# to libc::clock_gettime), so the device crates are unix-only for now.
+vm-superio.workspace = true
+vmm-sys-util.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-bindings.workspace = true

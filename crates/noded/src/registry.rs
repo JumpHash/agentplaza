@@ -755,9 +755,12 @@ fn prepare_persistent_workspace(
     persist_dir: &std::path::Path,
     cid: u64,
 ) -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
     let dir = persist_dir.join("workspaces");
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
     let image = persistent_workspace_path(persist_dir, cid);
     if !image.exists() {
         let partial = dir.join(format!("cid-{cid}.ext4.partial"));
