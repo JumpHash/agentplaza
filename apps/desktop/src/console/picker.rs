@@ -60,13 +60,14 @@ const EFFORTS: &[EffortOpt] = &[
 ];
 
 /// The choices from the hub's model list (`GET /v1/models` and the provider catalogue, as the web
-/// picker reads them).
+/// picker reads them). Decision models (group "decisions") are left out: agents never chat with them.
 pub fn choices(models: &Value) -> Vec<Choice> {
     models
         .get("models")
         .and_then(Value::as_array)
         .map(|list| {
             list.iter()
+                .filter(|m| m.get("group").and_then(Value::as_str) != Some("decisions"))
                 .filter_map(|m| {
                     let provider = m.get("provider")?.as_str()?.to_string();
                     let model = m.get("id")?.as_str()?;
@@ -184,8 +185,9 @@ mod tests {
     fn choices_read_the_hub_model_list() {
         let models = serde_json::json!({
             "models": [
-                {"provider": "anthropic", "id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"},
-                {"provider": "openai", "id": "gpt-x", "name": null}
+                {"provider": "anthropic", "id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "group": "chat"},
+                {"provider": "openai", "id": "gpt-x", "name": null},
+                {"provider": "openai-decisions", "id": "gpt-6-luna", "name": null, "group": "decisions"}
             ],
             "errors": []
         });
