@@ -18,6 +18,7 @@ import { buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './flo
 import { buildRoom, roomStyle } from './floor3d/rooms';
 import { grass, paving, rng, slabSide } from './floor3d/textures';
 import { clouds, grassTufts, outline, sky, toonMat } from './floor3d/toon';
+import { bakeStatic } from './floor3d/bake';
 import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
 
@@ -321,6 +322,7 @@ export function mount(root: HTMLElement): Cleanup {
   scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x8fcd62)));
   scene.fog = new THREE.Fog(SKY_HORIZON, 70, 240);
   const cloudLayer = clouds(16, 120, rng(31));
+  cloudLayer.group.userData.dynamic = true; // drifts every frame
   scene.add(cloudLayer.group);
   const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
   const controls = new OrbitControls(camera, canvas);
@@ -359,6 +361,7 @@ export function mount(root: HTMLElement): Cleanup {
   const pathGroup = new THREE.Group();
   scene.add(pathGroup);
   const plaza = buildPlaza(C);
+  plaza.userData.dynamic = true; // the xenon atom and its rings animate
   scene.add(plaza);
   const plazaAnim = plaza.userData.animate as (t: number) => void;
   const padGeo = new THREE.CircleGeometry(0.42, 28);
@@ -549,6 +552,7 @@ export function mount(root: HTMLElement): Cleanup {
     pathGroup.clear();
     pathGroup.add(buildPaths(ds.map((d) => new THREE.Vector3(d.cx, 0, d.cy)), C));
     const fountain = buildPlazaFurniture(C, ds.map((d) => Math.atan2(d.cy, d.cx)));
+    fountain.group.userData.dynamic = true; // the water animates
     pathGroup.add(fountain.group);
     propAnim.push(fountain.animate);
     for (const b of fountain.boxes) propBoxes.push(b);
@@ -573,6 +577,9 @@ export function mount(root: HTMLElement): Cleanup {
     }, rng(97));
     pathGroup.add(tufts.mesh);
     propAnim.push(tufts.animate);
+    // The world was just rebuilt (the old one is disposed above), so bake only this fresh static subtree.
+    const stats = { districts: bakeStatic(districtGroup), paths: bakeStatic(pathGroup) };
+    console.debug('floor: baked', stats);
   }
 
   // Robots, labels, pads.
@@ -583,13 +590,16 @@ export function mount(root: HTMLElement): Cleanup {
       o.castShadow = true;
       o.receiveShadow = true;
     });
+    robot.group.userData.dynamic = true; // walks, turns, is picked
     scene.add(robot.group);
     const padMat = new THREE.MeshBasicMaterial({ color: C.ink3, transparent: true, opacity: 0.6, depthWrite: false });
     const pad = new THREE.Mesh(padGeo, padMat);
+    pad.userData.dynamic = true; // tinted by state every frame
     pad.rotation.x = -Math.PI / 2;
     pad.position.set(hx, topOf(district) + 0.02, hy);
     scene.add(pad);
     const token = new THREE.Mesh(tokenGeo, mats.token);
+    token.userData.dynamic = true; // bobs and spins while its robot works
     token.visible = false;
     scene.add(token);
     const label = document.createElement('div');
@@ -889,6 +899,8 @@ export function mount(root: HTMLElement): Cleanup {
     if (from === to) return;
     const core = new THREE.Mesh(packetGeo, tone === 'ok' ? mats.ok : mats.accent);
     const halo = new THREE.Mesh(haloGeo, tone === 'ok' ? mats.okHalo : mats.accentHalo);
+    core.userData.dynamic = true; // moved along its arc every frame
+    halo.userData.dynamic = true;
     scene.add(core, halo);
     packets.push({ from, to, start: performance.now(), core, halo });
     while (packets.length > MAX_PACKETS) dropPacket(packets.shift()!);
@@ -1105,7 +1117,11 @@ export function mount(root: HTMLElement): Cleanup {
   });
 
   // Loop.
+  // Capped at 60 fps: a frame that comes too soon is skipped whole, and `last` moves only on rendered frames.
+  let lastRender = -Infinity;
   const frame = (now: number): void => {
+    if (now - lastRender < 1000 / 60 - 1) return;
+    lastRender = now;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const t = now / 1000;
