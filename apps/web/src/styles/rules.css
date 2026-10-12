@@ -1,0 +1,107 @@
+/* Rules: the laws, explained for people. Square corners, the register's own variables. */
+
+.rules-view { display: flex; flex-direction: column; gap: 24px; max-width: 1180px; min-width: 0; }
+.rules-intro p { margin: 0; max-width: 72ch; color: var(--ink-2); font-size: 15px; line-height: 1.6; }
+
+/* Summary strip */
+.rules-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--rule); background: var(--sheet); }
+.rules-stat { display: flex; flex-direction: column; gap: 4px; padding: 14px 18px; border-right: 1px solid var(--rule); }
+.rules-stat:last-child { border-right: 0; }
+.rules-stat-label { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.rules-stat-value { font-size: 26px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Toolbar */
+.rules-toolbar { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; border: 1px solid var(--rule); background: var(--sheet); }
+.rules-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+.rules-row > input[type="search"] { flex: 1 1 280px; min-width: 0; }
+.rules-tabs { min-width: 0; max-width: 100%; overflow-x: auto; }
+.rules-chips { display: inline-flex; border: 1px solid var(--ink); }
+.rules-chip {
+  appearance: none; border: 0; border-right: 1px solid var(--ink); border-radius: 0;
+  background: var(--sheet); color: var(--ink-2); padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.rules-chip:last-child { border-right: 0; }
+.rules-chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.rules-chip:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+/* Layout: list and latest infractions side by side, one column under 900px */
+.rules-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+.rules-main, .rules-side { min-width: 0; }
+.rules-side { position: sticky; top: 16px; }
+.rules-count { margin: 0 0 14px; font-size: 13px; color: var(--ink-3); }
+
+/* Tier groups */
+.rules-group { display: flex; flex-direction: column; gap: 14px; margin-bottom: 36px; }
+.rules-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; border-bottom: 1px solid var(--ink); padding-bottom: 8px; }
+.rules-group-head h2 { margin: 0; font-size: 20px; }
+.rules-group-count { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.rules-group-desc { flex-basis: 100%; margin: 0; color: var(--ink-2); font-size: 14px; }
+
+/* Rule cards */
+.law {
+  display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow-wrap: anywhere;
+  background: var(--sheet); border: 1px solid var(--rule); border-left: 4px solid var(--rule);
+  padding: 20px 22px 18px; scroll-margin-top: 16px;
+}
+.law.forbid { border-left-color: var(--crit); }
+.law.permit { border-left-color: var(--ok-ink); }
+.law.flash { animation: law-flash 2.2s ease-out; }
+@keyframes law-flash {
+  0% { background: color-mix(in srgb, var(--signal) 22%, var(--sheet)); }
+  100% { background: var(--sheet); }
+}
+.law-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px 16px; }
+.law-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.law-title h3 { margin: 0; font-size: 18px; line-height: 1.3; }
+.law-id { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+.law-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.law-statement { margin: 0; max-width: 72ch; font-size: 16px; line-height: 1.6; color: var(--ink); }
+.law-short, .law-why { margin: 0; max-width: 72ch; color: var(--ink-2); line-height: 1.6; }
+.law-short strong, .law-why strong { color: var(--ink); font-weight: 600; }
+.law-applies { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--ink-2); }
+.law-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); }
+.law-scope { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+.law-ops { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.op { font-family: var(--mono); font-size: 12px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink-2); padding: 1px 6px; }
+.law-usage { margin: 0; font-size: 13px; color: var(--ink-3); }
+.law-usage a { color: var(--ink-2); }
+
+/* How it is written */
+.law-how { border-top: 1px solid var(--rule-faint); padding-top: 10px; }
+.law-how summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.law-how[open] summary { color: var(--ink); }
+.law-how .law-file { font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin: 12px 0 8px; }
+.law-conds { margin: 0 0 12px; padding-left: 20px; font-size: 14px; color: var(--ink-2); line-height: 1.6; }
+.rules-src {
+  margin: 0; padding: 14px; background: var(--paper); border: 1px solid var(--rule); color: var(--ink);
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; overflow-x: auto;
+}
+
+/* Empty and quiet states */
+.rules-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 0; padding: 24px 0; color: var(--ink-3); font-size: 14px; }
+.rules-empty p { margin: 0; }
+
+/* Latest infractions */
+.infr-panel { background: var(--sheet); border: 1px solid var(--rule); padding: 16px 18px; }
+.infr-panel h2 { margin: 0 0 12px; font-size: 16px; }
+.infr-list { list-style: none; margin: 0; padding: 0; }
+.infr-row { display: flex; flex-direction: column; gap: 4px; padding: 12px 0; border-top: 1px solid var(--rule-faint); min-width: 0; }
+.infr-row:first-child { border-top: 0; padding-top: 0; }
+.infr-line { font-size: 14px; line-height: 1.45; color: var(--ink-2); overflow-wrap: anywhere; }
+.infr-line a { color: var(--ink); }
+.infr-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--ink-3); min-width: 0; }
+.infr-meta code { font-family: var(--mono); }
+.infr-detail { overflow-wrap: anywhere; }
+
+/* Phones and narrow tablets: one column, the strip in two */
+@media (max-width: 900px) {
+  .rules-grid { grid-template-columns: minmax(0, 1fr); }
+  .rules-side { position: static; }
+  .rules-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rules-stat:nth-child(2) { border-right: 0; }
+  .rules-stat:nth-child(-n + 2) { border-bottom: 1px solid var(--rule); }
+  .rules-stat:nth-child(3) { border-right: 1px solid var(--rule); }
+  .rules-stat:last-child { border-right: 0; }
+  .rules-row > input[type="search"] { flex-basis: 100%; }
+  .law { padding: 18px 16px 16px; }
+}
