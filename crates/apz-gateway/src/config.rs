@@ -27,13 +27,23 @@ pub enum ProviderKind {
     VertexGemini,
     #[serde(rename = "openai-compatible")]
     OpenAiCompatible,
+    /// OpenAI's Decisions API (`POST {base}/decisions`).
+    #[serde(rename = "openai-decisions")]
+    OpenAiDecisions,
+    /// TypeSafe Jev over the System One API (`POST {base}/v1/systemone`).
+    #[serde(rename = "systemone")]
+    SystemOne,
+    /// Microsoft's decision models on Azure AI Foundry (System One shape,
+    /// `api-key` header, `options.path`).
+    #[serde(rename = "azure-decisions")]
+    AzureDecisions,
     #[serde(rename = "mock")]
     Mock,
 }
 
 impl ProviderKind {
     /// Every kind, in the order the contract lists them.
-    pub const ALL: [ProviderKind; 10] = [
+    pub const ALL: [ProviderKind; 13] = [
         ProviderKind::Anthropic,
         ProviderKind::OpenAi,
         ProviderKind::OpenAiResponses,
@@ -43,6 +53,9 @@ impl ProviderKind {
         ProviderKind::VertexAnthropic,
         ProviderKind::VertexGemini,
         ProviderKind::OpenAiCompatible,
+        ProviderKind::OpenAiDecisions,
+        ProviderKind::SystemOne,
+        ProviderKind::AzureDecisions,
         ProviderKind::Mock,
     ];
 
@@ -58,7 +71,19 @@ impl ProviderKind {
             ProviderKind::VertexAnthropic => "vertex-anthropic",
             ProviderKind::VertexGemini => "vertex-gemini",
             ProviderKind::OpenAiCompatible => "openai-compatible",
+            ProviderKind::OpenAiDecisions => "openai-decisions",
+            ProviderKind::SystemOne => "systemone",
+            ProviderKind::AzureDecisions => "azure-decisions",
             ProviderKind::Mock => "mock",
+        }
+    }
+
+    /// The model group this kind belongs to: `"decisions"` answers named
+    /// questions, every other kind is `"chat"`. The two never mix.
+    pub fn group(&self) -> &'static str {
+        match self {
+            ProviderKind::OpenAiDecisions | ProviderKind::SystemOne | ProviderKind::AzureDecisions => "decisions",
+            _ => "chat",
         }
     }
 }
@@ -221,7 +246,13 @@ pub fn presets() -> Vec<Preset> {
           "Mainland China accounts use https://api.moonshot.cn/v1.")
             .with(&["kimi-k3"], Value::Null),
         p("groq", OpenAiCompatible, "Groq", "groq", Some("https://api.groq.com/openai/v1"), env("GROQ_API_KEY"), ""),
-        p("mistral", OpenAiCompatible, "Mistral", "mistral", Some("https://api.mistral.ai/v1"), env("MISTRAL_API_KEY"), ""),
+        p("mistral", OpenAiCompatible, "Mistral", "mistral", Some("https://api.mistral.ai/v1"), env("MISTRAL_API_KEY"),
+          "Magistral's thinking comes back as reasoning; tool-call ids are mapped to Mistral's 9-character form.")
+            .with(
+                &["mistral-medium-latest", "mistral-large-latest", "magistral-medium-latest", "devstral-latest",
+                  "codestral-latest", "mistral-small-latest"],
+                serde_json::json!({"mistral_compat": true}),
+            ),
         p("xai", OpenAiCompatible, "xAI", "xai", Some("https://api.x.ai/v1"), env("XAI_API_KEY"),
           "Effort goes out as reasoning_effort (low, medium, high, xhigh).")
             .with(&["grok-4.7"], serde_json::json!({"reasoning_effort": true})),
@@ -239,6 +270,15 @@ pub fn presets() -> Vec<Preset> {
         p("vllm", OpenAiCompatible, "vLLM", "vllm", Some("http://127.0.0.1:8000/v1"), Auth::None, "Local; no key."),
         p("llamacpp", OpenAiCompatible, "llama.cpp server", "llamacpp", Some("http://127.0.0.1:8080/v1"), Auth::None,
           "Local; no key."),
+        p("openai-decisions", OpenAiDecisions, "OpenAI Decisions", "openai", Some("https://api.openai.com/v1"),
+          env("OPENAI_API_KEY"), "Decisions API: named predicates, choices and scores, each with calibrated probabilities.")
+            .with(&["gpt-6-luna"], Value::Null),
+        p("microsoft-decisions", AzureDecisions, "Microsoft Decision", "microsoft", None, env("AZURE_AI_API_KEY"),
+          "Microsoft-Decision-1 on Azure AI Foundry. base_url https://<resource>.services.ai.azure.com; options.path defaults to /v1/systemone.")
+            .with(&["Microsoft-Decision-1"], Value::Null),
+        p("typesafe", SystemOne, "TypeSafe Jev", "typesafe", Some("https://api.typesafe.ai"), env("TYPESAFE_API_KEY"),
+          "Jev decision models over the System One API.")
+            .with(&["jev-latest", "jev-1.13.0"], Value::Null),
         p("mock", Mock, "Mock (offline)", "mock", None, Auth::None,
           "Deterministic, no network: models `agent` (calls a tool, then summarises) and `echo`."),
     ]
@@ -266,7 +306,9 @@ mod tests {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.as_str()));
         }
         let ids: Vec<_> = presets().iter().map(|p| p.id).collect();
-        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.len() == 25, "{ids:?}");
+        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.len() == 28, "{ids:?}");
+        assert_eq!(ProviderKind::SystemOne.group(), "decisions");
+        assert_eq!(ProviderKind::Mock.group(), "chat");
     }
 
     #[test]
@@ -274,7 +316,7 @@ mod tests {
         const BRANDS: &[&str] = &[
             "anthropic", "openai", "google", "aws", "azure", "xai", "deepseek", "zai", "moonshot", "mistral", "groq",
             "openrouter", "together", "fireworks", "perplexity", "cerebras", "nvidia", "ollama", "lmstudio", "vllm",
-            "llamacpp", "mock",
+            "llamacpp", "mock", "microsoft", "typesafe",
         ];
         let presets = presets();
         let mut ids: Vec<_> = presets.iter().map(|p| p.id).collect();
