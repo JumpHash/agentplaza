@@ -1,0 +1,24 @@
+//! One module per console area; each owns its subcommands (`Cmd`) and `run`.
+
+pub mod agents;
+pub mod approvals;
+pub mod board;
+pub mod conversations;
+pub mod council;
+pub mod decide;
+pub mod events;
+pub mod git;
+pub mod hub;
+pub mod library;
+pub mod machines;
+pub mod models;
+pub mod node;
+pub mod nodes;
+pub mod overview;
+pub mod plaza;
+pub mod projects;
+pub mod rules;
+pub mod society;
+pub mod tasks;
+pub mod tools;
+pub mod treasury;

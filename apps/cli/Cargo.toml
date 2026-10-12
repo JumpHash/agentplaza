@@ -1,0 +1,20 @@
+[package]
+name = "agentplaza-cli"
+description = "agentplaza: the AgentPlaza command line — every console feature, and a terminal UI with the plaza drawn live"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "agentplaza"
+path = "src/main.rs"
+
+[dependencies]
+apz-http = { path = "../../crates/apz-http" }
+apz-os = { path = "../../crates/apz-os" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+ratatui = "0.30"
+crossterm = "0.29"
