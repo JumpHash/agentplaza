@@ -6,7 +6,7 @@ import '../styles/ops.css';
 import { api, type MachineNode, type Overview, type Run, type Vm } from '../api';
 import { on } from '../store';
 import { ago, attempt, badge, button, empty, type Tone } from '../ui/components';
-import { deviceSvg } from '../ui/devices';
+import { deviceVisual } from '../ui/devices';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
@@ -283,7 +283,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const section = (m: MachineNode): HTMLElement => {
     const runs = m.runs ?? [];
-    const dev = deviceSvg(m.kind, { gpu: m.gpus.length > 0, active: isLive(runs) });
+    const dev = deviceVisual(m.kind, { gpu: m.gpus.length > 0, active: isLive(runs) });
     dev.classList.add('mach-dev');
     const s = m.stats;
     const live = s

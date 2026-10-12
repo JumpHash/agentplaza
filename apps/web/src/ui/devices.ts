@@ -1,3 +1,4 @@
+import { machineImage } from '../views/floor3d/machine-model';
 // Small SVG illustrations of the plaza's machines: what each one is.
 // Built with createElementNS only (no innerHTML). Line art: strokes follow
 // currentColor, fills come from the civic-register tokens on :root.
@@ -151,4 +152,18 @@ export function deviceSvg(kind: DeviceKind, opts: DeviceOpts): SVGSVGElement {
   const riserX = DRAW[kind](svg, opts.active);
   if (opts.gpu) drawGpu(svg, riserX);
   return svg;
+}
+
+/** The machine's picture on the Machines screen: a 3D toon model, or the line drawing without WebGL. */
+export function deviceVisual(kind: DeviceKind, opts: DeviceOpts): HTMLElement | SVGSVGElement {
+  const picture = machineImage(kind, opts);
+  if (!picture) return deviceSvg(kind, opts);
+  const img = document.createElement('img');
+  img.className = 'device-model';
+  img.src = picture;
+  img.alt = kind;
+  img.style.width = '220px';
+  img.style.height = 'auto';
+  img.style.display = 'block';
+  return img;
 }
