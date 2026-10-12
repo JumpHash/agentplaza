@@ -2,8 +2,9 @@
 # from the same optimised build, then installs the MSI and runs what it installed. The x64 package
 # carries the VM node (the Windows Hypervisor Platform backend) and the x86_64 guest.
 # Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
-# Speed: rust-cache (dependencies, saved from main) + sccache (unchanged workspace crates), one
-# release build for tests and packages, rust-lld, nextest.
+# Where: the org's self-hosted Windows runner (x64). arm64 is cross-compiled there: its tests are
+# built, not run, and its MSI is not installed. Speed: cargo's build directory persists on the
+# runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest.
 name: windows
 
 on:
@@ -28,8 +29,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: ${{ github.server_url == 'https://github.com' && 'true' || 'false' }}
   # LLVM's linker instead of link.exe: much faster on large binaries.
   CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
   CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER: rust-lld
@@ -46,38 +45,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x64, runner: windows-2025, triple: x86_64-pc-windows-msvc, garch: x86_64,
+          - { arch: x64, triple: x86_64-pc-windows-msvc, garch: x86_64, run_tests: true,
               bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmctl" }
-          - { arch: arm64, runner: windows-11-arm, triple: aarch64-pc-windows-msvc, garch: "",
+          - { arch: arm64, triple: aarch64-pc-windows-msvc, garch: "", run_tests: false,
               bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop" }
-    runs-on: ${{ matrix.runner }}
-    # A cold cache (a new Rust or a dependency update) compiles everything once on these 2–3 core
-    # runners; warm runs take minutes. A hung test is killed by nextest after 2 minutes.
-    timeout-minutes: 60
+    runs-on: [self-hosted, Windows, X64, hetzner]
+    # A cold build directory compiles everything once on the runner's 4 cores; after that a run
+    # rebuilds only what changed. A hung test is killed by nextest after 2 minutes.
+    timeout-minutes: 90
     steps:
       # Check out with LF line endings, as on Linux: hashFiles() then gives the guest the same
       # cache key guest.yml saved it under, and the shell scripts run as written.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      - name: The runner's build directory
+        run: echo "CARGO_TARGET_DIR=$(cygpath -m "$USERPROFILE")/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.triple }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: nextest }
-      # On GitHub the action hands sccache the Actions cache; elsewhere a plain sccache, on disk.
-      - uses: mozilla-actions/sccache-action@v0.0.9
-        if: github.server_url == 'https://github.com'
-      - uses: taiki-e/install-action@v2
-        if: github.server_url != 'https://github.com'
-        with: { tool: sccache }
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: windows-${{ matrix.arch }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
       - name: Test (the guest harness runs only inside Linux VMs)
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci
+        if: matrix.run_tests
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ matrix.triple }}
+      - name: Build the tests (arm64 cannot run here)
+        if: ${{ !matrix.run_tests }}
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ matrix.triple }} --no-run
       - name: Build the binaries
         if: inputs.package
-        run: cargo build --release --locked ${{ matrix.bins }}
+        run: cargo build --release --locked --target ${{ matrix.triple }} ${{ matrix.bins }}
       - name: The guest (cached by guest.yml; built on Linux)
         if: inputs.package && matrix.garch != ''
         uses: actions/cache/restore@v4
@@ -90,7 +85,10 @@ jobs:
         env:
           # A hand-run package (no release job built the guest) may go without it.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
-        run: packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$VERSION"
+        run: packaging/scripts/stage.sh ${{ matrix.triple }} "$CARGO_TARGET_DIR/${{ matrix.triple }}/release" stage "$VERSION"
+      - uses: actions/setup-dotnet@v4
+        if: inputs.package
+        with: { dotnet-version: 8.0.x }
       - name: Package
         if: inputs.package
         shell: pwsh
@@ -98,14 +96,15 @@ jobs:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: packaging/windows/build.ps1 -Stage stage -Version $env:VERSION -Arch ${{ matrix.arch }} -Out out-windows-${{ matrix.arch }}
-      - name: Verify
-        if: inputs.package
+      - name: Verify (x64; then uninstalled, the runner is shared)
+        if: inputs.package && matrix.arch == 'x64'
         shell: pwsh
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'msi.log'
           $msi = (Get-ChildItem out-windows-${{ matrix.arch }} -Filter *.msi).FullName
           $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', "`"$log`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec exited $($p.ExitCode)" }
+          try {
           $bin = Join-Path $env:ProgramFiles 'AgentPlaza\bin'
           foreach ($b in 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
           if (-not (Test-Path (Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\console\index.html'))) { throw 'console missing' }
@@ -115,6 +114,9 @@ jobs:
               $guest = Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\guest\x86_64'
               foreach ($f in 'vmlinux', 'initrd.gz') { if (-not (Test-Path (Join-Path $guest $f))) { throw "guest $f missing" } }
             }
+          }
+          } finally {
+            Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait | Out-Null
           }
       # Handed to release.yml's publish job through the cache (no artifact storage).
       - uses: actions/cache/save@v4

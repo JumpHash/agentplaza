@@ -1,9 +1,10 @@
 # AgentPlaza for macOS
 
-`build-dmg.sh` turns an arm64 stage and an x86_64 stage into one universal
-`AgentPlaza.app`, and wraps it in `AgentPlaza-<version>-macos-universal.dmg`.
+`build-dmg.sh` turns one architecture's stage into `AgentPlaza.app` and wraps it
+in `AgentPlaza-<version>-macos-<arch>.dmg`: `arm64` for Apple Silicon, `x86_64`
+for Intel. Every release ships both.
 
-    build-dmg.sh <stage-arm64> <stage-x86_64> <version> <out-dir>
+    build-dmg.sh <stage> <arm64|x86_64> <version> <out-dir>
 
 ## Signing
 

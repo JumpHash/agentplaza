@@ -1,8 +1,9 @@
 # Raspberry Pi 4/5 (Raspberry Pi OS 64-bit, Debian bookworm arm64): the Pi deb and tarball, made
 # from the Linux arm64 build (linux.yml leaves its stage in the cache; the binaries and the aarch64
 # guest are the same), with the Pi's node defaults and checks; installed and run on a fresh
-# bookworm in the same job. release.yml calls this after linux.yml on every push to main. (The Pi's
-# code is tested by linux.yml's arm64 job.)
+# bookworm in the same job where the runner can run arm64 (qemu). release.yml calls this after
+# linux.yml on every push to main. (The Pi's code is tested by linux.yml's arm64 job.) Runs on the
+# org's self-hosted Linux runner, packaging inside the CI image (see linux.yml).
 name: raspberry-pi
 
 on:
@@ -18,25 +19,27 @@ jobs:
   package:
     name: package (Raspberry Pi OS arm64)
     if: inputs.package
-    runs-on: ubuntu-22.04-arm
-    timeout-minutes: 5
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/cache/restore@v4
         with: { path: stage-out, key: "stage-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
-      - name: Packaging tools
-        run: |
-          sudo=$(command -v sudo || true)
-          command -v fpm >/dev/null || $sudo gem install --no-document fpm
+      - name: CI image
+        run: .github/ci/image.sh
       - name: Package
         run: |
           tar -xzf stage-out/stage-linux-aarch64.tgz
-          printf '%s\n' "${{ inputs.version }}" > stage/share/agentplaza/VERSION
-          packaging/raspberry-pi/build.sh stage "${{ inputs.version }}" out-raspberrypi
+          printf '%s\n' "$VERSION" > stage/share/agentplaza/VERSION
+          .github/ci/in-image.sh 'packaging/raspberry-pi/build.sh stage "$VERSION" out-raspberrypi'
       - name: Install and run on a fresh Raspberry Pi OS (bookworm arm64)
         run: |
-          if ! command -v docker >/dev/null; then echo "no docker here: the install check runs on GitHub"; exit 0; fi
-          docker run --rm -v "$PWD/out-raspberrypi:/pkgs:ro" debian:bookworm sh -c '
+          if [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+            echo "::notice::the install check is skipped: the runner has no qemu-aarch64 binfmt handler"; exit 0
+          fi
+          docker run --rm --platform linux/arm64 -v "$PWD/out-raspberrypi:/pkgs:ro" debian:bookworm sh -c '
             apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_arm64-raspberrypi.deb &&
             for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done &&
             test -f /etc/default/agentplaza-node &&

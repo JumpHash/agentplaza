@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Builds a universal AgentPlaza.app from an arm64 and an x86_64 stage, signs it,
-# and wraps it in a DMG. Ad-hoc signed unless APPLE_SIGNING_IDENTITY is set.
+# Builds AgentPlaza.app for one architecture from its stage, signs it, and wraps it in a DMG:
+# AgentPlaza-<version>-macos-<arch>.dmg (arm64: Apple Silicon, x86_64: Intel). Ad-hoc signed unless
+# APPLE_SIGNING_IDENTITY is set.
 #
-# Usage: build-dmg.sh <stage-arm64> <stage-x86_64> <version> <out-dir>
+# Usage: build-dmg.sh <stage> <arm64|x86_64> <version> <out-dir>
 #
-# Each stage has bin/ (binaries) and share/agentplaza/ (data and icons).
+# The stage has bin/ (binaries) and share/agentplaza/ (data and icons).
 #
 # Environment:
 #   APPLE_SIGNING_IDENTITY  Developer ID Application identity; enables timestamped signing.
@@ -16,10 +17,10 @@ die() { echo "build-dmg: $*" >&2; exit 1; }
 warn() { echo "build-dmg: warning: $*" >&2; }
 
 if [ "$#" -ne 4 ]; then
-  die "usage: $0 <stage-arm64> <stage-x86_64> <version> <out-dir>"
+  die "usage: $0 <stage> <arm64|x86_64> <version> <out-dir>"
 fi
-ARM_STAGE="$1"
-X86_STAGE="$2"
+STAGE="$1"
+ARCH="$2"
 VERSION="$3"
 OUT_DIR="$4"
 
@@ -28,10 +29,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 case "$VERSION" in
   ""|*[!0-9A-Za-z.+-]*) die "invalid version: $VERSION" ;;
 esac
-[ -d "$ARM_STAGE/bin" ] || die "missing $ARM_STAGE/bin"
-[ -d "$X86_STAGE/bin" ] || die "missing $X86_STAGE/bin"
-[ -d "$ARM_STAGE/share/agentplaza" ] || die "missing $ARM_STAGE/share/agentplaza"
-ICON="$ARM_STAGE/share/agentplaza/icons/agentplaza.icns"
+case "$ARCH" in
+  arm64|x86_64) ;;
+  *) die "invalid arch: $ARCH (arm64 or x86_64)" ;;
+esac
+[ -d "$STAGE/bin" ] || die "missing $STAGE/bin"
+[ -d "$STAGE/share/agentplaza" ] || die "missing $STAGE/share/agentplaza"
+ICON="$STAGE/share/agentplaza/icons/agentplaza.icns"
 [ -f "$ICON" ] || die "missing $ICON"
 
 if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
@@ -57,26 +61,17 @@ APP="$DMG_SRC/AgentPlaza.app"
 MACOS="$APP/Contents/MacOS"
 mkdir -p "$MACOS" "$APP/Contents/Resources/share"
 
-# Universal binaries: one lipo per name present in both stages.
-NAMES="$(printf '%s\n%s\n' "$(ls -1 "$ARM_STAGE/bin")" "$(ls -1 "$X86_STAGE/bin")" | sort -u | sed '/^$/d')"
-[ -n "$NAMES" ] || die "no binaries in the stages"
-while IFS= read -r name; do
-  arm="$ARM_STAGE/bin/$name"
-  x86="$X86_STAGE/bin/$name"
-  out="$MACOS/$name"
-  if [ -f "$arm" ] && [ -f "$x86" ]; then
-    lipo -create "$arm" "$x86" -output "$out"
-  elif [ -f "$arm" ]; then
-    warn "$name is only in the arm64 stage; copying it as is"
-    cp "$arm" "$out"
-  else
-    warn "$name is only in the x86_64 stage; copying it as is"
-    cp "$x86" "$out"
-  fi
-  chmod 755 "$out"
-done <<< "$NAMES"
+# The binaries, each checked to be built for this DMG's architecture.
+for bin in "$STAGE/bin"/*; do
+  [ -f "$bin" ] || continue
+  archs="$(lipo -archs "$bin")"
+  [ "$archs" = "$ARCH" ] || die "$(basename "$bin") is built for $archs, not $ARCH"
+  cp "$bin" "$MACOS/"
+  chmod 755 "$MACOS/$(basename "$bin")"
+done
+[ -n "$(ls -A "$MACOS")" ] || die "no binaries in $STAGE/bin"
 
-cp -R "$ARM_STAGE/share/agentplaza" "$APP/Contents/Resources/share/"
+cp -R "$STAGE/share/agentplaza" "$APP/Contents/Resources/share/"
 cp "$ICON" "$APP/Contents/Resources/agentplaza.icns"
 sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 
@@ -85,7 +80,7 @@ sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 if [ -f "$MACOS/apz-vmm" ]; then
   sign --entitlements "$HERE/entitlements.plist" "$MACOS/apz-vmm"
 else
-  warn "apz-vmm is not in the stages; the VMM will not have the hypervisor entitlement"
+  warn "apz-vmm is not in the stage; the VMM will not have the hypervisor entitlement"
 fi
 # The helpers next; the main executable (agentplaza-desktop, CFBundleExecutable) is signed as the
 # bundle itself, last, once everything it contains is signed.
@@ -101,7 +96,7 @@ codesign --verify --strict --verbose=2 "$APP"
 # DMG with the drag-to-Applications layout.
 ln -s /Applications "$DMG_SRC/Applications"
 mkdir -p "$OUT_DIR"
-DMG="$OUT_DIR/AgentPlaza-$VERSION-macos-universal.dmg"
+DMG="$OUT_DIR/AgentPlaza-$VERSION-macos-$ARCH.dmg"
 rm -f "$DMG"
 hdiutil create -volname "AgentPlaza $VERSION" -srcfolder "$DMG_SRC" -ov -format UDZO "$DMG"
 

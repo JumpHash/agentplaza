@@ -6,7 +6,7 @@ out the same way, which each platform's packager maps into its own format.
 | Platform | Deliverables | Built by |
 |---|---|---|
 | Windows x64, arm64 | `AgentPlaza-<v>-windows-<arch>.msi`, `AgentPlaza-<v>-windows-<arch>.zip` | `.github/workflows/windows.yml` → `packaging/windows/build.ps1` |
-| macOS (Apple Silicon + Intel, universal) | `AgentPlaza-<v>-macos-universal.dmg` | `.github/workflows/macos.yml` → `packaging/macos/build-dmg.sh` |
+| macOS Apple Silicon, Intel | `AgentPlaza-<v>-macos-<arm64\|x86_64>.dmg` | `.github/workflows/macos.yml` → `packaging/macos/build-dmg.sh` |
 | Linux x86_64, arm64 | `agentplaza_<v>_<amd64\|arm64>.deb` (Ubuntu, Debian), `agentplaza-<v>-1.<x86_64\|aarch64>.rpm` (Fedora), `agentplaza-<v>-1-<x86_64\|aarch64>.pkg.tar.zst` (Arch, Arch Linux ARM), `agentplaza-<v>-linux-<x86_64\|aarch64>.tar.gz` | `.github/workflows/linux.yml` → `packaging/linux/build.sh` |
 | Raspberry Pi 4/5 (Raspberry Pi OS 64-bit) | `agentplaza_<v>_arm64-raspberrypi.deb`, `agentplaza-<v>-raspberrypi-arm64.tar.gz` | `.github/workflows/raspberry-pi.yml` → `packaging/raspberry-pi/build.sh` |
 

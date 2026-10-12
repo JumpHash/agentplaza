@@ -1,0 +1,3 @@
+# The org's self-hosted runners carry a `hetzner` label besides GitHub's own.
+self-hosted-runner:
+  labels: [hetzner]

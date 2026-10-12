@@ -15,7 +15,8 @@ cat <<EOF
 |---|---|
 | **Windows** x64 | [MSI installer]($dl/AgentPlaza-$version-windows-x64.msi) · [zip]($dl/AgentPlaza-$version-windows-x64.zip) |
 | **Windows** arm64 | [MSI installer]($dl/AgentPlaza-$version-windows-arm64.msi) · [zip]($dl/AgentPlaza-$version-windows-arm64.zip) |
-| **macOS** (Apple Silicon + Intel) | [DMG]($dl/AgentPlaza-$version-macos-universal.dmg) |
+| **macOS** Apple Silicon | [DMG]($dl/AgentPlaza-$version-macos-arm64.dmg) |
+| **macOS** Intel | [DMG]($dl/AgentPlaza-$version-macos-x86_64.dmg) |
 | **Ubuntu / Debian** x86_64 | [.deb]($dl/agentplaza_${version}_amd64.deb) |
 | **Ubuntu / Debian** arm64 | [.deb]($dl/agentplaza_${version}_arm64.deb) |
 | **Fedora** x86_64 | [.rpm]($dl/agentplaza-$version-1.x86_64.rpm) |
