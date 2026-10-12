@@ -1,0 +1,123 @@
+# Linux (x86_64, arm64): tests, and with `package` the deb (Ubuntu, Debian), rpm (Fedora),
+# pacman (Arch, Arch Linux ARM) packages and tarballs, each installed and run in its distribution.
+# Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+name: linux
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version: { type: string, default: "" }
+      package: { type: boolean, default: false }
+
+concurrency:
+  group: ${{ github.workflow }}-linux-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  # Speed: a shared compiler cache (sccache on the Actions cache), no debug info, and in test
+  # builds unoptimised dependencies (the workspace optimises them for local runs).
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  FAST_DEPS: --config profile.dev.package."*".opt-level=0 --config profile.dev.package.agentplaza-desktop.opt-level=0
+
+jobs:
+  test:
+    name: test (x86_64)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_USER: apz, POSTGRES_PASSWORD: apz, POSTGRES_DB: apz_test }
+        ports: ["5434:5432"]
+        options: --health-cmd "pg_isready -U apz" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      APZ_TEST_DATABASE_URL: postgres://apz:apz@127.0.0.1:5434/apz_test
+      APZ_VERSION: 0.0.0-ci
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+        with: { cache-targets: "false" }
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev
+      - name: Test (workspace)
+        run: cargo test --workspace --locked $FAST_DEPS
+
+  package:
+    name: package (${{ matrix.arch }})
+    if: inputs.package
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, triple: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.runner }}
+    # Built on Ubuntu 22.04 (glibc 2.35): the binaries run on every distribution as new or newer.
+    container: ubuntu:22.04
+    env:
+      APZ_VERSION: ${{ inputs.version }}
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl ca-certificates git build-essential pkg-config \
+            libxkbcommon-dev libwayland-dev ruby ruby-dev rpm zstd libarchive-tools
+          gem install --no-document fpm
+      - uses: actions/checkout@v5
+      - name: Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Build (release)
+        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+      - name: Stage and package
+        run: |
+          packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$APZ_VERSION"
+          packaging/linux/build.sh stage "$APZ_VERSION" ${{ matrix.arch }} out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  verify:
+    name: install on ${{ matrix.name }}
+    if: inputs.package
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Ubuntu 24.04 (x86_64)", runner: ubuntu-24.04, image: "ubuntu:24.04", arch: x86_64,
+              install: "apt-get update && apt-get install -y ./agentplaza_*_amd64.deb" }
+          - { name: "Debian 12 (arm64)", runner: ubuntu-24.04-arm, image: "debian:bookworm", arch: aarch64,
+              install: "apt-get update && apt-get install -y ./agentplaza_*_arm64.deb" }
+          - { name: "Fedora 42 (x86_64)", runner: ubuntu-24.04, image: "fedora:42", arch: x86_64,
+              install: "dnf install -y ./agentplaza-*.x86_64.rpm" }
+          - { name: "Fedora 42 (aarch64)", runner: ubuntu-24.04-arm, image: "fedora:42", arch: aarch64,
+              install: "dnf install -y ./agentplaza-*.aarch64.rpm" }
+          - { name: "Arch Linux (x86_64)", runner: ubuntu-24.04, image: "archlinux:latest", arch: x86_64,
+              install: "pacman -Syu --noconfirm && pacman -U --noconfirm ./agentplaza-*-x86_64.pkg.tar.zst" }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: "pkg-linux-${{ matrix.arch }}" }
+      - name: Install
+        run: ${{ matrix.install }}
+      - name: Run
+        run: |
+          for b in apid apz-link noded vsockd agentplaza-desktop; do "$b" --version; done
+          test -f /usr/share/agentplaza/console/index.html

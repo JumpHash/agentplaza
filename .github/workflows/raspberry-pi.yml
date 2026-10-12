@@ -1,0 +1,83 @@
+# Raspberry Pi 4/5 (Raspberry Pi OS 64-bit, i.e. Debian bookworm arm64): tests on that system,
+# and with `package` the Pi deb and tarball, installed and run on a fresh bookworm.
+# Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
+name: raspberry-pi
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version: { type: string, default: "" }
+      package: { type: boolean, default: false }
+
+concurrency:
+  group: ${{ github.workflow }}-raspberry-pi-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  FAST_DEPS: --config profile.dev.package."*".opt-level=0 --config profile.dev.package.agentplaza-desktop.opt-level=0
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build:
+    name: test${{ inputs.package && ' and package' || '' }} (Raspberry Pi OS arm64)
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl ca-certificates git build-essential pkg-config \
+            libxkbcommon-dev libwayland-dev clang mold
+          if [ "${{ inputs.package }}" = "true" ]; then
+            apt-get install -y --no-install-recommends ruby ruby-dev
+            gem install --no-document fpm
+          fi
+      - uses: actions/checkout@v5
+      - name: Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Test (workspace)
+        env: { APZ_VERSION: 0.0.0-ci }
+        run: cargo test --workspace --locked $FAST_DEPS
+      - name: Build (release)
+        if: inputs.package
+        env: { APZ_VERSION: "${{ inputs.version }}" }
+        run: cargo build --release --locked -p apid -p apz-link -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+      - name: Stage and package
+        if: inputs.package
+        run: |
+          packaging/scripts/stage.sh aarch64-unknown-linux-gnu target/release stage "${{ inputs.version }}"
+          packaging/raspberry-pi/build.sh stage "${{ inputs.version }}" out
+      - uses: actions/upload-artifact@v4
+        if: inputs.package
+        with:
+          name: pkg-raspberrypi
+          path: out/*
+          if-no-files-found: error
+
+  verify:
+    name: install on a fresh Raspberry Pi OS (bookworm arm64)
+    if: inputs.package
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: pkg-raspberrypi }
+      - run: apt-get update && apt-get install -y ./agentplaza_*_arm64-raspberrypi.deb
+      - run: |
+          for b in apid apz-link noded vsockd agentplaza-desktop; do "$b" --version; done
+          test -f /etc/default/agentplaza-node
+          test -f /usr/share/agentplaza/console/index.html

@@ -1,0 +1,96 @@
+# The release pipeline: every push to main is a release. It picks the next semantic version
+# (packaging/scripts/next-version.sh), runs the four platform workflows with packaging on (their
+# tests gate everything), and publishes GitHub Release v<version> — the tag, the changelog and
+# every deliverable (packaging/README.md lists them) with SHA256SUMS.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["apps/site/**", "docs/**", "**/*.md"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (auto: from the commits)"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+# One release at a time, in push order; a newer push waits rather than cancelling a release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      previous: ${{ steps.next.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - id: next
+        env:
+          FORCE_BUMP: ${{ (inputs.bump && inputs.bump != 'auto') && inputs.bump || '' }}
+        run: packaging/scripts/next-version.sh
+
+  linux:
+    needs: version
+    uses: ./.github/workflows/linux.yml
+    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    secrets: inherit
+  macos:
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    secrets: inherit
+  windows:
+    needs: version
+    uses: ./.github/workflows/windows.yml
+    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    secrets: inherit
+  raspberry-pi:
+    needs: version
+    uses: ./.github/workflows/raspberry-pi.yml
+    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    secrets: inherit
+
+  web:
+    name: web console
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json }
+      - run: npm ci && npm run build && npm test
+        working-directory: apps/web
+
+  publish:
+    needs: [version, linux, macos, windows, raspberry-pi, web]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PREVIOUS: ${{ needs.version.outputs.previous }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "pkg-*", merge-multiple: true, path: dist }
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Changelog
+        run: packaging/scripts/changelog.sh "$VERSION" "$PREVIOUS" "$GITHUB_REPOSITORY" > notes.md && cat notes.md
+      - name: Publish v${{ needs.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "AgentPlaza $VERSION" \
+            --notes-file notes.md \
+            --latest

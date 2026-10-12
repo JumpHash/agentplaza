@@ -221,9 +221,6 @@ unsafe extern "C" {
 
     /// Creates a vCPU configuration object.
     pub fn hv_vcpu_config_create() -> hv_vcpu_config_t;
-    /// Destroys a vCPU configuration object created by
-    /// [`hv_vcpu_config_create`]. The object is owned by the caller.
-    pub fn hv_vcpu_config_destroy(config: hv_vcpu_config_t) -> hv_return_t;
     /// Reads a feature register's host value.
     pub fn hv_vcpu_config_get_feature_reg(
         config: hv_vcpu_config_t,
@@ -349,4 +346,12 @@ mod tests {
         assert_eq!(core::mem::offset_of!(hv_vcpu_exit_t, reason), 0);
         assert_eq!(core::mem::offset_of!(hv_vcpu_exit_t, exception), 8);
     }
+}
+
+// The vCPU configuration object `hv_vcpu_config_create` returns is an OS object: the framework has
+// no destroy function for it, the caller releases it with `os_release` (<os/object.h>, libSystem,
+// which every process links).
+unsafe extern "C" {
+    /// Releases an OS object (drops the caller's reference).
+    pub fn os_release(object: hv_vcpu_config_t);
 }

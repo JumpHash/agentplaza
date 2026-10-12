@@ -371,7 +371,7 @@ impl Drop for HvfVcpu {
 /// configuration object.
 ///
 /// The object `hv_vcpu_config_create` returns is owned by the caller, so it is
-/// destroyed here on every path, including the failures: a VMM that started
+/// released here on every path, including the failures: a VMM that started
 /// many vCPUs would otherwise leak one object per vCPU.
 fn host_id_registers() -> Result<(u64, u64), HvfError> {
     // SAFETY: `hv_vcpu_config_create` returns an object owned by the caller;
@@ -382,16 +382,10 @@ fn host_id_registers() -> Result<(u64, u64), HvfError> {
             feature_reg(config, sys::HV_FEATURE_REG_ID_AA64MMFR0_EL1)
                 .map(|id_aa64mmfr0| (id_aa64pfr0, id_aa64mmfr0))
         });
-    // SAFETY: `config` was created above, this process owns it, and it is
-    // destroyed exactly once.
-    let destroyed = sys::check("hv_vcpu_config_destroy", unsafe {
-        sys::hv_vcpu_config_destroy(config)
-    });
-    // A failed read is the more useful error; the failed destroy is only
-    // reported when both reads succeeded.
-    let registers = registers?;
-    destroyed?;
-    Ok(registers)
+    // SAFETY: `config` was created above, this process owns its one reference,
+    // and it is released exactly once (an OS object: `os_release`).
+    unsafe { sys::os_release(config) };
+    registers
 }
 
 /// Reads a host feature register through a vCPU configuration object.

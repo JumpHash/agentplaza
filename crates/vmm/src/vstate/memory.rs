@@ -535,6 +535,8 @@ pub(crate) mod tests {
     /// Creates a [`GuestMemoryMmap`] of the given size with the contained regions laid out in
     /// accordance with the requirements of the architecture on which the tests are being run
     /// (upstream: `test_utils::arch_mem`).
+    // Only where a backend lays out memory for the host architecture (not Intel macOS).
+    #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_arch = "aarch64"))]
     pub(crate) fn arch_mem(mem_size_bytes: usize) -> GuestMemoryMmap {
         // Upstream resolves this through `crate::arch::arch_memory_regions`; the
         // per-arch module is selected directly here.
