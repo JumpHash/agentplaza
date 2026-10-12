@@ -817,6 +817,12 @@ fn approved_by_other(app: &App, sudo: Option<&str>, repo: &str, n: u64) -> Resul
 }
 
 fn repos_route(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
+    // The org exists from the first look on, so an empty plaza lists no repos rather than failing.
+    if app.forge.configured() {
+        if let Err(e) = app.forge.ensure_org() {
+            return Response::error(502, &e);
+        }
+    }
     reply(list_repos(app, None), 200)
 }
 
