@@ -30,13 +30,16 @@ pub struct State {
     pub error: Option<String>,
     /// The previous animation tick, for the step's dt.
     pub last: Option<Instant>,
+    /// Device pixels per logical pixel, for the labels' textures (2 for crisp text: the window's
+    /// scale factor is not known to the widget).
+    pub scale: f32,
 }
 
 impl Default for State {
     fn default() -> State {
         let mut floor = Floor::new();
         let frame = Arc::new(floor.frame(1.0));
-        State { floor, frame, size: (0.0, 0.0), error: None, last: None }
+        State { floor, frame, size: (0.0, 0.0), error: None, last: None, scale: 2.0 }
     }
 }
 
@@ -102,7 +105,9 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
             state.floor.step(dt, now_ms(now));
             let (w, h) = state.size;
             if w > 0.0 && h > 0.0 {
-                state.frame = Arc::new(state.floor.frame(w / h));
+                let mut frame = state.floor.frame(w / h);
+                frame.overlays = state.floor.label_overlays(w, h, state.scale);
+                state.frame = Arc::new(frame);
             }
             perf(started.elapsed(), now);
         }
@@ -148,9 +153,6 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let (w, h) = state.size;
     if w > 0.0 && h > 0.0 {
         let labels = state.floor.labels(w, h);
-        for label in &labels {
-            layers.push(label_box(label));
-        }
         if let Some(label) = state.floor.selected.and_then(|sel| labels.iter().find(|l| l.cid == sel)) {
             layers.push(card(state, label, w, h));
         }
@@ -178,26 +180,6 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         body = body.push(ui::error_line(e));
     }
     ui::sheet(head, body.push(stage).into())
-}
-
-/// A label over its robot (`LABEL_CSS` and `roleTag`): a square sheet box with a 1px ink border and
-/// a print shadow, the name and the role tag on one line, what it is doing on the second. Its
-/// bottom centre sits 6 px above the robot's head.
-fn label_box(l: &Label) -> Element<'static, Msg> {
-    let line_colour = if l.working { ui::SIGNAL } else { ui::INK_3 };
-    let body = column![
-        row![ui::mono(l.name.clone(), 10.0, ui::INK), role_tag(&l.role, l.hue)].spacing(6).align_y(Alignment::Center),
-        ui::mono(l.line.clone(), 10.0, line_colour),
-    ]
-    .spacing(2);
-    let highlighted = l.highlighted;
-    let boxed = container(body).padding([5, 8]).style(move |_: &Theme| boxed_style(highlighted));
-
-    // The box's width is not known before layout: estimated from its text at the mono advance.
-    let chars = (l.name.chars().count() + l.role.chars().count() + 3).max(l.line.chars().count());
-    let width = (chars as f32 * 6.0 + 18.0).min(260.0);
-    let height = 42.0;
-    pin(boxed).x((l.x - width / 2.0).max(0.0)).y((l.y - height - 6.0).max(0.0)).into()
 }
 
 /// The agent card (`renderCard` and `positionCard`): the selected robot's name, role, status,
