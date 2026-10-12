@@ -199,7 +199,7 @@ export function mount(root: HTMLElement): Cleanup {
   const card = (d: Deliverable): HTMLElement => {
     const el = h(
       'article.prov-card.lib-card',
-      { tabindex: '0', title: d.name },
+      { tabindex: '0', title: d.name, 'data-key': `file-${d.id}` },
       h('div.lib-tile-wrap', null, tile(d), h('span.lib-tag', null, d.store)),
       h('div.prov-title', null, h('h3.truncate', null, d.title || d.name), h('span.mono.faint.truncate', null, d.name)),
       h(

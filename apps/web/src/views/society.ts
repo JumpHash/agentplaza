@@ -398,7 +398,7 @@ function row(peer: number, peerName: string, bond: Bond, gap: boolean, pick: (ci
   who.addEventListener('click', () => pick(peer));
   return h(
     'li.soc-row',
-    null,
+    { 'data-key': `peer-${peer}` },
     h('div.soc-row-top', null, who, badge(bond.kind, KIND_TONE[bond.kind]), gap ? badge('they disagree', 'warn') : null),
     bar(bond.opinion),
     bond.note ? noteEl(bond.note) : null,

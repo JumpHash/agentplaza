@@ -140,7 +140,7 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
       h(
         'header.mem-title',
         null,
-        h('div.mem-meta', null, badge(doc.kind, KIND_TONE[doc.kind]), doc.tags.map((t) => h('span.chip', null, `#${t}`))),
+        h('div.mem-meta', null, badge(doc.kind, KIND_TONE[doc.kind]), doc.tags.map((t) => h('span.chip', { 'data-key': `tag-${t}` }, `#${t}`))),
         h('h1', null, doc.title),
       ),
       h('p.mem-stamp', { title: new Date(doc.updated_ms).toLocaleString() }, stamp.join(' · ')),
@@ -155,7 +155,7 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
               null,
               doc.backlinks.map((b) => {
                 const slug = resolveRef(b);
-                return slug ? h('button.chip.link', { type: 'button', onclick: () => open(slug, true) }, titleOf(b)) : h('span.chip', null, b);
+                return slug ? h('button.chip.link', { type: 'button', onclick: () => open(slug, true), 'data-key': `backlink-${b}` }, titleOf(b)) : h('span.chip', { 'data-key': `backlink-${b}` }, b);
               }),
             ),
           )

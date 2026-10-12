@@ -91,7 +91,7 @@ function renderFleet(root: HTMLElement, list: Agent[]): void {
         const tone = a.status === 'working' ? 'info' : a.status === 'idle' ? 'ok' : 'muted';
         const tile = h(
           'button.fleet-tile',
-          { type: 'button', title: `${agentName(a)} · ${roleLabel(a.role)} · ${a.model}` },
+          { type: 'button', title: `${agentName(a)} · ${roleLabel(a.role)} · ${a.model}`, 'data-key': `ag-${a.cid}` },
           h('span.row', null, h('span.dot', { class: tone }), h('strong.truncate', null, agentName(a))),
           h('span.faint.truncate', null, a.work ? clip(a.work.prompt, 60) : a.status === 'offline' ? 'offline' : roleLabel(a.role)),
         );
