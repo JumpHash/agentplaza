@@ -15,6 +15,7 @@ pub fn show(value: Option<&Value>) -> String {
     match value {
         None | Some(Value::Null) => "-".to_string(),
         Some(Value::String(text)) => text.clone(),
+        Some(Value::Bool(on)) => if *on { "yes" } else { "no" }.to_string(),
         Some(other) => other.to_string(),
     }
 }
@@ -45,6 +46,53 @@ fn kv(label: &str, value: String, app: &App) -> Line<'static> {
 /// A field of an endpoint's answer, by JSON pointer.
 fn at(app: &App, path: &str, pointer: &str) -> String {
     show(app.data.get(path).and_then(|v| v.pointer(pointer)))
+}
+
+/// A service's flag from an endpoint's answer as a word: `up` or `down`.
+fn up(app: &App, path: &str, pointer: &str) -> String {
+    match app.data.get(path).and_then(|v| v.pointer(pointer)).and_then(Value::as_bool) {
+        Some(true) => "up".to_string(),
+        Some(false) => "down".to_string(),
+        None => "-".to_string(),
+    }
+}
+
+/// The plaza's state: `running`, or `HELD by <who> since <when>`, with the reason after a colon
+/// only when there is one.
+fn plaza(app: &App) -> String {
+    if !app.paused() {
+        return "running".to_string();
+    }
+    let state = app.data.get("/v1/plaza/state");
+    let by = show(state.and_then(|v| v.get("by")));
+    let since = state
+        .and_then(|v| v.get("since_ms"))
+        .and_then(Value::as_i64)
+        .map(|ms| format!(" since {}", local_time(ms)))
+        .unwrap_or_default();
+    let reason = state.and_then(|v| v.get("reason")).and_then(Value::as_str).unwrap_or_default().trim();
+    if reason.is_empty() {
+        format!("HELD by {by}{since}")
+    } else {
+        format!("HELD by {by}{since}: {reason}")
+    }
+}
+
+/// Epoch milliseconds as `YYYY-MM-DD HH:MM`. The crate carries no time-zone database, so this is
+/// UTC; a local conversion can replace the body once one is a dependency.
+pub fn local_time(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400) + 719_468;
+    let minute_of_day = secs.rem_euclid(86_400) / 60;
+    let era = days.div_euclid(146_097);
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}", minute_of_day / 60, minute_of_day % 60)
 }
 
 /// What an agent is doing now: its work's kind and prompt, or "-".
@@ -101,12 +149,13 @@ pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
 pub fn event_log(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let rows = usize::from(area.height.saturating_sub(2));
+    let width = usize::from(area.width.saturating_sub(2));
     let skip = app.log.len().saturating_sub(rows);
     let lines: Vec<Line> = app
         .log
         .iter()
         .skip(skip)
-        .map(|line| Line::from(Span::styled(line.clone(), Style::new().fg(palette.muted))))
+        .map(|line| Line::from(Span::styled(clip(line, width), Style::new().fg(palette.muted))))
         .collect();
     frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" events ")), area);
 }
@@ -165,24 +214,12 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
             "services",
             format!(
                 "hub {} · noded {}",
-                at(app, "/v1/overview", "/hub"),
-                at(app, "/v1/overview", "/noded"),
+                up(app, "/v1/overview", "/hub"),
+                up(app, "/v1/overview", "/noded"),
             ),
             app,
         ),
-        kv(
-            "plaza",
-            if app.paused() {
-                format!(
-                    "HELD by {}: {}",
-                    at(app, "/v1/plaza/state", "/by"),
-                    at(app, "/v1/plaza/state", "/reason"),
-                )
-            } else {
-                "running".to_string()
-            },
-            app,
-        ),
+        kv("plaza", plaza(app), app),
         Line::from(""),
         Line::from(Span::styled("tasks", Style::new().fg(app.palette.muted))),
     ];
