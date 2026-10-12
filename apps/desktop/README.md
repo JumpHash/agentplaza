@@ -13,11 +13,10 @@ It opens on a startup chooser:
 See `docs/plan-hub-nodes-desktop.md` for the hub/node design.
 
 ```
-cd apps/desktop
-cargo run
+cargo run -p agentplaza-desktop
 ```
 
-It is its own cargo workspace (`[workspace]` in `Cargo.toml`, with its own `Cargo.lock`).
+It is a member of the root workspace but not a default member, so a plain `cargo build` skips it.
 
 Layout: `src/console/` — `mod.rs` (the app), `boot.rs` (the chooser), `services.rs` (local
 services), `shell.rs` (sidebar, top bar, STOP ALL), `client.rs` (the hub client), `ui.rs` (the
