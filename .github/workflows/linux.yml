@@ -55,7 +55,7 @@ jobs:
       postgres:
         image: ${{ matrix.postgres }}
         env: { POSTGRES_USER: apz, POSTGRES_PASSWORD: apz, POSTGRES_DB: apz_test }
-        ports: ["5434:5432"]
+        ports: ["55434:5432"]
         options: --health-cmd "pg_isready -U apz" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v5
@@ -70,7 +70,9 @@ jobs:
           fi
       - name: The Postgres-backed tests (x86_64)
         if: matrix.postgres != ''
-        run: echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@127.0.0.1:5434/apz_test" >> "$GITHUB_ENV"
+        # On GitHub the job runs on the VM (the service's published port); under a local runner the job
+        # is a container on the service's network (its name).
+        run: echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@${{ github.server_url == 'https://github.com' && '127.0.0.1:55434' || 'postgres:5432' }}/apz_test" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with: { tool: nextest }
