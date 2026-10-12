@@ -1,5 +1,6 @@
-# The image every Linux CI job runs in (ghcr.io/jumphash/agentplaza-ci:<x86_64|aarch64>), built by
-# .github/workflows/ci-image.yml: Ubuntu 22.04 (glibc 2.35, so the packages run on every
+# The environment a local Forgejo runner gives the Linux CI jobs (label ubuntu-22.04 →
+# docker://agentplaza-ci:<arch>, built locally with `docker build -t agentplaza-ci:x86_64 .github/ci`):
+# GitHub's own ubuntu-22.04 runners have the same base. Ubuntu 22.04 (glibc 2.35, so the packages run on every
 # distribution as new or newer) with everything a job needs already installed — the build tools,
 # the desktop app's headers, the guest kernel's toolchain, the packagers (fpm for deb/rpm/pacman),
 # Rust, cargo-nextest, sccache and Node.js (JavaScript actions run inside the job's container on a local
@@ -9,7 +10,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git file xz-utils zstd cpio \
+      ca-certificates curl git file xz-utils zstd cpio sudo \
       build-essential pkg-config lld \
       libxkbcommon-dev libwayland-dev \
       flex bison bc libelf-dev libssl-dev busybox-static \

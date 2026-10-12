@@ -1,8 +1,8 @@
 # Raspberry Pi 4/5 (Raspberry Pi OS 64-bit, Debian bookworm arm64): the Pi deb and tarball, made
-# from the Linux arm64 build (linux.yml uploads its stage; the binaries and the aarch64 guest are
-# the same), with the Pi's node defaults and checks; then installed and run on a fresh bookworm.
-# release.yml calls this after linux.yml on every push to main. (Pi code is tested by linux.yml's
-# arm64 job.)
+# from the Linux arm64 build (linux.yml leaves its stage in the cache; the binaries and the aarch64
+# guest are the same), with the Pi's node defaults and checks; installed and run on a fresh
+# bookworm in the same job. release.yml calls this after linux.yml on every push to main. (The Pi's
+# code is tested by linux.yml's arm64 job.)
 name: raspberry-pi
 
 on:
@@ -13,44 +13,34 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   package:
     name: package (Raspberry Pi OS arm64)
     if: inputs.package
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 5
-    container:
-      image: ghcr.io/jumphash/agentplaza-ci:aarch64
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
-        with: { name: stage-linux-aarch64 }
+      - uses: actions/cache/restore@v4
+        with: { path: stage-out, key: "stage-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
+      - name: Packaging tools
+        run: |
+          sudo=$(command -v sudo || true)
+          command -v fpm >/dev/null || $sudo gem install --no-document fpm
       - name: Package
         run: |
-          tar -xzf stage-linux-aarch64.tgz
+          tar -xzf stage-out/stage-linux-aarch64.tgz
           printf '%s\n' "${{ inputs.version }}" > stage/share/agentplaza/VERSION
-          packaging/raspberry-pi/build.sh stage "${{ inputs.version }}" out
-      - uses: actions/upload-artifact@v4
-        with: { name: pkg-raspberrypi, path: "out/*", if-no-files-found: error }
-
-  verify:
-    name: install on a fresh Raspberry Pi OS (bookworm arm64)
-    if: inputs.package
-    needs: package
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
-    container: debian:bookworm
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: pkg-raspberrypi }
-      - run: apt-get update && apt-get install -y ./agentplaza_*_arm64-raspberrypi.deb
-      - run: |
-          for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done
-          test -f /etc/default/agentplaza-node
-          test -f /usr/share/agentplaza/console/index.html
-          test -s /usr/share/agentplaza/guest/aarch64/vmlinux
+          packaging/raspberry-pi/build.sh stage "${{ inputs.version }}" out-raspberrypi
+      - name: Install and run on a fresh Raspberry Pi OS (bookworm arm64)
+        run: |
+          if ! command -v docker >/dev/null; then echo "no docker here: the install check runs on GitHub"; exit 0; fi
+          docker run --rm -v "$PWD/out-raspberrypi:/pkgs:ro" debian:bookworm sh -c '
+            apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_arm64-raspberrypi.deb &&
+            for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done &&
+            test -f /etc/default/agentplaza-node &&
+            test -f /usr/share/agentplaza/console/index.html &&
+            test -s /usr/share/agentplaza/guest/aarch64/vmlinux'
+      - uses: actions/cache/save@v4
+        with: { path: out-raspberrypi, key: "pkg-raspberrypi-${{ github.run_id }}" }

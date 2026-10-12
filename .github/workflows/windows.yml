@@ -72,9 +72,13 @@ jobs:
       - name: Build the binaries
         if: inputs.package
         run: cargo build --release --locked ${{ matrix.bins }}
-      - uses: actions/download-artifact@v4
-        if: inputs.package && matrix.garch != '' && github.event_name != 'workflow_dispatch'
-        with: { name: "guest-${{ matrix.garch }}", path: "target/guest/${{ matrix.garch }}" }
+      - name: The guest (cached by guest.yml; built on Linux)
+        if: inputs.package && matrix.garch != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: target/guest/${{ matrix.garch }}
+          key: "guest-${{ matrix.garch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+          enableCrossOsArchive: true
       - name: Stage
         if: inputs.package
         env:
@@ -87,13 +91,13 @@ jobs:
         env:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: packaging/windows/build.ps1 -Stage stage -Version $env:VERSION -Arch ${{ matrix.arch }} -Out out
+        run: packaging/windows/build.ps1 -Stage stage -Version $env:VERSION -Arch ${{ matrix.arch }} -Out out-windows-${{ matrix.arch }}
       - name: Verify
         if: inputs.package
         shell: pwsh
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'msi.log'
-          $msi = (Get-ChildItem out -Filter *.msi).FullName
+          $msi = (Get-ChildItem out-windows-${{ matrix.arch }} -Filter *.msi).FullName
           $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', "`"$log`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec exited $($p.ExitCode)" }
           $bin = Join-Path $env:ProgramFiles 'AgentPlaza\bin'
@@ -106,6 +110,7 @@ jobs:
               foreach ($f in 'vmlinux', 'initrd.gz') { if (-not (Test-Path (Join-Path $guest $f))) { throw "guest $f missing" } }
             }
           }
-      - uses: actions/upload-artifact@v4
+      # Handed to release.yml's publish job through the cache (no artifact storage).
+      - uses: actions/cache/save@v4
         if: inputs.package
-        with: { name: "pkg-windows-${{ matrix.arch }}", path: "out/*", if-no-files-found: error }
+        with: { path: "out-windows-${{ matrix.arch }}", key: "pkg-windows-${{ matrix.arch }}-${{ github.run_id }}", enableCrossOsArchive: true }

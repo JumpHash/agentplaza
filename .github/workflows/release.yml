@@ -23,13 +23,12 @@ concurrency:
 
 permissions:
   contents: read
-  packages: read
 
 # The release's critical path: guest (seconds on a cache hit) → the platform jobs (test and
 # package in one build each, in parallel) → publish.
 jobs:
   version:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 3
     outputs:
       version: ${{ steps.next.outputs.version }}
@@ -68,7 +67,7 @@ jobs:
 
   web:
     name: web console
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
@@ -79,10 +78,11 @@ jobs:
 
   publish:
     needs: [version, linux, macos, windows, raspberry-pi, web]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
       contents: write
+      actions: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PREVIOUS: ${{ needs.version.outputs.previous }}
@@ -90,10 +90,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
-      - uses: actions/download-artifact@v4
-        with: { pattern: "pkg-*", merge-multiple: true, path: dist }
-      - name: Checksums
-        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      # The platform jobs leave their packages in the cache under this run's id (no artifact storage).
+      - uses: actions/cache/restore@v4
+        with: { path: out-linux-x86_64, key: "pkg-linux-x86_64-${{ github.run_id }}", fail-on-cache-miss: true }
+      - uses: actions/cache/restore@v4
+        with: { path: out-linux-aarch64, key: "pkg-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
+      - uses: actions/cache/restore@v4
+        with: { path: out-raspberrypi, key: "pkg-raspberrypi-${{ github.run_id }}", fail-on-cache-miss: true }
+      - uses: actions/cache/restore@v4
+        with: { path: out-macos, key: "pkg-macos-${{ github.run_id }}", fail-on-cache-miss: true }
+      - uses: actions/cache/restore@v4
+        with: { path: out-windows-x64, key: "pkg-windows-x64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
+      - uses: actions/cache/restore@v4
+        with: { path: out-windows-arm64, key: "pkg-windows-arm64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
+      - name: Gather and checksum
+        run: |
+          mkdir dist
+          cp out-*/* dist/
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: Changelog
         run: packaging/scripts/changelog.sh "$VERSION" "$PREVIOUS" "$GITHUB_REPOSITORY" > notes.md && cat notes.md
       - name: Publish v${{ needs.version.outputs.version }}
@@ -103,3 +117,9 @@ jobs:
             --title "AgentPlaza $VERSION" \
             --notes-file notes.md \
             --latest
+      - name: Drop this run's handoff caches
+        if: always()
+        run: |
+          for key in $(gh cache list --limit 100 --json key --jq '.[].key' | grep -E -- "-${{ github.run_id }}$"); do
+            gh cache delete "$key" || true
+          done

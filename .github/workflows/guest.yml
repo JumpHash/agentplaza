@@ -1,8 +1,8 @@
-# The guest VM images (kernel + initrd per architecture, scripts/mk-guest.sh) the agents run in.
-# Cached until their sources change: `check` restores the cache and, on a hit, uploads the images
-# in seconds (no container, no tools); on a miss `build` makes them natively in the CI image
-# (Ubuntu 22.04, the packages' glibc) and saves the cache. Uploaded as guest-<arch> for the
-# package jobs. release.yml calls this once per release; it also runs by hand.
+# The guest VM images (kernel + initrd per architecture, scripts/mk-guest.sh) the agents run in,
+# kept in the Actions cache until their sources change. `check` looks the cache up (seconds); on a
+# miss, `build-<arch>` makes them natively on Ubuntu 22.04 (the packages' glibc) and saves them.
+# The package jobs restore them from the cache (no artifact storage). release.yml calls this once
+# per release, before the platform workflows; it also runs by hand.
 name: guest
 
 on:
@@ -11,12 +11,11 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   check:
     name: cached guests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 3
     outputs:
       x86_64: ${{ steps.x86_64.outputs.cache-hit }}
@@ -28,82 +27,54 @@ jobs:
         with:
           path: target/guest/x86_64
           key: "guest-x86_64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
-      - uses: actions/upload-artifact@v4
-        if: steps.x86_64.outputs.cache-hit == 'true'
-        with:
-          name: guest-x86_64
-          path: |
-            target/guest/x86_64/vmlinux
-            target/guest/x86_64/initrd.gz
-            target/guest/x86_64/guest.json
-          if-no-files-found: error
+          enableCrossOsArchive: true
+          lookup-only: true
       - id: aarch64
         uses: actions/cache/restore@v4
         with:
           path: target/guest/aarch64
           key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
-      - uses: actions/upload-artifact@v4
-        if: steps.aarch64.outputs.cache-hit == 'true'
-        with:
-          name: guest-aarch64
-          path: |
-            target/guest/aarch64/vmlinux
-            target/guest/aarch64/initrd.gz
-            target/guest/aarch64/guest.json
-          if-no-files-found: error
+          enableCrossOsArchive: true
+          lookup-only: true
 
   build-x86_64:
     name: build the guest (x86_64)
     needs: check
     if: needs.check.outputs.x86_64 != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
-    container:
-      image: ghcr.io/jumphash/agentplaza-ci:x86_64
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
-      - run: git config --global --add safe.directory '*'
-      - run: scripts/mk-guest.sh x86_64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: |
+          sudo=$(command -v sudo || true)
+          $sudo apt-get update -qq
+          $sudo apt-get install -y -qq --no-install-recommends flex bison bc libelf-dev libssl-dev cpio busybox-static file
+          scripts/mk-guest.sh x86_64
       - uses: actions/cache/save@v4
         with:
           path: target/guest/x86_64
           key: "guest-x86_64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: guest-x86_64
-          path: |
-            target/guest/x86_64/vmlinux
-            target/guest/x86_64/initrd.gz
-            target/guest/x86_64/guest.json
-          if-no-files-found: error
+          enableCrossOsArchive: true
 
   build-aarch64:
     name: build the guest (aarch64)
     needs: check
     if: needs.check.outputs.aarch64 != 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 20
-    container:
-      image: ghcr.io/jumphash/agentplaza-ci:aarch64
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
-      - run: git config --global --add safe.directory '*'
-      - run: scripts/mk-guest.sh aarch64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: |
+          sudo=$(command -v sudo || true)
+          $sudo apt-get update -qq
+          $sudo apt-get install -y -qq --no-install-recommends flex bison bc libelf-dev libssl-dev cpio busybox-static file
+          scripts/mk-guest.sh aarch64
       - uses: actions/cache/save@v4
         with:
           path: target/guest/aarch64
           key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: guest-aarch64
-          path: |
-            target/guest/aarch64/vmlinux
-            target/guest/aarch64/initrd.gz
-            target/guest/aarch64/guest.json
-          if-no-files-found: error
+          enableCrossOsArchive: true

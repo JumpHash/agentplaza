@@ -2,7 +2,7 @@
 # macos-15-intel, in parallel); with `package`, a small job joins them into one universal DMG.
 # Pull requests run the tests; release.yml calls this with `package: true` on every push to main.
 # Speed: rust-cache (dependencies, saved from main) + sccache (unchanged workspace crates), one
-# release build for tests and packages, nextest.
+# release build for tests and packages, nextest. Jobs hand files over through the cache, not artifacts.
 name: macos
 
 on:
@@ -71,20 +71,25 @@ jobs:
       - name: Build the binaries
         if: inputs.package
         run: cargo build --release --locked --target ${{ matrix.triple }} ${{ matrix.bins }}
-      - uses: actions/download-artifact@v4
-        if: inputs.package && matrix.arch == 'aarch64' && github.event_name != 'workflow_dispatch'
-        with: { name: guest-aarch64, path: target/guest/aarch64 }
+      - name: The aarch64 guest (cached by guest.yml; built on Linux)
+        if: inputs.package && matrix.arch == 'aarch64'
+        uses: actions/cache/restore@v4
+        with:
+          path: target/guest/aarch64
+          key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+          enableCrossOsArchive: true
       - name: Stage
         if: inputs.package
         env:
-          # A hand-run package (no release job built the guest) may go without it.
+          # A hand run (guest.yml did not fill the cache) may go without the guest.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: |
           packaging/scripts/stage.sh ${{ matrix.triple }} target/${{ matrix.triple }}/release stage "$VERSION"
-          tar -czf stage-macos-${{ matrix.arch }}.tgz stage
-      - uses: actions/upload-artifact@v4
+          mkdir -p stage-out && tar -czf stage-out/stage-macos-${{ matrix.arch }}.tgz stage
+      # Handed to the DMG job through the cache (no artifact storage).
+      - uses: actions/cache/save@v4
         if: inputs.package
-        with: { name: "stage-macos-${{ matrix.arch }}", path: "stage-macos-${{ matrix.arch }}.tgz", retention-days: 1 }
+        with: { path: stage-out, key: "stage-macos-${{ matrix.arch }}-${{ github.run_id }}" }
 
   dmg:
     name: package (universal DMG)
@@ -94,8 +99,12 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
-        with: { pattern: "stage-macos-*", merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with: { path: stage-out, key: "stage-macos-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
+      - run: mv stage-out/stage-macos-aarch64.tgz . && rm -rf stage-out
+      - uses: actions/cache/restore@v4
+        with: { path: stage-out, key: "stage-macos-x86_64-${{ github.run_id }}", fail-on-cache-miss: true }
+      - run: mv stage-out/stage-macos-x86_64.tgz .
       - name: Universal app and DMG
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -104,10 +113,10 @@ jobs:
           mkdir arm64 x86_64
           tar -xzf stage-macos-aarch64.tgz -C arm64
           tar -xzf stage-macos-x86_64.tgz -C x86_64
-          packaging/macos/build-dmg.sh arm64/stage x86_64/stage "$VERSION" out
+          packaging/macos/build-dmg.sh arm64/stage x86_64/stage "$VERSION" out-macos
       - name: Verify the bundle
         run: |
-          hdiutil attach out/*.dmg -mountpoint /tmp/apz -nobrowse
+          hdiutil attach out-macos/*.dmg -mountpoint /tmp/apz -nobrowse
           app=/tmp/apz/AgentPlaza.app/Contents
           for b in apid apz-link agentplaza agentplaza-desktop noded; do "$app/MacOS/$b" --version; done
           lipo -archs "$app/MacOS/agentplaza-desktop"
@@ -117,5 +126,6 @@ jobs:
             test -s "$app/Resources/share/agentplaza/guest/aarch64/initrd.gz"
           fi
           hdiutil detach /tmp/apz
-      - uses: actions/upload-artifact@v4
-        with: { name: pkg-macos, path: "out/*.dmg", if-no-files-found: error }
+      # Handed to release.yml's publish job through the cache.
+      - uses: actions/cache/save@v4
+        with: { path: out-macos, key: "pkg-macos-${{ github.run_id }}" }
