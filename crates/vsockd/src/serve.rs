@@ -528,7 +528,7 @@ mod tests {
     use crate::hub::tests::{Recording, hub_with};
     use crate::hub::{SendOutcome, StopOutcome, TellOutcome};
     use std::net::Shutdown;
-    use std::os::unix::net::UnixStream;
+    use apz_uds::UnixStream;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;

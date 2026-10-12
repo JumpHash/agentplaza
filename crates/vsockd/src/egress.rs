@@ -12,13 +12,12 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
-use std::os::fd::AsRawFd;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use apz_uds::{UnixListener, UnixStream};
 use serde_json::json;
 
 use crate::apid::{Apid, TOKEN_HEADER};
@@ -215,7 +214,7 @@ impl Audit {
 /// thread, until a stop request.
 pub fn accept_loop(cid: u32, listener: UnixListener, policy: Arc<Policy>, apid: Apid) {
     while !sys::shutdown_requested() {
-        if let Err(err) = sys::poll_readable(listener.as_raw_fd(), super::ACCEPT_POLL_MS) {
+        if let Err(err) = sys::poll_readable(&listener, super::ACCEPT_POLL_MS) {
             eprintln!("vsockd: egress poll failed: {err}");
         }
         match listener.accept() {

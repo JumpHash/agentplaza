@@ -41,10 +41,6 @@ const PRINTER_INTERVAL: Duration = Duration::from_millis(20);
 /// take whole, so a read never asks for more than that.
 const CONSOLE_INPUT_CHUNK: usize = 64;
 
-/// Where the per-VM vsock Unix sockets live unless `--uds-dir` says otherwise;
-/// VM `i`'s muxer binds `{DEFAULT_UDS_DIR}/vm{cid}`.
-const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
-
 /// How long the console has to stay quiet (no new guest output) before the
 /// reader considers the guest's console live and starts forwarding its input.
 ///
@@ -87,7 +83,8 @@ usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
                      no vsock device; BASE is a guest CID, so at least 3)
   --uds-dir DIR      directory for the per-VM vsock Unix sockets and, with
                      --workspace, for the run's image copies (default
-                     /tmp/plaza-vsock; VM i's muxer binds DIR/vm{BASE+i})
+                     /tmp/plaza-vsock on Linux and macOS, the state directory's vsock on
+                     Windows; VM i's muxer binds DIR/vm{BASE+i})
   --workspace IMAGE  give the VMs a writable workspace volume built from the
                      ext4 image at IMAGE (default: no block device)
   --console          forward this tool's stdin to VM 0's serial console
@@ -182,7 +179,7 @@ impl Config {
         let mut timeout = Some(Duration::from_secs(120));
         let mut gic = None;
         let mut vsock_cid = None;
-        let mut uds_dir = PathBuf::from(DEFAULT_UDS_DIR);
+        let mut uds_dir = apz_os::dirs::vsock_sockets();
         let mut workspace = None;
         let mut console = false;
 

@@ -38,8 +38,8 @@ pub const DEFAULT_KERNEL: &str = "/boot/vmlinuz-linux";
 pub const DEFAULT_INITRD: &str = "target/guest/initrd.x86_64.gz";
 
 
-/// Where the per-VM vsock Unix sockets live unless `--uds-dir` says otherwise;
-/// VM `i`'s muxer binds `{DEFAULT_UDS_DIR}/vm{cid}`.
+/// The Unix socket directory of the per-VM vsock sockets (VM `i`'s muxer binds `{dir}/vm{cid}`). The
+/// config default is `apz_os::dirs::vsock_sockets()`, which is this on Linux and macOS and differs on Windows.
 pub const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
 
 /// The first guest CID of the initial role fleet unless `--agents-cid-base`
@@ -91,7 +91,7 @@ impl Default for Config {
             port: DEFAULT_PORT,
             kernel: PathBuf::from(DEFAULT_KERNEL),
             initrd: PathBuf::from(DEFAULT_INITRD),
-            uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
+            uds_dir: apz_os::dirs::vsock_sockets(),
             workspace: None,
             persist_dir: None,
             agents: None,

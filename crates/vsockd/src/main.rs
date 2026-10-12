@@ -7,90 +7,87 @@
 //! loop's v3 lines and hellos go to `apid` ([`apid`]) when `--internal-token-file`
 //! names its token. Runs until `SIGTERM`/`SIGINT`.
 //!
-//! AF_VSOCK's muxer backend is Linux-only; elsewhere the binary refuses to run.
+//! The muxer backend runs on Linux (AF_VSOCK) and Windows (AF_UNIX via `apz-uds`);
+//! macOS refuses to run.
 
 // Safe Rust except `sys`, the `poll(2)`/`sigaction(2)` boundary.
 #![deny(unsafe_code)]
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod apid;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod egress;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod http;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod hub;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod serve;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod sys;
 
 use std::process::ExitCode;
 
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
-use std::os::unix::net::{UnixListener, UnixStream};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
+use apz_uds::{UnixListener, UnixStream};
+#[cfg(any(target_os = "linux", windows))]
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::thread;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use apz_proto::line::Lines;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use hub::Hub;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use serve::{HostError, SessionLimits, StdoutLog, SystemClock, handle_session};
 
 /// The guest protocol's vsock port.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const DEFAULT_PORT: u32 = 5000;
-#[cfg(target_os = "linux")]
-const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const DEFAULT_HTTP_PORT: u16 = 19080;
 /// How often an accept loop checks for a stop request.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const ACCEPT_POLL_MS: i32 = 200;
 /// Guest sessions served at once; the next connection is refused.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const MAX_SESSIONS: usize = 64;
 /// Probe/remove/bind rounds before `bind_listener` gives up on a racing path.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const MAX_BIND_ATTEMPTS: u32 = 8;
 /// A v1 session's read timeout (`SO_RCVTIMEO`), so a silent guest cannot pin
 /// its thread.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 /// A v1 session's whole life.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 /// A keepalive session without a heartbeat for this long is reaped.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_IDLE_SECS: u64 = 300;
 /// How often a keepalive session wakes to take the hub's commands.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(250);
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const MAX_TOOL_CALLS: u64 = 1024;
 
 /// Caps concurrent guest sessions: a slot is reserved before a worker is
 /// spawned and released when its guard drops.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 struct SessionLimiter {
     active: AtomicUsize,
     max: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl SessionLimiter {
     fn new(max: usize) -> Self {
         Self { active: AtomicUsize::new(0), max }
@@ -105,22 +102,23 @@ impl SessionLimiter {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 struct SessionGuard(Arc<SessionLimiter>);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         self.0.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
 
-  --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock)
+  --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock;
+                    %LOCALAPPDATA%\\AgentPlaza\\state\\vsock on Windows)
   --cids LIST       comma-separated guest CIDs to serve, one listener each (default 3)
   --port P          vsock port each CID's listener answers (default 5000)
   --egress on|off   the egress proxy on vsock port 5001 per CID (default on); off serves none
@@ -151,19 +149,7 @@ fn main() -> ExitCode {
     ExitCode::FAILURE
 }
 
-#[cfg(not(unix))]
-fn main() -> ExitCode {
-    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
-        println!("vsockd {}", apz_os::VERSION);
-        return ExitCode::SUCCESS;
-    }
-    eprintln!(
-        "vsockd needs Unix sockets; on Windows the node runs without a guest socket bridge (planned)"
-    );
-    ExitCode::FAILURE
-}
-
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
@@ -183,7 +169,7 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     uds_dir: PathBuf,
@@ -196,11 +182,11 @@ struct Config {
     egress_ports: Vec<u16>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Default for Config {
     fn default() -> Self {
         Self {
-            uds_dir: PathBuf::from(DEFAULT_UDS_DIR),
+            uds_dir: apz_os::dirs::vsock_sockets(),
             cids: vec![3],
             port: DEFAULT_PORT,
             http_port: DEFAULT_HTTP_PORT,
@@ -212,7 +198,7 @@ impl Default for Config {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut args = args.into_iter();
@@ -264,8 +250,15 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
+/// On Windows the directory lives in the per-user profile, whose ACL already
+/// keeps other users out, so it is only created.
+#[cfg(windows)]
+fn create_uds_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
 /// Serves until a signal asks the daemon to stop.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn run(config: Config) -> Result<(), String> {
     // Checked before anything is bound: a daemon with an unusable apid address does not serve.
     let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone()).map_err(|err| format!("--apid: {err}"))?;
@@ -344,7 +337,7 @@ fn run(config: Config) -> Result<(), String> {
 /// Whether a failed probe of an existing socket path means nobody listens:
 /// refused (a dead socket) or not found (a leftover file). Anything else — a
 /// full backlog (`EAGAIN`), a permission problem — is treated as live.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn probe_is_stale(err: &std::io::Error) -> bool {
     matches!(err.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound)
 }
@@ -353,7 +346,7 @@ fn probe_is_stale(err: &std::io::Error) -> bool {
 /// listener. Two restarts racing one stale path settle within
 /// [`MAX_BIND_ATTEMPTS`] rounds: the loser's bind fails and its next probe
 /// sees the winner.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
     for _ in 0..MAX_BIND_ATTEMPTS {
         if path.exists() {
@@ -391,10 +384,10 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
 }
 
 /// Accepts sessions for one CID, each on its own thread, until a stop request.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, hub: Arc<Hub>) {
     while !sys::shutdown_requested() {
-        if let Err(err) = sys::poll_readable(listener.as_raw_fd(), ACCEPT_POLL_MS) {
+        if let Err(err) = sys::poll_readable(&listener, ACCEPT_POLL_MS) {
             eprintln!("vsockd: poll failed: {err}");
         }
         match listener.accept() {
@@ -418,7 +411,7 @@ fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, h
 }
 
 /// Serves one guest session and logs how it ended.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
     if let Err(err) = stream.set_nonblocking(false).and_then(|()| stream.set_read_timeout(Some(RECV_TIMEOUT))) {
         println!("vsockd: session with cid {cid} dropped: cannot set a read timeout ({err})");
@@ -442,7 +435,7 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
     }
 }
 
-#[cfg(all(target_os = "linux", test))]
+#[cfg(all(any(target_os = "linux", windows), test))]
 mod tests {
     use super::*;
 
@@ -500,6 +493,7 @@ mod tests {
         assert!(!never.exists(), "nothing was created: {err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_uds_dir_is_created_and_tightened_to_0700() {
         use std::os::unix::fs::PermissionsExt;

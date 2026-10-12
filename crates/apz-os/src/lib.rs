@@ -49,6 +49,17 @@ pub mod dirs {
         place("XDG_CONFIG_HOME", ".config", "config")
     }
 
+    /// Where the node's per-VM vsock sockets live (`{dir}/vm{cid}` and `{dir}/vm{cid}_{port}`): `/tmp/plaza-vsock`
+    /// on Linux and macOS (short, so socket paths stay under the 108-byte limit), the state directory's `vsock`
+    /// on Windows (`%LOCALAPPDATA%\AgentPlaza\state\vsock`: the user profile's ACL keeps it private).
+    pub fn vsock_sockets() -> PathBuf {
+        if cfg!(windows) {
+            state().join("vsock")
+        } else {
+            PathBuf::from("/tmp/plaza-vsock")
+        }
+    }
+
     #[cfg(all(unix, not(target_os = "macos")))]
     fn place(xdg: &str, fallback: &str, _kind: &str) -> PathBuf {
         let base = std::env::var_os(xdg)
@@ -251,6 +262,16 @@ pub mod process {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vsock_sockets_default() {
+        let dir = dirs::vsock_sockets();
+        if cfg!(windows) {
+            assert!(dir.ends_with("vsock"), "{}", dir.display());
+        } else {
+            assert_eq!(dir, std::path::PathBuf::from("/tmp/plaza-vsock"));
+        }
+    }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("apz-os-{tag}-{}-{}", std::process::id(), random::hex(4).unwrap()));

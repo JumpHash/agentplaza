@@ -1245,7 +1245,6 @@ fn write_fully_at(dst: &std::fs::File, mut data: &[u8], mut at: u64) -> std::io:
 /// user read or rewrite it. [`copy_sparse`] keeps the base's holes as holes, so a copy costs the blocks
 /// its VM writes, not the image's length. The copies happen once per run, before
 /// its VMs boot.
-#[cfg(unix)]
 pub fn materialize_workspaces(
     base: &Path,
     dir: &Path,
@@ -1293,9 +1292,17 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
             return process::boot(spec, runtime);
         }
         // The per-VM process boots through `crate::builder`, which is the
-        // Linux/KVM path: the Hypervisor.framework backend has no such binary,
-        // so the mode is refused rather than silently downgraded.
-        #[cfg(not(target_os = "linux"))]
+        // Linux/KVM path. Windows has no `apz-vmm` binary either, so there the
+        // request boots in-process (warned once); macOS refuses the mode rather
+        // than silently downgrading it.
+        #[cfg(windows)]
+        {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!("vmm: APZ_VMM_SPAWN=process is Linux-only; booting in-process");
+            });
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
         {
             let _ = (spec, runtime);
             return Err(SpawnError::SpawnMode {
@@ -1323,36 +1330,26 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     }
 }
 
-// Without unix the private-directory, sparse-copy and workspace helpers have no
-// implementation yet; these stubs keep their callers compiling and fail at use.
-#[cfg(not(unix))]
-fn no_unix_host() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "no VM backend on this platform yet (Windows: Windows Hypervisor Platform backend planned)",
-    )
+/// Creates `path` (with its parents). Windows has no mode bits, so the directory is not chmod'ed:
+/// it sits in the user's profile (`%LOCALAPPDATA%\AgentPlaza\state\vsock`), whose inherited ACL already
+/// restricts it to that user.
+#[cfg(windows)]
+pub fn create_uds_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
 }
 
-#[cfg(not(unix))]
-pub fn create_uds_dir(_path: &Path) -> std::io::Result<()> {
-    Err(no_unix_host())
+/// Windows counterpart of the unix `0700` directory: see [`create_uds_dir`] for why the profile's ACL
+/// is the protection here.
+#[cfg(windows)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
 }
 
-#[cfg(not(unix))]
-pub fn copy_sparse(_from: &Path, _to: &Path) -> std::io::Result<u64> {
-    Err(no_unix_host())
-}
-
-#[cfg(not(unix))]
-pub fn materialize_workspaces(
-    _base: &Path,
-    dir: &Path,
-    _n: usize,
-) -> Result<Vec<PathBuf>, WorkspaceError> {
-    Err(WorkspaceError::Directory {
-        path: dir.to_path_buf(),
-        source: no_unix_host(),
-    })
+/// Copies `from` to `to` in full and returns the bytes copied. NTFS sparse ranges are not attempted,
+/// so on Windows a workspace copy costs the image's full length, not just the blocks its VM writes.
+#[cfg(windows)]
+pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
+    std::fs::copy(from, to)
 }
 
 #[cfg(test)]

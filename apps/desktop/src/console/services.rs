@@ -27,8 +27,11 @@ pub enum Mode {
     Node,
 }
 
-/// The directory the sockets of apid, vsockd and noded share.
-const UDS_DIR: &str = "/tmp/plaza-vsock";
+/// The directory the sockets of apid, vsockd and noded share: `/tmp/plaza-vsock` on Linux and macOS, the
+/// state directory's `vsock` on Windows.
+fn uds_dir() -> String {
+    apz_os::dirs::vsock_sockets().to_string_lossy().into_owned()
+}
 
 /// One service of a mode: a Docker container (never stopped by the console) or a process.
 struct Svc {
@@ -206,7 +209,7 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
             how: How::Process {
                 bin: bin_path("vsockd"),
                 args: argv(&[
-                    "--uds-dir", UDS_DIR, "--cids", &cids, "--port", "5000", "--http-port",
+                    "--uds-dir", &uds_dir(), "--cids", &cids, "--port", "5000", "--http-port",
                     "19080", "--apid", "http://127.0.0.1:7700", "--internal-token-file", &internal,
                 ]),
                 env: None,
@@ -217,9 +220,10 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
             how: How::Process {
                 bin: bin_path("noded"),
                 args: argv(&[
-                    "--port", "8899", "--uds-dir", UDS_DIR, "--agents", &roles,
+                    "--port", "8899", "--uds-dir", &uds_dir(), "--agents", &roles,
                 ]),
-                env: Some(("APZ_VMM_SPAWN", "process")),
+                // The per-VM process mode and its jailer are Linux-only.
+                env: if cfg!(target_os = "linux") { Some(("APZ_VMM_SPAWN", "process")) } else { None },
             },
         },
     ]
@@ -245,7 +249,7 @@ fn node_plan(base: u64, count: u64) -> Vec<Svc> {
             how: How::Process {
                 bin: bin_path("vsockd"),
                 args: argv(&[
-                    "--uds-dir", UDS_DIR, "--cids", &cids, "--port", "5000", "--http-port",
+                    "--uds-dir", &uds_dir(), "--cids", &cids, "--port", "5000", "--http-port",
                     "19080", "--apid", "http://127.0.0.1:7701", "--internal-token-file", &token,
                 ]),
                 env: None,
@@ -256,9 +260,10 @@ fn node_plan(base: u64, count: u64) -> Vec<Svc> {
             how: How::Process {
                 bin: bin_path("noded"),
                 args: argv(&[
-                    "--port", "8899", "--uds-dir", UDS_DIR, "--agents", &roles, "--run-cids", &run,
+                    "--port", "8899", "--uds-dir", &uds_dir(), "--agents", &roles, "--run-cids", &run,
                 ]),
-                env: Some(("APZ_VMM_SPAWN", "process")),
+                // The per-VM process mode and its jailer are Linux-only.
+                env: if cfg!(target_os = "linux") { Some(("APZ_VMM_SPAWN", "process")) } else { None },
             },
         },
     ]

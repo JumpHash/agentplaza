@@ -30,7 +30,8 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
   -V, --version    print the version and exit
   --uds-dir DIR    directory for the per-VM vsock Unix sockets and, with
                    --workspace, for the runs' image copies
-                   (default /tmp/plaza-vsock; VM i's muxer binds DIR/vm{cid})
+                   (default /tmp/plaza-vsock on Linux and macOS, the state directory's
+                   vsock on Windows; VM i's muxer binds DIR/vm{cid})
   --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
                      (cid-<guest_cid>.ext4): copied once, reused across restarts
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
