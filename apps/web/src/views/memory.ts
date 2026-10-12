@@ -6,98 +6,19 @@ import { api, type MemoryDoc, type MemoryNote } from '../api';
 import { on } from '../store';
 import { ago, badge, empty, input, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import { createMemoryGraph, type MemoryGraph } from './memory-graph';
 
 type Kind = MemoryNote['kind'];
 type Resolve = (ref: string) => string | null;
-type Open = (slug: string) => void;
 
 const FALLBACK_REFRESH_MS = 30_000;
 const KIND_TONE: Record<Kind, Tone> = { note: 'info', person: 'accent', journal: 'warn' };
 
-const FENCE = /^\s*```/;
-const HEADING = /^(#{1,3})\s+(.*)$/;
-const ITEM = /^\s*[-*]\s+/;
-const INLINE = /\[\[([^\]\n]+)\]\]|\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*)\*|`([^`\n]+)`/g;
 
 /** Mirrors the server's slug rule: lowercase, runs of non [a-z0-9] become '-', trimmed, at most 60. */
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
-}
-
-/** Block markdown to DOM: headings, paragraphs, lists, fenced code, with inline spans. */
-function markdown(src: string, resolve: Resolve, open: Open): Node[] {
-  const lines = src.replace(/\r\n?/g, '\n').split('\n');
-  const at = (j: number): string => lines[j] ?? '';
-  const out: Node[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = at(i);
-    if (FENCE.test(line)) {
-      const code: string[] = [];
-      for (i++; i < lines.length && !FENCE.test(at(i)); i++) code.push(at(i));
-      i++;
-      out.push(h('pre.mem-code', null, h('code', null, code.join('\n'))));
-      continue;
-    }
-    const heading = HEADING.exec(line);
-    if (heading) {
-      const level = heading[1]?.length ?? 1;
-      const tag: 'h1' | 'h2' | 'h3' = level === 1 ? 'h1' : level === 2 ? 'h2' : 'h3';
-      out.push(h(tag, null, ...inline(heading[2] ?? '', resolve, open)));
-      i++;
-      continue;
-    }
-    if (ITEM.test(line)) {
-      const items: Node[] = [];
-      while (i < lines.length && ITEM.test(at(i))) {
-        items.push(h('li', null, inline(at(i).replace(ITEM, ''), resolve, open)));
-        i++;
-      }
-      out.push(h('ul', null, items));
-      continue;
-    }
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-    const para: string[] = [];
-    while (i < lines.length && at(i).trim() && !FENCE.test(at(i)) && !HEADING.test(at(i)) && !ITEM.test(at(i))) {
-      para.push(at(i));
-      i++;
-    }
-    out.push(h('p', null, inline(para.join(' '), resolve, open)));
-  }
-  return out;
-}
-
-/** Inline spans: [[Title]] chips, **bold**, *italic*, `code`. */
-function inline(text: string, resolve: Resolve, open: Open): (Node | string)[] {
-  const out: (Node | string)[] = [];
-  let last = 0;
-  for (const m of text.matchAll(INLINE)) {
-    const start = m.index ?? 0;
-    const [whole = '', wiki, bold, italic, code] = m;
-    if (start > last) out.push(text.slice(last, start));
-    if (wiki !== undefined) {
-      const title = wiki.trim();
-      const target = resolve(title);
-      out.push(
-        target
-          ? h('button.chip.link', { type: 'button', onclick: () => open(target) }, title)
-          : h('span.chip.missing', { title: 'No such note yet' }, title),
-      );
-    } else if (bold !== undefined) {
-      out.push(h('strong', null, bold));
-    } else if (italic !== undefined) {
-      out.push(h('em', null, italic));
-    } else if (code !== undefined) {
-      out.push(h('code', null, code));
-    }
-    last = start + whole.length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
 }
 
 export function mountMemory(root: HTMLElement, cid: number): () => void {
@@ -129,6 +50,12 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
     return hit ? hit.slug : null;
   };
   const titleOf = (ref: string): string => notes.find((n) => n.slug === resolveRef(ref))?.title ?? ref;
+  const wikiChip = (title: string): HTMLElement => {
+    const target = resolveRef(title);
+    return target
+      ? h('button.chip.link', { type: 'button', onclick: () => open(target, true) }, title)
+      : h('span.chip.missing', { title: 'No such note yet' }, title);
+  };
 
   const renderReader = (doc: MemoryDoc): void => {
     const prov = doc.provenance;
@@ -144,7 +71,7 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
         h('h1', null, doc.title),
       ),
       h('p.mem-stamp', { title: new Date(doc.updated_ms).toLocaleString() }, stamp.join(' · ')),
-      h('div.mem-prose', null, markdown(doc.body, resolveRef, (slug) => open(slug, true))),
+      h('div.mem-prose', null, renderMarkdown(doc.body, { wikiLink: wikiChip })),
       doc.backlinks.length
         ? h(
             'footer.mem-linked',
