@@ -103,7 +103,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
         replace(
           models,
           list.length
-            ? h('ul.prov-model-list', null, list.map((m) => h('li.mono', null, m.id)))
+            ? h('ul.prov-model-list', null, list.map((m) => h('li.mono', { 'data-key': `model-${m.id}` }, m.id)))
             : h('p.faint', null, 'No models listed'),
         );
       },
@@ -112,7 +112,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
 
     return h(
       'article.prov-card',
-      null,
+      { 'data-key': `prov-${p.id}` },
       h(
         'header.prov-head',
         null,
@@ -331,7 +331,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
       const q = search.value.trim().toLowerCase();
       const shown = free.filter((k) => !q || `${k.label} ${k.id} ${k.kind}`.toLowerCase().includes(q));
       const tiles = shown.map((k) => {
-        const tile = h('button.prov-kind', { type: 'button' }, brandLogo(k.brand, true), h('span.truncate', null, k.label));
+        const tile = h('button.prov-kind', { type: 'button', 'data-key': `kind-${k.id}` }, brandLogo(k.brand, true), h('span.truncate', null, k.label));
         tile.addEventListener('click', () => pick(k));
         return tile;
       });

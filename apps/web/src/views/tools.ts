@@ -85,7 +85,7 @@ function fullUrl(baseUrl: string, path: string): string {
 
 /** The plaza's check failures, shown above a proposal whose approve is off. */
 function checksBox(p: ConnectorProposal): HTMLElement {
-  return h('div.stack', null, badge('Checks failed · approve is off', 'warn'), h('ul', null, p.checks.map((c) => h('li', null, c))));
+  return h('div.stack', null, badge('Checks failed · approve is off', 'warn'), h('ul', null, p.checks.map((c) => h('li', { 'data-key': `check-${c}` }, c))));
 }
 
 export function mount(root: HTMLElement): Cleanup {
@@ -156,7 +156,7 @@ export function mount(root: HTMLElement): Cleanup {
           c.actions.map((a) =>
             h(
               'li',
-              null,
+              { 'data-key': `act-${a.name}` },
               h(
                 'span.tool-chip',
                 { title: a.risk === 'irreversible' ? `${a.description} · needs your approval` : a.description },
@@ -170,7 +170,7 @@ export function mount(root: HTMLElement): Cleanup {
 
     return h(
       'article.prov-card',
-      null,
+      { 'data-key': `conn-${c.id}` },
       h(
         'header.prov-head',
         null,
@@ -224,7 +224,7 @@ export function mount(root: HTMLElement): Cleanup {
 
       return h(
         'div.stack',
-        null,
+        { 'data-key': `field-${f.name}` },
         field(`${f.label} · ${f.required ? 'required' : 'optional'}`, control, sourceLine(f)),
         remove ? h('div.prov-row', null, h('span.prov-spacer'), remove) : null,
       );
@@ -324,7 +324,7 @@ export function mount(root: HTMLElement): Cleanup {
     const blocked = p.checks.length > 0;
     return h(
       'article.prov-card',
-      null,
+      { 'data-key': `prop-${p.id}` },
       h(
         'header.prov-head',
         null,
@@ -349,7 +349,7 @@ export function mount(root: HTMLElement): Cleanup {
             'ul.tool-actions',
             null,
             s.fields.map((f) =>
-              h('li', null, h('span.tool-chip', { title: `$${f.env}${f.secret ? ' · secret' : ''}${f.hint ? ` · ${f.hint}` : ''}` }, f.required ? `${f.label} *` : f.label)),
+              h('li', { 'data-key': `pfield-${f.env}` }, h('span.tool-chip', { title: `$${f.env}${f.secret ? ' · secret' : ''}${f.hint ? ` · ${f.hint}` : ''}` }, f.required ? `${f.label} *` : f.label)),
             ),
           )
         : null,
@@ -359,7 +359,7 @@ export function mount(root: HTMLElement): Cleanup {
         s.actions.map((a) =>
           h(
             'li',
-            null,
+            { 'data-key': `pact-${a.name}` },
             h(
               'span.tool-chip',
               { title: a.description },
@@ -379,7 +379,7 @@ export function mount(root: HTMLElement): Cleanup {
     const [text, tone] = PROPOSAL_STATE[p.state];
     return h(
       'li',
-      null,
+      { 'data-key': `decided-${p.id}` },
       h('span.mono', null, p.spec.id),
       ' ',
       badge(text, tone, true),
@@ -434,7 +434,7 @@ export function mount(root: HTMLElement): Cleanup {
         s.actions.map((a) =>
           h(
             'section.stack',
-            null,
+            { 'data-key': `review-${a.name}` },
             h('div.prov-row', null, dot(RISK[a.risk]), h('strong', null, a.name), h('span.faint', null, a.risk)),
             h('p.mono', null, `${a.method} ${fullUrl(s.base_url, a.path)}`),
             h('p.faint', null, a.description),
@@ -486,7 +486,7 @@ export function mount(root: HTMLElement): Cleanup {
 
     return h(
       'article.prov-card',
-      null,
+      { 'data-key': `lib-${t.name}@${t.version}` },
       h(
         'header.prov-head',
         null,
@@ -506,7 +506,7 @@ export function mount(root: HTMLElement): Cleanup {
       ),
       h('p.lib-command', { title: 'Command' }, t.command.join(' ')),
       t.requires.length
-        ? h('ul.tool-actions', null, t.requires.map((p) => h('li', null, h('span.tool-chip', null, p))))
+        ? h('ul.tool-actions', null, t.requires.map((p) => h('li', { 'data-key': `req-${p}` }, h('span.tool-chip', null, p))))
         : null,
       t.review_note ? h('p.faint', null, `Note: ${t.review_note}`) : null,
       h('div.prov-actions', null, ...actions),
@@ -520,7 +520,7 @@ export function mount(root: HTMLElement): Cleanup {
           'ul.lib-files',
           null,
           t.files.map((f) =>
-            h('li', null, button(`${f.path} · ${f.size} B`, () => void showFile(t, f.path, view), { size: 'sm', kind: 'ghost' })),
+            h('li', { 'data-key': `file-${f.path}` }, button(`${f.path} · ${f.size} B`, () => void showFile(t, f.path, view), { size: 'sm', kind: 'ghost' })),
           ),
         )
       : h('p.faint', null, 'No files.');

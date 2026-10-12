@@ -140,7 +140,7 @@ function stackedBar(title: string, parts: Part[], whole: number, fmt: (v: number
     'div.res-bar',
     null,
     parts.map((p) => {
-      const seg = h(`span.res-seg.res-${p.cls}`, { title: `${p.label}: ${fmt(p.value)}` });
+      const seg = h(`span.res-seg.res-${p.cls}`, { title: `${p.label}: ${fmt(p.value)}`, 'data-key': `seg-${p.cls}` });
       seg.style.width = `${clamp((p.value / span) * 100, 0, 100)}%`;
       return seg;
     }),
@@ -148,7 +148,7 @@ function stackedBar(title: string, parts: Part[], whole: number, fmt: (v: number
   const legend = h(
     'ul.res-legend',
     null,
-    parts.map((p) => h('li', null, h(`span.res-swatch.res-${p.cls}`, null), h('span', null, p.label), h('strong', null, fmt(p.value)))),
+    parts.map((p) => h('li', { 'data-key': `part-${p.cls}` }, h(`span.res-swatch.res-${p.cls}`, null), h('span', null, p.label), h('strong', null, fmt(p.value)))),
   );
   return h('div.res-row', null, h('div.res-title', null, title), bar, legend);
 }
@@ -169,7 +169,7 @@ function servicesTable(rows: ProcessUsage[]): HTMLElement {
         'tbody',
         null,
         rows.map((p) =>
-          h('tr', null, h('td', null, p.name), h('td', { class: 'num res-pid' }, String(p.pid)), h('td', { class: 'num' }, pct(p.cpu_percent)), h('td', { class: 'num' }, human(p.rss_mib))),
+          h('tr', { 'data-key': `svc-${p.name}` }, h('td', null, p.name), h('td', { class: 'num res-pid' }, String(p.pid)), h('td', { class: 'num' }, pct(p.cpu_percent)), h('td', { class: 'num' }, human(p.rss_mib))),
         ),
       ),
     ),
@@ -208,7 +208,7 @@ function agentsTable(m: MachineNode, vms: VmUsage[], byCid: Map<number, Agent>, 
     const name = agent ? agentName(agent) : v.cid === null ? 'Unattached' : `CID ${v.cid}`;
     return h(
       'tr',
-      null,
+      { 'data-key': `vm-${v.run}-${v.vm}` },
       h('td', null, h('div', null, name), h('div.faint', null, role ? roleLabel(role) : '—')),
       h('td', { class: 'res-pid' }, `${v.run}/${v.vm}`),
       h('td', { class: 'num' }, pct(v.cpu_percent)),
@@ -318,7 +318,7 @@ function topology(o: Overview | null, machines: MachineNode[], selectedId: strin
         'vector-effect': 'non-scaling-stroke',
       }),
     );
-    const label = h('div.mach-wire-label', null, `${m.agents ?? 0} agents · ${machineVms(m)} VMs`);
+    const label = h('div.mach-wire-label', { 'data-key': `wire-${m.id}` }, `${m.agents ?? 0} agents · ${machineVms(m)} VMs`);
     label.style.top = `${(50 + y) / 2}%`;
     wiresBox.append(label);
 
@@ -328,7 +328,7 @@ function topology(o: Overview | null, machines: MachineNode[], selectedId: strin
     const state = m.reachable === false ? 'unreachable' : live ? 'running' : 'idle';
     const block = h(
       'div.mach-block',
-      { role: 'button', tabindex: '0' },
+      { role: 'button', tabindex: '0', 'data-key': `block-${m.id}` },
       h('div.mach-row', null, mark, h('span.mach-name', null, m.name)),
       h('div.faint', null, `${KIND_LABEL[m.kind]} · ${state}`),
     );
@@ -382,7 +382,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         }
         return h(
           'div.vm',
-          null,
+          { 'data-key': `vm-${vm.index}` },
           h(
             'div.row',
             null,
@@ -399,7 +399,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const detailRow = (run: Run): HTMLTableRowElement => {
     const cached = runCache.get(run.id);
     const cell = h('td', { colspan: RUN_COLUMNS.length }, cached ? vmList(run.id, cached.vms) : h('p.faint', null, 'Loading…'));
-    const tr = h('tr.detail', null, cell);
+    const tr = h('tr.detail', { 'data-key': `detail-${run.id}` }, cell);
     void api.run(run.id).then(
       (fresh) => {
         runCache.set(run.id, fresh);
@@ -441,7 +441,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       );
       const tr = h(
         'tr.clickable',
-        null,
+        { 'data-key': `run-${run.id}` },
         h('td', null, run.id),
         h('td', null, run.role ?? 'fleet'),
         h('td', null, badge(run.state, stateTone(run.state), true)),
