@@ -97,6 +97,11 @@ jobs:
           $bin = Join-Path $env:ProgramFiles 'AgentPlaza\bin'
           foreach ($b in 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
           if (-not (Test-Path (Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\console\index.html'))) { throw 'console missing' }
+          if ('${{ matrix.arch }}' -eq 'x64') {
+            foreach ($b in 'noded', 'vsockd', 'vmctl') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
+            $guest = Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\guest\x86_64'
+            foreach ($f in 'vmlinux', 'initrd.gz') { if (-not (Test-Path (Join-Path $guest $f))) { throw "guest $f missing" } }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-windows-${{ matrix.arch }}
