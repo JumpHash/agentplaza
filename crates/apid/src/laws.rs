@@ -83,6 +83,7 @@ pub struct Laws {
     titles: BTreeMap<String, String>,
     path: PathBuf,
     violations: Mutex<BTreeMap<String, Vec<Violation>>>,
+    sink: Mutex<Option<InfractionSink>>,
 }
 
 impl Laws {
@@ -102,7 +103,7 @@ impl Laws {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
-        Laws { program, titles, path, violations: Mutex::new(violations) }
+        Laws { program, titles, path, violations: Mutex::new(violations), sink: Mutex::new(None) }
     }
 
     /// Decides one tool call. `input` is the call's JSON input, scanned for the flags the laws test.
@@ -178,8 +179,19 @@ impl Laws {
     }
 
     /// Every violation recorded from now on is also handed to `sink`.
-    pub fn set_sink(&self, _sink: InfractionSink) {
-        // contract: J2
+    pub fn set_sink(&self, sink: InfractionSink) {
+        *self.sink.lock().unwrap_or_else(PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Every recorded violation, as (cid, violation), for the Rules view and the one-time import.
+    pub fn all_violations(&self) -> Vec<(u64, Violation)> {
+        let all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        all.iter()
+            .flat_map(|(cid, list)| {
+                let cid = cid.parse::<u64>().unwrap_or(0);
+                list.iter().map(move |v| (cid, v.clone()))
+            })
+            .collect()
     }
 
     /// The agent's violations within the last 30 days, newest first, as profile JSON.
@@ -192,15 +204,26 @@ impl Laws {
     }
 
     fn record(&self, cid: u64, laws: &[String], tool: &str, at_ms: u64) {
-        let mut all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
-        let list = all.entry(cid.to_string()).or_default();
-        for law in laws {
-            list.push(Violation { law: law.clone(), at_ms, detail: format!("tool {tool} refused") });
+        let recorded: Vec<Violation> = laws
+            .iter()
+            .map(|law| Violation { law: law.clone(), at_ms, detail: format!("tool {tool} refused") })
+            .collect();
+        {
+            let mut all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+            let list = all.entry(cid.to_string()).or_default();
+            list.extend(recorded.iter().cloned());
+            let excess = list.len().saturating_sub(KEEP);
+            list.drain(..excess);
+            if let Err(e) = save(&self.path, &all) {
+                eprintln!("laws: could not save violations: {e}");
+            }
         }
-        let excess = list.len().saturating_sub(KEEP);
-        list.drain(..excess);
-        if let Err(e) = save(&self.path, &all) {
-            eprintln!("laws: could not save violations: {e}");
+        // The sink runs outside the violations lock: it writes to Postgres.
+        let guard = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(sink) = guard.as_ref() {
+            for violation in &recorded {
+                sink(cid, violation, tool);
+            }
         }
     }
 }
