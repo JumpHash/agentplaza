@@ -35,5 +35,29 @@ cp -R "$root/docs/codex-draft/roles/." "$share/prompts/"
 cp "$root/packaging/icons/"* "$share/icons/"
 printf '%s\n' "$version" > "$share/VERSION"
 
+# The agents' VM kernel and initrd (scripts/mk-guest.sh, built per architecture by guest.yml), found
+# by noded. Only where the stage has the VM node; a missing guest fails unless APZ_ALLOW_NO_GUEST=1.
+if [ "$node" = yes ]; then
+  case "$triple" in
+    x86_64-unknown-linux-gnu) garch=x86_64 ;;
+    aarch64-unknown-linux-gnu|aarch64-apple-darwin) garch=aarch64 ;;
+    *) echo "stage.sh: no guest image for $triple" >&2; exit 1 ;;
+  esac
+  gsrc="${APZ_GUEST_DIR:-$root/target/guest}/$garch"
+  missing=
+  for f in vmlinux initrd.gz guest.json; do
+    [ -s "$gsrc/$f" ] || missing="$missing $gsrc/$f"
+  done
+  if [ -z "$missing" ]; then
+    mkdir -p "$share/guest/$garch"
+    cp "$gsrc/vmlinux" "$gsrc/initrd.gz" "$gsrc/guest.json" "$share/guest/$garch/"
+  elif [ "${APZ_ALLOW_NO_GUEST:-0}" = 1 ]; then
+    echo "stage.sh: warning: no guest image, agents cannot run:$missing" >&2
+  else
+    echo "stage.sh: missing guest image:$missing (APZ_ALLOW_NO_GUEST=1 stages without it)" >&2
+    exit 1
+  fi
+fi
+
 echo "staged $version for $triple in $stage:"
 ls -la "$stage/bin"

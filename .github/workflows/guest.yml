@@ -1,0 +1,51 @@
+# The guest VM images (kernel + initrd per architecture, scripts/mk-guest.sh) that the agents run
+# in: each is built natively on its architecture on Ubuntu 22.04 (the same glibc as the packages),
+# cached until its sources change, and uploaded as guest-<arch> for the package jobs.
+# release.yml calls this once per release; it also runs by hand.
+name: guest
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guest:
+    name: guest image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev \
+            cpio xz-utils curl ca-certificates busybox-static file git
+      - uses: actions/checkout@v5
+      - name: Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Cache the guest
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: target/guest/${{ matrix.arch }}
+          key: "guest-${{ matrix.arch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+      - name: Build the guest (cache miss)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/mk-guest.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-${{ matrix.arch }}
+          path: target/guest/${{ matrix.arch }}/*
+          if-no-files-found: error

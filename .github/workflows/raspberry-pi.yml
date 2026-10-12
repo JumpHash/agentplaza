@@ -55,9 +55,13 @@ jobs:
         if: inputs.package
         env: { APZ_VERSION: "${{ inputs.version }}" }
         run: cargo build --release --locked -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl
+      - uses: actions/download-artifact@v4
+        if: inputs.package
+        with: { pattern: "guest-*", path: target/guest, merge-multiple: false }
       - name: Stage and package
         if: inputs.package
         run: |
+          for d in target/guest/guest-*; do mv "$d" "target/guest/${d##*guest-}"; done
           packaging/scripts/stage.sh aarch64-unknown-linux-gnu target/release stage "${{ inputs.version }}"
           packaging/raspberry-pi/build.sh stage "${{ inputs.version }}" out
       - uses: actions/upload-artifact@v4
@@ -81,3 +85,5 @@ jobs:
           for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done
           test -f /etc/default/agentplaza-node
           test -f /usr/share/agentplaza/console/index.html
+          test -s /usr/share/agentplaza/guest/aarch64/vmlinux
+          test -s /usr/share/agentplaza/guest/aarch64/initrd.gz
