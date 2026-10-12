@@ -282,26 +282,41 @@ h2 .dim { color: var(--ink-3); }
 
 .diagram { margin: 0; border: 1px solid var(--ink); background: var(--sheet); box-shadow: 8px 8px 0 var(--ink); }
 .diagram svg { width: 100%; height: auto; }
-.diagram .link path { stroke: var(--ink-3); stroke-width: 1.4; stroke-dasharray: 6 5; fill: none; }
-.diagram .pkt circle { fill: var(--signal); }
-.diagram .box rect { fill: #fff; stroke: var(--ink); stroke-width: 1.2; }
-.diagram .box.hub rect { fill: var(--ink); }
-.diagram .box.hub text { fill: var(--paper); }
-.diagram text { font: 500 12px var(--mono); fill: var(--ink); }
-.diagram .t2 { font-weight: 400; font-size: 10.5px; fill: var(--ink-3); }
-.diagram .box.hub .t2 { fill: #a3aba3; }
-.diagram .code rect { fill: var(--paper); stroke: var(--signal); stroke-dasharray: 3 3; }
-.diagram .code text { font-size: 10.5px; fill: var(--signal-ink); }
+.diagram .link path { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 6 5; fill: none; }
+.diagram .lkey { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 6 5; fill: none; }
+.diagram .lead { stroke: var(--signal); stroke-width: 1; stroke-dasharray: 3 3; fill: none; }
+.diagram .bracket { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 4 3; fill: none; }
+.diagram .pkt circle, .diagram .pkt-key { fill: var(--signal); }
+.diagram .body { fill: var(--sheet); stroke: var(--ink); stroke-width: 1; }
+.diagram .box.hub .body { fill: var(--ink); }
+.diagram .ok { fill: #2e6a40; }
+.diagram .vm { fill: none; stroke: var(--ink); stroke-width: 1; }
+.diagram .vm.on { fill: var(--ink); }
+.diagram .lock rect { fill: var(--ink-2); }
+.diagram .lock path { fill: none; stroke: var(--ink-2); stroke-width: 1.2; }
+.diagram text { font: 400 10px var(--mono); fill: var(--ink-2); }
+.diagram .name { font: 500 11.5px var(--mono); fill: var(--ink); }
+.diagram .sub { font: 400 10px var(--mono); fill: var(--ink-3); }
+.diagram .tag { font: 500 10px var(--mono); fill: var(--ink-3); letter-spacing: .04em; }
+.diagram .tier-4 .name { font-size: 10.5px; }
+.diagram .box.hub .name { font-size: 13px; fill: var(--paper); }
+.diagram .box.hub .sub { fill: #a3aba3; }
+.diagram .code .body, .diagram .joinkey { fill: var(--paper); stroke: var(--signal); stroke-dasharray: 3 3; }
+.diagram .code text { font-size: 9.5px; fill: var(--signal-ink); }
+.diagram .tier-1 { --d: 150ms; }
+.diagram .tier-2 { --d: 350ms; }
+.diagram .tier-3 { --d: 550ms; }
+.diagram .tier-4 { --d: 750ms; }
+.diagram .code { --d: 1000ms; }
+.diagram .lock { --d: 1100ms; }
 /* Drawn on arrival: links trace out, boxes drop in, then packets fly. */
-[data-draw] .link path { stroke-dashoffset: 400; transition: stroke-dashoffset 1400ms var(--ease); }
-[data-draw] .box, [data-draw] .code { opacity: 0; transform: translateY(10px); transform-box: fill-box; transition: opacity 500ms, transform 700ms var(--ease); }
+/* Links trace in: one long dash whose offset runs back to zero, then the dashed style takes over. */
+[data-draw] .link path { stroke-dasharray: 600; stroke-dashoffset: 600; transition: stroke-dashoffset 1400ms var(--ease); }
+[data-draw].in .link path { stroke-dashoffset: 0; stroke-dasharray: 6 5; transition: stroke-dashoffset 1400ms var(--ease), stroke-dasharray 0s linear 1400ms; }
+/* Boxes, the join code and the lock rise tier by tier (--d set per tier above). */
+[data-draw] .box, [data-draw] .code, [data-draw] .lock { opacity: 0; transform: translateY(10px); transform-box: fill-box; transition: opacity 500ms var(--d, 0ms), transform 700ms var(--ease) var(--d, 0ms); }
+[data-draw].in .box, [data-draw].in .code, [data-draw].in .lock { opacity: 1; transform: none; }
 [data-draw] .pkt { opacity: 0; transition: opacity 400ms 1300ms; }
-[data-draw].in .link path { stroke-dashoffset: 0; }
-[data-draw].in .box, [data-draw].in .code { opacity: 1; transform: none; }
-[data-draw].in .box:nth-of-type(2) { transition-delay: 250ms; }
-[data-draw].in .box:nth-of-type(3) { transition-delay: 400ms; }
-[data-draw].in .box:nth-of-type(4) { transition-delay: 550ms; }
-[data-draw].in .code { transition-delay: 900ms; }
 [data-draw].in .pkt { opacity: 1; }
 
 .choices { list-style: none; counter-reset: c; margin: 38px 0 0; padding: 0; border-top: 1px solid var(--night-rule); }
