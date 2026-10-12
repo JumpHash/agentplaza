@@ -50,6 +50,17 @@ pub struct Furniture {
     pub animate: Anim,
 }
 
+/// The street lamps' bulb colour.
+pub const LAMP: u32 = 0x7fe8ff;
+/// Dark hull metal, for benches, stalls and planters.
+const HULL: u32 = 0x56607e;
+
+/// A toon colour that also glows a little: the plaza's bioluminescence and crystals.
+pub fn glowing(color: u32, intensity: f32) -> Mat {
+    let c = Color::hex(color);
+    toon_mat(Material { color: c, emissive: c, emissive_intensity: intensity, ..Material::default() })
+}
+
 /// `toonMat({ color, roughness, metalness })`: toon.ts drops roughness and metalness.
 fn std_mat(color: Color) -> Mat {
     toon_mat(Material { color, ..Material::default() })
@@ -67,7 +78,7 @@ fn css(c: Color) -> String {
 }
 
 /// `part(parent, geo, mat, x, y, z)`: a mesh placed under `parent`.
-fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
+pub fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
     let m = Obj::mesh(geo, mat);
     m.set_position(x, y, z);
     parent.add(&m);
@@ -75,7 +86,7 @@ fn part(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
 }
 
 /// `shadows(root)`: every mesh under `root` casts and receives shadows.
-fn shadows(root: &Obj) {
+pub fn shadows(root: &Obj) {
     let children = {
         let mut n = root.get();
         if matches!(n.kind, Kind::Mesh { .. }) {
@@ -103,7 +114,7 @@ fn no_cast(root: &Obj) {
 
 /// The footprint of `o`'s subtree, its world matrix being `parent` times its own local matrix.
 /// Like three's `Box3.setFromObject`, each mesh's local bounds are transformed corner by corner.
-fn footprint(o: &Obj, parent: Mat4) -> Box2 {
+pub fn footprint(o: &Obj, parent: Mat4) -> Box2 {
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     expand_box(o, parent, &mut lo, &mut hi);
@@ -146,11 +157,6 @@ fn expand_box(o: &Obj, parent: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
     }
 }
 
-/// `pick(items, rand)`: one random item.
-fn pick<'a, T>(items: &'a [T], r: &mut Rng) -> &'a T {
-    &items[(r.next() * items.len() as f32).floor() as usize]
-}
-
 /// The smallest angle between two bearings, in radians.
 fn ang_dist(a: f32, b: f32) -> f32 {
     let d = a - b;
@@ -158,13 +164,13 @@ fn ang_dist(a: f32, b: f32) -> f32 {
 }
 
 /// Distance from (px, pz) to the segment from the origin to (bx, bz).
-fn seg_dist(px: f32, pz: f32, bx: f32, bz: f32) -> f32 {
+pub fn seg_dist(px: f32, pz: f32, bx: f32, bz: f32) -> f32 {
     let len2 = (bx * bx + bz * bz).max(1e-6);
     let t = ((px * bx + pz * bz) / len2).clamp(0.0, 1.0);
     (px - bx * t).hypot(pz - bz * t)
 }
 
-/// A wooden bench at the origin, its seat facing +z and its back at -z.
+/// A bench at the origin, its seat facing +z and its back at -z.
 fn bench(mat: &Mat) -> Obj {
     let b = Obj::group();
     part(&b, &geometry::box_geo(1.3, 0.08, 0.42), mat, 0.0, 0.42, 0.0);
@@ -190,7 +196,7 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     let pave = part(
         &g,
         &geometry::cylinder(4.3, 4.45, 0.06, 64),
-        &textured(textures::paving(stone, 4.0)),
+        &std_mat(stone),
         0.0,
         0.03,
         0.0,
@@ -201,16 +207,16 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     let inlay = part(&g, &geometry::torus(3.3, 0.025, 6, 72, TAU), &std_mat(palette.rule), 0.0, 0.065, 0.0);
     inlay.set_rotation(PI / 2.0, 0.0, 0.0);
 
-    let bench_wood = toon_mat(Material {
-        map: Some(textures::wood()),
-        color: palette.rule.lerp(palette.ink3, 0.25),
+    let bench_metal = toon_mat(Material {
+        map: Some(textures::metal()),
+        color: Color::hex(HULL),
         ..Material::default()
     });
     for i in 0..4 {
         let a = (i as f32 / 4.0) * PI * 2.0;
         let x = a.cos() * 3.6;
         let z = a.sin() * 3.6;
-        let b = bench(&bench_wood);
+        let b = bench(&bench_metal);
         b.set_position(x, 0.0, z);
         b.set_rotation(0.0, (-x).atan2(-z), 0.0); // the seat faces the centre, the back faces out
         g.add(&b);
@@ -355,17 +361,23 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
     let stone_mat = textured(textures::polish(palette.sheet));
     let water_mat = toon_mat(Material {
         map: Some(Arc::clone(&water_base)),
+        emissive: Color::hex(0x2ad0ff),
+        emissive_intensity: 0.55,
         transparent: true,
         opacity: 0.9,
         ..Material::default()
     });
-    let counter_mat = textured(textures::wood());
+    let counter_mat = toon_mat(Material {
+        map: Some(textures::metal()),
+        color: Color::hex(HULL),
+        ..Material::default()
+    });
     let pole_mat = textured(textures::metal());
     let awning_key = format!("awning:{}:{}", css(palette.signal), css(palette.sheet));
-    let (signal, sheet) = (palette.signal, palette.sheet);
+    let signal = palette.signal;
     let awning_tex = textures::canvas_texture(&awning_key, 256, 64, 1.0, |cg, w, h, _| {
         for i in 0..8 {
-            let c = if i % 2 == 1 { signal } else { sheet };
+            let c = if i % 2 == 1 { signal } else { Color::hex(0xd8deef) };
             cg.set_fill(&css(c));
             cg.fill_rect(i as f32 * w / 8.0, 0.0, w / 8.0, h);
         }
@@ -382,7 +394,7 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
         let node = Obj::group();
         node.set_position(x, 0.0, z);
         if i == 0 {
-            // The fountain: a stone basin with a rippling pool and a spout.
+            // The fountain: a basin with a glowing pool and a spout of light.
             let basin = part(&node, &geometry::cylinder(0.62, 0.7, 0.26, 32), &stone_mat, 0.0, 0.13, 0.0);
             let pool = part(&node, &geometry::circle(0.55, 32, 0.0, TAU), &water_mat, 0.0, 0.27, 0.0);
             pool.set_rotation(-PI / 2.0, 0.0, 0.0);
@@ -390,7 +402,7 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
             part(&node, &geometry::sphere(0.11, 12, 8), &water_mat, 0.0, 0.92, 0.0);
             boxes.push(footprint(&basin, node.local_matrix()));
         } else {
-            // A market stall: a wooden counter under a striped awning, turned to face the plaza's centre.
+            // A market stall: a metal counter under a striped awning, turned to face the plaza's centre.
             node.set_rotation(0.0, (-x).atan2(-z), 0.0);
             let counter = part(&node, &geometry::box_geo(1.1, 0.72, 0.5), &counter_mat, 0.0, 0.36, 0.0);
             part(&node, &geometry::box_geo(0.26, 0.18, 0.26), &std_mat(palette.ok), 0.25, 0.81, 0.0);
@@ -417,11 +429,12 @@ pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furnitu
     Furniture { group: g, boxes, animate }
 }
 
-/// `buildPaths(from, palette)`: flat paved strips from the origin out to each point (y = 0), for
-/// the paths between the centre and the districts.
+/// `buildPaths(from, palette)`: plated strips from the origin out to each point (y = 0), for the
+/// paths between the centre and the districts, each with a light line down either edge.
 pub fn build_paths(from: &[Vec3], palette: &PropPalette) -> Obj {
     let g = Obj::group();
-    let mat = textured(textures::paving(palette.rule.lerp(palette.sheet, 0.35), 2.0));
+    let mat = std_mat(palette.rule.lerp(palette.sheet, 0.35));
+    let light = Mat::basic(palette.info);
     for to in from {
         let len = to.x.hypot(to.z);
         if len < 0.5 {
@@ -436,215 +449,14 @@ pub fn build_paths(from: &[Vec3], palette: &PropPalette) -> Obj {
         strip.set_position(to.x / 2.0, 0.015, to.z / 2.0);
         strip.set_rotation(0.0, -to.z.atan2(to.x), 0.0);
         strip.get().receive_shadow = true;
+        for side in [-0.41f32, 0.41] {
+            let line = Obj::mesh(&geometry::box_geo(len, 0.02, 0.05), &light);
+            line.set_position(0.0, 0.02, side);
+            strip.add(&line);
+        }
         g.add(&strip);
     }
     g
-}
-
-/// The scatter's state while it is built: the shared materials, the footprints so far and the
-/// lamp spots, and the random numbers that place everything.
-struct Scatter {
-    sites: Vec<Site>,
-    g: Obj,
-    boxes: Vec<Box2>,
-    rand: Rng,
-    lamps: Vec<(f32, f32)>,
-    bark: Mat,
-    greens: Vec<Mat>,
-    dark_greens: Vec<Mat>,
-    blossoms: Vec<Mat>,
-    flowers: Vec<Mat>,
-    soil: Mat,
-    clay: Mat,
-    rock_mat: Mat,
-    bench_wood: Mat,
-    pole_mat: Mat,
-    bulb: Mat,
-}
-
-impl Scatter {
-    /// Whether a piece of radius `rad` at (x, z) clears the plaza, the districts, the paths and the boxes so far.
-    fn clear(&self, x: f32, z: f32, rad: f32) -> bool {
-        if x.hypot(z) < 6.4 + rad {
-            return false;
-        }
-        for s in &self.sites {
-            if (x - s.cx).abs() < s.r + 3.0 + rad && (z - s.cy).abs() < s.r + 3.0 + rad {
-                return false;
-            }
-            if seg_dist(x, z, s.cx, s.cy) < 1.4 + rad {
-                return false;
-            }
-        }
-        for b in &self.boxes {
-            if x + rad > b.x0 - 0.3 && x - rad < b.x1 + 0.3 && z + rad > b.z0 - 0.3 && z - rad < b.z1 + 0.3 {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn add_lamp(&mut self, x: f32, z: f32) {
-        // Paths meet at the centre, so lamps of neighbouring paths can land on one spot: keep one.
-        if self.lamps.iter().any(|&(lx, lz)| (lx - x).hypot(lz - z) < 3.0) {
-            return;
-        }
-        self.lamps.push((x, z));
-        let l = Obj::group();
-        l.set_position(x, 0.0, z);
-        let pole = part(&l, &geometry::cylinder(0.035, 0.045, 2.2, 8), &self.pole_mat, 0.0, 1.1, 0.0);
-        part(&l, &geometry::cylinder(0.06, 0.08, 0.1, 10), &self.pole_mat, 0.0, 2.25, 0.0);
-        part(&l, &geometry::sphere(0.16, 14, 10), &self.bulb, 0.0, 2.4, 0.0);
-        self.g.add(&l);
-        shadows(&l);
-        self.boxes.push(footprint(&pole, l.local_matrix()));
-    }
-
-    fn add_tree(&mut self, x: f32, z: f32) {
-        let t = Obj::group();
-        t.set_position(x, 0.0, z);
-        let h = 0.9 + self.rand.next() * 0.5;
-        let trunk = part(&t, &geometry::cylinder(0.08, 0.12, h, 8), &self.bark, 0.0, h / 2.0, 0.0);
-        if self.rand.next() < 0.35 {
-            // A conifer: three stacked cones.
-            let needles = pick(&self.dark_greens, &mut self.rand);
-            for k in 0..3 {
-                let kf = k as f32;
-                part(&t, &geometry::cone(0.8 - kf * 0.2, 0.95, 10), needles, 0.0, h + 0.25 + kf * 0.42, 0.0);
-            }
-        } else {
-            // A broadleaf: a layered crown, now and then in blossom.
-            let crown_set = if self.rand.next() < 0.2 { &self.blossoms } else { &self.greens };
-            let crown = pick(crown_set, &mut self.rand);
-            part(&t, &geometry::sphere(0.72, 14, 10), crown, 0.0, h + 0.35, 0.0);
-            part(&t, &geometry::sphere(0.5, 12, 8), crown, 0.28, h + 0.8, 0.12);
-            part(&t, &geometry::sphere(0.42, 12, 8), crown, -0.22, h + 0.7, -0.18);
-        }
-        self.g.add(&t);
-        shadows(&t);
-        self.boxes.push(footprint(&trunk, t.local_matrix()));
-    }
-
-    fn add_bed(&mut self, x: f32, z: f32) {
-        let b = Obj::group();
-        b.set_position(x, 0.0, z);
-        b.set_rotation(0.0, self.rand.next() * PI, 0.0);
-        let border = part(&b, &geometry::box_geo(1.5, 0.2, 0.9), &self.clay, 0.0, 0.1, 0.0);
-        part(&b, &geometry::box_geo(1.36, 0.06, 0.76), &self.soil, 0.0, 0.19, 0.0);
-        for _ in 0..16 {
-            let fm = pick(&self.flowers, &mut self.rand);
-            let radius = 0.06 + self.rand.next() * 0.03;
-            let fx = (self.rand.next() - 0.5) * 1.1;
-            let fy = 0.3 + self.rand.next() * 0.06;
-            let fz = (self.rand.next() - 0.5) * 0.6;
-            part(&b, &geometry::sphere(radius, 8, 6), fm, fx, fy, fz);
-        }
-        self.g.add(&b);
-        shadows(&b);
-        self.boxes.push(footprint(&border, b.local_matrix()));
-    }
-
-    fn add_rock(&mut self, x: f32, z: f32) {
-        let rad = 0.3 + self.rand.next() * 0.35;
-        let m = Obj::mesh(&geometry::dodecahedron(rad, 0), &self.rock_mat);
-        m.set_position(x, rad * 0.4, z);
-        let rx = self.rand.next() * 3.0;
-        let ry = self.rand.next() * 3.0;
-        let rz = self.rand.next() * 3.0;
-        m.set_rotation(rx, ry, rz);
-        {
-            let mut n = m.get();
-            n.cast_shadow = true;
-            n.receive_shadow = true;
-        }
-        self.g.add(&m);
-        self.boxes.push(footprint(&m, Mat4::IDENTITY));
-    }
-
-    fn add_bench(&mut self, x: f32, z: f32) {
-        let b = bench(&self.bench_wood);
-        b.set_position(x, 0.0, z);
-        b.set_rotation(0.0, self.rand.next() * PI * 2.0, 0.0);
-        self.g.add(&b);
-        shadows(&b);
-        self.boxes.push(footprint(&b, Mat4::IDENTITY));
-    }
-}
-
-/// `buildScatter(sites, palette)`: street lamps along every path, then trees, flower beds, rocks
-/// and benches scattered where they clash with neither the plaza, the slabs and their ramps, the
-/// paths, nor each other.
-pub fn build_scatter(sites: &[Site], palette: &PropPalette) -> (Obj, Vec<Box2>) {
-    let mut far = 0.0f32;
-    for s in sites {
-        far = far.max(s.cx.hypot(s.cy) + s.r);
-    }
-    let reach = (far + 6.0).min(34.0);
-
-    // Materials shared by every piece of the scatter.
-    let greens = [0x5f8f4a, 0x77a25a, 0x4d7a3c, 0x8fae5e].iter().map(|&c| std_mat(Color::hex(c))).collect();
-    let dark_greens = [0x2f5d3a, 0x3c6e47].iter().map(|&c| std_mat(Color::hex(c))).collect();
-    let blossoms = [0xf2b8c6, 0xf7e3ea].iter().map(|&c| std_mat(Color::hex(c))).collect();
-    let flowers = [0xf2c14e, 0xe98aa0, 0xf7f3e8, 0xd9573c, 0x9b7fd1].iter().map(|&c| std_mat(Color::hex(c))).collect();
-
-    let mut sc = Scatter {
-        sites: sites.to_vec(),
-        g: Obj::group(),
-        boxes: Vec::new(),
-        rand: Rng::new(1177),
-        lamps: Vec::new(),
-        bark: textured(textures::wood()),
-        greens,
-        dark_greens,
-        blossoms,
-        flowers,
-        soil: std_mat(palette.rule.lerp(palette.ink3, 0.6)),
-        clay: std_mat(Color::hex(0xc98b66)),
-        rock_mat: std_mat(palette.ink3.lerp(palette.sheet, 0.45)),
-        bench_wood: toon_mat(Material {
-            map: Some(textures::wood()),
-            ..Material::default()
-        }),
-        pole_mat: textured(textures::metal()),
-        bulb: Mat::basic(Color::hex(0xffd79a)),
-    };
-
-    // One street lamp per path, just off its edge where it reaches the district, sides alternating.
-    for (i, site) in sites.iter().enumerate() {
-        let dist = site.cx.hypot(site.cy);
-        let d = dist - site.r - 2.6;
-        if dist < 1.0 || d < 7.0 {
-            continue;
-        }
-        let ux = site.cx / dist;
-        let uz = site.cy / dist;
-        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
-        sc.add_lamp(ux * d - uz * side * 0.95, uz * d + ux * side * 0.95);
-    }
-
-    // Scatter: trees most often, then flower beds, rocks and benches, wherever the spot is clear.
-    for _ in 0..320 {
-        let x = (sc.rand.next() * 2.0 - 1.0) * reach;
-        let z = (sc.rand.next() * 2.0 - 1.0) * reach;
-        let roll = sc.rand.next();
-        if roll < 0.42 {
-            if sc.clear(x, z, 0.7) {
-                sc.add_tree(x, z);
-            }
-        } else if roll < 0.62 {
-            if sc.clear(x, z, 0.85) {
-                sc.add_bed(x, z);
-            }
-        } else if roll < 0.84 {
-            if sc.clear(x, z, 0.4) {
-                sc.add_rock(x, z);
-            }
-        } else if sc.clear(x, z, 0.7) {
-            sc.add_bench(x, z);
-        }
-    }
-    outline(&sc.g, 0.1);
-    (sc.g, sc.boxes)
 }
 
 #[cfg(test)]
@@ -674,12 +486,5 @@ mod tests {
     fn build_plaza_returns_a_non_empty_group() {
         let (g, _anim) = build_plaza(&palette());
         assert!(count_meshes(&g) > 0);
-    }
-
-    #[test]
-    fn build_scatter_over_two_sites_returns_footprints() {
-        let sites = [Site { cx: 14.0, cy: 0.0, r: 4.0 }, Site { cx: -10.0, cy: 12.0, r: 4.0 }];
-        let (_g, boxes) = build_scatter(&sites, &palette());
-        assert!(!boxes.is_empty());
     }
 }

@@ -63,40 +63,26 @@ function rrect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: 
   g.closePath();
 }
 
-/** Grass: a flat cartoon meadow — soft lighter patches and little inked tufts. */
-export function grass(): THREE.CanvasTexture {
-  return canvasTexture('grass', 512, 512, 24, (g, w, h, r) => {
-    g.fillStyle = '#86c45e';
+/**
+ * The ground: one smooth sheet under the whole floor, lighter where the plaza stands and fading
+ * darker toward the horizon, with a few faint survey rings round the centre. Not repeated: it
+ * spans the ground plane once, centred on the plaza.
+ */
+export function ground(): THREE.CanvasTexture {
+  return canvasTexture('ground', 1024, 1024, 1, (g, w, h) => {
+    const fade = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    fade.addColorStop(0, '#3d4680');
+    fade.addColorStop(0.12, '#353d72');
+    fade.addColorStop(0.35, '#272d58');
+    fade.addColorStop(1, '#161a36');
+    g.fillStyle = fade;
     g.fillRect(0, 0, w, h);
-    // Big soft patches in two close greens.
-    for (let i = 0; i < 14; i++) {
-      g.fillStyle = r() < 0.5 ? '#8fcb66' : '#7fbc58';
+    g.strokeStyle = 'rgba(160,180,255,0.07)';
+    g.lineWidth = 2;
+    for (const r of [44, 66, 92, 124]) {
       g.beginPath();
-      g.ellipse(r() * w, r() * h, 30 + r() * 60, 20 + r() * 40, r() * Math.PI, 0, Math.PI * 2);
-      g.fill();
-    }
-    // Tufts: three-stroke "v"s, the classic cartoon grass mark.
-    g.lineCap = 'round';
-    for (let i = 0; i < 90; i++) {
-      const x = r() * w;
-      const y = r() * h;
-      const s = 4 + r() * 5;
-      g.strokeStyle = r() < 0.7 ? 'rgba(70,128,52,0.55)' : 'rgba(196,232,150,0.7)';
-      g.lineWidth = 1.6;
-      g.beginPath();
-      g.moveTo(x - s * 0.6, y - s);
-      g.lineTo(x, y);
-      g.lineTo(x + s * 0.1, y - s * 1.3);
-      g.moveTo(x, y);
-      g.lineTo(x + s * 0.7, y - s * 0.9);
+      g.arc(w / 2, h / 2, r, 0, Math.PI * 2);
       g.stroke();
-    }
-    // A few tiny flowers.
-    for (let i = 0; i < 12; i++) {
-      g.fillStyle = ['#fff6d8', '#ffd25e', '#ff9db5'][Math.floor(r() * 3)]!;
-      g.beginPath();
-      g.arc(r() * w, r() * h, 2 + r() * 1.5, 0, Math.PI * 2);
-      g.fill();
     }
   });
 }
@@ -235,12 +221,12 @@ export function water(): THREE.CanvasTexture {
   });
 }
 
-/** A slab's sides: a darker band of its district hue, so the tiled top stands out. */
+/** A slab's sides: a dark hull band in its district hue, under the slab's neon rim. */
 export function slabSide(hue: number): THREE.Material {
   const key = `side:${Math.round(hue)}`;
   const hit = materials.get(key);
   if (hit) return hit;
-  const m = toonMat({ color: new THREE.Color().setHSL(hue / 360, 0.35, 0.66, THREE.SRGBColorSpace) });
+  const m = toonMat({ color: new THREE.Color().setHSL(hue / 360, 0.3, 0.2, THREE.SRGBColorSpace) });
   materials.set(key, m);
   return m;
 }

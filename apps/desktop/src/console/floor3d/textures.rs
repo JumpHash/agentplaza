@@ -2,7 +2,7 @@
 //! polish, water) and the seeded random numbers everything procedural uses.
 
 use std::collections::HashMap;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use super::canvas::Canvas;
@@ -91,49 +91,19 @@ fn rrect(g: &mut Canvas, x: f32, y: f32, w: f32, h: f32, radius: f32) {
     g.close_path();
 }
 
-/// Grass: a flat cartoon meadow — soft lighter patches and little inked tufts.
-pub fn grass() -> Tex {
-    canvas_texture("grass", 512, 512, 24.0, |g, w, h, r| {
-        g.set_fill("#86c45e");
+/// The ground: one smooth sheet under the whole floor, lighter where the plaza stands and fading
+/// darker toward the horizon, with a few faint survey rings round the centre. Not repeated: it
+/// spans the ground plane once, centred on the plaza.
+pub fn ground() -> Tex {
+    canvas_texture("ground", 1024, 1024, 1.0, |g, w, h, _| {
+        g.set_fill_radial(w / 2.0, h / 2.0, 0.0, w / 2.0, h / 2.0, w / 2.0, &[(0.0, "#3d4680"), (0.12, "#353d72"), (0.35, "#272d58"), (1.0, "#161a36")]);
         g.fill_rect(0.0, 0.0, w, h);
-        // Big soft patches in two close greens.
-        for _ in 0..14 {
-            g.set_fill(if r.next() < 0.5 { "#8fcb66" } else { "#7fbc58" });
+        g.set_stroke("rgba(160,180,255,0.07)");
+        g.set_line_width(2.0);
+        for r in [44.0_f32, 66.0, 92.0, 124.0] {
             g.begin_path();
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let rx = 30.0 + r.next() * 60.0;
-            let ry = 20.0 + r.next() * 40.0;
-            let rot = r.next() * PI;
-            g.ellipse(x, y, rx, ry, rot, 0.0, TAU, false);
-            g.fill();
-        }
-        // Tufts: three-stroke "v"s, the classic cartoon grass mark.
-        g.set_line_cap("round");
-        for _ in 0..90 {
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let s = 4.0 + r.next() * 5.0;
-            g.set_stroke(if r.next() < 0.7 { "rgba(70,128,52,0.55)" } else { "rgba(196,232,150,0.7)" });
-            g.set_line_width(1.6);
-            g.begin_path();
-            g.move_to(x - s * 0.6, y - s);
-            g.line_to(x, y);
-            g.line_to(x + s * 0.1, y - s * 1.3);
-            g.move_to(x, y);
-            g.line_to(x + s * 0.7, y - s * 0.9);
+            g.arc(w / 2.0, h / 2.0, r, 0.0, TAU, false);
             g.stroke();
-        }
-        // A few tiny flowers.
-        for _ in 0..12 {
-            let pick = (r.next() * 3.0).floor() as usize;
-            g.set_fill(["#fff6d8", "#ffd25e", "#ff9db5"][pick]);
-            g.begin_path();
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let rad = 2.0 + r.next() * 1.5;
-            g.arc(x, y, rad, 0.0, TAU, false);
-            g.fill();
         }
     })
 }
@@ -289,14 +259,14 @@ pub fn water() -> Tex {
     })
 }
 
-/// A slab's sides: a darker band of its district hue, so the tiled top stands out.
+/// A slab's sides: a dark hull band in its district hue, under the slab's neon rim.
 pub fn slab_side(hue: f32) -> Mat {
     let key = format!("side:{}", js_round(hue));
     let hit = lock(material_cache()).get(&key).cloned();
     if let Some(hit) = hit {
         return hit;
     }
-    let m = Mat::toon(Color::hsl(hue / 360.0, 0.35, 0.66));
+    let m = Mat::toon(Color::hsl(hue / 360.0, 0.3, 0.2));
     lock(material_cache()).insert(key, m.clone());
     m
 }
@@ -340,9 +310,9 @@ mod tests {
     }
 
     #[test]
-    fn grass_is_repeat_wrapped() {
-        let t = grass();
+    fn ground_is_a_texture() {
+        let t = ground();
+        assert_eq!(t.repeat, [1.0, 1.0]);
         assert!(t.wrap);
-        assert_eq!(t.repeat, [24.0, 24.0]);
     }
 }

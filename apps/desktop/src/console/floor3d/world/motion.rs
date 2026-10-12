@@ -146,7 +146,8 @@ impl Floor {
         self.update_bots(dt, now_ms);
         self.update_packets();
         self.update_dust();
-        self.clouds.set_rotation(0.0, self.time * 0.006, 0.0);
+        self.stars.set_rotation(0.0, self.time * 0.004, 0.0);
+        self.planet.get().rotation.y = self.time * 0.05;
         (self.plaza_anim)(self.time);
         for anim in self.prop_anim.iter_mut() {
             anim(self.time);

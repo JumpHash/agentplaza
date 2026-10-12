@@ -1,12 +1,12 @@
-// The props that furnish the Floor outside the district rooms (those are in rooms/): the central
-// plaza's paved ring and its xenon atom; the fountain and market stalls around it; the paths and
-// their street lamps; and the trees, flower beds, benches and rocks scattered over the meadow.
+// The props that furnish the plaza outside the district rooms (those are in rooms/, the outskirts
+// and the horizon in outskirts.ts): the central plaza's ring and its xenon atom; the holo fountain
+// and market stalls around it; the paths with their light lines.
 // Everything is toon-shaded primitives; each group carries what the scene animates in
 // `userData.animate(t)`, and every solid piece reports its ground footprint so robots collide with it.
 
 import * as THREE from 'three';
 import { outline, toonMat } from './toon';
-import { canvasTexture, metal as metalTex, paving, polish, rng, water, wood as woodTex, type Rand } from './textures';
+import { canvasTexture, metal as metalTex, polish, rng, water } from './textures';
 
 /** The palette colours the props need, already resolved to three.js colours. */
 export interface PropPalette {
@@ -40,21 +40,27 @@ export interface Furniture {
   animate: (t: number) => void;
 }
 
-const LAMP = new THREE.Color(0xffd79a);
-const CLAY = new THREE.Color(0xc98b66);
+export const LAMP = new THREE.Color(0x7fe8ff);
+/** Dark hull metal, for benches, stalls and planters. */
+const HULL = new THREE.Color(0x56607e);
+
+/** A toon colour that also glows a little: the plaza's bioluminescence and crystals. */
+export function glowing(color: number, intensity: number): THREE.MeshToonMaterial {
+  return toonMat({ color, emissive: color, emissiveIntensity: intensity });
+}
 
 function std(color: THREE.Color, roughness: number, metalness = 0.1): THREE.MeshToonMaterial {
   return toonMat({ color, roughness, metalness });
 }
 
-function part(parent: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
+export function part(parent: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
   parent.add(m);
   return m;
 }
 
-function shadows(root: THREE.Object3D): void {
+export function shadows(root: THREE.Object3D): void {
   root.traverse((o) => {
     if (o instanceof THREE.Mesh) {
       o.castShadow = true;
@@ -64,14 +70,10 @@ function shadows(root: THREE.Object3D): void {
 }
 
 /** The world-space ground footprint of an object, from its bounding box. */
-function footprint(o: THREE.Object3D): Box2 {
+export function footprint(o: THREE.Object3D): Box2 {
   o.updateWorldMatrix(true, false);
   const b = new THREE.Box3().setFromObject(o);
   return { x0: b.min.x, x1: b.max.x, z0: b.min.z, z1: b.max.z };
-}
-
-function pick<T>(items: T[], r: Rand): T {
-  return items[Math.floor(r() * items.length)] as T;
 }
 
 /** The smallest angle between two bearings, in radians. */
@@ -80,13 +82,13 @@ function angDist(a: number, b: number): number {
 }
 
 /** Distance from (px, pz) to the segment from the origin to (bx, bz). */
-function segDist(px: number, pz: number, bx: number, bz: number): number {
+export function segDist(px: number, pz: number, bx: number, bz: number): number {
   const len2 = Math.max(bx * bx + bz * bz, 1e-6);
   const t = Math.max(0, Math.min(1, (px * bx + pz * bz) / len2));
   return Math.hypot(px - bx * t, pz - bz * t);
 }
 
-/** A wooden bench at the origin, its seat facing +z and its back at -z. */
+/** A bench at the origin, its seat facing +z and its back at -z. */
 function bench(mat: THREE.Material): THREE.Group {
   const b = new THREE.Group();
   part(b, new THREE.BoxGeometry(1.3, 0.08, 0.42), mat, 0, 0.42, 0);
@@ -100,14 +102,14 @@ function bench(mat: THREE.Material): THREE.Group {
 export function buildPlaza(palette: PropPalette): THREE.Group {
   const g = new THREE.Group();
   const stone = palette.rule.clone().lerp(palette.sheet, 0.4);
-  const pave = part(g, new THREE.CylinderGeometry(4.3, 4.45, 0.06, 64), toonMat({ map: paving(stone, 4), roughness: 0.9 }), 0, 0.03, 0);
+  const pave = part(g, new THREE.CylinderGeometry(4.3, 4.45, 0.06, 64), std(stone, 0.9), 0, 0.03, 0);
   pave.receiveShadow = true;
   const ring = part(g, new THREE.RingGeometry(3.7, 3.95, 72), std(stone.clone().multiplyScalar(0.72), 0.9, 0), 0, 0.066, 0);
   ring.rotation.x = -Math.PI / 2;
   const inlay = part(g, new THREE.TorusGeometry(3.3, 0.025, 6, 72), std(palette.rule, 0.8, 0), 0, 0.065, 0);
   inlay.rotation.x = Math.PI / 2;
 
-  const benchWood = toonMat({ map: woodTex(), color: palette.rule.clone().lerp(palette.ink3, 0.25), roughness: 0.8 });
+  const benchWood = toonMat({ map: metalTex(), color: HULL });
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2;
     const x = Math.cos(a) * 3.6;
@@ -207,13 +209,13 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
 
   const waterTex = water();
   const stoneMat = toonMat({ map: polish(palette.sheet), roughness: 0.4 });
-  const waterMat = toonMat({ map: waterTex, roughness: 0.12, transparent: true, opacity: 0.9 });
-  const counterMat = toonMat({ map: woodTex(), roughness: 0.8 });
+  const waterMat = toonMat({ map: waterTex, emissive: 0x2ad0ff, emissiveIntensity: 0.55, transparent: true, opacity: 0.9 });
+  const counterMat = toonMat({ map: metalTex(), color: HULL });
   const poleMat = toonMat({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
   const awningTex = canvasTexture(`awning:${palette.signal.getStyle()}:${palette.sheet.getStyle()}`, 256, 64, 1, (cg, w, h) => {
     const n = 8;
     for (let i = 0; i < n; i++) {
-      cg.fillStyle = i % 2 === 1 ? palette.signal.getStyle() : palette.sheet.getStyle();
+      cg.fillStyle = i % 2 === 1 ? palette.signal.getStyle() : '#d8deef';
       cg.fillRect((i * w) / n, 0, w / n, h);
     }
   });
@@ -225,7 +227,7 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
     const node = new THREE.Group();
     node.position.set(x, 0, z);
     if (i === 0) {
-      // The fountain: a stone basin with a rippling pool and a spout.
+      // The fountain: a basin with a glowing pool and a spout of light.
       const basin = part(node, new THREE.CylinderGeometry(0.62, 0.7, 0.26, 32), stoneMat, 0, 0.13, 0);
       const pool = part(node, new THREE.CircleGeometry(0.55, 32), waterMat, 0, 0.27, 0);
       pool.rotation.x = -Math.PI / 2;
@@ -233,7 +235,7 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
       part(node, new THREE.SphereGeometry(0.11, 12, 8), waterMat, 0, 0.92, 0);
       boxes.push(footprint(basin));
     } else {
-      // A market stall: a wooden counter under a striped awning, turned to face the plaza's centre.
+      // A market stall: a metal counter under a striped awning, turned to face the plaza's centre.
       node.rotation.y = Math.atan2(-x, -z);
       const counter = part(node, new THREE.BoxGeometry(1.1, 0.72, 0.5), counterMat, 0, 0.36, 0);
       part(node, new THREE.BoxGeometry(0.26, 0.18, 0.26), std(palette.ok, 0.7, 0), 0.25, 0.81, 0);
@@ -254,10 +256,14 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
   return { group: g, boxes, animate };
 }
 
-/** Flat paved strips from the origin out to each point (y = 0), for the paths between the centre and the districts. */
+/**
+ * Plated strips from the origin out to each point (y = 0), for the paths between the centre and the
+ * districts, each with a light line down either edge.
+ */
 export function buildPaths(from: THREE.Vector3[], palette: PropPalette): THREE.Group {
   const g = new THREE.Group();
-  const mat = toonMat({ map: paving(palette.rule.clone().lerp(palette.sheet, 0.35), 2), roughness: 0.95 });
+  const mat = std(palette.rule.clone().lerp(palette.sheet, 0.35), 0.95);
+  const light = new THREE.MeshBasicMaterial({ color: palette.info, toneMapped: false });
   for (const to of from) {
     const len = Math.hypot(to.x, to.z);
     if (len < 0.5) continue;
@@ -270,146 +276,11 @@ export function buildPaths(from: THREE.Vector3[], palette: PropPalette): THREE.G
     strip.rotation.y = -Math.atan2(to.z, to.x);
     strip.receiveShadow = true;
     g.add(strip);
+    for (const side of [-0.41, 0.41]) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(len, 0.02, 0.05), light);
+      line.position.set(0, 0.02, side);
+      strip.add(line);
+    }
   }
   return g;
-}
-
-/**
- * Greenery, lamps and small street furniture outside the districts: street lamps along every path,
- * then trees, flower beds, rocks and benches scattered where they clash with neither the plaza, the
- * slabs and their ramps, the paths, nor each other.
- */
-export function buildScatter(sites: Site[], palette: PropPalette): { group: THREE.Group; boxes: Box2[] } {
-  const g = new THREE.Group();
-  const boxes: Box2[] = [];
-  const rand = rng(1177);
-  let far = 0;
-  for (const s of sites) far = Math.max(far, Math.hypot(s.cx, s.cy) + s.r);
-  const reach = Math.min(34, far + 6);
-
-  // Materials shared by every piece of the scatter.
-  const bark = toonMat({ map: woodTex(), roughness: 0.9 });
-  const greens = [0x5f8f4a, 0x77a25a, 0x4d7a3c, 0x8fae5e].map((c) => std(new THREE.Color(c), 0.85, 0));
-  const darkGreens = [0x2f5d3a, 0x3c6e47].map((c) => std(new THREE.Color(c), 0.9, 0));
-  const blossoms = [0xf2b8c6, 0xf7e3ea].map((c) => std(new THREE.Color(c), 0.85, 0));
-  const flowers = [0xf2c14e, 0xe98aa0, 0xf7f3e8, 0xd9573c, 0x9b7fd1].map((c) => std(new THREE.Color(c), 0.7, 0));
-  const soil = std(palette.rule.clone().lerp(palette.ink3, 0.6), 1, 0);
-  const clay = std(CLAY, 0.9, 0);
-  const rockMat = std(palette.ink3.clone().lerp(palette.sheet, 0.45), 0.95, 0);
-  const benchWood = toonMat({ map: woodTex(), roughness: 0.8 });
-  const poleMat = toonMat({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
-  const bulb = new THREE.MeshBasicMaterial({ color: LAMP, toneMapped: false });
-
-  /** Whether a piece of radius `rad` at (x, z) clears the plaza, the districts, the paths and the boxes so far. */
-  const clear = (x: number, z: number, rad: number): boolean => {
-    if (Math.hypot(x, z) < 6.4 + rad) return false;
-    for (const s of sites) {
-      if (Math.abs(x - s.cx) < s.r + 3 + rad && Math.abs(z - s.cy) < s.r + 3 + rad) return false;
-      if (segDist(x, z, s.cx, s.cy) < 1.4 + rad) return false;
-    }
-    for (const b of boxes) {
-      if (x + rad > b.x0 - 0.3 && x - rad < b.x1 + 0.3 && z + rad > b.z0 - 0.3 && z - rad < b.z1 + 0.3) return false;
-    }
-    return true;
-  };
-
-  const lamps: [number, number][] = [];
-  const addLamp = (x: number, z: number): void => {
-    // Paths meet at the centre, so lamps of neighbouring paths can land on one spot: keep one.
-    if (lamps.some(([lx, lz]) => Math.hypot(lx - x, lz - z) < 3)) return;
-    lamps.push([x, z]);
-    const l = new THREE.Group();
-    l.position.set(x, 0, z);
-    const pole = part(l, new THREE.CylinderGeometry(0.035, 0.045, 2.2, 8), poleMat, 0, 1.1, 0);
-    part(l, new THREE.CylinderGeometry(0.06, 0.08, 0.1, 10), poleMat, 0, 2.25, 0);
-    part(l, new THREE.SphereGeometry(0.16, 14, 10), bulb, 0, 2.4, 0);
-    g.add(l);
-    shadows(l);
-    boxes.push(footprint(pole));
-  };
-
-  const addTree = (x: number, z: number): void => {
-    const t = new THREE.Group();
-    t.position.set(x, 0, z);
-    const h = 0.9 + rand() * 0.5;
-    const trunk = part(t, new THREE.CylinderGeometry(0.08, 0.12, h, 8), bark, 0, h / 2, 0);
-    if (rand() < 0.35) {
-      // A conifer: three stacked cones.
-      const needles = pick(darkGreens, rand);
-      for (let k = 0; k < 3; k++) part(t, new THREE.ConeGeometry(0.8 - k * 0.2, 0.95, 10), needles, 0, h + 0.25 + k * 0.42, 0);
-    } else {
-      // A broadleaf: a layered crown, now and then in blossom.
-      const crown = pick(rand() < 0.2 ? blossoms : greens, rand);
-      part(t, new THREE.SphereGeometry(0.72, 14, 10), crown, 0, h + 0.35, 0);
-      part(t, new THREE.SphereGeometry(0.5, 12, 8), crown, 0.28, h + 0.8, 0.12);
-      part(t, new THREE.SphereGeometry(0.42, 12, 8), crown, -0.22, h + 0.7, -0.18);
-    }
-    g.add(t);
-    shadows(t);
-    boxes.push(footprint(trunk));
-  };
-
-  const addBed = (x: number, z: number): void => {
-    const b = new THREE.Group();
-    b.position.set(x, 0, z);
-    b.rotation.y = rand() * Math.PI;
-    const border = part(b, new THREE.BoxGeometry(1.5, 0.2, 0.9), clay, 0, 0.1, 0);
-    part(b, new THREE.BoxGeometry(1.36, 0.06, 0.76), soil, 0, 0.19, 0);
-    for (let k = 0; k < 16; k++) {
-      const fm = pick(flowers, rand);
-      part(b, new THREE.SphereGeometry(0.06 + rand() * 0.03, 8, 6), fm, (rand() - 0.5) * 1.1, 0.3 + rand() * 0.06, (rand() - 0.5) * 0.6);
-    }
-    g.add(b);
-    shadows(b);
-    boxes.push(footprint(border));
-  };
-
-  const addRock = (x: number, z: number): void => {
-    const rad = 0.3 + rand() * 0.35;
-    const m = new THREE.Mesh(new THREE.DodecahedronGeometry(rad, 0), rockMat);
-    m.position.set(x, rad * 0.4, z);
-    m.rotation.set(rand() * 3, rand() * 3, rand() * 3);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    g.add(m);
-    boxes.push(footprint(m));
-  };
-
-  const addBench = (x: number, z: number): void => {
-    const b = bench(benchWood);
-    b.position.set(x, 0, z);
-    b.rotation.y = rand() * Math.PI * 2;
-    g.add(b);
-    shadows(b);
-    boxes.push(footprint(b));
-  };
-
-  // One street lamp per path, just off its edge where it reaches the district, sides alternating.
-  sites.forEach((s, i) => {
-    const dist = Math.hypot(s.cx, s.cy);
-    const d = dist - s.r - 2.6;
-    if (dist < 1 || d < 7) return;
-    const ux = s.cx / dist;
-    const uz = s.cy / dist;
-    const side = i % 2 === 0 ? 1 : -1;
-    addLamp(ux * d - uz * side * 0.95, uz * d + ux * side * 0.95);
-  });
-
-  // Scatter: trees most often, then flower beds, rocks and benches, wherever the spot is clear.
-  for (let i = 0; i < 320; i++) {
-    const x = (rand() * 2 - 1) * reach;
-    const z = (rand() * 2 - 1) * reach;
-    const roll = rand();
-    if (roll < 0.42) {
-      if (clear(x, z, 0.7)) addTree(x, z);
-    } else if (roll < 0.62) {
-      if (clear(x, z, 0.85)) addBed(x, z);
-    } else if (roll < 0.84) {
-      if (clear(x, z, 0.4)) addRock(x, z);
-    } else if (clear(x, z, 0.7)) {
-      addBench(x, z);
-    }
-  }
-  outline(g, 0.1);
-  return { group: g, boxes };
 }

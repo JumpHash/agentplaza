@@ -136,8 +136,6 @@ iframe.lib-big {
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .lib-tag {
-    background: rgba(255, 255, 255, 0.16);
-  }
+:root:not([data-theme='light']) .lib-tag {
+  background: rgba(255, 255, 255, 0.16);
 }

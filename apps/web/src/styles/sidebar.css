@@ -53,6 +53,7 @@
 
 .sidebar-foot { margin-top: auto; font: 11px/1.6 var(--mono); color: var(--ink-3); display: grid; gap: 4px; }
 .sidebar-foot .row { gap: 8px; }
+.theme-switch { justify-self: start; gap: 6px; padding-left: 0; }
 
 /* The resize handle: a 6px strip on the right edge; a 2px signal line on hover or drag. */
 .sb-resize { display: none; position: absolute; top: 0; bottom: 0; right: 0; width: 6px; cursor: col-resize; touch-action: none; z-index: 2; }

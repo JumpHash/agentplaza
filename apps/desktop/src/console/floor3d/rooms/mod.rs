@@ -60,7 +60,8 @@ pub fn build_room(role: &str, s: f32, hue: f32, palette: &KitPalette) -> BuiltRo
     (style.build)(&mut room);
     toon::outline(&g, 0.12);
 
-    let floor = Mat::toon(Color::WHITE);
+    // Tinted toward the night's blue, so a room's floor reads as lit by the plaza's moonlight.
+    let floor = Mat::toon(Color::hex(0xb4bde0));
     floor.get().map = Some(floor_texture(style.floor, hue, s));
     let screen = room.k.screen.clone();
     let glow_ok = room.k.glow_ok.clone();

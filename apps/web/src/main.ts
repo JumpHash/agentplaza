@@ -2,6 +2,7 @@
 
 import { api, ApiError } from './api';
 import { heldBanner, plazaControl } from './ui/plaza-control';
+import './ui/theme';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/views.css';

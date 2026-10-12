@@ -10,7 +10,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git file xz-utils zstd cpio sudo \
+      ca-certificates curl wget git file xz-utils zstd cpio sudo \
       build-essential pkg-config lld \
       libxkbcommon-dev libwayland-dev \
       flex bison bc libelf-dev libssl-dev busybox-static \
