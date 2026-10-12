@@ -427,14 +427,31 @@ fn router() -> Router<Node> {
 /// and the running VMs with the guest memory they were booted with.
 fn machine_stats(node: &Node) -> Response {
     let (mut vms_running, mut guest_mem_mib) = (0_u64, 0_u64);
+    let mut vms = Vec::new();
     for run in node.registry().list() {
         let view = run.view(Detail::Summary);
-        for _ in view.vms.iter().filter(|vm| vm.state == "running") {
+        let pids = run.process_ids();
+        for vm in view.vms.iter().filter(|vm| vm.state == "running") {
             vms_running += 1;
             guest_mem_mib += u64::from(view.memory_mib);
+            let Some(&(_, pid)) = pids.iter().find(|(index, _)| *index == vm.id) else {
+                continue;
+            };
+            vms.push(stats::VmProcess {
+                pid,
+                run: view.id.to_string(),
+                vm: vm.id,
+                cid: vm.guest_cid,
+                role: vm.role.clone(),
+                usable_mib: vm.memory.as_ref().map(|memory| memory.usable_mib),
+                guest_used_mib: vm.memory.as_ref().and_then(|memory| {
+                    let available = memory.available_mib?;
+                    Some(u64::from(memory.max_mib).saturating_sub(available))
+                }),
+            });
         }
     }
-    match node.stats.view(vms_running, guest_mem_mib) {
+    match node.stats.view(vms_running, guest_mem_mib, &vms) {
         Some(view) => Response::json(200, &view),
         None => Response::error(503, "no host sample yet"),
     }

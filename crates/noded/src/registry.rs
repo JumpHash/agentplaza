@@ -1244,6 +1244,18 @@ impl Run {
         &self.id
     }
 
+    /// The process id of each running VM of the run that has one, as
+    /// `(VM index, pid)`. A VM in process-less form, or mid-kill, has none.
+    pub fn process_ids(&self) -> Vec<(u32, u32)> {
+        let inner = self.lock();
+        inner
+            .vms
+            .iter()
+            .filter(|slot| slot.state == VmState::Running)
+            .filter_map(|slot| Some((slot.id, slot.handle.as_ref()?.process_id()?)))
+            .collect()
+    }
+
     /// The run as the API reports it.
     pub fn view(&self, detail: Detail) -> RunView<'_> {
         let inner = self.lock();
