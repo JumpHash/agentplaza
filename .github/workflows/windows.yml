@@ -51,7 +51,9 @@ jobs:
           - { arch: arm64, runner: windows-11-arm, triple: aarch64-pc-windows-msvc, garch: "",
               bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop" }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    # A cold cache (a new Rust or a dependency update) compiles everything once on these 2–3 core
+    # runners; warm runs take minutes. A hung test is killed by nextest after 2 minutes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

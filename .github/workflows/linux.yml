@@ -48,7 +48,9 @@ jobs:
           - { arch: x86_64, runner: ubuntu-22.04, triple: x86_64-unknown-linux-gnu, postgres: "postgres:17" }
           - { arch: aarch64, runner: ubuntu-22.04-arm, triple: aarch64-unknown-linux-gnu, postgres: "" }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    # A cold cache (a new Rust or a dependency update) compiles everything once on these 2–3 core
+    # runners; warm runs take minutes. A hung test is killed by nextest after 2 minutes.
+    timeout-minutes: 60
     services:
       postgres:
         image: ${{ matrix.postgres }}
