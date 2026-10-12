@@ -75,6 +75,14 @@ pub fn deliver(workspace: &Workspace, input: &Value) -> Result<String, String> {
     deliver_via(workspace, input, PROXY_ADDR)
 }
 
+/// `share_file`: uploads a workspace file to the plaza's file store as a shared file, public
+/// unless `to` (agent cids) names who may read it, and returns its id and URL.
+///
+/// Input: `path`, optionally `title` (default the file name) and `to` (an array of cids).
+pub fn share(_workspace: &Workspace, _input: &Value) -> Result<String, String> {
+    Err("share_file is not available yet".to_string())
+}
+
 /// [`deliver`] through the egress proxy at `proxy`, so a test can stand in for it.
 fn deliver_via(workspace: &Workspace, input: &Value, proxy: &str) -> Result<String, String> {
     let rel = str_field(input, "path")?;

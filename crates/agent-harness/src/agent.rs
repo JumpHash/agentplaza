@@ -531,6 +531,7 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "code_engine" => engines::run(workspace, input),
         "tool_package" => library::package(workspace, input),
         "deliver_file" => library::deliver(workspace, input),
+        "share_file" => library::share(workspace, input),
         "checkpoint_diff" => checkpoints::diff(workspace, input),
         "checkpoint_restore" => checkpoints::restore(workspace, input),
         "checkpoint_list" => checkpoints::list(workspace, input),
