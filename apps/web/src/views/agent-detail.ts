@@ -1,7 +1,7 @@
 // Agent detail: one agent's transcript, its composer, and its model, details and queue.
 
 import '../styles/agent.css';
-import { api, ApiError, type Agent, type Block, type Delta, type Entry, type ModelInfo } from '../api';
+import { api, ApiError, type Agent, type Block, type Delta, type Entry, type ModelInfo, type Settings } from '../api';
 import { href } from '../router';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, card, clip, compact, empty, field, tabs, textarea } from '../ui/components';
@@ -9,8 +9,42 @@ import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountMemory } from './memory';
 import { profileCard } from './agent-profile';
+import { choicesFrom, modelPicker, type ModelChoice } from '../ui/model-picker';
 
 const NEAR_BOTTOM_PX = 80;
+
+type Tier = 'orchestrator' | 'worker';
+
+/**
+ * The model choices for a tier. A worker may run any model: the policy's worker list comes
+ * first as presets, then every model the providers list. An orchestrator may run only its
+ * policy list. `current` (an override no longer offered) is kept as a choice.
+ */
+export function tierChoices(
+  tier: Tier,
+  settings: Settings,
+  models: ModelInfo[],
+  inherit?: { label: string },
+  current?: string,
+): ModelChoice[] {
+  const names = new Map(models.map((m) => [`${m.provider}/${m.id}`, m.name ?? m.id] as [string, string]));
+  const policy = settings.model_policy[tier];
+  const out = choicesFrom(policy, names, inherit);
+  if (tier === 'worker') {
+    for (const c of out) if (c.value && policy.includes(c.value)) c.preset = true;
+    const offered = new Set(out.map((c) => c.value));
+    for (const m of models) {
+      const value = `${m.provider}/${m.id}`;
+      if (offered.has(value)) continue;
+      offered.add(value);
+      out.push({ value, label: m.name ?? m.id, provider: m.provider });
+    }
+  }
+  if (current && !out.some((c) => c.value === current)) {
+    out.push({ value: current, label: current, provider: current.split('/')[0] ?? '' });
+  }
+  return out;
+}
 
 type Section = { root: HTMLElement; head: HTMLElement };
 type LiveTurn = { work: number; el: HTMLElement; text: Text; thinking: Text };
@@ -21,7 +55,18 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const transcript = h('div.transcript');
   const composer = textarea({ placeholder: 'Message this agent…', rows: 3 });
   const send = button('Send', () => void submit(), { kind: 'primary', icon: 'send', title: 'Send (Ctrl+Enter)' });
-  const modelSelect = h('select.select');
+  // The agent's model override ('' = the default), offered by its tier.
+  const picker = modelPicker({
+    choices: [],
+    label: 'Change model',
+    placeholder: 'Use the default',
+    onChange: (value) => {
+      void attempt(() => api.setAgentModel(cid, value || null), 'Model updated').then((ok) => {
+        if (ok) appliedOverride = value;
+        else picker.value = appliedOverride ?? '';
+      });
+    },
+  });
   const modelLine = h('div.model-line');
   const details = h('div');
   const queue = h('div.stack');
@@ -163,12 +208,10 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     transcript.scrollTop = transcript.scrollHeight;
   };
 
-  const populateModels = (models: ModelInfo[]): void => {
+  const populateModels = (models: ModelInfo[], settings: Settings): void => {
     const current = appliedOverride ?? '';
-    const options = models.map((m) => ({ value: `${m.provider}/${m.id}`, label: m.name ?? m.id }));
-    if (current && !options.some((o) => o.value === current)) options.push({ value: current, label: current });
-    modelSelect.replaceChildren(h('option', { value: '' }, 'Use the default'), ...options.map((o) => h('option', { value: o.value }, o.label)));
-    modelSelect.value = current;
+    picker.setChoices(tierChoices(agent?.tier ?? 'worker', settings, models, { label: 'Use the default' }, current));
+    picker.value = current;
   };
 
   const renderAgent = (): void => {
@@ -199,7 +242,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     const want = a.model_override ?? '';
     if (want !== appliedOverride) {
       appliedOverride = want;
-      modelSelect.value = want;
+      picker.value = want;
     }
 
     replace(
@@ -249,14 +292,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       e.preventDefault();
       void submit();
     }
-  });
-
-  modelSelect.addEventListener('change', () => {
-    const value = modelSelect.value;
-    void attempt(() => api.setAgentModel(cid, value || null), 'Model updated').then((ok) => {
-      if (ok) appliedOverride = value;
-      else modelSelect.value = appliedOverride ?? '';
-    });
   });
 
   // The agent's permission mode: loaded on mount, saved on click.
@@ -353,7 +388,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         h(
           'aside.agent-side',
           null,
-          card('Model', h('div.stack', null, modelLine, field('Change model', modelSelect))),
+          card('Model', h('div.stack', null, modelLine, field('Change model', picker.el))),
           card('Permissions', permissionHost),
           card('Details', details),
           card('Queue', queue),
@@ -377,7 +412,9 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     }
     if (!alive) return;
     renderAgent();
-    void api.models().then((view) => alive && populateModels(view.models)).catch(() => undefined);
+    void Promise.all([api.models(), api.settings()])
+      .then(([view, settings]) => alive && populateModels(view.models, settings))
+      .catch(() => undefined);
     await loadHistory();
   };
   void start();

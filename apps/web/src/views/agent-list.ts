@@ -2,7 +2,7 @@ import { agentName, roleLabel } from '../roles';
 // The roster: every agent the plaza holds, filterable by role and status, with
 // each row's own actions. Live through the agents cell; it fetches nothing itself.
 
-import { api, type Agent, type AgentStatus, type WorkKind } from '../api';
+import { api, type Agent, type AgentStatus, type ModelInfo, type Settings, type WorkKind } from '../api';
 import { go } from '../router';
 import { agents, refreshAgents } from '../store';
 import {
@@ -25,6 +25,8 @@ import {
 } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { avatar } from './agent-profile';
+import { tierChoices } from './agent-detail';
+import { modelPicker } from '../ui/model-picker';
 import type { Cleanup } from './index';
 import '../styles/agents.css';
 
@@ -166,7 +168,16 @@ export function mountAgentList(root: HTMLElement): Cleanup {
   function openSpawn(): void {
     const roleChoice = select(roles.map((r) => ({ value: r, label: r })));
     const count = input({ type: 'number', min: 1, max: MAX_COUNT, value: 1 });
-    const model = select([{ value: '', label: 'Default for the role' }]);
+    // The model list follows the role's tier: a worker role may run any model, an orchestrator role only its policy list.
+    let settings: Settings | null = null;
+    let models: ModelInfo[] = [];
+    const model = modelPicker({ choices: [], label: 'Model', placeholder: 'Default for the role' });
+    const syncModels = (): void => {
+      if (!settings) return;
+      const tier = agents.get().find((a) => a.role === roleChoice.value)?.tier ?? 'worker';
+      model.setChoices(tierChoices(tier, settings, models, { label: 'Default for the role' }));
+    };
+    roleChoice.addEventListener('change', syncModels);
     const send = button('Spawn', () => void submit(), { kind: 'primary', icon: 'plus' });
     let close: () => void = () => {};
 
@@ -188,14 +199,16 @@ export function mountAgentList(root: HTMLElement): Cleanup {
       void refreshAgents();
     };
 
-    void attempt(() => api.models()).then((view) => {
-      if (!view) return;
-      model.append(...view.models.map((m) => new Option(`${m.provider}/${m.id}`, `${m.provider}/${m.id}`)));
+    void Promise.all([attempt(() => api.models()), attempt(() => api.settings())]).then(([view, loaded]) => {
+      if (!view || !loaded) return;
+      models = view.models;
+      settings = loaded;
+      syncModels();
     });
 
     close = modal(
       'Spawn agents',
-      h('div.stack', null, field('Role', roleChoice), field('Count', count), field('Model', model), h('div.row.modal-actions', null, send)),
+      h('div.stack', null, field('Role', roleChoice), field('Count', count), field('Model', model.el), h('div.row.modal-actions', null, send)),
     );
   }
 }

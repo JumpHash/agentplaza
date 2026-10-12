@@ -7,9 +7,10 @@ import { agents } from '../store';
 import { attempt, badge, button, card, dot, empty, field, input, select, table, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
+import { modelPicker } from '../ui/model-picker';
+import { tierChoices } from './agent-detail';
 
 type Tier = 'orchestrator' | 'worker';
-type Choice = { value: string; label: string };
 type Price = { input: number; output: number };
 
 const EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -138,15 +139,23 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
   }
 
   function defaultsCard(): HTMLElement {
-    const orch = select(choices(copy.model_policy.orchestrator, copy.orchestrator_model), copy.orchestrator_model);
-    orch.addEventListener('change', () => {
-      copy.orchestrator_model = orch.value;
-      sync();
+    const orch = modelPicker({
+      choices: tierChoices('orchestrator', copy, modelsView.models, undefined, copy.orchestrator_model),
+      value: copy.orchestrator_model,
+      label: 'Orchestrator model',
+      onChange: (v) => {
+        copy.orchestrator_model = v;
+        sync();
+      },
     });
-    const worker = select(choices(copy.model_policy.worker, copy.default_model), copy.default_model);
-    worker.addEventListener('change', () => {
-      copy.default_model = worker.value;
-      sync();
+    const worker = modelPicker({
+      choices: tierChoices('worker', copy, modelsView.models, undefined, copy.default_model),
+      value: copy.default_model,
+      label: 'Worker default',
+      onChange: (v) => {
+        copy.default_model = v;
+        sync();
+      },
     });
     const roles = Array.from(
       new Set([
@@ -168,19 +177,24 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       : empty('agents', 'No roles connected');
     return card(
       'Defaults',
-      h('div.stack', null, field('Orchestrator model', orch), field('Worker default', worker), h('h3', null, 'Per role'), roleRows),
+      h('div.stack', null, field('Orchestrator model', orch.el), field('Worker default', worker.el), h('h3', null, 'Per role'), roleRows),
     );
   }
 
-  function roleSelect(role: string): HTMLSelectElement {
+  function roleSelect(role: string): HTMLElement {
     const current = copy.role_models[role] ?? '';
-    const s = select(choices(copy.model_policy.worker, current === '' ? null : current, { value: '', label: 'Worker default' }), current);
-    s.addEventListener('change', () => {
-      if (s.value === '') delete copy.role_models[role];
-      else copy.role_models[role] = s.value;
-      sync();
-    });
-    return s;
+    // A role that runs the orchestrator tier is limited to its list; any other role may run any model.
+    const orchestrator = role === 'orchestrator' || agents.get().some((a) => a.role === role && a.tier === 'orchestrator');
+    return modelPicker({
+      choices: tierChoices(orchestrator ? 'orchestrator' : 'worker', copy, modelsView.models, { label: orchestrator ? 'Orchestrator default' : 'Worker default' }, current),
+      value: current,
+      label: `${role} model`,
+      onChange: (v) => {
+        if (v === '') delete copy.role_models[role];
+        else copy.role_models[role] = v;
+        sync();
+      },
+    }).el;
   }
 
   function limitsCard(): HTMLElement {
@@ -274,13 +288,6 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
 function parseEntry(entry: string): { base: string; effort: string | null } {
   const at = entry.lastIndexOf('@');
   return at > 0 ? { base: entry.slice(0, at), effort: entry.slice(at + 1) } : { base: entry, effort: null };
-}
-
-/** The choices for a select: the tier's list, plus the current value if the list lacks it. */
-function choices(list: string[], current: string | null, first?: Choice): Choice[] {
-  const values = current !== null && current !== '' && !list.includes(current) ? [...list, current] : list;
-  const options = values.map((v) => ({ value: v, label: list.includes(v) ? v : `${v} (not on the list)` }));
-  return first ? [first, ...options] : options;
 }
 
 function clone<T>(value: T): T {
