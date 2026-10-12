@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use iced::widget::{button, column, pick_list, row, text, text_input, Space};
-use iced::{Element, Length, Task};
+use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input, Space};
+use iced::{Element, Length, Task, Theme};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -18,6 +18,12 @@ use crate::console::{ui, Ctx};
 
 const GROUPS: [&str; 3] = ["Configured with a key", "Needs a key", "Local"];
 const EFFORTS: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+const DECISIONS_LEDE: &str = "Models that answer typed questions with calibrated probabilities instead of writing text. The plaza uses them to decide; agents never chat with them.";
+
+/// The model group a provider view belongs to when the hub does not say ("chat" or "decisions").
+fn chat_group() -> String {
+    "chat".to_string()
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -57,11 +63,124 @@ pub struct Provider {
     #[serde(default)]
     pub extra_headers: Map<String, Value>,
     pub credential: String,
+    #[serde(default = "chat_group")]
+    pub group: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListedModel {
     pub id: String,
+}
+
+/// The plaza's decision model (`GET /v1/decisions/default`); both null when none is set.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DecisionDefault {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// A decision answer (`POST /v1/decisions`): the model the plaza reports and one answer per question.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DecisionReply {
+    #[serde(default)]
+    pub model: String,
+    pub answers: Vec<Answer>,
+}
+
+/// One answer, by question type. Choice and score carry a distribution over their options or levels.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Answer {
+    Predicate {
+        name: String,
+        probability: f64,
+    },
+    Choice {
+        name: String,
+        choice: Value,
+        #[serde(default)]
+        probabilities: Vec<Weighted>,
+        #[serde(default)]
+        confidence: Option<f64>,
+    },
+    Score {
+        name: String,
+        score: f64,
+        #[serde(default)]
+        probabilities: Vec<Weighted>,
+        #[serde(default)]
+        confidence: Option<f64>,
+    },
+    Refusal {
+        name: String,
+    },
+}
+
+/// One option or level with its probability.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Weighted {
+    pub value: Value,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub probability: f64,
+}
+
+/// The question kinds the Try-it form asks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum QKind {
+    #[default]
+    Predicate,
+    Choice,
+    Score,
+}
+
+impl QKind {
+    fn key(self) -> &'static str {
+        match self {
+            QKind::Predicate => "predicate",
+            QKind::Choice => "choice",
+            QKind::Score => "score",
+        }
+    }
+}
+
+impl std::fmt::Display for QKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            QKind::Predicate => "Predicate",
+            QKind::Choice => "Choice",
+            QKind::Score => "Score",
+        })
+    }
+}
+
+/// The Try-it form: the input, one question, and the last answer.
+#[derive(Debug)]
+pub struct TryIt {
+    input: text_editor::Content,
+    kind: QKind,
+    instructions: String,
+    /// Comma-separated choices (choice) or levels (score), lowest first.
+    options: String,
+    asking: bool,
+    error: Option<String>,
+    answer: Option<DecisionReply>,
+}
+
+impl Default for TryIt {
+    fn default() -> Self {
+        TryIt {
+            input: text_editor::Content::new(),
+            kind: QKind::default(),
+            instructions: String::new(),
+            options: String::new(),
+            asking: false,
+            error: None,
+            answer: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -282,6 +401,11 @@ pub struct State {
     dialog: Dialog,
     policy: Option<Policy>,
     prices_open: bool,
+    /// The plaza's decision model as `provider/model`, as the poll last read it.
+    decision_default: Option<String>,
+    /// A decision model just picked, while its save is in flight.
+    decision_pending: Option<String>,
+    try_it: TryIt,
 }
 
 #[derive(Debug, Clone)]
@@ -323,6 +447,17 @@ pub enum Msg {
     TogglePrices,
     PolicySave,
     PolicySaved(Result<Settings, String>),
+    /// The plaza's decision model, as the poll read it.
+    DefaultLoaded(Result<DecisionDefault, String>),
+    /// A decision model was picked (`provider/model`); its save's result.
+    DecisionPick(String),
+    DecisionSaved(Result<String, String>),
+    TryKind(QKind),
+    TryInstructions(String),
+    TryOptions(String),
+    TryInput(text_editor::Action),
+    TryAsk,
+    Asked(Result<DecisionReply, String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -337,7 +472,7 @@ pub fn go(msg: &Msg) -> Option<Id> {
 /// reloads every time; the policy reloads only when there are no unsaved edits to lose.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     match state.tab {
-        Tab::Providers => providers_task(ctx),
+        Tab::Providers => Task::batch(vec![providers_task(ctx), default_task(ctx)]),
         Tab::Policy => match &state.policy {
             Some(p) if p.dirty() || p.saving => Task::none(),
             _ => policy_task(ctx),
@@ -724,6 +859,87 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = Some(e);
             Task::none()
         }
+        Msg::DefaultLoaded(Ok(d)) => {
+            state.decision_default = d.provider.zip(d.model).map(|(p, m)| format!("{p}/{m}"));
+            Task::none()
+        }
+        Msg::DefaultLoaded(Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::DecisionPick(id) => {
+            let Some((provider, model)) = id.split_once('/') else { return Task::none() };
+            let body = json!({ "provider": provider, "model": model });
+            state.decision_pending = Some(id.clone());
+            let c = ctx.client.clone();
+            client::task(move || c.call("PUT", "/v1/decisions/default", Some(&body)).map(|_| id), Msg::DecisionSaved)
+        }
+        Msg::DecisionSaved(Ok(id)) => {
+            state.decision_default = Some(id);
+            state.decision_pending = None;
+            state.error = None;
+            Task::none()
+        }
+        Msg::DecisionSaved(Err(e)) => {
+            state.decision_pending = None;
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::TryKind(kind) => {
+            state.try_it.kind = kind;
+            Task::none()
+        }
+        Msg::TryInstructions(s) => {
+            state.try_it.instructions = s;
+            Task::none()
+        }
+        Msg::TryOptions(s) => {
+            state.try_it.options = s;
+            Task::none()
+        }
+        Msg::TryInput(action) => {
+            state.try_it.input.perform(action);
+            Task::none()
+        }
+        Msg::TryAsk => {
+            let Some(target) = state.decision_default.clone() else {
+                state.try_it.error = Some("Pick a decision model first".to_string());
+                return Task::none();
+            };
+            let t = &mut state.try_it;
+            if t.asking {
+                return Task::none();
+            }
+            let input = t.input.text().trim().to_string();
+            if input.is_empty() {
+                t.error = Some("Write the input the question is about".to_string());
+                return Task::none();
+            }
+            let question = match question_json(t.kind, &t.instructions, &t.options) {
+                Ok(q) => q,
+                Err(e) => {
+                    t.error = Some(e);
+                    return Task::none();
+                }
+            };
+            let Some((provider, model)) = target.split_once('/') else { return Task::none() };
+            let body = json!({ "provider": provider, "model": model, "input": input, "questions": [question] });
+            t.asking = true;
+            t.error = None;
+            let c = ctx.client.clone();
+            client::task(move || c.post::<DecisionReply>("/v1/decisions", &body), Msg::Asked)
+        }
+        Msg::Asked(Ok(reply)) => {
+            state.try_it.asking = false;
+            state.try_it.error = None;
+            state.try_it.answer = Some(reply);
+            Task::none()
+        }
+        Msg::Asked(Err(e)) => {
+            state.try_it.asking = false;
+            state.try_it.error = Some(e);
+            Task::none()
+        }
     }
 }
 
@@ -912,15 +1128,177 @@ fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.providers.is_empty() {
         parts.push(ui::empty("models", "No providers yet", ""));
     }
-    for group in GROUPS {
-        let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| group_of(p) == group).map(|p| provider_card(state, p)).collect();
+    parts.push(provider_group(state, "chat", "Chat models", None));
+    parts.push(provider_group(state, "decisions", "Decisions", Some(DECISIONS_LEDE)));
+    parts.push(decision_model_card(state));
+    parts.push(try_it_card(state));
+    column(parts).spacing(16).into()
+}
+
+/// One of the two provider groups: its heading (and lede), then its providers under their
+/// credential groups.
+fn provider_group<'a>(state: &'a State, group: &str, title: &str, lede: Option<&str>) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::label(title).into()];
+    if let Some(lede) = lede {
+        items.push(ui::prose(lede.to_string()).into());
+    }
+    let mut sections: Vec<Element<'a, Msg>> = Vec::new();
+    for credential in GROUPS {
+        let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == group && group_of(p) == credential).map(|p| provider_card(state, p)).collect();
         if cards.is_empty() {
             continue;
         }
-        let items: Vec<Element<'a, Msg>> = vec![ui::label(group).into(), column(cards).spacing(12).into()];
-        parts.push(column(items).spacing(8).into());
+        sections.push(column(vec![ui::label(credential).into(), column(cards).spacing(12).into()]).spacing(8).into());
     }
-    column(parts).spacing(16).into()
+    if sections.is_empty() {
+        items.push(ui::faint("None yet").into());
+    } else {
+        items.extend(sections);
+    }
+    column(items).spacing(8).into()
+}
+
+/// The decision models the plaza may use: every decisions-group provider's models, as `provider/model`.
+fn decision_options(providers: &[Provider]) -> Vec<String> {
+    providers.iter().filter(|p| p.group == "decisions").flat_map(|p| p.models.iter().map(move |m| format!("{}/{m}", p.id))).collect()
+}
+
+fn decision_model_card<'a>(state: &'a State) -> Element<'a, Msg> {
+    let options = decision_options(&state.providers);
+    let current = state.decision_pending.clone().or_else(|| state.decision_default.clone());
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::faint("The model the plaza decides with.").into()];
+    if options.is_empty() {
+        items.push(ui::faint("Add a decisions provider to choose one.").into());
+    } else {
+        items.push(pick_list(options, current, Msg::DecisionPick).width(Length::Fill).into());
+    }
+    if state.decision_pending.is_some() {
+        items.push(ui::faint("Saving…").into());
+    }
+    ui::card("Decision model", column(items).spacing(12).into())
+}
+
+fn try_it_card<'a>(state: &'a State) -> Element<'a, Msg> {
+    let t = &state.try_it;
+    let input: Element<'a, Msg> = text_editor(&t.input).placeholder("The input the question is about").on_action(Msg::TryInput).height(120.0).into();
+    let kinds: Vec<QKind> = vec![QKind::Predicate, QKind::Choice, QKind::Score];
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        labelled("Input", input),
+        labelled("Question", pick_list(kinds, Some(t.kind), Msg::TryKind).width(Length::Fill).into()),
+        labelled("Instructions", text_input("What to decide", &t.instructions).on_input(Msg::TryInstructions).padding(8).into()),
+    ];
+    if t.kind != QKind::Predicate {
+        let (label, hint) = if t.kind == QKind::Choice { ("Choices", "Comma-separated, at least two") } else { ("Levels", "Comma-separated, lowest first") };
+        items.push(labelled(label, text_input(hint, &t.options).on_input(Msg::TryOptions).padding(8).into()));
+    }
+    items.push(row(vec![spacer(), ui::btn("Ask", None, Kind::Primary, (!t.asking).then_some(Msg::TryAsk))]).into());
+    if let Some(e) = &t.error {
+        items.push(ui::error_line(e));
+    }
+    if let Some(reply) = &t.answer {
+        items.push(answers_view(reply));
+    }
+    ui::card("Try it", column(items).spacing(12).into())
+}
+
+/// The one question the Try-it form asks, in the plaza's request shape.
+fn question_json(kind: QKind, instructions: &str, options: &str) -> Result<Value, String> {
+    let items = split_list(options);
+    let mut question = json!({ "type": kind.key(), "name": "question", "instructions": instructions.trim() });
+    match kind {
+        QKind::Predicate => {}
+        QKind::Choice => {
+            if items.len() < 2 {
+                return Err("A choice question needs at least two choices".to_string());
+            }
+            question["choices"] = items.iter().map(|v| json!({ "value": v })).collect::<Vec<Value>>().into();
+        }
+        QKind::Score => {
+            if items.len() < 2 {
+                return Err("A score question needs at least two levels".to_string());
+            }
+            question["levels"] = items.iter().map(|v| json!({ "label": v })).collect::<Vec<Value>>().into();
+        }
+    }
+    Ok(question)
+}
+
+fn answers_view<'a>(reply: &'a DecisionReply) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = Vec::new();
+    if !reply.model.is_empty() {
+        items.push(ui::faint(format!("Answered by {}", reply.model)).into());
+    }
+    items.extend(reply.answers.iter().map(answer_view));
+    column(items).spacing(12).into()
+}
+
+fn answer_view<'a>(answer: &'a Answer) -> Element<'a, Msg> {
+    match answer {
+        Answer::Predicate { name, probability } => bar_line(name.clone(), *probability),
+        Answer::Choice { name, choice, probabilities, confidence } => {
+            let head: Element<'a, Msg> = row(vec![ui::mono(name.clone(), 12.0, ui::INK).into(), spacer(), ui::badge(&value_text(choice), Tone::Signal)]).spacing(8).into();
+            let mut items: Vec<Element<'a, Msg>> = vec![head];
+            items.extend(probabilities.iter().map(|w| bar_line(weighted_label(w), w.probability)));
+            items.extend(confidence.map(confidence_line));
+            column(items).spacing(6).into()
+        }
+        Answer::Score { name, score, probabilities, confidence } => {
+            let head: Element<'a, Msg> = row(vec![ui::mono(name.clone(), 12.0, ui::INK).into(), spacer(), ui::badge(&format!("{score:.2}"), Tone::Signal)]).spacing(8).into();
+            let mut items: Vec<Element<'a, Msg>> = vec![head];
+            items.extend(probabilities.iter().map(|w| bar_line(weighted_label(w), w.probability)));
+            items.extend(confidence.map(confidence_line));
+            column(items).spacing(6).into()
+        }
+        Answer::Refusal { name } => row(vec![ui::mono(name.clone(), 12.0, ui::INK).into(), spacer(), ui::badge("Refused", Tone::Warn)]).spacing(8).into(),
+    }
+}
+
+/// A label with its percentage, and the probability as a bar under it.
+fn bar_line<'a>(label: String, probability: f64) -> Element<'a, Msg> {
+    let head: Element<'a, Msg> = row(vec![ui::mono(label, 12.0, ui::INK).into(), spacer(), ui::mono(format!("{:.1}%", probability * 100.0), 11.0, ui::INK_3).into()])
+        .spacing(8)
+        .into();
+    column(vec![head, bar(probability)]).spacing(4).into()
+}
+
+/// A probability bar: the signal colour to its share, the faint rule for the rest.
+fn bar<'a>(probability: f64) -> Element<'a, Msg> {
+    let filled = ((probability.clamp(0.0, 1.0) * 1000.0).round() as u16).clamp(1, 999);
+    row(vec![
+        container(Space::new())
+            .width(Length::FillPortion(filled))
+            .height(6.0)
+            .style(|_: &Theme| container::Style { background: Some(ui::SIGNAL.into()), ..Default::default() })
+            .into(),
+        container(Space::new())
+            .width(Length::FillPortion(1000 - filled))
+            .height(6.0)
+            .style(|_: &Theme| container::Style { background: Some(ui::RULE_FAINT.into()), ..Default::default() })
+            .into(),
+    ])
+    .width(Length::Fill)
+    .into()
+}
+
+fn confidence_line<'a>(confidence: f64) -> Element<'a, Msg> {
+    ui::faint(format!("Confidence {:.0}%", confidence * 100.0)).into()
+}
+
+/// A decision value as text: a string as it is, anything else as JSON.
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn weighted_label(w: &Weighted) -> String {
+    w.label.clone().unwrap_or_else(|| value_text(&w.value))
+}
+
+fn default_task(ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    client::task(move || c.get::<DecisionDefault>("/v1/decisions/default"), Msg::DefaultLoaded)
 }
 
 fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
