@@ -5,9 +5,9 @@
 //!
 //! The registry publishes run and VM state transitions and each VM's serial
 //! deltas as they happen, and the task ledger publishes every task transition,
-//! to `GET /v1/events`, which streams every event to a connected console as
-//! server-sent events, so a console sees a run's or a task's life between its
-//! polls. Polling stays the source of truth for a full snapshot (the register,
+//! to the hub's `GET /v1/ws` WebSocket, which sends every event to a connected
+//! console as one text message (`{"event": <kind>, "data": <data>}`), so a
+//! console sees a run's or a task's life between its polls. Polling stays the source of truth for a full snapshot (the register,
 //! the ledger, and a run's whole serial capture); the stream is the deltas.
 //!
 //! The frames:
@@ -54,7 +54,7 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-/// One event, as `GET /v1/events` frames it.
+/// One event, as the console's `GET /v1/ws` socket carries it (its kind and its data).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A run's state changed (or the run was registered, as `starting`).
@@ -266,7 +266,8 @@ impl Event {
         }
     }
 
-    /// The whole server-sent frame.
+    /// The event as one server-sent block, for the text streams that still frame events so (the
+    /// hub's `/v1/ws` sends [`Event::kind`] and [`Event::data`] as one JSON message instead).
     pub fn frame(&self) -> String {
         format!("event: {}\ndata: {}\n\n", self.kind(), self.data())
     }
