@@ -350,8 +350,7 @@ fn container_state(name: &str) -> &'static str {
     }
 }
 
-/// The pids whose argv[0] is `name` or ends in `/<name>`, found by scanning /proc (Linux; other
-/// systems have no such listing, so none are found there).
+/// The pids whose argv[0] is `name` or ends in `/<name>`, found by scanning /proc (Linux).
 #[cfg(target_os = "linux")]
 fn find_pids(name: &str) -> Vec<u32> {
     let Ok(entries) = fs::read_dir("/proc") else {
@@ -372,9 +371,35 @@ fn find_pids(name: &str) -> Vec<u32> {
     pids
 }
 
-#[cfg(not(target_os = "linux"))]
-fn find_pids(_name: &str) -> Vec<u32> {
-    Vec::new()
+/// The pids of processes named exactly `name`: `pgrep -x` (macOS and the BSDs).
+#[cfg(all(unix, not(target_os = "linux")))]
+fn find_pids(name: &str) -> Vec<u32> {
+    let Ok(out) = Command::new("pgrep").args(["-x", name]).stdin(Stdio::null()).output() else {
+        return Vec::new();
+    };
+    let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect();
+    pids.sort_unstable();
+    pids
+}
+
+/// The pids of `<name>.exe` processes: `tasklist` as CSV ("image","pid",…), Windows.
+#[cfg(windows)]
+fn find_pids(name: &str) -> Vec<u32> {
+    let image = apz_os::process::exe(name);
+    let filter = format!("IMAGENAME eq {image}");
+    let Ok(out) = Command::new("tasklist").args(["/FI", &filter, "/FO", "CSV", "/NH"]).stdin(Stdio::null()).output() else {
+        return Vec::new();
+    };
+    let mut pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split("\",\"");
+            let first = fields.next()?.trim_start_matches('"');
+            first.eq_ignore_ascii_case(&image).then(|| fields.next()?.trim_end_matches('"').parse().ok())?
+        })
+        .collect();
+    pids.sort_unstable();
+    pids
 }
 
 /// The first line of `apz-link join` stdout: "joined <hub> as <node id> (agents …)".
@@ -424,12 +449,15 @@ fn bin_path(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// This machine's name: the kernel's on Linux, `COMPUTERNAME` on Windows, `hostname` elsewhere.
 fn hostname() -> String {
-    fs::read_to_string("/proc/sys/kernel/hostname")
+    let named = fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "localhost".to_string())
+        .or_else(|| env::var("COMPUTERNAME").ok())
+        .or_else(|| {
+            Command::new("hostname").stdin(Stdio::null()).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        });
+    named.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| "localhost".to_string())
 }
 
 fn path_arg(path: &Path) -> String {
