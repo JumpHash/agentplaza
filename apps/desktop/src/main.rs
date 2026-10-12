@@ -1,5 +1,8 @@
 //! The desktop app: the console, opening on the startup chooser.
 
+// A release build opens no console window on Windows.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 

@@ -169,10 +169,24 @@ pub fn run() -> iced::Result {
         .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Semibold.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Italic.ttf").as_slice())
         // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
-        .window(iced::window::Settings {
-            size: snapshot_size().unwrap_or(iced::Size::new(1360.0, 880.0)),
-            visible: std::env::var_os("APZ_SNAPSHOT").is_none(),
-            ..Default::default()
+        .window({
+            let mut settings = iced::window::Settings {
+                size: snapshot_size().unwrap_or(iced::Size::new(1360.0, 880.0)),
+                visible: std::env::var_os("APZ_SNAPSHOT").is_none(),
+                // The app icon, shown on the window and in the taskbar or dock.
+                icon: iced::window::icon::from_file_data(
+                    include_bytes!("../../../../packaging/icons/agentplaza-256.png"),
+                    None,
+                )
+                .ok(),
+                ..Default::default()
+            };
+            // Wayland app id / X11 class: matches the .desktop file name so docks show the icon.
+            #[cfg(target_os = "linux")]
+            {
+                settings.platform_specific.application_id = "agentplaza".to_string();
+            }
+            settings
         })
         .antialiasing(true)
         .run()
