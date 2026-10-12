@@ -251,6 +251,17 @@ impl Queues {
         )
     }
 
+    /// Drops the agent's queued items, not the one in flight; returns how many.
+    pub fn clear(&self, cid: u64) -> usize {
+        let mut lanes = self.locked();
+        let Some(lane) = lanes.lanes.get_mut(&cid) else {
+            return 0;
+        };
+        let dropped = lane.queue.len();
+        lane.queue.clear();
+        dropped
+    }
+
     /// The agent went offline: fail its items (tasks return to open).
     pub fn agent_gone(&self, app: &App, cid: u64) {
         // contract

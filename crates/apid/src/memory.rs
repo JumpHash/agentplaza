@@ -266,6 +266,15 @@ impl Memory {
         })
     }
 
+    /// Deletes every note of `cid`, its whole memory library.
+    pub fn wipe(&self, cid: u64) {
+        if let Err(err) = std::fs::remove_dir_all(self.dir(cid)) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("apid: memory wipe {cid}: {err}");
+            }
+        }
+    }
+
     fn dir(&self, cid: u64) -> PathBuf {
         self.root.join(cid.to_string())
     }

@@ -189,6 +189,17 @@ impl Db {
         }
     }
 
+    /// Deletes the stored transcript rows of `cid` (a wipe).
+    pub fn delete_transcript(&self, cid: u64) {
+        if !self.enabled() {
+            return;
+        }
+        let cid = cid as i64;
+        if let Err(err) = self.run(|c| c.execute("DELETE FROM transcript WHERE cid = $1", &[&cid])) {
+            eprintln!("apid: delete transcript {cid}: {err}");
+        }
+    }
+
     pub fn enabled(&self) -> bool {
         self.client.is_some()
     }
