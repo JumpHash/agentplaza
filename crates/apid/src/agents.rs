@@ -267,15 +267,17 @@ pub fn model_of(app: &App, agent: &Agent) -> String {
 pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // contract
     let role_prompt = app.roles.prompts.get(&agent.role).map_or("", String::as_str);
+    // The orchestrator's or the mayor's per-agent limits, over the plaza's defaults.
+    let limits = app.harness.limits(agent.cid);
     AgentProfile {
         name: agent.name.clone(),
         role: agent.role.clone(),
         model: model_of(app, agent),
         system: system_prompt(agent, role_prompt),
         tools: crate::tools::specs_for_agent(app, agent),
-        max_turns: app.settings.get().max_turns,
-        compress_at: crate::harness_control::DEFAULT_COMPRESS_AT,
-        keep_recent: crate::harness_control::DEFAULT_KEEP_RECENT,
+        max_turns: limits.max_turns.unwrap_or(app.settings.get().max_turns),
+        compress_at: limits.compress_at.unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
+        keep_recent: limits.keep_recent.unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
     }
 }
 

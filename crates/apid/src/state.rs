@@ -91,6 +91,8 @@ pub struct App {
     pub projects: crate::projects::Store,
     /// Loops and per-agent harness limits.
     pub harness: crate::harness_control::Store,
+    /// The plaza's git host (Forgejo) and the agents' identities on it.
+    pub forge: crate::git::Forge,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -129,6 +131,7 @@ impl App {
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
             harness: crate::harness_control::Store::load(&config.state_dir),
+            forge: crate::git::Forge::load(&config.state_dir, &env),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,

@@ -35,6 +35,7 @@ mod toolbox;
 mod toolbox_survey;
 mod projects;
 mod harness_control;
+mod git;
 mod transcript;
 mod upstream;
 
