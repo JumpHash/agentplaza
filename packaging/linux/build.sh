@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Linux packages (deb, pacman, rpm) and the tarball from a stage dir.
+# Build the Linux packages (deb, pacman, rpm), the AppImage and the tarball from a stage dir.
 # Usage: build.sh <stage-dir> <version> <x86_64|aarch64> <out-dir>
 # Needs fpm on PATH; rpm also needs rpmbuild; pacman needs bsdtar and zstd.
 set -euo pipefail
@@ -105,6 +105,27 @@ TGZ="$OUT/agentplaza-${VERSION}-linux-${ARCH}.tar.gz"
 cp -a "$STAGE" "$WORK/agentplaza-$VERSION"
 tar -C "$WORK" -czf "$TGZ" "agentplaza-$VERSION"
 echo "built: $TGZ"
+
+# The AppImage: one file that runs on any distribution (glibc 2.35 or newer) by a double-click,
+# with its icon, and is the command line tool when run through a link named `agentplaza` (AppRun).
+# Built with appimagetool and the static type2 runtime for $ARCH (the CI image has both:
+# $APZ_APPIMAGE_RUNTIMES); skipped, with a note, where they are missing.
+APPIMAGE="$OUT/AgentPlaza-${VERSION}-linux-${ARCH}.AppImage"
+RUNTIME="${APZ_APPIMAGE_RUNTIMES:-/opt/appimage-runtime}/runtime-$ARCH"
+if command -v appimagetool >/dev/null 2>&1 && [ -f "$RUNTIME" ]; then
+  APPDIR="$WORK/AgentPlaza.AppDir"
+  install -d "$APPDIR/usr"
+  cp -a "$TREE/usr/bin" "$TREE/usr/share" "$APPDIR/usr/"
+  install -m755 "$HERE/AppRun" "$APPDIR/AppRun"
+  install -m644 "$HERE/agentplaza.desktop" "$APPDIR/agentplaza.desktop"
+  install -m644 "$STAGE/share/agentplaza/icons/agentplaza-256.png" "$APPDIR/agentplaza.png"
+  ln -s agentplaza.png "$APPDIR/.DirIcon"
+  rm -f "$APPIMAGE"
+  ARCH=$ARCH appimagetool --no-appstream --runtime-file "$RUNTIME" "$APPDIR" "$APPIMAGE" >/dev/null
+  echo "built: $APPIMAGE"
+else
+  echo "note: no appimagetool or $RUNTIME here; skipping the AppImage" >&2
+fi
 
 # rpm last, so a host without rpmbuild still gets the other artifacts.
 RPM="$OUT/agentplaza-${VERSION}-1.${ARCH}.rpm"

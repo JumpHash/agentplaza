@@ -1,0 +1,25 @@
+#!/bin/sh
+# AppRun: where the AgentPlaza AppImage starts. Double-clicked (or run as the AppImage's own name)
+# it opens the desktop app. Run through a link named after one of its commands, it is that
+# command: `ln -s AgentPlaza-<v>.AppImage ~/.local/bin/agentplaza` gives the command line tool
+# (the desktop app's startup chooser makes that link with one click), and the same works for
+# apid, noded and the rest. `AgentPlaza-<v>.AppImage --cli <args>` runs the command line tool too.
+#
+# The AppImage runtime sets ARGV0 to the name it was started as, and APPDIR to its mounted tree.
+here=${APPDIR:-$(dirname "$(readlink -f "$0")")}
+name=$(basename "${ARGV0:-$0}")
+
+if [ "${1:-}" = --cli ]; then
+  shift
+  exec "$here/usr/bin/agentplaza" "$@"
+fi
+
+case $name in
+  AppRun | *.AppImage | *.appimage | agentplaza-desktop) ;;
+  *)
+    if [ -x "$here/usr/bin/$name" ]; then
+      exec "$here/usr/bin/$name" "$@"
+    fi
+    ;;
+esac
+exec "$here/usr/bin/agentplaza-desktop" "$@"

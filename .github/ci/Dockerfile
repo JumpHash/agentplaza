@@ -29,6 +29,24 @@ RUN sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list \
  && rm -rf /tmp/bb /tmp/*.deb /var/lib/apt/lists/*
 ENV APZ_BUSYBOX_AARCH64=/opt/arm64/busybox
 
+# AppImage tooling for the Linux AppImages (packaging/linux/build.sh): appimagetool, unpacked (a
+# container has no FUSE), and the static type2 runtimes the AppImages start with (no libfuse2 needed
+# on the user's system), one per architecture. Pinned and checked by SHA-256.
+RUN curl -fsSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
+ && echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  /tmp/appimagetool" | sha256sum -c - \
+ && chmod +x /tmp/appimagetool && cd /opt && /tmp/appimagetool --appimage-extract >/dev/null \
+ && mv /opt/squashfs-root /opt/appimagetool && ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool \
+ && rm /tmp/appimagetool \
+ && mkdir -p /opt/appimage-runtime \
+ && curl -fsSL -o /opt/appimage-runtime/runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 \
+ && curl -fsSL -o /opt/appimage-runtime/runtime-aarch64 https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64 \
+ && printf '%s\n' \
+      "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  /opt/appimage-runtime/runtime-x86_64" \
+      "00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444  /opt/appimage-runtime/runtime-aarch64" \
+    | sha256sum -c - \
+ && appimagetool --version
+ENV APZ_APPIMAGE_RUNTIMES=/opt/appimage-runtime
+
 # The GitHub CLI, for the release job.
 ENV GH_VERSION=2.89.0
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_amd64.tar.gz" \

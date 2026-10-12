@@ -1,9 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=AgentPlaza
+GenericName=AI agent plaza
 Comment=A town for your AI agents
 Exec=agentplaza-desktop
 Icon=agentplaza
-Categories=Development;Utility;
+Categories=Development;
+Keywords=agents;AI;LLM;plaza;
 Terminal=false
-StartupWMClass=agentplaza-desktop
+StartupNotify=true
+StartupWMClass=agentplaza

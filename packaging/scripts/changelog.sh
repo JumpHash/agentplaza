@@ -33,8 +33,9 @@ cat <<EOF
 | **Fedora** aarch64 | [.rpm]($dl/agentplaza-$version-1.aarch64.rpm) |
 | **Arch Linux** x86_64 | [.pkg.tar.zst]($dl/agentplaza-$version-1-x86_64.pkg.tar.zst) |
 | **Arch Linux ARM** aarch64 | [.pkg.tar.zst]($dl/agentplaza-$version-1-aarch64.pkg.tar.zst) |
-| **Linux** (any distribution) | [x86_64 tarball]($dl/agentplaza-$version-linux-x86_64.tar.gz) · [aarch64 tarball]($dl/agentplaza-$version-linux-aarch64.tar.gz) |
-| **Raspberry Pi 4/5** (Raspberry Pi OS 64-bit) | [.deb]($dl/agentplaza_${version}_arm64-raspberrypi.deb) · [tarball]($dl/agentplaza-$version-raspberrypi-arm64.tar.gz) |
+| **Linux** AppImage (any distribution: download, make executable, double-click) | [x86_64]($dl/AgentPlaza-$version-linux-x86_64.AppImage) · [aarch64]($dl/AgentPlaza-$version-linux-aarch64.AppImage) |
+| **Linux** tarball | [x86_64]($dl/agentplaza-$version-linux-x86_64.tar.gz) · [aarch64]($dl/agentplaza-$version-linux-aarch64.tar.gz) |
+| **Raspberry Pi 4/5** (Raspberry Pi OS 64-bit) | [.deb]($dl/agentplaza_${version}_arm64-raspberrypi.deb) · [AppImage]($dl/AgentPlaza-$version-linux-aarch64.AppImage) · [tarball]($dl/agentplaza-$version-raspberrypi-arm64.tar.gz) |
 
 Checksums: [SHA256SUMS]($dl/SHA256SUMS). Agents run in microVMs on Linux (KVM, x86_64 and arm64, Raspberry Pi 4/5 included) and Apple Silicon Macs; Windows and Intel Macs run the hub and the desktop app and use nodes elsewhere.
 

@@ -89,7 +89,7 @@ jobs:
           .github/ci/in-image.sh "packaging/scripts/stage.sh ${{ matrix.triple }} ${{ matrix.out }} stage \"\$VERSION\" &&
             packaging/linux/build.sh stage \"\$VERSION\" ${{ matrix.arch }} out-linux-${{ matrix.arch }}"
           mkdir -p stage-out && tar -czf stage-out/stage-linux-${{ matrix.arch }}.tgz stage
-      - name: Install and run on Ubuntu 24.04, Debian 12, Fedora 42, Arch
+      - name: Install and run on Ubuntu 24.04, Debian 12, Fedora 42, Arch; the AppImage on Ubuntu 22.04
         if: inputs.package
         run: |
           # arm64 packages run under qemu: only where the runner has it registered (binfmt_misc).
@@ -103,7 +103,10 @@ jobs:
           run ubuntu:24.04 "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ matrix.deb }}.deb" ubuntu & a=$!
           run debian:bookworm "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ matrix.deb }}.deb" debian & b=$!
           run fedora:42 "dnf install -y -q /pkgs/agentplaza-*.${{ matrix.arch }}.rpm" fedora & c=$!
-          pids="$a $b $c"
+          # The AppImage on the oldest glibc it supports, without FUSE (unpacked to run): the desktop
+          # app by default, the command line tool through a link named agentplaza.
+          run ubuntu:22.04 "cd /tmp && cp /pkgs/AgentPlaza-*-linux-${{ matrix.arch }}.AppImage app.AppImage && ln -s app.AppImage agentplaza && export APPIMAGE_EXTRACT_AND_RUN=1 && ./app.AppImage --version && ./agentplaza --version && ./app.AppImage --cli --version" appimage & d=$!
+          pids="$a $b $c $d"
           if [ ${{ matrix.arch }} = x86_64 ]; then
             run archlinux:latest "pacman -Sy --noconfirm >/dev/null && pacman -U --noconfirm /pkgs/agentplaza-*-x86_64.pkg.tar.zst" arch & pids="$pids $!"
           fi
