@@ -1,12 +1,13 @@
 // The props that furnish the Floor outside the district rooms (those are in rooms/): the central
-// plaza's paved ring and its xenon atom; the fountain and market stalls around it; the paths and
-// their street lamps; and the trees, flower beds, benches and rocks scattered over the meadow.
+// plaza's plated ring and its xenon atom; the holo fountain and market stalls around it; the light
+// strips of the paths and their lamps; and the glow trees, crystal spires, planters, benches and
+// rocks scattered over the deck.
 // Everything is toon-shaded primitives; each group carries what the scene animates in
 // `userData.animate(t)`, and every solid piece reports its ground footprint so robots collide with it.
 
 import * as THREE from 'three';
 import { outline, toonMat } from './toon';
-import { canvasTexture, metal as metalTex, paving, polish, rng, water, wood as woodTex, type Rand } from './textures';
+import { canvasTexture, metal as metalTex, paving, polish, rng, water, type Rand } from './textures';
 
 /** The palette colours the props need, already resolved to three.js colours. */
 export interface PropPalette {
@@ -40,8 +41,14 @@ export interface Furniture {
   animate: (t: number) => void;
 }
 
-const LAMP = new THREE.Color(0xffd79a);
-const CLAY = new THREE.Color(0xc98b66);
+const LAMP = new THREE.Color(0x7fe8ff);
+/** Dark hull metal, for benches, stalls and planters. */
+const HULL = new THREE.Color(0x56607e);
+
+/** A toon colour that also glows a little: the plaza's bioluminescence and crystals. */
+function glowing(color: number, intensity: number): THREE.MeshToonMaterial {
+  return toonMat({ color, emissive: color, emissiveIntensity: intensity });
+}
 
 function std(color: THREE.Color, roughness: number, metalness = 0.1): THREE.MeshToonMaterial {
   return toonMat({ color, roughness, metalness });
@@ -86,7 +93,7 @@ function segDist(px: number, pz: number, bx: number, bz: number): number {
   return Math.hypot(px - bx * t, pz - bz * t);
 }
 
-/** A wooden bench at the origin, its seat facing +z and its back at -z. */
+/** A bench at the origin, its seat facing +z and its back at -z. */
 function bench(mat: THREE.Material): THREE.Group {
   const b = new THREE.Group();
   part(b, new THREE.BoxGeometry(1.3, 0.08, 0.42), mat, 0, 0.42, 0);
@@ -107,7 +114,7 @@ export function buildPlaza(palette: PropPalette): THREE.Group {
   const inlay = part(g, new THREE.TorusGeometry(3.3, 0.025, 6, 72), std(palette.rule, 0.8, 0), 0, 0.065, 0);
   inlay.rotation.x = Math.PI / 2;
 
-  const benchWood = toonMat({ map: woodTex(), color: palette.rule.clone().lerp(palette.ink3, 0.25), roughness: 0.8 });
+  const benchWood = toonMat({ map: metalTex(), color: HULL });
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2;
     const x = Math.cos(a) * 3.6;
@@ -207,13 +214,13 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
 
   const waterTex = water();
   const stoneMat = toonMat({ map: polish(palette.sheet), roughness: 0.4 });
-  const waterMat = toonMat({ map: waterTex, roughness: 0.12, transparent: true, opacity: 0.9 });
-  const counterMat = toonMat({ map: woodTex(), roughness: 0.8 });
+  const waterMat = toonMat({ map: waterTex, emissive: 0x2ad0ff, emissiveIntensity: 0.55, transparent: true, opacity: 0.9 });
+  const counterMat = toonMat({ map: metalTex(), color: HULL });
   const poleMat = toonMat({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
   const awningTex = canvasTexture(`awning:${palette.signal.getStyle()}:${palette.sheet.getStyle()}`, 256, 64, 1, (cg, w, h) => {
     const n = 8;
     for (let i = 0; i < n; i++) {
-      cg.fillStyle = i % 2 === 1 ? palette.signal.getStyle() : palette.sheet.getStyle();
+      cg.fillStyle = i % 2 === 1 ? palette.signal.getStyle() : '#d8deef';
       cg.fillRect((i * w) / n, 0, w / n, h);
     }
   });
@@ -225,7 +232,7 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
     const node = new THREE.Group();
     node.position.set(x, 0, z);
     if (i === 0) {
-      // The fountain: a stone basin with a rippling pool and a spout.
+      // The fountain: a basin with a glowing pool and a spout of light.
       const basin = part(node, new THREE.CylinderGeometry(0.62, 0.7, 0.26, 32), stoneMat, 0, 0.13, 0);
       const pool = part(node, new THREE.CircleGeometry(0.55, 32), waterMat, 0, 0.27, 0);
       pool.rotation.x = -Math.PI / 2;
@@ -233,7 +240,7 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
       part(node, new THREE.SphereGeometry(0.11, 12, 8), waterMat, 0, 0.92, 0);
       boxes.push(footprint(basin));
     } else {
-      // A market stall: a wooden counter under a striped awning, turned to face the plaza's centre.
+      // A market stall: a metal counter under a striped awning, turned to face the plaza's centre.
       node.rotation.y = Math.atan2(-x, -z);
       const counter = part(node, new THREE.BoxGeometry(1.1, 0.72, 0.5), counterMat, 0, 0.36, 0);
       part(node, new THREE.BoxGeometry(0.26, 0.18, 0.26), std(palette.ok, 0.7, 0), 0.25, 0.81, 0);
@@ -254,10 +261,14 @@ export function buildPlazaFurniture(palette: PropPalette, bearings: number[]): F
   return { group: g, boxes, animate };
 }
 
-/** Flat paved strips from the origin out to each point (y = 0), for the paths between the centre and the districts. */
+/**
+ * Plated strips from the origin out to each point (y = 0), for the paths between the centre and the
+ * districts, each with a light line down either edge.
+ */
 export function buildPaths(from: THREE.Vector3[], palette: PropPalette): THREE.Group {
   const g = new THREE.Group();
   const mat = toonMat({ map: paving(palette.rule.clone().lerp(palette.sheet, 0.35), 2), roughness: 0.95 });
+  const light = new THREE.MeshBasicMaterial({ color: palette.info, toneMapped: false });
   for (const to of from) {
     const len = Math.hypot(to.x, to.z);
     if (len < 0.5) continue;
@@ -270,16 +281,21 @@ export function buildPaths(from: THREE.Vector3[], palette: PropPalette): THREE.G
     strip.rotation.y = -Math.atan2(to.z, to.x);
     strip.receiveShadow = true;
     g.add(strip);
+    for (const side of [-0.41, 0.41]) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(len, 0.02, 0.05), light);
+      line.position.set(0, 0.02, side);
+      strip.add(line);
+    }
   }
   return g;
 }
 
 /**
- * Greenery, lamps and small street furniture outside the districts: street lamps along every path,
- * then trees, flower beds, rocks and benches scattered where they clash with neither the plaza, the
- * slabs and their ramps, the paths, nor each other.
+ * Lamps, alien greenery and small street furniture outside the districts: lamps along every path,
+ * then glow trees and crystal spires, planters, rocks and benches scattered where they clash with
+ * neither the plaza, the slabs and their ramps, the paths, nor each other.
  */
-export function buildScatter(sites: Site[], palette: PropPalette): { group: THREE.Group; boxes: Box2[] } {
+export function buildScatter(sites: Site[], _palette: PropPalette): { group: THREE.Group; boxes: Box2[] } {
   const g = new THREE.Group();
   const boxes: Box2[] = [];
   const rand = rng(1177);
@@ -288,16 +304,16 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
   const reach = Math.min(34, far + 6);
 
   // Materials shared by every piece of the scatter.
-  const bark = toonMat({ map: woodTex(), roughness: 0.9 });
-  const greens = [0x5f8f4a, 0x77a25a, 0x4d7a3c, 0x8fae5e].map((c) => std(new THREE.Color(c), 0.85, 0));
-  const darkGreens = [0x2f5d3a, 0x3c6e47].map((c) => std(new THREE.Color(c), 0.9, 0));
-  const blossoms = [0xf2b8c6, 0xf7e3ea].map((c) => std(new THREE.Color(c), 0.85, 0));
-  const flowers = [0xf2c14e, 0xe98aa0, 0xf7f3e8, 0xd9573c, 0x9b7fd1].map((c) => std(new THREE.Color(c), 0.7, 0));
-  const soil = std(palette.rule.clone().lerp(palette.ink3, 0.6), 1, 0);
-  const clay = std(CLAY, 0.9, 0);
-  const rockMat = std(palette.ink3.clone().lerp(palette.sheet, 0.45), 0.95, 0);
-  const benchWood = toonMat({ map: woodTex(), roughness: 0.8 });
-  const poleMat = toonMat({ map: metalTex(), roughness: 0.4, metalness: 0.5 });
+  const bark = toonMat({ map: metalTex(), color: 0x3a4262 });
+  const greens = [0x2fd6c4, 0x38b8ff, 0x5fe0a0, 0x22a8b8].map((c) => glowing(c, 0.35));
+  const crystals = [0x9a6bff, 0x5fd8ff].map((c) => glowing(c, 0.55));
+  const blossoms = [0xff6fd8, 0xc77dff].map((c) => glowing(c, 0.45));
+  const flowers = [0x5fe8ff, 0xff6fd8, 0x7dffb0, 0xb48cff, 0xffc75f].map((c) => glowing(c, 0.9));
+  const soil = std(new THREE.Color(0x141a2e), 1, 0);
+  const clay = std(HULL, 0.9, 0);
+  const rockMat = toonMat({ color: 0x343a63, emissive: 0x2a1f7a, emissiveIntensity: 0.25 });
+  const benchWood = toonMat({ map: metalTex(), color: HULL });
+  const poleMat = toonMat({ map: metalTex(), color: 0x6a7598 });
   const bulb = new THREE.MeshBasicMaterial({ color: LAMP, toneMapped: false });
 
   /** Whether a piece of radius `rad` at (x, z) clears the plaza, the districts, the paths and the boxes so far. */
@@ -334,11 +350,18 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
     const h = 0.9 + rand() * 0.5;
     const trunk = part(t, new THREE.CylinderGeometry(0.08, 0.12, h, 8), bark, 0, h / 2, 0);
     if (rand() < 0.35) {
-      // A conifer: three stacked cones.
-      const needles = pick(darkGreens, rand);
-      for (let k = 0; k < 3; k++) part(t, new THREE.ConeGeometry(0.8 - k * 0.2, 0.95, 10), needles, 0, h + 0.25 + k * 0.42, 0);
+      // A crystal spire: a tall glowing prism with two smaller ones leaning off it.
+      const glass = pick(crystals, rand);
+      const prism = new THREE.ConeGeometry(0.34, 1.9, 5);
+      part(t, prism, glass, 0, h + 0.5, 0);
+      const side = part(t, prism, glass, 0.26, h - 0.05, 0.08);
+      side.scale.setScalar(0.55);
+      side.rotation.z = -0.5;
+      const other = part(t, prism, glass, -0.22, h - 0.1, -0.1);
+      other.scale.setScalar(0.45);
+      other.rotation.set(0.3, 0, 0.55);
     } else {
-      // A broadleaf: a layered crown, now and then in blossom.
+      // A glow tree: a layered crown of soft light, now and then in pink bloom.
       const crown = pick(rand() < 0.2 ? blossoms : greens, rand);
       part(t, new THREE.SphereGeometry(0.72, 14, 10), crown, 0, h + 0.35, 0);
       part(t, new THREE.SphereGeometry(0.5, 12, 8), crown, 0.28, h + 0.8, 0.12);
@@ -349,6 +372,7 @@ export function buildScatter(sites: Site[], palette: PropPalette): { group: THRE
     boxes.push(footprint(trunk));
   };
 
+  // A planter of glowing buds.
   const addBed = (x: number, z: number): void => {
     const b = new THREE.Group();
     b.position.set(x, 0, z);

@@ -11,6 +11,7 @@ import { SCREENS } from '../views';
 import { brandBlock } from './brand';
 import { dot } from './components';
 import { h, icon, replace } from './dom';
+import { themeSwitch } from './theme';
 
 type Mode = 'open' | 'rail' | 'hidden';
 interface State {
@@ -127,7 +128,7 @@ export function sidebar(opts: { counts: Map<string, HTMLElement>; navLinks: Map<
     if (small.matches && e.target instanceof Element && e.target.closest('a')) closeDrawer();
   });
 
-  const foot = h('div.sidebar-foot');
+  const foot = h('div');
   onConnection((up) =>
     replace(foot, h('span.row', null, dot(up ? 'ok' : 'danger'), h('span.lbl', null, up ? 'Live' : 'Reconnecting…'))),
   );
@@ -170,7 +171,7 @@ export function sidebar(opts: { counts: Map<string, HTMLElement>; navLinks: Map<
   });
 
   backdrop = h('div.sb-backdrop', { onclick: closeDrawer });
-  return h('aside.sidebar', null, brandBlock(), nav, foot, handle);
+  return h('aside.sidebar', null, brandBlock(), nav, h('div.sidebar-foot', null, themeSwitch(), foot), handle);
 }
 
 /** The button at the left of the top bar, and the `[` key, both cycle the sidebar. */

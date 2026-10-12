@@ -63,40 +63,60 @@ function rrect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: 
   g.closePath();
 }
 
-/** Grass: a flat cartoon meadow — soft lighter patches and little inked tufts. */
-export function grass(): THREE.CanvasTexture {
-  return canvasTexture('grass', 512, 512, 24, (g, w, h, r) => {
-    g.fillStyle = '#86c45e';
+/**
+ * The deck: the plaza's ground, dark hull plating in big square panels, each with a bevel, corner
+ * bolts and a seam of faint light, and every so often a glowing guide light in the seam.
+ */
+export function deck(): THREE.CanvasTexture {
+  return canvasTexture('deck', 512, 512, 36, (g, w, h, r) => {
+    g.fillStyle = '#0c101c';
     g.fillRect(0, 0, w, h);
-    // Big soft patches in two close greens.
-    for (let i = 0; i < 14; i++) {
-      g.fillStyle = r() < 0.5 ? '#8fcb66' : '#7fbc58';
-      g.beginPath();
-      g.ellipse(r() * w, r() * h, 30 + r() * 60, 20 + r() * 40, r() * Math.PI, 0, Math.PI * 2);
-      g.fill();
+    const n = 4;
+    const p = w / n;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const x = i * p;
+        const y = j * p;
+        const l = 15 + r() * 4;
+        g.fillStyle = `hsl(226, 26%, ${l}%)`;
+        rrect(g, x + 3, y + 3, p - 6, p - 6, 6);
+        g.fill();
+        // The bevel: a lit top-left edge and a shaded bottom-right one.
+        g.fillStyle = 'rgba(150,175,255,0.10)';
+        g.fillRect(x + 6, y + 5, p - 12, 3);
+        g.fillStyle = 'rgba(0,0,0,0.25)';
+        g.fillRect(x + 6, y + p - 8, p - 12, 3);
+        // A recessed inner plate on some panels, a vent grille on others.
+        if (r() < 0.35) {
+          g.strokeStyle = 'rgba(0,0,0,0.35)';
+          g.lineWidth = 2;
+          rrect(g, x + p * 0.22, y + p * 0.22, p * 0.56, p * 0.56, 5);
+          g.stroke();
+        } else if (r() < 0.25) {
+          g.fillStyle = 'rgba(0,0,0,0.3)';
+          for (let k = 0; k < 5; k++) g.fillRect(x + p * 0.3, y + p * 0.32 + k * 9, p * 0.4, 4);
+        }
+        g.fillStyle = 'rgba(160,180,220,0.22)';
+        for (const [bx, by] of [[10, 10], [p - 10, 10], [10, p - 10], [p - 10, p - 10]] as const) {
+          g.beginPath();
+          g.arc(x + bx, y + by, 2.2, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
     }
-    // Tufts: three-stroke "v"s, the classic cartoon grass mark.
-    g.lineCap = 'round';
-    for (let i = 0; i < 90; i++) {
-      const x = r() * w;
-      const y = r() * h;
-      const s = 4 + r() * 5;
-      g.strokeStyle = r() < 0.7 ? 'rgba(70,128,52,0.55)' : 'rgba(196,232,150,0.7)';
-      g.lineWidth = 1.6;
-      g.beginPath();
-      g.moveTo(x - s * 0.6, y - s);
-      g.lineTo(x, y);
-      g.lineTo(x + s * 0.1, y - s * 1.3);
-      g.moveTo(x, y);
-      g.lineTo(x + s * 0.7, y - s * 0.9);
-      g.stroke();
+    // Light in the seams: a faint cyan grid, brighter guide lights here and there.
+    g.fillStyle = 'rgba(70,200,255,0.28)';
+    for (let i = 0; i <= n; i++) {
+      g.fillRect(i * p - 1, 0, 2, h);
+      g.fillRect(0, i * p - 1, w, 2);
     }
-    // A few tiny flowers.
-    for (let i = 0; i < 12; i++) {
-      g.fillStyle = ['#fff6d8', '#ffd25e', '#ff9db5'][Math.floor(r() * 3)]!;
-      g.beginPath();
-      g.arc(r() * w, r() * h, 2 + r() * 1.5, 0, Math.PI * 2);
-      g.fill();
+    for (let k = 0; k < 10; k++) {
+      const along = r() < 0.5;
+      const a = Math.floor(r() * n) * p;
+      const b = r() * (w - 40);
+      g.fillStyle = r() < 0.7 ? 'rgba(90,220,255,0.85)' : 'rgba(190,120,255,0.85)';
+      if (along) g.fillRect(a - 2, b, 4, 26);
+      else g.fillRect(b, a - 2, 26, 4);
     }
   });
 }
@@ -235,12 +255,12 @@ export function water(): THREE.CanvasTexture {
   });
 }
 
-/** A slab's sides: a darker band of its district hue, so the tiled top stands out. */
+/** A slab's sides: a dark hull band in its district hue, under the slab's neon rim. */
 export function slabSide(hue: number): THREE.Material {
   const key = `side:${Math.round(hue)}`;
   const hit = materials.get(key);
   if (hit) return hit;
-  const m = toonMat({ color: new THREE.Color().setHSL(hue / 360, 0.35, 0.66, THREE.SRGBColorSpace) });
+  const m = toonMat({ color: new THREE.Color().setHSL(hue / 360, 0.3, 0.2, THREE.SRGBColorSpace) });
   materials.set(key, m);
   return m;
 }

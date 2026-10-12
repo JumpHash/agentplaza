@@ -1,5 +1,5 @@
-// The Floor's cartoon look: banded toon shading, ink outlines, a painted sky with drifting clouds,
-// and wind-swayed grass. Every lit surface in the scene is a `toonMat`; `outline` gives a group the
+// The Floor's cartoon look: banded toon shading, ink outlines, a painted night sky with stars and a
+// ringed planet. Every lit surface in the scene is a `toonMat`; `outline` gives a group the
 // inked silhouette of a cartoon.
 
 import * as THREE from 'three';
@@ -133,7 +133,7 @@ void main() {
   gl_FragColor = vec4(c, 1.0);
 }`;
 
-/** A painted sky dome: banded blue to a warm horizon. */
+/** A painted sky dome: banded from the zenith's colour down to the horizon's glow. */
 export function sky(top: THREE.Color, horizon: THREE.Color, ground: THREE.Color): THREE.Mesh {
   const mat = new THREE.ShaderMaterial({
     uniforms: { top: { value: top }, horizon: { value: horizon }, ground: { value: ground } },
@@ -148,92 +148,57 @@ export function sky(top: THREE.Color, horizon: THREE.Color, ground: THREE.Color)
   return dome;
 }
 
-/** Puffy cartoon clouds drifting in a slow ring overhead. Returns the group and its per-frame step. */
-export function clouds(n: number, radius: number, rand: () => number): { group: THREE.Group; animate: (t: number) => void } {
-  const group = new THREE.Group();
-  const mat = toonMat({ color: 0xffffff, emissive: 0xdde6f0, emissiveIntensity: 0.35 });
-  const puff = new THREE.SphereGeometry(1, 16, 12);
-  for (let i = 0; i < n; i++) {
-    const c = new THREE.Group();
-    const lobes = 4 + Math.floor(rand() * 3);
-    for (let k = 0; k < lobes; k++) {
-      const s = 1.6 + rand() * 1.6;
-      const m = new THREE.Mesh(puff, mat);
-      m.scale.set(s * 1.3, s * 0.8, s);
-      m.position.set((k - lobes / 2) * 1.9 + rand(), rand() * 0.8, (rand() - 0.5) * 2);
-      c.add(m);
-    }
-    const a = (i / n) * Math.PI * 2 + rand() * 0.4;
-    const r = radius * (0.7 + rand() * 0.5);
-    c.position.set(Math.cos(a) * r, 48 + rand() * 14, Math.sin(a) * r);
-    c.rotation.y = rand() * Math.PI;
-    group.add(c);
-  }
-  outline(group, 0);
-  return { group, animate: (t: number) => (group.rotation.y = t * 0.006) };
-}
-
-// ---- Grass -----------------------------------------------------------------------------------
-
 /**
- * Tufts of grass instanced over the meadow, swaying in the wind (a vertex shader bends each blade
- * by its height). `keep(x, z)` says whether a tuft may grow at a spot.
+ * The night sky's furniture: stars scattered over the upper sky, a few bright coloured ones, and a
+ * ringed planet low over the horizon. Unfogged, so they read through the haze. The field turns slowly.
  */
-export function grassTufts(count: number, reach: number, keep: (x: number, z: number) => boolean, rand: () => number): { mesh: THREE.InstancedMesh; animate: (t: number) => void } {
-  // One tuft: three crossed blades, each a thin triangle.
-  const pos: number[] = [];
-  for (let b = 0; b < 3; b++) {
-    const a = (b / 3) * Math.PI + 0.3;
-    const dx = Math.cos(a) * 0.07;
-    const dz = Math.sin(a) * 0.07;
-    const lean = (b - 1) * 0.06;
-    pos.push(-dx, 0, -dz, dx, 0, dz, lean, 0.32 + b * 0.05, 0);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.computeVertexNormals();
-  const mat = toonMat({ color: 0xffffff, side: THREE.DoubleSide });
-  const uniforms = { uTime: { value: 0 } };
-  mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = uniforms.uTime;
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float uTime;')
-      .replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-        vec4 wp = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-        float sway = sin(uTime * 1.7 + wp.x * 0.35 + wp.z * 0.25) * 0.5 + sin(uTime * 3.1 + wp.x) * 0.15;
-        transformed.x += sway * position.y * 0.45;
-        transformed.z += sway * position.y * 0.2;`,
-      );
-    // Paler tips: a little gradient up each blade.
-    shader.vertexShader = shader.vertexShader.replace('#include <color_vertex>', '#include <color_vertex>\nvTipShade = position.y;');
-    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying float vTipShade;');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vTipShade;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= 0.75 + vTipShade * 1.1;');
+export function starfield(n: number, radius: number, rand: () => number): { group: THREE.Group; animate: (t: number) => void } {
+  const group = new THREE.Group();
+  const layer = (count: number, size: number, color: number, opacity: number): void => {
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      // Uniform over the sky above 6 degrees of elevation.
+      const a = rand() * Math.PI * 2;
+      const y = 0.1 + rand() * 0.9;
+      const ring = Math.sqrt(1 - y * y);
+      pos.set([Math.cos(a) * ring * radius, y * radius, Math.sin(a) * ring * radius], i * 3);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color, size, transparent: true, opacity, depthWrite: false, fog: false });
+    group.add(new THREE.Points(geo, mat));
   };
-  const mesh = new THREE.InstancedMesh(geo, mat, count);
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const up = new THREE.Vector3(0, 1, 0);
-  const tint = new THREE.Color();
-  let n = 0;
-  for (let i = 0; i < count * 4 && n < count; i++) {
-    const x = (rand() * 2 - 1) * reach;
-    const z = (rand() * 2 - 1) * reach;
-    if (Math.hypot(x, z) > reach || !keep(x, z)) continue;
-    const s = 0.7 + rand() * 0.9;
-    q.setFromAxisAngle(up, rand() * Math.PI * 2);
-    m.compose(new THREE.Vector3(x, 0, z), q, new THREE.Vector3(s, s, s));
-    mesh.setMatrixAt(n, m);
-    mesh.setColorAt(n, tint.setHSL(0.24 + rand() * 0.07, 0.5 + rand() * 0.2, 0.42 + rand() * 0.14));
-    n++;
-  }
-  mesh.count = n;
-  mesh.receiveShadow = true;
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.userData.outline = false;
-  return { mesh, animate: (t: number) => (uniforms.uTime.value = t) };
+  layer(n, 1.4, 0xdfe8ff, 0.85);
+  layer(Math.round(n / 8), 2.6, 0x9fdcff, 0.95);
+  layer(Math.round(n / 16), 2.4, 0xd9a8ff, 0.95);
+
+  // A ringed planet low in the sky.
+  const planet = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(18, 32, 20),
+    toonMat({ color: 0x6b4fd8, emissive: 0x3a1f8f, emissiveIntensity: 0.6, fog: false }),
+  );
+  const band = new THREE.Mesh(
+    new THREE.SphereGeometry(18.15, 32, 6, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.1),
+    toonMat({ color: 0x9d7dff, emissive: 0x5a3bd0, emissiveIntensity: 0.6, fog: false }),
+  );
+  const ringGeo = new THREE.RingGeometry(24, 33, 64);
+  ringGeo.rotateX(-Math.PI / 2);
+  const ring = new THREE.Mesh(
+    ringGeo,
+    new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false, fog: false }),
+  );
+  ring.userData.outline = false;
+  planet.add(body, band, ring);
+  planet.rotation.set(0.35, 0, 0.3);
+  planet.position.set(-150, 70, -210);
+  group.add(planet);
+  outline(planet, 1);
+  return {
+    group,
+    animate: (t: number) => {
+      group.rotation.y = t * 0.004;
+      planet.rotation.y = t * 0.05;
+    },
+  };
 }

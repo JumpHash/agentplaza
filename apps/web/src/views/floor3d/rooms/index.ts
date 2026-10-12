@@ -60,7 +60,8 @@ export function buildRoom(role: string, s: number, hue: number, palette: KitPale
   const { glowOk, glowInfo } = kit;
   return {
     group: g,
-    floor: toonMat({ map: floorTexture(style.floor, hue, s) }),
+    // Tinted toward the night's blue, so a room's floor reads as lit by the plaza's moonlight.
+    floor: toonMat({ map: floorTexture(style.floor, hue, s), color: 0xb4bde0 }),
     screens: [kit.screen],
     animate: (t) => {
       glowOk.color.copy(palette.ok).multiplyScalar(0.4 + 0.6 * Math.max(0, Math.sin(t * 2.7)));

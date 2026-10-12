@@ -1,23 +1,14 @@
 // Agent portraits: each agent's own 3D robot, posed in a little photo studio and photographed —
-// toon-shaded and inked like on the Floor, on a cartoon sunburst in the agent's colour. One small
+// toon-shaded and inked like on the Floor, on a night-sky starburst in the agent's colour. One small
 // offscreen renderer takes every picture; pictures are cached as data URLs per agent and look.
 
 import * as THREE from 'three';
-import { makeRobot, type Palette, type RobotPose, type RobotState } from './robot';
+import { makeRobot, ROBOT_PALETTE, robotVariant, type RobotPose, type RobotState } from './robot';
 
 const SIZE = 384;
 const POSES: RobotPose[] = ['wave', 'proud', 'think', 'cheer'];
 const cache = new Map<string, string>();
 let studio: { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera; backdrop: THREE.MeshBasicMaterial } | null | undefined;
-
-function palette(): Palette {
-  const cs = getComputedStyle(document.documentElement);
-  const get = (name: string, fallback: string): string => cs.getPropertyValue(`--${name}`).trim() || fallback;
-  return {
-    ink: get('ink', '#1a1a1a'), sheet: get('sheet', '#ffffff'), paper: get('paper', '#f5f3ee'), rule: get('rule', '#d6d2c8'),
-    signal: get('signal', '#d9482b'), ok: get('ok', '#2f8f5b'), info: get('info', '#2f6fb0'), inkMuted: get('ink-3', '#8a8a8a'),
-  };
-}
 
 function openStudio(): typeof studio {
   if (studio !== undefined) return studio;
@@ -53,7 +44,7 @@ function openStudio(): typeof studio {
   }
 }
 
-/** A cartoon sunburst in the agent's colour, drawn once per hue. */
+/** A starburst in the agent's colour on the night sky, drawn once per hue. */
 const bursts = new Map<number, THREE.CanvasTexture>();
 function sunburst(hue: number): THREE.CanvasTexture {
   const hit = bursts.get(hue);
@@ -61,9 +52,9 @@ function sunburst(hue: number): THREE.CanvasTexture {
   const cv = document.createElement('canvas');
   cv.width = cv.height = 512;
   const g = cv.getContext('2d')!;
-  g.fillStyle = `hsl(${hue} 70% 84%)`;
+  g.fillStyle = `hsl(${hue} 45% 16%)`;
   g.fillRect(0, 0, 512, 512);
-  g.fillStyle = `hsl(${hue} 70% 77%)`;
+  g.fillStyle = `hsl(${hue} 55% 22%)`;
   const rays = 18;
   for (let i = 0; i < rays; i++) {
     const a0 = (i / rays) * Math.PI * 2;
@@ -76,10 +67,17 @@ function sunburst(hue: number): THREE.CanvasTexture {
     g.fill();
   }
   const glow = g.createRadialGradient(256, 300, 10, 256, 300, 260);
-  glow.addColorStop(0, 'rgba(255,255,255,0.75)');
-  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  glow.addColorStop(0, `hsla(${hue}, 90%, 65%, 0.75)`);
+  glow.addColorStop(1, `hsla(${hue}, 90%, 65%, 0)`);
   g.fillStyle = glow;
   g.fillRect(0, 0, 512, 512);
+  // A sprinkle of stars.
+  g.fillStyle = 'rgba(230,238,255,0.8)';
+  for (let i = 0; i < 40; i++) {
+    const x = (i * 197 + hue * 7) % 512;
+    const y = (i * 131 + hue * 3) % 260;
+    g.fillRect(x, y, i % 5 === 0 ? 3 : 2, i % 5 === 0 ? 3 : 2);
+  }
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   bursts.set(hue, tex);
@@ -103,7 +101,7 @@ export function portrait(spec: PortraitSpec): string | null {
   if (hit) return hit;
   const st = openStudio();
   if (!st) return null;
-  const robot = makeRobot(spec.roleHue, spec.orchestrator, palette(), spec.bodyHue);
+  const robot = makeRobot(spec.roleHue, spec.orchestrator, ROBOT_PALETTE, spec.bodyHue, robotVariant(spec.cid));
   robot.setState(spec.state === 'offline' ? 'offline' : 'idle');
   robot.pose(POSES[spec.cid % POSES.length]!);
   robot.group.rotation.y = -0.35;

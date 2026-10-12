@@ -13,11 +13,11 @@ import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
 import { roleLabel } from '../roles';
 import { h } from '../ui/dom';
-import { makeRobot, type Palette as RobotPalette, type Robot, type RobotState } from './floor3d/robot';
+import { makeRobot, ROBOT_PALETTE, robotVariant, type Robot, type RobotState } from './floor3d/robot';
 import { buildPaths, buildPlaza, buildPlazaFurniture, buildScatter } from './floor3d/props';
 import { buildRoom, roomStyle } from './floor3d/rooms';
-import { grass, paving, rng, slabSide } from './floor3d/textures';
-import { clouds, grassTufts, outline, sky, toonMat } from './floor3d/toon';
+import { deck, paving, rng, slabSide } from './floor3d/textures';
+import { outline, sky, starfield, toonMat } from './floor3d/toon';
 import { bakeStatic } from './floor3d/bake';
 import { mountFloor2d } from './floor2d';
 import type { Cleanup } from './index';
@@ -285,27 +285,18 @@ export function mount(root: HTMLElement): Cleanup {
   const renderer = gl ? newRenderer() : null;
   if (!renderer) return mountFloor2d(root);
   const palette = readPalette();
-  // The scene's own cartoon grade of the register palette: cream, sand and slate instead of
-  // paper greys, with the same signal orange and status colours.
+  // The scene's own sci-fi grade, the same in either console theme: hull slate and steel for the
+  // plaza, neon mint and cyan for the status lights, and the register's signal orange.
   const C = {
-    sheet: new THREE.Color(0xfff4de),
-    rule: new THREE.Color(0xe2b97f),
-    ink3: new THREE.Color(0x667892),
-    signal: colour(palette.signal, '#d9482b'),
-    ok: colour(palette.ok, '#2f8f5b'),
-    info: colour(palette.info, '#2f6fb0'),
-    paper: colour(palette.paper, '#f5f3ee'),
+    sheet: new THREE.Color(0x2c3554),
+    rule: new THREE.Color(0x56638a),
+    ink3: new THREE.Color(0x7d8bb5),
+    signal: colour(palette.signal, '#ff7a2e'),
+    ok: new THREE.Color(0x3ee08f),
+    info: new THREE.Color(0x4cc9ff),
   };
-  const robotPalette: RobotPalette = {
-    ink: palette.ink,
-    sheet: palette.sheet,
-    paper: palette.paper,
-    rule: palette.rule,
-    signal: palette.signal,
-    ok: palette.ok,
-    info: palette.info,
-    inkMuted: palette.ink3,
-  };
+  // The rooms keep their own light paper (documents, signs) under the night lighting.
+  const roomPalette = { ...C, sheet: new THREE.Color(0xe9edf7), rule: new THREE.Color(0xa9b4cc) };
 
   // Renderer, scene, camera, controls.
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -317,13 +308,14 @@ export function mount(root: HTMLElement): Cleanup {
   canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab';
 
   const scene = new THREE.Scene();
-  const SKY_TOP = new THREE.Color(0x5fa8e8);
-  const SKY_HORIZON = new THREE.Color(0xfde9c4);
-  scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x8fcd62)));
-  scene.fog = new THREE.Fog(SKY_HORIZON, 70, 240);
-  const cloudLayer = clouds(16, 120, rng(31));
-  cloudLayer.group.userData.dynamic = true; // drifts every frame
-  scene.add(cloudLayer.group);
+  // Night: a deep blue zenith banded down to a violet horizon glow, stars and a ringed planet.
+  const SKY_TOP = new THREE.Color(0x05071a);
+  const SKY_HORIZON = new THREE.Color(0x3a2275);
+  scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x090c18)));
+  scene.fog = new THREE.Fog(0x161236, 60, 230);
+  const skyLayer = starfield(900, 330, rng(31));
+  skyLayer.group.userData.dynamic = true; // turns every frame
+  scene.add(skyLayer.group);
   const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -335,8 +327,9 @@ export function mount(root: HTMLElement): Cleanup {
   controls.minDistance = 6;
   controls.maxDistance = 300;
 
-  scene.add(new THREE.HemisphereLight(0xdff0ff, 0x8a7a5a, 1.1));
-  const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
+  // Cool moonlight from above and a violet bounce from the deck; the neon does the rest.
+  scene.add(new THREE.HemisphereLight(0x9fb0ff, 0x2a1d52, 1.15));
+  const sun = new THREE.DirectionalLight(0xd2ddff, 2.0);
   sun.position.set(22, 40, 16);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -347,9 +340,8 @@ export function mount(root: HTMLElement): Cleanup {
   sc.updateProjectionMatrix();
   scene.add(sun);
 
-  // Ground: a meadow out to the painted horizon.
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: grass() }));
-  grass().repeat.set(36, 36);
+  // Ground: hull plating out to the horizon.
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: deck() }));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.01;
   ground.receiveShadow = true;
@@ -387,7 +379,7 @@ export function mount(root: HTMLElement): Cleanup {
   }
   const dustGeo = new THREE.BufferGeometry();
   dustGeo.setAttribute('position', dustAttr);
-  const dustMat = new THREE.PointsMaterial({ color: C.ink3, size: 0.07, transparent: true, opacity: 0.55, depthWrite: false });
+  const dustMat = new THREE.PointsMaterial({ color: 0x7fe3ff, size: 0.08, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending });
   scene.add(new THREE.Points(dustGeo, dustMat));
 
   // DOM: stage with the canvas, name labels, the card, the legend.
@@ -472,15 +464,20 @@ export function mount(root: HTMLElement): Cleanup {
     if (orch) {
       const dais = new THREE.Mesh(
         new THREE.CylinderGeometry(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48),
-        toonMat({ map: paving(new THREE.Color(0xf0d3a2), 3) }),
+        toonMat({ map: paving(new THREE.Color(0x3a4670), 3) }),
       );
       dais.position.set(d.cx, DAIS_H / 2, d.cy);
       dais.castShadow = true;
       dais.receiveShadow = true;
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(DAIS_R, 0.05, 8, 64), new THREE.MeshBasicMaterial({ color: C.signal }));
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(DAIS_R, 0.05, 8, 64), new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false }));
       rim.rotation.x = Math.PI / 2;
       rim.position.set(d.cx, DAIS_H + 0.01, d.cy);
-      g.add(dais, rim);
+      // A cyan ring of light round the foot of the skirt.
+      const foot = new THREE.Mesh(new THREE.TorusGeometry(DAIS_R + DAIS_RAMP, 0.06, 8, 96), new THREE.MeshBasicMaterial({ color: C.info, toneMapped: false }));
+      foot.rotation.x = Math.PI / 2;
+      foot.position.set(d.cx, 0.04, d.cy);
+      foot.userData.outline = false;
+      g.add(dais, rim, foot);
     } else {
       // A terrace: the flat top plus a sloped band all round, so robots can walk on and off; its
       // floor is the room's own, laid as a separate surface so the texture runs square to the room.
@@ -493,10 +490,21 @@ export function mount(root: HTMLElement): Cleanup {
       slab.castShadow = true;
       slab.receiveShadow = true;
       g.add(slab);
+      // Neon in the district's hue along the slab's top edge and round its foot.
+      const neon = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.95, 0.62, THREE.SRGBColorSpace), toneMapped: false });
+      for (const [rr, y] of [[d.r, SLAB_H + 0.01], [d.r + RAMP, 0.03]] as const) {
+        const edge = round
+          ? new THREE.Mesh(new THREE.TorusGeometry(rr, 0.045, 6, 72), neon)
+          : new THREE.Mesh(new THREE.TorusGeometry(rr * Math.SQRT2, 0.045, 6, 4), neon);
+        edge.rotation.set(Math.PI / 2, 0, round ? 0 : Math.PI / 4);
+        edge.position.set(d.cx, y, d.cy);
+        edge.userData.outline = false;
+        g.add(edge);
+      }
       // The room faces the plaza: square rooms turn in quarter turns so they stay square to their slab.
       const facing = Math.atan2(-d.cx, -d.cy);
       const turn = round ? facing : Math.round(facing / (Math.PI / 2)) * (Math.PI / 2);
-      const room = buildRoom(d.role, d.r, d.hue, C);
+      const room = buildRoom(d.role, d.r, d.hue, roomPalette);
       const top = new THREE.Mesh(round ? new THREE.CircleGeometry(d.r, 48) : new THREE.PlaneGeometry(2 * d.r, 2 * d.r), room.floor);
       top.rotation.set(-Math.PI / 2, 0, turn);
       top.position.set(d.cx, SLAB_H + 0.004, d.cy);
@@ -559,24 +567,6 @@ export function mount(root: HTMLElement): Cleanup {
     const outside = buildScatter(ds, C);
     pathGroup.add(outside.group);
     for (const b of outside.boxes) propBoxes.push(b);
-    // Grass tufts everywhere the meadow is open: off the plaza, the terraces and the paths.
-    let far = 12;
-    for (const d of ds) far = Math.max(far, Math.hypot(d.cx, d.cy) + d.r + 10);
-    const tufts = grassTufts(9000, Math.min(far, 60), (x, z) => {
-      if (Math.hypot(x, z) < 4.8) return false;
-      for (const d of ds) {
-        const pad = d.role === 'orchestrator' ? DAIS_R + DAIS_RAMP : d.r + RAMP;
-        if (Math.abs(x - d.cx) < pad + 0.2 && Math.abs(z - d.cy) < pad + 0.2) return false;
-        const len = Math.hypot(d.cx, d.cy);
-        if (len > 0.5) {
-          const t = clamp((x * d.cx + z * d.cy) / (len * len), 0, 1);
-          if (Math.hypot(x - d.cx * t, z - d.cy * t) < 0.75) return false;
-        }
-      }
-      return !propBoxes.some((b) => x > b.x0 - 0.1 && x < b.x1 + 0.1 && z > b.z0 - 0.1 && z < b.z1 + 0.1);
-    }, rng(97));
-    pathGroup.add(tufts.mesh);
-    propAnim.push(tufts.animate);
     // The world was just rebuilt (the old one is disposed above), so bake only this fresh static subtree.
     const stats = { districts: bakeStatic(districtGroup), paths: bakeStatic(pathGroup) };
     console.debug('floor: baked', stats);
@@ -585,7 +575,7 @@ export function mount(root: HTMLElement): Cleanup {
   // Robots, labels, pads.
   function createBot(agent: Agent, district: District, hx: number, hy: number): Bot {
     const orch = agent.tier === 'orchestrator';
-    const robot = makeRobot(district.hue, orch, robotPalette, agentHue(agent.cid));
+    const robot = makeRobot(district.hue, orch, ROBOT_PALETTE, agentHue(agent.cid), robotVariant(agent.cid));
     robot.group.traverse((o) => {
       o.castShadow = true;
       o.receiveShadow = true;
@@ -1136,7 +1126,7 @@ export function mount(root: HTMLElement): Cleanup {
     updatePackets(now);
     updateDust(t);
     plazaAnim(t);
-    cloudLayer.animate(t);
+    skyLayer.animate(t);
     for (const fn of propAnim) fn(t);
     controls.update();
     renderer.render(scene, camera);
@@ -1162,7 +1152,7 @@ export function mount(root: HTMLElement): Cleanup {
     disposeTree(pathGroup);
     disposeTree(plaza);
     disposeTree(ground);
-    disposeTree(cloudLayer.group);
+    disposeTree(skyLayer.group);
     dustGeo.dispose();
     dustMat.dispose();
     padGeo.dispose();

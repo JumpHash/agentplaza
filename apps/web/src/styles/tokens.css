@@ -120,46 +120,25 @@
   --content-max: 1480px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --paper: #101310;
-    --sheet: #161a16;
-    --rule: #2d342d;
-    --rule-faint: #222822;
-    --margin: #7a3a36;
-    --ink: #e4e8e1;
-    --ink-2: #a6aea5;
-    --ink-3: #6f786f;
-    --signal: #ff7a2e;
-    --signal-ink: #ff9a5c;
-    --crit: #ff7c86;
-    --warn-ink: #e2bd5a;
-    --ok-ink: #86c995;
-    --info-ink: #7fb6e6;
-    --hover: #1c211c;
-    --print: 2px 2px 0 #000;
-    --shadow: 3px 3px 0 #000;
-  }
-}
-
-:root[data-theme="dark"] {
+/* The dark theme is the console's own: night navy sheets, pale ink, the same signal orange. The
+   light register is there on request (`data-theme="light"`, the theme switch in the sidebar). */
+:root:not([data-theme="light"]) {
   color-scheme: dark;
-  --paper: #101310;
-  --sheet: #161a16;
-  --rule: #2d342d;
-  --rule-faint: #222822;
-  --margin: #7a3a36;
-  --ink: #e4e8e1;
-  --ink-2: #a6aea5;
-  --ink-3: #6f786f;
+  --paper: #0a0e19;
+  --sheet: #111726;
+  --rule: #263049;
+  --rule-faint: #1a2135;
+  --margin: #6e3a55;
+  --ink: #e3e8f4;
+  --ink-2: #a3adc4;
+  --ink-3: #6c7790;
   --signal: #ff7a2e;
   --signal-ink: #ff9a5c;
   --crit: #ff7c86;
   --warn-ink: #e2bd5a;
-  --ok-ink: #86c995;
-  --info-ink: #7fb6e6;
-  --hover: #1c211c;
+  --ok-ink: #5fe0a0;
+  --info-ink: #6cc8ff;
+  --hover: #182036;
   --print: 2px 2px 0 #000;
   --shadow: 3px 3px 0 #000;
 }
