@@ -360,12 +360,17 @@ fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D5
+        let Ok(items) = self.items.lock() else { return String::new() };
+        serde_json::to_string_pretty(&*items).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D5
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let next: Vec<Discovery> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut items = self.items.lock().map_err(|_| "toolbox is unavailable".to_string())?;
+        self.save(&next);
+        *items = next;
+        Ok(())
     }
 }
 
@@ -373,6 +378,16 @@ impl Store {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn snapshot_restores_into_a_fresh_store() {
+        let a = Store::load(&temp_dir("snapshot"));
+        a.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
+        let b = Store::load(&temp_dir("snapshot-restored"));
+        b.restore(&a.snapshot()).unwrap();
+        assert_eq!(b.snapshot(), a.snapshot());
+        assert_eq!(b.list().len(), 1);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();

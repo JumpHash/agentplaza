@@ -498,18 +498,34 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D5
+        serde_json::to_string_pretty(&*self.lock()).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D5
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let next: Vec<Entry> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut entries = self.lock();
+        self.save(&next)?;
+        *entries = next;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_restores_into_a_fresh_store() {
+        let dir = std::env::temp_dir().join(format!("apid-library-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = Store::load(dir.join("a"));
+        a.insert(1, "alpha", package("tool", true)).unwrap();
+        let b = Store::load(dir.join("b"));
+        b.restore(&a.snapshot()).unwrap();
+        assert_eq!(b.snapshot(), a.snapshot());
+        assert_ne!(b.snapshot(), "[]");
+    }
 
     fn store(tag: &str) -> Store {
         let nanos = std::time::SystemTime::now()

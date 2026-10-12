@@ -504,12 +504,16 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D5
+        serde_json::to_string_pretty(&*lock(&self.index)).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D5
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let next: Vec<Deliverable> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut index = lock(&self.index);
+        self.save(&next).map_err(|e| e.to_string())?;
+        *index = next;
+        Ok(())
     }
 }
 
@@ -523,6 +527,17 @@ mod tests {
         assert_eq!(decode("100%25"), "100%");
         assert_eq!(decode("50%"), "50%");
         assert_eq!(decode("%E2%9C%93"), "\u{2713}");
+    }
+
+    #[test]
+    fn snapshot_restores_into_a_fresh_store() {
+        let env = BTreeMap::new();
+        let a = Store::load(&scratch("snapshot"), &env).unwrap();
+        a.add(upload("report.txt"), b"hello").unwrap();
+        let b = Store::load(&scratch("snapshot-restored"), &env).unwrap();
+        b.restore(&a.snapshot()).unwrap();
+        assert_eq!(b.snapshot(), a.snapshot());
+        assert_eq!(b.list().len(), 1);
     }
 
     fn scratch(name: &str) -> PathBuf {

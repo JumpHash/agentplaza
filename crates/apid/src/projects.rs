@@ -710,18 +710,34 @@ fn reply(app: &App, result: Result<Project, String>) -> Response {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D5
+        let Ok(items) = self.items.lock() else { return String::new() };
+        serde_json::to_string_pretty(&*items).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D5
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let next: Vec<Project> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut items = self.items.lock().map_err(|_| "projects are unavailable".to_string())?;
+        self.save(&next)?;
+        *items = next;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_restores_into_a_fresh_store() {
+        let (_dir, a) = fresh("snapshot");
+        a.open(&lead(), "Ship the thing", "Make the thing work", "other", false).unwrap();
+        let (_dir2, b) = fresh("snapshot-restored");
+        b.restore(&a.snapshot()).unwrap();
+        assert_eq!(b.list(), a.list());
+        assert!(b.restore("not json").is_err());
+        assert_eq!(b.list(), a.list(), "a refused restore changes nothing");
+    }
 
     fn fresh(tag: &str) -> (PathBuf, Store) {
         let dir = std::env::temp_dir().join(format!("apid-projects-{tag}-{}-{}", std::process::id(), now_ms()));
