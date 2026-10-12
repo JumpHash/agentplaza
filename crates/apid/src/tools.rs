@@ -84,6 +84,11 @@ const IN_VM: &[&str] = &["bash", "read_file", "write_file", "edit_file", "list",
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
 const GATED: &[&str] = &[
+    "plaza_project_open",
+    "plaza_project_advance",
+    "plaza_project_approve",
+    "plaza_agent_control",
+    "plaza_loop",
     "plaza_bid",
     "plaza_vote",
     "plaza_propose",
@@ -156,6 +161,11 @@ fn permitted(role: &str, name: &str) -> bool {
         "plaza_bid" => !orchestrator,
         "plaza_vote" | "plaza_propose" => council::is_seated(role),
         "plaza_verdict" => role == REVIEWER_ROLE,
+        // Projects: the orchestrator opens them; it and the planner move them along; the mayor approves plans.
+        "plaza_project_open" => orchestrator,
+        "plaza_project_advance" => orchestrator || role == "planner",
+        "plaza_project_approve" => role == "mayor" || role == "mayor-office",
+        "plaza_agent_control" | "plaza_loop" => crate::harness_control::may_control(role),
         _ => true,
     }
 }
@@ -822,6 +832,23 @@ mod tests {
         let seated = offered("finance", &[]);
         assert!(seated.iter().any(|n| n == "plaza_vote"));
         assert!(seated.iter().any(|n| n == "plaza_propose"));
+    }
+
+    #[test]
+    fn project_and_harness_tools_go_to_their_roles() {
+        let has = |role: &str, tool: &str| offered(role, &[]).iter().any(|n| n == tool);
+        assert!(has(ORCHESTRATOR_ROLE, "plaza_project_open"));
+        assert!(has(ORCHESTRATOR_ROLE, "plaza_project_advance"));
+        assert!(has(ORCHESTRATOR_ROLE, "plaza_agent_control"));
+        assert!(has(ORCHESTRATOR_ROLE, "plaza_loop"));
+        assert!(has("planner", "plaza_project_advance"));
+        assert!(has("mayor", "plaza_project_approve"));
+        assert!(has("mayor", "plaza_agent_control"));
+        assert!(!has("builder", "plaza_project_open"));
+        assert!(!has("builder", "plaza_project_approve"));
+        assert!(!has("builder", "plaza_agent_control"));
+        // Everyone can read projects, attach to them and critique them.
+        assert!(has("builder", "plaza_projects") && has("builder", "plaza_project_critique"));
     }
 
     #[test]
