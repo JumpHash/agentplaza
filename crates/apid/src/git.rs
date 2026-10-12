@@ -170,10 +170,13 @@ impl Forge {
         self.ensure_org()?;
         let team = self.team_id()?;
         let user = format!("agent-{cid}");
+        // The password lives only for this call: Forgejo makes a user's token only with that
+        // user's own basic auth, so it is set (or reset, for a user made earlier) right here.
+        let password = random_password()?;
         let account = json!({
             "username": user,
             "email": format!("{user}@agentplaza.local"),
-            "password": random_password()?,
+            "password": password,
             "must_change_password": false,
             "full_name": name
         });
@@ -182,11 +185,25 @@ impl Forge {
         if !(200..300).contains(&status) && !exists {
             return Err(format!("creating {user} failed ({status}): {body}"));
         }
+        if exists {
+            let reset = json!({ "login_name": user, "source_id": 0, "password": password, "must_change_password": false });
+            let (status, body) = self.api("PATCH", &format!("/api/v1/admin/users/{user}"), Some(&reset), None)?;
+            if !(200..300).contains(&status) {
+                return Err(format!("resetting {user} failed ({status}): {body}"));
+            }
+        }
         let token = json!({
             "name": format!("apid-relay-{}", now_ms()),
             "scopes": ["write:repository", "write:user", "read:organization"]
         });
-        let (status, reply) = self.api("POST", &format!("/api/v1/users/{user}/tokens"), Some(&token), Some(&user))?;
+        let base = self.base.as_deref().ok_or("the git host is not configured")?;
+        let headers = [
+            ("Authorization", basic(&user, &password)),
+            ("Content-Type", "application/json".to_string()),
+            ("Accept", "application/json".to_string()),
+        ];
+        let (status, _, bytes) = send("POST", &format!("{base}/api/v1/users/{user}/tokens"), &headers, token.to_string().into_bytes())?;
+        let reply: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         if !(200..300).contains(&status) {
             return Err(format!("creating {user}'s token failed ({status}): {reply}"));
         }
