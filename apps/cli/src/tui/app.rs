@@ -602,6 +602,44 @@ pub fn run(client: Client) -> Result<(), String> {
     }
 }
 
+/// `APZ_TUI_SNAPSHOT=<file>`: runs the app off-screen for `secs` seconds against the hub (polls and
+/// live events as usual), then writes every tab as plain text, `width`×`height`, into `path` —
+/// the terminal UI's equivalent of the desktop app's `APZ_SNAPSHOT`.
+pub fn snapshot(client: Client, path: &std::path::Path, width: u16, height: u16, secs: f32) -> Result<(), String> {
+    let mut app = App::new(client);
+    let started = Instant::now();
+    let mut last = started;
+    while started.elapsed().as_secs_f32() < secs {
+        app.drain();
+        thread::sleep(Duration::from_millis(50));
+        let now = Instant::now();
+        app.tick(now.duration_since(last).as_secs_f32());
+        last = now;
+    }
+    let mut out = String::new();
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let key = char::from_digit(i as u32 + 1, 10).unwrap_or('1');
+        app.on_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        // The tab's own data arrives with its first poll.
+        let until = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < until {
+            app.drain();
+            thread::sleep(Duration::from_millis(50));
+            app.tick(0.05);
+        }
+        let mut term = Terminal::new(ratatui::backend::TestBackend::new(width, height)).map_err(|e| e.to_string())?;
+        term.draw(|frame| app.draw(frame)).map_err(|e| e.to_string())?;
+        let buffer = term.backend().buffer();
+        out.push_str(&format!("──── tab {} {:?} ────\n", i + 1, tab));
+        for y in 0..buffer.area.height {
+            let line: String = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+    }
+    std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
