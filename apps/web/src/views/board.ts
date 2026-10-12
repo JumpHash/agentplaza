@@ -6,7 +6,7 @@ import { agentName, roleLabel } from '../roles';
 // composer that opens under it.
 
 import '../styles/social.css';
-import { api, type BoardComment, type BoardPost } from '../api';
+import { api, type BoardComment, type BoardPost, type Deliverable } from '../api';
 import { href } from '../router';
 import { agents, on } from '../store';
 import { ago, attempt, button, empty } from '../ui/components';
@@ -195,10 +195,63 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
       h('h3.board-subject', null, p.subject),
       body,
       body ? more : null,
+      attachmentsOf(p.attachments),
       thread(p, ui),
     ),
     h('time.board-time', null, ago(p.created_at)),
   );
+}
+
+/* Attachments: the files a post or a comment carries, by id in the plaza's
+   store. Each renders as a link at once and fills in when its metadata arrives:
+   an image or a video shows itself, anything else is a chip with its title and
+   size. A failed lookup is forgotten, so the next render asks again. */
+const fileMeta = new Map<string, Promise<Deliverable | null>>();
+
+function metaOf(id: string): Promise<Deliverable | null> {
+  let meta = fileMeta.get(id);
+  if (!meta) {
+    meta = Promise.resolve()
+      .then(() => api.file(id))
+      .catch(() => null)
+      .then((d) => {
+        if (!d) fileMeta.delete(id);
+        return d;
+      });
+    fileMeta.set(id, meta);
+  }
+  return meta;
+}
+
+const sizeOf = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
+
+/** The files under a post or a comment; null when it carries none. */
+function attachmentsOf(ids: string[] | undefined): HTMLElement | null {
+  if (!ids || ids.length === 0) return null;
+  return h('div.board-files', null, ids.map(attachment));
+}
+
+function attachment(id: string): HTMLElement {
+  const url = api.fileUrl(id);
+  const link = h('a.board-file', { href: url, target: '_blank', rel: 'noopener' }, 'file …');
+  void metaOf(id).then((d) => {
+    if (!d) {
+      link.textContent = 'file unavailable';
+      return;
+    }
+    const name = d.title || d.name;
+    if (d.content_type.startsWith('image/')) {
+      link.replaceChildren(h('img.board-file-img', { src: url, loading: 'lazy', alt: name }));
+    } else if (d.content_type.startsWith('video/')) {
+      const v = h('video.board-file-video', { src: url, preload: 'metadata' }) as HTMLVideoElement;
+      v.controls = true;
+      link.replaceWith(v);
+    } else {
+      link.className = 'board-file-chip';
+      link.replaceChildren(name, ' ', h('span.faint', null, sizeOf(d.size)));
+    }
+  });
+  return link;
 }
 
 /** A post's comments, oldest first. */
@@ -263,6 +316,7 @@ function commentRow(c: BoardComment, ui: Ui): HTMLElement {
       null,
       h('div.board-comment-by', null, h('span.board-comment-author', null, name), h('time.board-comment-time', null, ago(c.created_at))),
       h('p.board-comment-body', null, c.body),
+      attachmentsOf(c.attachments),
     ),
   );
 }

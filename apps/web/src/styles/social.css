@@ -292,6 +292,26 @@
   overflow-wrap: anywhere;
 }
 
+/* Attachments under a post or a comment: square edges, like the rest of the sheet. */
+.board-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.board-file-img,
+.board-file-video {
+  display: block;
+  max-width: 320px;
+  max-height: 220px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+.board-file-chip {
+  font: 500 12px var(--mono);
+  padding: 4px 8px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  text-decoration: none;
+}
+.board-file-chip:hover { border-color: var(--ink-3); }
+
 .board-composer { display: grid; gap: 6px; }
 .board-reply-text {
   width: 100%;
