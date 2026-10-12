@@ -87,12 +87,15 @@ if [ -f "$MACOS/apz-vmm" ]; then
 else
   warn "apz-vmm is not in the stages; the VMM will not have the hypervisor entitlement"
 fi
+# The helpers next; the main executable (agentplaza-desktop, CFBundleExecutable) is signed as the
+# bundle itself, last, once everything it contains is signed.
 for bin in "$MACOS"/*; do
-  if [ "$(basename "$bin")" != "apz-vmm" ]; then
-    sign --entitlements "$HERE/entitlements-app.plist" "$bin"
-  fi
+  case "$(basename "$bin")" in
+    apz-vmm|agentplaza-desktop) ;;
+    *) sign --entitlements "$HERE/entitlements-app.plist" "$bin" ;;
+  esac
 done
-sign "$APP"
+sign --entitlements "$HERE/entitlements-app.plist" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 # DMG with the drag-to-Applications layout.
