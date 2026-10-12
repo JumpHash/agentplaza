@@ -128,9 +128,32 @@ fn prove_inside(
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
+    // A bound path is mirrored at its own location, so its top directory is there (on CI the test
+    // binary lives under /home/runner/…): that one is allowed, but it may hold nothing except the
+    // mirrored path — the host's own directory never shows through.
+    let mirrored: Vec<(String, String)> = [bind_file, bind_dir]
+        .iter()
+        .filter_map(|path| {
+            let mut parts = path.components().skip(1).map(|c| c.as_os_str().to_string_lossy().into_owned());
+            Some((parts.next()?, parts.next().unwrap_or_default()))
+        })
+        .collect();
     for forbidden in ["etc", "usr", "home", "proc", "var", "bin", "sbin", "lib"] {
-        if entries.iter().any(|entry| entry == forbidden) {
+        if !entries.iter().any(|entry| entry == forbidden) {
+            continue;
+        }
+        let expected: Vec<&String> = mirrored.iter().filter(|(top, _)| top == forbidden).map(|(_, next)| next).collect();
+        if expected.is_empty() {
             println!("{VERDICT} root-has-{forbidden} {entries:?}");
+            return Err(4);
+        }
+        let inside: Vec<String> = fs::read_dir(format!("/{forbidden}"))
+            .map_err(|err| fail("cannot list a mirrored directory", err))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        if inside.iter().any(|name| !expected.contains(&name)) {
+            println!("{VERDICT} root-has-{forbidden}-beyond-the-mirror {inside:?}");
             return Err(4);
         }
     }

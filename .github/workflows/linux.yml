@@ -83,6 +83,7 @@ jobs:
         with:
           shared-key: linux-${{ matrix.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - name: Test
         run: cargo nextest run --workspace --locked --cargo-profile release --profile ci
       - name: Build the binaries

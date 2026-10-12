@@ -65,6 +65,7 @@ jobs:
         with:
           shared-key: macos-${{ matrix.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - name: Test (the guest harness runs only inside Linux VMs)
         if: runner.arch == matrix.cpu
         run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ matrix.triple }}
