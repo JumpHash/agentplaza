@@ -393,6 +393,8 @@ pub struct Node {
     pub hull: Option<Geo>,
     /// `userData.outline === false`: `outline()` leaves it alone.
     pub no_outline: bool,
+    /// `userData.walk`: robots walk over it (rugs, floor markings): it has no footprint.
+    pub walk: bool,
     /// An opaque tag for picking (a robot's cid) and lookups.
     pub tag: Option<u64>,
     pub children: Vec<Obj>,
@@ -424,6 +426,7 @@ impl Obj {
             dynamic: false,
             hull: None,
             no_outline: false,
+            walk: false,
             tag: None,
             children: Vec::new(),
         })))
@@ -520,6 +523,11 @@ impl Obj {
     }
     pub fn set_render_order(&self, order: i32) -> &Self {
         self.get().render_order = order;
+        self
+    }
+    /// `userData.walk = true`: no collision footprint.
+    pub fn set_walk(&self) -> &Self {
+        self.get().walk = true;
         self
     }
     /// `userData.outline = false`.

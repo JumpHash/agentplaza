@@ -271,8 +271,7 @@ fn build_security_reviewer(room: &mut Room) {
     }
     for y in [0.35, 0.8] {
         let beam = box_geo(5.2, 0.03, 0.03);
-        // The TS sets userData.walk here; Obj has no walk flag in Rust yet.
-        mesh(&room.g, &beam, &k.glow_red, 0.0, y, 1.8);
+        mesh(&room.g, &beam, &k.glow_red, 0.0, y, 1.8).set_walk();
     }
 
     room.desk(2.2, 0.4, -PI / 2.0);
