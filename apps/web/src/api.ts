@@ -68,6 +68,7 @@ export interface Provider {
   id: string; kind: string; base_url: string | null; auth: Auth; models: string[];
   options: Record<string, unknown> | null; extra_headers: Record<string, string>;
   credential: 'env' | 'secret' | 'none' | 'missing' | 'command';
+  group?: ModelGroup;
 }
 
 export interface ProviderInput {
@@ -96,8 +97,30 @@ export interface Connector {
   roles: string[]; actions: ConnectorAction[]; cli: { package: string; binary: string } | null;
 }
 export interface ConnectorTest { ok: boolean; latency_ms: number; detail: string }
-export interface ModelInfo { provider: string; id: string; name: string | null }
+/** `chat` models write text for agents; `decisions` models answer typed questions for the plaza. */
+export type ModelGroup = 'chat' | 'decisions';
+export interface ModelInfo { provider: string; id: string; name: string | null; group?: ModelGroup }
 export interface ModelsView { models: ModelInfo[]; errors: { provider: string; error: string }[] }
+
+/** Provider kinds whose models are decision models (the kind list carries no group). */
+const DECISION_KINDS = ['openai-decisions', 'systemone', 'azure-decisions'];
+export const isDecisionKind = (kind: string): boolean => DECISION_KINDS.includes(kind);
+
+// ---- Decisions: typed questions answered with calibrated probabilities ----
+export interface DecisionChoice { value: string; description?: string }
+export interface DecisionLevel { label: string; description?: string }
+export type DecisionQuestion =
+  | { type: 'predicate'; name: string; instructions: string }
+  | { type: 'choice'; name: string; instructions: string; choices: DecisionChoice[] }
+  | { type: 'score'; name: string; instructions: string; levels: DecisionLevel[] };
+export interface DecisionRequest { provider: string; model: string; input: string; questions: DecisionQuestion[] }
+export type DecisionAnswer =
+  | { type: 'predicate'; name: string; probability: number }
+  | { type: 'choice'; name: string; choice: string; probabilities: { value: string; probability: number }[]; confidence: number }
+  | { type: 'score'; name: string; score: number; probabilities: { value: number; label: string; probability: number }[]; confidence: number }
+  | { type: 'refusal'; name: string };
+export interface DecisionResponse { provider: string; model: string; answers: DecisionAnswer[]; usage: { input_tokens: number } }
+export interface DecisionDefault { provider: string | null; model: string | null }
 
 export interface Settings {
   default_model: string; orchestrator_model: string; role_models: Record<string, string>;
@@ -276,7 +299,19 @@ export const api = {
   setSecret: (id: string, value: string) => put<unknown>(`/v1/providers/${id}/secret`, { value }),
   testProvider: (id: string, model?: string) => post<TestReport>(`/v1/providers/${id}/test`, model ? { model } : {}),
   providerModels: (id: string) => get<{ id: string; name: string | null }[]>(`/v1/providers/${id}/models`),
-  models: () => get<ModelsView>('/v1/models'),
+  /** Chat models only: every chat picker (agents, policy) is built from this, so decision models are never offered. */
+  models: async (): Promise<ModelsView> => {
+    const view = await get<ModelsView>('/v1/models');
+    return { ...view, models: view.models.filter((m) => m.group !== 'decisions') };
+  },
+  /** Decision models only. */
+  decisionModels: async (): Promise<ModelsView> => {
+    const view = await get<ModelsView>('/v1/models');
+    return { ...view, models: view.models.filter((m) => m.group === 'decisions') };
+  },
+  askDecision: (r: DecisionRequest) => post<DecisionResponse>('/v1/decisions', r),
+  getDecisionDefault: () => get<DecisionDefault>('/v1/decisions/default'),
+  setDecisionDefault: (d: { provider: string; model: string }) => put<DecisionDefault>('/v1/decisions/default', d),
   settings: () => get<Settings>('/v1/settings'),
   saveSettings: (s: Settings) => put<Settings>('/v1/settings', s),
 
