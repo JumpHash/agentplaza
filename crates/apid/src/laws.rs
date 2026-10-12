@@ -2,11 +2,12 @@
 //!
 //! `check` decides one tool call against the laws that cover `tool.call`. An applying forbid
 //! refuses the call and is recorded as a violation on the agent's profile. A call that no law
-//! permits is allowed and logged, because the role bundles do not yet permit every tool.
+//! permits is refused too (default deny), but not recorded: a missing permission, not misconduct.
+//! `permits` answers for a role and tool alone; it decides which tools an agent is offered.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use apz_plaza::council;
 use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
@@ -45,7 +46,7 @@ pub struct Violation {
 pub struct Verdict {
     /// Ids of the applying forbid laws; non-empty means the call is refused.
     pub forbid: Vec<String>,
-    /// True when no law permitted the call and none forbade it (default deny, not yet enforced).
+    /// True when no law permitted the call and none forbade it (default deny: refused, not recorded).
     pub unpermitted: bool,
 }
 
@@ -91,6 +92,9 @@ pub struct Laws {
     path: PathBuf,
     violations: Mutex<BTreeMap<String, Vec<Violation>>>,
     sink: Mutex<Option<InfractionSink>>,
+    /// Memoized [`Laws::permits`] answers, keyed by (role, tool). The seats and tiers a role has
+    /// are fixed constants, so an answer never changes while apid runs.
+    permitted: Mutex<HashMap<(String, String), bool>>,
 }
 
 impl Laws {
@@ -110,7 +114,14 @@ impl Laws {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
-        Laws { program, titles, path, violations: Mutex::new(violations), sink: Mutex::new(None) }
+        Laws {
+            program,
+            titles,
+            path,
+            violations: Mutex::new(violations),
+            sink: Mutex::new(None),
+            permitted: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Decides one tool call. `input` is the call's JSON input, scanned for the flags the laws test.
@@ -180,12 +191,26 @@ impl Laws {
         verdict
     }
 
-    /// The refusal reason when a law forbids the call (recorded as a violation); `None` when it may run.
+    /// Whether the laws let `role` use `tool` at all: no forbid applies and a permit covers it.
+    /// Decided on the role, tier and seat alone (an empty input), and memoized.
+    pub fn permits(&self, role: &str, tool: &str) -> bool {
+        let key = (role.to_string(), tool.to_string());
+        if let Some(answer) = self.permitted.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
+            return *answer;
+        }
+        let verdict = self.check("0", role, tool, &Json::Object(Default::default()));
+        let answer = verdict.forbid.is_empty() && !verdict.unpermitted;
+        self.permitted.lock().unwrap_or_else(PoisonError::into_inner).insert(key, answer);
+        answer
+    }
+
+    /// The refusal reason when a law forbids the call (recorded as a violation) or no law permits
+    /// it (default deny, not recorded); `None` when it may run.
     pub fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Json) -> Option<String> {
         let verdict = self.check(&cid.to_string(), role, tool, input);
         if verdict.forbid.is_empty() {
             if verdict.unpermitted {
-                eprintln!("laws: agent {cid} calls {tool}; no law permits it yet, allowed");
+                return Some(format!("refused: no law permits {tool} for the {role} role"));
             }
             return None;
         }
@@ -258,6 +283,13 @@ impl Laws {
             }
         }
     }
+}
+
+/// The compiled-in laws for questions asked outside an `App` (tool offers), compiled once.
+/// Only [`Laws::permits`] is answered from it, which records nothing, so its violations path is never written.
+pub fn global() -> &'static Laws {
+    static LAWS: OnceLock<Laws> = OnceLock::new();
+    LAWS.get_or_init(|| Laws::load(&std::env::temp_dir().join("apz-laws-gate")))
 }
 
 /// Writes the violations atomically: a temporary file, then a rename over the old one.
@@ -625,5 +657,29 @@ mod tests {
         let laws = Laws::load(&scratch("builder-post"));
         let verdict = laws.check("7", "builder", "plaza_post_task", &json!({}));
         assert!(verdict.unpermitted, "{verdict:?}");
+    }
+
+    #[test]
+    fn a_call_no_law_permits_is_refused_and_not_recorded() {
+        let dir = scratch("default-deny");
+        let _ = std::fs::remove_file(dir.join("violations.json"));
+        let laws = Laws::load(&dir);
+        let refusal = laws.refusal(7, "builder", "plaza_post_task", &json!({}));
+        assert_eq!(refusal.as_deref(), Some("refused: no law permits plaza_post_task for the builder role"));
+        assert!(laws.all_violations().is_empty());
+        assert!(laws.recent(7, apz_plaza::now_ms()).is_empty());
+    }
+
+    #[test]
+    fn permits_follows_the_tier_and_seat_laws() {
+        let laws = Laws::load(&scratch("permits"));
+        assert!(laws.permits("mayor", "plaza_project_approve"));
+        assert!(!laws.permits("builder", "plaza_project_approve"));
+        assert!(!laws.permits("builder", "plaza_post_task"));
+        assert!(laws.permits("builder", "plaza_bid"));
+        assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task"));
+        assert!(laws.permits("builder", "bash"));
+        // A second ask is answered from the memo, the same way.
+        assert!(laws.permits("mayor", "plaza_project_approve"));
     }
 }
