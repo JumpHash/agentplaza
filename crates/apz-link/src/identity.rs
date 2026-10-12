@@ -41,9 +41,14 @@ impl Identity {
         Err("contract: L1".into())
     }
 
-    /// The inclusive guest-CID range as `vsockd --cids` / `noded --run-cids` take it: `A-B`.
+    /// The inclusive guest-CID range as `noded --run-cids` takes it (and people read it): `A-B`.
     pub fn cid_range(&self) -> String {
         format!("{}-{}", self.cid_base, self.cid_base + self.cid_count - 1)
+    }
+
+    /// The same CIDs as `vsockd --cids` takes them: `A,A+1,…,B`.
+    pub fn cid_list(&self) -> String {
+        (self.cid_base..self.cid_base + self.cid_count).map(|cid| cid.to_string()).collect::<Vec<_>>().join(",")
     }
 }
 
