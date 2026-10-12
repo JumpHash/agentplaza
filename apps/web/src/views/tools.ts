@@ -7,7 +7,7 @@
 import '../styles/models.css';
 import '../styles/tools.css';
 import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorProposal, type ConnectorTest, type Discovery, type LibraryTool } from '../api';
-import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, toast, type Tone } from '../ui/components';
+import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import type { Cleanup } from './index';
@@ -608,38 +608,181 @@ export function mount(root: HTMLElement): Cleanup {
     renderToolbox();
   };
 
-  const renderToolbox = (): void => {
-    const heading = h('h2.prov-group-title', null, 'Found by agents');
-    const intro = h('p.faint', null, 'Software, services and techniques agents found on the internet, tried in their VMs and recommend to each other.');
-    if (!discoveries.length) {
-      replace(discBody, heading, intro, empty('models', 'Nothing yet. Agents record what they find with plaza_toolbox_share.'));
-      return;
-    }
-    replace(discBody, heading, intro, h('div.prov-grid', null, discoveries.map(discCard)));
+  const DISC_PAGE = 10;
+  const DISC_KINDS = ['cli', 'library', 'service', 'api', 'technique'];
+  const expanded = new Set<string>();
+  let discQuery = '';
+  let discKind = '';
+  let discPage = 1;
+  let discMounted = false;
+
+  const discHeading = h('h2.prov-group-title', null, 'Found by agents');
+  const discIntro = h('p.faint', null, 'Software, services and techniques agents found on the internet, tried in their VMs and recommend to each other.');
+  const discSearch = h('input.disc-search', {
+    type: 'search',
+    placeholder: 'Search name, use, tags, by',
+    'aria-label': 'Search found tools',
+    oninput: () => {
+      discQuery = discSearch.value;
+      discPage = 1;
+      paintDiscoveries();
+    },
+  });
+  const discKindSelect = select([{ value: '', label: 'All kinds' }, ...DISC_KINDS.map((k) => ({ value: k, label: k }))], '');
+  discKindSelect.classList.add('disc-kind');
+  discKindSelect.addEventListener('change', () => {
+    discKind = discKindSelect.value;
+    discPage = 1;
+    paintDiscoveries();
+  });
+  const discCount = h('span.disc-count', null);
+  const discToolbar = h('div.disc-toolbar', null, discSearch, discKindSelect, discCount);
+  const discArea = h('div.disc-area', null);
+
+  const matches = (d: Discovery, q: string): boolean => !q || [d.name, d.what_for, d.by, ...d.tags].some((s) => s.toLowerCase().includes(q));
+
+  const act = (label: string, onClick: () => void, kind?: 'danger' | 'ghost'): HTMLButtonElement => {
+    const b = button(label, onClick, { size: 'sm', kind });
+    b.classList.add('disc-btn');
+    return b;
   };
 
-  const discCard = (d: Discovery): HTMLElement =>
-    h(
-      'article.prov-card',
+  const flagDisc = (d: Discovery): void => {
+    let close = () => {};
+    const reason = textarea({ rows: 3, placeholder: 'What is wrong with it?' });
+    const save = button(
+      'Save',
+      async () => {
+        const text = reason.value.trim();
+        if (!text) {
+          toast('Write a reason first', 'error');
+          return;
+        }
+        save.disabled = true;
+        const done = await attempt(() => api.flagDiscovery(d.id, text), `${d.name} flagged`);
+        save.disabled = false;
+        if (!done) return;
+        close();
+        await refreshToolbox();
+      },
+      { kind: 'primary' },
+    );
+    close = modal(
+      `Flag ${d.name}`,
+      h(
+        'div.stack',
+        null,
+        field('Reason', reason, 'Shown next to the entry.'),
+        h('div.prov-row', null, h('span.prov-spacer'), button('Cancel', () => close(), { kind: 'ghost' }), save),
+      ),
+    );
+  };
+
+  const unflagDisc = async (d: Discovery): Promise<void> => {
+    const done = await attempt(() => api.flagDiscovery(d.id, null), `${d.name} unflagged`);
+    if (done) await refreshToolbox();
+  };
+
+  const removeDisc = async (d: Discovery): Promise<void> => {
+    if (!window.confirm(`Remove ${d.name} from the found tools?`)) return;
+    const done = await attempt(() => api.removeDiscovery(d.id), `${d.name} removed`);
+    if (!done) return;
+    expanded.delete(d.id);
+    await refreshToolbox();
+  };
+
+  const discRow = (d: Discovery): HTMLElement => {
+    const open = expanded.has(d.id);
+    const toggle = (): void => {
+      if (expanded.has(d.id)) expanded.delete(d.id);
+      else expanded.add(d.id);
+      paintDiscoveries();
+    };
+    const flag = d.flagged ? badge('flagged', 'danger') : null;
+    if (flag) flag.title = d.flagged ?? '';
+    return h(
+      'li.disc-row',
       { 'data-key': `disc-${d.id}` },
       h(
-        'header.prov-head',
+        'div.disc-main',
         null,
+        h('div.disc-line', null, h('strong.disc-name', { title: d.name }, d.name), h('span.tool-chip', null, d.kind), flag),
         h(
-          'div.prov-title',
+          'div.disc-line',
           null,
-          h('h3.truncate', null, d.name),
-          h('span.faint.truncate', null, `by ${d.by} · ${d.endorsed_by.length} endorsements`),
+          h('span.disc-what', { title: d.what_for }, d.what_for),
+          h('span.disc-by', null, `by ${d.by} · ${d.endorsed_by.length} endorsements`),
         ),
       ),
-      h('div.prov-meta', null, h('span.tool-chip', null, d.kind)),
-      h('p', null, d.what_for),
-      h('details', null, h('summary', null, 'How to use'), h('pre.lib-file', null, d.how)),
-      h('p', null, d.verdict),
-      // Agents write these URLs, so only web links become anchors (as the proposal review does).
-      d.url && /^https?:\/\//.test(d.url) ? h('a', { href: d.url, target: '_blank', rel: 'noopener noreferrer' }, d.url) : null,
-      d.tags.length ? h('ul.tool-actions', null, d.tags.map((t) => h('li', { 'data-key': `tag-${t}` }, h('span.tool-chip', null, t)))) : null,
+      h(
+        'div.disc-actions',
+        null,
+        act('Details', toggle),
+        act(d.flagged ? 'Unflag' : 'Flag', () => {
+          if (d.flagged) void unflagDisc(d);
+          else flagDisc(d);
+        }),
+        act('Remove', () => void removeDisc(d), 'danger'),
+      ),
+      open
+        ? h(
+            'div.disc-details',
+            null,
+            h('pre.lib-file', null, d.how),
+            h('p', null, d.verdict),
+            d.tags.length ? h('ul.tool-actions', null, d.tags.map((t) => h('li', { 'data-key': `tag-${t}` }, h('span.tool-chip', null, t)))) : null,
+            // Agents write these URLs, so only web links become anchors (as the proposal review does).
+            d.url && /^https?:\/\//.test(d.url) ? h('a', { href: d.url, target: '_blank', rel: 'noopener noreferrer' }, d.url) : null,
+          )
+        : null,
     );
+  };
+
+  const paintDiscoveries = (): void => {
+    const q = discQuery.trim().toLowerCase();
+    const rows = discoveries.filter((d) => (!discKind || d.kind === discKind) && matches(d, q));
+    const pages = Math.max(1, Math.ceil(rows.length / DISC_PAGE));
+    discPage = Math.min(Math.max(1, discPage), pages);
+    discCount.textContent = `${discoveries.length} found`;
+    if (!discoveries.length) {
+      replace(discArea, empty('models', 'Nothing yet. Agents record what they find with plaza_toolbox_share.'));
+      return;
+    }
+    if (!rows.length) {
+      replace(discArea, h('p.faint', null, 'Nothing matches that search.'));
+      return;
+    }
+    const start = (discPage - 1) * DISC_PAGE;
+    const prev = button(
+      'Previous',
+      () => {
+        discPage -= 1;
+        paintDiscoveries();
+      },
+      { kind: 'ghost', size: 'sm', disabled: discPage <= 1 },
+    );
+    const next = button(
+      'Next',
+      () => {
+        discPage += 1;
+        paintDiscoveries();
+      },
+      { kind: 'ghost', size: 'sm', disabled: discPage >= pages },
+    );
+    replace(
+      discArea,
+      h('ul.disc-list', null, rows.slice(start, start + DISC_PAGE).map(discRow)),
+      h('div.disc-pager', null, prev, h('span', null, `page ${discPage} of ${pages}`), next),
+    );
+  };
+
+  const renderToolbox = (): void => {
+    if (!discMounted) {
+      discMounted = true;
+      replace(discBody, discHeading, discIntro, discToolbar, discArea);
+    }
+    paintDiscoveries();
+  };
 
   void refresh();
   void refreshProposals();
