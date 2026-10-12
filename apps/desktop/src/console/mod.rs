@@ -8,6 +8,7 @@
 
 pub mod boot;
 pub mod brands;
+pub mod cli_link;
 pub mod floor3d;
 pub mod client;
 pub mod events;
