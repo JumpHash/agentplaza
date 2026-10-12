@@ -177,7 +177,9 @@ impl Store {
             Tier::Worker => policy.worker,
         };
         let names: Vec<String> = list.iter().filter_map(|m| canonical(m).ok()).collect();
-        if names.contains(&wanted) {
+        // An entry without an effort pin admits that model at any effort; a pinned entry only itself.
+        let base = ModelRef::parse(model).map(|r| r.base_name()).map_err(|e| e.to_string())?;
+        if names.contains(&wanted) || names.contains(&base) {
             return Ok(());
         }
         Err(format!(
@@ -286,8 +288,11 @@ mod tests {
         let err = store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").unwrap_err();
         assert!(err.contains("not allowed for the orchestrator tier"), "{err}");
         assert!(err.contains("allowed: "), "{err}");
-        // Orchestrator tier: only its own list.
+        // Orchestrator tier: only its own list, at any effort when the entry pins none.
         assert!(store.allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5").is_ok());
+        assert!(store.allowed(Tier::Orchestrator, "openai/gpt-6-astra@high").is_ok());
+        assert!(store.allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5@max").is_ok());
+        assert!(store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash@high").is_err());
         assert!(store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").is_err());
         // Unparseable names fail with the parser's text.
         assert!(store.allowed(Tier::Worker, "no-slash-here").is_err());
