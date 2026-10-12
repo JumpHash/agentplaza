@@ -17,6 +17,7 @@ export const STYLES_D: Record<string, RoomStyle> = {
       const coinsA = room.item(-2.5, -1.8);
       for (let i = 0; i < 6; i++) room.cyl(coinsA, 0.16, 0.16, 0.05, k.gold, 0, i * 0.05, 0, 20);
       const flip = room.cyl(coinsA, 0.16, 0.16, 0.05, k.gold, 0, 0.4, 0, 20);
+      flip.userData.dynamic = true;
       room.anim.push((t) => {
         const p = (t * 0.7) % 1;
         flip.position.y = 0.4 + Math.sin(p * Math.PI) * 0.25;
@@ -40,6 +41,7 @@ export const STYLES_D: Record<string, RoomStyle> = {
       const dialPivot = new THREE.Group();
       dialPivot.position.set(0, 0.45, 0.35);
       safe.add(dialPivot);
+      dialPivot.userData.dynamic = true;
       room.cyl(dialPivot, 0.12, 0.12, 0.04, k.gold, 0, 0, 0, 16).rotation.x = Math.PI / 2;
       room.anim.push((t) => (dialPivot.rotation.z = t * 0.9));
 
@@ -69,7 +71,7 @@ export const STYLES_D: Record<string, RoomStyle> = {
       room.box(wall, 2.6, 1.2, 0.12, k.dark, 0, 0.7, 0);
       for (const x of [-1.1, 1.1]) room.box(wall, 0.1, 0.7, 0.1, k.metal, x, 0, 0);
       for (const y of [0.9, 1.4]) {
-        for (const x of [-0.82, 0, 0.82]) room.box(wall, 0.7, 0.4, 0.03, k.screen, x, y, 0.075);
+        for (const x of [-0.82, 0, 0.82]) room.box(wall, 0.7, 0.4, 0.03, k.screen, x, y, 0.075).userData.dynamic = true;
       }
 
       // A rotating red siren with a flashing red light.
@@ -79,6 +81,7 @@ export const STYLES_D: Record<string, RoomStyle> = {
       const head = new THREE.Group();
       head.position.set(0, 0.95, 0);
       siren.add(head);
+      head.userData.dynamic = true; // spins; its light rides along
       room.ball(head, 0.22, k.red, 0, 0, 0).scale.set(1, 0.6, 1);
       room.box(head, 0.1, 0.1, 0.1, k.glowRed, 0.2, -0.02, 0);
       const light = new THREE.PointLight(0xff4a3a, 0.8, 4, 2);
@@ -151,10 +154,12 @@ export const STYLES_D: Record<string, RoomStyle> = {
       const arm = new THREE.Group();
       arm.position.set(0, 2.5, 0);
       mast.add(arm);
+      arm.userData.dynamic = true;
       room.cyl(arm, 0.5, 0.08, 0.16, k.white, 0, -0.08, 0.15, 24).rotation.x = Math.PI / 2;
       room.box(arm, 0.05, 0.05, 0.2, k.metal, 0, -0.025, 0.07);
       room.anim.push((t) => (arm.rotation.y = t * 0.5));
       const tip = room.ball(mast, 0.07, k.glowRed, 0, 3.1, 0);
+      tip.userData.dynamic = true;
       room.anim.push((t) => (tip.visible = Math.sin(t * 4) > 0));
 
       // Cable spools lying on their sides.
@@ -227,6 +232,7 @@ export const STYLES_D: Record<string, RoomStyle> = {
       const wave = new THREE.Group();
       wave.position.set(0, 2.22, 0);
       flag.add(wave);
+      wave.userData.dynamic = true; // the cloth rides along
       const cloth = room.box(wave, 0.7, 0.45, 0.02, k.blue, 0.35, -0.225, 0);
       room.anim.push((t) => {
         wave.rotation.y = Math.sin(t * 3) * 0.3;
@@ -265,7 +271,7 @@ export const STYLES_D: Record<string, RoomStyle> = {
       for (const x of [-0.65, 0.65]) room.box(desk, 0.5, 0.72, 0.7, k.darkWood, x, 0, 0);
       room.box(desk, 0.28, 0.02, 0.18, k.metal, 0, 0.79, -0.25);
       room.box(desk, 0.07, 0.14, 0.05, k.metal, 0, 0.81, -0.25);
-      room.box(desk, 0.6, 0.4, 0.04, k.screen, 0, 0.95, -0.25);
+      room.box(desk, 0.6, 0.4, 0.04, k.screen, 0, 0.95, -0.25).userData.dynamic = true;
 
       // A tall armchair in the corner, angled toward the room.
       const chair = room.item(-2.1, -2.1, Math.PI / 4);

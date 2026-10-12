@@ -29,6 +29,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       const rocket = new THREE.Group();
       rocket.position.y = 0.2;
       pad.add(rocket);
+      rocket.userData.dynamic = true;
       room.cyl(rocket, 0.24, 0.24, 1.5, k.white, 0, 0, 0, 20);
       room.cone(rocket, 0.24, 0.55, k.signal, 0, 1.5, 0, 20);
       for (let i = 0; i < 3; i++) {
@@ -54,6 +55,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       }
       room.box(gantry, 0.8, 0.06, 0.12, k.signal, 0.65, 2.2, 0);
       const beacon = room.ball(gantry, 0.09, k.glowRed, 0, 3.3, 0);
+      beacon.userData.dynamic = true;
       room.anim.push((t) => (beacon.visible = Math.sin(t * 5) > 0));
 
       // The control desk, traffic cones at the front-left, crates along both sides.
@@ -92,6 +94,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       const wheel = new THREE.Group();
       wheel.position.set(0, 1.12, 0.17);
       vault.add(wheel);
+      wheel.userData.dynamic = true;
       mesh(wheel, new THREE.TorusGeometry(0.42, 0.045, 8, 28), k.gold, 0, 0, 0);
       for (let i = 0; i < 3; i++) mesh(wheel, new THREE.BoxGeometry(0.06, 0.84, 0.05), k.gold, 0, 0, 0).rotation.z = (i * Math.PI) / 3;
       mesh(wheel, new THREE.SphereGeometry(0.09, 12, 10), k.dark, 0, 0, 0.03);
@@ -103,6 +106,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       const head = new THREE.Group();
       head.position.set(0, 2.0, 0);
       pole.add(head);
+      head.userData.dynamic = true;
       room.box(head, 0.26, 0.2, 0.42, k.dark, 0, -0.1, 0.1);
       room.cyl(head, 0.07, 0.07, 0.06, k.info, 0, -0.03, 0.32, 12).rotation.x = Math.PI / 2;
       room.ball(head, 0.035, k.glowRed, 0.09, 0.12, 0.2);
@@ -159,6 +163,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       const stamp = new THREE.Group();
       stamp.position.y = 0.92;
       stand.add(stamp);
+      stamp.userData.dynamic = true;
       room.box(stamp, 0.6, 0.12, 0.42, k.red, 0, 0, 0);
       room.cyl(stamp, 0.07, 0.09, 0.5, k.wood, 0, 0.12, 0, 12);
       room.ball(stamp, 0.11, k.gold, 0, 0.66, 0);
@@ -198,6 +203,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       const arm = new THREE.Group();
       arm.position.set(-0.52, 1.4, -0.3);
       table.add(arm);
+      arm.userData.dynamic = true;
       room.box(arm, 0.04, 0.04, 0.45, k.metal, 0, -0.02, 0.22);
       room.cone(arm, 0.14, 0.16, k.signal, 0, -0.16, 0.45, 16).rotation.x = Math.PI;
       room.ball(arm, 0.05, k.glowWarm, 0, -0.1, 0.45);
@@ -223,6 +229,7 @@ export const STYLES_B: Record<string, RoomStyle> = {
       const crane = new THREE.Group();
       crane.position.set(0.22, 0.08, 0.14);
       city.add(crane);
+      crane.userData.dynamic = true;
       room.cyl(crane, 0.04, 0.04, 0.3, k.gold, 0, 0, 0, 8);
       room.box(crane, 0.36, 0.03, 0.03, k.gold, 0, 0.3, 0);
       room.box(crane, 0.02, 0.1, 0.02, k.dark, 0.15, 0.2, 0);
