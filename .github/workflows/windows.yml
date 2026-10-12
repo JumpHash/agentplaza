@@ -64,8 +64,13 @@ jobs:
       # cache key guest.yml saved it under, and the shell scripts run as written.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
-      - name: The runner's build directory
-        run: echo "CARGO_TARGET_DIR=$(cygpath -m "$USERPROFILE")/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
+      # The runner's user is not an administrator: everything lives in its profile, the build
+      # directory (kept between runs) and .NET (for WiX) included.
+      - name: The runner's build directory and .NET
+        run: |
+          home=$(cygpath -m "$USERPROFILE")
+          echo "CARGO_TARGET_DIR=$home/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
+          echo "DOTNET_INSTALL_DIR=$home/.dotnet" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ env.TRIPLE }}" }
       - uses: taiki-e/install-action@v2
@@ -75,7 +80,8 @@ jobs:
         run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }}
       - name: Build the tests (arm64 cannot run here)
         if: matrix.arch != 'x64'
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }} --no-run
+        # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
+        run: cargo test --workspace --exclude agent-harness --locked --profile release --target ${{ env.TRIPLE }} --no-run
       - name: Build the binaries
         if: inputs.package
         run: cargo build --release --locked --target ${{ env.TRIPLE }} ${{ env.BINS }}
@@ -102,27 +108,30 @@ jobs:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: packaging/windows/build.ps1 -Stage stage -Version $env:VERSION -Arch ${{ matrix.arch }} -Out out-windows-${{ matrix.arch }}
-      - name: Verify (x64; then uninstalled, the runner is shared)
+      # An administrative install unpacks the MSI's files without installing it (no administrator
+      # needed, nothing left on the shared runner); what it unpacked must run.
+      - name: Verify the MSI (x64)
         if: inputs.package && matrix.arch == 'x64'
         shell: pwsh
         run: |
-          $log = Join-Path $env:RUNNER_TEMP 'msi.log'
           $msi = (Get-ChildItem out-windows-${{ matrix.arch }} -Filter *.msi).FullName
-          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', "`"$log`"" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec exited $($p.ExitCode)" }
-          try {
-          $bin = Join-Path $env:ProgramFiles 'AgentPlaza\bin'
-          foreach ($b in 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
-          if (-not (Test-Path (Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\console\index.html'))) { throw 'console missing' }
-          if ('${{ matrix.arch }}' -eq 'x64') {
-            foreach ($b in 'noded', 'vsockd', 'vmctl') { & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" } }
-            if ('${{ github.event_name }}' -ne 'workflow_dispatch') {
-              $guest = Join-Path $env:ProgramFiles 'AgentPlaza\share\agentplaza\guest\x86_64'
-              foreach ($f in 'vmlinux', 'initrd.gz') { if (-not (Test-Path (Join-Path $guest $f))) { throw "guest $f missing" } }
-            }
+          $dir = Join-Path $env:RUNNER_TEMP 'msi-unpacked'
+          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          $log = Join-Path $env:RUNNER_TEMP 'msi.log'
+          $p = Start-Process msiexec.exe -ArgumentList '/a', "`"$msi`"", '/qn', "TARGETDIR=`"$dir`"", '/l*v', "`"$log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec /a exited $($p.ExitCode)" }
+          $apid = Get-ChildItem $dir -Recurse -Filter apid.exe | Select-Object -First 1
+          if (-not $apid) { throw 'apid.exe is not in the MSI' }
+          $bin = $apid.DirectoryName
+          $root = Split-Path $bin -Parent
+          foreach ($b in 'apid', 'apz-link', 'agentplaza', 'agentplaza-desktop', 'noded', 'vsockd', 'vmctl') {
+            & (Join-Path $bin "$b.exe") --version; if ($LASTEXITCODE) { throw "$b failed" }
           }
-          } finally {
-            Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait | Out-Null
+          if (-not (Test-Path (Join-Path $root 'share\agentplaza\console\index.html'))) { throw 'console missing' }
+          if ('${{ github.event_name }}' -ne 'workflow_dispatch') {
+            foreach ($f in 'vmlinux', 'initrd.gz') {
+              if (-not (Test-Path (Join-Path $root "share\agentplaza\guest\x86_64\$f"))) { throw "guest $f missing" }
+            }
           }
       # Handed to release.yml's publish job through the cache (no artifact storage).
       - uses: actions/cache/save@v4

@@ -58,7 +58,8 @@ jobs:
       - name: Test (Intel; the guest harness runs only inside Linux VMs)
         run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target x86_64-apple-darwin
       - name: Build the tests (Apple Silicon cannot run here)
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target aarch64-apple-darwin --no-run
+        # cargo test, not nextest: nextest lists the tests by running the binaries, which an Intel Mac cannot.
+        run: cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
       - name: Build the binaries
         if: inputs.package
         run: |
