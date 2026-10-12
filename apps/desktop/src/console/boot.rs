@@ -405,9 +405,9 @@ pub fn subscription(_state: &State) -> Subscription<Msg> {
     Subscription::none()
 }
 
-/// `~/.config/agentplaza/desktop.json`.
+/// `desktop.json` in the plaza's config directory (`apz_os::dirs::config`).
 fn config_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config").join("agentplaza").join("desktop.json"))
+    Some(apz_os::dirs::config().join("desktop.json"))
 }
 
 fn encode_remembered(choice: Choice) -> String {

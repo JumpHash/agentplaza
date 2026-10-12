@@ -34,6 +34,7 @@ tiny-skia = "0.11"
 ab_glyph = "0.2"
 # The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
 apz-http = { path = "../../crates/apz-http" }
+apz-os = { path = "../../crates/apz-os" }
 serde.workspace = true
 serde_json.workspace = true
 

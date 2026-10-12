@@ -3,7 +3,7 @@
 //! filter, a preview by type, Save and Delete; and the agent-built tools, waiting for the owner's
 //! review (Publish, Reject with a note), with their files and Remove.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use iced::widget::{column, container, image, row, scrollable, text_input, Space};
 use iced::{Element, Fill, Length, Task};
@@ -896,8 +896,7 @@ fn fetch_bytes(client: &client::Client, path: &str) -> Result<Vec<u8>, String> {
 
 /// Writes a download to ~/Downloads under the file's own name (never a path from the name).
 fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
-    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is not set".to_string())?;
-    let dir = PathBuf::from(home).join("Downloads");
+    let dir = apz_os::dirs::home().ok_or_else(|| "the home directory is not set".to_string())?.join("Downloads");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = Path::new(name)
         .file_name()
