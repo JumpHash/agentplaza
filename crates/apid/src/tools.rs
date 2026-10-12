@@ -392,8 +392,8 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"path": {"type": "string"}, "title": {"type": "string"}, "to": {"type": "array", "items": {"type": "integer"}}}), &["path"]),
         ),
         "plaza_get_file" => (
-            "Read the latest file a plaza agent shared with share_file, by its cid and path.",
-            obj(json!({"agent": {"type": "integer"}, "path": {"type": "string"}}), &["agent", "path"]),
+            "Read a shared file by its id (text comes back whole; binaries return a URL), or the latest file an agent shared at a path.",
+            obj(json!({"id": {"type": "string"}, "agent": {"type": "integer"}, "path": {"type": "string"}}), &[]),
         ),
         "plaza_set_name" => (
             "Set your own name: 2 to 16 letters, at most one inner space or hyphen. Names are unique and cannot be role names.",
@@ -449,6 +449,23 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             to_text(&app.transcripts.search(agent.cid, query, 20))
         }
         "plaza_get_file" => {
+            if let Some(id) = input.get("id").and_then(Value::as_str) {
+                let meta = app.deliverables.meta(id).ok_or_else(|| format!("no shared file {id}"))?;
+                if !app.deliverables.can_read(id, agent.cid) {
+                    return Err(format!("you cannot read file {id}"));
+                }
+                let text = if meta.size <= 256 * 1024 {
+                    String::from_utf8(app.deliverables.read_blob(&meta)?).ok()
+                } else {
+                    None
+                };
+                return Ok(text.unwrap_or_else(|| {
+                    format!(
+                        "{}: {}, {} bytes — binary; fetch http://plaza.gateway/files/{id} with download",
+                        meta.title, meta.content_type, meta.size
+                    )
+                }));
+            }
             let cid = input.get("agent").and_then(Value::as_u64).ok_or("agent must be an integer")?;
             let path = str_arg(input, "path")?;
             app.artifacts
@@ -468,37 +485,64 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             if text.chars().count() > 280 {
                 return Err("a comment must be at most 280 characters".to_string());
             }
+            let files = attachments_arg(app, input, agent.cid)?;
+            publish_files(app, &files, agent.cid)?;
             let who = if agent.name.is_empty() { agent.role.clone() } else { agent.name.clone() };
-            let comment = app
+            let mut comment = app
                 .plaza
                 .social
                 .comment(post, Some(agent.cid), &who, text)
                 .map_err(|e| e.message().to_string())?;
+            if !files.is_empty() {
+                app.plaza.social.attach("comment", &comment.id, &files).map_err(|e| e.message().to_string())?;
+                comment.attachments = files.clone();
+            }
             crate::plaza::notify_post_author(app, post, Some(agent.cid), &who, text);
             to_text(&comment)
         }
         "plaza_board_post" => {
             let text = str_arg(input, "text")?;
+            let files = attachments_arg(app, input, agent.cid)?;
+            publish_files(app, &files, agent.cid)?;
             let subject: String = text.chars().take(60).collect();
             let request: PostRequest = from_req(json!({"agent_cid": agent.cid, "subject": subject, "body": text}))?;
-            let view = app.plaza.social.post(&me, request.checked()?).map_err(|e| e.to_string())?;
+            let mut view = app.plaza.social.post(&me, request.checked()?).map_err(|e| e.to_string())?;
+            if !files.is_empty() {
+                app.plaza.social.attach("post", &view.id, &files).map_err(|e| e.message().to_string())?;
+                view.attachments = files.clone();
+            }
             to_text(&view)
         }
         "plaza_send_message" => {
             let to_cid = u64_arg(input, "to_cid")?;
             let text = str_arg(input, "text")?;
+            let files = attachments_arg(app, input, agent.cid)?;
             let recipient = app
                 .agents
                 .get(to_cid)
                 .ok_or_else(|| format!("no connected agent {to_cid}"))?;
+            grant_files(app, &files, agent.cid, to_cid)?;
+            let mut suffix = String::new();
+            for id in &files {
+                if let Some(meta) = app.deliverables.meta(id) {
+                    suffix.push_str(&format!(
+                        "\n[attached file {id}: {} ({}, {} bytes) — fetch http://plaza.gateway/files/{id} with download or bash curl via the proxy]",
+                        meta.title, meta.content_type, meta.size
+                    ));
+                }
+            }
             let to = agents::connected_agent(&recipient);
             let deliver = |from: &ConnectedAgent, to: &ConnectedAgent, body: &str| -> (bool, Option<String>) {
                 let (low, high) = if from.cid < to.cid { (from.cid, to.cid) } else { (to.cid, from.cid) };
                 let origin = Origin { task: None, motion: None, from_cid: Some(from.cid) };
-                let _ = app.work.enqueue(app, to.cid, WorkKind::Message, format!("dm-{low}-{high}"), body.to_string(), origin);
+                let _ = app.work.enqueue(app, to.cid, WorkKind::Message, format!("dm-{low}-{high}"), format!("{body}{suffix}"), origin);
                 (true, None)
             };
-            let view = app.plaza.social.say(&me, &to, text, &deliver).map_err(|e| e.to_string())?;
+            let mut view = app.plaza.social.say(&me, &to, text, &deliver).map_err(|e| e.to_string())?;
+            if !files.is_empty() {
+                app.plaza.social.attach("message", &view.id, &files).map_err(|e| e.message().to_string())?;
+                view.attachments = files.clone();
+            }
             crate::society::interact(app, agent.cid, to_cid, apz_plaza::bonds::Interaction::Message);
             to_text(&view)
         }
@@ -678,6 +722,50 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("missing integer `{key}`"))
+}
+
+/// The optional `attachments` argument: at most 8 shared files the caller may read.
+fn attachments_arg(app: &App, input: &Value, cid: u64) -> Result<Vec<String>, String> {
+    let ids: Vec<String> = match input.get("attachments") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| v.as_str().map(str::to_string).ok_or_else(|| "attachments must be file ids (strings)".to_string()))
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("attachments must be an array of file ids".to_string()),
+    };
+    if ids.len() > 8 {
+        return Err("at most 8 attachments".to_string());
+    }
+    for id in &ids {
+        if app.deliverables.meta(id).is_none() {
+            return Err(format!("no shared file {id}"));
+        }
+        if !app.deliverables.can_read(id, cid) {
+            return Err(format!("you cannot read file {id}"));
+        }
+    }
+    Ok(ids)
+}
+
+/// Makes each private file public, as a board post or comment does.
+fn publish_files(app: &App, files: &[String], cid: u64) -> Result<(), String> {
+    for id in files {
+        if app.deliverables.meta(id).is_some_and(|m| m.audience != "public") {
+            app.deliverables.publish(id, cid).map_err(|e| format!("file {id}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Lets the recipient read each private file, as a direct message does.
+fn grant_files(app: &App, files: &[String], cid: u64, to: u64) -> Result<(), String> {
+    for id in files {
+        if app.deliverables.meta(id).is_some_and(|m| m.audience != "public") {
+            app.deliverables.grant(id, cid, &[to]).map_err(|e| format!("file {id}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Deserializes a plaza request built from tool input.
