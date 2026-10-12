@@ -19,6 +19,12 @@ pub struct Config {
     pub console: PathBuf,
     pub env_file: Option<PathBuf>,
     pub dev_models: bool,
+    /// The address the hub serves on (loopback unless `--bind` says otherwise).
+    pub bind: std::net::IpAddr,
+    /// How nodes reach this hub; join tokens carry it.
+    pub public_url: String,
+    /// Serve HTTPS with the hub's certificate (implied off loopback).
+    pub tls: bool,
 }
 
 impl Config {
@@ -38,7 +44,12 @@ impl Config {
             console: PathBuf::from("apps/web/dist"),
             env_file: Some(Path::new(&home).join(".config/agentplaza/keys.env")),
             dev_models: false,
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            public_url: String::new(),
+            tls: false,
         };
+        let mut public_url = None;
+        let mut tls = false;
         let mut args = args.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--dev-models" {
@@ -55,10 +66,16 @@ impl Config {
                 "--roles" => config.roles = PathBuf::from(value()?),
                 "--prompts" => config.prompts = PathBuf::from(value()?),
                 "--console" => config.console = PathBuf::from(value()?),
+                "--bind" => config.bind = value()?.parse().map_err(|e| format!("{flag}: {e}"))?,
+                "--public-url" => public_url = Some(value()?),
+                "--tls" => tls = true,
                 "--env-file" => config.env_file = Some(PathBuf::from(value()?)),
                 other => return Err(format!("unknown argument: {other}")),
             }
         }
+        config.tls = tls || !config.bind.is_loopback();
+        let scheme = if config.tls { "https" } else { "http" };
+        config.public_url = public_url.unwrap_or_else(|| format!("{scheme}://127.0.0.1:{}", config.port));
         Ok(config)
     }
 }
@@ -129,6 +146,8 @@ impl App {
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
         let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
+        let hub_auth = crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         let app = Arc::new(App {
             bus: events::Bus::default(),
             artifacts: crate::artifacts::Artifacts::default(),
@@ -149,7 +168,7 @@ impl App {
             custom_roles: crate::roles_custom::Store::default(),
             agent_proposals: crate::agent_proposals::Store::default(),
             nodes: crate::nodes::Store::default(),
-            hub_auth: crate::hub_auth::Hub::local(),
+            hub_auth,
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
@@ -187,6 +206,11 @@ impl App {
         spawn_treasury_saver(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
+        // TODO(H1 merge): serve `config.bind` over TLS (`apz_http::Server::bind_addr`, `.tls(...)`)
+        // once those land; until then the hub listens on loopback only.
+        if !app.config.bind.is_loopback() {
+            eprintln!("apid: --bind {} is not served yet; listening on 127.0.0.1:{}", app.config.bind, app.config.port);
+        }
         let server = apz_http::Server::bind(app.config.port)?
             .limits(apz_http::Limits { max_head: 16 << 10, max_body: 512 << 20 });
         let router = api::router();

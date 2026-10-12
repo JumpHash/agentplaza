@@ -35,6 +35,8 @@ pub struct Request {
     /// Header names lower-cased, values trimmed, in arrival order.
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// The connecting peer's address; None when the server did not record it.
+    pub peer: Option<std::net::IpAddr>,
 }
 
 impl Request {

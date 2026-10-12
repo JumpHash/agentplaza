@@ -4,7 +4,7 @@
 //! apid [--port 7700] [--state-dir DIR] [--noded-port 8899] [--hub-port 19080]
 //!      [--roles docs/agents/initial-roles.json] [--prompts docs/codex-draft/roles]
 //!      [--console apps/web/dist] [--env-file ~/.config/agentplaza/keys.env]
-//!      [--dev-models]
+//!      [--dev-models] [--bind ADDR] [--public-url URL] [--tls]
 //! ```
 
 #![forbid(unsafe_code)]
@@ -61,6 +61,10 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
                      (default $XDG_STATE_HOME/agentplaza)
   --noded-port PORT  the node daemon (default 8899)
   --hub-port PORT    the hub (default 19080)
+  --bind ADDR        the address to serve on (default 127.0.0.1); off loopback the hub
+                     serves HTTPS
+  --public-url URL   how nodes reach this hub (default http://127.0.0.1:PORT, https with TLS)
+  --tls              serve HTTPS with the hub's self-signed certificate
   --roles MANIFEST   roles manifest (default docs/agents/initial-roles.json)
   --prompts DIR      role prompts, DIR/<role>/prompt.md (default docs/codex-draft/roles)
   --console DIR      the web console's files (default apps/web/dist)
