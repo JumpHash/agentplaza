@@ -285,7 +285,7 @@ impl Floor {
                 if let Some(from) = from {
                     self.send_packet(from, cid, false);
                 } else if text(data.get("kind")) == "task" {
-                    let boss = self.bots.iter().find(|b| b.agent.role == "orchestrator").map(|b| b.agent.cid);
+                    let boss = self.bots.iter().find(|b| b.agent.tier == "orchestrator").map(|b| b.agent.cid);
                     if let Some(boss) = boss {
                         self.send_packet(boss, cid, false);
                     }
@@ -614,6 +614,7 @@ mod tests {
                 name: format!("bot{cid}"),
                 role: "worker".to_string(),
                 status: status.to_string(),
+                tier: "worker".to_string(),
                 model: "test".to_string(),
             },
             district: 0,
