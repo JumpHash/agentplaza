@@ -3,6 +3,7 @@
 //! `layout` builds the world and keeps it in step with the agent list, `motion` moves it each
 //! frame, `view` is the iced side (the shader widget, pointer input, labels, card, legend).
 
+pub mod labels;
 pub mod layout;
 pub mod motion;
 pub mod view;
@@ -267,6 +268,7 @@ impl Floor {
             draws,
             lights,
             time: self.time,
+            overlays: Vec::new(),
         }
     }
 

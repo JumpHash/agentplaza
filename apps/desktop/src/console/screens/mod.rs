@@ -2,6 +2,8 @@
 //! `Go(Id)` variant for navigation), `go(&Msg)`, `load`, `update`, `view`. This registry is the only
 //! place that knows them all; a screen module touches nothing outside itself.
 
+pub mod agent_side;
+pub mod wizard;
 pub mod overview;
 pub mod agents;
 pub mod projects;

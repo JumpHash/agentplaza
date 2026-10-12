@@ -36,6 +36,25 @@ const SHADOW_SIZE: u32 = 2048;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADER: &str = include_str!("floor.wgsl");
 
+/// Overlays: a textured rectangle per instance, in the widget's NDC.
+const OVERLAY: &str = r"
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var smp: sampler;
+struct Out { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs(@builtin(vertex_index) i: u32, @location(0) rect: vec4<f32>) -> Out {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
+    );
+    let c = corners[i];
+    var o: Out;
+    o.clip = vec4<f32>(mix(rect.x, rect.z, c.x), mix(rect.y, rect.w, c.y), 0.0, 1.0);
+    o.uv = c;
+    return o;
+}
+@fragment fn fs(o: Out) -> @location(0) vec4<f32> { return textureSample(tex, smp, o.uv); }
+";
+
 const BLIT: &str = r"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var smp: sampler;
@@ -161,6 +180,11 @@ pub struct Pipeline {
     shadow_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
+    overlay_pipeline: wgpu::RenderPipeline,
+    /// Per overlay: its rectangle (NDC: x0, y0, x1, y1).
+    overlay_rects: Option<(wgpu::Buffer, usize)>,
+    /// This frame's overlays: texture id, in order.
+    overlay_cmds: Vec<u64>,
     tex_layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     globals_group: wgpu::BindGroup,
@@ -357,6 +381,37 @@ impl shader::Pipeline for Pipeline {
             multiview: None,
             cache: None,
         });
+        let overlay_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("floor overlay"),
+            source: wgpu::ShaderSource::Wgsl(OVERLAY.into()),
+        });
+        let overlay_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("floor overlay"),
+            bind_group_layouts: &[&tex_layout],
+            push_constant_ranges: &[],
+        });
+        const RECT: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x4];
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("floor overlay"),
+            layout: Some(&overlay_layout),
+            vertex: wgpu::VertexState {
+                module: &overlay_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout { array_stride: 16, step_mode: wgpu::VertexStepMode::Instance, attributes: &RECT }],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview: None,
+            cache: None,
+        });
         let linear_clamp = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("floor blit"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -372,6 +427,9 @@ impl shader::Pipeline for Pipeline {
             shadow_pipeline,
             blit_pipeline,
             blit_layout,
+            overlay_pipeline,
+            overlay_rects: None,
+            overlay_cmds: Vec::new(),
             tex_layout,
             globals,
             globals_group,
@@ -787,6 +845,34 @@ impl shader::Primitive for Primitive {
             }
             p.cmds.push(Cmd { key, mesh, tex, rows: range });
         }
+        // Overlays: their rectangles in the widget's NDC, their textures uploaded.
+        let mut rects: Vec<[f32; 4]> = Vec::with_capacity(f.overlays.len());
+        p.overlay_cmds.clear();
+        for o in &f.overlays {
+            if !p.textures.contains_key(&o.tex.id) {
+                p.upload_texture(device, queue, &o.tex);
+            }
+            used_textures.insert(o.tex.id);
+            let (w, h) = (bounds.width.max(1.0), bounds.height.max(1.0));
+            rects.push([o.x / w * 2.0 - 1.0, 1.0 - o.y / h * 2.0, (o.x + o.w) / w * 2.0 - 1.0, 1.0 - (o.y + o.h) / h * 2.0]);
+            p.overlay_cmds.push(o.tex.id);
+        }
+        if !rects.is_empty() {
+            let bytes: &[u8] = bytemuck::cast_slice(&rects);
+            if p.overlay_rects.as_ref().is_none_or(|(_, cap)| *cap < bytes.len()) {
+                let cap = bytes.len().next_power_of_two();
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("floor overlays"),
+                    size: cap as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                p.overlay_rects = Some((buffer, cap));
+            }
+            if let Some((buffer, _)) = &p.overlay_rects {
+                queue.write_buffer(buffer, 0, bytes);
+            }
+        }
         p.meshes.retain(|id, _| used_meshes.contains(id));
         p.textures.retain(|id, _| used_textures.contains(id));
 
@@ -816,6 +902,17 @@ impl shader::Primitive for Primitive {
             pass.set_pipeline(&p.blit_pipeline);
             pass.set_bind_group(0, &targets.blit_group, &[]);
             pass.draw(0..3, 0..1);
+        }
+        // The overlays (labels), at full resolution over the picture, in order.
+        if let (Some((rects, _)), false) = (&p.overlay_rects, p.overlay_cmds.is_empty()) {
+            pass.set_pipeline(&p.overlay_pipeline);
+            pass.set_vertex_buffer(0, rects.slice(..));
+            for (i, id) in p.overlay_cmds.iter().enumerate() {
+                if let Some(tex) = p.textures.get(id) {
+                    pass.set_bind_group(0, &tex.group, &[]);
+                    pass.draw(0..6, i as u32..i as u32 + 1);
+                }
+            }
         }
         true
     }

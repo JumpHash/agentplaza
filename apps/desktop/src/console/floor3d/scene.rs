@@ -750,6 +750,19 @@ pub struct Frame {
     pub lights: Vec<PointLightDraw>,
     /// Seconds since the floor opened (the grass's wind).
     pub time: f32,
+    /// 2D pictures drawn over the scene (the robots' name labels), back to front.
+    pub overlays: Vec<Overlay>,
+}
+
+/// A picture over the scene: a texture at a rectangle in widget pixels from its top-left (logical
+/// pixels; the texture may be painted at a higher scale for crisp text).
+#[derive(Debug, Clone)]
+pub struct Overlay {
+    pub tex: Tex,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 /// The draws and point lights under `root`: each visible mesh with its world matrix, its hull
