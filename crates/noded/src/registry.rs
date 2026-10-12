@@ -744,13 +744,34 @@ fn prepare_persistent_workspace(
     use std::os::unix::fs::DirBuilderExt;
     let dir = persist_dir.join("workspaces");
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
-    let image = dir.join(format!("cid-{cid}.ext4"));
+    let image = persistent_workspace_path(persist_dir, cid);
     if !image.exists() {
         let partial = dir.join(format!("cid-{cid}.ext4.partial"));
         vmm::spawner::copy_sparse(base, &partial)?;
         std::fs::rename(&partial, &image)?;
     }
     Ok(image)
+}
+
+/// The persistent workspace image of the keepalive VM with guest CID `cid`
+/// under `persist_dir`: `persist_dir/workspaces/cid-{cid}.ext4`.
+fn persistent_workspace_path(persist_dir: &std::path::Path, cid: u64) -> PathBuf {
+    persist_dir.join("workspaces").join(format!("cid-{cid}.ext4"))
+}
+
+/// Replaces the workspace image `image` with a fresh copy of the base image
+/// `base`. The copy is made under a partial name and renamed over the image, as
+/// [`prepare_persistent_workspace`] makes its copies, so an interrupted wipe
+/// never leaves a half-copied image behind.
+fn replace_workspace(base: &std::path::Path, image: &std::path::Path) -> std::io::Result<()> {
+    let partial = PathBuf::from(format!("{}.partial", image.display()));
+    match std::fs::remove_file(&partial) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    vmm::spawner::copy_sparse(base, &partial)?;
+    std::fs::rename(&partial, image)
 }
 
 /// The daemon's runs, in creation order.
@@ -981,32 +1002,34 @@ impl Registry {
         };
         // Every VM of the run gets the same balloon, at the same usable size.
         let balloon = meta.balloon_usable_mib;
+        // Each VM's spec is kept in its slot: a restart or wipe boots the VM
+        // again from exactly the spec it was booted from here.
+        let specs: Vec<VmSpec> = (0..vms)
+            .map(|i| {
+                // `plans` has one entry per VM, so `i` is in range.
+                let plan = &plans[i];
+                VmSpec {
+                    kernel: self.images.kernel.clone(),
+                    cmdline: plan.cmdline.clone(),
+                    vcpus,
+                    memory_mib,
+                    initrd: Some(self.images.initrd.clone()),
+                    gic: None,
+                    vsock: Some(VsockConfig {
+                        guest_cid: plan.vsock_cid,
+                        uds_path: self.uds_dir.join(format!("vm{}", plan.vsock_cid)),
+                    }),
+                    // One image per VM, in the order `materialize_workspaces`
+                    // produced them: the run has exactly `vms` copies.
+                    workspace: workspaces.as_ref().and_then(|images| images.get(i)).cloned(),
+                    balloon,
+                }
+            })
+            .collect();
         let run = self.insert(id, meta);
-        let boot = spawner::spawn_each(vms, |i| {
-            // `spawn_each` calls this exactly `vms` times with the ids
-            // `0..vms`, and `plans` has `vms` entries: the index is in range.
-            let plan = &plans[i as usize];
-            VmSpec {
-                kernel: self.images.kernel.clone(),
-                cmdline: plan.cmdline.clone(),
-                vcpus,
-                memory_mib,
-                initrd: Some(self.images.initrd.clone()),
-                gic: None,
-                vsock: Some(VsockConfig {
-                    guest_cid: plan.vsock_cid,
-                    uds_path: self.uds_dir.join(format!("vm{}", plan.vsock_cid)),
-                }),
-                // One image per VM, in the order `materialize_workspaces`
-                // produced them: the spawn's ids are `0..vms` and the run has
-                // exactly `vms` copies.
-                workspace: workspaces
-                    .as_ref()
-                    .and_then(|images| images.get(i as usize))
-                    .cloned(),
-                balloon,
-            }
-        });
+        // `spawn_each` calls this exactly `vms` times with the ids `0..vms`, and
+        // `specs` has `vms` entries: the index is in range.
+        let boot = spawner::spawn_each(vms, |i| specs[i as usize].clone());
         match boot {
             Ok(handles) => {
                 let mut inner = run.lock();
@@ -1034,6 +1057,7 @@ impl Registry {
                         role: plans[index].role.clone(),
                         runtime: handle.runtime(),
                         handle: Some(handle),
+                        spec: Some(specs[index].clone()),
                         state: VmState::Running,
                         // The capture was empty at boot (the serial delta
                         // ticker starts at the first byte the guest writes).
@@ -1086,6 +1110,87 @@ impl Registry {
         err
     }
 
+    /// Restarts VM `vm` of run `run`: stops it, then boots it again from the
+    /// spec it was booted from (same CID, same workspace image).
+    pub fn restart_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        self.cycle_vm(&run, vm, false)?;
+        Ok(run)
+    }
+
+    /// Wipes VM `vm` of run `run`: stops it, replaces its workspace image with a
+    /// fresh copy of the base image, and boots it again.
+    pub fn wipe_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        self.cycle_vm(&run, vm, true)?;
+        Ok(run)
+    }
+
+    /// Stops VM `vm` of run `run` for good: it is killed and left stopped, and
+    /// the run's other VMs carry on. Nothing boots it again.
+    pub fn stop_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let (mut handle, _spec) = run.take_vm(vm)?;
+        if let Err(err) = handle.kill() {
+            run.return_vm(vm, handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        run.set_vm_killed(vm, handle);
+        Ok(run)
+    }
+
+    /// The restart and wipe of one VM: stops it, resets its workspace when
+    /// `wipe` is set, boots it again from its spec and seats it in its slot.
+    fn cycle_vm(&self, run: &Run, vm: u32, wipe: bool) -> Result<(), VmOpError> {
+        let base = match (wipe, &self.images.workspace) {
+            (true, None) => return Err(VmOpError::NoBaseImage),
+            (true, Some(base)) => Some(base.clone()),
+            (false, _) => None,
+        };
+        let (mut killed, spec) = run.take_vm(vm)?;
+        if let Err(err) = killed.kill() {
+            run.return_vm(vm, killed);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        if let Some(base) = &base {
+            if let Err(err) = self.reset_workspace(base, run, &spec) {
+                run.set_vm_killed(vm, killed);
+                return Err(VmOpError::Failed(format!("cannot reset VM {vm}'s workspace: {err}")));
+            }
+        }
+        match spawner::spawn(spec) {
+            Ok(fresh) => {
+                run.seat_vm(vm, killed, fresh);
+                Ok(())
+            }
+            Err(err) => {
+                run.set_vm_killed(vm, killed);
+                Err(VmOpError::Failed(format!("VM {vm} did not boot again: {err}")))
+            }
+        }
+    }
+
+    /// Gives a VM's workspace a fresh copy of `base`. A keepalive run's
+    /// persistent image is deleted and copied again; any other image is copied
+    /// over in place.
+    fn reset_workspace(&self, base: &std::path::Path, run: &Run, spec: &VmSpec) -> std::io::Result<()> {
+        match (run.keepalive, &self.persist_dir, &spec.vsock) {
+            (true, Some(persist), Some(vsock)) => {
+                let image = persistent_workspace_path(persist, vsock.guest_cid);
+                match std::fs::remove_file(&image) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err),
+                }
+                prepare_persistent_workspace(base, persist, vsock.guest_cid).map(|_| ())
+            }
+            _ => match &spec.workspace {
+                Some(image) => replace_workspace(base, image),
+                None => Ok(()),
+            },
+        }
+    }
+
     /// The registry's event bus, so a stream endpoint can subscribe to it.
     pub fn events_bus(&self) -> &EventBus {
         &self.events
@@ -1134,6 +1239,7 @@ impl Registry {
             memory_mib: meta.memory_mib,
             beats: meta.beats,
             role: meta.role,
+            keepalive: meta.keepalive,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             cids: Arc::clone(&self.cids),
@@ -1161,6 +1267,58 @@ impl Registry {
     }
 }
 
+/// Why a per-VM operation (restart, wipe or stop) did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VmOpError {
+    /// The node has no run with that id.
+    UnknownRun,
+    /// The run has no VM with that index.
+    UnknownVm(u32),
+    /// The run is not running, so its VMs cannot be operated on.
+    RunEnded(RunState),
+    /// Another restart, wipe or stop of the VM has not finished yet.
+    Busy(u32),
+    /// The node has no base workspace image to wipe a VM back to.
+    NoBaseImage,
+    /// The VM did not stop, so it was left as it was.
+    Refused(String),
+    /// The VM could not be prepared or booted again.
+    Failed(String),
+}
+
+impl VmOpError {
+    /// The HTTP status this error is reported as: 404 for a run or VM the node
+    /// does not have, 409 for one whose state refuses the operation now, 500
+    /// when the VM itself could not be stopped or booted.
+    pub fn status(&self) -> u16 {
+        match self {
+            VmOpError::UnknownRun | VmOpError::UnknownVm(_) => 404,
+            VmOpError::RunEnded(_) | VmOpError::Busy(_) | VmOpError::NoBaseImage => 409,
+            VmOpError::Refused(_) | VmOpError::Failed(_) => 500,
+        }
+    }
+}
+
+impl std::fmt::Display for VmOpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VmOpError::UnknownRun => write!(formatter, "no run with that id"),
+            VmOpError::UnknownVm(vm) => write!(formatter, "the run has no VM {vm}"),
+            VmOpError::RunEnded(state) => {
+                write!(formatter, "the run is {}, so its VMs cannot be operated on", state.as_str())
+            }
+            VmOpError::Busy(vm) => write!(formatter, "VM {vm} is already being restarted, wiped or stopped"),
+            VmOpError::NoBaseImage => {
+                write!(formatter, "this node has no base workspace image to wipe a VM back to")
+            }
+            VmOpError::Refused(reason) => write!(formatter, "VM did not stop: {reason}"),
+            VmOpError::Failed(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for VmOpError {}
+
 /// One run: what the API reports about it and the VMs behind it.
 pub struct Run {
     id: String,
@@ -1169,6 +1327,9 @@ pub struct Run {
     beats: Option<u32>,
     /// The role every VM of the run runs as, when the run has one.
     role: Option<String>,
+    /// Whether the run's guests are keepalive agents: their workspace images
+    /// are persistent, so a wipe copies the base image over the persistent one.
+    keepalive: bool,
     created_at: u64,
     /// Where this run's state, VM and serial-delta events are published.
     events: Arc<EventBus>,
@@ -1201,6 +1362,10 @@ struct VmSlot {
     /// The VM's control handle (`wait`/`kill`), absent only while a kill has
     /// taken it out to stop the VM outside the run's lock.
     handle: Option<VmHandle>,
+    /// The spec the VM was booted from, kept so a restart or wipe boots it
+    /// again exactly as it was. Absent only for a slot that was not booted from
+    /// a spec (the unit tests' stand-in VMs).
+    spec: Option<VmSpec>,
     /// How the VM stopped (read and written under the run's lock).
     state: VmState,
     /// How much of the serial capture the event bus has already published
@@ -1415,6 +1580,85 @@ impl Run {
         }
     }
 
+    /// Takes VM `vm`'s control handle out of the run, with the spec it was
+    /// booted from, so the VM can be stopped outside the run's lock. The slot
+    /// keeps its state; the watcher skips a slot with no handle until
+    /// [`Run::seat_vm`] or [`Run::set_vm_killed`] puts one back.
+    fn take_vm(&self, vm: u32) -> Result<(VmHandle, VmSpec), VmOpError> {
+        let mut inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter_mut()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        let spec = slot
+            .spec
+            .clone()
+            .ok_or_else(|| VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from")))?;
+        let handle = slot.handle.take().ok_or(VmOpError::Busy(vm))?;
+        Ok((handle, spec))
+    }
+
+    /// Puts back the handle of a VM whose stop was refused: it is still running.
+    fn return_vm(&self, vm: u32, handle: VmHandle) {
+        let mut inner = self.lock();
+        if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
+            slot.handle = Some(handle);
+        }
+    }
+
+    /// Records that VM `vm` was stopped: its killed handle goes back into the
+    /// slot and the slot becomes `killed`. The run's CIDs are released once no
+    /// VM of the run is left running (the watcher then ends the run).
+    fn set_vm_killed(&self, vm: u32, handle: VmHandle) {
+        let mut inner = self.lock();
+        let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) else {
+            return;
+        };
+        slot.handle = Some(handle);
+        slot.state = VmState::Killed;
+        self.events.publish(Event::Vm {
+            run: self.id.clone(),
+            vm,
+            state: VmState::Killed.as_str(),
+        });
+        let all_stopped = inner.all_vms_stopped();
+        drop(inner);
+        if all_stopped {
+            self.release_cids();
+        }
+    }
+
+    /// Seats a restarted VM: `fresh` becomes the slot's running VM, and
+    /// `killed` (the handle of the VM it replaces) stays with the slot as a
+    /// stopped VM. A run that ended while the VM was booting takes it back down.
+    fn seat_vm(&self, vm: u32, killed: VmHandle, mut fresh: VmHandle) {
+        let mut inner = self.lock();
+        if inner.state != RunState::Running {
+            drop(inner);
+            if let Err(err) = fresh.kill() {
+                eprintln!("noded: run {}: VM {vm} did not stop: {err}", self.id);
+            }
+            self.set_vm_killed(vm, killed);
+            return;
+        }
+        if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
+            // The new VM has a new serial capture, which starts empty.
+            slot.runtime = fresh.runtime();
+            slot.handle = Some(fresh);
+            slot.state = VmState::Running;
+            slot.serial_seen = 0;
+            self.events.publish(Event::Vm {
+                run: self.id.clone(),
+                vm,
+                state: VmState::Running.as_str(),
+            });
+        }
+    }
+
     /// Releases this run's guest CIDs: the run has ended, so its span is the
     /// next run's to draw.
     ///
@@ -1615,6 +1859,26 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn a_wipe_copies_the_base_image_over_the_workspace_and_leaves_no_partial() {
+        let dir = scratch("wipe-copy");
+        let base = dir.join("base.ext4");
+        let image = dir.join("cid-7.ext4");
+        std::fs::write(&base, b"fresh base image").expect("the base image");
+        std::fs::write(&image, b"the agent's own files").expect("the workspace image");
+        replace_workspace(&base, &image).expect("the workspace is replaced");
+        assert_eq!(std::fs::read(&image).expect("the image"), b"fresh base image");
+        assert!(!dir.join("cid-7.ext4.partial").exists());
+    }
+
+    #[test]
+    fn a_persistent_workspace_is_named_by_its_guest_cid() {
+        assert_eq!(
+            persistent_workspace_path(std::path::Path::new("/persist"), 7),
+            PathBuf::from("/persist/workspaces/cid-7.ext4")
+        );
+    }
+
     /// A daemon with a workspace base image lays one copy per VM of a run out
     /// in the run's own directory under its UDS root, before the run's VMs
     /// boot — so no two VMs of a run ever share the one writable volume. The
@@ -1761,6 +2025,7 @@ mod tests {
             memory_mib: MIN_MEMORY_MIB,
             beats: None,
             role: role.map(str::to_string),
+            keepalive: false,
             created_at: now_ms(),
             events: EventBus::new(),
             cids,
@@ -1769,6 +2034,7 @@ mod tests {
                 ended_at: None,
                 vms: vec![VmSlot {
                     id: 0,
+                    spec: None,
                     guest_cid: cid,
                     role: role.map(str::to_string),
                     runtime: Arc::new(VmRuntime::new(0)),
