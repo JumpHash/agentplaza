@@ -35,6 +35,9 @@ pub struct Origin {
     pub motion: Option<String>,
     /// For `message` work: the agent who wrote.
     pub from_cid: Option<u64>,
+    /// True for the owner's own chat (the owner chat route sets it); automated chats leave it false.
+    #[serde(default)]
+    pub owner: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
