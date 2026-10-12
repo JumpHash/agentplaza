@@ -81,10 +81,11 @@
 .mp-pop {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
   right: 0;
+  /* At least as wide as the trigger, wider in a narrow column; it opens leftwards. */
+  width: max(100%, min(420px, 90vw));
   z-index: 50;
-  max-height: 360px;
+  max-height: 420px;
   overflow: auto;
   background: var(--sheet);
   color: var(--ink);
