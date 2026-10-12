@@ -2,7 +2,7 @@
 # .github/workflows/ci-image.yml: Ubuntu 22.04 (glibc 2.35, so the packages run on every
 # distribution as new or newer) with everything a job needs already installed — the build tools,
 # the desktop app's headers, the guest kernel's toolchain, the packagers (fpm for deb/rpm/pacman),
-# Rust, cargo-nextest and Node.js (JavaScript actions run inside the job's container on a local
+# Rust, cargo-nextest, sccache and Node.js (JavaScript actions run inside the job's container on a local
 # Forgejo runner; GitHub mounts its own) — so a job spends its minutes compiling, not installing.
 FROM ubuntu:22.04
 
@@ -25,6 +25,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && arch="$(uname -m)" \
  && curl -LsSf "https://get.nexte.st/latest/linux$( [ "$arch" = aarch64 ] && echo -arm )" | tar zxf - -C "$CARGO_HOME/bin" \
  && cargo nextest --version \
+ && curl -fsSL "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-$arch-unknown-linux-musl.tar.gz" \
+      | tar -xz -C "$CARGO_HOME/bin" --strip-components=1 "sccache-v0.18.0-$arch-unknown-linux-musl/sccache" \
+ && sccache --version \
  && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
 # Node.js for JavaScript actions under a local runner (Forgejo Actions / act).

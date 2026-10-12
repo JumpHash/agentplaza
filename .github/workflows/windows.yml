@@ -57,7 +57,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with: { tool: nextest }
+      # On GitHub the action hands sccache the Actions cache; elsewhere a plain sccache, on disk.
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: github.server_url == 'https://github.com'
+      - uses: taiki-e/install-action@v2
+        if: github.server_url != 'https://github.com'
+        with: { tool: sccache }
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-${{ matrix.arch }}

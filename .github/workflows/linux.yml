@@ -65,7 +65,10 @@ jobs:
       - name: The Postgres-backed tests (x86_64)
         if: matrix.postgres != ''
         run: echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@postgres:5432/apz_test" >> "$GITHUB_ENV"
+      # On GitHub the action hands sccache the Actions cache; elsewhere the image's sccache keeps a
+      # local disk cache.
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: github.server_url == 'https://github.com'
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux-${{ matrix.arch }}
