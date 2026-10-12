@@ -21,7 +21,9 @@
 //!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine}
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, Router};
 use serde::{Deserialize, Serialize};
@@ -137,9 +139,13 @@ struct Persisted {
 #[derive(Default)]
 pub struct Store {
     inner: Mutex<Persisted>,
-    /// Per node: queued commands, and results waiting for a caller.
+    /// Per node: queued commands, and results waiting for a caller. Each is paired with its signal.
     queues: Mutex<BTreeMap<String, VecDeque<Command>>>,
+    queue_signal: Condvar,
     results: Mutex<BTreeMap<String, CommandResult>>,
+    result_signal: Condvar,
+    /// The last command sequence number handed out (`k<seq>`).
+    seq: AtomicU64,
     /// Nonces seen (node id, nonce) → expiry ms; join attempts per source address.
     nonces: Mutex<BTreeMap<(String, String), u64>>,
     join_attempts: Mutex<BTreeMap<String, Vec<u64>>>,
@@ -192,19 +198,72 @@ impl Store {
     }
 
     /// Queues a command for a node; the caller may wait for its result with `wait_result`.
-    pub fn enqueue(&self, _node: &str, _target: &str, _method: &str, _path: &str, _body: Value) -> String {
-        String::new() // contract: N2
+    pub fn enqueue(&self, node: &str, target: &str, method: &str, path: &str, body: Value) -> String {
+        let id = format!("k{}", self.seq.fetch_add(1, Ordering::Relaxed) + 1);
+        let command = Command {
+            id: id.clone(),
+            target: target.to_string(),
+            method: method.to_string(),
+            path: path.to_string(),
+            body,
+            created_ms: apz_plaza::now_ms(),
+        };
+        if let Ok(mut queues) = self.queues.lock() {
+            queues.entry(node.to_string()).or_default().push_back(command);
+        }
+        self.queue_signal.notify_all();
+        id
     }
-    /// Takes the node's queued commands, waiting up to `wait_ms` for one to arrive.
-    pub fn take(&self, _node: &str, _wait_ms: u64) -> Vec<Command> {
-        Vec::new() // contract: N2
+    /// Takes the node's queued commands, waiting up to `wait_ms` for one to arrive (capped at 25 s).
+    pub fn take(&self, node: &str, wait_ms: u64) -> Vec<Command> {
+        let deadline = Instant::now() + Duration::from_millis(wait_ms.min(25_000));
+        let mut queues = match self.queues.lock() {
+            Ok(q) => q,
+            Err(_) => return Vec::new(),
+        };
+        loop {
+            if queues.get(node).is_some_and(|q| !q.is_empty()) {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            queues = match self.queue_signal.wait_timeout(queues, deadline - now) {
+                Ok((guard, _)) => guard,
+                Err(_) => return Vec::new(),
+            };
+        }
+        queues.get_mut(node).map(|q| q.drain(..).collect()).unwrap_or_default()
     }
-    pub fn put_result(&self, _node: &str, _result: CommandResult) {
-        // contract: N2
+    /// Stores a command's result and wakes whoever waits for it.
+    pub fn put_result(&self, _node: &str, result: CommandResult) {
+        if let Ok(mut results) = self.results.lock() {
+            results.insert(result.command.clone(), result);
+        }
+        self.result_signal.notify_all();
     }
-    /// Waits up to `wait_ms` for a command's result.
-    pub fn wait_result(&self, _command: &str, _wait_ms: u64) -> Option<CommandResult> {
-        None // contract: N2
+    /// Waits up to `wait_ms` for a command's result, removing it when found.
+    pub fn wait_result(&self, command: &str, wait_ms: u64) -> Option<CommandResult> {
+        let deadline = Instant::now() + Duration::from_millis(wait_ms);
+        let mut results = self.results.lock().ok()?;
+        loop {
+            if let Some(result) = results.remove(command) {
+                return Some(result);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            results = self.result_signal.wait_timeout(results, deadline - now).ok()?.0;
+        }
+    }
+    /// Records the machine summary a node reported with its heartbeat.
+    pub fn set_machine(&self, id: &str, machine: Value) -> Result<(), String> {
+        let mut persisted = self.inner.lock().map_err(|e| e.to_string())?;
+        let node = persisted.nodes.iter_mut().find(|n| n.id == id).ok_or_else(|| "unknown node".to_string())?;
+        node.machine = machine;
+        Ok(())
     }
 }
 
@@ -230,6 +289,117 @@ fn revoke_code_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { 
 fn revoke_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
 fn drain_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
 fn join_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N1") }
-fn commands_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N2") }
-fn results_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N2") }
-fn heartbeat_route(_app: &App, _req: &Request, _p: &Params<'_>) -> Response { Response::error(501, "contract: N2") }
+/// The node a signed request speaks for, provided it is the node named in the path.
+fn signed_node(app: &App, req: &Request, p: &Params<'_>) -> Result<Node, Response> {
+    match app.nodes.authenticate(req, apz_plaza::now_ms()) {
+        Ok(n) if n.id == p.get("id") => Ok(n),
+        _ => Err(Response::error(401, "not this node")),
+    }
+}
+
+fn commands_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let node = match signed_node(app, req, p) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let wait = req.query_param("wait").and_then(|w| w.parse::<u64>().ok()).unwrap_or(25).min(25);
+    Response::json(200, &app.nodes.take(&node.id, wait * 1000))
+}
+
+fn results_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let node = match signed_node(app, req, p) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let result: CommandResult = match req.json() {
+        Ok(r) => r,
+        Err(_) => return Response::error(400, "bad command result"),
+    };
+    app.nodes.put_result(&node.id, result);
+    Response::json(200, &serde_json::json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct Heartbeat {
+    machine: Value,
+}
+
+fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let node = match signed_node(app, req, p) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let beat: Heartbeat = match req.json() {
+        Ok(b) => b,
+        Err(_) => return Response::error(400, "bad heartbeat"),
+    };
+    match app.nodes.set_machine(&node.id, beat.machine) {
+        Ok(()) => Response::json(200, &serde_json::json!({"ok": true})),
+        Err(e) => Response::error(404, &e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn enqueue_then_take_returns_it_once() {
+        let store = Store::default();
+        let id = store.enqueue("n1", "noded", "GET", "/v1/status", Value::Null);
+        let got = store.take("n1", 0);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, id);
+        assert_eq!(got[0].path, "/v1/status");
+        assert!(store.take("n1", 0).is_empty());
+        assert!(store.take("n2", 0).is_empty());
+    }
+
+    #[test]
+    fn take_waits_then_returns_empty_on_timeout() {
+        let store = Store::default();
+        let started = Instant::now();
+        assert!(store.take("n1", 60).is_empty());
+        assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn take_wakes_when_a_command_arrives() {
+        let store = Arc::new(Store::default());
+        let writer = store.clone();
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            writer.enqueue("n1", "hub", "POST", "/x", Value::Null);
+        });
+        let got = store.take("n1", 5_000);
+        handle.join().unwrap();
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn result_from_another_thread_wakes_wait_result() {
+        let store = Arc::new(Store::default());
+        let writer = store.clone();
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            writer.put_result(
+                "n1",
+                CommandResult { command: "k9".into(), ok: true, status: 200, body: Value::Null },
+            );
+        });
+        let started = Instant::now();
+        let got = store.wait_result("k9", 5_000);
+        handle.join().unwrap();
+        assert_eq!(got.map(|r| r.status), Some(200));
+        assert!(started.elapsed() < Duration::from_millis(4_000));
+        assert!(store.wait_result("k9", 10).is_none(), "a result is removed once taken");
+    }
+
+    #[test]
+    fn set_machine_stores_for_known_node_only() {
+        let store = Store::default();
+        assert!(store.set_machine("n9", Value::Null).is_err());
+    }
+}
