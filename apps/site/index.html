@@ -261,21 +261,133 @@
         <li><b>Signed requests.</b> Each node signs every call with its own Ed25519 key. Revoke it and it stops at once.</li>
       </ul>
     </div>
-    <figure class="diagram" data-draw aria-label="A hub with three nodes joined over pinned TLS">
-      <svg viewBox="0 0 520 380" role="img" aria-hidden="true">
+    <figure class="diagram" data-draw aria-label="Hub and nodes. The owner's web console and desktop app reach a hub over HTTPS. The hub links three nodes and three edge devices, each joined with a one-time code over pinned TLS with signed requests. Agents run as VM cells in each node's own CID range.">
+      <svg viewBox="0 0 640 520" role="img">
+        <title>Hub and nodes: the owner's console and desktop app above the hub; nodes n0 to n2 and edge devices e1 to e3 below it, each linked over pinned TLS with signed requests.</title>
         <defs>
           <pattern id="dots" width="12" height="12" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#c7cfc3"/></pattern>
         </defs>
-        <rect width="520" height="380" fill="url(#dots)"/>
-        <g class="link"><path d="M260 150 L90 290"/><path d="M260 150 L260 300"/><path d="M260 150 L430 290"/></g>
-        <g class="pkt"><circle r="4"><animateMotion dur="2.6s" repeatCount="indefinite" path="M260 150 L90 290"/></circle>
-          <circle r="4"><animateMotion dur="3.1s" begin="-1s" repeatCount="indefinite" path="M260 300 L260 150"/></circle>
-          <circle r="4"><animateMotion dur="2.2s" begin="-0.6s" repeatCount="indefinite" path="M430 290 L260 150"/></circle></g>
-        <g class="box hub"><rect x="170" y="70" width="180" height="84"/><text x="186" y="100">HUB</text><text class="t2" x="186" y="122">apid · laws · git · files</text><text class="t2" x="186" y="140">join codes · registry</text></g>
-        <g class="box"><rect x="20" y="290" width="140" height="64"/><text x="34" y="316">n0 · this machine</text><text class="t2" x="34" y="336">cids 20–130</text></g>
-        <g class="box"><rect x="190" y="300" width="140" height="64"/><text x="204" y="326">n1 · workstation</text><text class="t2" x="204" y="346">cids 1000–1099</text></g>
-        <g class="box"><rect x="360" y="290" width="140" height="64"/><text x="374" y="316">n2 · gpu box</text><text class="t2" x="374" y="336">cids 1100–1199</text></g>
-        <g class="code"><rect x="300" y="196" width="196" height="30"/><text x="312" y="216">apzj1.eyJ1Ijoi…  ⏱ 15 min</text></g>
+        <rect width="640" height="520" fill="url(#dots)"/>
+        <g class="link">
+          <path d="M230 84 V130"/><path d="M410 84 V130"/>
+          <path d="M320 216 V234 H105 V256"/><path d="M320 234 V256"/><path d="M320 234 H535 V256"/>
+          <path d="M212 234 V380 H105 V410"/><path d="M212 234 V380 H320 V410"/><path d="M212 234 V380 H535 V410"/>
+        </g>
+        <g class="pkt">
+          <circle r="3.5"><animateMotion dur="1.8s" repeatCount="indefinite" path="M230 84 V130"/></circle>
+          <circle r="3.5"><animateMotion dur="2.4s" begin="-0.7s" repeatCount="indefinite" path="M410 130 V84"/></circle>
+          <circle r="3.5"><animateMotion dur="3.2s" begin="-1s" repeatCount="indefinite" path="M105 256 V234 H320 V216"/></circle>
+          <circle r="3.5"><animateMotion dur="2.6s" repeatCount="indefinite" path="M320 216 V234 H535 V256"/></circle>
+          <circle r="3.5"><animateMotion dur="3.6s" begin="-2s" repeatCount="indefinite" path="M212 234 V380 H320 V410"/></circle>
+          <circle r="3.5"><animateMotion dur="3s" begin="-0.8s" repeatCount="indefinite" path="M535 410 V380 H212 V234"/></circle>
+        </g>
+        <text class="tag" x="20" y="64">01 · OWNER</text>
+        <text class="tag" x="222" y="110" text-anchor="end">HTTPS · session</text>
+        <text class="tag" x="418" y="110">HTTPS · owner token</text>
+        <g class="box tier-1">
+          <rect class="body" x="150" y="40" width="160" height="44"/>
+          <text class="name" x="162" y="58">web console</text>
+          <text class="sub" x="162" y="74">owner · browser</text>
+        </g>
+        <g class="box tier-1">
+          <rect class="body" x="330" y="40" width="160" height="44"/>
+          <text class="name" x="342" y="58">desktop app</text>
+          <text class="sub" x="342" y="74">owner · this machine</text>
+        </g>
+        <text class="tag" x="20" y="158">02 · HUB</text>
+        <g class="box hub tier-2">
+          <rect class="body" x="150" y="130" width="340" height="86"/>
+          <text class="name" x="170" y="156">HUB · apid</text>
+          <text class="sub" x="170" y="176">laws · git · files · LLM gateway</text>
+          <text class="sub" x="170" y="194">node registry · join codes</text>
+        </g>
+        <g class="lock">
+          <rect x="104" y="224" width="8" height="7"/>
+          <path d="M106 224 V221 a2 2 0 0 1 4 0 V224"/>
+          <text x="118" y="230">pinned TLS · signed</text>
+        </g>
+        <text class="tag" x="20" y="250">03 · NODES</text>
+        <g class="box tier-3">
+          <rect class="body" x="20" y="256" width="170" height="100"/>
+          <rect class="ok" x="176" y="264" width="6" height="6"/>
+          <text class="name" x="32" y="280">n0 · this machine</text>
+          <text class="sub" x="32" y="296">cids 20–130</text>
+          <rect class="vm on" x="32" y="312" width="14" height="14"/>
+          <rect class="vm on" x="50" y="312" width="14" height="14"/>
+          <rect class="vm on" x="68" y="312" width="14" height="14"/>
+          <rect class="vm" x="86" y="312" width="14" height="14"/>
+          <text class="sub" x="32" y="346">agent VMs</text>
+        </g>
+        <g class="box tier-3">
+          <rect class="body" x="235" y="256" width="170" height="100"/>
+          <rect class="ok" x="391" y="264" width="6" height="6"/>
+          <text class="name" x="247" y="280">n1 · workstation</text>
+          <text class="sub" x="247" y="296">cids 1000–1099</text>
+          <rect class="vm on" x="247" y="312" width="14" height="14"/>
+          <rect class="vm on" x="265" y="312" width="14" height="14"/>
+          <rect class="vm on" x="283" y="312" width="14" height="14"/>
+          <rect class="vm on" x="301" y="312" width="14" height="14"/>
+          <rect class="vm" x="319" y="312" width="14" height="14"/>
+          <text class="sub" x="247" y="346">agent VMs</text>
+        </g>
+        <g class="box tier-3">
+          <rect class="body" x="450" y="256" width="170" height="100"/>
+          <rect class="ok" x="606" y="264" width="6" height="6"/>
+          <text class="name" x="462" y="280">n2 · gpu box</text>
+          <text class="sub" x="462" y="296">cids 1100–1199</text>
+          <rect class="vm on" x="462" y="312" width="14" height="14"/>
+          <rect class="vm on" x="480" y="312" width="14" height="14"/>
+          <rect class="vm on" x="498" y="312" width="14" height="14"/>
+          <rect class="vm on" x="516" y="312" width="14" height="14"/>
+          <rect class="vm on" x="534" y="312" width="14" height="14"/>
+          <rect class="vm" x="552" y="312" width="14" height="14"/>
+          <text class="sub" x="462" y="346">agent VMs</text>
+        </g>
+        <g class="code">
+          <path class="lead" d="M600 186 V254"/>
+          <rect class="body" x="498" y="136" width="122" height="50"/>
+          <text x="506" y="155">apzj1.eyJ1Ijoi…</text>
+          <text x="506" y="172">single use · 15 min</text>
+          <text x="550" y="246">joining…</text>
+        </g>
+        <g class="box tier-4">
+          <rect class="body" x="20" y="410" width="170" height="56"/>
+          <rect class="ok" x="176" y="416" width="6" height="6"/>
+          <text class="name" x="32" y="428">e1 · edge</text>
+          <text class="sub" x="32" y="442">pi 5 · 1200–1219</text>
+          <rect class="vm on" x="32" y="449" width="9" height="9"/>
+          <rect class="vm on" x="44" y="449" width="9" height="9"/>
+          <rect class="vm" x="56" y="449" width="9" height="9"/>
+        </g>
+        <g class="box tier-4">
+          <rect class="body" x="235" y="410" width="170" height="56"/>
+          <rect class="ok" x="391" y="416" width="6" height="6"/>
+          <text class="name" x="247" y="428">e2 · edge</text>
+          <text class="sub" x="247" y="442">kiosk · 1220–1239</text>
+          <rect class="vm on" x="247" y="449" width="9" height="9"/>
+          <rect class="vm" x="259" y="449" width="9" height="9"/>
+        </g>
+        <g class="box tier-4">
+          <rect class="body" x="450" y="410" width="170" height="56"/>
+          <rect class="ok" x="606" y="416" width="6" height="6"/>
+          <text class="name" x="462" y="428">e3 · edge</text>
+          <text class="sub" x="462" y="442">field gateway · 1240–1259</text>
+          <rect class="vm on" x="462" y="449" width="9" height="9"/>
+          <rect class="vm on" x="474" y="449" width="9" height="9"/>
+          <rect class="vm" x="486" y="449" width="9" height="9"/>
+        </g>
+        <path class="bracket" d="M20 470 V476 H620 V470"/>
+        <text class="tag" x="320" y="494" text-anchor="middle">EDGE NODES · same join, same laws, fewer VMs</text>
+        <g class="legend">
+          <rect class="vm" x="20" y="504" width="9" height="9"/>
+          <text x="36" y="512">agent VM</text>
+          <path class="lkey" d="M100 508 H120"/>
+          <text x="126" y="512">signed link</text>
+          <circle class="pkt-key" cx="212" cy="508" r="3.5"/>
+          <text x="222" y="512">traffic</text>
+          <rect class="joinkey" x="282" y="503" width="14" height="10"/>
+          <text x="302" y="512">join code</text>
+        </g>
       </svg>
     </figure>
   </div>
