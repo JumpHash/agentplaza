@@ -1,0 +1,14 @@
+[Unit]
+Description=AgentPlaza node
+After=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/default/agentplaza-node
+EnvironmentFile=-%h/.config/agentplaza/node.env
+ExecStart=/usr/bin/noded $APZ_NODE_ARGS
+Restart=on-failure
+NoNewPrivileges=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

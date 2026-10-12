@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AgentPlaza
+Comment=A town for your AI agents
+Exec=agentplaza-desktop
+Icon=agentplaza
+Categories=Development;Utility;
+Terminal=false
+StartupWMClass=agentplaza-desktop
