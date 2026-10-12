@@ -141,6 +141,16 @@ export interface Machine { name: string; arch: string; backend: string; irqchip:
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
 export interface Gpu { vendor: string; name: string; memory_mib: number | null }
+/** One process the plaza runs on a machine. `cpu_percent` is of the whole machine (all cores = 100). */
+export interface ProcessUsage { name: string; pid: number; cpu_percent: number; rss_mib: number }
+/** An agent VM's process, and its guest memory as the balloon reports it. */
+export interface VmUsage extends ProcessUsage { run: string; vm: number; cid: number | null; role: string | null; usable_mib: number | null; guest_used_mib: number | null }
+export interface PlazaUsage {
+  /** apid, the hub (vsockd), noded, garage — whichever run on this machine. */
+  services: ProcessUsage[];
+  vms: VmUsage[];
+  total: { cpu_percent: number; rss_mib: number; services_cpu_percent: number; services_rss_mib: number; vms_cpu_percent: number; vms_rss_mib: number };
+}
 export interface MachineNode extends Machine {
   id: string;
   kind: 'server' | 'workstation' | 'edge' | 'apple';
@@ -149,7 +159,12 @@ export interface MachineNode extends Machine {
   runs?: Run[];
   agents?: number;
   reachable?: boolean;
-  stats: { cpu_percent: number; load: [number, number, number]; mem_total_mib: number; mem_used_mib: number; uptime_s: number; vms_running: number; guest_mem_mib: number; history: { t_ms: number; cpu_percent: number; mem_used_mib: number }[] } | null;
+  stats: {
+    cpu_percent: number; load: [number, number, number]; mem_total_mib: number; mem_used_mib: number; uptime_s: number;
+    vms_running: number; guest_mem_mib: number; history: { t_ms: number; cpu_percent: number; mem_used_mib: number }[];
+    /** Where the machine's resources go: the plaza's services and its agents' VMs (absent on older nodes). */
+    plaza?: PlazaUsage;
+  } | null;
 }
 
 /** One agent's view of another (AP-072): decayed evidence r/s, belief, disbelief, uncertainty, expected trust. */
