@@ -42,7 +42,7 @@ fn restart_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         Err(res) => return res,
     };
     app.work.cancel(app, cid, "restarted by the owner");
-    match noded_call(app, &run, vm, "restart") {
+    match noded_call(app, cid, &run, vm, "restart") {
         Ok(()) => Response::json(200, &json!({ "ok": true })),
         Err(res) => res,
     }
@@ -63,7 +63,7 @@ fn wipe_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     };
     app.work.cancel(app, cid, "wiped by the owner");
     app.work.clear(cid);
-    if let Err(res) = noded_call(app, &run, vm, "wipe") {
+    if let Err(res) = noded_call(app, cid, &run, vm, "wipe") {
         return res;
     }
     let mut wiped = vec!["workspace"];
@@ -102,7 +102,7 @@ fn retire_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
     };
     app.work.cancel(app, cid, "retired by the owner");
     app.work.clear(cid);
-    if let Err(res) = noded_call(app, &run, vm, "stop") {
+    if let Err(res) = noded_call(app, cid, &run, vm, "stop") {
         return res;
     }
     crate::agents::gone(app, cid, "retired by the owner");
@@ -126,9 +126,9 @@ fn place(app: &App, cid: u64) -> Result<(String, u32), Response> {
 }
 
 /// Asks noded to run `action` on the VM; any failure becomes the response.
-fn noded_call(app: &App, run: &str, vm: u32, action: &str) -> Result<(), Response> {
+fn noded_call(app: &App, cid: u64, run: &str, vm: u32, action: &str) -> Result<(), Response> {
     let path = format!("/v1/runs/{run}/vms/{vm}/{action}");
-    match app.noded.post(&path, &json!({})) {
+    match crate::fleet::noded_for(app, cid, "POST", &path, Some(&json!({}))) {
         Ok((code, _)) if (200..300).contains(&code) => Ok(()),
         Ok((code, body)) => Err(Response::error(502, &format!("noded {action} failed: {code} {body}"))),
         Err(err) => Err(Response::error(502, &format!("noded unreachable: {err}"))),

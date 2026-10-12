@@ -221,7 +221,7 @@ pub fn approve(app: &App, id: &str, edited: Option<RoleDef>, count: Option<u32>,
     if new_role {
         app.custom_roles.save(role.clone()).map_err(|e| format!("could not save role {}: {e}", role.id))?;
     }
-    let spawned = spawn_agents(app, &role.id, count, (!model.is_empty()).then_some(model.as_str()))?;
+    let spawned = spawn_agents(app, &role.id, count, (!model.is_empty()).then_some(model.as_str()), None)?;
     let cids: Vec<u64> = spawned
         .get("cids")
         .and_then(Value::as_array)

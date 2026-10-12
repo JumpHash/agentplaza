@@ -249,7 +249,7 @@ impl Queues {
         };
         let message = HostMessage::Cancel { work: item.id, reason: reason.to_string() };
         matches!(
-            app.hub.post(&send_path(cid), &json!({ "message": message })),
+            crate::fleet::send(app, cid, &json!({ "message": message })),
             Ok((code, _)) if (200..300).contains(&code)
         )
     }
@@ -416,7 +416,7 @@ impl Queues {
             thread: item.thread.clone(),
             prompt: item.prompt.clone(),
         };
-        let sent = app.hub.post(&send_path(cid), &json!({ "message": message }));
+        let sent = crate::fleet::send(app, cid, &json!({ "message": message }));
         if !matches!(sent, Ok((code, _)) if (200..300).contains(&code)) {
             self.locked().requeue_front(item);
             app.agents.update(cid, |a| a.status = Status::Idle);
@@ -436,10 +436,6 @@ impl Queues {
         );
         app.bus.publish("work", &json!({ "cid": cid, "work": item.id, "state": "started" }));
     }
-}
-
-fn send_path(cid: u64) -> String {
-    format!("/v1/agents/{cid}/send")
 }
 
 /// The wire spelling of a work status, for the transcript and events.

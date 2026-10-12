@@ -90,19 +90,29 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
 }
 
-/// Checks the internal token and the CID, then runs `f`.
+/// Checks who is calling and the CID, then runs `f`. The local gateway presents the internal
+/// token; a joined node's apz-link signs the request with its node key, and may speak only for
+/// the CIDs in that node's range.
 pub(crate) fn authorized(
     app: &App,
     req: &Request,
     cid: &str,
     f: impl FnOnce(u64) -> Result<Response, Response>,
 ) -> Response {
-    if req.header("x-apz-internal") != Some(app.token.as_str()) {
-        return Response::error(403, "missing or wrong internal token");
-    }
     let Ok(cid) = cid.parse::<u64>() else {
         return Response::error(400, "the CID must be a number");
     };
+    if req.header("x-apz-node").is_some() {
+        let node = match app.nodes.authenticate(req, apz_plaza::now_ms()) {
+            Ok(node) => node,
+            Err(_) => return Response::error(403, "bad node signature"),
+        };
+        if cid < node.cid_base || cid >= node.cid_base + node.cid_count {
+            return Response::error(403, "that agent is not on this node");
+        }
+    } else if !req.header("x-apz-internal").is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes())) {
+        return Response::error(403, "missing or wrong internal token");
+    }
     f(cid).unwrap_or_else(|response| response)
 }
 

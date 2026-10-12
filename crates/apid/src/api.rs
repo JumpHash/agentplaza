@@ -46,6 +46,7 @@ pub fn router() -> Router<App> {
     let router = crate::roles_custom::routes(router);
     let router = crate::agent_proposals::routes(router);
     let router = crate::nodes::routes(router);
+    let router = crate::fleet::routes(router);
     let router = crate::hub_auth::routes(router);
     let router = memory::routes(router);
     router

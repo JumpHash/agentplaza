@@ -161,6 +161,8 @@ pub struct Store {
     /// Nonces seen (node id, nonce) → expiry ms; join attempts per source address.
     nonces: Mutex<BTreeMap<(String, String), u64>>,
     join_attempts: Mutex<BTreeMap<String, Vec<u64>>>,
+    /// Per node, from its last heartbeat: its gateway's `/v1/status` and its noded's `/v1/runs`.
+    reports: Mutex<BTreeMap<String, (Value, Value)>>,
 }
 
 impl Store {
@@ -411,6 +413,16 @@ impl Store {
         node.machine = machine;
         Ok(())
     }
+    /// Keeps what a node's heartbeat said about its agents (gateway status) and VMs (runs).
+    pub fn set_report(&self, id: &str, status: Value, runs: Value) {
+        if let Ok(mut reports) = self.reports.lock() {
+            reports.insert(id.to_string(), (status, runs));
+        }
+    }
+    /// The node's last reported (gateway status, runs).
+    pub fn report(&self, id: &str) -> Option<(Value, Value)> {
+        self.reports.lock().ok()?.get(id).cloned()
+    }
 }
 
 fn code_state(code: &Code, now_ms: u64) -> &'static str {
@@ -610,6 +622,12 @@ fn results_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 #[derive(Deserialize)]
 struct Heartbeat {
     machine: Value,
+    /// The node's vsockd `GET /v1/status`.
+    #[serde(default)]
+    status: Value,
+    /// The node's noded `GET /v1/runs`.
+    #[serde(default)]
+    runs: Value,
 }
 
 fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -621,6 +639,7 @@ fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(b) => b,
         Err(_) => return Response::error(400, "bad heartbeat"),
     };
+    app.nodes.set_report(&node.id, beat.status, beat.runs);
     match app.nodes.set_machine(&node.id, beat.machine) {
         Ok(()) => Response::json(200, &serde_json::json!({"ok": true})),
         Err(e) => Response::error(404, &e),

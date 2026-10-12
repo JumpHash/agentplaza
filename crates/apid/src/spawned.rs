@@ -156,9 +156,9 @@ pub fn spawn_respawn(app: Arc<App>) {
             if app.agents.get(entry.cid).is_some_and(|agent| agent.status != Status::Offline) {
                 continue;
             }
-            let payload = json!({"n": 1, "role": entry.role, "vsock_cid": entry.cid, "vcpus": 1, "memory_mib": 256});
+            let payload = json!({"n": 1, "role": entry.role, "vsock_cid": entry.cid, "vcpus": 1, "memory_mib": 1024});
             let model = entry.model.as_deref().unwrap_or("role default");
-            match app.noded.post("/v1/runs", &payload) {
+            match crate::fleet::noded_for(&app, entry.cid, "POST", "/v1/runs", Some(&payload)) {
                 Ok((status, _)) if status < 300 => eprintln!(
                     "apid: respawned {} as cid {} (model {model}, HTTP {status})",
                     entry.role, entry.cid

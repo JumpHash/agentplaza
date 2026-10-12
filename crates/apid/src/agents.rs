@@ -187,7 +187,7 @@ pub fn rename(app: &App, cid: u64, raw: &str) -> Result<Agent, String> {
     store_name(app, cid, &name)?;
     let agent = app.agents.get(cid).ok_or("no such agent")?;
     let push = json!({"message": HostMessage::Profile { profile: profile(app, &agent) }});
-    let _ = app.hub.post(&format!("/v1/agents/{cid}/send"), &push);
+    let _ = crate::fleet::send(app, cid, &push);
     app.bus.publish("agent", &agent);
     Ok(agent)
 }
@@ -205,7 +205,7 @@ pub fn push_profiles(app: &App) {
 /// Pushes one agent its current profile.
 pub fn push_profile(app: &App, agent: &Agent) {
     let push = json!({"message": HostMessage::Profile { profile: profile(app, agent) }});
-    let _ = app.hub.post(&format!("/v1/agents/{}/send", agent.cid), &push);
+    let _ = crate::fleet::send(app, agent.cid, &push);
 }
 
 /// The human label of a role, or the raw name when it is not a known role.
@@ -452,31 +452,31 @@ pub fn spawn_reconcile(app: Arc<App>) {
     });
 }
 
-/// One reconcile pass. Hub or noded errors are ignored: either may be down.
+/// One reconcile pass over every node (`fleet::reports`). A node whose gateway or noded did not
+/// answer changes nothing: its agents are only marked gone when its own gateway says so.
 fn reconcile_once(app: &App) {
-    // Sessions: register unknown or offline sessions, then mark vanished agents offline.
-    if let Ok((200, body)) = app.hub.get("/v1/status") {
-        let rows = body["agents"].as_array().cloned().unwrap_or_default();
-        let live: Vec<u64> = rows.iter().filter_map(|row| row["cid"].as_u64()).collect();
-        for row in &rows {
-            let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
-                continue;
-            };
-            let known_online = app.agents.get(cid).is_some_and(|agent| agent.status != Status::Offline);
-            if !known_online {
-                hello(app, cid, role, 0);
+    let mut placements: BTreeMap<u64, (String, u32)> = BTreeMap::new();
+    for (node, status, runs) in crate::fleet::reports(app) {
+        // Sessions: register unknown or offline sessions, then mark this node's vanished agents offline.
+        if let Some(rows) = status["agents"].as_array() {
+            let live: Vec<u64> = rows.iter().filter_map(|row| row["cid"].as_u64()).collect();
+            for row in rows {
+                let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
+                    continue;
+                };
+                let known_online = app.agents.get(cid).is_some_and(|agent| agent.status != Status::Offline);
+                if !known_online {
+                    hello(app, cid, role, 0);
+                }
+            }
+            for agent in app.agents.list() {
+                if agent.status != Status::Offline && crate::fleet::node_of(app, agent.cid) == node && !live.contains(&agent.cid) {
+                    gone(app, agent.cid, "session not on its node's gateway");
+                }
             }
         }
-        for agent in app.agents.list() {
-            if agent.status != Status::Offline && !live.contains(&agent.cid) {
-                gone(app, agent.cid, "session not on the hub");
-            }
-        }
-    }
-    // Runs: point each agent at the run and VM whose guest CID it is.
-    if let Ok((200, body)) = app.noded.get("/v1/runs") {
-        let mut placements: BTreeMap<u64, (String, u32)> = BTreeMap::new();
-        for run in body["runs"].as_array().into_iter().flatten() {
+        // Runs: the run and VM whose guest CID each agent is.
+        for run in runs["runs"].as_array().into_iter().flatten() {
             if !run["ended_at"].is_null() {
                 continue;
             }
@@ -489,19 +489,19 @@ fn reconcile_once(app: &App) {
                 }
             }
         }
-        for agent in app.agents.list() {
-            let Some((run, vm)) = placements.get(&agent.cid).cloned() else {
-                continue;
-            };
-            if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) {
-                let updated = app.agents.update(agent.cid, |slot| {
-                    slot.run = Some(run);
-                    slot.vm = Some(vm);
-                });
-                if updated {
-                    if let Some(fresh) = app.agents.get(agent.cid) {
-                        app.bus.publish("agent", &fresh);
-                    }
+    }
+    for agent in app.agents.list() {
+        let Some((run, vm)) = placements.get(&agent.cid).cloned() else {
+            continue;
+        };
+        if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) {
+            let updated = app.agents.update(agent.cid, |slot| {
+                slot.run = Some(run);
+                slot.vm = Some(vm);
+            });
+            if updated {
+                if let Some(fresh) = app.agents.get(agent.cid) {
+                    app.bus.publish("agent", &fresh);
                 }
             }
         }
@@ -592,6 +592,8 @@ struct SpawnBody {
     role: String,
     count: Option<u32>,
     model: Option<String>,
+    /// The node to run on (`n0`, the hub's own machine, when absent).
+    node: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -617,16 +619,26 @@ fn spawn(app: &App, req: &Request) -> Response {
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    match spawn_agents(app, &b.role, b.count.unwrap_or(1), b.model.as_deref()) {
+    match spawn_agents(app, &b.role, b.count.unwrap_or(1), b.model.as_deref(), b.node.as_deref()) {
         Ok(value) => Response::json(200, &value),
         Err(e) if e.starts_with("noded") => Response::error(502, &e),
         Err(e) => Response::error(400, &e),
     }
 }
 
-/// Spawns `count` agents of `role`: checks the role, the count and the model's tier, asks noded
-/// for the runs and records them. Returns noded's reply; errors are the message for the caller.
-pub fn spawn_agents(app: &App, role: &str, count: u32, model: Option<&str>) -> Result<Value, String> {
+/// Spawns `count` agents of `role` on `node` (default `n0`): checks the role, the count, the
+/// model's tier and that the node takes new agents, asks its noded for the runs and records them.
+/// Returns noded's reply; errors are the message for the caller.
+pub fn spawn_agents(app: &App, role: &str, count: u32, model: Option<&str>, node: Option<&str>) -> Result<Value, String> {
+    let node = node.unwrap_or(crate::fleet::LOCAL);
+    if node != crate::fleet::LOCAL {
+        match app.nodes.get(node) {
+            None => return Err(format!("no node {node}")),
+            Some(record) if record.revoked => return Err(format!("node {node} is revoked")),
+            Some(record) if record.draining => return Err(format!("node {node} is draining")),
+            Some(_) => {}
+        }
+    }
     if !crate::roles_custom::exists(app, role) {
         return Err(format!("unknown role {role}"));
     }
@@ -638,7 +650,7 @@ pub fn spawn_agents(app: &App, role: &str, count: u32, model: Option<&str>) -> R
     }
     // The same shape as the starting fleet (noded --agents-memory-mib defaults to 1024).
     let payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
-    match app.noded.post("/v1/runs", &payload) {
+    match crate::fleet::noded(app, node, "POST", "/v1/runs", Some(&payload)) {
         Ok((status, value)) => {
             if status >= 300 {
                 return Err(format!("noded: status {status}: {value}"));
@@ -705,7 +717,7 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
     };
     // Best effort: the agent's next hello carries the profile anyway.
     let push = json!({"message": HostMessage::Profile { profile: profile(app, &updated) }});
-    let _ = app.hub.post(&format!("/v1/agents/{}/send", updated.cid), &push);
+    let _ = crate::fleet::send(app, updated.cid, &push);
     let v = view(app, &updated);
     app.bus.publish("agent", &v);
     Response::json(200, &v)
@@ -717,12 +729,12 @@ fn delete(app: &App, params: &Params<'_>) -> Response {
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
-    let _ = app.hub.post(&format!("/v1/agents/{}/stop", agent.cid), &json!({}));
+    let _ = crate::fleet::gateway(app, agent.cid, "POST", &format!("/v1/agents/{}/stop", agent.cid), Some(&json!({})));
     if let Err(e) = app.spawned.forget(agent.cid) {
         eprintln!("apid: spawned.json not saved: {e}");
     }
     let run_status = agent.run.as_ref().and_then(|run| {
-        app.noded.call("DELETE", &format!("/v1/runs/{run}"), None).map(|(status, _)| status).ok()
+        crate::fleet::noded_for(app, agent.cid, "DELETE", &format!("/v1/runs/{run}"), None).map(|(status, _)| status).ok()
     });
     Response::json(200, &json!({"deleted": true, "run_status": run_status}))
 }
@@ -797,7 +809,8 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
-    app.hub.proxy("POST", &format!("/v1/agents/{}/{action}", agent.cid), &req.body)
+    let body: Option<Value> = serde_json::from_slice(&req.body).ok();
+    crate::fleet::respond(crate::fleet::gateway(app, agent.cid, "POST", &format!("/v1/agents/{}/{action}", agent.cid), body.as_ref()))
 }
 
 /// The agent's transcript after entry `after`, at most `limit` (max 1000).

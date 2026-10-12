@@ -42,6 +42,7 @@ mod lifecycle;
 mod roles_custom;
 mod agent_proposals;
 mod nodes;
+mod fleet;
 mod hub_auth;
 mod transcript;
 mod upstream;

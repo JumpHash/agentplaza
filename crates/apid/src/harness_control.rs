@@ -291,7 +291,7 @@ pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
     let item = app.work.current(cid).ok_or_else(|| format!("agent {cid} has no running work"))?;
     let data = json!({ "control": control.clone() });
     let message = apz_proto::wire::HostMessage::Control { work: item.id, control };
-    match app.hub.post(&format!("/v1/agents/{cid}/send"), &json!({ "message": message })) {
+    match crate::fleet::send(app, cid, &json!({ "message": message })) {
         Ok((code, _)) if (200..300).contains(&code) => {}
         Ok((code, _)) => return Err(format!("agent {cid} refused the control (HTTP {code})")),
         Err(e) => return Err(format!("agent {cid} is unreachable: {e}")),
