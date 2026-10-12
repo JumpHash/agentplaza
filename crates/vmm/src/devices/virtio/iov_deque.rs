@@ -10,19 +10,25 @@
 // the double-mapped iovec ring the guest and the device both see.
 #![allow(unsafe_code)]
 
-use libc::{c_int, c_void, iovec, off_t, size_t};
+#[cfg(target_os = "linux")]
+use libc::{c_int, c_void, off_t, size_t};
 
+use crate::pal::iovec;
+#[cfg(target_os = "linux")]
 use crate::vstate::memory::host_page_size;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IovDequeError {
     /// Error creating or sealing the memfd: {0}.
+    #[cfg(target_os = "linux")]
     #[error("error creating or sealing the memfd: {0}")]
     Memfd(std::io::Error),
     /// Error while resizing the memfd: {0}.
+    #[cfg(target_os = "linux")]
     #[error("error while resizing the memfd: {0}")]
     MemfdResize(std::io::Error),
     /// Error calling mmap: {0}.
+    #[cfg(target_os = "linux")]
     #[error("error calling mmap: {0}")]
     Mmap(std::io::Error),
 }
@@ -89,17 +95,20 @@ pub enum IovDequeError {
 // }
 // ```
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct IovDeque<const L: u16> {
-    pub iov: *mut libc::iovec,
+    pub iov: *mut iovec,
     pub start: u16,
     pub len: u16,
     pub capacity: u16,
 }
 
 // SAFETY: This is `Send`. We hold sole ownership of the underlying buffer.
+#[cfg(target_os = "linux")]
 unsafe impl<const L: u16> Send for IovDeque<L> {}
 
+#[cfg(target_os = "linux")]
 impl<const L: u16> IovDeque<L> {
     /// Create a sealed memfd of `pages_bytes` bytes, double-mapped below.
     ///
@@ -361,6 +370,7 @@ impl<const L: u16> IovDeque<L> {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<const L: u16> Drop for IovDeque<L> {
     fn drop(&mut self) {
         let pages_bytes = Self::pages_bytes();
@@ -370,9 +380,132 @@ impl<const L: u16> Drop for IovDeque<L> {
     }
 }
 
+/// Windows has no `memfd_create`, and no way to map the same pages twice at adjacent addresses
+/// without a section object. The ring is therefore a `Vec` of `2 * L` iovecs in which the live
+/// elements are `buf[start..start + len]`. `start` is kept below `L`, so the live range always
+/// fits in `buf` and is contiguous; when `start` would reach `L`, the live elements are moved back
+/// to the front (at most `L` copies per wrap).
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct IovDeque<const L: u16> {
+    buf: Vec<iovec>,
+    start: u16,
+    len: u16,
+}
+
+// SAFETY: This is `Send`. We hold sole ownership of the underlying buffer.
+#[cfg(windows)]
+unsafe impl<const L: u16> Send for IovDeque<L> {}
+
+#[cfg(windows)]
+impl<const L: u16> IovDeque<L> {
+    /// Create a new [`IovDeque`] that can hold memory described by a single VirtIO queue.
+    pub fn new() -> Result<Self, IovDequeError> {
+        Ok(Self {
+            buf: vec![
+                iovec {
+                    iov_base: std::ptr::null_mut(),
+                    iov_len: 0,
+                };
+                2 * usize::from(L)
+            ],
+            start: 0,
+            len: 0,
+        })
+    }
+
+    /// Returns the number of `iovec` objects currently in the [`IovDeque`]
+    #[inline(always)]
+    pub fn len(&self) -> u16 {
+        self.len
+    }
+
+    /// Returns `true` if the [`IovDeque`] is full, `false` otherwise
+    #[inline(always)]
+    pub fn is_full(&self) -> bool {
+        self.len() == L
+    }
+
+    /// Resets the queue, dropping all its elements.
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.start = 0;
+        self.len = 0;
+    }
+
+    /// The live elements, as a range of indices into `buf`.
+    #[inline(always)]
+    fn live(&self) -> std::ops::Range<usize> {
+        let start = usize::from(self.start);
+        start..start + usize::from(self.len)
+    }
+
+    /// Adds an `iovec` in the ring buffer.
+    ///
+    /// Panics if the buffer is full.
+    pub fn push_back(&mut self, iov: iovec) {
+        // Same contract as the Linux implementation: pushing into a full ring is an internal bug.
+        assert!(
+            !self.is_full(),
+            "The number of `iovec` objects is bigger than the available space"
+        );
+
+        // `start < L` and `len < L` here, so the index is below `2 * L`.
+        self.buf[usize::from(self.start) + usize::from(self.len)] = iov;
+        self.len += 1;
+    }
+
+    /// Pops the first `nr_iovecs` iovecs from the front of the buffer.
+    ///
+    /// This will panic if we are asked
+    /// to pop more iovecs than what is currently available in the buffer.
+    pub fn pop_front(&mut self, nr_iovecs: u16) {
+        assert!(
+            self.len() >= nr_iovecs,
+            "Internal bug! Trying to drop more iovec objects than what is available"
+        );
+
+        self.start += nr_iovecs;
+        self.len -= nr_iovecs;
+        if self.start >= L {
+            // Move the live elements back to the front so that `start < L` again.
+            let live = self.live();
+            self.buf.copy_within(live, 0);
+            self.start = 0;
+        }
+    }
+
+    /// Pops the first `nr_iovecs` iovecs from the back of the buffer.
+    ///
+    /// This will panic if we are asked
+    /// to pop more iovecs than what is currently available in the buffer.
+    pub fn pop_back(&mut self, nr_iovecs: u16) {
+        assert!(
+            self.len() >= nr_iovecs,
+            "Internal bug! Trying to drop more iovec objects than what is available"
+        );
+
+        self.len -= nr_iovecs;
+    }
+
+    /// Get a slice of the iovec objects currently in the buffer.
+    pub fn as_slice(&self) -> &[iovec] {
+        &self.buf[self.live()]
+    }
+
+    /// Get a mutable slice of the iovec objects currently in the buffer.
+    pub fn as_mut_slice(&mut self) -> &mut [iovec] {
+        let live = self.live();
+        &mut self.buf[live]
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use libc::{c_void, iovec};
+    use std::collections::VecDeque;
+    use std::ffi::c_void;
+
+    use crate::pal::iovec;
 
     type IovDeque = super::IovDeque<256>;
 
@@ -462,5 +595,39 @@ mod tests {
         }
         deque.push_back(make_iovec(0, 1));
     }
-}
 
+    #[test]
+    fn wrap_around_keeps_order() {
+        fn assert_contents(deque: &IovDeque, expected: &VecDeque<u16>) {
+            assert_eq!(usize::from(deque.len()), expected.len());
+            let ids: Vec<u16> = deque
+                .as_slice()
+                .iter()
+                .map(|iov| iov.iov_base as usize as u16)
+                .collect();
+            assert_eq!(ids, expected.iter().copied().collect::<Vec<u16>>());
+        }
+
+        let mut deque = IovDeque::new().unwrap();
+        let mut expected = VecDeque::new();
+        let mut next_id: u16 = 0;
+        // Uneven push and pop batches move `start` across the end of the buffer many times; far
+        // more than `2 * L` elements pass through the queue in total.
+        for step in 0..2000usize {
+            let to_push = (step * 7 % 97).min(256 - expected.len());
+            for _ in 0..to_push {
+                deque.push_back(make_iovec(next_id, 1));
+                expected.push_back(next_id);
+                next_id = next_id.wrapping_add(1);
+            }
+            assert_contents(&deque, &expected);
+
+            let to_pop = (step * 13 % 89).min(expected.len());
+            deque.pop_front(u16::try_from(to_pop).unwrap());
+            for _ in 0..to_pop {
+                expected.pop_front();
+            }
+            assert_contents(&deque, &expected);
+        }
+    }
+}

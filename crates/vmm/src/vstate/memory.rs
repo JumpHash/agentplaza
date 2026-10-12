@@ -14,8 +14,11 @@
 // Syscall boundary (see the allowlist in `lib.rs`): `mmap`/`munmap`/`sysconf`
 // and the raw-pointer guest-region builder have no safe-Rust equivalent, and
 // the region owns its mapping, which is what the `Send`/`Sync` impls assert.
+// On Windows the guest region is vm-memory's own `VirtualAlloc` mapping, so there is no
+// unsafe code of ours on that path.
 #![allow(unsafe_code)]
 
+#[cfg(unix)]
 use std::ffi::c_void;
 use std::ops::Deref;
 
@@ -57,6 +60,7 @@ pub const fn mib_to_bytes(mib: usize) -> usize {
 }
 
 /// Get the size of the host page size.
+#[cfg(unix)]
 pub fn host_page_size() -> usize {
     /// Default page size for the host OS.
     static PAGE_SIZE: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
@@ -66,6 +70,12 @@ pub fn host_page_size() -> usize {
     });
 
     *PAGE_SIZE
+}
+
+/// Get the size of the host page size (Windows: 4 KiB, the page size of the supported targets).
+#[cfg(windows)]
+pub fn host_page_size() -> usize {
+    4096
 }
 
 /// Align address up to the alignment.
@@ -94,6 +104,7 @@ macro_rules! align_down {
 
 /// The alignment used to allocate guest memory.
 /// Chosen to enable optimizations on host kernel, e.g. allow huge pages at the beginning of the memory space.
+#[cfg(unix)]
 const GUEST_MEMORY_ALIGNMENT: usize = mib_to_bytes(2);
 
 /// Errors associated with the guest memory implementation.
@@ -111,16 +122,22 @@ pub enum MemoryError {
     /// Memory region has zero size
     #[error("Memory region has zero size")]
     ZeroSize,
+    /// Failed to allocate guest memory with VirtualAlloc
+    #[cfg(windows)]
+    #[error("failed to allocate guest memory: {0}")]
+    Alloc(std::io::Error),
 }
 
 /// A region of guest memory. Unmapped on drop.
 /// This struct doesn't provide any facility to access the memory or read its properties, see [GuestRegionMmap].
+#[cfg(unix)]
 #[derive(Debug)]
 struct RawGuestRegionMmap {
     mmap_address: *mut u8,
     mmap_size: usize,
 }
 
+#[cfg(unix)]
 impl RawGuestRegionMmap {
     /// Allocates a `PROT_NONE` region of memory, aligned to [`GUEST_MEMORY_ALIGNMENT`] (2 MiB).
     ///
@@ -286,6 +303,7 @@ impl RawGuestRegionMmap {
 
 /// Reports a munmap failure during region trimming (non-fatal: at worst a
 /// `PROT_NONE` VMA is leaked).
+#[cfg(unix)]
 fn log_munmap_failure(len: usize) {
     // Local equivalent of the upstream `warn!` logger macro (trimmed: no logger).
     eprintln!("warning: munmap of {len} bytes failed: {}", {
@@ -294,6 +312,7 @@ fn log_munmap_failure(len: usize) {
     });
 }
 
+#[cfg(unix)]
 impl Drop for RawGuestRegionMmap {
     fn drop(&mut self) {
         // SAFETY: All memory access is done via GuestRegionMmap, and at this point there are no references to that.
@@ -310,8 +329,10 @@ impl Drop for RawGuestRegionMmap {
 
 /// SAFETY: Send and Sync aren't automatically inherited for the raw address pointer.
 /// RawGuestRegionMmap exclusively owns the memory region and doesn't expose the raw pointer for concurrent mutation.
+#[cfg(unix)]
 unsafe impl Send for RawGuestRegionMmap {}
 /// SAFETY: See comment above.
+#[cfg(unix)]
 unsafe impl Sync for RawGuestRegionMmap {}
 
 /// A region of guest memory. Unmapped on drop.
@@ -319,6 +340,7 @@ unsafe impl Sync for RawGuestRegionMmap {}
 #[derive(Debug)]
 pub struct GuestRegionMmap {
     /// Held for its `Drop` impl which unmaps the guest memory region.
+    #[cfg(unix)]
     _region: RawGuestRegionMmap,
     proxy: vm_memory::GuestRegionMmap,
 }
@@ -333,6 +355,7 @@ impl Deref for GuestRegionMmap {
 
 impl GuestRegionMmap {
     /// Creates a new [GuestRegionMmap], by actually allocating the guest memory with the given properties.
+    #[cfg(unix)]
     fn allocate(guest_base: GuestAddress, size: usize) -> Result<Self, MemoryError> {
         let region = RawGuestRegionMmap::allocate(
             size,
@@ -358,7 +381,22 @@ impl GuestRegionMmap {
         assert!(region.mmap_size >= mmap_region.size());
 
         Ok(GuestRegionMmap {
+            #[cfg(unix)]
             _region: region,
+            proxy: vm_memory::GuestRegionMmap::new(mmap_region, guest_base)
+                .ok_or(MemoryError::VmMemoryError)?,
+        })
+    }
+
+    /// Creates a new [GuestRegionMmap], by allocating the guest memory with vm-memory's own
+    /// Windows mapping (committed, read-write `VirtualAlloc`, freed when the region is dropped).
+    #[cfg(windows)]
+    fn allocate(guest_base: GuestAddress, size: usize) -> Result<Self, MemoryError> {
+        if size == 0 {
+            return Err(MemoryError::ZeroSize);
+        }
+        let mmap_region = vm_memory::MmapRegion::new(size).map_err(MemoryError::Alloc)?;
+        Ok(GuestRegionMmap {
             proxy: vm_memory::GuestRegionMmap::new(mmap_region, guest_base)
                 .ok_or(MemoryError::VmMemoryError)?,
         })
@@ -401,7 +439,7 @@ impl GuestRegionMmapExt {
 }
 
 impl Deref for GuestRegionMmapExt {
-    type Target = vm_memory::MmapRegion;
+    type Target = vm_memory::MmapRegion<()>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
@@ -567,6 +605,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_guest_region_errors_when_empty_size() {
         assert!(matches!(
