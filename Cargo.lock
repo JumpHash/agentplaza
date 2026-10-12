@@ -179,6 +179,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-link"
+version = "0.1.0"
+dependencies = [
+ "apz-http",
+ "apz-trust",
+ "rcgen",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apz-plaza"
 version = "0.1.0"
 dependencies = [

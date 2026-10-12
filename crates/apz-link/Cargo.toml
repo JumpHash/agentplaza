@@ -1,0 +1,16 @@
+[package]
+name = "apz-link"
+description = "AgentPlaza node link: joins a hub with a join code, then carries the hub's commands to this machine's noded and vsockd and the agents' traffic to the hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-http = { path = "../apz-http" }
+apz-trust = { path = "../apz-trust" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"
