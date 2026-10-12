@@ -63,8 +63,10 @@ jobs:
               mkdir -p "$dir" && cp "$tmp/zstd-1.5.7/programs/zstd" "$dir/"
               rm -rf "$tmp"
             fi
-            # The cache unpacks with `tar --use-compress-program unzstd`.
+            # The cache packs with `tar --use-compress-program zstdmt` and unpacks with `unzstd`:
+            # zstd answers to both names.
             ln -sf zstd "$dir/unzstd"
+            ln -sf zstd "$dir/zstdmt"
             echo "$dir" >> "$GITHUB_PATH"
             "$dir/zstd" --version
           else

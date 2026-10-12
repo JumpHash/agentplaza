@@ -99,6 +99,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
+      # First, so the closing clean-up has it even when a restore below fails.
+      - name: CI image
+        run: .github/ci/image.sh
       # The platform jobs leave their packages in the cache under this run's id (no artifact storage).
       - uses: actions/cache/restore@v4
         with: { path: out-linux-x86_64, key: "pkg-linux-x86_64-${{ github.run_id }}", fail-on-cache-miss: true }
@@ -114,8 +117,6 @@ jobs:
       - uses: actions/cache/restore@v4
         if: vars.APZ_WINDOWS_ARM64 == 'on'
         with: { path: out-windows-arm64, key: "pkg-windows-arm64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
-      - name: CI image
-        run: .github/ci/image.sh
       - name: Gather and checksum
         run: |
           rm -rf dist && mkdir dist
