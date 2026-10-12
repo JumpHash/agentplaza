@@ -437,7 +437,7 @@ impl canvas::Program<Msg> for Graph<'_> {
             };
             let mut stroke = canvas::Stroke::default().with_color(colour).with_width(width * k.max(0.5));
             if dashed {
-                stroke = stroke.with_line_dash(canvas::stroke::LineDash { segments: &[6.0, 4.0], offset: 0 });
+                stroke = canvas::Stroke { line_dash: canvas::stroke::LineDash { segments: &[6.0, 4.0], offset: 0 }, ..stroke };
             }
             frame.stroke(&path, stroke);
             if arrow {

@@ -613,7 +613,7 @@ fn new_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         let mut g = column![ui::label(group)].spacing(6);
         for &tool in names {
             let on = w.tools.iter().any(|t| t.as_str() == tool);
-            g = g.push(checkbox(tool, on).on_toggle(move |v| WizardMsg::ToggleTool(tool, v)));
+            g = g.push(checkbox(on).label(tool).on_toggle(move |v| WizardMsg::ToggleTool(tool, v)));
         }
         tools = tools.push(g);
     }

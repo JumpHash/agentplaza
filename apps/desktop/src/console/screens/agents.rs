@@ -277,8 +277,8 @@ fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
         cell(3, ui::label("Agent").into()),
         cell(2, ui::label("Model").into()),
         cell(3, ui::label("Work").into()),
-        container(ui::label("Tokens")).width(Length::FillPortion(1)).align_x(Alignment::End).into(),
-        Space::new().width(Length::Fixed(ACTIONS_WIDTH)).into(),
+        Element::from(container(ui::label("Tokens")).width(Length::FillPortion(1)).align_x(Alignment::End)),
+        Element::from(Space::new().width(Length::Fixed(ACTIONS_WIDTH))),
     ]
     .spacing(12)
     .padding([8, 12])
@@ -302,8 +302,8 @@ fn row_view<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
         cell(3, agent_cell(a)),
         cell(2, model_cell(a)),
         cell(3, work_cell(a)),
-        container(ui::mono(compact(a.tokens), 12.0, INK)).width(Length::FillPortion(1)).align_x(Alignment::End).into(),
-        container(actions(a)).width(Length::Fixed(ACTIONS_WIDTH)).align_x(Alignment::End).into(),
+        Element::from(container(ui::mono(compact(a.tokens), 12.0, INK)).width(Length::FillPortion(1)).align_x(Alignment::End)),
+        Element::from(container(actions(a)).width(Length::Fixed(ACTIONS_WIDTH)).align_x(Alignment::End)),
     ]
     .spacing(12)
     .padding([10, 12])

@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod client;
+pub mod ws;
 mod message;
 mod router;
 mod server;
