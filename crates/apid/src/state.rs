@@ -135,6 +135,8 @@ pub struct App {
     pub hub: Upstream,
     /// The secret the hub presents on `/internal/*` (`x-apz-internal`).
     pub token: String,
+    /// This app, weakly: for work that outlives a request (a socket's thread) to read live state.
+    me: std::sync::OnceLock<std::sync::Weak<App>>,
 }
 
 impl App {
@@ -147,6 +149,7 @@ impl App {
         let hub_auth = crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         let app = Arc::new(App {
+            me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
@@ -187,6 +190,7 @@ impl App {
         crate::autoscale::spawn(Arc::clone(&app));
         // Every note an agent writes is a live `memory` event for the console.
         let weak = Arc::downgrade(&app);
+        let _ = app.me.set(Arc::downgrade(&app));
         app.memory.set_listener(move |cid, meta| {
             if let Some(app) = weak.upgrade() {
                 app.bus.publish("memory", &serde_json::json!({ "cid": cid, "slug": meta.slug, "title": meta.title, "kind": meta.kind }));
@@ -286,4 +290,11 @@ fn write_token(dir: &Path) -> std::io::Result<String> {
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
     file.write_all(token.as_bytes())?;
     Ok(token)
+}
+
+impl App {
+    /// This app as a weak handle (for a socket's thread; it reads the live state through it).
+    pub fn handle(&self) -> std::sync::Weak<App> {
+        self.me.get().cloned().unwrap_or_default()
+    }
 }

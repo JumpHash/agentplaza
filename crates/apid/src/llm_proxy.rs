@@ -350,12 +350,11 @@ fn read_sse(reader: impl BufRead, mut on_event: impl FnMut(&str, &str) -> io::Re
     Ok(tail)
 }
 
-/// What a WebSocket's model calls need, read when the socket opens: the agent's own model, the
-/// list it is held to (`None`: not held to one), and the provider's upstream.
+/// What a WebSocket's model calls need: the agent, the hub (to read the hold and the agent's
+/// policy afresh for every call, not once when the socket opened), and the provider's upstream.
 struct Grant {
     cid: u64,
-    own: String,
-    list: Option<Vec<String>>,
+    app: std::sync::Weak<App>,
     base: String,
     key: String,
     headers: Vec<(String, String)>,
@@ -364,20 +363,27 @@ struct Grant {
 fn grant_for(app: &App, req: &Request, cid: u64, provider: &str) -> Result<Grant, Response> {
     let agent = app.agents.get(cid).ok_or_else(|| Response::error(404, "unknown agent"))?;
     let (base, key) = provider_upstream(app, provider)?;
+    let _ = agent;
     Ok(Grant {
         cid,
-        own: crate::agents::model_of(app, &agent),
-        list: held_to(app, &agent),
+        app: app.handle(),
         base,
         key,
         headers: anthropic_headers(req),
     })
 }
 
-/// The gateway's policy for one WebSocket call, as over HTTP.
+/// The gateway's policy for one WebSocket call, as over HTTP, read live: STOP ALL holds the call,
+/// and the agent's current model and the list it is held to apply (a change since the socket
+/// opened counts).
 fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<(), String> {
-    match &grant.list {
-        Some(list) => check_model(body, provider, &grant.own, list),
+    let app = grant.app.upgrade().ok_or("the hub is shutting down")?;
+    if app.control.paused() {
+        return Err("the plaza is held (STOP ALL); waiting for the owner to resume".into());
+    }
+    let agent = app.agents.get(grant.cid).ok_or("unknown agent")?;
+    match held_to(&app, &agent) {
+        Some(list) => check_model(body, provider, &crate::agents::model_of(&app, &agent), &list),
         None => Ok(()),
     }
 }
