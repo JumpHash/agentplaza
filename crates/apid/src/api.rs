@@ -134,6 +134,7 @@ fn content_type(path: &Path) -> &'static str {
         Some("png") => "image/png",
         Some("json") => apz_http::JSON,
         Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
         _ => "application/octet-stream",
     }
 }
