@@ -7,6 +7,7 @@ import { go, href } from '../router';
 import { agents, on } from '../store';
 import { ago, badge, clip, empty } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
@@ -157,7 +158,7 @@ function bubble(m: Conversation, side: 'left' | 'right', label: (cid: number) =>
         h('span.faint', null, ago(m.created_at)),
         m.delivered ? null : badge('undelivered', 'warn'),
       ),
-      h('p.bubble-text', null, m.text),
+      h('div.bubble-text', null, renderMarkdown(m.text)),
     ),
   );
 }

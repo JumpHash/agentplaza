@@ -8,6 +8,7 @@ import { api, type Deliverable } from '../api';
 import { attempt, button, empty, input, modal, tabs } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
+import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 type Group = 'Video' | 'Image' | 'Audio' | 'Documents' | 'Other';
@@ -108,18 +109,21 @@ function bigPreview(d: Deliverable): HTMLElement {
   }
   if (d.content_type.toLowerCase() === 'application/pdf') return h('iframe.lib-big', { src: url, title: name });
   if (!isTextual(d)) return h('p.faint', null, 'No preview for this type. Download it to open it.');
-  const pre = h('pre.lib-file.lib-text', null, 'Loading…') as HTMLElement;
+  const markdown = /\.md$/i.test(d.name) || d.content_type.toLowerCase() === 'text/markdown';
+  const pre = (markdown ? h('div.lib-file.lib-text', null, 'Loading…') : h('pre.lib-file.lib-text', null, 'Loading…')) as HTMLElement;
   if (d.size > TEXT_LIMIT) pre.textContent = `Too large to preview (${humanSize(d.size)}). Download it to read it.`;
-  else void loadText(d, pre);
+  else void loadText(d, pre, markdown);
   return pre;
 }
 
-async function loadText(d: Deliverable, pre: HTMLElement): Promise<void> {
+async function loadText(d: Deliverable, pre: HTMLElement, markdown: boolean): Promise<void> {
   try {
     const res = await fetch(api.fileUrl(d.id));
     if (!res.ok) throw new Error(String(res.status));
     const text = await res.text();
-    pre.textContent = text.length > TEXT_LIMIT ? `${text.slice(0, TEXT_LIMIT)}\n…` : text;
+    const shown = text.length > TEXT_LIMIT ? `${text.slice(0, TEXT_LIMIT)}\n…` : text;
+    if (markdown) pre.replaceChildren(renderMarkdown(shown));
+    else pre.textContent = shown;
   } catch {
     pre.textContent = 'Could not read this file.';
   }

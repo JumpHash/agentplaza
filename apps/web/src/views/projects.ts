@@ -8,6 +8,7 @@ import { href } from '../router';
 import { on } from '../store';
 import { ago, attempt, badge, button, card, empty, field, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
@@ -76,7 +77,7 @@ function docItem(d: ProjectDoc): HTMLElement {
     null,
     h('div.pj-doc-head', null, h('span.pj-doc-title', null, d.title), badge(d.kind, 'muted')),
     h('div.pj-meta', null, `by ${d.by} · ${ago(d.at_ms)}`),
-    d.summary ? h('p.pj-doc-summary', null, d.summary) : null,
+    d.summary ? h('div.pj-doc-summary', null, renderMarkdown(d.summary)) : null,
     h(
       'div.pj-doc-links',
       null,
@@ -115,7 +116,7 @@ function critiquesBody(p: Project): Node {
           h('span.pj-muted', null, `revision ${c.revision}`),
           h('span.pj-muted', null, ago(c.at_ms)),
         ),
-        c.text ? h('p.pj-crit-text', null, c.text) : null,
+        c.text ? h('div.pj-crit-text', null, renderMarkdown(c.text)) : null,
       ),
     ),
   );

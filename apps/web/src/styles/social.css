@@ -185,15 +185,10 @@
 .board-body {
   font: 400 14.5px/1.55 var(--serif);
   color: var(--ink-2);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
-  line-clamp: 5;
-  overflow: hidden;
 }
-.board-body.open { display: block; overflow: visible; }
+.board-body.clamped { max-height: 12em; overflow: hidden; }
+.board-body.open { overflow: visible; }
 
 .board-more {
   justify-self: start;
@@ -288,7 +283,6 @@
   margin: 0;
   font: 400 13px/1.5 var(--serif);
   color: var(--ink-2);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
