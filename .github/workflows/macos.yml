@@ -41,15 +41,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Apple Silicon, arch: aarch64, runner: macos-15, triple: aarch64-apple-darwin,
+          - { name: Apple Silicon, arch: aarch64, runner: macos-15, triple: aarch64-apple-darwin, cpu: ARM64,
               bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl" }
-          - { name: Intel, arch: x86_64, runner: macos-15-intel, triple: x86_64-apple-darwin,
+          - { name: Intel, arch: x86_64, runner: macos-15-intel, triple: x86_64-apple-darwin, cpu: X64,
               bins: "-p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      # Each leg names its target, so either kind of Mac builds either (an Intel Mac cross-builds
+      # Apple Silicon); the tests run where the runner's CPU is the target's.
       - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.triple }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: nextest }
       # On GitHub the action hands sccache the Actions cache; elsewhere a plain sccache, on disk.
@@ -63,10 +66,11 @@ jobs:
           shared-key: macos-${{ matrix.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test (the guest harness runs only inside Linux VMs)
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci
+        if: runner.arch == matrix.cpu
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ matrix.triple }}
       - name: Build the binaries
         if: inputs.package
-        run: cargo build --release --locked ${{ matrix.bins }}
+        run: cargo build --release --locked --target ${{ matrix.triple }} ${{ matrix.bins }}
       - uses: actions/download-artifact@v4
         if: inputs.package && matrix.arch == 'aarch64' && github.event_name != 'workflow_dispatch'
         with: { name: guest-aarch64, path: target/guest/aarch64 }
@@ -76,7 +80,7 @@ jobs:
           # A hand-run package (no release job built the guest) may go without it.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: |
-          packaging/scripts/stage.sh ${{ matrix.triple }} target/release stage "$VERSION"
+          packaging/scripts/stage.sh ${{ matrix.triple }} target/${{ matrix.triple }}/release stage "$VERSION"
           tar -czf stage-macos-${{ matrix.arch }}.tgz stage
       - uses: actions/upload-artifact@v4
         if: inputs.package
