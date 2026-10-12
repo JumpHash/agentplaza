@@ -144,14 +144,14 @@ fn subscription(console: &Console) -> Subscription<Msg> {
         None if std::env::var_os("APZ_SNAPSHOT").is_some() => iced::time::every(std::time::Duration::from_secs(8)).map(|_| Msg::Snapshot),
         _ => Subscription::none(),
     };
-    if console.ctx.is_none() {
+    let Some(ctx) = console.ctx.as_ref() else {
         return boot::subscription(&console.boot).map(Msg::Boot);
-    }
+    };
     Subscription::batch([
         snapshot,
         iced::time::every(std::time::Duration::from_secs(4)).map(|_| Msg::Tick),
         shell::subscription(&console.shell).map(Msg::Shell),
-        screens::subscription(&console.screens, &console.shell.current).map(Msg::Screen),
+        screens::subscription(&console.screens, &console.shell.current, ctx).map(Msg::Screen),
     ])
 }
 

@@ -203,10 +203,10 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-/// The shown screen's own subscriptions: the Floor's animation frames while it is open.
-pub fn subscription(_screens: &Screens, id: &Id) -> iced::Subscription<Msg> {
+/// The shown screen's own subscriptions: the Floor's animation frames and the hub's events while it is open.
+pub fn subscription(_screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
-        Id::Floor => floor::subscription().map(Msg::Floor),
+        Id::Floor => iced::Subscription::batch([floor::subscription(), floor::events(ctx)]).map(Msg::Floor),
         _ => iced::Subscription::none(),
     }
 }
