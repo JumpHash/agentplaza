@@ -345,7 +345,7 @@ impl std::fmt::Display for SocialError {
 impl std::error::Error for SocialError {}
 
 /// One post as the API reports it: the contract's `board.posts` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostView {
     /// The post's id (`p<seq>`), monotonic and never reused.
     pub id: String,
@@ -369,12 +369,13 @@ pub struct PostView {
     /// [`Social::MAX_COMMENTS`]; the oldest is dropped past that.
     pub comments: Vec<CommentView>,
     /// Ids of the files shown with the post (the plaza's file store). Always present.
+    #[serde(default)]
     pub attachments: Vec<String>,
 }
 
 /// One comment on a board post's thread, as the API reports it: the contract's
 /// `{id: c<seq>, post, agent_cid, author, body, created_at}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentView {
     /// The comment's id (`c<seq>`), on its own counter, monotonic and never reused.
     pub id: String,
@@ -389,6 +390,7 @@ pub struct CommentView {
     /// When the comment was recorded, in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// Ids of the files shown with the comment. Always present.
+    #[serde(default)]
     pub attachments: Vec<String>,
 }
 
@@ -465,7 +467,7 @@ pub struct ContactsView {
 /// One exchange as the API reports it: the contract's `{id: c<seq>, from_cid,
 /// to_cid, text, created_at}`, plus the roles the pair spoke as and the
 /// delivery line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationView {
     /// The exchange's id (`c<seq>`), monotonic and never reused.
     pub id: String,
@@ -487,6 +489,7 @@ pub struct ConversationView {
     /// statement that there is nowhere to send the call. `null` when delivered.
     pub delivery: Option<String>,
     /// Ids of the files sent with the message. Always present.
+    #[serde(default)]
     pub attachments: Vec<String>,
 }
 
@@ -571,7 +574,7 @@ pub struct Social {
     inner: Mutex<SocialInner>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct SocialInner {
     /// The board, oldest first. Posts are never removed and their ids are
     /// contiguous from `p1`, so a cursor's unread count is arithmetic.
@@ -1194,14 +1197,113 @@ fn to_usize(count: u64) -> usize {
 /// came back.
 
 impl Social {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
+    /// The whole state as JSON, for Postgres: the board with its comments and
+    /// attachments, the cursors, the contacts and the exchange record. The event
+    /// bus is not part of it.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D4
+        let inner = self.lock();
+        serde_json::to_string(&*inner).expect("the social state serializes")
     }
 
-    /// Replaces the state with a [`Social::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D4
+    /// Replaces the state with `json`, a [`Social::snapshot`]. The snapshot must
+    /// hold to the invariants a live operation keeps; a refusal changes nothing,
+    /// and a restore publishes nothing.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let restored: SocialInner = serde_json::from_str(json)
+            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+        check_snapshot(&restored)?;
+        *self.lock() = restored;
+        Ok(())
+    }
+}
+
+/// Refuses a snapshot no sequence of live operations could have produced: the
+/// board's ids contiguous from `p1` with its counter at the newest, comment and
+/// exchange ids unique and within their counters, every comment filed under the
+/// post it names, and no cursor past the board (its unread arithmetic would
+/// underflow).
+fn check_snapshot(state: &SocialInner) -> Result<(), String> {
+    let seq_of = |id: &str, prefix: char| id.strip_prefix(prefix).and_then(|n| n.parse::<u64>().ok());
+    if state.posts_seq != state.posts.len() as u64 {
+        return Err(format!(
+            "the board counter is {} but the board holds {} posts",
+            state.posts_seq,
+            state.posts.len()
+        ));
+    }
+    let mut comment_seqs = std::collections::BTreeSet::new();
+    for (index, post) in state.posts.iter().enumerate() {
+        if post.id != format!("p{}", index + 1) {
+            return Err(format!("post {} is out of place at position {}", post.id, index + 1));
+        }
+        if post.comments.len() > Social::MAX_COMMENTS {
+            return Err(format!("post {} holds more than {} comments", post.id, Social::MAX_COMMENTS));
+        }
+        for comment in &post.comments {
+            let seq = seq_of(&comment.id, 'c')
+                .ok_or_else(|| format!("comment id {:?} is malformed", comment.id))?;
+            if seq == 0 || seq > state.comment_seq {
+                return Err(format!("comment {} is past the comment counter {}", comment.id, state.comment_seq));
+            }
+            if !comment_seqs.insert(seq) {
+                return Err(format!("comment id {} appears twice", comment.id));
+            }
+            if comment.post != post.id {
+                return Err(format!("comment {} is filed under {} but names {}", comment.id, post.id, comment.post));
+            }
+        }
+    }
+    let mut last = 0;
+    for exchange in &state.conversations {
+        let seq = seq_of(&exchange.id, 'c')
+            .ok_or_else(|| format!("exchange id {:?} is malformed", exchange.id))?;
+        if seq <= last || seq > state.conv_seq {
+            return Err(format!(
+                "exchange {} is out of order or past the exchange counter {}",
+                exchange.id, state.conv_seq
+            ));
+        }
+        last = seq;
+    }
+    if let Some((cid, cursor)) = state.cursors.iter().find(|(_, cursor)| **cursor > state.posts_seq) {
+        return Err(format!("agent {cid}'s cursor {cursor} is past the board"));
+    }
+    Ok(())
+}
+
+/// A contact as a snapshot carries it: its kind is text until it is checked
+/// against the three kinds a link can have (see [`ContactView`]).
+#[derive(Deserialize)]
+struct ContactRow {
+    peer_cid: u64,
+    role: String,
+    since: u64,
+    kind: String,
+}
+
+impl std::convert::TryFrom<ContactRow> for ContactView {
+    type Error = String;
+
+    fn try_from(row: ContactRow) -> Result<Self, String> {
+        let kind = match row.kind.as_str() {
+            MET => MET,
+            HIRED => HIRED,
+            WAS_HIRED => WAS_HIRED,
+            other => return Err(format!("unknown contact kind {other:?}")),
+        };
+        Ok(ContactView {
+            peer_cid: row.peer_cid,
+            role: row.role,
+            since: row.since,
+            kind,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ContactView {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let row = ContactRow::deserialize(deserializer)?;
+        ContactView::try_from(row).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1246,6 +1348,52 @@ mod tests {
         social
             .post(auth, request.checked().expect("a post inside the caps"))
             .expect("room on the board")
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_board_the_record_and_the_contacts_and_refuses_garbage() {
+        let (social, _notes) = lab();
+        let builder = agent(100, "builder");
+        let scout = agent(101, "scout");
+        let first = posted(&social, &builder, "hiring?");
+        posted(&social, &scout, "a second post");
+        social
+            .comment(&first.id, Some(101), "scout", "I can help.")
+            .expect("a comment on a post");
+        social
+            .comment(&first.id, None, "owner", "Thanks.")
+            .expect("an owner comment");
+        social
+            .attach("post", &first.id, &["f1".to_string()])
+            .expect("a file on a post");
+        social
+            .say(&builder, &scout, "are you free?", &|_, _, _| (true, None))
+            .expect("an exchange");
+        social
+            .say(&scout, &builder, "yes", &|_, _, _| (false, Some("offline".to_string())))
+            .expect("a reply");
+        social.add_contact(&builder, &scout).expect("a contact link");
+        let json = social.snapshot();
+
+        let (restored, notes) = lab();
+        restored.restore(&json).expect("a snapshot restores");
+        assert!(notes.try_recv().is_err(), "a restore publishes nothing");
+        assert_eq!(
+            serde_json::to_string(&restored.board(&[], 50)).unwrap(),
+            serde_json::to_string(&social.board(&[], 50)).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&restored.conversations(50)).unwrap(),
+            serde_json::to_string(&social.conversations(50)).unwrap()
+        );
+        assert_eq!(restored.snapshot(), json, "the snapshot round-trips");
+
+        let (fresh, _notes) = lab();
+        assert!(fresh.restore("not json").is_err());
+        let mut broken: serde_json::Value = serde_json::from_str(&json).unwrap();
+        broken["posts_seq"] = serde_json::json!(1);
+        assert!(fresh.restore(&broken.to_string()).is_err());
+        assert_eq!(fresh.board(&[], 50).total, 0, "a refusal changes nothing");
     }
 
     #[test]
