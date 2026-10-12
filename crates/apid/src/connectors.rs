@@ -735,7 +735,7 @@ impl Store {
         let outcome = execute(c, action, &values, &input);
         let latency_ms = started.elapsed().as_millis() as u64;
         let (ok, detail) = match outcome {
-            Ok(body) => (true, snippet(&body)),
+            Ok(reply) => (true, snippet(&reply_text(reply))),
             Err(e) => (false, e),
         };
         Ok(json!({ "ok": ok, "latency_ms": latency_ms, "detail": detail }))
@@ -822,9 +822,65 @@ fn failure((status, message): Failure) -> Response {
 
 /// The one path an agent tool takes to reach an external service. Refuses an
 /// unknown, disabled, unconfigured or role-forbidden connector before anything is sent.
-pub fn call(app: &App, role: &str, connector: &str, action: &str, input: &Value) -> Result<String, String> {
+/// `agent` is `(cid, name)` for an agent's call, which stores a binary reply in the file
+/// store and returns its id; `None` (an owner or console call) gets the base64 text.
+pub fn call(app: &App, agent: Option<(u64, &str)>, role: &str, connector: &str, action: &str, input: &Value) -> Result<String, String> {
     let plan = gate(&app.connectors, role, connector, action)?;
-    execute(plan.connector, plan.action, &plan.values, input)
+    match execute(plan.connector, plan.action, &plan.values, input)? {
+        Reply::Text(text) => Ok(text),
+        Reply::Binary { content_type, bytes } => match agent {
+            None => Ok(format!("[{content_type}; {} bytes; base64]\n{}", bytes.len(), base64(&bytes))),
+            Some((cid, name)) => {
+                let upload = crate::deliverables::Upload {
+                    name: format!("{connector}-{action}.{}", extension(&content_type)),
+                    title: format!("{} {action}", plan.connector.label),
+                    description: None,
+                    task: None,
+                    content_type: content_type.clone(),
+                    author_cid: cid,
+                    author: name.to_string(),
+                    kind: "shared".into(),
+                    audience: "private".into(),
+                    allowed: vec![cid],
+                };
+                let stored = app.deliverables.add(upload, &bytes)?;
+                Ok(format!(
+                    "{content_type}, {} bytes, saved as file {}. Fetch it into your VM with download from http://plaza.gateway/files/{}",
+                    bytes.len(),
+                    stored.id,
+                    stored.id
+                ))
+            }
+        },
+    }
+}
+
+/// A successful upstream reply: text, or a binary body that goes to the file store.
+enum Reply {
+    Text(String),
+    Binary { content_type: String, bytes: Vec<u8> },
+}
+
+/// The text form of a reply: a binary body is described, not inlined.
+fn reply_text(reply: Reply) -> String {
+    match reply {
+        Reply::Text(text) => text,
+        Reply::Binary { content_type, bytes } => format!("[{content_type}; {} bytes]", bytes.len()),
+    }
+}
+
+/// A file extension for the common binary types the connectors return.
+fn extension(content_type: &str) -> &'static str {
+    match content_type.split(';').next().unwrap_or("").trim() {
+        "audio/mpeg" => "mp3",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/ogg" => "ogg",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "video/mp4" => "mp4",
+        _ => "bin",
+    }
 }
 
 /// What a call needs once the gates have passed.
@@ -855,8 +911,8 @@ fn gate(store: &Store, role: &str, connector: &str, action: &str) -> Result<Plan
 }
 
 /// Sends one action upstream. The credentials are attached here and redacted from
-/// every error; the body comes back as text, or as base64 with a note when binary.
-fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: &Value) -> Result<String, String> {
+/// every error; the body comes back as text, or as binary bytes for the file store.
+fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: &Value) -> Result<Reply, String> {
     let main = main_field(c);
     let secret = main.and_then(|f| values.get(f.name)).map_or("", String::as_str);
     // Every value that must never reach an error: the main key and each secret field.
@@ -928,6 +984,13 @@ fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: 
         .map_err(|e| e.to_string())?;
     let truncated = bytes.len() > BODY_CAP;
     bytes.truncate(BODY_CAP);
+    if (200..300).contains(&status) && !is_text(&content_type) {
+        // A cut-off file would be stored as if whole, so an oversized binary body is refused.
+        if truncated {
+            return Err(format!("{}.{} returned a binary body over 256 KiB; not stored", c.id, a.name));
+        }
+        return Ok(Reply::Binary { content_type, bytes });
+    }
     let mut text = if is_text(&content_type) {
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
@@ -937,7 +1000,7 @@ fn execute(c: &Connector, a: &Action, values: &BTreeMap<String, String>, input: 
         text.push_str("\n[truncated at 256 KiB]");
     }
     if (200..300).contains(&status) {
-        Ok(text)
+        Ok(Reply::Text(text))
     } else {
         Err(redact_all(&format!("{}.{} returned HTTP {status}: {}", c.id, a.name, snippet(&text)), &secrets))
     }

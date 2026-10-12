@@ -656,7 +656,8 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
             let (connector, action) = crate::connectors::by_tool(other).ok_or("unknown connector tool")?;
-            crate::connectors::call(app, &agent.role, connector.id, action.name, input)
+            let name = if agent.name.is_empty() { &agent.role } else { &agent.name };
+            crate::connectors::call(app, Some((agent.cid, name.as_str())), &agent.role, connector.id, action.name, input)
         }
         other => Err(format!("{other} is not implemented")),
     }
