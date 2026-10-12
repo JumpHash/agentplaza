@@ -421,6 +421,28 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/vms/{index}/memory", |node, request, params| {
             set_vm_memory(node, params.get("id"), params.get("index"), &request.body)
         })
+        // One VM of a run: restart it as it was booted (same CID, same workspace image), reset
+        // its workspace to the base image and restart it, or stop it for good.
+        .post("/v1/runs/{id}/vms/{index}/restart", |node, _, params| restart_vm(node, params.get("id"), params.get("index")))
+        .post("/v1/runs/{id}/vms/{index}/wipe", |node, _, params| wipe_vm(node, params.get("id"), params.get("index")))
+        .post("/v1/runs/{id}/vms/{index}/stop", |node, _, params| stop_vm(node, params.get("id"), params.get("index")))
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/restart` → 200 with the run's summary view.
+fn restart_vm(_node: &Node, _id: &str, _index: &str) -> Response {
+    Response::error(501, "contract: N1")
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/wipe`: stop the VM, replace its workspace image with a fresh
+/// copy of the base image (the persistent image too, for a keepalive run), boot it again.
+fn wipe_vm(_node: &Node, _id: &str, _index: &str) -> Response {
+    Response::error(501, "contract: N1")
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/stop`: stop the VM and do not restart it (the run keeps its
+/// other VMs; a keepalive VM stopped this way is not brought back).
+fn stop_vm(_node: &Node, _id: &str, _index: &str) -> Response {
+    Response::error(501, "contract: N1")
 }
 
 /// `GET /v1/machine/stats`: the latest host sample, the last minute of samples,

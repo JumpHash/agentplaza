@@ -29,6 +29,7 @@ pub const COMPONENTS: &[&str] = &[
     "treasury", "tasks", "agora", "social", "council", "bonds",
     "projects", "toolbox", "harness", "approvals", "library", "deliverables", "connectors",
     "names", "settings", "providers", "spawned", "laws", "society", "work",
+    "control", "custom_roles", "agent_proposals",
 ];
 
 const SCHEMA: &str = "
@@ -88,6 +89,9 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "laws" => app.laws.snapshot(),
         "society" => app.society.snapshot(),
         "work" => app.work.snapshot(),
+        "control" => app.control.snapshot(),
+        "custom_roles" => app.custom_roles.snapshot(),
+        "agent_proposals" => app.agent_proposals.snapshot(),
         _ => String::new(),
     }
 }
@@ -115,6 +119,9 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "laws" => app.laws.restore(json),
         "society" => app.society.restore(json),
         "work" => app.work.restore(json),
+        "control" => app.control.restore(json),
+        "custom_roles" => app.custom_roles.restore(json),
+        "agent_proposals" => app.agent_proposals.restore(json),
         other => Err(format!("unknown component {other}")),
     }
 }

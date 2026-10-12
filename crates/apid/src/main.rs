@@ -38,6 +38,10 @@ mod harness_control;
 mod git;
 mod db;
 mod rules;
+mod control;
+mod lifecycle;
+mod roles_custom;
+mod agent_proposals;
 mod transcript;
 mod upstream;
 

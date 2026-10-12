@@ -42,6 +42,10 @@ pub fn router() -> Router<App> {
     let router = crate::harness_control::routes(router);
     let router = crate::git::routes(router);
     let router = crate::rules::routes(router);
+    let router = crate::control::routes(router);
+    let router = crate::lifecycle::routes(router);
+    let router = crate::roles_custom::routes(router);
+    let router = crate::agent_proposals::routes(router);
     let router = memory::routes(router);
     router
         .get("/", |app, _, _| static_file(&app.config.console, "index.html"))

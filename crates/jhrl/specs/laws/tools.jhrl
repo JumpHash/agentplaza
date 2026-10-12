@@ -139,3 +139,15 @@ law "T-011" "Agents may run tools other agents built" {
   resource is Tool
   when resource.kind == "library"
 }
+
+law "T-012" "Only the orchestrator proposes new agents" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "The orchestrator may propose new agents for the owner to approve, and only when the owner asked for them in its chat. Nothing is spawned until the owner approves."
+  rationale "New agents cost money and change who does what; the owner decides, the orchestrator drafts."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_agent_propose" and principal.tier == "orchestrator"
+}

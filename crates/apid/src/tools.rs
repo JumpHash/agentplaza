@@ -83,6 +83,7 @@ const IN_VM: &[&str] = &["bash", "read_file", "write_file", "edit_file", "list",
 
 /// Host tools offered only by tier or seat (see [`permitted`]).
 const GATED: &[&str] = &[
+    "plaza_agent_propose",
     "plaza_project_open",
     "plaza_project_advance",
     "plaza_project_approve",
@@ -116,6 +117,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::projects::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_git" => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
@@ -127,7 +129,7 @@ pub fn runs(name: &str) -> Option<Runs> {
 /// The tool specs an agent of `role` is offered (its grants + plaza tools).
 pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
     // contract
-    let granted = app.roles.tools.get(role).cloned().unwrap_or_default();
+    let granted = crate::roles_custom::tools_of(app, role);
     let mut specs: Vec<ToolSpec> = offered(role, &granted).iter().filter_map(|name| spec(name)).collect();
     specs.extend(crate::connectors::specs_for(app, role));
     specs
@@ -433,7 +435,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
         ),
         other => {
-            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other))?;
+            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other)).or_else(|| crate::agent_proposals::spec(other))?;
             return Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema });
         }
     };
@@ -731,6 +733,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
         other if crate::projects::TOOLS.contains(&other) => crate::projects::run(app, agent, other, input),
         other if crate::harness_control::TOOLS.contains(&other) => crate::harness_control::run(app, agent, other, input),
         "plaza_git" => crate::git::run(app, agent, input),
+        "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
             let (connector, action) = crate::connectors::by_tool(other).ok_or("unknown connector tool")?;

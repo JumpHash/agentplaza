@@ -263,7 +263,8 @@ pub fn model_of(app: &App, agent: &Agent) -> String {
 /// The agent's profile: name, role, model, system prompt, tools, limits.
 pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // contract
-    let role_prompt = app.roles.prompts.get(&agent.role).map_or("", String::as_str);
+    let role_prompt = crate::roles_custom::prompt_for(app, &agent.role);
+    let role_prompt = role_prompt.as_str();
     // The orchestrator's or the mayor's per-agent limits, over the plaza's defaults.
     let limits = app.harness.limits(agent.cid);
     AgentProfile {
@@ -596,7 +597,7 @@ fn spawn(app: &App, req: &Request) -> Response {
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    if !app.roles.tools.contains_key(&b.role) {
+    if !crate::roles_custom::exists(app, &b.role) {
         return Response::error(400, &format!("unknown role {}", b.role));
     }
     let count = b.count.unwrap_or(1);
