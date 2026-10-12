@@ -1,15 +1,27 @@
-// The live layer: one EventSource on /v1/events, typed listeners, and the
-// few pieces of state the shell and several views share (agents, overview).
+// The live layer: one WebSocket on /v1/ws (same origin, subprotocol
+// apz.events.v1) carrying typed frames to listeners, and the few pieces of
+// state the shell and several views share (agents, overview).
 
 import { api, type Agent, type Overview } from './api';
 
 type Listener = (data: unknown) => void;
 const listeners = new Map<string, Set<Listener>>();
-let source: EventSource | null = null;
+let socket: WebSocket | null = null;
 let connected = false;
 const connectionListeners = new Set<(up: boolean) => void>();
 
-/** Subscribes to SSE frames of `kind`; returns the unsubscribe function. */
+// Reconnects: 1 s doubling to 30 s, each wait jittered into [half, whole] of
+// the current step; the step resets once a socket has stayed open for a minute.
+const BACKOFF_MIN_MS = 1_000;
+const BACKOFF_MAX_MS = 30_000;
+const STABLE_MS = 60_000;
+const MAX_FRAME_BYTES = 1 << 20;
+let wanted = false; // connect() was called and the page has not left
+let backoff = BACKOFF_MIN_MS;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let stableTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Subscribes to frames of `kind`; returns the unsubscribe function. */
 export function on(kind: string, fn: Listener): () => void {
   let set = listeners.get(kind);
   if (!set) listeners.set(kind, (set = new Set()));
@@ -23,31 +35,101 @@ export function onConnection(fn: (up: boolean) => void): () => void {
   return () => connectionListeners.delete(fn);
 }
 
-const KINDS = ['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role'];
+const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role']);
 
+/** Opens the live layer (idempotent). It reconnects on its own until the page leaves. */
 export function connect(): void {
-  if (source) return;
-  source = new EventSource('/v1/events');
-  source.onopen = () => setConnected(true);
-  source.onerror = () => setConnected(false);
-  for (const kind of KINDS) {
-    source.addEventListener(kind, (ev) => {
-      let data: unknown;
-      try {
-        data = JSON.parse((ev as MessageEvent<string>).data);
-      } catch {
-        return;
-      }
-      listeners.get(kind)?.forEach((fn) => fn(data));
-    });
+  wanted = true;
+  if (socket || retryTimer !== undefined) return;
+  open();
+}
+
+function open(): void {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${scheme}//${location.host}/v1/ws`, 'apz.events.v1');
+  socket = ws;
+  ws.onopen = () => {
+    if (socket !== ws) return;
+    stableTimer = setTimeout(() => {
+      stableTimer = undefined;
+      backoff = BACKOFF_MIN_MS;
+    }, STABLE_MS);
+    setConnected(true);
+  };
+  ws.onmessage = (ev) => dispatch(ev.data);
+  ws.onclose = () => {
+    if (socket !== ws) return;
+    socket = null;
+    clearTimeout(stableTimer);
+    stableTimer = undefined;
+    setConnected(false);
+    if (wanted) scheduleRetry();
+  };
+}
+
+function scheduleRetry(): void {
+  const wait = backoff * (0.5 + Math.random() * 0.5);
+  backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined;
+    if (wanted && !socket) open();
+  }, wait);
+}
+
+/** Routes one text frame `{"event", "data"}` to its listeners; anything else is ignored. */
+function dispatch(raw: unknown): void {
+  if (typeof raw !== 'string' || oversized(raw)) return;
+  let frame: unknown;
+  try {
+    frame = JSON.parse(raw);
+  } catch {
+    return;
   }
+  if (typeof frame !== 'object' || frame === null) return;
+  const f = frame as { event?: unknown; data?: unknown };
+  if (typeof f.event !== 'string' || !KINDS.has(f.event) || !('data' in f)) return;
+  const data = f.data;
+  listeners.get(f.event)?.forEach((fn) => fn(data));
+}
+
+/** True when the frame is over 1 MB of UTF-8. */
+function oversized(text: string): boolean {
+  // UTF-8 takes at least one byte per UTF-16 unit and at most three per unit,
+  // so only strings in between need an exact count.
+  if (text.length > MAX_FRAME_BYTES) return true;
+  if (text.length * 3 <= MAX_FRAME_BYTES) return false;
+  return new TextEncoder().encode(text).byteLength > MAX_FRAME_BYTES;
+}
+
+/** Page hide or unload: close cleanly and stop retrying until the page is shown again. */
+function leave(): void {
+  wanted = false;
+  clearTimeout(retryTimer);
+  retryTimer = undefined;
+  clearTimeout(stableTimer);
+  stableTimer = undefined;
+  const ws = socket;
+  socket = null;
+  ws?.close(1000, 'page hidden');
+  setConnected(false);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', leave);
+  // A page restored from the back-forward cache has lost its socket.
+  window.addEventListener('pageshow', (ev) => {
+    if (ev.persisted) connect();
+  });
 }
 
 function setConnected(up: boolean): void {
   if (up === connected) return;
   connected = up;
   connectionListeners.forEach((fn) => fn(up));
-  if (up) void refreshAgents();
+  if (up) {
+    void refreshAgents();
+    void refreshOverview();
+  }
 }
 
 // ---- Shared state ----------------------------------------------------------
