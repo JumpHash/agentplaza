@@ -55,6 +55,7 @@ dependencies = [
  "apz-os",
  "clap",
  "crossterm",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

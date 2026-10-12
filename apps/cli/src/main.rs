@@ -97,6 +97,13 @@ enum Command {
 }
 
 fn main() {
+    // Like any Unix tool: when the reader goes away (`agentplaza events | head`), end quietly
+    // instead of panicking on a broken pipe.
+    #[cfg(unix)]
+    // SAFETY: restoring the default disposition of SIGPIPE before any thread starts.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     if let Err(error) = run(cli) {
         eprintln!("agentplaza: {error}");
