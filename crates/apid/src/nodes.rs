@@ -489,10 +489,37 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
 }
 
+/// The plaza's machines: `n0`, the hub's own (never stored: it is always there, online while
+/// its noded answers), then every joined node.
 fn views(app: &App) -> Vec<NodeView> {
     let now = apz_plaza::now_ms();
     let agents = app.agents.list();
-    app.nodes.list().into_iter().map(|node| view(node, &agents, now)).collect()
+    let local_up = matches!(app.noded.get("/v1/machine"), Ok((200, _)));
+    let local = Node {
+        id: "n0".into(),
+        name: local_summary()["host"].as_str().unwrap_or("this hub").to_string(),
+        public_key: String::new(),
+        cid_base: 0,
+        cid_count: REMOTE_CID_BASE,
+        joined_ms: 0,
+        last_seen_ms: if local_up { now } else { 0 },
+        machine: local_summary(),
+        draining: false,
+        revoked: false,
+        address: "loopback".into(),
+    };
+    std::iter::once(local).chain(app.nodes.list()).map(|node| view(node, &agents, now)).collect()
+}
+
+/// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
+fn local_summary() -> Value {
+    let cpus = std::fs::read_to_string("/proc/cpuinfo").map(|t| t.lines().filter(|l| l.starts_with("processor")).count()).unwrap_or(0);
+    let memory_mib = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|t| t.lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok()))
+        .map_or(0, |kb| kb / 1024);
+    let host = std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
+    serde_json::json!({"cpus": cpus, "memory_mib": memory_mib, "host": host, "version": env!("CARGO_PKG_VERSION")})
 }
 
 #[derive(Default, Deserialize)]

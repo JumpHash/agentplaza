@@ -201,6 +201,12 @@ fn model_call(
     work: u64,
     mut request: ChatRequest,
 ) -> HostMessage {
+    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn.
+    if app.control.paused() {
+        let e = "the plaza is held (STOP ALL); waiting for the owner to resume".to_string();
+        app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": e }));
+        return HostMessage::ModelResult { req, ok: false, response: None, error: Some(e) };
+    }
     let model = model_of(app, agent);
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
