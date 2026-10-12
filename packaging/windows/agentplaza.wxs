@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AgentPlaza MSI (WiX Toolset v5).
+  Build with packaging/windows/build.ps1, which passes:
+    -d Version=<x.y.z>   the product version
+    -d StageDir=<dir>    the staged tree (bin\ and share\ beneath it)
+    -arch <x64|arm64>
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="AgentPlaza"
+           Manufacturer="JUMPHASH"
+           Version="$(var.Version)"
+           UpgradeCode="C431513B-3B9F-4D7D-846E-ACDE57CCFF53"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AgentPlaza is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="agentplaza.ico" SourceFile="$(var.StageDir)\share\agentplaza\icons\agentplaza.ico" />
+    <Property Id="ARPPRODUCTICON" Value="agentplaza.ico" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLDIR" Name="AgentPlaza">
+        <Directory Id="BINDIR" Name="bin" />
+        <Directory Id="SHAREDIR" Name="share" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuDir" Name="AgentPlaza" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="BinFiles" Directory="BINDIR">
+      <Files Include="$(var.StageDir)\bin\**" />
+    </ComponentGroup>
+
+    <ComponentGroup Id="ShareFiles" Directory="SHAREDIR">
+      <Files Include="$(var.StageDir)\share\**" />
+    </ComponentGroup>
+
+    <!-- bin on the system PATH. The registry value is the KeyPath, so the component
+         stays per-machine and is removed cleanly on uninstall. -->
+    <Component Id="PathComponent" Directory="BINDIR" Guid="*">
+      <Environment Id="SystemPathBin" Name="PATH" Value="[BINDIR]" Part="last" Action="set" System="yes" Permanent="no" />
+      <RegistryValue Id="PathComponentKey" Root="HKLM" Key="Software\JUMPHASH\AgentPlaza" Name="PathAdded" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- Start-menu shortcut for all users. Per-machine, so the KeyPath is HKLM. -->
+    <Component Id="StartMenuShortcut" Directory="AppMenuDir" Guid="*">
+      <Shortcut Id="AgentPlazaStartMenuShortcut"
+                Name="AgentPlaza"
+                Description="AgentPlaza desktop app"
+                Target="[BINDIR]agentplaza-desktop.exe"
+                WorkingDirectory="BINDIR"
+                Icon="agentplaza.ico" />
+      <RemoveFolder Id="RemoveAppMenuDir" Directory="AppMenuDir" On="uninstall" />
+      <RegistryValue Id="StartMenuShortcutKey" Root="HKLM" Key="Software\JUMPHASH\AgentPlaza" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main" Title="AgentPlaza" Level="1">
+      <ComponentGroupRef Id="BinFiles" />
+      <ComponentGroupRef Id="ShareFiles" />
+      <ComponentRef Id="PathComponent" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+  </Package>
+</Wix>
