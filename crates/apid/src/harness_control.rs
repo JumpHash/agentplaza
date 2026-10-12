@@ -499,18 +499,33 @@ fn control_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 impl Store {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
     pub fn snapshot(&self) -> String {
-        String::new() // contract: D5
+        let inner = self.locked();
+        serde_json::to_string_pretty(&Saved { loops: inner.0.clone(), limits: inner.1.clone() }).unwrap_or_default()
     }
 
     /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, _json: &str) -> Result<(), String> {
-        Ok(()) // contract: D5
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let saved: Saved = serde_json::from_str(json).map_err(|err| err.to_string())?;
+        let mut inner = self.locked();
+        self.save(&saved.loops, &saved.limits)?;
+        *inner = (saved.loops, saved.limits);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_restores_into_a_fresh_store() {
+        let a = Store::load(&fresh_dir("snapshot"));
+        a.start_loop(1, "check the queue", 60, 3, "alpha", 1).unwrap();
+        let b = Store::load(&fresh_dir("snapshot-restored"));
+        b.restore(&a.snapshot()).unwrap();
+        assert_eq!(b.snapshot(), a.snapshot());
+        assert_eq!(b.loops().len(), 1);
+    }
 
     fn fresh_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
