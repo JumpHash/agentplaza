@@ -42,6 +42,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     go('conversations', key);
   };
 
+  let shownKey: string | null = null;
   const render = (): void => {
     if (!loaded) return;
     if (failed) {
@@ -63,7 +64,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       pairs.map((p) => pairItem(p, p.key === current.key, label, () => select(p.key))),
     );
     replace(thread, ...threadNodes(current, label));
-    thread.scrollTop = thread.scrollHeight;
+    // A newly opened thread starts at its newest message; a redraw keeps the reader's place.
+    if (shownKey !== current.key) thread.scrollTop = thread.scrollHeight;
+    shownKey = current.key;
   };
 
   const load = async (): Promise<void> => {

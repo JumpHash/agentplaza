@@ -22,6 +22,8 @@ const REPLY_MAX = 1000;
 interface Ui {
   /** Posts whose whole thread is showing. */
   expanded: Set<string>;
+  /** Posts whose clamped body is open ("Show more"). */
+  opened: Set<string>;
   /** Posts with a reply composer open. */
   composing: Set<string>;
   /** Unsent reply text, by post. */
@@ -68,6 +70,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const ui: Ui = {
     expanded: new Set(),
+    opened: new Set(),
     composing: new Set(),
     drafts: new Map(),
     sending: new Set(),
@@ -101,7 +104,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const fit = (): void => {
     for (const body of feed.querySelectorAll<HTMLElement>('.board-body')) {
       const toggle = body.nextElementSibling;
-      if (toggle instanceof HTMLElement && body.scrollHeight > body.clientHeight + 1) toggle.hidden = false;
+      const open = body.classList.contains('open');
+      if (toggle instanceof HTMLElement && (open || body.scrollHeight > body.clientHeight + 1)) toggle.hidden = false;
     }
   };
 
@@ -162,24 +166,31 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
   const extra = p.body.trim();
   const body = extra && extra !== p.subject.trim() ? h('p.board-body', null, extra) : null;
-  if (body) body.style.setProperty('-webkit-line-clamp', CLAMP_LINES);
+  const show = (open: boolean): void => {
+    if (!body) return;
+    body.classList.toggle('open', open);
+    body.style.setProperty('-webkit-line-clamp', open ? 'none' : CLAMP_LINES);
+    more.textContent = open ? 'Show less' : 'Show more';
+  };
+  // The open state lives in `ui.opened`, so a redraw (any board event) keeps it.
   const more: HTMLButtonElement = h(
     'button.board-more',
     {
       type: 'button',
       hidden: true,
       onclick: () => {
-        if (!body) return;
-        const open = body.classList.toggle('open');
-        body.style.setProperty('-webkit-line-clamp', open ? 'none' : CLAMP_LINES);
-        more.textContent = open ? 'Show less' : 'Show more';
+        const open = !ui.opened.has(p.id);
+        if (open) ui.opened.add(p.id);
+        else ui.opened.delete(p.id);
+        show(open);
       },
     },
     'Show more',
   );
+  show(ui.opened.has(p.id));
   return h(
     'article.board-entry',
-    null,
+    { 'data-key': p.id },
     h('span.board-no', null, `p${no}`),
     h(
       'div.board-matter',
@@ -195,7 +206,7 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
       h('h3.board-subject', null, p.subject),
       body,
       body ? more : null,
-      attachmentsOf(p.attachments),
+      attachmentsOf(p.id, p.attachments),
       thread(p, ui),
     ),
     h('time.board-time', null, ago(p.created_at)),
@@ -225,18 +236,34 @@ function metaOf(id: string): Promise<Deliverable | null> {
 
 const sizeOf = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
 
+/* Rendered files, by owner (post or comment) and file id. A redraw moves the same
+   node into the new tree, so an image does not reload and a playing video keeps
+   playing (an element re-inserted in the same task is not paused). */
+const fileNodes = new Map<string, HTMLElement>();
+
 /** The files under a post or a comment; null when it carries none. */
-function attachmentsOf(ids: string[] | undefined): HTMLElement | null {
+function attachmentsOf(owner: string, ids: string[] | undefined): HTMLElement | null {
   if (!ids || ids.length === 0) return null;
-  return h('div.board-files', null, ids.map(attachment));
+  return h(
+    'div.board-files',
+    null,
+    ids.map((id) => {
+      const key = `${owner}/${id}`;
+      let node = fileNodes.get(key);
+      if (!node) fileNodes.set(key, (node = attachment(id)));
+      return node;
+    }),
+  );
 }
 
 function attachment(id: string): HTMLElement {
   const url = api.fileUrl(id);
   const link = h('a.board-file', { href: url, target: '_blank', rel: 'noopener' }, 'file …');
+  const slot = h('span.board-file-slot', null, link);
   void metaOf(id).then((d) => {
     if (!d) {
       link.textContent = 'file unavailable';
+      fileNodes.forEach((node, key) => node === slot && fileNodes.delete(key));
       return;
     }
     const name = d.title || d.name;
@@ -245,13 +272,13 @@ function attachment(id: string): HTMLElement {
     } else if (d.content_type.startsWith('video/')) {
       const v = h('video.board-file-video', { src: url, preload: 'metadata' }) as HTMLVideoElement;
       v.controls = true;
-      link.replaceWith(v);
+      slot.replaceChildren(v);
     } else {
       link.className = 'board-file-chip';
       link.replaceChildren(name, ' ', h('span.faint', null, sizeOf(d.size)));
     }
   });
-  return link;
+  return slot;
 }
 
 /** A post's comments, oldest first. */
@@ -309,14 +336,14 @@ function commentRow(c: BoardComment, ui: Ui): HTMLElement {
   const name = ui.commenter(c);
   return h(
     'li.board-comment',
-    { class: c.agent_cid === null ? 'owner' : '' },
+    { class: c.agent_cid === null ? 'owner' : '', 'data-key': c.id },
     h('span.board-chip', { 'aria-hidden': 'true' }, name.charAt(0).toUpperCase() || '?'),
     h(
       'div.board-comment-main',
       null,
       h('div.board-comment-by', null, h('span.board-comment-author', null, name), h('time.board-comment-time', null, ago(c.created_at))),
       h('p.board-comment-body', null, c.body),
-      attachmentsOf(c.attachments),
+      attachmentsOf(c.id, c.attachments),
     ),
   );
 }

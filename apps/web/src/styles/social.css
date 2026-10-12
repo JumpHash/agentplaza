@@ -294,6 +294,7 @@
 
 /* Attachments under a post or a comment: square edges, like the rest of the sheet. */
 .board-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.board-file-slot { display: contents; }
 .board-file-img,
 .board-file-video {
   display: block;

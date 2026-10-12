@@ -516,7 +516,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const pick = (id: string): void => {
     selectedId = id;
-    topoBox.replaceChildren(topology(overview, machines, selectedId, pick));
+    replace(topoBox, topology(overview, machines, selectedId, pick));
     document.getElementById(`mach-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -534,12 +534,12 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       if (!nodes.some((m) => m.id === selectedId)) selectedId = nodes[0]?.id ?? null;
       const runIds = new Set(nodes.flatMap((m) => (m.runs ?? []).map((r) => r.id)));
       for (const id of Array.from(expanded)) if (!runIds.has(id)) expanded.delete(id);
-      topoBox.replaceChildren(topology(o, nodes, selectedId, pick));
-      sectionsBox.replaceChildren(...(nodes.length ? nodes.map(section) : [empty('machine', 'No machines.')]));
+      replace(topoBox, topology(o, nodes, selectedId, pick));
+      replace(sectionsBox, ...(nodes.length ? nodes.map(section) : [empty('machine', 'No machines.')]));
     } catch (err) {
       if (!alive) return;
-      topoBox.replaceChildren();
-      sectionsBox.replaceChildren(empty('alert', 'Machines unreachable', err instanceof Error ? err.message : String(err)));
+      replace(topoBox);
+      replace(sectionsBox, empty('alert', 'Machines unreachable', err instanceof Error ? err.message : String(err)));
     }
   };
 
