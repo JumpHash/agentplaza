@@ -170,12 +170,21 @@ pub fn run() -> iced::Result {
         .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Italic.ttf").as_slice())
         // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
         .window(iced::window::Settings {
-            size: iced::Size::new(1360.0, 880.0),
+            size: snapshot_size().unwrap_or(iced::Size::new(1360.0, 880.0)),
             visible: std::env::var_os("APZ_SNAPSHOT").is_none(),
             ..Default::default()
         })
         .antialiasing(true)
         .run()
+}
+
+/// `APZ_SNAPSHOT_SIZE=WxH`: the hidden window's size for a snapshot (e.g. a tall one for a long page).
+fn snapshot_size() -> Option<iced::Size> {
+    std::env::var_os("APZ_SNAPSHOT")?;
+    let value = std::env::var("APZ_SNAPSHOT_SIZE").ok()?;
+    let (w, h) = value.split_once('x')?;
+    let (w, h) = (w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?);
+    (w >= 320.0 && h >= 240.0 && w <= 8192.0 && h <= 8192.0).then(|| iced::Size::new(w, h))
 }
 
 /// Writes a window screenshot as a PNG (`APZ_SNAPSHOT`).
