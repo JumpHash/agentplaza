@@ -39,14 +39,35 @@ pub enum Msg {
     Screen(screens::Msg),
     /// The poll timer: the shown screen reloads.
     Tick,
+    /// `APZ_SNAPSHOT`: time to capture the window's own frame, and the frame.
+    Snapshot,
+    Shot(iced::window::Screenshot),
+    /// The graphics backend and adapter in use.
+    System(iced::system::Information),
 }
 
 fn boot() -> (Console, Task<Msg>) {
     let (boot, task) = boot::init();
-    (
-        Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default() },
-        task.map(Msg::Boot),
-    )
+    let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default() };
+    // For development and captures: `APZ_CONNECT=<hub url>` (and `APZ_TOKEN`) skips the chooser,
+    // `APZ_SCREEN=<screen label>` opens that screen.
+    let info = iced::system::information().map(Msg::System);
+    let Ok(url) = std::env::var("APZ_CONNECT") else {
+        return (console, Task::batch([task.map(Msg::Boot), info]));
+    };
+    let ctx = Ctx { client: client::Client::new(&url, None, std::env::var("APZ_TOKEN").ok()) };
+    if let Ok(name) = std::env::var("APZ_SCREEN") {
+        if let Some((id, ..)) = screens::NAV.iter().find(|(_, label, ..)| label.eq_ignore_ascii_case(&name)) {
+            console.shell.current = id.clone();
+        }
+    }
+    let tasks = Task::batch([
+        screens::open(&mut console.screens, console.shell.current.clone(), &ctx).map(Msg::Screen),
+        shell::load(&ctx).map(Msg::Shell),
+        info,
+    ]);
+    console.ctx = Some(ctx);
+    (console, tasks)
 }
 
 fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
@@ -79,6 +100,21 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
             }
             screens::update(&mut console.screens, msg, &ctx).map(Msg::Screen)
         }
+        Msg::System(info) => {
+            eprintln!("agentplaza-desktop: graphics {} on {}", info.graphics_backend, info.graphics_adapter);
+            console.shell.software_gpu = is_software(&info.graphics_adapter).then(|| info.graphics_adapter.clone());
+            Task::none()
+        }
+        Msg::Snapshot => iced::window::oldest().and_then(iced::window::screenshot).map(Msg::Shot),
+        Msg::Shot(shot) => {
+            if let Ok(path) = std::env::var("APZ_SNAPSHOT") {
+                match save_png(&shot, &path) {
+                    Ok(()) => eprintln!("agentplaza-desktop: saved {path}"),
+                    Err(err) => eprintln!("agentplaza-desktop: snapshot failed: {err}"),
+                }
+            }
+            iced::exit()
+        }
         Msg::Tick => {
             let Some(ctx) = console.ctx.clone() else { return Task::none() };
             Task::batch([
@@ -101,10 +137,16 @@ fn view(console: &Console) -> Element<'_, Msg> {
 }
 
 fn subscription(console: &Console) -> Subscription<Msg> {
+    let snapshot = match std::env::var("APZ_SNAPSHOT_AFTER").ok().and_then(|s| s.parse::<u64>().ok()) {
+        Some(secs) if std::env::var_os("APZ_SNAPSHOT").is_some() => iced::time::every(std::time::Duration::from_secs(secs)).map(|_| Msg::Snapshot),
+        None if std::env::var_os("APZ_SNAPSHOT").is_some() => iced::time::every(std::time::Duration::from_secs(8)).map(|_| Msg::Snapshot),
+        _ => Subscription::none(),
+    };
     if console.ctx.is_none() {
         return boot::subscription(&console.boot).map(Msg::Boot);
     }
     Subscription::batch([
+        snapshot,
         iced::time::every(std::time::Duration::from_secs(4)).map(|_| Msg::Tick),
         shell::subscription(&console.shell).map(Msg::Shell),
         screens::subscription(&console.screens, &console.shell.current).map(Msg::Screen),
@@ -117,7 +159,33 @@ pub fn run() -> iced::Result {
         .title(|_: &Console| "AgentPlaza".to_string())
         .theme(|_: &Console| crate::theme::theme())
         .subscription(subscription)
-        .window_size([1360.0, 880.0])
+        // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
+        .window(iced::window::Settings {
+            size: iced::Size::new(1360.0, 880.0),
+            visible: std::env::var_os("APZ_SNAPSHOT").is_none(),
+            ..Default::default()
+        })
         .antialiasing(true)
         .run()
+}
+
+/// Writes a window screenshot as a PNG (`APZ_SNAPSHOT`).
+fn save_png(shot: &iced::window::Screenshot, path: &str) -> Result<(), String> {
+    let size = tiny_skia::IntSize::from_wh(shot.size.width, shot.size.height).ok_or("empty frame")?;
+    // The frame is straight RGBA; tiny-skia stores premultiplied, so premultiply (opaque anyway).
+    let mut data = shot.rgba.to_vec();
+    for px in data.chunks_exact_mut(4) {
+        let a = u16::from(px[3]);
+        for c in &mut px[..3] {
+            *c = ((u16::from(*c) * a + 127) / 255) as u8;
+        }
+    }
+    let pixmap = tiny_skia::Pixmap::from_vec(data, size).ok_or("bad frame")?;
+    pixmap.save_png(path).map_err(|e| e.to_string())
+}
+
+/// Whether a graphics adapter name is a CPU (software) renderer.
+fn is_software(adapter: &str) -> bool {
+    let a = adapter.to_ascii_lowercase();
+    ["llvmpipe", "lavapipe", "swiftshader", "softpipe", "software", "swrast"].iter().any(|s| a.contains(s))
 }

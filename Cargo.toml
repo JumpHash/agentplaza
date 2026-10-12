@@ -37,8 +37,15 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+# Dependencies optimised in dev too (wgpu, iced, glam, ring, …): built once, fast at run time.
+opt-level = 2
 
 [profile.release]
 debug = false
 strip = "debuginfo"
 lto = "thin"
+
+# The desktop app draws every frame on the CPU side too (scene walk, batching): its dev builds
+# stay fast with the app itself optimised (dependencies are, below).
+[profile.dev.package.agentplaza-desktop]
+opt-level = 2

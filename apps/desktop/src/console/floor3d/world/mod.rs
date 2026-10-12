@@ -181,6 +181,8 @@ pub struct Floor {
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
     static_lights: Vec<PointLightDraw>,
+    /// The dynamic subtrees inside the root's static children (found when baking).
+    deep_dynamic: Vec<(Obj, glam::Mat4)>,
 }
 
 impl Floor {
@@ -228,6 +230,7 @@ impl Floor {
             statics: Arc::new(Vec::new()),
             statics_version: 0,
             static_lights: Vec::new(),
+            deep_dynamic: Vec::new(),
         };
         layout::base(&mut floor);
         floor
@@ -238,10 +241,23 @@ impl Floor {
         if self.statics_dirty {
             self.statics = Arc::new(scene::bake(&self.root));
             self.static_lights = scene::flatten(&self.root, Filter::Static).1;
+            let root_world = self.root.local_matrix();
+            let children = self.root.get().children.clone();
+            self.deep_dynamic = children
+                .iter()
+                .filter(|c| !c.get().dynamic)
+                .flat_map(|c| scene::dynamic_roots(c, root_world))
+                .collect();
             self.statics_version += 1;
             self.statics_dirty = false;
         }
-        let (draws, mut lights) = scene::flatten(&self.root, Filter::Dynamic);
+        // Only the moving parts are walked: the root's dynamic children (robots and packets come
+        // and go) and the dynamic subtrees found inside the baked ones.
+        let root_world = self.root.local_matrix();
+        let mut roots: Vec<(Obj, glam::Mat4)> =
+            self.root.get().children.iter().filter(|c| c.get().dynamic).map(|c| (c.clone(), root_world)).collect();
+        roots.extend(self.deep_dynamic.iter().cloned());
+        let (draws, mut lights) = scene::flatten_roots(&roots);
         lights.extend(self.static_lights.iter().copied());
         Frame {
             camera: self.orbit.camera(aspect),

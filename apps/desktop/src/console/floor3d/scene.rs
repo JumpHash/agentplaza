@@ -817,6 +817,37 @@ fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &m
     }
 }
 
+/// The topmost dynamic nodes in `node`'s subtree (`node` included), each with its parent's world
+/// matrix: the only parts a frame has to walk once the rest is baked.
+pub fn dynamic_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4)> {
+    let mut found = Vec::new();
+    fn visit(node: &Obj, parent: Mat4, found: &mut Vec<(Obj, Mat4)>) {
+        let (dynamic, world, children) = {
+            let n = node.get();
+            (n.dynamic, parent * local_of(&n), n.children.clone())
+        };
+        if dynamic {
+            found.push((node.clone(), parent));
+            return;
+        }
+        for child in &children {
+            visit(child, world, found);
+        }
+    }
+    visit(node, parent, &mut found);
+    found
+}
+
+/// The draws and point lights of these (dynamic) subtrees.
+pub fn flatten_roots(roots: &[(Obj, Mat4)]) -> (Vec<Draw>, Vec<PointLightDraw>) {
+    let mut draws = Vec::new();
+    let mut lights = Vec::new();
+    for (node, parent) in roots {
+        walk(node, *parent, true, Filter::Dynamic, &mut draws, &mut lights);
+    }
+    (draws, lights)
+}
+
 fn empty_geo() -> Geo {
     static EMPTY: std::sync::OnceLock<Geo> = std::sync::OnceLock::new();
     Arc::clone(EMPTY.get_or_init(|| Geometry::new(Vec::new(), Vec::new(), Vec::new(), Vec::new())))
@@ -916,6 +947,25 @@ mod tests {
         assert_eq!(flatten(&root, Filter::Static).0.len(), 1);
         assert_eq!(flatten(&root, Filter::Dynamic).0.len(), 1);
         assert_eq!(root.world_matrix_of(&child).map(|m| m.transform_point3(Vec3::ZERO)), Some(Vec3::new(3.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn dynamic_roots_are_the_topmost_dynamic_nodes_with_their_parent_matrix() {
+        let geo = Geometry::new(vec![[0.0; 3]], vec![], vec![], vec![0]);
+        let mat = Mat::toon(Color::WHITE);
+        let root = Obj::group();
+        let room = Obj::group();
+        room.set_position(5.0, 0.0, 0.0);
+        let fan = Obj::group();
+        fan.set_dynamic(true).add(&Obj::mesh(&geo, &mat));
+        room.add(&fan).add(&Obj::mesh(&geo, &mat));
+        root.add(&room);
+        let roots = dynamic_roots(&root, Mat4::IDENTITY);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].1.transform_point3(Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0));
+        let (draws, _) = flatten_roots(&roots);
+        assert_eq!(draws.len(), 1);
+        assert_eq!(draws[0].model.transform_point3(Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0));
     }
 
     #[test]

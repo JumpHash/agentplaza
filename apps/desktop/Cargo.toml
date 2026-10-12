@@ -23,6 +23,8 @@ iced = { version = "0.14", default-features = false, features = [
     # The console's icons (the web console's lucide set) and agent portraits.
     "svg",
     "image",
+    # The graphics adapter in use, so a software fallback is visible, not just slow.
+    "sysinfo",
 ] }
 # The Floor's 3D world, drawn with our own wgpu pipelines inside iced's shader widget
 # (`console/floor3d`): matrices, vertex data, and its painted textures and plaques.

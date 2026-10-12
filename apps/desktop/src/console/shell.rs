@@ -34,6 +34,8 @@ pub struct State {
     pub hub_ok: bool,
     /// The hub's address, shown faint in the sidebar footer.
     pub hub: String,
+    /// The graphics adapter, when it is a software fallback (the 3D floor will crawl on it).
+    pub software_gpu: Option<String>,
 }
 
 impl Default for State {
@@ -47,6 +49,7 @@ impl Default for State {
             counts: Default::default(),
             hub_ok: false,
             hub: String::new(),
+            software_gpu: None,
         }
     }
 }
@@ -126,6 +129,9 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
     let mut main = column![top_bar(state, wrap)];
     if state.paused {
         main = main.push(held_banner(state));
+    }
+    if let Some(adapter) = &state.software_gpu {
+        main = main.push(gpu_banner(adapter));
     }
     main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
     let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
@@ -281,6 +287,25 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
         border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Rendering fell back to the CPU: say so, with the adapter, instead of just being slow.
+fn gpu_banner<'a, M: 'a>(adapter: &'a str) -> Element<'a, M> {
+    container(
+        column![
+            ui::mono("Software rendering: no GPU is available to the app, so the 3D floor is slow.", 12.5, CRIT),
+            ui::faint(format!("Adapter: {adapter}. A driver update that has not been loaded yet (reboot) is the usual cause.")),
+        ]
+        .spacing(4),
+    )
+    .padding([10, 16])
+    .width(Length::Fill)
+    .style(|_: &Theme| container::Style {
+        background: Some(ui::SHEET.into()),
+        border: Border { color: CRIT, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     })
     .into()
