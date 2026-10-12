@@ -681,9 +681,7 @@ mod tests {
         guest.send(r#"{"type":"work_done","work":1,"status":"done","summary":""}"#).unwrap();
         guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
         session.join().unwrap().expect("a clean end");
-        let mut rest = String::new();
-        let mut reader = guest.get_ref();
-        reader.read_to_string(&mut rest).unwrap();
+        let rest = String::from_utf8(crate::read_until_closed(guest.get_ref(), Duration::from_secs(20))).unwrap();
         assert_eq!(rest, "", "nothing is written after the refusals");
         let log = log.text();
         assert!(log.contains("hello to apid failed") && log.contains("apid failed model_call"), "{log}");
@@ -739,8 +737,7 @@ mod tests {
         let (log, hub) = hub_with(None);
         let result = handle_session(&mut Lines::new(host), 3, limits, &*log, &hub, clock);
         assert_eq!(hub.agent_count(), 0, "no session outlives its end");
-        let mut sent = String::new();
-        guest.read_to_string(&mut sent).unwrap();
+        let sent = String::from_utf8(crate::read_until_closed(&guest, Duration::from_secs(20))).unwrap();
         (result, log.text(), sent.lines().map(str::to_string).collect())
     }
 

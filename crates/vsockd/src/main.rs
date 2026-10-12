@@ -435,6 +435,29 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
     }
 }
 
+/// Test helper: everything `stream` sends until it closes, read with short polled timeouts up to
+/// `deadline`. On Windows a read already blocked on an AF_UNIX socket is not reliably woken when
+/// the peer closes, but a fresh one sees the close; so no read here waits longer than a poll.
+#[cfg(all(any(target_os = "linux", windows), test))]
+pub(crate) fn read_until_closed(stream: &UnixStream, deadline: Duration) -> Vec<u8> {
+    use std::io::{ErrorKind, Read};
+    stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let end = Instant::now() + deadline;
+    let mut reader = stream;
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 4096];
+    while Instant::now() < end {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&buf[..n]),
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {}
+            // A reset after the peer closed counts as the close.
+            Err(_) => break,
+        }
+    }
+    bytes
+}
+
 #[cfg(all(any(target_os = "linux", windows), test))]
 mod tests {
     use super::*;

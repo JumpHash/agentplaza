@@ -779,8 +779,7 @@ mod tests {
             let policy = Policy::new(vec![]);
             let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &Apid::off()));
             client.write_all(request.as_bytes()).unwrap();
-            let mut answer = String::new();
-            client.read_to_string(&mut answer).unwrap();
+            let answer = String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20))).unwrap();
             assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{request:?}: {answer:?}");
             let audit = proxy.join().unwrap();
             assert!(!audit.allowed && audit.host.eq_ignore_ascii_case(GATEWAY_HOST), "{audit:?}");
@@ -905,8 +904,7 @@ mod tests {
                   Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
             )
             .unwrap();
-        let mut answer = String::new();
-        client.read_to_string(&mut answer).unwrap();
+        let answer = String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20))).unwrap();
         assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer:?}");
         let audit = proxy.join().unwrap();
         assert!(!audit.allowed, "{audit:?}");
