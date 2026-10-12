@@ -44,6 +44,7 @@ mod roles_custom;
 mod agent_proposals;
 mod nodes;
 mod fleet;
+mod node_link;
 mod hub_auth;
 mod transcript;
 mod upstream;
