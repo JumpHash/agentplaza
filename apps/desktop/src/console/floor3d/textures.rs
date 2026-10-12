@@ -138,6 +138,23 @@ pub fn grass() -> Tex {
     })
 }
 
+/// The ground: one smooth sheet under the whole floor, lighter where the plaza stands and fading
+/// darker toward the horizon, with a few faint survey rings round the centre. Not repeated: it
+/// spans the ground plane once, centred on the plaza.
+pub fn ground() -> Tex {
+    canvas_texture("ground", 1024, 1024, 1.0, |g, w, h, _| {
+        g.set_fill_radial(w / 2.0, h / 2.0, 0.0, w / 2.0, h / 2.0, w / 2.0, &[(0.0, "#3d4680"), (0.12, "#353d72"), (0.35, "#272d58"), (1.0, "#161a36")]);
+        g.fill_rect(0.0, 0.0, w, h);
+        g.set_stroke("rgba(160,180,255,0.07)");
+        g.set_line_width(2.0);
+        for r in [44.0_f32, 66.0, 92.0, 124.0] {
+            g.begin_path();
+            g.arc(w / 2.0, h / 2.0, r, 0.0, TAU, false);
+            g.stroke();
+        }
+    })
+}
+
 /// Cobblestones: rounded stones, each with a highlight and an inked edge, set in dark grout.
 pub fn paving(tint: Color, repeat: f32) -> Tex {
     canvas_texture(&format!("paving:{}:{}", css_of(tint), repeat), 256, 256, repeat, move |g, w, h, r| {
@@ -289,14 +306,14 @@ pub fn water() -> Tex {
     })
 }
 
-/// A slab's sides: a darker band of its district hue, so the tiled top stands out.
+/// A slab's sides: a dark hull band in its district hue, under the slab's neon rim.
 pub fn slab_side(hue: f32) -> Mat {
     let key = format!("side:{}", js_round(hue));
     let hit = lock(material_cache()).get(&key).cloned();
     if let Some(hit) = hit {
         return hit;
     }
-    let m = Mat::toon(Color::hsl(hue / 360.0, 0.35, 0.66));
+    let m = Mat::toon(Color::hsl(hue / 360.0, 0.3, 0.2));
     lock(material_cache()).insert(key, m.clone());
     m
 }
@@ -344,5 +361,12 @@ mod tests {
         let t = grass();
         assert!(t.wrap);
         assert_eq!(t.repeat, [24.0, 24.0]);
+    }
+
+    #[test]
+    fn ground_is_a_texture() {
+        let t = ground();
+        assert_eq!(t.repeat, [1.0, 1.0]);
+        assert!(t.wrap);
     }
 }
