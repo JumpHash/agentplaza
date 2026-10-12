@@ -2,7 +2,7 @@
 //! polish, water) and the seeded random numbers everything procedural uses.
 
 use std::collections::HashMap;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use super::canvas::Canvas;
@@ -89,53 +89,6 @@ fn rrect(g: &mut Canvas, x: f32, y: f32, w: f32, h: f32, radius: f32) {
     g.arc_to(x, y + h, x, y, radius);
     g.arc_to(x, y, x + w, y, radius);
     g.close_path();
-}
-
-/// Grass: a flat cartoon meadow — soft lighter patches and little inked tufts.
-pub fn grass() -> Tex {
-    canvas_texture("grass", 512, 512, 24.0, |g, w, h, r| {
-        g.set_fill("#86c45e");
-        g.fill_rect(0.0, 0.0, w, h);
-        // Big soft patches in two close greens.
-        for _ in 0..14 {
-            g.set_fill(if r.next() < 0.5 { "#8fcb66" } else { "#7fbc58" });
-            g.begin_path();
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let rx = 30.0 + r.next() * 60.0;
-            let ry = 20.0 + r.next() * 40.0;
-            let rot = r.next() * PI;
-            g.ellipse(x, y, rx, ry, rot, 0.0, TAU, false);
-            g.fill();
-        }
-        // Tufts: three-stroke "v"s, the classic cartoon grass mark.
-        g.set_line_cap("round");
-        for _ in 0..90 {
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let s = 4.0 + r.next() * 5.0;
-            g.set_stroke(if r.next() < 0.7 { "rgba(70,128,52,0.55)" } else { "rgba(196,232,150,0.7)" });
-            g.set_line_width(1.6);
-            g.begin_path();
-            g.move_to(x - s * 0.6, y - s);
-            g.line_to(x, y);
-            g.line_to(x + s * 0.1, y - s * 1.3);
-            g.move_to(x, y);
-            g.line_to(x + s * 0.7, y - s * 0.9);
-            g.stroke();
-        }
-        // A few tiny flowers.
-        for _ in 0..12 {
-            let pick = (r.next() * 3.0).floor() as usize;
-            g.set_fill(["#fff6d8", "#ffd25e", "#ff9db5"][pick]);
-            g.begin_path();
-            let x = r.next() * w;
-            let y = r.next() * h;
-            let rad = 2.0 + r.next() * 1.5;
-            g.arc(x, y, rad, 0.0, TAU, false);
-            g.fill();
-        }
-    })
 }
 
 /// The ground: one smooth sheet under the whole floor, lighter where the plaza stands and fading
@@ -354,13 +307,6 @@ mod tests {
         let b = canvas_texture("test:same-key", 8, 8, 1.0, |_, _, _, _| {});
         assert!(std::sync::Arc::ptr_eq(&a, &b));
         assert!(cached() >= 1);
-    }
-
-    #[test]
-    fn grass_is_repeat_wrapped() {
-        let t = grass();
-        assert!(t.wrap);
-        assert_eq!(t.repeat, [24.0, 24.0]);
     }
 
     #[test]

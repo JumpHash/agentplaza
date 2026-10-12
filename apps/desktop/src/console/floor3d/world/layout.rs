@@ -10,7 +10,8 @@ use super::{AgentInfo, Bot, Colors, District, DistrictLight, Floor, Shared};
 use crate::console::floor3d::canvas::Canvas;
 use crate::console::floor3d::geometry;
 use crate::console::floor3d::props::{self, Box2, PropPalette, Site};
-use crate::console::floor3d::robot::Robot;
+use crate::console::floor3d::outskirts;
+use crate::console::floor3d::robot::{robot_variant, Robot};
 use crate::console::floor3d::rooms::{self, BuiltRoom, KitPalette};
 use crate::console::floor3d::scene::{Color, Kind, Mat, Material, Obj, Shading, Tex};
 use crate::console::floor3d::textures::{self, Rng};
@@ -62,10 +63,6 @@ fn top_of(d: &District) -> f32 {
     if d.role == "orchestrator" { DAIS_H } else { SLAB_H }
 }
 
-fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
-    v.max(lo).min(hi)
-}
-
 fn children(o: &Obj) -> Vec<Obj> {
     o.get().children.clone()
 }
@@ -74,8 +71,9 @@ fn prop_palette(c: &Colors) -> PropPalette {
     PropPalette { sheet: c.sheet, rule: c.rule, ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
 }
 
+/// The rooms keep their own light paper (documents, signs) under the night lighting.
 fn kit_palette(c: &Colors) -> KitPalette {
-    KitPalette { sheet: c.sheet, rule: c.rule, ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
+    KitPalette { sheet: Color::hex(0xe9edf7), rule: Color::hex(0xa9b4cc), ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
 }
 
 /// A colour as CSS for the canvas.
@@ -191,19 +189,22 @@ pub(super) fn shared(colors: &Colors) -> Shared {
 pub(super) fn base(floor: &mut Floor) {
     let c = floor.colors;
 
-    // Sky dome: the painted sky, horizon and grass below.
-    floor.root.add(&toon::sky(Color::hex(0x5fa8e8), Color::hex(0xfde9c4), Color::hex(0x8fcd62)));
+    // Night: a deep blue zenith banded down to a violet horizon glow, stars and a ringed planet.
+    floor.root.add(&toon::sky(Color::hex(0x05071a), Color::hex(0x3a2275), Color::hex(0x090c18)));
 
-    floor.clouds = toon::clouds(16, 120.0, &mut Rng::new(31));
-    floor.clouds.set_dynamic(true); // drifts every frame
-    floor.root.add(&floor.clouds);
+    let sky = toon::starfield(900, 330.0, &mut Rng::new(31));
+    floor.stars = sky.group;
+    floor.planet = sky.planet;
+    floor.stars.set_dynamic(true); // turns every frame
+    floor.root.add(&floor.stars);
 
-    // Ground: a meadow out to the painted horizon.
-    let ground_map = textures::grass().with_repeat(36.0, 36.0);
+    // Ground: one smooth sheet out to the horizon, lighter round the plaza.
+    let ground_map = textures::ground();
     let ground_mat = toon::toon_mat(Material { map: Some(ground_map), ..Material::default() });
     let ground = Obj::mesh(&geometry::plane(500.0, 500.0, 1, 1), &ground_mat);
     ground.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, -0.01, 0.0).set_shadows(false, true);
     floor.root.add(&ground);
+    floor.root.add(&outskirts::build_backdrop());
 
     floor.root.add(&floor.district_group).add(&floor.path_group);
 
@@ -225,10 +226,11 @@ pub(super) fn base(floor: &mut Floor) {
         })
         .collect();
     let dust_mat = Mat::new(Material {
-        shading: Shading::Points { size: 0.07 },
-        color: c.ink3,
+        shading: Shading::Points { size: 0.08 },
+        color: Color::hex(0x7fe3ff),
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.8,
+        additive: true,
         depth_write: false,
         ..Material::default()
     });
@@ -307,12 +309,16 @@ fn district_mesh(floor: &mut Floor, d: &District) -> Obj {
     let g = Obj::group();
     let orch = d.role == "orchestrator";
     if orch {
-        let dais_mat = toon::toon_mat(Material { map: Some(textures::paving(Color::hex(0xf0d3a2), 3.0)), ..Material::default() });
+        let dais_mat = toon::toon_mat(Material { color: Color::hex(0x4a5690), ..Material::default() });
         let dais = Obj::mesh(&geometry::cylinder(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48), &dais_mat);
         dais.set_position(d.cx, DAIS_H / 2.0, d.cy).set_shadows(true, true);
         let rim = Obj::mesh(&geometry::torus(DAIS_R, 0.05, 8, 64, TAU), &Mat::basic(c.signal));
         rim.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(d.cx, DAIS_H + 0.01, d.cy);
-        g.add(&dais).add(&rim);
+        // A cyan ring of light round the foot of the skirt.
+        let foot = Obj::mesh(&geometry::torus(DAIS_R + DAIS_RAMP, 0.06, 8, 96, TAU), &Mat::basic(c.info));
+        foot.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(d.cx, 0.04, d.cy);
+        foot.get().no_outline = true;
+        g.add(&dais).add(&rim).add(&foot);
     } else {
         // A terrace: the flat top plus a sloped band all round, so robots can walk on and off; its
         // floor is the room's own, laid as a separate surface so the texture runs square to the room.
@@ -325,6 +331,19 @@ fn district_mesh(floor: &mut Floor, d: &District) -> Obj {
         let slab = Obj::mesh(&body, &textures::slab_side(d.hue));
         slab.set_position(d.cx, SLAB_H / 2.0, d.cy).set_shadows(true, true);
         g.add(&slab);
+        // Neon in the district's hue along the slab's top edge and round its foot.
+        let neon = Mat::basic(Color::hsl(d.hue / 360.0, 0.95, 0.62));
+        for (rr, y) in [(d.r, SLAB_H + 0.01), (d.r + RAMP, 0.03)] {
+            let ring = if d.round {
+                geometry::torus(rr, 0.045, 6, 72, TAU)
+            } else {
+                geometry::torus(rr * SQRT_2, 0.045, 6, 4, TAU)
+            };
+            let edge = Obj::mesh(&ring, &neon);
+            edge.set_rotation(FRAC_PI_2, 0.0, if d.round { 0.0 } else { FRAC_PI_4 }).set_position(d.cx, y, d.cy);
+            edge.get().no_outline = true;
+            g.add(&edge);
+        }
 
         // The room faces the plaza: square rooms turn in quarter turns so they stay square to their slab.
         let facing = (-d.cx).atan2(-d.cy);
@@ -407,37 +426,9 @@ fn build_world(floor: &mut Floor) {
     floor.prop_anim.push(fountain.animate);
     floor.prop_boxes.extend(fountain.boxes);
     let sites: Vec<Site> = ds.iter().map(|d| Site { cx: d.cx, cy: d.cy, r: d.r }).collect();
-    let (scatter, scatter_boxes) = props::build_scatter(&sites, &pp);
+    let (scatter, scatter_boxes) = outskirts::build_scatter(&sites, &pp);
     floor.path_group.add(&scatter);
     floor.prop_boxes.extend(scatter_boxes);
-
-    // Grass tufts everywhere the meadow is open: off the plaza, the terraces and the paths.
-    let mut far: f32 = 12.0;
-    for d in &ds {
-        far = far.max(d.cx.hypot(d.cy) + d.r + 10.0);
-    }
-    let boxes = floor.prop_boxes.clone();
-    let keep = |x: f32, z: f32| -> bool {
-        if x.hypot(z) < 4.8 {
-            return false;
-        }
-        for d in &ds {
-            let pad = if d.role == "orchestrator" { DAIS_R + DAIS_RAMP } else { d.r + RAMP };
-            if (x - d.cx).abs() < pad + 0.2 && (z - d.cy).abs() < pad + 0.2 {
-                return false;
-            }
-            let len = d.cx.hypot(d.cy);
-            if len > 0.5 {
-                let t = clamp((x * d.cx + z * d.cy) / (len * len), 0.0, 1.0);
-                if (x - d.cx * t).hypot(z - d.cy * t) < 0.75 {
-                    return false;
-                }
-            }
-        }
-        !boxes.iter().any(|b| x > b.x0 - 0.1 && x < b.x1 + 0.1 && z > b.z0 - 0.1 && z < b.z1 + 0.1)
-    };
-    let tufts = toon::grass_tufts(9000, far.min(60.0), &keep, &mut Rng::new(97));
-    floor.path_group.add(&tufts);
 
     floor.statics_dirty = true; // the world was rebuilt: re-bake the statics
 }
@@ -446,7 +437,7 @@ fn build_world(floor: &mut Floor) {
 fn create_bot(floor: &Floor, agent: &AgentInfo, district: usize, hx: f32, hy: f32) -> Bot {
     let d = &floor.districts[district];
     let orch = is_orchestrator(agent);
-    let robot = Robot::new(d.hue, orch, &floor.robot_palette, agent_hue(agent.cid));
+    let robot = Robot::with_variant(d.hue, orch, &floor.robot_palette, agent_hue(agent.cid), robot_variant(agent.cid));
     robot.group.traverse(&mut |o: &Obj| {
         o.set_shadows(true, true);
     });

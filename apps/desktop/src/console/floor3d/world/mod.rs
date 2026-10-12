@@ -15,7 +15,7 @@ use glam::Quat;
 
 use super::controls::Orbit;
 use super::props::{Anim, Box2};
-use super::robot::{Robot, RobotPalette, RobotState};
+use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
 use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
 
 /// What the floor needs of an agent (from `GET /v1/agents`).
@@ -123,13 +123,13 @@ pub struct Colors {
 impl Default for Colors {
     fn default() -> Self {
         Colors {
-            sheet: Color::hex(0xfff4de),
-            rule: Color::hex(0xe2b97f),
-            ink3: Color::hex(0x667892),
-            signal: Color::hex(0xe8590c),
-            ok: Color::hex(0x2e6a40),
-            info: Color::hex(0x2d5f8a),
-            paper: Color::hex(0xe9ece5),
+            sheet: Color::hex(0x2c3554),
+            rule: Color::hex(0x56638a),
+            ink3: Color::hex(0x7d8bb5),
+            signal: Color::hex(0xff7a2e),
+            ok: Color::hex(0x3ee08f),
+            info: Color::hex(0x4cc9ff),
+            paper: Color::hex(0x0a0e19),
         }
     }
 }
@@ -154,7 +154,9 @@ pub struct Floor {
     pub path_group: Obj,
     pub plaza: Obj,
     pub plaza_anim: Anim,
-    pub clouds: Obj,
+    /// The starfield (it turns slowly) and its ringed planet (it spins).
+    pub stars: Obj,
+    pub planet: Obj,
     pub dust: Obj,
     /// Per mote: x, y, z, rise speed.
     pub dust_seeds: Vec<[f32; 4]>,
@@ -187,19 +189,10 @@ pub struct Floor {
 }
 
 impl Floor {
-    /// An empty floor with its sky, ground, clouds, plaza and dust (`layout::base`).
+    /// An empty floor with its sky, stars, ground, plaza and dust (`layout::base`).
     pub fn new() -> Floor {
         let colors = Colors::default();
-        let robot_palette = RobotPalette {
-            ink: Color::hex(0x151916),
-            sheet: Color::hex(0xf4f6f1),
-            paper: colors.paper,
-            rule: Color::hex(0xc7cfc3),
-            signal: colors.signal,
-            ok: colors.ok,
-            info: colors.info,
-            ink_muted: Color::hex(0x7d867e),
-        };
+        let robot_palette = robot_palette();
         let shared = layout::shared(&colors);
         let mut floor = Floor {
             root: Obj::group(),
@@ -207,7 +200,8 @@ impl Floor {
             path_group: Obj::group(),
             plaza: Obj::group(),
             plaza_anim: Box::new(|_| {}),
-            clouds: Obj::group(),
+            stars: Obj::group(),
+            planet: Obj::group(),
             dust: Obj::group(),
             dust_seeds: Vec::new(),
             colors,

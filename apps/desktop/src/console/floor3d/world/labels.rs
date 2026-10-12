@@ -11,10 +11,12 @@ use super::Floor;
 use crate::console::floor3d::canvas::Canvas;
 use crate::console::floor3d::scene::{Color, Overlay, Tex};
 
-const SHEET: &str = "#f4f6f1";
-const INK: &str = "#151916";
-const SIGNAL: &str = "#e8590c";
-const MUTED: &str = "#7d867e";
+// The console's dark theme (tokens.css): a night-navy sheet, pale ink, a black print shadow.
+const SHEET: &str = "#111726";
+const INK: &str = "#e3e8f4";
+const SHADOW: &str = "#000000";
+const SIGNAL: &str = "#ff7a2e";
+const MUTED: &str = "#6c7790";
 const NAME_FONT: &str = "500 10px monospace";
 const ROLE_FONT: &str = "9.5px monospace";
 const LINE_FONT: &str = "10px monospace";
@@ -107,7 +109,7 @@ fn draw(label: &Label, scale: f32) -> (Canvas, f32, f32) {
     c.scale(scale, scale);
 
     // The print shadow, then the sheet with its 1px border (highlighted: signal orange).
-    c.set_fill(INK);
+    c.set_fill(SHADOW);
     c.fill_rect(2.0, 2.0, box_w, box_h);
     c.set_fill(SHEET);
     c.fill_rect(0.0, 0.0, box_w, box_h);
@@ -123,7 +125,7 @@ fn draw(label: &Label, scale: f32) -> (Canvas, f32, f32) {
     let tag_x = 9.0 + name_w + 6.0;
     c.set_stroke(INK);
     c.stroke_rect(tag_x + 0.5, 6.5, tag_w - 1.0, 17.0);
-    let [r, g, b] = Color::hsl(label.hue / 360.0, 0.55, 0.34).to_srgb_u8();
+    let [r, g, b] = Color::hsl(label.hue / 360.0, 0.75, 0.6).to_srgb_u8();
     c.set_fill(&format!("#{r:02x}{g:02x}{b:02x}"));
     c.fill_rect(tag_x + 1.0, 7.0, 3.0, 16.0);
     c.set_fill(INK);
