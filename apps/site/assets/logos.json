@@ -70,5 +70,13 @@
  "github": {
   "title": "GitHub",
   "hex": "#181717"
+ },
+ "microsoft": {
+  "title": "Microsoft",
+  "hex": "#5E5E5E"
+ },
+ "typesafe": {
+  "title": "TypeSafe Jev",
+  "hex": "#E551BA"
  }
 }

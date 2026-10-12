@@ -28,7 +28,8 @@ src = (ROOT / "apps/web/src/ui/brands.gen.ts").read_text()
 body = src[src.index("{", src.index("BRAND_ICONS")) : src.rindex("}") + 1]
 icons = json.loads(re.sub(r",\s*}", "}", body))
 WANT = ["anthropic", "openai", "google", "xai", "deepseek", "zai", "moonshot", "mistral", "openrouter", "perplexity",
-        "nvidia", "ollama", "lmstudio", "huggingface", "replicate", "elevenlabs", "cloudflare", "github"]
+        "nvidia", "ollama", "lmstudio", "huggingface", "replicate", "elevenlabs", "cloudflare", "github",
+        "microsoft", "typesafe"]
 symbols = []
 for key in WANT:
     icon = icons.get(key)
