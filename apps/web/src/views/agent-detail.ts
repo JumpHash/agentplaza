@@ -21,6 +21,25 @@ type Tier = 'orchestrator' | 'worker';
  * first as presets, then every model the providers list. An orchestrator may run only its
  * policy list. `current` (an override no longer offered) is kept as a choice.
  */
+/** Reasoning effort levels a model name can pin (`provider/model@effort`); '' = the model's default. */
+const EFFORTS: [string, string][] = [
+  ['', 'Model default'],
+  ['none', 'None'],
+  ['minimal', 'Minimal'],
+  ['low', 'Low'],
+  ['medium', 'Medium'],
+  ['high', 'High'],
+  ['xhigh', 'Extra high'],
+  ['max', 'Max'],
+];
+const effortOf = (value: string): string => {
+  const at = value.lastIndexOf('@');
+  const e = at < 0 ? '' : value.slice(at + 1);
+  return EFFORTS.some(([v]) => v === e) ? e : '';
+};
+const stripEffort = (value: string): string => (effortOf(value) ? value.slice(0, value.lastIndexOf('@')) : value);
+const withEffort = (value: string, effort: string): string => (value ? (effort ? `${stripEffort(value)}@${effort}` : value) : '');
+
 export function tierChoices(
   tier: Tier,
   settings: Settings,
@@ -56,18 +75,39 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const transcript = h('div.transcript');
   const composer = textarea({ placeholder: 'Message this agent…', rows: 3 });
   const send = button('Send', () => void submit(), { kind: 'primary', icon: 'send', title: 'Send (Ctrl+Enter)' });
-  // The agent's model override ('' = the default), offered by its tier.
+  // The agent's model override ('' = the default), offered by its tier, and its reasoning
+  // effort, stored together as `provider/model@effort`.
+  const saveModel = (value: string): void => {
+    void attempt(() => api.setAgentModel(cid, value || null), 'Model updated').then((ok) => {
+      if (ok) appliedOverride = value;
+      syncModel(appliedOverride ?? '');
+    });
+  };
+  // The values the picker offers, so a pinned effort shows on its preset when there is one.
+  let offered = new Set<string>();
   const picker = modelPicker({
     choices: [],
     label: 'Change model',
     placeholder: 'Use the default',
-    onChange: (value) => {
-      void attempt(() => api.setAgentModel(cid, value || null), 'Model updated').then((ok) => {
-        if (ok) appliedOverride = value;
-        else picker.value = appliedOverride ?? '';
-      });
-    },
+    onChange: (value) => saveModel(withEffort(value, effortSel.value)),
   });
+  const effortSel = h(
+    'select.select',
+    { 'aria-label': 'Reasoning effort' },
+    EFFORTS.map(([value, label]) => h('option', { value }, label)),
+  ) as HTMLSelectElement;
+  effortSel.addEventListener('change', () => {
+    // Effort on the default model pins that model for this agent.
+    const base = stripEffort(picker.value || (agent ? agent.model : ''));
+    if (base) saveModel(withEffort(base, effortSel.value));
+  });
+  // Shows `value` in both controls: the picker gets the choice it matches (with or without
+  // the effort pin), the effort control the pin.
+  const syncModel = (value: string): void => {
+    const effort = effortOf(value);
+    picker.value = offered.has(value) ? value : stripEffort(value);
+    effortSel.value = effort;
+  };
   const modelLine = h('div.model-line');
   const details = h('div');
   const queue = h('div.stack');
@@ -211,8 +251,10 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
 
   const populateModels = (models: ModelInfo[], settings: Settings): void => {
     const current = appliedOverride ?? '';
-    picker.setChoices(tierChoices(agent?.tier ?? 'worker', settings, models, { label: 'Use the default' }, current));
-    picker.value = current;
+    const choices = tierChoices(agent?.tier ?? 'worker', settings, models, { label: 'Use the default' }, current);
+    offered = new Set(choices.map((c) => c.value));
+    picker.setChoices(choices);
+    syncModel(current);
   };
 
   const renderAgent = (): void => {
@@ -244,7 +286,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     const want = a.model_override ?? '';
     if (want !== appliedOverride) {
       appliedOverride = want;
-      picker.value = want;
+      syncModel(want);
     }
 
     replace(
@@ -391,7 +433,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         h(
           'aside.agent-side',
           null,
-          card('Model', h('div.stack', null, modelLine, field('Change model', picker.el))),
+          card('Model', h('div.stack', null, modelLine, field('Change model', picker.el), field('Reasoning effort', effortSel))),
           card('Harness', harness.el),
           card('Permissions', permissionHost),
           card('Details', details),
