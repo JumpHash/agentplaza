@@ -566,6 +566,184 @@ impl FleetGpu {
     }
 }
 
+/// The GPU-animated batches (`hw_anim.wgsl`): fan spins and LED blinks, each batch one indexed draw in the main
+/// pass. The batches upload when the statics' version changes; the pipelines are built on first use.
+struct AnimGpu {
+    layout: wgpu::BindGroupLayout,
+    globals: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    /// The statics' version the batches were uploaded for.
+    version: Option<u64>,
+    batches: Vec<GpuAnimBatch>,
+    /// The spin and blink pipelines, for a sample count.
+    pipelines: Option<(u32, wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+}
+
+/// One animated batch on the GPU: its `AnimVertex` stream (18 floats each), its indices and its kind.
+struct GpuAnimBatch {
+    kind: super::scene::AnimKind,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    count: u32,
+}
+
+impl Drop for GpuAnimBatch {
+    fn drop(&mut self) {
+        self.vertices.destroy();
+        self.indices.destroy();
+    }
+}
+
+/// The bytes of one animated vertex: position, normal, colour, params and axis, 18 floats.
+const ANIM_STRIDE: u64 = 18 * 4;
+
+fn anim_layout() -> wgpu::VertexBufferLayout<'static> {
+    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
+    wgpu::VertexBufferLayout { array_stride: ANIM_STRIDE, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
+}
+
+impl AnimGpu {
+    fn new(device: &wgpu::Device) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hardware animation"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        // hw_anim.wgsl's Globals is the same block as fleet_anim.wgsl's (view-projection, then the clock).
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hardware animation globals"),
+            size: std::mem::size_of::<FleetGlobals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hardware animation"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+        });
+        AnimGpu { layout, globals, group, version: None, batches: Vec::new(), pipelines: None }
+    }
+
+    /// This frame: the globals (the clock wrapped at `WRAP_PERIOD`), the batches when the statics changed, and the
+    /// pipelines for `samples` (built once per sample count, and only when there is something to draw).
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, samples: u32, view_proj: Mat4, time: f32, version: u64, batches: &[super::scene::AnimBatch]) {
+        let globals = FleetGlobals { view_proj: view_proj.to_cols_array_2d(), time: [time % WRAP_PERIOD, 0.0, 0.0, 0.0] };
+        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        if self.version != Some(version) {
+            // Outline hulls are not drawn here yet (no vs_outline in hw_anim.wgsl): only the Mesh batches.
+            self.batches = batches
+                .iter()
+                .filter(|b| !b.vertices.is_empty() && matches!(b.draw.kind, DrawKind::Mesh))
+                .map(|b| upload_anim(device, queue, b))
+                .collect();
+            self.version = Some(version);
+        }
+        if !self.batches.is_empty() && self.pipelines.as_ref().map(|p| p.0) != Some(samples) {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("hardware animation"),
+                source: wgpu::ShaderSource::Wgsl(crate::hardware::HW_ANIM_WGSL.into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("hardware animation"),
+                bind_group_layouts: &[&self.layout],
+                push_constant_ranges: &[],
+            });
+            let spin = anim_pipeline(device, &module, &layout, format, samples, "vs_spin", "fs_color");
+            let blink = anim_pipeline(device, &module, &layout, format, samples, "vs_blink", "fs_emissive");
+            self.pipelines = Some((samples, spin, blink));
+        }
+    }
+
+    /// Draws each batch with its kind's pipeline: one indexed draw per batch. Returns the draws issued.
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> usize {
+        let Some((_, spin, blink)) = &self.pipelines else { return 0 };
+        if self.batches.is_empty() {
+            return 0;
+        }
+        pass.set_bind_group(0, &self.group, &[]);
+        for b in &self.batches {
+            pass.set_pipeline(match b.kind {
+                super::scene::AnimKind::Spin => spin,
+                super::scene::AnimKind::Blink => blink,
+            });
+            pass.set_vertex_buffer(0, b.vertices.slice(..));
+            pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..b.count, 0, 0..1);
+        }
+        self.batches.len()
+    }
+}
+
+/// An animated batch's buffers: its vertices as flat `AnimVertex` floats, and its indices (identity when the
+/// geometry has none).
+fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::AnimBatch) -> GpuAnimBatch {
+    let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 18);
+    for v in &b.vertices {
+        flat.extend(v.pos);
+        flat.extend(v.normal);
+        flat.extend(v.color);
+        flat.extend(v.params);
+        flat.extend(v.axis);
+    }
+    let indices: Vec<u32> = if b.draw.geo.indices.is_empty() { (0..b.vertices.len() as u32).collect() } else { b.draw.geo.indices.clone() };
+    let vertex_bytes: &[u8] = bytemuck::cast_slice(&flat);
+    let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
+    let vertices = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("hardware animation vertices"),
+        size: vertex_bytes.len() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&vertices, 0, vertex_bytes);
+    let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("hardware animation indices"),
+        size: index_bytes.len() as u64,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&index_buffer, 0, index_bytes);
+    GpuAnimBatch { kind: b.kind, vertices, indices: index_buffer, count: indices.len() as u32 }
+}
+
+/// One opaque, depth-tested pipeline of hw_anim.wgsl: the vertex entry `vs` and the fragment entry `fs`.
+fn anim_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    vs: &str,
+    fs: &str,
+) -> wgpu::RenderPipeline {
+    let buffers = [anim_layout()];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("hardware animation"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState { module, entry_point: Some(vs), compilation_options: Default::default(), buffers: &buffers },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fs),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview: None,
+        cache: None,
+    })
+}
+
 fn fleet_depth(write: bool) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: write, depth_compare: wgpu::CompareFunction::LessEqual, stencil: Default::default(), bias: Default::default() }
 }
@@ -685,6 +863,8 @@ pub struct Pipeline {
     fade_time: Option<f32>,
     /// The Machines view instanced animation (`fleet_anim.wgsl`).
     fleet: FleetGpu,
+    /// The GPU-animated batches of the statics (`hw_anim.wgsl`: fan spins, LED blinks), drawn in the main pass.
+    anim: AnimGpu,
     physical: Rect,
     background: wgpu::Color,
     /// The clear's alpha: 1 for the floor; a card pipeline sets 0 so its clear is transparent (no backdrop).
@@ -952,6 +1132,7 @@ impl Pipeline {
             fade_alpha: HashMap::new(),
             fade_time: None,
             fleet: FleetGpu::new(device, queue),
+            anim: AnimGpu::new(device),
             physical: Rect::default(),
             background: wgpu::Color::BLACK,
             clear_alpha: 1.0,
@@ -1548,6 +1729,7 @@ impl Primitive {
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         p.fleet.prepare(device, queue, p.format, samples, proj * view, f.time, f.animated.as_ref());
+        p.anim.prepare(device, queue, p.format, samples, proj * view, f.time, f.statics_version, f.anim_batches.as_slice());
         let bg = w.background;
         // Premultiplied: the clear's alpha scales its colour, so a card's clear of 0 is fully transparent.
         let a = f64::from(p.clear_alpha);
@@ -1886,6 +2068,9 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                 }
             }
             for _ in 0..p.fleet.draw(&mut pass) {
+                p.count(PASS_MESH);
+            }
+            for _ in 0..p.anim.draw(&mut pass) {
                 p.count(PASS_MESH);
             }
         }

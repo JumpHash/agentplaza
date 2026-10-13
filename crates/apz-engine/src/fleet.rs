@@ -960,6 +960,8 @@ mod tests {
         let dynamic = crate::scene::flatten_rigs_instanced(&rigs).0.len();
         let animated: usize = scene.machines.values().map(|m| m.built.animated_parts()).sum();
         eprintln!("fleet breakdown: {} cables, {} machines, {} animated hardware nodes", scene.links.len(), scene.machines.len(), animated);
+        let gpu = crate::scene::bake_split(&scene.group, true);
+        eprintln!("fleet with GPU_HW_ANIM: {} static draws + {} animation batches (the animated nodes leave the per-frame draws)", gpu.statics.len(), gpu.animated.len());
         (statics, dynamic)
     }
 
