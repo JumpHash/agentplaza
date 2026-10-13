@@ -11,7 +11,7 @@ more. three.js is removed when every row below says **done**. Status comes from 
 | 3 | Idle camera drift, Reset restarts it | done |
 | 4 | Render on demand, motion tiers | done (Rest, Ambient 12 fps, Active) |
 | 5 | Machine list orbit stage and thumbnails (`machine-stage.ts`, `machine-model.ts`) | done (web and desktop), vendor tint and contact shadow included |
-| 6 | GPU reference cards (`gpus.ts`) | done (data and matching); wire the card choice into the board's `gpu-pcie` parts |
+| 6 | GPU reference cards (`gpus.ts`) | done (data and matching, as on the web; the web does not put the matched card into the board's `gpu-pcie` parts either) |
 | 7 | Lifts: cab, rails, doors, controller (`lift.ts`, `lift-ctrl.ts`) | missing; needs `apz-board` lifts and landings first |
 | 8 | Gangways and ramps (`gangway.ts`, `ramp.ts`) | missing; needs `apz-board` links |
 | 9 | Nav grid walking, A*, followers, avoidance, respawn (`nav-*.ts`) | the web's nav grid is ported (`apz-board::navgrid`: portals, lifts, spots, drops, connectivity); `apz-board` has the planners (grid, Lazy Theta*, flow fields); the robot follower (`NavWorld`) and the engine hookup are missing |
@@ -19,7 +19,7 @@ more. three.js is removed when every row below says **done**. Status comes from 
 | 11 | Board scale growth to seat agents (`board-layout.ts`) | partial: `apz-board` plans and accepts as the web does: the planning grid and the acceptance grid are the web's nav grid (`apz-board::navgrid`, every rule of `nav-grid.ts`, the rooms with their generated furniture), so boards with one GPU fitted lay out (2 and 4 GPU workstations do not, on the web either); the browser still uses the engine's older layout until a web worker runs it |
 | 12 | Grounding, drawn tops and support (`ground.ts`, `drawn-tops.ts`) | in `apz-board` (support field); engine hookup missing |
 | 13 | Warm-up budget for board builds (`warm.ts`) | done: a re-entered machine's board comes from the build cache; budgeted steps exist (`warm.rs`) but the board build is still one call |
-| 14 | Shadow proxies (`bake.ts`) | missing |
+| 14 | Shadow proxies (`bake.ts`) | done in kind: the engine merges every static opaque caster into one geometry that only the shadow pass draws (`render.rs` build_statics), the proxies' purpose, in one bucket instead of per-cell buckets |
 | 15 | Portrait studio (`portrait.ts`) | done in the engine (`portrait.rs`, offscreen) and on the web under `?engine=wasm`; the desktop still draws its own copy in `render_card.rs` |
 | 16 | Robot lab: species, clip, tool, carry, hue, orch, cam (`robot-lab.ts`) | done, also in the browser (`#/robot-lab?engine=wasm`) on the web lab's own pale stage |
 | 17 | Z-fight lint over the hardware models (`zfight.ts`) | ported (`apz-board::zfight`), counts equal to the web on all 11 cases; committed with the board fixes |
@@ -41,3 +41,17 @@ more. three.js is removed when every row below says **done**. Status comes from 
 - One wasm build packed in Rust (`tools/apz-pack`: wasm-bindgen and wasm-opt as libraries, brotli and gzip siblings),
   and the same crate compiled natively into the desktop. The engine goes over the wire at 1.24 MB (brotli); the hub
   serves it as `application/wasm` with a year's immutable cache.
+
+## The plan to the end (2026-10-14)
+
+1. `apz-board::nav`: the planner (`nav-plan.ts`), the body and drawn tops (`nav-height.ts`, `drawn-tops.ts`), the lift
+   controller (moved from the engine), then `NavWorld` (`nav-agents.ts`).
+2. `apz-board::layout::nav_scene`: the nav grid of a finished layout with its rooms (nav-scene.ts), public, so the engine
+   and the layout's acceptance build the same grid.
+3. The engine's board view: rooms built from the same room plans, lift, gangway and ramp meshes from the grid's lifts
+   and portals, robots driven by `NavWorld` (body clips from the pose), the lift cabs from the controllers, the debug
+   hooks (`__apzBots`, `__apzLifts`, `__apzNavCell`).
+4. The browser: the shared layout computed in a web worker running the same wasm, posted back to the engine.
+5. The nav overlay (`?nav=1`).
+6. The wasm engine becomes the web's default (no `?engine=wasm`); the three.js renderers, their pure-TS cores that only
+   they use, their tests and the `three` dependency are deleted.
