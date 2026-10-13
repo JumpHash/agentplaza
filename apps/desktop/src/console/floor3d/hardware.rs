@@ -462,7 +462,7 @@ fn eval_when(w: &When, vals: &BTreeMap<String, f64>) -> bool {
 
 // ---- Validation -----------------------------------------------------------------------------
 
-const SLOT_TYPES: [&str; 10] = ["cpu", "gpu", "memory", "storage", "network", "power", "io", "soc", "modem", "bmc"];
+const SLOT_TYPES: [&str; 11] = ["cpu", "gpu", "memory", "storage", "network", "power", "io", "soc", "modem", "bmc", "npu"];
 const TAGS: [&str; 4] = ["status", "activity", "fan", "screen"];
 
 struct Check<'a> {
