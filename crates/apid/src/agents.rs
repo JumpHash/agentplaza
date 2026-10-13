@@ -506,8 +506,9 @@ fn reconcile_once(app: &App) {
         let Some((run, vm)) = placements.get(&agent.cid).cloned() else {
             continue;
         };
-        // An agent that said hello before noded's runs were read gets its fleet role now.
-        let role = if agent.role.is_empty() { app.spawned.role_of(agent.cid).unwrap_or_default() } else { agent.role.clone() };
+        // The trusted role (an operator spawn's, else the one noded booted the guest with) wins: an agent that said
+        // hello before noded's runs were read, or before a noded restart, follows it.
+        let role = app.spawned.role_of(agent.cid).unwrap_or_else(|| agent.role.clone());
         if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role {
             let updated = app.agents.update(agent.cid, |slot| {
                 slot.run = Some(run);
