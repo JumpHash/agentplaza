@@ -91,6 +91,55 @@ pub struct RotatedToken {
     pub token: String,
 }
 
+/// A plaza machine's hardware, GPUs and runs (`GET /v1/machines`, the web's machine list).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlazaMachine {
+    pub id: String,
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub irqchip: String,
+    #[serde(default)]
+    pub vsock_mode: String,
+    #[serde(default)]
+    pub cpus: u64,
+    #[serde(default)]
+    pub memory_mib: u64,
+    #[serde(default)]
+    pub gpus: Vec<Gpu>,
+    #[serde(default)]
+    pub runs: Vec<Run>,
+}
+
+/// A GPU a machine reported.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Gpu {
+    #[serde(default)]
+    pub vendor: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub memory_mib: Option<u64>,
+}
+
+/// A run on a machine: its kind (role), state, VMs, and when it started (ms since the epoch).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Run {
+    pub id: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub created_at: f64,
+    #[serde(default)]
+    pub vms: Vec<Value>,
+}
+
 /// One of the list loads: pending until the first answer, failed when the last request did.
 #[derive(Debug, Default)]
 pub enum Load<T> {
@@ -138,6 +187,9 @@ pub struct State {
     /// The leave confirmation is open, and whether the network is forgotten too.
     pub leaving: bool,
     pub forget: bool,
+    /// The plaza's machines, and the node whose detail is open.
+    pub machines: Load<Vec<PlazaMachine>>,
+    pub selected: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +233,10 @@ pub enum Msg {
     ToggleForget(bool),
     Leave,
     Left(Result<(), String>),
+    MachinesLoaded(Result<Vec<PlazaMachine>, String>),
+    /// Open a node's detail, or close it.
+    Select(String),
+    Deselect,
 }
 
 /// The navigation this message asks for, if any.
@@ -193,11 +249,12 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let (nodes, codes, hub) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
+    let (nodes, codes, hub, machines) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     Task::batch([
         client::task(move || nodes.get::<Vec<NodeView>>("/v1/nodes"), Msg::NodesLoaded),
         client::task(move || codes.get::<Vec<JoinCode>>("/v1/nodes/codes"), Msg::CodesLoaded),
         client::task(move || hub.get::<HubIdentity>("/v1/hub/identity"), Msg::HubLoaded),
+        client::task(move || machines.get::<Vec<PlazaMachine>>("/v1/machines"), Msg::MachinesLoaded),
         Task::perform(async { services::node_status() }, Msg::NodeLoaded),
     ])
 }
@@ -399,6 +456,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let forget = state.forget;
             Task::perform(async move { services::leave(forget) }, Msg::Left)
         }
+        Msg::MachinesLoaded(result) => {
+            state.machines = settle(result);
+            Task::none()
+        }
+        Msg::Select(id) => {
+            state.selected = Some(id);
+            Task::none()
+        }
+        Msg::Deselect => {
+            state.selected = None;
+            Task::none()
+        }
         Msg::Left(result) => {
             state.node_busy = false;
             let forgot = state.forget;
@@ -459,6 +528,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(dialog_view(dialog));
     }
     parts.push(ui::card("Machines in this plaza", nodes_view(&state.nodes)));
+    if let Some(detail) = detail_view(state) {
+        parts.push(detail);
+    }
     parts.push(network_view(state));
     parts.push(ui::card("Join codes", codes_view(&state.codes)));
     parts.push(ui::card("This hub", hub_view(&state.hub)));
@@ -483,7 +555,7 @@ fn nodes_view<'a>(nodes: &'a Load<Vec<NodeView>>) -> Element<'a, Msg> {
 fn node_row<'a>(n: &'a NodeView) -> Element<'a, Msg> {
     let (state, tone) = node_state(n);
     cells(vec![
-        (3, column![ui::mono(n.name.as_str(), 13.0, ui::INK), ui::faint(n.id.as_str())].spacing(2).into()),
+        (3, column![ui::link(n.name.as_str(), Msg::Select(n.id.clone()), false), ui::faint(n.id.as_str())].spacing(2).into()),
         (2, ui::badge(state, tone)),
         (2, ui::mono(if n.address.is_empty() { "—" } else { n.address.as_str() }, 12.0, ui::INK).into()),
         (1, ui::mono(n.agents.to_string(), 12.0, ui::INK).into()),
@@ -728,7 +800,7 @@ fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if let Some(error) = &state.node_error {
         parts.push(ui::error_line(error.as_str()));
     }
-    ui::card("Join another network", column(parts).spacing(12).width(Length::Fill).into())
+    ui::card("This machine", column(parts).spacing(12).width(Length::Fill).into())
 }
 
 /// The join form: the code (monospace) and the Join button.
@@ -788,6 +860,85 @@ fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(12)
     .into()
+}
+
+/// The selected node's detail under the machines table: its machine's facts and its runs.
+fn detail_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    let id = state.selected.as_ref()?;
+    let Load::Ready(nodes) = &state.nodes else {
+        return None;
+    };
+    let node = nodes.iter().find(|n| &n.id == id)?;
+    let body: Element<'a, Msg> = match &state.machines {
+        Load::Pending => ui::loading(),
+        Load::Failed => ui::empty("alert", "Could not load this machine.", ""),
+        Load::Ready(list) => match list.iter().find(|m| &m.id == id) {
+            Some(machine) => column![machine_facts(node, machine), runs_table(&machine.runs)].spacing(16).width(Length::Fill).into(),
+            None => ui::faint("This machine reports no facts.").into(),
+        },
+    };
+    let close = ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::Deselect));
+    Some(ui::card(&node.name, column![body, close].spacing(16).width(Length::Fill).into()))
+}
+
+/// The machine's facts, laid out like the web's detail: CPU, memory, GPUs, arch and backend, then the rest.
+fn machine_facts<'a>(node: &'a NodeView, m: &'a PlazaMachine) -> Element<'a, Msg> {
+    let cpus = if m.cpus > 0 { format!("{} cores", m.cpus) } else { "?".to_string() };
+    let memory = if m.memory_mib > 0 { format!("{:.1} GiB", m.memory_mib as f64 / 1024.0) } else { "?".to_string() };
+    let gpus = if m.gpus.is_empty() { "None".to_string() } else { m.gpus.iter().map(gpu_text).collect::<Vec<_>>().join(", ") };
+    let host = node.machine.as_ref().and_then(|x| x.host.as_deref()).unwrap_or("?");
+    column![
+        fact("CPU", ui::mono(cpus, 12.0, ui::INK).into()),
+        fact("Memory", ui::mono(memory, 12.0, ui::INK).into()),
+        fact("GPUs", ui::mono(gpus, 12.0, ui::INK).into()),
+        fact("Arch", ui::mono(or_dash(&m.arch), 12.0, ui::INK).into()),
+        fact("Backend", ui::mono(or_dash(&m.backend), 12.0, ui::INK).into()),
+        fact("Host", ui::mono(host, 12.0, ui::INK).into()),
+        fact("Class", ui::mono(or_dash(&m.class), 12.0, ui::INK).into()),
+        fact("Irqchip", ui::mono(or_dash(&m.irqchip), 12.0, ui::INK).into()),
+        fact("vsock", ui::mono(or_dash(&m.vsock_mode), 12.0, ui::INK).into()),
+    ]
+    .spacing(12)
+    .into()
+}
+
+/// A GPU as the web's list shows it: its vendor and name, with its memory when it reports one.
+fn gpu_text(g: &Gpu) -> String {
+    let name = format!("{} {}", g.vendor, g.name).trim().to_string();
+    match g.memory_mib {
+        Some(mib) if mib > 0 => format!("{name} ({:.0} GiB)", mib as f64 / 1024.0),
+        _ => name,
+    }
+}
+
+/// The machine's runs: id, kind, state, its VMs, and when it started; a faint line when it has none.
+fn runs_table<'a>(runs: &'a [Run]) -> Element<'a, Msg> {
+    if runs.is_empty() {
+        return ui::faint("No runs.").into();
+    }
+    table(
+        &[(3, "ID"), (2, "Kind"), (2, "State"), (1, "VMs"), (3, "Started")],
+        runs.iter()
+            .map(|r| {
+                cells(vec![
+                    (3, ui::mono(r.id.as_str(), 12.0, ui::INK).into()),
+                    (2, ui::faint(r.role.as_deref().unwrap_or("fleet")).into()),
+                    (2, ui::badge(r.state.as_str(), run_tone(&r.state))),
+                    (1, ui::mono(r.vms.len().to_string(), 12.0, ui::INK).into()),
+                    (3, ui::faint(ago(r.created_at)).into()),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// A run's state tone: running is ok, failed is a danger, anything else is muted.
+fn run_tone(state: &str) -> ui::Tone {
+    match state {
+        "running" => ui::Tone::Ok,
+        "failed" => ui::Tone::Danger,
+        _ => ui::Tone::Muted,
+    }
 }
 
 /// A value, or a dash when there is none.
@@ -877,5 +1028,30 @@ fn boxed(_: &Theme) -> container::Style {
     container::Style {
         border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_json_parses_facts_gpus_and_runs() {
+        let json = r#"{"id":"n1","class":"desktop","arch":"x86_64","backend":"kvm","irqchip":"split","vsock_mode":"vhost","cpus":16,"memory_mib":65536,"gpus":[{"vendor":"nvidia","name":"RTX 4090","memory_mib":24576}],"runs":[{"id":"r1","state":"running","vcpus":1,"memory_mib":256,"role":"worker","created_at":1700000000000.0,"vms":[{"index":0,"state":"running"}]}]}"#;
+        let m: PlazaMachine = serde_json::from_str(json).expect("machine JSON parses");
+        assert_eq!(m.id, "n1");
+        assert_eq!((m.cpus, m.memory_mib), (16, 65536));
+        assert_eq!(m.gpus[0].name, "RTX 4090");
+        assert_eq!(m.gpus[0].memory_mib, Some(24576));
+        assert_eq!(gpu_text(&m.gpus[0]), "nvidia RTX 4090 (24 GiB)");
+        assert_eq!(m.runs[0].role.as_deref(), Some("worker"));
+        assert_eq!(m.runs[0].vms.len(), 1);
+    }
+
+    #[test]
+    fn machine_json_tolerates_a_partial_reply() {
+        let m: PlazaMachine = serde_json::from_str(r#"{"id":"n0"}"#).expect("partial machine JSON parses");
+        assert!(m.gpus.is_empty() && m.runs.is_empty());
+        assert_eq!(m.cpus, 0);
     }
 }

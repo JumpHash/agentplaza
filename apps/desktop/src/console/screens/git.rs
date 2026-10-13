@@ -355,7 +355,7 @@ fn fetch(client: &Client, q: &Query) -> Result<Data, String> {
                 d.readme = Some(f);
             }
         }
-        Tab::Commits => d.commits = client.get(&format!("{base}/commits?ref=&limit=30"))?,
+        Tab::Commits => d.commits = client.get(&format!("{base}/commits?ref={}&limit=30", enc(&q.git_ref)))?,
         Tab::Pulls => match q.pr {
             Some(n) => d.pull = Some(client.get(&format!("{base}/pulls/{n}"))?),
             None => d.pulls = client.get(&format!("{base}/pulls?state={}", q.pulls.key()))?,
@@ -663,13 +663,10 @@ fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let names: Vec<String> = state.data.branches.iter().map(|b| b.name.clone()).collect();
-    if names.is_empty() {
+    if state.data.branches.is_empty() {
         return ui::empty("git", "Nothing pushed yet", "This repository has no branches.");
     }
-    let picker = pick_list(names, Some(state.git_ref.clone()), Msg::Branch);
-    let toolbar = row![ui::label("Branch"), picker].spacing(10).align_y(Alignment::Center);
-    let mut items: Vec<Element<'a, Msg>> = vec![toolbar.into(), crumbs(state), dir_table(&state.data.tree)];
+    let mut items: Vec<Element<'a, Msg>> = vec![branch_picker(state), crumbs(state), dir_table(&state.data.tree)];
     if let Some(file) = &state.data.file {
         items.push(file_block(&state.file_path, file));
     } else if let Some(readme) = &state.data.readme {
@@ -682,13 +679,20 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
     column(items).spacing(14).into()
 }
 
+/// The branch picker: the repository's branches with the open one selected (code and commits tabs).
+fn branch_picker<'a>(state: &'a State) -> Element<'a, Msg> {
+    let names: Vec<String> = state.data.branches.iter().map(|b| b.name.clone()).collect();
+    let picker = pick_list(names, Some(state.git_ref.clone()), Msg::Branch);
+    row![ui::label("Branch"), picker].spacing(10).align_y(Alignment::Center).into()
+}
+
 fn crumbs<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![link(&state.repo, Msg::Dir(String::new()))];
-    let parts: Vec<&str> = if state.path.is_empty() { Vec::new() } else { state.path.split('/').collect() };
-    for (i, part) in parts.iter().enumerate() {
-        let to = parts[..=i].join("/");
-        items.push(ui::mono("/", 13.0, INK_3).into());
-        items.push(link(part, Msg::Dir(to)));
+    let mut items: Vec<Element<'a, Msg>> = Vec::new();
+    for (i, (label_text, to)) in crumb_trail(&state.repo, &state.path).into_iter().enumerate() {
+        if i > 0 {
+            items.push(ui::mono("/", 13.0, INK_3).into());
+        }
+        items.push(link(&label_text, Msg::Dir(to)));
     }
     row(items).spacing(6).align_y(Alignment::Center).into()
 }
@@ -813,10 +817,15 @@ fn chip<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
 }
 
 fn commits_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    if state.data.commits.is_empty() {
-        return ui::empty("git", "No commits yet", "");
+    if state.data.branches.is_empty() {
+        return ui::empty("git", "Nothing pushed yet", "This repository has no branches.");
     }
-    list(state.data.commits.iter().map(commit_row).collect())
+    let log: Element<'a, Msg> = if state.data.commits.is_empty() {
+        ui::empty("git", "No commits yet", "")
+    } else {
+        list(state.data.commits.iter().map(commit_row).collect())
+    };
+    column![branch_picker(state), log].spacing(12).into()
 }
 
 fn commit_row<'a>(k: &Commit) -> Element<'a, Msg> {
@@ -887,6 +896,7 @@ fn pull_row<'a>(p: &Pull) -> Element<'a, Msg> {
         row![
             cell(Length::Fixed(60.0), ui::mono(format!("#{}", p.number), 13.0, INK_2)),
             cell(Length::Fill, text(p.title.clone()).font(SERIF_SEMIBOLD).size(15.0).color(INK)),
+            cell(Length::Fixed(80.0), state_badge(&p.state)),
             cell(Length::Fixed(220.0), ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2)),
             cell(Length::Fixed(120.0), ui::faint(p.author.clone())),
             review_badge(&p.review),
@@ -922,7 +932,7 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     .align_y(Alignment::Center);
     let meta = row![
         ui::mono(format!("#{}", p.number), 13.0, INK_2),
-        ui::badge(&p.state, if open { Tone::Ok } else { Tone::Muted }),
+        state_badge(&p.state),
         review_badge(&p.review),
         ui::faint(p.author.clone()),
         ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2),
@@ -1029,6 +1039,12 @@ fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     } else {
         (INK, None, theme::MONO)
     }
+}
+
+/// A pull request's state: open in the ok tone, closed or merged muted.
+fn state_badge<'a>(state: &str) -> Element<'a, Msg> {
+    let tone = if state == "open" { Tone::Ok } else { Tone::Muted };
+    ui::badge(state, tone)
 }
 
 fn review_badge<'a>(review: &str) -> Element<'a, Msg> {
@@ -1159,6 +1175,16 @@ fn enc(s: &str) -> String {
     out
 }
 
+/// The crumbs of a folder path: the repository at the root (to ""), then each folder with its own path.
+fn crumb_trail(repo: &str, path: &str) -> Vec<(String, String)> {
+    let mut out = vec![(repo.to_string(), String::new())];
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    for (i, part) in parts.iter().enumerate() {
+        out.push((part.to_string(), parts[..=i].join("/")));
+    }
+    out
+}
+
 fn first_line(message: &str) -> &str {
     message.split('\n').next().unwrap_or("")
 }
@@ -1213,4 +1239,53 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146097 + doe - 719468
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_tree_response_parses_entries() {
+        let json = r#"[{"name":"src","path":"src","kind":"dir","size":0},{"name":"README.md","path":"README.md","kind":"file","size":12}]"#;
+        let tree: Vec<Entry> = serde_json::from_str(json).expect("tree parses");
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].kind, "dir");
+        assert_eq!(tree[1].path, "README.md");
+        assert_eq!(tree[1].size, 12);
+    }
+
+    #[test]
+    fn git_file_response_parses_text_and_binary() {
+        let text: FileView = serde_json::from_str(r#"{"path":"a.rs","ref":"main","size":5,"text":"fn a","binary":false}"#).expect("text parses");
+        assert_eq!(text.text.as_deref(), Some("fn a"));
+        assert!(!text.binary);
+        let bin: FileView = serde_json::from_str(r#"{"path":"a.png","ref":"main","size":2048,"text":null,"binary":true}"#).expect("binary parses");
+        assert!(bin.binary);
+        assert!(bin.text.is_none());
+        assert_eq!(fmt_size(bin.size), "2.0 KB");
+    }
+
+    #[test]
+    fn git_commits_response_parses_log() {
+        let json = r#"[{"id":"9f2c1ab4e0","short":"9f2c1ab","message":"hub: fix\n\nbody","author":"Zarathos","at":"2026-10-12T10:00:00Z","additions":12,"deletions":3}]"#;
+        let log: Vec<Commit> = serde_json::from_str(json).expect("commits parse");
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].short, "9f2c1ab");
+        assert_eq!(first_line(&log[0].message), "hub: fix");
+        assert_eq!((log[0].additions, log[0].deletions), (12, 3));
+    }
+
+    #[test]
+    fn git_crumbs_walk_the_folder_path() {
+        assert_eq!(crumb_trail("plaza", ""), vec![("plaza".to_string(), String::new())]);
+        let trail = crumb_trail("plaza", "src/console/screens");
+        let expect: Vec<(String, String)> = vec![
+            ("plaza".to_string(), String::new()),
+            ("src".to_string(), "src".to_string()),
+            ("console".to_string(), "src/console".to_string()),
+            ("screens".to_string(), "src/console/screens".to_string()),
+        ];
+        assert_eq!(trail, expect);
+    }
 }

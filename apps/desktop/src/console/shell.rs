@@ -232,6 +232,7 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Rules
             | Id::Usage
             | Id::Tools
+            | Id::Mcp
             | Id::Agent(_)
     )
 }
