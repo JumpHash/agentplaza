@@ -13,6 +13,9 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildModel, currentPulses, evalWhen, modelsFor, parseWhen, placeAtom, repeatOffsets, traceMeshes, validate, validatePalette } from '../src/views/floor3d/hardware';
 import { MODELS, PALETTE, PALETTE_FILE } from '../src/views/floor3d/hardware-index';
+import { boardHeightAt, layoutOnBoard, pathOnTraces, traceGraph, type BoardLayout } from '../src/views/floor3d/board-layout';
+import type { Model } from '../src/views/floor3d/hardware';
+import type { Agent } from '../src/api';
 
 let failures = 0;
 function eq(actual: unknown, expected: unknown, name: string): void {
@@ -307,6 +310,61 @@ eq(movesOf({ id: 1, kind: 'refund', amount: 500, created_at: 0, memo: '', posted
   { from: 'Escrow t9', to: 'Plaza budget' }, 'a refund moves from escrow to the plaza budget');
 eq(Math.abs(creditsUsd(1000) - 1) < 1e-9, true, 'a thousand credits are a dollar');
 eq(creditsOf(0.5), 500, 'half a dollar of model spend is five hundred credits');
+
+// ---- Board layout (floor3d/board-layout) ------------------------------------------------------------
+
+const boardAgent = (cid: number, role: string, tier = 'worker'): Agent => ({ cid, name: '', role, tier }) as unknown as Agent;
+/** The contract's fixture: cpu (cap 2), gpu (cap 2, shown by gpus >= 1), memory (cap 1); the atom over the cpu. */
+const boardFixture = (): Model => ({
+  schema: 1,
+  kind: 'test',
+  view: 'board',
+  size: [40, 4, 30],
+  params: { gpus: 1 },
+  parts: [{ id: 'cpu0' }, { id: 'gpu0', when: 'gpus >= 1' }, { id: 'dimm0' }],
+  anchors: { atom: [-7, 2, 0] },
+  slots: [
+    { id: 'cpu', on: 'cpu0', type: 'cpu', top: 1.4, rect: [-12, -4, 8, 8], capacity: 2 },
+    { id: 'gpu', on: 'gpu0', type: 'gpu', top: 1.4, rect: [2, -6, 12, 12], capacity: 2 },
+    { id: 'memory', on: 'dimm0', type: 'memory', top: 1.4, rect: [-12, -12, 8, 6], capacity: 1 },
+  ],
+});
+const slotOf = (l: BoardLayout): Record<string, string> => Object.fromEntries(l.districts.map((d) => [d.role, d.slot]));
+const room = (l: BoardLayout, role: string) => l.districts.find((d) => d.role === role)!;
+const team5 = [boardAgent(1, 'orchestrator', 'orchestrator'), boardAgent(2, 'builder'), boardAgent(3, 'finance'), boardAgent(4, 'librarian'), boardAgent(5, 'qa')];
+
+const lay = layoutOnBoard(team5, boardFixture());
+eq(slotOf(lay), { orchestrator: 'cpu', builder: 'gpu', finance: 'cpu', librarian: 'memory', qa: 'gpu' }, 'board: each role takes its family slot; the orchestrator on the cpu');
+eq([room(lay, 'orchestrator').cx, room(lay, 'orchestrator').cy, room(lay, 'orchestrator').w, room(lay, 'orchestrator').d, room(lay, 'orchestrator').y], [-6, 0, 4, 8, 1.4], 'board: the orchestrator takes the cpu cell nearest the atom');
+eq([room(lay, 'finance').cx, room(lay, 'finance').cy], [-10, 0], 'board: the other cpu room takes the free cell');
+eq([room(lay, 'builder').cx, room(lay, 'builder').cy, room(lay, 'qa').cx], [5, 0, 11], 'board: rooms in one slot fill its cells in order');
+eq([room(lay, 'librarian').cx, room(lay, 'librarian').cy, room(lay, 'librarian').r], [-8, -9, 2.7], 'board: a one-cell slot is the whole rect, radius 0.9 of its half side');
+eq(lay.homes.get(1)?.slice(1), [-6, 0], 'board: a lone agent sits at its cell centre');
+eq([lay.bounds, lay.pcbTop], [{ cx: 0, cz: 0, w: 40, d: 30 }, 0.4], 'board: bounds are the footprint; pcb top defaults to 0.4');
+
+eq(Math.abs(boardHeightAt(5, 0, lay) - 1.4) < 1e-9, true, 'board height: inside a cell is the slot top');
+eq(Math.abs(boardHeightAt(-3.5, -9, lay) - 0.9) < 1e-9, true, 'board height: half a unit outside a cell ramps halfway down');
+eq(boardHeightAt(-2.5, -9, lay), 0.4, 'board height: past the ramp is the PCB top');
+eq(boardHeightAt(0, 20, lay), 0.4, 'board height: away from every cell is the PCB top');
+
+const noGpu = layoutOnBoard([boardAgent(1, 'orchestrator', 'orchestrator'), boardAgent(2, 'builder'), boardAgent(3, 'qa')], boardFixture(), { gpus: 0 });
+eq(slotOf(noGpu), { orchestrator: 'cpu', builder: 'cpu', qa: 'memory' }, 'board: a hidden gpu is no slot; builders fall back to the cpu, then any room');
+
+const crowded = layoutOnBoard(
+  [boardAgent(1, 'orchestrator', 'orchestrator'), boardAgent(2, 'architect'), boardAgent(3, 'auditor'), boardAgent(4, 'builder'), boardAgent(5, 'finance'), boardAgent(6, 'librarian'), boardAgent(7, 'qa')],
+  boardFixture(),
+);
+eq(crowded.districts.length, 7, 'board: overflow drops no role');
+eq(slotOf(crowded), { orchestrator: 'cpu', architect: 'gpu', auditor: 'cpu', builder: 'gpu', finance: 'memory', librarian: 'gpu', qa: 'gpu' }, 'board: overflow goes to the slot whose rooms stay largest');
+eq(crowded.districts.filter((d) => d.slot === 'gpu').map((d) => d.w), [6, 6, 6, 6], 'board: an overfull slot shrinks its rooms to fit');
+
+eq(layoutOnBoard([], boardFixture()).districts.length, 0, 'board: no agents, no rooms');
+
+const walk = traceGraph({ ...boardFixture(), traces: [{ path: [[0, 0], [10, 0], [10, 10]], y: 0.42, width: 0.25 }] });
+eq(walk.nodes.length, 3, 'walkways: one node per distinct trace point');
+eq(pathOnTraces(walk, [1, 0.5], [9.5, 10]), [[1, 0.5], [0, 0], [10, 0], [10, 10], [9.5, 10]], 'walkways: a walk along an L-shaped trace goes by its corner');
+const apart = traceGraph({ ...boardFixture(), traces: [{ path: [[0, 0], [1, 0]], y: 0.42, width: 0.25 }, { path: [[5, 5], [6, 5]], y: 0.42, width: 0.25 }] });
+eq(pathOnTraces(apart, [0, 0], [6, 5]), null, 'walkways: no walk between traces that do not join');
 
 if (failures) {
   console.error(`${failures} failure(s)`);
