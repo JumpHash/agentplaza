@@ -24,6 +24,8 @@ use crate::stage::{Motion, Stage};
 pub const FOV_DEG: f32 = 30.0;
 /// The share of the view the machine fills, by height or width.
 pub const FILL: f32 = 0.7;
+/// The share of a thumbnail's shorter side the machine fills (a card, so more than the stage's `FILL`).
+pub const THUMB_FILL: f32 = 0.85;
 /// The auto-rotate speed, radians per second: one turn in 30 s (three's autoRotateSpeed 2.0).
 pub const SPIN_RATE: f32 = std::f32::consts::TAU / 30.0;
 /// How far the orbit pose looks down onto the machine (the web's `high` vector).
@@ -296,10 +298,15 @@ impl MachineStage {
 
     /// Sets `orbit` to the framing of the machine at `aspect`.
     fn framed(&self, orbit: &mut Orbit, aspect: f32) {
+        self.framed_at(orbit, aspect, FILL);
+    }
+
+    /// Frames the bounds to `fill` of the view's shorter side: the stage's `FILL`, or a thumbnail's `THUMB_FILL`.
+    fn framed_at(&self, orbit: &mut Orbit, aspect: f32, fill: f32) {
         let tan = (FOV_DEG.to_radians() / 2.0).tan();
         let [sx, sy, sz] = self.size;
-        let by_height = sy / 2.0 / (FILL * tan);
-        let by_width = sx / 2.0 / (FILL * tan * aspect.max(1e-3));
+        let by_height = sy / 2.0 / (fill * tan);
+        let by_width = sx / 2.0 / (fill * tan * aspect.max(1e-3));
         let dist = by_height.max(by_width) + sz / 2.0;
         let high = (self.dir + Vec3::Y * ELEVATION).normalize();
         orbit.look(self.center + high * dist, self.center);
@@ -363,7 +370,7 @@ impl MachineStage {
     /// The thumbnail's frame at `aspect`: the start pose framed for that aspect (no spin, no user drive).
     pub fn thumbnail_frame(&self, aspect: f32) -> Frame {
         let mut orbit = Orbit::default();
-        self.framed(&mut orbit, aspect);
+        self.framed_at(&mut orbit, aspect, THUMB_FILL);
         self.frame_with(self.camera_of(&orbit, aspect))
     }
 
@@ -536,6 +543,75 @@ mod tests {
         let px = renderer.thumbnail(&stage, 64, 64).expect("the readback");
         assert_eq!(px.len(), 64 * 64 * 4);
         assert!(px.iter().any(|b| *b != 0), "the thumbnail is empty");
+    }
+
+    /// The RGBA bytes of one fixture machine's 64 by 64 thumbnail, on the test device.
+    fn thumbnail_of(device: &wgpu::Device, queue: &wgpu::Queue, id: &str) -> Vec<u8> {
+        let fleet = fixture();
+        let m = fleet.machines.iter().find(|m| m.id == id).expect("the fixture machine");
+        let stage = MachineStage::new(m, None).expect("a stage");
+        let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
+        renderer.thumbnail(&stage, 64, 64).expect("the readback")
+    }
+
+    /// One pixel of a 64 by 64 RGBA thumbnail.
+    fn pixel(px: &[u8], x: usize, y: usize) -> [u8; 4] {
+        let i = (y * 64 + x) * 4;
+        [px[i], px[i + 1], px[i + 2], px[i + 3]]
+    }
+
+    #[test]
+    fn a_thumbnail_is_a_transparent_card_with_the_machine_lit_and_framed() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("no wgpu adapter here: the thumbnail test is skipped");
+            return;
+        };
+        const N: usize = 64;
+        // n1 is a server and n2 a laptop in floor-15.json.
+        let mut server = Vec::new();
+        for id in ["n1", "n2"] {
+            let px = thumbnail_of(&device, &queue, id);
+            assert_eq!(px.len(), N * N * 4);
+            // The top corners are transparent. The bottom corners hold no sky or backdrop, only the machine's own cast
+            // shadow: black, at most the shadow catcher's 0.2 opacity (alpha 51). A laptop's shadow reaches a bottom corner.
+            for (x0, y0, below) in [(0, 0, false), (N - 4, 0, false), (0, N - 4, true), (N - 4, N - 4, true)] {
+                for y in y0..y0 + 4 {
+                    for x in x0..x0 + 4 {
+                        let p = pixel(&px, x, y);
+                        if below {
+                            assert!(p[..3] == [0, 0, 0] && p[3] <= 51, "{id}: the corner ({x}, {y}) is not shadow: rgba {p:?}");
+                        } else {
+                            assert_eq!(p[3], 0, "{id}: the corner ({x}, {y}) is transparent");
+                        }
+                    }
+                }
+            }
+            // The opaque pixels (alpha 128 and up) span the machine, by the longer of their two sides.
+            let (mut lo, mut hi) = ((N, N), (0, 0));
+            for y in 0..N {
+                for x in 0..N {
+                    if pixel(&px, x, y)[3] >= 128 {
+                        lo = (lo.0.min(x), lo.1.min(y));
+                        hi = (hi.0.max(x), hi.1.max(y));
+                    }
+                }
+            }
+            let span = (hi.0 - lo.0 + 1).max(hi.1 - lo.1 + 1);
+            assert!(span as f32 >= 0.6 * N as f32, "{id}: the machine spans {span} of {N} px");
+            if id == "n1" {
+                server = px;
+            }
+        }
+        // The server's case is dark grey by design (as in the web's studio shot), so its centre says little. What shows
+        // that it is lit, not a black silhouette, is its highlights: the brightest twentieth of its opaque pixels.
+        let mut lumas: Vec<f32> = (0..N * N)
+            .map(|i| pixel(&server, i % N, i / N))
+            .filter(|c| c[3] >= 128)
+            .map(|c| 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]))
+            .collect();
+        lumas.sort_by(f32::total_cmp);
+        let bright = lumas[lumas.len() * 19 / 20];
+        assert!(bright >= 60.0, "the server is lit: its brightest twentieth reaches only {bright:.0} of 255");
     }
 
     #[test]

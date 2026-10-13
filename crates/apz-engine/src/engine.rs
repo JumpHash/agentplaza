@@ -81,6 +81,8 @@ pub struct Renderer {
     primitive: Option<render::Primitive>,
     /// The offscreen target of the last thumbnail, reused while its size holds.
     thumb: Option<(u32, u32, wgpu::Texture)>,
+    /// The pipeline the thumbnails draw with: the main format in its sRGB form, and a card's transparent clear (built on first use).
+    thumb_pipeline: Option<render::Pipeline>,
 }
 
 impl Renderer {
@@ -94,6 +96,7 @@ impl Renderer {
             pipeline: render::Pipeline::new(device, queue, format),
             primitive: None,
             thumb: None,
+            thumb_pipeline: None,
         }
     }
 
@@ -132,6 +135,12 @@ impl Renderer {
 
 /// The largest side a thumbnail renders at, in device px.
 pub const THUMB_MAX: u32 = 512;
+
+/// A thumbnail's target format: the main surface's format in its sRGB form. The shaders write linear colour, and only an
+/// sRGB target encodes it, so a linear target reads darker than the live canvas.
+fn thumb_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    format.add_srgb_suffix()
+}
 
 /// The readback slot a thumbnail's buffer reports into when it is mapped.
 #[derive(Default)]
@@ -192,9 +201,17 @@ impl Renderer {
     /// The pixels come from [`Thumbnail::pixels`].
     pub fn thumbnail_begin(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Thumbnail, String> {
         let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
+        let format = thumb_format(self.format);
         let frame = Arc::new(machine.thumbnail_frame(w as f32 / h as f32));
         let bounds = render::Rect { x: 0.0, y: 0.0, width: w as f32, height: h as f32 };
-        self.prepare(frame, bounds, 1.0);
+        let primitive = render::Primitive { frame };
+        let pipeline = self.thumb_pipeline.get_or_insert_with(|| {
+            let mut p = render::Pipeline::new(&self.device, &self.queue, format);
+            // A thumbnail is a card: its clear is transparent and its sky is left out, so only the machine and its shadow draw.
+            p.clear_alpha = 0.0;
+            p
+        });
+        primitive.prepare(pipeline, &self.device, &self.queue, &bounds, 1.0);
 
         let texture = match self.thumb.take() {
             Some((tw, th, texture)) if (tw, th) == (w, h) => texture,
@@ -204,7 +221,7 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: self.format,
+                format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             }),
@@ -233,7 +250,7 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.draw(&mut pass);
+            primitive.draw(pipeline, &mut pass);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -254,7 +271,7 @@ impl Renderer {
                 waker.wake();
             }
         });
-        let swap_rb = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let swap_rb = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
         Ok(Thumbnail { buffer, slot, width: w, height: h, row, swap_rb })
     }
 
