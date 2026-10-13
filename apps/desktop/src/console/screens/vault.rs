@@ -7,10 +7,15 @@
 //! typed into a secure input and cleared from the state when its request is built. Every destructive
 //! act asks first. The request bodies and the form state live in `vault_forms.rs`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 #[path = "vault_forms.rs"]
 mod forms;
+#[path = "vault_audit.rs"]
+mod audit;
+
+use audit::{AuditPage, AuditState, ImportForm, ImportResult};
 
 use forms::{
     add_passphrase_body, create_body, create_card, pending_card, recovery_card, rekey_body, rekey_card, rollback_body, rotate_body,
@@ -99,6 +104,8 @@ pub struct ConsumerRef {
     pub binding: String,
     pub label: String,
     pub wants: String,
+    /// Each node's state: an entry id, `missing`, or `out_of_scope`.
+    pub per_node: BTreeMap<String, String>,
 }
 
 /// The answer of `POST /v1/vault/secrets/{id}/test`: no value in it.
@@ -208,6 +215,18 @@ fn now_ms() -> f64 {
 
 // ---- State, messages, loading -----------------------------------------------------------------
 
+/// The unsealed screen's sections: the secrets, then the consumers matrix, the audit log and the .env import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    #[default]
+    Secrets,
+    Consumers,
+    Audit,
+    Import,
+}
+
+const TABS: [(Tab, &str); 4] = [(Tab::Secrets, "Secrets"), (Tab::Consumers, "Consumers"), (Tab::Audit, "Audit log"), (Tab::Import, ".env import")];
+
 /// An act that asks for confirmation before it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
@@ -249,6 +268,12 @@ pub struct State {
     pub rotate: Option<Rotate>,
     /// The last test's answer.
     pub test_note: Option<String>,
+    /// The unsealed section on show.
+    pub tab: Tab,
+    /// The audit log, read one page at a time.
+    pub audit: AuditState,
+    /// The .env import, open until it is cleared or sent.
+    pub import: ImportForm,
 }
 
 impl State {
@@ -260,6 +285,7 @@ impl State {
         self.rekey = None;
         self.create = None;
         self.rotate = None;
+        self.import = ImportForm::default();
     }
 }
 
@@ -305,6 +331,21 @@ pub enum Msg {
     RotateSubmit,
     CloseRotate,
     RunTest(String),
+    Tab(Tab),
+    AuditPage(Result<AuditPage, String>),
+    AuditMore,
+    AuditVerify,
+    AuditVerified(Result<AuditPage, String>),
+    ImportPick,
+    ImportLoaded(Result<Option<(String, String)>, String>),
+    ImportName(usize, bool),
+    ImportNode(usize, bool),
+    ImportBinding(usize, bool),
+    ImportScope(ScopeMode),
+    ImportClear,
+    ImportSubmit,
+    ImportDone(Result<ImportResult, String>),
+    OpenCreateFor(String, String, String),
 }
 
 pub fn go(_msg: &Msg) -> Option<Id> {
@@ -557,6 +598,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
         // Create.
         Msg::OpenCreate => {
+            state.tab = Tab::Secrets;
             state.create = Some(SecretForm {
                 nodes: state.nodes.iter().map(|n| (n.id.clone(), false)).collect(),
                 bindings: state.consumers.iter().map(|c| (c.binding.clone(), false)).collect(),
@@ -665,6 +707,159 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let c = ctx.client.clone();
             client::task(move || c.post::<VaultTest>(&path, &body), Msg::Tested)
         }
+
+        // The consumers matrix, the audit log and the .env import.
+        Msg::Tab(tab) => {
+            state.tab = tab;
+            if tab == Tab::Audit && !state.audit.loaded && !state.audit.busy {
+                state.audit.busy = true;
+                return audit::page_task(ctx, state.audit.after);
+            }
+            Task::none()
+        }
+        Msg::OpenCreateFor(name, binding, node) => {
+            state.tab = Tab::Secrets;
+            state.create = Some(SecretForm {
+                name,
+                scope: ScopeMode::Nodes,
+                nodes: state.nodes.iter().map(|n| (n.id.clone(), n.id == node)).collect(),
+                bindings: state.consumers.iter().map(|c| (c.binding.clone(), c.binding == binding)).collect(),
+                ..Default::default()
+            });
+            Task::none()
+        }
+        Msg::AuditPage(result) => {
+            state.audit.busy = false;
+            match result {
+                Ok(page) => {
+                    state.audit.more = page.entries.len() as u64 == audit::PAGE;
+                    if let Some(last) = page.entries.last() {
+                        state.audit.after = last.seq;
+                    }
+                    state.audit.lines.extend(page.entries);
+                    state.audit.loaded = true;
+                    state.audit.error = None;
+                }
+                Err(error) => state.audit.error = Some(error),
+            }
+            Task::none()
+        }
+        Msg::AuditMore => {
+            if state.audit.busy || !state.audit.more {
+                return Task::none();
+            }
+            state.audit.busy = true;
+            audit::page_task(ctx, state.audit.after)
+        }
+        Msg::AuditVerify => {
+            if state.audit.busy {
+                return Task::none();
+            }
+            state.audit.busy = true;
+            audit::verify_task(ctx)
+        }
+        Msg::AuditVerified(Ok(page)) => {
+            state.audit.busy = false;
+            state.audit.error = None;
+            state.audit.chain = Some(page.chain_ok.unwrap_or(false));
+            Task::none()
+        }
+        Msg::AuditVerified(Err(error)) => {
+            state.audit.busy = false;
+            state.audit.error = Some(error);
+            Task::none()
+        }
+        Msg::ImportPick => {
+            state.failure = None;
+            Task::perform(audit::pick_env_file(), Msg::ImportLoaded)
+        }
+        Msg::ImportLoaded(Ok(Some((name, raw)))) => {
+            let (valid, invalid, skipped) = audit::scan_names(&raw);
+            let scope = state.import.scope;
+            state.import = ImportForm {
+                source: Some(name),
+                raw,
+                picked: valid.iter().map(|n| (n.clone(), true)).collect(),
+                bindings: state.consumers.iter().map(|c| (c.binding.clone(), valid.contains(&c.wants))).collect(),
+                nodes: state.nodes.iter().map(|n| (n.id.clone(), false)).collect(),
+                scope,
+                invalid,
+                skipped_lines: skipped,
+                result: None,
+            };
+            Task::none()
+        }
+        Msg::ImportLoaded(Ok(None)) => Task::none(),
+        Msg::ImportLoaded(Err(error)) => {
+            state.failure = Some(error);
+            Task::none()
+        }
+        Msg::ImportName(i, on) => {
+            if let Some(p) = state.import.picked.get_mut(i) {
+                p.1 = on;
+            }
+            Task::none()
+        }
+        Msg::ImportNode(i, on) => {
+            if let Some(p) = state.import.nodes.get_mut(i) {
+                p.1 = on;
+            }
+            Task::none()
+        }
+        Msg::ImportBinding(i, on) => {
+            if let Some(p) = state.import.bindings.get_mut(i) {
+                p.1 = on;
+            }
+            Task::none()
+        }
+        Msg::ImportScope(mode) => {
+            state.import.scope = mode;
+            Task::none()
+        }
+        Msg::ImportClear => {
+            state.import = ImportForm::default();
+            Task::none()
+        }
+        Msg::ImportSubmit => {
+            let names: Vec<String> = state.import.picked.iter().filter(|(_, on)| *on).map(|(n, _)| n.clone()).collect();
+            if names.is_empty() {
+                state.failure = Some("Pick at least one name to import.".into());
+                return Task::none();
+            }
+            if state.import.raw.is_empty() {
+                state.failure = Some("Choose the file again to retry.".into());
+                return Task::none();
+            }
+            let scope = match audit::import_scope(&state.import) {
+                Ok(scope) => scope,
+                Err(error) => {
+                    state.failure = Some(error);
+                    return Task::none();
+                }
+            };
+            let bindings = audit::import_bindings(state);
+            let raw = std::mem::take(&mut state.import.raw);
+            let body = audit::import_body(&raw, &names, scope, &bindings);
+            drop(raw);
+            state.import.picked.clear();
+            state.import.invalid.clear();
+            state.import.source = None;
+            state.busy = true;
+            state.failure = None;
+            state.notice = None;
+            let c = ctx.client.clone();
+            client::task(move || c.post::<ImportResult>("/v1/vault/import", &body), Msg::ImportDone)
+        }
+        Msg::ImportDone(Ok(result)) => {
+            state.busy = false;
+            state.import.result = Some(result);
+            load(state, ctx)
+        }
+        Msg::ImportDone(Err(error)) => {
+            state.busy = false;
+            state.failure = Some(format!("{error} The file was cleared, so choose it again to retry."));
+            Task::none()
+        }
     }
 }
 
@@ -705,7 +900,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
                     if state.create.is_none() {
                         actions.push(ui::btn("New secret", None, ui::Kind::Primary, gate(state.busy, Msg::OpenCreate)));
                     }
-                    parts.extend(unsealed_parts(state));
+                    parts.extend(unsealed_section(state));
                 }
                 "sealed" => parts.push(sealed_card(state)),
                 "tampered" => parts.push(ui::card(
@@ -753,6 +948,18 @@ fn unsealed_parts<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
         parts.push(rotate_card(rotate, state.busy));
     }
     parts.push(secrets_card(state));
+    parts
+}
+
+/// The unsealed body under the section tabs: the secrets (the cards above), or one of the three sections.
+fn unsealed_section<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::tabs(&TABS, state.tab, Msg::Tab)];
+    match state.tab {
+        Tab::Secrets => parts.extend(unsealed_parts(state)),
+        Tab::Consumers => parts.push(audit::consumers_card(state)),
+        Tab::Audit => parts.push(audit::audit_card(state)),
+        Tab::Import => parts.push(audit::import_card(state)),
+    }
     parts
 }
 

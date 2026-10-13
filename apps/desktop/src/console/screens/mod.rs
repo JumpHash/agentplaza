@@ -22,6 +22,7 @@ pub mod models;
 pub mod usage;
 pub mod tools;
 pub mod mcp;
+pub mod mcp_hub;
 pub mod vault;
 pub mod machines;
 pub mod nodes;
@@ -213,6 +214,8 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
 
 /// Opens a screen (sets its parameters) and loads it.
 pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
+    // Any screen change drops the new token from the MCP page, so it never outlives the tab.
+    mcp_hub::leave(&mut screens.mcp.hub);
     if let Id::Agent(cid) = id {
         screens.agent = agent::State { cid, ..Default::default() };
     }

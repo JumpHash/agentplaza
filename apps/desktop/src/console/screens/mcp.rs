@@ -1,7 +1,7 @@
 //! The MCP screen (parity with the web console's `mcp` view): the servers the plaza runs for agents
 //! (start, stop, test, remove), one server's tools, its config summary and logs, and the catalogue of
-//! presets. Adding and editing wait for the wizard (parity item 5); "This hub as a server" waits for
-//! parity item 6. A server's env settings are shown by name only: the values are a vault secret or a
+//! presets. Adding and editing wait for the wizard (parity item 5). "This hub as a server" is the second
+//! tab, in mcp_hub.rs. A server's env settings are shown by name only: the values are a vault secret or a
 //! literal, and neither is read here.
 
 use std::collections::BTreeMap;
@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::mcp_hub;
 use super::Id;
 use crate::console::{client, ui, Ctx};
 
@@ -163,6 +164,17 @@ pub struct State {
     pub confirm_remove: Option<String>,
     /// A write is on its way to the hub.
     pub busy: bool,
+    /// The tab open: the servers, or this hub as a server.
+    pub tab: Tab,
+    pub hub: mcp_hub::State,
+}
+
+/// The tabs of the screen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Servers,
+    Hub,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +196,8 @@ pub enum Msg {
     CancelRemove,
     Remove(String),
     AddNotice,
+    Tab(Tab),
+    Hub(mcp_hub::Msg),
 }
 
 /// This screen opens no other screen yet: the hub-as-a-server tab comes with parity item 6.
@@ -196,6 +210,9 @@ pub fn go(_msg: &Msg) -> Option<Id> {
 /// Loads the screen's data (called when it opens and on every poll tick). The open server's tools
 /// reload with it; its logs load on demand.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    if state.tab == Tab::Hub {
+        return mcp_hub::load(&state.hub, ctx).map(Msg::Hub);
+    }
     let mut tasks = vec![servers_task(ctx), fetch(ctx, "/v1/mcp/catalog".to_string(), Msg::CatalogueLoaded)];
     if let Some(id) = state.selected.clone() {
         tasks.push(tools_task(ctx, &id));
@@ -353,6 +370,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((ADD_NOTICE.to_string(), false));
             Task::none()
         }
+        Msg::Tab(tab) => {
+            mcp_hub::leave(&mut state.hub);
+            state.tab = tab;
+            load(state, ctx)
+        }
+        Msg::Hub(m) => mcp_hub::update(&mut state.hub, m, ctx).map(Msg::Hub),
     }
 }
 
@@ -367,7 +390,18 @@ fn gate(busy: bool, msg: Msg) -> Option<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![tab_bar(), ui::faint("Servers the plaza runs for agents. Keys stay in the vault; only the names of a server's env settings are shown here.").into()];
+    let content: Element<'a, Msg> = match state.tab {
+        Tab::Servers => servers_view(state),
+        Tab::Hub => mcp_hub::view(&state.hub).map(Msg::Hub),
+    };
+    let body: Element<'a, Msg> = column![tab_bar(state.tab), content].spacing(22).width(Length::Fill).into();
+    // The page scrolls as the web does: a tall list is not squeezed into the window.
+    scrollable(ui::sheet(ui::view_head("MCP", vec![]), body)).height(Length::Fill).into()
+}
+
+/// The servers tab: the note, the notices, the servers, the open server and the catalogue.
+fn servers_view(state: &State) -> Element<'_, Msg> {
+    let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint("Servers the plaza runs for agents. Keys stay in the vault; only the names of a server's env settings are shown here.").into()];
     if let Some((text, is_error)) = &state.notice {
         parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
     }
@@ -379,17 +413,15 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(detail_section(state, id));
     }
     parts.push(catalogue_section(state));
-    let body: Element<'a, Msg> = column(parts).spacing(22).width(Length::Fill).into();
-    // The page scrolls as the web does: a tall list is not squeezed into the window.
-    scrollable(ui::sheet(ui::view_head("MCP", vec![]), body)).height(Length::Fill).into()
+    column(parts).spacing(22).width(Length::Fill).into()
 }
 
-/// The tab strip. The hub tab is disabled until parity item 6 lands.
-fn tab_bar<'a>() -> Element<'a, Msg> {
+/// The tab strip. The open tab is shown but not pressable.
+fn tab_bar<'a>(tab: Tab) -> Element<'a, Msg> {
+    let servers_open = tab == Tab::Servers;
     let items: Vec<Element<'a, Msg>> = vec![
-        ui::btn_sm::<Msg>("Servers", None, ui::Kind::Secondary, None),
-        ui::btn_sm::<Msg>("This hub as a server", None, ui::Kind::Ghost, None),
-        ui::faint("Next update.").into(),
+        ui::btn_sm("Servers", None, if servers_open { ui::Kind::Secondary } else { ui::Kind::Ghost }, (!servers_open).then_some(Msg::Tab(Tab::Servers))),
+        ui::btn_sm("This hub as a server", None, if servers_open { ui::Kind::Ghost } else { ui::Kind::Secondary }, servers_open.then_some(Msg::Tab(Tab::Hub))),
     ];
     row(items).spacing(8).align_y(Alignment::Center).into()
 }
