@@ -120,75 +120,11 @@ export function buildPlaza(palette: PropPalette): THREE.Group {
     g.add(b);
   }
 
-  // A xenon atom above the orchestrator: a pulsing, glowing nucleus and its 54 electrons on five
-  // shells (2, 8, 18, 18, 8), each shell tilted its own way, the inner ones spinning faster.
-  const XENON = new THREE.Color(0x9fa8ff);
-  const globe = new THREE.Group();
-  const nucleus = new THREE.Group();
-  const proton = toonMat({ color: palette.signal, emissive: palette.signal, emissiveIntensity: 0.45 });
-  const neutron = toonMat({ color: palette.sheet, emissive: 0xffe2b0, emissiveIntensity: 0.25 });
-  const nucleonGeo = new THREE.SphereGeometry(0.13, 14, 10);
-  const nr = rng(54);
-  for (let i = 0; i < 24; i++) {
-    const v = new THREE.Vector3(nr() - 0.5, nr() - 0.5, nr() - 0.5).normalize().multiplyScalar(Math.cbrt(nr()) * 0.24);
-    part(nucleus, nucleonGeo, i % 2 ? proton : neutron, v.x, v.y, v.z);
-  }
-  globe.add(nucleus);
-  const haloMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
-  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.62, 24, 16), haloMat);
-  globe.add(halo);
-  const auraMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
-  const aura = new THREE.Mesh(new THREE.SphereGeometry(1.9, 24, 16), auraMat);
-  globe.add(aura);
-  const glow = new THREE.PointLight(XENON, 2.2, 9, 1.6);
-  globe.add(glow);
-  const ringMat = toonMat({ color: 0xc9ccff, emissive: XENON, emissiveIntensity: 0.6 });
-  const electronMat = toonMat({ color: 0x8ff0ff, emissive: 0x5fd8ff, emissiveIntensity: 1.1 });
-  const electronGeo = new THREE.SphereGeometry(0.065, 12, 8);
-  const shells: { group: THREE.Group; electrons: THREE.Mesh[]; r: number; speed: number }[] = [];
-  [2, 8, 18, 18, 8].forEach((n, k) => {
-    const r = 0.62 + k * 0.27;
-    const shell = new THREE.Group();
-    shell.rotation.set(nr() * Math.PI, nr() * Math.PI, nr() * Math.PI);
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.012, 6, 96), ringMat);
-    ring.rotation.x = Math.PI / 2;
-    ring.userData.outline = false; // a fine glowing track, not an inked hoop
-    shell.add(ring);
-    const electrons: THREE.Mesh[] = [];
-    for (let i = 0; i < n; i++) electrons.push(part(shell, electronGeo, electronMat, 0, 0, 0));
-    globe.add(shell);
-    shells.push({ group: shell, electrons, r, speed: 1.9 / (1 + k * 0.45) * (k % 2 ? -1 : 1) });
-  });
-  outline(globe, 0.05);
-  globe.scale.setScalar(1.5);
-  globe.position.set(0, 4.2, 0);
-  g.add(globe);
-
-  g.userData = {
-    animate: (t: number) => {
-      globe.position.y = 4.2 + Math.sin(t * 0.9) * 0.1;
-      // The nucleus beats, its halo and light breathing with it.
-      const beat = Math.pow(Math.max(0, Math.sin(t * 2.4)), 6);
-      nucleus.scale.setScalar(1 + 0.12 * beat);
-      nucleus.rotation.y = t * 0.6;
-      halo.scale.setScalar(1 + 0.35 * beat + 0.05 * Math.sin(t * 7));
-      haloMat.opacity = 0.3 + 0.35 * beat;
-      auraMat.opacity = 0.07 + 0.08 * beat;
-      aura.scale.setScalar(1 + 0.1 * beat);
-      glow.intensity = 1.6 + 2.4 * beat;
-      for (const sh of shells) {
-        sh.group.rotation.y += 0.002;
-        const n = sh.electrons.length;
-        sh.electrons.forEach((e, i) => {
-          const a = t * sh.speed + (i / n) * Math.PI * 2;
-          e.position.set(Math.cos(a) * sh.r, 0, Math.sin(a) * sh.r);
-          e.scale.setScalar(1 + 0.25 * beat);
-        });
-      }
-    },
-  };
+  const atom = xenonAtom(palette, 4.2);
+  g.add(atom.group);
+  g.userData = { animate: (t: number) => atom.animate(t) };
   shadows(g);
-  globe.traverse((o) => (o.castShadow = false));
+  atom.group.traverse((o) => (o.castShadow = false));
   outline(g);
   return g;
 }
@@ -283,4 +219,74 @@ export function buildPaths(from: THREE.Vector3[], palette: PropPalette): THREE.G
     }
   }
   return g;
+}
+
+
+/** The xenon atom the plaza is built around: its nucleus, halo, aura, light and five electron shells. */
+/** Its group is centred on its origin, lifted to `height`; `animate(t)` runs its per-frame motion. */
+export function xenonAtom(palette: PropPalette, height: number): { group: THREE.Group; animate: (t: number) => void } {
+  // A xenon atom above the orchestrator: a pulsing, glowing nucleus and its 54 electrons on five
+  // shells (2, 8, 18, 18, 8), each shell tilted its own way, the inner ones spinning faster.
+  const XENON = new THREE.Color(0x9fa8ff);
+  const globe = new THREE.Group();
+  const nucleus = new THREE.Group();
+  const proton = toonMat({ color: palette.signal, emissive: palette.signal, emissiveIntensity: 0.45 });
+  const neutron = toonMat({ color: palette.sheet, emissive: 0xffe2b0, emissiveIntensity: 0.25 });
+  const nucleonGeo = new THREE.SphereGeometry(0.13, 14, 10);
+  const nr = rng(54);
+  for (let i = 0; i < 24; i++) {
+    const v = new THREE.Vector3(nr() - 0.5, nr() - 0.5, nr() - 0.5).normalize().multiplyScalar(Math.cbrt(nr()) * 0.24);
+    part(nucleus, nucleonGeo, i % 2 ? proton : neutron, v.x, v.y, v.z);
+  }
+  globe.add(nucleus);
+  const haloMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.62, 24, 16), haloMat);
+  globe.add(halo);
+  const auraMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const aura = new THREE.Mesh(new THREE.SphereGeometry(1.9, 24, 16), auraMat);
+  globe.add(aura);
+  const glow = new THREE.PointLight(XENON, 2.2, 9, 1.6);
+  globe.add(glow);
+  const ringMat = toonMat({ color: 0xc9ccff, emissive: XENON, emissiveIntensity: 0.6 });
+  const electronMat = toonMat({ color: 0x8ff0ff, emissive: 0x5fd8ff, emissiveIntensity: 1.1 });
+  const electronGeo = new THREE.SphereGeometry(0.065, 12, 8);
+  const shells: { group: THREE.Group; electrons: THREE.Mesh[]; r: number; speed: number }[] = [];
+  [2, 8, 18, 18, 8].forEach((n, k) => {
+    const r = 0.62 + k * 0.27;
+    const shell = new THREE.Group();
+    shell.rotation.set(nr() * Math.PI, nr() * Math.PI, nr() * Math.PI);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.012, 6, 96), ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.userData.outline = false; // a fine glowing track, not an inked hoop
+    shell.add(ring);
+    const electrons: THREE.Mesh[] = [];
+    for (let i = 0; i < n; i++) electrons.push(part(shell, electronGeo, electronMat, 0, 0, 0));
+    globe.add(shell);
+    shells.push({ group: shell, electrons, r, speed: 1.9 / (1 + k * 0.45) * (k % 2 ? -1 : 1) });
+  });
+  outline(globe, 0.05);
+  globe.scale.setScalar(1.5);
+  globe.position.set(0, height, 0);
+  const animate = (t: number): void => {
+    globe.position.y = height + Math.sin(t * 0.9) * 0.1;
+    // The nucleus beats, its halo and light breathing with it.
+    const beat = Math.pow(Math.max(0, Math.sin(t * 2.4)), 6);
+    nucleus.scale.setScalar(1 + 0.12 * beat);
+    nucleus.rotation.y = t * 0.6;
+    halo.scale.setScalar(1 + 0.35 * beat + 0.05 * Math.sin(t * 7));
+    haloMat.opacity = 0.3 + 0.35 * beat;
+    auraMat.opacity = 0.07 + 0.08 * beat;
+    aura.scale.setScalar(1 + 0.1 * beat);
+    glow.intensity = 1.6 + 2.4 * beat;
+    for (const sh of shells) {
+      sh.group.rotation.y += 0.002;
+      const n = sh.electrons.length;
+      sh.electrons.forEach((e, i) => {
+        const a = t * sh.speed + (i / n) * Math.PI * 2;
+        e.position.set(Math.cos(a) * sh.r, 0, Math.sin(a) * sh.r);
+        e.scale.setScalar(1 + 0.25 * beat);
+      });
+    }
+  };
+  return { group: globe, animate };
 }

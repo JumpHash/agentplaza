@@ -471,7 +471,54 @@ export const api = {
   joinNodeLink: (code: string) => post<NodeLink>('/v1/node-link/join', { code }),
   /** Leaves that network; `forget` also drops its saved hub details. */
   leaveNodeLink: (forget: boolean) => post<NodeLink>('/v1/node-link/leave', { forget }),
+
+  /** The model-call ledger, totalled per model, agent, role and provider over [from, to) unix ms (default: the last 30 days). */
+  usageSummary: (from?: number, to?: number) => get<UsageSummary>(`/v1/usage/summary${query({ from, to })}`),
+  /** Buckets of the window, empty ones included. `by` picks the grouping key. */
+  usageSeries: (from: number, to: number, bucket: UsageBucket, by: UsageGroup) => get<UsageSeries>(`/v1/usage/series${query({ from, to, bucket, by })}`),
+  /** Calls newest first. Pass the previous page's `next_before` to load older calls. */
+  usageCalls: (q: { before?: number; limit?: number; model?: string; cid?: number }) => get<UsageCallsPage>(`/v1/usage/calls${query({ ...q })}`),
+  /** Every known model price (USD per million tokens). Large: prefer `price` for the few models in use. */
+  prices: () => get<PricesView>('/v1/prices'),
+  /** One model's price. Rejects with an ApiError (404) when no source prices the model. */
+  price: (model: string) => get<ModelPrice>(`/v1/prices/${encodeURIComponent(model)}`),
+  /** Fetches the price sources again now. */
+  refreshPrices: () => post<unknown>('/v1/prices/refresh'),
 };
+
+// ---- Usage ledger ----------------------------------------------------------
+
+export type UsageBucket = 'hour' | 'day';
+export type UsageGroup = 'model' | 'agent' | 'role' | 'provider';
+
+/** Token counts and money for a set of calls. `usd` is the provider-reported cost where known, else `est_usd`. */
+export interface UsageTotals {
+  calls: number; input: number; output: number; cache_read: number; cache_write: number;
+  cost_usd: number; est_usd: number; usd: number; cache_hit_rate: number;
+}
+export interface UsageKeyed { key: string; totals: UsageTotals }
+export interface UsageSummary {
+  from_ms: number; to_ms: number; totals: UsageTotals;
+  by_model: UsageKeyed[]; by_agent: UsageKeyed[]; by_role: UsageKeyed[]; by_provider: UsageKeyed[];
+  /** Models that were called but have no price, so their estimate is zero. */
+  unpriced: string[];
+}
+export interface UsagePoint { at_ms: number; groups: Record<string, UsageTotals>; totals: UsageTotals }
+export interface UsageSeries { from_ms: number; to_ms: number; bucket_ms: number; by: UsageGroup; points: UsagePoint[] }
+export interface UsageCall {
+  id: number; at_ms: number; cid: number; role: string; model: string; provider: string;
+  input: number; output: number; cache_read: number; cache_write: number;
+  cost_usd: number | null; est_usd: number; task: string | null; via: string;
+}
+export interface UsageCallsPage { calls: UsageCall[]; total: number; next_before: number | null }
+
+// ---- Prices ----------------------------------------------------------------
+
+/** USD per million tokens. `cache_read`/`cache_write` are null when the source does not price them. */
+export interface PriceRates { input: number; output: number; cache_read: number | null; cache_write: number | null; source: string }
+export interface ModelPrice { model: string; price: PriceRates }
+export interface PriceSource { name: string; url: string; models: number; ok: boolean; error?: string }
+export interface PricesView { fetched_at_ms: number; sources: PriceSource[]; models: ModelPrice[] }
 
 /** This hub as a node of another network. `cids` is the CID range its agents hold there, "first-last" (null until joined); `pid` is set while `running`. */
 export interface NodeLink { joined: boolean; hub: string | null; node_id: string | null; cids: string | null; running: boolean; pid: number | null }

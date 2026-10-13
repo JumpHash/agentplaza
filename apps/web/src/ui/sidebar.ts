@@ -113,6 +113,7 @@ export function sidebar(opts: { counts: Map<string, HTMLElement>; navLinks: Map<
   const nav = h('nav.nav', { 'aria-label': 'Screens' });
   let section = '';
   for (const s of SCREENS) {
+    if (s.hidden) continue; // reachable by its route only (the dev lab)
     if (s.section !== section) {
       section = s.section;
       nav.appendChild(h('div.nav-section', null, section));

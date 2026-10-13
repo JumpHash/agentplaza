@@ -122,6 +122,12 @@ pub struct MachineView {
     pub irqchip: &'static str,
     pub class: &'static str,
     pub kind: &'static str,
+    /// The maker, lower-case (`apple`, `dell`, `raspberrypi`); null when unknown.
+    pub vendor: Option<String>,
+    /// The maker's model name; null when unknown.
+    pub model: Option<String>,
+    /// A Mac's Apple Silicon details; null elsewhere.
+    pub apple: Option<Apple>,
     pub cpu: Cpu,
     pub gpus: Vec<Gpu>,
     pub cpus: u32,
@@ -155,10 +161,13 @@ impl Node {
             irqchip: machine_irqchip(),
             class,
             kind: self.probed.kind,
+            vendor: self.probed.vendor.clone(),
+            model: self.probed.model.clone(),
+            apple: self.probed.apple.clone(),
             cpu: self.probed.cpu.clone(),
             gpus: host_gpus(),
             cpus: host_cpus(),
-            memory_mib: host_memory_mib(),
+            memory_mib: self.probed.memory_mib,
             storage_gib: self.probed.storage_gib,
             vsock_mode: "uds-muxer",
             started_at_ms: self.started_at_ms,
@@ -233,8 +242,11 @@ fn host_cpus() -> u32 {
         .unwrap_or(1)
 }
 
-/// The host's total memory, in MiB (`MemTotal` from `/proc/meminfo`).
+/// The host's total memory, in MiB (`MemTotal` from `/proc/meminfo`; `hw.memsize` on macOS).
 fn host_memory_mib() -> u64 {
+    if cfg!(target_os = "macos") {
+        return sysctl("hw.memsize").and_then(|n| parse_bytes(&n)).map_or(0, |bytes| bytes / MIB);
+    }
     let Ok(info) = std::fs::read_to_string("/proc/meminfo") else {
         return 0;
     };
@@ -368,25 +380,229 @@ pub struct Cpu {
 #[derive(Debug, Clone)]
 struct Probed {
     kind: &'static str,
+    vendor: Option<String>,
+    model: Option<String>,
+    apple: Option<Apple>,
     cpu: Cpu,
+    memory_mib: u64,
     storage_gib: Option<u64>,
 }
 
+/// A Mac with Apple Silicon: its chip and core counts, GPU cores, Neural Engine cores and unified
+/// memory. Counts that the host does not report are null.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Apple {
+    pub chip: String,
+    pub p_cores: Option<u32>,
+    pub e_cores: Option<u32>,
+    pub gpu_cores: Option<u32>,
+    pub neural_cores: u32,
+    pub unified_memory_gib: Option<u64>,
+}
+
+const DMI_DIR: &str = "/sys/class/dmi/id";
 const DMI_CHASSIS: &str = "/sys/class/dmi/id/chassis_type";
 const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply";
 const DEVICE_TREE_MODEL: &str = "/proc/device-tree/model";
 const WINDOWS_CPU_KEY: &str = r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0";
+/// `Win32_Processor`: the physical cores and the logical processors, summed over the sockets.
+const WINDOWS_CORES: &str = "$p = Get-CimInstance Win32_Processor; '{0}|{1}' -f ($p | Measure-Object -Property NumberOfCores -Sum).Sum, ($p | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum";
+/// `Win32_ComputerSystem`: the manufacturer and the model.
+const WINDOWS_SYSTEM: &str = "$c = Get-CimInstance Win32_ComputerSystem; '{0}|{1}' -f $c.Manufacturer, $c.Model";
+const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
 
-/// Probes the machine once: its kind, CPU and the size of the state directory's filesystem.
+/// Probes the machine once: its kind, maker and model, CPU, memory and the size of the state
+/// directory's filesystem.
 fn probe_host(state_dir: &Path) -> Probed {
     let tree = device_tree_model();
+    if cfg!(target_os = "macos") {
+        let (kind, vendor, model, apple) = probe_mac();
+        return Probed {
+            kind,
+            vendor,
+            model,
+            apple,
+            cpu: probe_cpu(None),
+            memory_mib: host_memory_mib(),
+            storage_gib: storage_gib(state_dir),
+        };
+    }
     let sbc = matches!(machine_class(), "pi4" | "pi5") || tree.as_deref().is_some_and(|model| model.contains("Raspberry Pi"));
-    let kind = if cfg!(target_os = "macos") {
-        apple_kind(&sysctl("hw.model").unwrap_or_default())
-    } else {
-        kind_of(cfg!(target_os = "android"), sbc, chassis_type(), has_battery(Path::new(POWER_SUPPLY_DIR)))
+    let kind = kind_of(cfg!(target_os = "android"), sbc, chassis_type(), has_battery(Path::new(POWER_SUPPLY_DIR)));
+    let (vendor, model) = host_maker(tree.as_deref());
+    Probed {
+        kind,
+        vendor,
+        model,
+        apple: None,
+        cpu: probe_cpu(tree.as_deref()),
+        memory_mib: host_memory_mib(),
+        storage_gib: storage_gib(state_dir),
+    }
+}
+
+/// A Mac's kind, maker, model and Apple Silicon details. The model name is `system_profiler`'s
+/// ("MacBook Pro", "Mac Studio") with the chip, falling back to `hw.model`.
+fn probe_mac() -> (&'static str, Option<String>, Option<String>, Option<Apple>) {
+    let hardware = command_stdout("system_profiler", &["SPHardwareDataType"]).unwrap_or_default();
+    let hw_model = sysctl("hw.model").unwrap_or_default();
+    let name = parse_model_name(&hardware);
+    let chip = sysctl("machdep.cpu.brand_string").filter(|brand| brand.starts_with("Apple "));
+    let kind = apple_kind(name.as_deref().unwrap_or(&hw_model));
+    let model = match name {
+        Some(name) => Some(apple_model(&name, chip.as_deref())),
+        None => clean_model(&hw_model),
     };
-    Probed { kind, cpu: probe_cpu(tree.as_deref()), storage_gib: storage_gib(state_dir) }
+    let apple = chip.map(|chip| Apple {
+        p_cores: sysctl("hw.perflevel0.physicalcpu").and_then(|n| parse_count(&n)),
+        e_cores: sysctl("hw.perflevel1.physicalcpu").and_then(|n| parse_count(&n)),
+        gpu_cores: command_stdout("system_profiler", &["SPDisplaysDataType"]).and_then(|text| parse_gpu_cores(&text)),
+        neural_cores: neural_cores(&chip),
+        unified_memory_gib: sysctl("hw.memsize").and_then(|n| parse_bytes(&n)).map(|bytes| bytes / GIB),
+        chip,
+    });
+    (kind, Some("apple".to_string()), model, apple)
+}
+
+/// The maker and model of a machine that is not a Mac: an Android device's properties, a Windows
+/// computer's system, an arm board's device-tree model, or a PC's DMI strings.
+fn host_maker(tree: Option<&str>) -> (Option<String>, Option<String>) {
+    if cfg!(target_os = "android") {
+        let manufacturer = command_stdout("getprop", &["ro.product.manufacturer"]).unwrap_or_default();
+        let model = command_stdout("getprop", &["ro.product.model"]).unwrap_or_default();
+        return maker_pair(&manufacturer, &model);
+    }
+    if cfg!(target_os = "windows") {
+        return parse_maker_line(&powershell(WINDOWS_SYSTEM).unwrap_or_default());
+    }
+    if let Some(model) = tree {
+        return (normalize_vendor(model), clean_model(model));
+    }
+    let read = |file: &str| std::fs::read_to_string(format!("{DMI_DIR}/{file}")).unwrap_or_default();
+    let vendor = normalize_vendor(&read("sys_vendor"));
+    let model = dmi_model(vendor.as_deref(), &read("product_name"), &read("product_version"));
+    (vendor, model)
+}
+
+/// The maker and model from a raw vendor and model string.
+fn maker_pair(vendor: &str, model: &str) -> (Option<String>, Option<String>) {
+    (normalize_vendor(vendor), clean_model(model))
+}
+
+/// The maker and model from a `manufacturer|model` line (the Windows probe's output).
+fn parse_maker_line(text: &str) -> (Option<String>, Option<String>) {
+    let (vendor, model) = text.trim().split_once('|').unwrap_or((text, ""));
+    maker_pair(vendor, model)
+}
+
+/// The model of a PC from its DMI strings. Lenovo's `product_name` is a machine code and its
+/// `product_version` the marketing name (`ThinkPad X1 Carbon Gen 9`), so that is preferred there.
+fn dmi_model(vendor: Option<&str>, product_name: &str, product_version: &str) -> Option<String> {
+    let name = clean_model(product_name);
+    if vendor == Some("lenovo") {
+        clean_model(product_version).or(name)
+    } else {
+        name
+    }
+}
+
+/// Placeholders that firmware and drivers write instead of a real maker or model.
+const PLACEHOLDERS: &[&str] = &[
+    "",
+    "default string",
+    "none",
+    "not applicable",
+    "not defined",
+    "not specified",
+    "o.e.m.",
+    "system manufacturer",
+    "system product name",
+    "system version",
+    "to be filled by o.e.m.",
+    "undefined",
+    "unknown",
+];
+
+fn is_placeholder(text: &str) -> bool {
+    PLACEHOLDERS.contains(&text.trim().to_ascii_lowercase().as_str())
+}
+
+/// A maker's name as the lower-case short name every node reports (`dell`, `lenovo`, `apple`):
+/// the first word of the vendor string, letters and digits only, with the few makers whose first
+/// word differs from their short name mapped (`ASUSTeK COMPUTER INC.` is `asus`). None for a
+/// placeholder or an empty string.
+fn normalize_vendor(raw: &str) -> Option<String> {
+    if is_placeholder(raw) {
+        return None;
+    }
+    let first = raw.split_whitespace().next()?;
+    let key: String = first.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+    let name = match key.as_str() {
+        "asustek" => "asus",
+        "microstar" => "msi",
+        "hewlett" | "hewlettpackard" => "hp",
+        "raspberry" => "raspberrypi",
+        other => other,
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// A model name as the host reports it, trimmed; None for a placeholder or an empty string.
+fn clean_model(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    (!is_placeholder(text)).then(|| text.to_string())
+}
+
+/// The model name of a Mac from `system_profiler SPHardwareDataType` (`Model Name: MacBook Pro`).
+fn parse_model_name(text: &str) -> Option<String> {
+    text.lines().find_map(|line| clean_model(line.trim().strip_prefix("Model Name:")?))
+}
+
+/// A Mac's marketing model with its chip: `MacBook Pro (M3 Max)`, `Mac Studio (M2 Ultra)`.
+fn apple_model(name: &str, chip: Option<&str>) -> String {
+    match chip {
+        Some(chip) => format!("{name} ({})", chip.trim_start_matches("Apple ")),
+        None => name.to_string(),
+    }
+}
+
+/// The Neural Engine's core count of an Apple Silicon chip: 16 on every chip so far, 32 on the
+/// "Ultra" chips, which fuse two dies (an assumption about the chips, not a probed value).
+fn neural_cores(chip: &str) -> u32 {
+    if chip.contains("Ultra") {
+        32
+    } else {
+        16
+    }
+}
+
+/// The GPU core count from `system_profiler SPDisplaysDataType` (`Total Number of Cores: 40`).
+fn parse_gpu_cores(text: &str) -> Option<u32> {
+    text.lines().find_map(|line| parse_count(line.trim().strip_prefix("Total Number of Cores:")?))
+}
+
+/// A count from a command's output or a sysctl value (`12`).
+fn parse_count(text: &str) -> Option<u32> {
+    text.trim().parse().ok()
+}
+
+/// A byte count from a sysctl value (`hw.memsize`).
+fn parse_bytes(text: &str) -> Option<u64> {
+    text.trim().parse().ok()
+}
+
+/// The physical cores and logical processors from the Windows probe's `cores|threads` line; None
+/// when either is zero or the line is malformed.
+fn parse_core_pair(text: &str) -> Option<(u32, u32)> {
+    let (cores, threads) = text.trim().split_once('|')?;
+    let (cores, threads) = (parse_count(cores)?, parse_count(threads)?);
+    (cores > 0 && threads > 0).then_some((cores, threads))
+}
+
+/// Runs a PowerShell command and returns its trimmed output, when it succeeds.
+fn powershell(script: &str) -> Option<String> {
+    command_stdout("powershell", &["-NoProfile", "-Command", script])
 }
 
 /// The machine kind from what the host reports: `phone` (Android), `edge` (a single-board
@@ -447,21 +663,22 @@ fn parse_device_tree_model(bytes: &[u8]) -> Option<String> {
 }
 
 /// The CPU of the host. Linux reads `/proc/cpuinfo`; macOS asks `sysctl`; Windows reads the
-/// registry through `reg query` (its core count is not probed, so it reports the threads).
-/// Probed once, at start.
+/// registry through `reg query` and the physical cores and logical processors through PowerShell
+/// (both counts fall back to the threads when that fails). Probed once, at start.
 fn probe_cpu(tree: Option<&str>) -> Cpu {
     let logical = host_cpus();
     if cfg!(target_os = "macos") {
         return Cpu {
             model: sysctl("machdep.cpu.brand_string").unwrap_or_else(|| "unknown".to_string()),
-            cores: sysctl("hw.physicalcpu").and_then(|n| n.parse().ok()).unwrap_or(logical),
-            threads: sysctl("hw.logicalcpu").and_then(|n| n.parse().ok()).unwrap_or(logical),
+            cores: sysctl("hw.physicalcpu").and_then(|n| parse_count(&n)).unwrap_or(logical),
+            threads: sysctl("hw.logicalcpu").and_then(|n| parse_count(&n)).unwrap_or(logical),
         };
     }
     if cfg!(target_os = "windows") {
         let model = command_stdout("reg", &["query", WINDOWS_CPU_KEY, "/v", "ProcessorNameString"])
             .and_then(|out| parse_reg_string(&out, "ProcessorNameString"));
-        return Cpu { model: model.unwrap_or_else(|| "unknown".to_string()), cores: logical, threads: logical };
+        let (cores, threads) = powershell(WINDOWS_CORES).and_then(|out| parse_core_pair(&out)).unwrap_or((logical, logical));
+        return Cpu { model: model.unwrap_or_else(|| "unknown".to_string()), cores, threads };
     }
     parse_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default(), tree, logical)
 }
@@ -543,9 +760,18 @@ fn sysctl(name: &str) -> Option<String> {
     command_stdout("sysctl", &["-n", name])
 }
 
-/// The trimmed stdout of a command that succeeds, or None.
+/// The trimmed stdout of a command that succeeds, or None. On Windows the probe starts without a
+/// console window.
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program).args(args).output().ok()?;
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command.output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -901,3 +1127,105 @@ fn delete_run(node: &Node, id: &str) -> Response {
     }
 }
 
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn vendors_are_lower_case_short_names() {
+        assert_eq!(normalize_vendor("Dell Inc.").as_deref(), Some("dell"));
+        assert_eq!(normalize_vendor("LENOVO").as_deref(), Some("lenovo"));
+        assert_eq!(normalize_vendor("ASUSTeK COMPUTER INC.").as_deref(), Some("asus"));
+        assert_eq!(normalize_vendor("Micro-Star International Co., Ltd.").as_deref(), Some("msi"));
+        assert_eq!(normalize_vendor("Gigabyte Technology Co., Ltd.").as_deref(), Some("gigabyte"));
+        assert_eq!(normalize_vendor("HP").as_deref(), Some("hp"));
+        assert_eq!(normalize_vendor("Hewlett-Packard").as_deref(), Some("hp"));
+        assert_eq!(normalize_vendor("Apple Inc.").as_deref(), Some("apple"));
+        assert_eq!(normalize_vendor("Raspberry Pi").as_deref(), Some("raspberrypi"));
+        assert_eq!(normalize_vendor("Raspberry Pi 5 Model B Rev 1.0").as_deref(), Some("raspberrypi"));
+        assert_eq!(normalize_vendor("samsung").as_deref(), Some("samsung"));
+    }
+
+    #[test]
+    fn placeholder_vendors_are_unknown() {
+        for raw in ["System manufacturer", "To Be Filled By O.E.M.", "Default string", "  ", "Unknown", ""] {
+            assert_eq!(normalize_vendor(raw), None, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn dmi_model_prefers_the_version_on_lenovo() {
+        assert_eq!(dmi_model(Some("lenovo"), "20XW0000US\n", "ThinkPad X1 Carbon Gen 9\n").as_deref(), Some("ThinkPad X1 Carbon Gen 9"));
+        assert_eq!(dmi_model(Some("lenovo"), "20XW0000US", "Not Defined").as_deref(), Some("20XW0000US"));
+        assert_eq!(dmi_model(Some("dell"), "XPS 13 9310", "1.0").as_deref(), Some("XPS 13 9310"));
+        assert_eq!(dmi_model(Some("asus"), "System Product Name", "System Version"), None);
+    }
+
+    #[test]
+    fn windows_system_line_gives_maker_and_model() {
+        assert_eq!(parse_maker_line("Dell Inc.|XPS 13 9310\r\n"), (Some("dell".into()), Some("XPS 13 9310".into())));
+        assert_eq!(parse_maker_line("LENOVO|21HM001QUS"), (Some("lenovo".into()), Some("21HM001QUS".into())));
+        assert_eq!(parse_maker_line("System manufacturer|System Product Name"), (None, None));
+        assert_eq!(parse_maker_line(""), (None, None));
+    }
+
+    #[test]
+    fn android_properties_give_maker_and_model() {
+        // getprop prints the value and a newline; the manufacturer is lower-case on most devices.
+        assert_eq!(maker_pair("samsung\n", "SM-S918B\n"), (Some("samsung".into()), Some("SM-S918B".into())));
+        assert_eq!(maker_pair("Google\n", "Pixel 8\n"), (Some("google".into()), Some("Pixel 8".into())));
+    }
+
+    #[test]
+    fn a_device_tree_model_is_the_board_and_its_maker() {
+        let tree = parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").unwrap();
+        assert_eq!(maker_pair(&tree, &tree), (Some("raspberrypi".into()), Some("Raspberry Pi 5 Model B Rev 1.0".into())));
+    }
+
+    #[test]
+    fn system_profiler_gives_the_marketing_model_name() {
+        let text = "Hardware:\n\n    Hardware Overview:\n\n      Model Name: MacBook Pro\n      Model Identifier: Mac15,9\n      Chip: Apple M3 Max\n";
+        assert_eq!(parse_model_name(text).as_deref(), Some("MacBook Pro"));
+        assert_eq!(parse_model_name("      Model Identifier: Mac15,9\n"), None);
+        assert_eq!(apple_kind(&parse_model_name(text).unwrap()), "laptop");
+        assert_eq!(apple_kind("Mac Studio"), "workstation");
+    }
+
+    #[test]
+    fn a_mac_model_carries_its_chip() {
+        assert_eq!(apple_model("MacBook Pro", Some("Apple M3 Max")), "MacBook Pro (M3 Max)");
+        assert_eq!(apple_model("Mac Studio", Some("Apple M2 Ultra")), "Mac Studio (M2 Ultra)");
+        assert_eq!(apple_model("Mac mini", None), "Mac mini");
+    }
+
+    #[test]
+    fn gpu_cores_come_from_the_displays_report() {
+        let text = "Graphics/Displays:\n\n    Apple M3 Max:\n\n      Chipset Model: Apple M3 Max\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 40\n      Vendor: Apple (0x106b)\n";
+        assert_eq!(parse_gpu_cores(text), Some(40));
+        assert_eq!(parse_gpu_cores("      Chipset Model: Intel UHD\n"), None);
+    }
+
+    #[test]
+    fn neural_engine_has_32_cores_on_ultra_chips_and_16_elsewhere() {
+        assert_eq!(neural_cores("Apple M3 Max"), 16);
+        assert_eq!(neural_cores("Apple M2 Ultra"), 32);
+    }
+
+    #[test]
+    fn sysctl_counts_and_bytes_parse() {
+        assert_eq!(parse_count("12\n"), Some(12));
+        assert_eq!(parse_count("n/a"), None);
+        assert_eq!(parse_bytes("137438953472\n"), Some(128 * GIB));
+        assert_eq!(parse_bytes(""), None);
+        assert_eq!(parse_bytes("137438953472").map(|bytes| bytes / MIB), Some(131072));
+    }
+
+    #[test]
+    fn windows_core_counts_are_physical_then_logical() {
+        assert_eq!(parse_core_pair("12|24\r\n"), Some((12, 24)));
+        assert_eq!(parse_core_pair("0|0"), None);
+        assert_eq!(parse_core_pair("12"), None);
+        assert_eq!(parse_core_pair(""), None);
+    }
+}

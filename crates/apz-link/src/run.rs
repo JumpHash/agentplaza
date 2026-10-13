@@ -127,11 +127,21 @@ fn local_json(port: u16, path: &str) -> Value {
 }
 
 /// The fields noded reports about the machine that a heartbeat carries to the hub.
-const NODED_MACHINE_FIELDS: [&str; 8] = ["kind", "cpu", "os", "arch", "backend", "gpus", "memory_mib", "storage_gib"];
+const NODED_MACHINE_FIELDS: [&str; 11] =
+    ["kind", "vendor", "model", "apple", "cpu", "os", "arch", "backend", "gpus", "memory_mib", "storage_gib"];
+
+/// The live load a heartbeat carries, from noded's `/v1/machine/stats`: `{cpu_pct, mem_used_mib}`;
+/// null when the daemon has no sample yet or does not answer.
+fn stats_report(stats: &Value) -> Value {
+    if !stats.is_object() {
+        return Value::Null;
+    }
+    json!({ "cpu_pct": stats["cpu_percent"].clone(), "mem_used_mib": stats["mem_used_mib"].clone() })
+}
 
 /// The machine a heartbeat reports: this machine's summary (`join::machine_summary`) with
-/// noded's machine facts (`NODED_MACHINE_FIELDS`) laid over it when the daemon answers, so the
-/// hub holds the same description a local view shows.
+/// noded's machine facts (`NODED_MACHINE_FIELDS`) laid over it when the daemon answers, and its
+/// live `stats`, so the hub holds the same description a local view shows.
 fn machine_report(noded: u16) -> Value {
     let mut machine = join::machine_summary();
     if let (Value::Object(report), Value::Object(facts)) = (&mut machine, local_json(noded, "/v1/machine")) {
@@ -141,7 +151,27 @@ fn machine_report(noded: u16) -> Value {
             }
         }
     }
+    if let Value::Object(report) = &mut machine {
+        report.insert("stats".to_string(), stats_report(&local_json(noded, "/v1/machine/stats")));
+    }
     machine
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use super::*;
+
+    #[test]
+    fn live_stats_are_the_cpu_percent_and_memory_used() {
+        let sample = json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3], "history": [] });
+        assert_eq!(stats_report(&sample), json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 }));
+    }
+
+    #[test]
+    fn stats_are_null_without_a_sample() {
+        assert_eq!(stats_report(&Value::Null), Value::Null);
+        assert_eq!(stats_report(&json!({"error": "no host sample yet"})), json!({ "cpu_pct": null, "mem_used_mib": null }));
+    }
 }
 
 fn heartbeat_once(identity: &Identity, key: &NodeKey, local: Local) {

@@ -6,7 +6,8 @@ export interface Route {
 }
 
 export function parse(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  // A query (`#/hardware-lab?model=…`) is read by its screen; the route is the part before it.
+  const parts = (hash.replace(/^#\/?/, '').split('?')[0] ?? '').split('/').filter(Boolean).map(decodeURIComponent);
   return { screen: parts[0] ?? 'overview', params: parts.slice(1) };
 }
 

@@ -11,6 +11,7 @@
 pub mod canvas;
 pub mod controls;
 pub mod geometry;
+pub mod hardware;
 pub mod outskirts;
 pub mod props;
 pub mod render;

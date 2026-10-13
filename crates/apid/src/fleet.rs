@@ -130,7 +130,8 @@ pub fn fleet(app: &App) -> Value {
 /// The fleet JSON from its facts (pure): `machines` (the hub first, then every node in order)
 /// and `links` (one per node, to `n0`). A node is reachable when it is not revoked and was
 /// seen within `OFFLINE_AFTER_MS`. Status: revoked, else draining, else online or offline.
-/// Remote nodes report no stats (`null`): their noded is reached only through the command queue.
+/// The hub's stats come from its noded; a remote node's come from its last heartbeat (`null` until
+/// one carries them), since its noded is reached only through the command queue.
 pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed]) -> Value {
     let hub_machine = hub.machine.clone().unwrap_or(Value::Null);
     let hub_status = if hub.machine.is_some() { "online" } else { "offline" };
@@ -157,7 +158,9 @@ pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed])
         } else {
             "offline"
         };
-        machines.push(machine_row(&node.id, &node.name, "node", status, &node.machine, placed, Value::Null, node.last_seen_ms));
+        // A remote node's live stats are the ones its last heartbeat carried.
+        let stats = node.machine.get("stats").cloned().unwrap_or(Value::Null);
+        machines.push(machine_row(&node.id, &node.name, "node", status, &node.machine, placed, stats, node.last_seen_ms));
         links.push(json!({ "a": LOCAL, "b": node.id, "online": reachable }));
     }
     json!({ "machines": machines, "links": links })
@@ -183,6 +186,9 @@ fn machine_row(
         "name": name,
         "role": role,
         "kind": field("kind"),
+        "vendor": field("vendor"),
+        "model": field("model"),
+        "apple": field("apple"),
         "status": status,
         "arch": field("arch"),
         "os": field("os"),
@@ -272,7 +278,18 @@ mod tests {
     #[test]
     fn fleet_lists_the_hub_then_each_node_with_its_status_and_agents() {
         let nodes = [
-            node("n3", "pi-kitchen", NOW - 5_000, json!({ "kind": "edge", "os": "linux", "arch": "aarch64", "storage_gib": 58 }), false, false),
+            node(
+                "n3",
+                "pi-kitchen",
+                NOW - 5_000,
+                json!({
+                    "kind": "edge", "os": "linux", "arch": "aarch64", "storage_gib": 58,
+                    "vendor": "raspberrypi", "model": "Raspberry Pi 5 Model B Rev 1.0", "apple": null,
+                    "stats": { "cpu_pct": 3.2, "mem_used_mib": 900 },
+                }),
+                false,
+                false,
+            ),
             node("n4", "old-laptop", NOW - 5_000, json!({ "kind": "laptop" }), true, false),
             node("n5", "silent", NOW - OFFLINE_AFTER_MS - 1, json!({}), false, false),
             node("n6", "banned", NOW, json!({}), false, true),
@@ -292,6 +309,9 @@ mod tests {
         assert_eq!(hub_row["stats"], json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 }));
         assert_eq!(hub_row["cpu"]["threads"], 24);
         assert_eq!(hub_row["gpus"][0]["vendor"], "NVIDIA");
+        assert_eq!(hub_row["vendor"], Value::Null);
+        assert_eq!(hub_row["model"], Value::Null);
+        assert_eq!(hub_row["apple"], Value::Null);
 
         let statuses: Vec<(&str, &str)> = machines[1..]
             .iter()
@@ -305,7 +325,10 @@ mod tests {
         assert_eq!(pi["kind"], "edge");
         assert_eq!(pi["agents"], json!([1000]));
         assert_eq!(pi["working"], 0);
-        assert_eq!(pi["stats"], Value::Null);
+        assert_eq!(pi["stats"], json!({ "cpu_pct": 3.2, "mem_used_mib": 900 }));
+        assert_eq!(pi["vendor"], "raspberrypi");
+        assert_eq!(pi["model"], "Raspberry Pi 5 Model B Rev 1.0");
+        assert_eq!(pi["apple"], Value::Null);
         assert_eq!(pi["gpus"], json!([]));
         assert_eq!(pi["cpu"], Value::Null);
         assert_eq!(pi["last_seen_ms"], NOW - 5_000);
@@ -326,5 +349,26 @@ mod tests {
         assert_eq!(hub_row["kind"], Value::Null);
         assert_eq!(hub_row["stats"], Value::Null);
         assert_eq!(view["links"], json!([]));
+    }
+
+    #[test]
+    fn a_mac_hub_reports_its_maker_model_and_apple_details() {
+        let apple = json!({
+            "chip": "Apple M2 Ultra", "p_cores": 16, "e_cores": 8, "gpu_cores": 76,
+            "neural_cores": 32, "unified_memory_gib": 192,
+        });
+        let mac = HubReport {
+            machine: Some(json!({
+                "name": "studio", "kind": "workstation", "vendor": "apple", "model": "Mac Studio (M2 Ultra)", "apple": apple,
+            })),
+            stats: None,
+        };
+        let view = assemble(NOW, &mac, &[], &[]);
+        let hub_row = &view["machines"][0];
+        assert_eq!(hub_row["vendor"], "apple");
+        assert_eq!(hub_row["model"], "Mac Studio (M2 Ultra)");
+        assert_eq!(hub_row["apple"]["gpu_cores"], 76);
+        assert_eq!(hub_row["apple"]["unified_memory_gib"], 192);
+        assert_eq!(hub_row["stats"], Value::Null);
     }
 }

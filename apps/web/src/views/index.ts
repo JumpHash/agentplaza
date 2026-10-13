@@ -10,6 +10,7 @@ import { mount as council } from './council';
 import { mount as files } from './files';
 import { mount as floor } from './floor';
 import { mount as git } from './git';
+import { mount as hardwareLab } from './hardware-lab';
 import { mount as machine } from './machine';
 import { mount as models } from './models';
 import { mount as nodes } from './nodes';
@@ -20,6 +21,7 @@ import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
+import { mount as usage } from './usage';
 
 export type Cleanup = () => void;
 export type Mount = (root: HTMLElement, params: string[]) => Cleanup;
@@ -30,6 +32,8 @@ export interface Screen {
   icon: IconName;
   section: string;
   mount: Mount;
+  /** Reachable by its route, not listed in the sidebar (developer tools). */
+  hidden?: boolean;
 }
 
 export const SCREENS: Screen[] = [
@@ -48,7 +52,9 @@ export const SCREENS: Screen[] = [
   { key: 'treasury', label: 'Treasury', icon: 'treasury', section: 'Social', mount: treasury },
   { key: 'rules', label: 'Rules', icon: 'rules', section: 'Social', mount: rules },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
+  { key: 'usage', label: 'Usage', icon: 'zap', section: 'Setup', mount: usage },
   { key: 'tools', label: 'Tools', icon: 'wrench', section: 'Setup', mount: tools },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
+  { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
 ];
