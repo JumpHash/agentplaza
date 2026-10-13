@@ -10,6 +10,7 @@
 
 pub mod canvas;
 pub mod controls;
+pub mod fleet;
 pub mod geometry;
 pub mod hardware;
 pub mod outskirts;

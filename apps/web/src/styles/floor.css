@@ -1,11 +1,12 @@
 /* Floor */
-.floor-view { max-width: none; height: calc(100vh - var(--topbar-h)); }
-/* While the Floor is mounted the page never scrolls: the view fills the window below the top bar. */
+.floor-view { max-width: none; }
+/* While the Floor or the Society is mounted the page never scrolls: the shell's column fills the window, and the
+   view takes what the top bar and the banners leave. The bottom gap is the side gutter (28px margin + 28px padding). */
 body.floor-mode { overflow: hidden; }
-body.floor-mode .view {
-  height: calc(100vh - var(--topbar-h) - 48px); margin-bottom: 0;
-  display: flex; flex-direction: column;
-}
+body.floor-mode .app { height: 100vh; height: 100dvh; min-height: 0; }
+body.floor-mode .main { height: 100%; min-height: 0; padding-bottom: 0; }
+body.floor-mode .view-host { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bottom: 28px; padding-bottom: 28px; }
 /* The canvas sits in a card like any other section: 1px rule, square, sheet behind it. */
 .floor-stage {
   position: relative; flex: 1; min-height: 0; overflow: hidden;

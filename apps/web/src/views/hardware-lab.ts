@@ -3,13 +3,17 @@
 // Route: #/hardware-lab?model=exterior/workstation&gpus=1&status=online&working=0&open=0&traces=1&cam=iso
 // (cam: iso | top | front | side | anchor). Any other numeric key is a model param, overriding its default:
 // &p_cores=16&e_cores=8&gpu_cores=76. The model's params are number inputs in the controls. The URL is kept in step.
+// model=fleet shows the Machines scene (fleet.ts) with GET /v1/fleet from the live hub; &fake=N adds N made-up
+// machines of mixed kinds, vendors and statuses to it (for judging the ring, cables and statuses).
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { h } from '../ui/dom';
 import type { Cleanup } from './index';
-import { MODELS } from './floor3d/hardware-index';
+import { api, type FleetMachine, type FleetResponse, type FleetStatus } from '../api';
+import { MODELS, PALETTE } from './floor3d/hardware-index';
 import { buildModel, currentPulses, placeAtom, traceMeshes, validate, type Built, type Model, type Pulses, type Status } from './floor3d/hardware';
+import { buildFleet, type FleetScene } from './floor3d/fleet';
 import { sky, toonMat } from './floor3d/toon';
 
 const STATUSES: string[] = ['online', 'draining', 'offline', 'revoked'];
@@ -24,14 +28,61 @@ interface LabState {
   open: number;
   traces: boolean;
   cam: Cam;
+  /** Made-up fleet machines added to model=fleet (&fake=N). */
+  fake: number;
   /** Model params from the URL (every numeric key the lab does not use itself); they override the model's defaults. */
   params: Record<string, number>;
 }
 
-const DEFAULT_STATE: LabState = { model: 'exterior/workstation', gpus: 0, status: 'online', working: 0, open: 0, traces: true, cam: 'iso', params: {} };
+const DEFAULT_STATE: LabState = { model: 'exterior/workstation', gpus: 0, status: 'online', working: 0, open: 0, traces: true, cam: 'iso', fake: 0, params: {} };
 /** The query keys the lab reads for itself; any other key that holds a number is a model param. */
-const LAB_KEYS = new Set(['model', 'gpus', 'status', 'working', 'open', 'traces', 'cam']);
+const LAB_KEYS = new Set(['model', 'gpus', 'status', 'working', 'open', 'traces', 'cam', 'fake']);
 const PARAM_KEY = /^[a-z_]\w*$/;
+
+const NO_FLEET: FleetResponse = { machines: [], links: [] };
+type FakeTemplate = Omit<FleetMachine, 'id' | 'name' | 'role' | 'status' | 'agents' | 'working' | 'stats' | 'last_seen_ms'>;
+/** The kinds the fake machines cycle through: a laptop, an edge device, a phone, a server, an Apple laptop, a workstation with a GPU. */
+const FAKE_TEMPLATES: FakeTemplate[] = [
+  { kind: 'laptop', vendor: 'lenovo', model: 'ThinkPad X1 Carbon', cpu: { model: 'Intel Core Ultra 7 165U', cores: 10, threads: 12 }, memory_mib: 32768, gpus: [], storage_gib: 512, arch: 'x86_64', os: 'linux', backend: 'kvm', apple: null },
+  { kind: 'edge', vendor: 'raspberrypi', model: 'Raspberry Pi 5', cpu: { model: 'Cortex-A76', cores: 4, threads: 4 }, memory_mib: 8192, gpus: [], storage_gib: 256, arch: 'aarch64', os: 'linux', backend: 'kvm', apple: null },
+  { kind: 'phone', vendor: 'samsung', model: 'Galaxy S24', cpu: { model: 'Snapdragon 8 Gen 3', cores: 8, threads: 8 }, memory_mib: 8192, gpus: [], storage_gib: 256, arch: 'aarch64', os: 'android', backend: 'none', apple: null },
+  { kind: 'server', vendor: 'dell', model: 'PowerEdge R750', cpu: { model: 'Intel Xeon Gold 6338', cores: 32, threads: 64 }, memory_mib: 262144, gpus: [{ name: 'NVIDIA A40', vendor: 'NVIDIA', memory_mib: 46080 }], storage_gib: 7680, arch: 'x86_64', os: 'linux', backend: 'kvm', apple: null },
+  { kind: 'laptop', vendor: 'apple', model: 'MacBook Pro (M3 Max)', cpu: { model: 'Apple M3 Max', cores: 16, threads: 16 }, memory_mib: 65536, gpus: [], storage_gib: 1024, arch: 'arm64', os: 'macos', backend: 'hvf', apple: { chip: 'Apple M3 Max', p_cores: 12, e_cores: 4, gpu_cores: 40, neural_cores: 16, unified_memory_gib: 64 } },
+  { kind: 'workstation', vendor: 'dell', model: 'Precision 7865', cpu: { model: 'AMD Ryzen Threadripper PRO 7965WX', cores: 24, threads: 48 }, memory_mib: 131072, gpus: [{ name: 'NVIDIA GeForce RTX 4090', vendor: 'NVIDIA', memory_mib: 24576 }], storage_gib: 2048, arch: 'x86_64', os: 'linux', backend: 'kvm', apple: null },
+];
+
+/**
+ * The fleet with n fake nodes added (ids f1..fn, linked to the hub). Statuses: the third is draining, the sixth
+ * offline. Without a hub in the fleet, a fake one (the last template) is added first.
+ */
+export function withFake(view: FleetResponse, n: number): FleetResponse {
+  if (n <= 0) return view;
+  const machines = [...view.machines];
+  const links = [...view.links];
+  const make = (t: FakeTemplate, id: string, role: 'hub' | 'node', status: FleetStatus, working: number): FleetMachine => ({
+    ...t,
+    id,
+    name: `fake ${t.model ?? t.kind}`,
+    role,
+    status,
+    agents: [],
+    working,
+    stats: status === 'offline' ? null : { cpu_pct: 8 + ((working * 23 + id.length * 7) % 60), mem_used_mib: 2048 },
+    last_seen_ms: status === 'offline' ? 0 : Date.now(),
+  });
+  let hub = machines.find((m) => m.role === 'hub');
+  if (!hub) {
+    hub = make(FAKE_TEMPLATES[5]!, 'fake-hub', 'hub', 'online', 1);
+    machines.push(hub);
+  }
+  for (let i = 0; i < n; i++) {
+    const status: FleetStatus = i === 2 ? 'draining' : i === 5 ? 'offline' : 'online';
+    const id = `f${i + 1}`;
+    machines.push(make(FAKE_TEMPLATES[i % FAKE_TEMPLATES.length]!, id, 'node', status, status === 'offline' ? 0 : i % 3));
+    links.push({ a: hub.id, b: id, online: status !== 'offline' });
+  }
+  return { machines, links };
+}
 
 /** The lab's state from the route's query; a missing or bad value takes its default. */
 function readState(hash: string): LabState {
@@ -54,6 +105,7 @@ function readState(hash: string): LabState {
     open: num('open', 0, 1, DEFAULT_STATE.open),
     traces: q.has('traces') ? q.get('traces') !== '0' : DEFAULT_STATE.traces,
     cam: (CAMS as readonly string[]).includes(cam) ? (cam as Cam) : DEFAULT_STATE.cam,
+    fake: Math.round(num('fake', 0, 12, DEFAULT_STATE.fake)),
     params,
   };
 }
@@ -94,7 +146,7 @@ export function mount(root: HTMLElement): Cleanup {
   const modelSel = h(
     'select',
     { 'aria-label': 'Model', onchange: () => { state.model = modelSel.value; state.params = {}; rebuild(true); writeUrl(); sync(); } },
-    ...Object.keys(MODELS).sort().map((k) => h('option', { value: k }, k)),
+    ...['fleet', ...Object.keys(MODELS).sort()].map((k) => h('option', { value: k }, k)),
   );
   const gpuBtns = [0, 1, 2].map((n) => h('button', { type: 'button', class: 'btn', onclick: () => { state.gpus = n; rebuild(false); writeUrl(); sync(); } }, `${n} GPU${n === 1 ? '' : 's'}`));
   const statusSel = h(
@@ -175,6 +227,7 @@ export function mount(root: HTMLElement): Cleanup {
       traces: state.traces ? '1' : '0',
       cam: state.cam,
     });
+    if (state.fake) q.set('fake', String(state.fake));
     for (const [k, v] of Object.entries(state.params)) q.set(k, String(v));
     history.replaceState(null, '', `#/hardware-lab?${q.toString().replace(/%2F/g, '/')}`);
   };
@@ -238,26 +291,59 @@ export function mount(root: HTMLElement): Cleanup {
   let current: { model: Model; built: Built; traces: THREE.Group | null; pulses: Pulses | null; atom: { atom: THREE.Object3D; animate: (t: number) => void } | null } | null = null;
 
   function renderErrors(errors: string[] = lastErrors): void {
-    errorsEl.textContent = errors.length ? errors.join('\n') : `${state.model}: no errors`;
+    errorsEl.textContent = errors.length ? errors.join('\n') : lastInfo || `${state.model}: no errors`;
     errorsEl.style.color = errors.length ? 'var(--crit)' : 'var(--ink-2)';
   }
   let lastErrors: string[] = [];
+  let lastInfo = '';
 
-  /** Frames the model: the camera's preset (iso by default), at a distance that fits its size. */
+  /** Frames a sphere: the camera's preset (iso by default), at a distance that fits it. */
+  function frameSphere(at: [number, number, number], radius: number, cam: Cam): void {
+    const centre = new THREE.Vector3(...at);
+    const dist = (Math.max(radius, 1) / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 0.9;
+    const dir = { iso: [0.8, 0.6, 1], top: [0, 1, 0.0001], front: [0, 0, 1], side: [1, 0, 0], anchor: [0.8, 0.6, 1] }[cam];
+    camera.position.copy(centre).add(new THREE.Vector3(...dir).normalize().multiplyScalar(dist));
+    controls.target.copy(centre);
+  }
+
+  /** Frames the model: the camera's preset (iso by default), at a distance that fits its size. The fleet is framed by its own sphere. */
   function frame(model: Model | undefined, cam: Cam): void {
+    if (!model && fleetScene) {
+      const f = fleetScene.frame();
+      frameSphere(f.center, f.radius, cam);
+      controls.update();
+      return;
+    }
     const [w, hgt, d] = model?.size ?? [4, 6, 4];
-    const centre = new THREE.Vector3(0, hgt / 2, 0);
     if (cam === 'anchor' && model?.anchors?.camera) {
       camera.position.set(...model.anchors.camera.at);
       controls.target.set(...model.anchors.camera.look);
     } else {
-      const radius = Math.max(Math.hypot(w, hgt, d) / 2, 1);
-      const dist = (radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 0.9;
-      const dir = { iso: [0.8, 0.6, 1], top: [0, 1, 0.0001], front: [0, 0, 1], side: [1, 0, 0], anchor: [0.8, 0.6, 1] }[cam];
-      camera.position.copy(centre).add(new THREE.Vector3(...dir).normalize().multiplyScalar(dist));
-      controls.target.copy(centre);
+      frameSphere([0, hgt / 2, 0], Math.hypot(w, hgt, d) / 2, cam);
     }
     controls.update();
+  }
+
+  // ---- The fleet (model=fleet) ----------------------------------------------------------------
+  let fleetData: FleetResponse | null = null;
+  let fleetAsked = false;
+  let fleetLoading = false;
+  let fleetError = '';
+  let fleetScene: FleetScene | null = null;
+  let fleetView: FleetResponse | null = null;
+  let alive = true;
+
+  /** GET /v1/fleet once; the fleet, when it is shown, is rebuilt with the answer. */
+  async function loadFleet(): Promise<void> {
+    fleetLoading = true;
+    try {
+      fleetData = await api.fleet();
+      fleetError = '';
+    } catch (e) {
+      fleetError = `GET /v1/fleet: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    fleetLoading = false;
+    if (alive && state.model === 'fleet') rebuild(true);
   }
 
   /** Builds the model in `state`. `reframe` also moves the camera to frame it. */
@@ -267,7 +353,28 @@ export function mount(root: HTMLElement): Cleanup {
       disposeTree(current.built.group);
       current = null;
     }
+    if (fleetScene) {
+      scene.remove(fleetScene.group);
+      disposeTree(fleetScene.group);
+      fleetScene = null;
+      fleetView = null;
+    }
+    if (state.model === 'fleet') {
+      if (!fleetAsked) {
+        fleetAsked = true;
+        void loadFleet();
+      }
+      fleetView = withFake(fleetData ?? NO_FLEET, state.fake);
+      fleetScene = buildFleet(fleetView, PALETTE);
+      scene.add(fleetScene.group);
+      lastErrors = fleetError ? [fleetError] : [];
+      lastInfo = fleetLoading ? 'fleet: loading GET /v1/fleet' : `fleet: ${fleetView.machines.length} machines, ${fleetView.links.length} links`;
+      if (reframe) frame(undefined, state.cam);
+      renderErrors();
+      return;
+    }
     const model = MODELS[state.model];
+    lastInfo = '';
     lastErrors = model ? validate(model, state.model) : [`no model named "${state.model}" (see the Model menu)`];
     if (model) {
       const built = buildModel(model, { ...state.params, gpus: state.gpus });
@@ -294,7 +401,7 @@ export function mount(root: HTMLElement): Cleanup {
   const onHash = (): void => {
     if (!location.hash.startsWith('#/hardware-lab')) return;
     const next = readState(location.hash);
-    const changed = next.model !== state.model || next.gpus !== state.gpus || !sameParams(next.params, state.params);
+    const changed = next.model !== state.model || next.gpus !== state.gpus || next.fake !== state.fake || !sameParams(next.params, state.params);
     const reframe = next.model !== state.model || next.cam !== state.cam;
     state = next;
     if (changed || reframe) rebuild(reframe);
@@ -323,11 +430,13 @@ export function mount(root: HTMLElement): Cleanup {
         atom.atom.visible = model.view !== 'exterior' || state.status === 'online';
       }
     }
+    if (fleetScene && fleetView) fleetScene.update(dt, fleetView);
     controls.update();
     renderer.render(scene, camera);
   });
 
   return () => {
+    alive = false;
     window.removeEventListener('hashchange', onHash);
     renderer.setAnimationLoop(null);
     ro.disconnect();
@@ -335,6 +444,10 @@ export function mount(root: HTMLElement): Cleanup {
     if (current) {
       scene.remove(current.built.group);
       disposeTree(current.built.group);
+    }
+    if (fleetScene) {
+      scene.remove(fleetScene.group);
+      disposeTree(fleetScene.group);
     }
     renderer.dispose();
   };

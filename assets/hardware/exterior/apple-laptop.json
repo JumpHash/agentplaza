@@ -546,26 +546,18 @@
             },
             {
               "id": "lid_logo",
-              "geo": {
-                "type": "sphere",
-                "r": 0.5
-              },
+              "use": "parts/apple-logo",
               "at": [
                 0,
                 0.165,
                 0
               ],
-              "scale": [
-                0.9,
-                0.05,
-                1.1
-              ],
-              "mat": {
-                "color": "#e8eadf",
-                "emissive": "#f4f4ea",
-                "glow": 1.0
-              },
-              "outline": false
+              "scale": 1.2,
+              "rot": [
+                0,
+                180,
+                0
+              ]
             }
           ]
         }

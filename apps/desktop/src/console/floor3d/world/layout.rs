@@ -35,8 +35,9 @@ pub const DAIS_RAMP: f32 = 2.2; // width of the dais's sloped skirt
 pub const GRAVITY: f32 = 9.8; // world units per second squared
 pub const POLAR: f32 = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 pub const AZIMUTH: f32 = FRAC_PI_4;
-/// The fit's bounding sphere is this much bigger than the plaza, so it sits with a small margin.
-const FIT_MARGIN: f32 = 1.06;
+/// The share of the stage's half-width and half-height the plaza may fill: 0.85 leaves 7.5 % of
+/// the stage clear on each side.
+const FIT_FILL: f32 = 0.85;
 /// Height the fit allows above the plaza for the robots and their labels, grid units.
 const LABEL_HEADROOM: f32 = 4.0;
 #[allow(dead_code)] // read by motion.rs
@@ -562,7 +563,9 @@ impl Floor {
     }
 
     /// The radius of the disc about the origin that holds every district's slab and its ramp, the
-    /// orchestrator's dais, and the robots' labels above them (`LABEL_HEADROOM`, grid units).
+    /// orchestrator's dais, and the robots' labels above them (`LABEL_HEADROOM`, grid units). The
+    /// view no longer fits this sphere; it stays as the bound the fit test checks against.
+    #[allow(dead_code)] // read by the fit test only
     pub fn plaza_radius(&self) -> f32 {
         let mut reach = DAIS_R + DAIS_RAMP;
         for d in &self.districts {
@@ -577,23 +580,99 @@ impl Floor {
         reach.hypot(LABEL_HEADROOM)
     }
 
-    /// `resetView()`: the isometric-ish view that fits the whole plaza in a `aspect` (width / height)
-    /// stage. The plaza is a disc about the origin; its bounding sphere is fitted to the frustum's
-    /// narrower half-angle, so it fits both ways.
-    pub fn reset_view(&mut self, aspect: f32) {
-        let target = Vec3::new(0.0, 0.4, 0.0);
-        let radius = self.plaza_radius() * FIT_MARGIN;
-        let half_v = (FOV_DEG / 2.0).to_radians();
-        let half_h = (half_v.tan() * aspect.max(1e-3)).atan();
-        let dist = radius / half_v.min(half_h).sin();
-        // three's setFromSphericalCoords(dist, POLAR, AZIMUTH).
-        let offset = Vec3::new(
-            dist * POLAR.sin() * AZIMUTH.sin(),
-            dist * POLAR.cos(),
-            dist * POLAR.sin() * AZIMUTH.cos(),
-        );
-        self.orbit.look(target + offset, target);
+    /// The points the fit frames, world units: each district's footprint with its ramp, on the
+    /// ground and at its top; the dais's rim on the ground and at its top; and each robot's home
+    /// up to the height of its label. The outskirts are left out.
+    pub(super) fn fit_points(&self) -> Vec<Vec3> {
+        let mut pts = Vec::new();
+        for d in &self.districts {
+            let top = top_of(d);
+            for (x, z) in footprint(d) {
+                pts.push(Vec3::new(x, 0.0, z));
+                pts.push(Vec3::new(x, top, z));
+            }
+        }
+        for (x, z) in rim(0.0, 0.0, DAIS_R + DAIS_RAMP) {
+            pts.push(Vec3::new(x, 0.0, z));
+            pts.push(Vec3::new(x, DAIS_H, z));
+        }
+        // A robot stands about 1.5 units tall, its label just above it.
+        const ROBOT_AND_LABEL: f32 = 2.0;
+        for bot in &self.bots {
+            let (x, z) = bot.home;
+            pts.push(Vec3::new(x, DAIS_H + ROBOT_AND_LABEL, z));
+        }
+        pts
     }
+
+    /// `resetView()`: the isometric-ish view that frames the plaza in an `aspect` (width / height)
+    /// stage. The eye keeps its angles (`POLAR`, `AZIMUTH`) and the distance is solved so that each
+    /// fit point sits within `FIT_FILL` of the stage's half-width and half-height. A point `v` from
+    /// the target is `dist - v·dir` deep, so it needs `dist >= v·dir + max(|across| / (FIT_FILL ·
+    /// tan_h), |up| / (FIT_FILL · tan_v))`; the nearest distance is the largest such bound.
+    pub fn reset_view(&mut self, aspect: f32) {
+        // three's setFromSphericalCoords(1, POLAR, AZIMUTH): the unit direction from target to eye.
+        let dir = Vec3::new(POLAR.sin() * AZIMUTH.sin(), POLAR.cos(), POLAR.sin() * AZIMUTH.cos());
+        let right = Vec3::Y.cross(dir).normalize();
+        let up = dir.cross(right);
+        let tan_v = (FOV_DEG / 2.0).to_radians().tan();
+        let tan_h = tan_v * aspect.max(1e-3);
+        let points = self.fit_points();
+        let min_dist = self.orbit.min_distance;
+        let solve = |target: Vec3| {
+            points.iter().fold(min_dist, |far, p| {
+                let v = *p - target;
+                let across = v.dot(right).abs() / (FIT_FILL * tan_h);
+                let lift = v.dot(up).abs() / (FIT_FILL * tan_v);
+                far.max(v.dot(dir) + across.max(lift))
+            })
+        };
+        // The near side of the plaza projects larger, so a target at the origin leaves the plaza low
+        // on the stage. Each pass solves the distance, then moves the target across and up to the
+        // middle of the points' extent on the stage; a few passes settle it.
+        let mut target = Vec3::new(0.0, 0.4, 0.0);
+        for _ in 0..4 {
+            let dist = solve(target);
+            let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for p in &points {
+                let v = *p - target;
+                let depth = dist - v.dot(dir);
+                let nx = v.dot(right) / (depth * tan_h);
+                let ny = v.dot(up) / (depth * tan_v);
+                x0 = x0.min(nx);
+                x1 = x1.max(nx);
+                y0 = y0.min(ny);
+                y1 = y1.max(ny);
+            }
+            target += right * ((x0 + x1) / 2.0 * dist * tan_h) + up * ((y0 + y1) / 2.0 * dist * tan_v);
+        }
+        let dist = solve(target);
+        self.orbit.look(target + dir * dist, target);
+    }
+}
+
+/// Ground points around a district's footprint, its ramp included: a square's corners, or a round
+/// room's rim.
+fn footprint(d: &District) -> Vec<(f32, f32)> {
+    let reach = d.r + RAMP;
+    if d.round {
+        rim(d.cx, d.cy, reach)
+    } else {
+        vec![(d.cx - reach, d.cy - reach), (d.cx + reach, d.cy - reach), (d.cx + reach, d.cy + reach), (d.cx - reach, d.cy + reach)]
+    }
+}
+
+/// Points on a circle of `reach` about (`cx`, `cy`): the vertices of a polygon that circumscribes the
+/// circle, so framing them frames the whole circle.
+fn rim(cx: f32, cy: f32, reach: f32) -> Vec<(f32, f32)> {
+    const N: usize = 24;
+    let r = reach / (PI / N as f32).cos();
+    (0..N)
+        .map(|i| {
+            let a = TAU * i as f32 / N as f32;
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect()
 }
 
 #[cfg(test)]

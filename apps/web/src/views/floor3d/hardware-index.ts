@@ -28,6 +28,7 @@ import partVrmBank from '../../../../../assets/hardware/parts/vrm-bank.json';
 import partNic from '../../../../../assets/hardware/parts/nic.json';
 import partUsbC from '../../../../../assets/hardware/parts/usb-c.json';
 import partRj45 from '../../../../../assets/hardware/parts/rj45.json';
+import partAppleLogo from '../../../../../assets/hardware/parts/apple-logo.json';
 
 // The JSON is checked by validate() (a test runs it on every file), not by the TypeScript types.
 const model = (raw: unknown): Model => raw as Model;
@@ -62,4 +63,5 @@ export const MODELS: Record<string, Model> = {
   'parts/nic': model(partNic),
   'parts/usb-c': model(partUsbC),
   'parts/rj45': model(partRj45),
+  'parts/apple-logo': model(partAppleLogo),
 };

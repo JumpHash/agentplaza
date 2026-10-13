@@ -261,15 +261,27 @@ mod tests {
 
     #[test]
     fn plaza_fits_the_stage_for_its_aspect() {
-        // The fitted sphere's angular radius must fit the narrower half-angle of the frustum.
+        // Every point the fit frames (rooms, dais, robots and their labels) projects inside the
+        // stage, within the fill margin, and the plaza uses most of the tighter axis.
         for aspect in [1024.0 / 615.0, 1000.0 / 700.0, 0.8] {
             let mut floor = floor_with("idle");
             floor.reset_view(aspect);
-            let eye = floor.orbit.camera(aspect).eye;
-            let angular = (floor.plaza_radius() / eye.distance(floor.orbit.target)).asin();
-            let half_v = (crate::console::floor3d::controls::FOV_DEG / 2.0).to_radians();
-            let half = half_v.min((half_v.tan() * aspect).atan());
-            assert!(angular <= half, "aspect {aspect}: {angular} > {half}");
+            let cam = floor.orbit.camera(aspect);
+            let back = (cam.eye - cam.target).normalize();
+            let right = glam::Vec3::Y.cross(back).normalize();
+            let up = back.cross(right);
+            let tan_v = (crate::console::floor3d::controls::FOV_DEG / 2.0).to_radians().tan();
+            let tan_h = tan_v * aspect;
+            let (mut wide, mut tall) = (0.0f32, 0.0f32);
+            for p in floor.fit_points() {
+                let v = p - cam.eye;
+                let depth = -v.dot(back);
+                let (nx, ny) = (v.dot(right) / (depth * tan_h), v.dot(up) / (depth * tan_v));
+                assert!(nx.abs() <= 0.86 && ny.abs() <= 0.86, "aspect {aspect}: a point at ({nx}, {ny})");
+                wide = wide.max(nx.abs());
+                tall = tall.max(ny.abs());
+            }
+            assert!(wide.max(tall) >= 0.8, "aspect {aspect}: the plaza fills only {}", wide.max(tall));
         }
     }
 }

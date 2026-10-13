@@ -18,8 +18,6 @@ use crate::theme::OK;
 
 /// The card's width.
 const CARD_W: f32 = 284.0;
-/// The stage's height on the sheet.
-const STAGE_H: f32 = 640.0;
 
 pub struct State {
     pub floor: Floor,
@@ -33,13 +31,15 @@ pub struct State {
     /// Device pixels per logical pixel, for the labels' textures (2 for crisp text: the window's
     /// scale factor is not known to the widget).
     pub scale: f32,
+    /// The user has orbited, panned or zoomed: a resize no longer refits the view.
+    pub moved: bool,
 }
 
 impl Default for State {
     fn default() -> State {
         let mut floor = Floor::new();
         let frame = Arc::new(floor.frame(1.0));
-        State { floor, frame, size: (0.0, 0.0), error: None, last: None, scale: 2.0 }
+        State { floor, frame, size: (0.0, 0.0), error: None, last: None, scale: 2.0, moved: false }
     }
 }
 
@@ -145,13 +145,22 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
         Msg::Agents(Err(e)) => state.error = Some(e),
         Msg::Resized(w, h) => {
             state.size = (w, h);
-            if !state.floor.fitted {
+            if !state.moved {
                 fit(state);
             }
         }
-        Msg::Rotate { dx, dy, height } => state.floor.orbit.rotate(dx, dy, height),
-        Msg::Pan { dx, dy, height } => state.floor.orbit.pan(dx, dy, height, FOV_DEG),
-        Msg::Dolly(steps) => state.floor.orbit.dolly(steps),
+        Msg::Rotate { dx, dy, height } => {
+            state.moved = true;
+            state.floor.orbit.rotate(dx, dy, height);
+        }
+        Msg::Pan { dx, dy, height } => {
+            state.moved = true;
+            state.floor.orbit.pan(dx, dy, height, FOV_DEG);
+        }
+        Msg::Dolly(steps) => {
+            state.moved = true;
+            state.floor.orbit.dolly(steps);
+        }
         Msg::Hover(at) => {
             let (w, h) = state.size;
             let hit = at.and_then(|p| state.floor.pick(p.x, p.y, w, h));
@@ -163,7 +172,10 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
             state.floor.selected = hit;
         }
         Msg::Event(e) => state.floor.on_event(&e.kind, &e.data),
-        Msg::ResetView => reset(state),
+        Msg::ResetView => {
+            state.moved = false;
+            reset(state);
+        }
         Msg::Go(_) => {}
     }
     Task::none()
@@ -197,13 +209,13 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 
     let stage = container(stack(layers))
         .width(Length::Fill)
-        .height(Length::Fixed(STAGE_H))
+        .height(Length::Fill)
         .style(|_: &Theme| container::Style {
             border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
 
-    let mut body = column![].spacing(12);
+    let mut body = column![].spacing(12).height(Length::Fill);
     if let Some(e) = &state.error {
         body = body.push(ui::error_line(e));
     }

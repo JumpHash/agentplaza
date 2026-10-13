@@ -387,7 +387,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             left = left.push(canvas(graph).width(Length::Fill).height(Length::Fill));
             row![
                 container(left).width(Length::FillPortion(3)).height(Length::Fill),
-                container(scrollable(column![panel]).width(Length::Fill)).width(Length::FillPortion(2)).height(Length::Fill),
+                container(scrollable(column![panel]).width(Length::Fill).height(Length::Fill))
+                    .width(Length::FillPortion(2))
+                    .height(Length::Fill),
             ]
             .spacing(16)
             .height(Length::Fill)

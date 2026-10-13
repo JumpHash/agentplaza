@@ -366,6 +366,37 @@ eq(pathOnTraces(walk, [1, 0.5], [9.5, 10]), [[1, 0.5], [0, 0], [10, 0], [10, 10]
 const apart = traceGraph({ ...boardFixture(), traces: [{ path: [[0, 0], [1, 0]], y: 0.42, width: 0.25 }, { path: [[5, 5], [6, 5]], y: 0.42, width: 0.25 }] });
 eq(pathOnTraces(apart, [0, 0], [6, 5]), null, 'walkways: no walk between traces that do not join');
 
+// The Machines scene's pure parts (fleet.ts; desktop mirrors the same numbers).
+import { cableCurvePoints, facingAngle, packetRate, ringLayout, rotateY } from '../src/views/floor3d/fleet';
+const r3 = (v: number): number => Math.round(v * 1000) / 1000;
+const ring1 = ringLayout([{ id: 'n1', radius: 5 }]);
+eq([ring1.ring, r3(ring1.slots[0]!.x), r3(ring1.slots[0]!.z)], [14, -14, 0], 'fleet ring: one node sits opposite the origin on the minimum ring');
+const fixNodes = [{ id: 'n10', radius: 3 }, { id: 'n2', radius: 6 }, { id: 'n1', radius: 4 }, { id: 'n3', radius: 3 }];
+const ringFix = ringLayout(fixNodes, 6);
+eq(ringFix.slots.map((s) => s.id), ['n1', 'n2', 'n3', 'n10'], 'fleet ring: nodes sorted by id, numbers as numbers');
+eq(ringFix.ring >= 6 + 6 + 4, true, 'fleet ring: clears the hub and the largest node');
+let ringGap = true;
+ringFix.slots.forEach((s, i) => {
+  const o = ringFix.slots[(i + 1) % ringFix.slots.length]!;
+  const ra = fixNodes.find((n) => n.id === s.id)!.radius;
+  const rb = fixNodes.find((n) => n.id === o.id)!.radius;
+  if (Math.hypot(o.x - s.x, o.z - s.z) < ra + rb + 4 - 1e-9) ringGap = false;
+});
+eq(ringGap, true, 'fleet ring: neighbours keep their radii plus 4 apart (chord, cyclic)');
+const cable = cableCurvePoints([0, 4, 0], [10, 4, 0]);
+eq(cable.length, 25, 'fleet cable: 24 segments, 25 points');
+eq([cable[0], cable[24]], [[0, 4, 0], [10, 4, 0]], 'fleet cable: starts at one port and ends at the other');
+eq(cable[12], [5, 2.5, 0], 'fleet cable: the middle hangs 1.5 below the straight line');
+eq(cableCurvePoints([0, 0.5, 0], [10, 0.5, 0])[12]![1], 0.1,'fleet cable: never below the ground clamp');
+eq(packetRate(0, 0, true), 0.5, 'fleet packets: the base rate when idle');
+eq(packetRate(1, 0, true), 1.5, 'fleet packets: one working agent on the hub end adds one per second');
+eq(packetRate(2, 1, true), 3.5, 'fleet packets: working agents on both ends add up');
+eq(packetRate(4, 4, true), 4, 'fleet packets: capped at four per second');
+eq(packetRate(3, 3, false), 0, 'fleet packets: an offline link carries none');
+const fp = rotateY([0, 0, -4.6], facingAngle(14, 0, [0, 0, -4.6]));
+eq([r3(fp[0]), r3(fp[2])], [-4.6, 0], 'fleet facing: the port turns to face the hub');
+eq(rotateY([1, 2, 0], Math.PI / 2).map(r3), [0, 2, -1], 'fleet facing: rotation about y, as three.js turns it');
+
 if (failures) {
   console.error(`${failures} failure(s)`);
   process.exit(1);

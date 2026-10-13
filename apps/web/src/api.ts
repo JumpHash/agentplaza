@@ -324,6 +324,39 @@ export interface LibraryTool {
 
 // ---- Endpoints -------------------------------------------------------------
 
+/** `GET /v1/fleet`: the machines of the plaza (the hub and its nodes) and the links between them. */
+export type FleetKind = 'workstation' | 'laptop' | 'edge' | 'phone' | 'server';
+export type FleetStatus = 'online' | 'draining' | 'offline' | 'revoked';
+export interface FleetApple { chip: string; p_cores: number; e_cores: number; gpu_cores: number; neural_cores: number; unified_memory_gib: number }
+export interface FleetMachine {
+  id: string;
+  name: string;
+  role: 'hub' | 'node';
+  kind: FleetKind;
+  /** The maker in lower case (apple, dell, lenovo, raspberrypi, samsung, ...); null when unknown. */
+  vendor: string | null;
+  model: string | null;
+  /** Only on Macs. */
+  apple?: FleetApple | null;
+  status: FleetStatus;
+  arch: string;
+  os: string;
+  backend: string;
+  cpu: { model: string; cores: number; threads: number };
+  memory_mib: number;
+  gpus: { name: string; vendor: string; memory_mib: number }[];
+  storage_gib: number;
+  /** The cids running there. */
+  agents: number[];
+  /** Of those, how many are working. */
+  working: number;
+  /** Live load; null when unknown. */
+  stats: { cpu_pct: number; mem_used_mib: number } | null;
+  last_seen_ms: number;
+}
+export interface FleetLink { a: string; b: string; online: boolean }
+export interface FleetResponse { machines: FleetMachine[]; links: FleetLink[] }
+
 export const api = {
   overview: () => get<Overview>('/v1/overview'),
 
@@ -397,6 +430,7 @@ export const api = {
 
   machine: () => get<Machine>('/v1/machine'),
   machines: () => get<MachineNode[]>('/v1/machines'),
+  fleet: () => get<FleetResponse>('/v1/fleet'),
   runs: () => get<{ runs: Run[] }>('/v1/runs').then((r) => r.runs),
   run: (id: string) => get<Run & { vms: (Vm & { serial?: string })[] }>(`/v1/runs/${id}`),
   createRun: (n: number, role?: string) => post<Run>('/v1/runs', { n, vcpus: 1, memory_mib: 256, role }),

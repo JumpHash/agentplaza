@@ -44,7 +44,8 @@ const LABEL_CSS =
   'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--print);color:var(--ink);' +
   'font:600 10.5px/1.35 var(--mono);white-space:nowrap;' +
   'pointer-events:none;will-change:transform';
-const FIT_MARGIN = 1.12; // the whole plaza in frame with a little air around it
+const FIT_FILL = 0.85; // the plaza spans this share of the stage on its tighter axis
+const FIT_SEGMENTS = 48; // points round the plaza's ring that the default view must frame
 
 interface District {
   role: string;
@@ -423,6 +424,7 @@ export function mount(root: HTMLElement): Cleanup {
   let fitted = false;
   // The plaza's bounds (set by buildWorld) and whether the user has moved the camera; until they do, the default view refits.
   const plazaBounds = new THREE.Sphere(new THREE.Vector3(0, 0.4, 0), 8);
+  let plazaTop = DAIS_H; // the top of the tallest district, the fit's upper ring
   let userMoved = false;
   let settingView = false; // resetView's own camera moves are not the user's
   controls.addEventListener('change', () => {
@@ -580,18 +582,13 @@ export function mount(root: HTMLElement): Cleanup {
     // The world was just rebuilt (the old one is disposed above), so bake only this fresh static subtree.
     const stats = { districts: bakeStatic(districtGroup), paths: bakeStatic(pathGroup) };
     console.debug('floor: baked', stats);
-    // Every district, path and outside prop: the bounds the default view frames. Each mesh contributes its own
-    // sphere, so the outside ring costs its radius rather than the corners of a box around it.
-    const bounds = new THREE.Sphere().makeEmpty();
-    for (const root of [districtGroup, pathGroup]) {
-      root.traverse((o) => {
-        const geo = (o as THREE.Mesh).geometry;
-        if (!geo) return;
-        geo.computeBoundingSphere();
-        bounds.union(geo.boundingSphere!.clone().applyMatrix4(o.matrixWorld));
-      });
-    }
-    if (!bounds.isEmpty()) plazaBounds.copy(bounds);
+    // What the default view frames is the plaza itself: the districts out to their reach (a square room's corners
+    // included), which holds the dais and every robot's home. The outskirts scatter and the skyline stay out of it.
+    const box = new THREE.Box3().setFromObject(districtGroup);
+    plazaTop = box.isEmpty() ? DAIS_H : box.max.y;
+    let reach = DAIS_R + DAIS_RAMP;
+    for (const d of ds) reach = Math.max(reach, Math.hypot(d.cx, d.cy) + (d.r + RAMP) * (d.shape === 'square' ? Math.SQRT2 : 1));
+    plazaBounds.set(new THREE.Vector3(0, plazaTop / 2, 0), reach);
   }
 
   // Robots, labels, pads.
@@ -701,21 +698,74 @@ export function mount(root: HTMLElement): Cleanup {
   }
 
   /**
-   * Where the camera sits for the default view: the plaza's bounding sphere in frame. The tighter of the vertical and
-   * horizontal half-angles decides the distance, so the outer ring is never cropped on any canvas aspect.
+   * The default view: the camera distance at which the plaza fills FIT_FILL of the stage on its tighter axis, and the
+   * point it is aimed at. The plaza's ring (its reach, at the ground and at the tallest district's top) is projected;
+   * the nearest distance where every point is in front of the lens and inside that share of the frame is found by
+   * bisection. Perspective puts the near side of the ring lower on screen than the far side is high, so the aim moves
+   * to the ring's projected middle and the fit is run again.
    */
+  function fitView(): { dist: number; target: THREE.Vector3 } {
+    const target = plazaBounds.center.clone();
+    const reach = plazaBounds.radius;
+    const dir = new THREE.Vector3().setFromSphericalCoords(1, POLAR, AZIMUTH);
+    const ring: THREE.Vector3[] = [];
+    for (let i = 0; i < FIT_SEGMENTS; i++) {
+      const a = (i / FIT_SEGMENTS) * Math.PI * 2;
+      for (const y of [0, plazaTop]) ring.push(new THREE.Vector3(target.x + Math.cos(a) * reach, y, target.z + Math.sin(a) * reach));
+    }
+    const place = (dist: number): void => {
+      camera.position.copy(target).addScaledVector(dir, dist);
+      camera.lookAt(target);
+      camera.updateMatrixWorld();
+    };
+    const fits = (dist: number): boolean => {
+      place(dist);
+      return ring.every((p) => {
+        if (p.clone().applyMatrix4(camera.matrixWorldInverse).z >= 0) return false; // behind the lens
+        const q = p.clone().project(camera);
+        return Math.abs(q.x) <= FIT_FILL && Math.abs(q.y) <= FIT_FILL;
+      });
+    };
+    const bisect = (): number => {
+      let near = 1; // too close: the ring spills out of the frame
+      let far = 4000; // far enough that the plaza is a speck, so it fits
+      for (let i = 0; i < 40; i++) {
+        const mid = (near + far) / 2;
+        if (fits(mid)) far = mid;
+        else near = mid;
+      }
+      return far;
+    };
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+    let dist = bisect();
+    for (let pass = 0; pass < 2; pass++) {
+      place(dist);
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const p of ring) {
+        const y = p.clone().project(camera).y;
+        lo = Math.min(lo, y);
+        hi = Math.max(hi, y);
+      }
+      // Moving the aim up the screen's own vertical moves the plaza down the frame by the same share of the view.
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+      target.addScaledVector(up, ((lo + hi) / 2) * dist * tanHalf);
+      dist = bisect();
+    }
+    return { dist, target };
+  }
+
+  /** Where the camera sits for the default view: the plaza framed by fitView, the orbit aimed at its centre. */
   function resetView(): void {
-    const vHalf = THREE.MathUtils.degToRad(camera.fov) / 2;
-    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
-    const dist = (plazaBounds.radius * FIT_MARGIN) / Math.sin(Math.min(vHalf, hHalf));
+    const { dist, target } = fitView();
     controls.maxDistance = Math.max(300, dist * 2); // the orbit limit never pulls a large plaza in
     if (scene.fog instanceof THREE.Fog) {
       // The haze keeps its look at the fitted distance: the plaza stays clear and the far horizon still fades.
       scene.fog.near = dist * 0.8;
       scene.fog.far = dist * 3;
     }
-    controls.target.copy(plazaBounds.center);
-    camera.position.copy(plazaBounds.center).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
+    controls.target.copy(target);
+    camera.position.copy(target).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
     settingView = true;
     controls.update();
     settingView = false;

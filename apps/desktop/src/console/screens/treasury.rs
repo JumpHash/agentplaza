@@ -9,7 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::widget::{button, column, container, pick_list, row, text_input, Space};
+use iced::widget::text::Wrapping;
+use iced::widget::{button, column, container, pick_list, responsive, row, scrollable, text_input, Space};
 use iced::{alignment, mouse, Alignment, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Renderer, Size, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
@@ -37,6 +38,18 @@ const DASH: f32 = 7.0;
 const DASH_PERIOD: f32 = 14.0;
 const BAR_PAD_LEFT: f32 = 58.0;
 const BAR_PAD_BOTTOM: f32 = 22.0;
+/// The gap between tiles, cards and sections.
+const GAP: f32 = 16.0;
+/// The narrowest a tile may get; below five of them plus gaps, the tiles wrap to rows of three.
+const TILE_MIN: f32 = 150.0;
+/// Estimated advance of one 11px mono glyph, and of one 15px serif glyph (for fitting text).
+const MONO11_CHAR: f32 = 7.6;
+const SERIF15_CHAR: f32 = 7.6;
+/// The gap between legend entries, and an entry's swatch with the gaps inside it.
+const LEGEND_GAP: f32 = 18.0;
+const LEGEND_SWATCH: f32 = 22.0;
+/// A journal row's fixed columns (id, time, kind, amount) with their gaps, and the memo's share.
+const JOURNAL_FIXED: f32 = 56.0 + 92.0 + 120.0 + 90.0 + 4.0 * 12.0;
 const SERIES_COLUMNS: [(SeriesSort, &str, u16); 11] = [
     (SeriesSort::Time, "When", 3),
     (SeriesSort::Minted, "Minted", 2),
@@ -559,7 +572,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.extend(sections(data, state, now));
         }
     }
-    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
+    ui::sheet(head, scrollable(column(parts).spacing(GAP).width(Length::Fill)).spacing(GAP).height(Length::Fill).into())
 }
 
 /// The read-only body: tallies, the range and view controls, the charts or the series table, the
@@ -576,17 +589,35 @@ fn sections<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> 
     out
 }
 
+/// The five tallies, in one row when there is room for five tiles, else rows of three.
 fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
     let c = &state.counters;
     let cost = c.usd.at(now);
-    row![
-        tile("Plaza budget", money(c.budget.at(now)), String::new()),
-        tile("In circulation", money(c.circulating.at(now)), "held in agents’ wallets".to_string()),
-        tile("Paid out in range", money(c.paid.at(now)), "margins for verified work".to_string()),
-        tile("Real model cost", usd(cost), format!("≈ {} credits metered", money(cost / CREDIT_USD))),
-        tile("Treasury", money(c.treasury.at(now)), format!("{} fined in range", money(d.fined()))),
-    ]
-    .spacing(12)
+    let stats: Vec<(&'static str, String, String)> = vec![
+        ("Plaza budget", money(c.budget.at(now)), String::new()),
+        ("In circulation", money(c.circulating.at(now)), "held in agents’ wallets".to_string()),
+        ("Paid out", money(c.paid.at(now)), "margins for verified work".to_string()),
+        ("Real model cost", usd(cost), format!("≈ {} credits metered", money(cost / CREDIT_USD))),
+        ("Treasury", money(c.treasury.at(now)), format!("{} fined in range", money(d.fined()))),
+    ];
+    responsive(move |size| {
+        let per_row = if size.width >= 5.0 * TILE_MIN + 4.0 * GAP { 5 } else { 3 };
+        let rows: Vec<Element<'a, Msg>> = stats
+            .chunks(per_row)
+            .map(|chunk| {
+                let mut line = row![].spacing(GAP);
+                for (title, value, note) in chunk {
+                    line = line.push(tile(title, value.clone(), note.clone()));
+                }
+                // A short last row keeps the grid's columns: the empty slots take the same share.
+                for _ in chunk.len()..per_row {
+                    line = line.push(Space::new().width(Length::FillPortion(1)));
+                }
+                line.into()
+            })
+            .collect();
+        column(rows).spacing(GAP).width(Length::Fill).into()
+    })
     .into()
 }
 
@@ -620,14 +651,17 @@ fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
 
 /// A tally tile (the web's `.stat`): the figure, its label, then an italic note when there is one.
 fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
-    let mut stack = column![iced::widget::text(value).font(VALUE).size(28.0).color(theme::INK), ui::label(title)].spacing(4);
-    if !note.is_empty() {
-        stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(theme::INK_2));
-    }
+    // Long figures step down a size so they stay inside the tile.
+    let size = if value.chars().count() > 8 { 22.0 } else { 28.0 };
+    let mut stack = column![iced::widget::text(value).font(VALUE).size(size).color(theme::INK).wrapping(Wrapping::None), ui::label(title).wrapping(Wrapping::None)]
+        .spacing(6);
+    // A note wraps onto as many lines as it needs and the tile grows with it; a tile without one keeps
+    // a blank line, so the tiles beside it stay the same height.
+    let note = if note.is_empty() { "\u{a0}".to_string() } else { note };
+    stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(theme::INK_2));
     container(stack)
-        .padding(Padding { top: 14.0, right: 16.0, bottom: 16.0, left: 16.0 })
+        .padding(Padding::from(16.0))
         .width(Length::FillPortion(1))
-        .height(Length::Fixed(100.0))
         .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
@@ -635,8 +669,9 @@ fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
 /// The budget's path (the web's `flow`): budget, escrow, then spend (providers, compute) or payment
 /// (agents), then wallets. The arrows carry dashes that run along them, faster for larger flows.
 fn flow<'a>(d: &Data) -> Element<'a, Msg> {
-    let diagram = FlowChart { budget: d.budget, escrow: d.escrow, spent: d.spent, paid: d.paid(), wallets: d.wallets_total(), t: now_ms() / 1000.0 };
-    iced::widget::canvas(diagram).width(Length::Fill).height(Length::Fixed(200.0)).into()
+    // The same range totals as the flows chart's legend: the series summed over the selected range.
+    let diagram = FlowChart { budget: d.budget, escrow: d.escrowed(), spent: d.spent(), paid: d.paid(), wallets: d.wallets_total(), t: now_ms() / 1000.0 };
+    iced::widget::canvas(diagram).width(Length::Fill).height(Length::Fixed(180.0)).into()
 }
 
 struct FlowChart {
@@ -852,22 +887,56 @@ impl canvas::Program<Msg> for StackedBars {
 /// A row of swatches, each series' name and its value: the total over the range, or the last value
 /// when `last` (for balances, which are levels rather than flows).
 fn legend<'a>(series: &[chart::Series], format: fn(f64) -> String, last: bool) -> Element<'a, Msg> {
-    series
+    let items: Vec<(Color, String, String)> = series
         .iter()
-        .fold(row![].spacing(18).align_y(Alignment::Center), |line, s| {
+        .map(|s| {
             let total: f64 = if last { s.values.last().copied().unwrap_or(0.0) } else { s.values.iter().sum() };
-            let color = s.color;
-            let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
-                background: Some(color.into()),
-                ..Default::default()
-            });
-            line.push(
-                row![swatch, iced::widget::text(s.key.clone()).font(MONO).size(11.0).color(INK_2), iced::widget::text(format(total)).font(MONO).size(11.0).color(INK)]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
-            )
+            (s.color, s.key.clone(), format(total))
         })
-        .into()
+        .collect();
+    responsive(move |size| {
+        // Entries fill a line left to right; an entry that would pass the width starts the next line.
+        let mut lines: Vec<Vec<&(Color, String, String)>> = vec![Vec::new()];
+        let mut used = 0.0_f32;
+        for item in &items {
+            let width = LEGEND_SWATCH + (item.1.chars().count() + item.2.chars().count() + 1) as f32 * MONO11_CHAR;
+            let gap = if used > 0.0 { LEGEND_GAP } else { 0.0 };
+            if used > 0.0 && used + gap + width > size.width {
+                lines.push(Vec::new());
+                used = 0.0;
+            }
+            used += if used > 0.0 { LEGEND_GAP } else { 0.0 } + width;
+            if let Some(line) = lines.last_mut() {
+                line.push(item);
+            }
+        }
+        let rows: Vec<Element<'a, Msg>> = lines
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let mut r = row![].spacing(LEGEND_GAP).align_y(Alignment::Center);
+                for (color, key, value) in line {
+                    let color = *color;
+                    let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
+                        background: Some(color.into()),
+                        ..Default::default()
+                    });
+                    r = r.push(
+                        row![
+                            swatch,
+                            iced::widget::text(key.clone()).font(MONO).size(11.0).color(INK_2).wrapping(Wrapping::None),
+                            iced::widget::text(value.clone()).font(MONO).size(11.0).color(INK).wrapping(Wrapping::None),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    );
+                }
+                r.into()
+            })
+            .collect();
+        column(rows).spacing(6).width(Length::Fill).into()
+    })
+    .into()
 }
 
 /// The series as a table: sortable, paged, with a totals row (flows summed, balances at their end).
@@ -1037,17 +1106,7 @@ fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a
     let selected_wallet = wallets.iter().find(|o| o.cid == state.filter.wallet).cloned();
     let wallet_pick = pick_list(wallets, selected_wallet, Msg::WalletPicked);
     let task = text_input("Task", &state.task_draft).on_input(Msg::TaskDraft).on_submit(Msg::TaskApply).style(theme::input).width(Length::Fill);
-    let head = container(
-        column![
-            row![ui::label("Journal"), Space::new().width(Length::Fill), ui::faint(format!("{} of {}", state.journal.len(), state.journal_total))]
-                .align_y(Alignment::Center),
-            row![kind_pick, wallet_pick, task].spacing(12).align_y(Alignment::Center),
-        ]
-        .spacing(10),
-    )
-    .padding(Padding { top: 8.0, right: 12.0, bottom: 10.0, left: 12.0 })
-    .width(Length::Fill)
-    .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() });
+    let filters = row![kind_pick, wallet_pick, task].spacing(12).align_y(Alignment::Center);
 
     let body: Element<'a, Msg> = if state.journal.is_empty() {
         ui::empty::<Msg>("clock", "No entries.", "")
@@ -1066,17 +1125,12 @@ fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a
         ledger.into()
     };
     let footer = row![
-        ui::faint(format!("Newest first · {} shown", state.journal.len())),
+        ui::faint(format!("Newest first · {} of {} shown", state.journal.len(), state.journal_total)),
         Space::new().width(Length::Fill),
         ui::btn("Load older", None, ui::Kind::Secondary, (state.journal_next.is_some() && !state.older_busy).then_some(Msg::OlderPressed)),
     ]
-    .align_y(Alignment::Center)
-    .padding(Padding { top: 8.0, right: 14.0, bottom: 8.0, left: 14.0 });
-    let frame = container(column![body, footer]).width(Length::Fill).style(|_: &Theme| container::Style {
-        border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
-        ..Default::default()
-    });
-    column![head, frame].into()
+    .align_y(Alignment::Center);
+    ui::card("Journal", column![filters, body, footer].spacing(GAP).width(Length::Fill).into())
 }
 
 /// How far a fresh row has faded in (0 at its arrival, 1 once settled).
@@ -1084,8 +1138,9 @@ fn fade(fresh: &[(i64, Instant)], id: i64, now: Instant) -> f32 {
     fresh.iter().find(|(i, _)| *i == id).map_or(1.0, |(_, at)| chart::ease(progress(*at, now)) as f32)
 }
 
+/// One journal row: the id, the time, the kind's badge, the memo (cut with an ellipsis to the room
+/// the fixed columns leave), and the amount, right-aligned.
 fn entry_row<'a>(e: &Entry, alpha: f32) -> Element<'a, Msg> {
-    let fade = |c: Color| Color { a: c.a * alpha, ..c };
     let memo = if e.memo.is_empty() {
         match &e.task {
             Some(task) => format!("{} for {task}", e.kind),
@@ -1094,17 +1149,40 @@ fn entry_row<'a>(e: &Entry, alpha: f32) -> Element<'a, Msg> {
     } else {
         e.memo.clone()
     };
-    row![
-        container(ui::mono(format!("#{}", e.id), 11.5, fade(INK_3))).width(Length::Fixed(56.0)),
-        container(ui::mono(ago(e.at), 11.5, fade(INK_3))).width(Length::Fixed(92.0)),
-        container(ui::badge::<Msg>(&e.kind, kind_tone(&e.kind))).width(Length::Fixed(110.0)),
-        container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(fade(INK))).width(Length::Fill),
-        iced::widget::text(money(e.amount)).font(AMOUNT).size(14.0).color(fade(INK)),
-    ]
-    .spacing(14)
-    .padding(Padding { top: 9.0, right: 14.0, bottom: 9.0, left: 14.0 })
-    .align_y(Alignment::Center)
+    let (id, when, kind, amount, tone) = (format!("#{}", e.id), ago(e.at), kind_label(&e.kind), money(e.amount), kind_tone(&e.kind));
+    responsive(move |size| {
+        let fade = |c: Color| Color { a: c.a * alpha, ..c };
+        let room = (size.width - JOURNAL_FIXED).max(0.0);
+        let memo = ellipsize(&memo, (room / SERIF15_CHAR) as usize);
+        row![
+            container(ui::mono(id.clone(), 11.5, fade(INK_3))).width(Length::Fixed(56.0)).clip(true),
+            container(ui::mono(when.clone(), 11.5, fade(INK_3))).width(Length::Fixed(92.0)).clip(true),
+            container(ui::badge::<Msg>(&kind, tone)).width(Length::Fixed(120.0)).clip(true),
+            container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(fade(INK)).wrapping(Wrapping::None))
+                .width(Length::Fill)
+                .clip(true),
+            container(iced::widget::text(amount.clone()).font(AMOUNT).size(14.0).color(fade(INK)).wrapping(Wrapping::None))
+                .width(Length::Fixed(90.0))
+                .align_right(Length::Fixed(90.0)),
+        ]
+        .spacing(12)
+        .padding(Padding { top: 9.0, right: 0.0, bottom: 9.0, left: 0.0 })
+        .align_y(Alignment::Center)
+        .into()
+    })
     .into()
+}
+
+/// `text` cut to `max` characters, the last of them an ellipsis when it had to be cut.
+fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let kept: String = text.chars().take(max - 1).collect();
+    format!("{}…", kept.trim_end())
 }
 
 fn mint_form<'a>(state: &State) -> Element<'a, Msg> {
@@ -1223,7 +1301,7 @@ fn kind_options(d: Option<&Data>, journal: &[Entry]) -> Vec<KindChoice> {
     kinds.sort();
     kinds.dedup();
     let mut options = vec![KindChoice { kind: None, label: "All kinds".to_string() }];
-    options.extend(kinds.into_iter().map(|k| KindChoice { kind: Some(k.clone()), label: k }));
+    options.extend(kinds.into_iter().map(|k| KindChoice { label: kind_label(&k), kind: Some(k) }));
     options
 }
 
@@ -1277,18 +1355,29 @@ fn balance_series(points: &[Bucket]) -> Vec<chart::Series> {
     ]
 }
 
-/// The flows per bucket, one series per kind seen in the range, sorted by kind.
+/// The flows per bucket, one series per kind that moved money in the range, sorted by kind. A kind
+/// that is zero across the whole range is left out, so the legend lists only what the chart shows.
 fn flow_series(points: &[Bucket]) -> Vec<chart::Series> {
     let mut kinds: Vec<String> = points.iter().flat_map(|p| p.by_kind.keys().cloned()).collect();
     kinds.sort();
     kinds.dedup();
     kinds
         .into_iter()
-        .map(|kind| {
-            let values = points.iter().map(|p| p.by_kind.get(&kind).copied().unwrap_or(0.0)).collect();
-            chart::Series { color: kind_color(&kind), key: kind, values }
+        .filter_map(|kind| {
+            let values: Vec<f64> = points.iter().map(|p| p.by_kind.get(&kind).copied().unwrap_or(0.0)).collect();
+            (values.iter().any(|v| *v != 0.0)).then(|| chart::Series { color: kind_color(&kind), key: kind_label(&kind), values })
         })
         .collect()
+}
+
+/// A kind's id as a reader sees it: "budget_move" is "Budget move", "subcontract" is "Subcontract".
+fn kind_label(kind: &str) -> String {
+    let spaced = kind.replace('_', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// Whole units with thousands separators, as the web's `money`.
@@ -1449,8 +1538,6 @@ impl Animated {
 #[derive(Debug, Clone)]
 pub struct Data {
     budget: f64,
-    spent: f64,
-    escrow: f64,
     treasury: f64,
     wallets: Vec<Wallet>,
     roster: Vec<Member>,
@@ -1522,8 +1609,6 @@ impl Data {
         let totals = usage.get("totals").cloned().unwrap_or(Value::Null);
         Data {
             budget: num(treasury, "plaza_budget"),
-            spent: num(treasury, "spent"),
-            escrow: balance("escrow"),
             treasury: balance("treasury"),
             wallets: list(wallets, "wallets")
                 .iter()
@@ -1540,6 +1625,15 @@ impl Data {
 
     fn paid(&self) -> f64 {
         self.points.iter().map(|p| p.paid).sum()
+    }
+
+    /// The range's spend and escrow: the series summed, as the flows' legend sums them.
+    fn spent(&self) -> f64 {
+        self.points.iter().map(|p| p.spent).sum()
+    }
+
+    fn escrowed(&self) -> f64 {
+        self.points.iter().map(|p| p.escrowed).sum()
     }
 
     fn fined(&self) -> f64 {
@@ -1755,7 +1849,7 @@ mod tests {
         let points: Vec<Bucket> = list(&series, "points").iter().map(Bucket::parse).collect();
         let flows = flow_series(&points);
         let keys: Vec<&str> = flows.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, vec!["fine", "mint", "payment", "spend"]);
+        assert_eq!(keys, vec!["Fine", "Mint", "Payment", "Spend"]);
         assert_eq!(flows[1].values, vec![5.0, 0.0]);
         assert_eq!(balance_series(&points)[0].values, vec![10.0, 8.0]);
         let all = totals(&points);

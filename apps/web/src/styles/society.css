@@ -3,6 +3,8 @@
 .soc {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  /* One row as tall as the stage: the graph and the panel fit it, and the panel scrolls inside. */
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--s4);
   flex: 1;
   min-height: 0;
@@ -164,7 +166,7 @@
 .soc-sw.soc-sw-box { width: 14px; height: 14px; border: 2px solid var(--ink); border-radius: 4px; background: var(--surface-3); }
 
 @media (max-width: 899px) {
-  .soc { grid-template-columns: minmax(0, 1fr); height: auto; min-height: 0; }
+  .soc { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; height: auto; min-height: 0; }
   .soc-graph { height: 62vh; min-height: 360px; }
   .soc-panel { overflow: visible; }
 }

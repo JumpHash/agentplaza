@@ -36,7 +36,9 @@ export type Geo =
   | { type: 'sphere'; r: number }
   | { type: 'torus'; r: number; tube: number; arc?: number }
   | { type: 'plane'; w: number; d: number }
-  | { type: 'ring'; ri: number; ro: number };
+  | { type: 'ring'; ri: number; ro: number }
+  /** A flat outline (points [x, z], counter-clockwise seen from above) extruded up by h: logos, cut shapes. */
+  | { type: 'shape'; points: [number, number][]; h: number };
 export type GeoType = Geo['type'];
 
 export interface Anim {
@@ -158,6 +160,7 @@ const GEO: Record<GeoType, { req: readonly string[]; opt: readonly string[] }> =
   torus: { req: ['r', 'tube'], opt: ['arc'] },
   plane: { req: ['w', 'd'], opt: [] },
   ring: { req: ['ri', 'ro'], opt: [] },
+  shape: { req: ['h'], opt: ['points'] }, // points is checked on its own (an array, not a number)
 };
 const DEFAULT_MAT: Material = { color: '#9aa3b8' };
 const TAU = Math.PI * 2;
@@ -321,7 +324,7 @@ function checkMatRef(m: unknown, path: string, c: VCtx): void {
 
 function checkGeo(g: unknown, path: string, c: VCtx): void {
   if (!isObj(g) || typeof g.type !== 'string' || !(g.type in GEO)) {
-    fail(c, `${path}.type`, `unknown geo type ${JSON.stringify(isObj(g) ? g.type : g)} (box, rbox, cyl, cone, sphere, torus, plane, ring)`);
+    fail(c, `${path}.type`, `unknown geo type ${JSON.stringify(isObj(g) ? g.type : g)} (box, rbox, cyl, cone, sphere, torus, plane, ring, shape)`);
     return;
   }
   const spec = GEO[g.type as GeoType];
@@ -336,6 +339,12 @@ function checkGeo(g: unknown, path: string, c: VCtx): void {
   if (g.type === 'rbox' && isNum(g.w) && isNum(g.h) && isNum(g.d) && isNum(g.r) && g.r > Math.min(g.w, g.h, g.d) / 2)
     fail(c, `${path}.r`, 'the radius is more than half the smallest side');
   if (g.type === 'ring' && isNum(g.ri) && isNum(g.ro) && g.ri >= g.ro) fail(c, `${path}.ri`, 'the inner radius must be below the outer');
+  if (g.type === 'shape') {
+    const pts = g.points;
+    if (!Array.isArray(pts) || pts.length < 3) fail(c, `${path}.points`, 'expected 3 or more [x, z] points');
+    else if (!pts.every((q) => Array.isArray(q) && q.length === 2 && isNum(q[0]) && isNum(q[1])))
+      fail(c, `${path}.points`, 'every point is [x, z]');
+  }
   if (g.type === 'torus' && g.arc !== undefined && !(isNum(g.arc) && g.arc > 0 && g.arc <= 360)) fail(c, `${path}.arc`, 'expected degrees in (0, 360]');
 }
 
@@ -476,6 +485,14 @@ function makeGeometry(g: Geo): THREE.BufferGeometry {
     }
     case 'ring': {
       const geo = new THREE.RingGeometry(g.ri, g.ro, 48);
+      geo.rotateX(-Math.PI / 2);
+      return geo;
+    }
+    case 'shape': {
+      // The outline in the shape's plane as (x, -z), extruded along +z by h, then laid flat: the
+      // rotation maps (sx, sy, e) to (sx, e, -sy), so y runs 0..h and z comes back as given.
+      const shape = new THREE.Shape(g.points.map(([x, z]) => new THREE.Vector2(x, -z)));
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: g.h, bevelEnabled: false, curveSegments: 1 });
       geo.rotateX(-Math.PI / 2);
       return geo;
     }
