@@ -76,8 +76,11 @@ pub struct FrameOut {
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    format: wgpu::TextureFormat,
     pipeline: render::Pipeline,
     primitive: Option<render::Primitive>,
+    /// The offscreen target of the last thumbnail, reused while its size holds.
+    thumb: Option<(u32, u32, wgpu::Texture)>,
 }
 
 impl Renderer {
@@ -87,8 +90,10 @@ impl Renderer {
         Renderer {
             device: device.clone(),
             queue: queue.clone(),
+            format,
             pipeline: render::Pipeline::new(device, queue, format),
             primitive: None,
+            thumb: None,
         }
     }
 
@@ -123,6 +128,156 @@ impl Renderer {
         self.pipeline.draw_stats()
     }
 
+}
+
+/// The largest side a thumbnail renders at, in device px.
+pub const THUMB_MAX: u32 = 512;
+
+/// The readback slot a thumbnail's buffer reports into when it is mapped.
+#[derive(Default)]
+struct Mapped {
+    result: Option<Result<(), wgpu::BufferAsyncError>>,
+    waker: Option<std::task::Waker>,
+}
+
+/// A thumbnail on its way back from the GPU, its readback buffer being mapped. [`Thumbnail::pixels`] resolves it.
+pub struct Thumbnail {
+    buffer: wgpu::Buffer,
+    slot: Arc<std::sync::Mutex<Mapped>>,
+    width: u32,
+    height: u32,
+    /// Bytes per buffer row, padded to wgpu's copy alignment.
+    row: u32,
+    /// The target is blue-red swapped (a BGRA format), so its pixels are swapped back to RGBA.
+    swap_rb: bool,
+}
+
+impl Thumbnail {
+    /// The RGBA8 pixels, row by row from the top, once the GPU has mapped them. On the browser this await is the only
+    /// wait; natively the device must be polled first ([`Renderer::thumbnail`] does both).
+    pub async fn pixels(self) -> Result<Vec<u8>, String> {
+        let slot = self.slot.clone();
+        let result = std::future::poll_fn(|cx| {
+            let mut mapped = slot.lock().unwrap_or_else(|e| e.into_inner());
+            match mapped.result.take() {
+                Some(result) => std::task::Poll::Ready(result),
+                None => {
+                    mapped.waker = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            }
+        })
+        .await;
+        result.map_err(|e| format!("the thumbnail readback failed: {e:?}"))?;
+        let (line, rows, row) = (self.width as usize * 4, self.height as usize, self.row as usize);
+        let mut out = Vec::with_capacity(line * rows);
+        {
+            let view = self.buffer.slice(..).get_mapped_range();
+            for bytes in view.chunks(row).take(rows) {
+                out.extend_from_slice(&bytes[..line]);
+            }
+        }
+        self.buffer.unmap();
+        if self.swap_rb {
+            for px in out.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Renderer {
+    /// Renders one machine's stage pose offscreen at `w` by `h` (each capped at [`THUMB_MAX`]) and starts the readback.
+    /// The pixels come from [`Thumbnail::pixels`].
+    pub fn thumbnail_begin(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Thumbnail, String> {
+        let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
+        let frame = Arc::new(machine.thumbnail_frame(w as f32 / h as f32));
+        let bounds = render::Rect { x: 0.0, y: 0.0, width: w as f32, height: h as f32 };
+        self.prepare(frame, bounds, 1.0);
+
+        let texture = match self.thumb.take() {
+            Some((tw, th, texture)) if (tw, th) == (w, h) => texture,
+            _ => self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("apz-engine thumbnail"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }),
+        };
+        self.thumb = Some((w, h, texture.clone()));
+
+        let row = (w * 4).div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("apz-engine thumbnail readback"),
+            size: u64::from(row) * u64::from(h),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("apz-engine thumbnail") });
+        {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("apz-engine thumbnail pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.draw(&mut pass);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slot = Arc::new(std::sync::Mutex::new(Mapped::default()));
+        let sink = slot.clone();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            let mut mapped = sink.lock().unwrap_or_else(|e| e.into_inner());
+            mapped.result = Some(result);
+            if let Some(waker) = mapped.waker.take() {
+                waker.wake();
+            }
+        });
+        let swap_rb = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        Ok(Thumbnail { buffer, slot, width: w, height: h, row, swap_rb })
+    }
+
+    /// One machine's thumbnail as RGBA8 bytes, natively: the device is polled until the pixels are mapped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn thumbnail(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        let thumb = self.thumbnail_begin(machine, w, h)?;
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("{e:?}"))?;
+        block_ready(thumb.pixels())
+    }
+}
+
+/// Drives a future that is ready once the GPU has done its work (the native readback, after a device poll).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn block_ready<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        if let std::task::Poll::Ready(out) = future.as_mut().poll(&mut cx) {
+            return out;
+        }
+        std::thread::yield_now();
+    }
 }
 
 /// The engine: the stage (the Floor's state), the pointer state, and the GPU side when there is one.
@@ -301,6 +456,14 @@ impl Engine {
             self.frames += 1;
         }
         out
+    }
+
+    /// Starts the thumbnail of one machine of the feed, rendered offscreen at `w` by `h` ([`Renderer::thumbnail_begin`]).
+    /// Err when there is no GPU, the feed has no such machine, or the render fails.
+    pub fn thumbnail_begin(&mut self, id: &str, w: u32, h: u32) -> Result<Thumbnail, String> {
+        let machine = self.stage.machine_stage_for(id).ok_or_else(|| format!("no machine '{id}' on the feed"))?;
+        let gpu = self.gpu.as_mut().ok_or_else(|| "the engine has no GPU".to_string())?;
+        gpu.thumbnail_begin(&machine, w, h)
     }
 
     /// The frame the stage built at the last advance.

@@ -34,7 +34,7 @@ pub mod textures;
 pub mod toon;
 pub mod world;
 
-pub use engine::{agent_list, feed_from_json, Cmd, Engine, Feed, FrameOut, Pick, Renderer};
+pub use engine::{agent_list, feed_from_json, Cmd, Engine, Feed, FrameOut, Pick, Renderer, Thumbnail};
 pub use stage::Motion;
 
 /// An `APZ_*` capture or debug knob from the environment. A browser has no environment, so every knob reads as

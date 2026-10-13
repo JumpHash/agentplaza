@@ -4,17 +4,13 @@
 //! has them, its storage drives. The camera orbits the machine: it turns by itself until the first input, then the
 //! user drives it. The look and param rules are the web's, so a morph starts from the same picture.
 //!
-//! TODO(thumbnail): `Engine::thumbnail(id, w, h) -> Vec<u8>` (the stage pose rendered offscreen, read back as RGBA) is
-//! not built. It needs an offscreen colour target and a buffer readback on the host's device.
-//! TODO(tint): `Picture::tints` holds each shown card's vendor tint and is tested, but the tint is not yet applied to
-//! the model's shroud material. That needs a palette override in `hardware::build` (the web's `retint` step).
-//! TODO(shadow): the web's shadow catcher (a transparent plane under the machine) is not drawn. The sun's shadow map
-//! is the only ground shadow.
+//! The thumbnail is `Renderer::thumbnail` (native) and `WebEngine::thumbnail` (the browser): this pose rendered
+//! offscreen. The card tints go through `hardware::build_tinted`, and a shadow catcher sits under the machine.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use web_time::Instant;
 
 use crate::controls::Orbit;
@@ -188,6 +184,37 @@ fn studio_world() -> World {
     }
 }
 
+/// The web's shadow catcher (`makeScene`): a transparent 14 by 14 floor just above the ground at opacity 0.2 that shows
+/// only the machine's shadow.
+fn shadow_catcher() -> Draw {
+    const HALF: f32 = 7.0;
+    const LIFT: f32 = 0.002;
+    let positions = vec![[-HALF, LIFT, -HALF], [HALF, LIFT, -HALF], [HALF, LIFT, HALF], [-HALF, LIFT, HALF]];
+    let normals = vec![[0.0, 1.0, 0.0]; 4];
+    let geo = scene::Geometry::new(positions, normals, Vec::new(), vec![0, 2, 1, 0, 3, 2]);
+    let material = scene::Material {
+        shading: scene::Shading::Shadow,
+        color: Color::BLACK,
+        opacity: 0.2,
+        transparent: true,
+        depth_write: false,
+        fog: false,
+        ..scene::Material::default()
+    };
+    Draw {
+        kind: scene::DrawKind::Mesh,
+        geo,
+        mat_id: scene::next_id(),
+        material,
+        model: Mat4::IDENTITY,
+        cast_shadow: false,
+        receive_shadow: true,
+        render_order: 0,
+        lod: 0,
+        fade: 0,
+    }
+}
+
 /// Each stage's statics get their own version, so the renderer never reuses one machine's baked draws for another.
 static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
 
@@ -219,13 +246,15 @@ impl MachineStage {
     pub fn new(machine: &Machine, drives: Option<u32>) -> Option<MachineStage> {
         let pic = picture(machine, drives);
         let model: &'static Model = hardware::model(pic.look.exterior()).or_else(|| hardware::model("exterior/workstation"))?;
-        let mut built = hardware::build(model, &params_of(&pic));
+        let mut built = hardware::build_tinted(model, &params_of(&pic), &pic.tints);
         built.freeze_cutaways(); // no fades on the stage
         built.update(0.0, 0.0, &State { status: status_of(&machine.status), activity: 0.0, open: 0.0 });
 
         let root = Obj::group();
         root.add(&built.root);
-        let statics = Arc::new(scene::bake(&root));
+        let mut statics = scene::bake(&root);
+        statics.push(shadow_catcher());
+        let statics = Arc::new(statics);
         let lights = scene::flatten(&root, Filter::Static).1;
 
         let size = model.size;
@@ -260,15 +289,22 @@ impl MachineStage {
     /// Frames the machine so it fills [`FILL`] of the view, from the camera's pose (the web's `frameOf`, orbit pose).
     fn fit(&mut self, aspect: f32) {
         self.aspect = aspect;
+        let mut orbit = std::mem::take(&mut self.orbit);
+        self.framed(&mut orbit, aspect);
+        self.orbit = orbit;
+    }
+
+    /// Sets `orbit` to the framing of the machine at `aspect`.
+    fn framed(&self, orbit: &mut Orbit, aspect: f32) {
         let tan = (FOV_DEG.to_radians() / 2.0).tan();
         let [sx, sy, sz] = self.size;
         let by_height = sy / 2.0 / (FILL * tan);
         let by_width = sx / 2.0 / (FILL * tan * aspect.max(1e-3));
         let dist = by_height.max(by_width) + sz / 2.0;
         let high = (self.dir + Vec3::Y * ELEVATION).normalize();
-        self.orbit.look(self.center + high * dist, self.center);
-        self.orbit.min_distance = dist * 0.5;
-        self.orbit.max_distance = dist * 1.6;
+        orbit.look(self.center + high * dist, self.center);
+        orbit.min_distance = dist * 0.5;
+        orbit.max_distance = dist * 1.6;
     }
 
     /// Steps the camera by `dt` seconds and returns the motion it needs: [`Motion::Active`] while the user's drag is
@@ -310,15 +346,30 @@ impl MachineStage {
 
     /// The stage camera (FOV 30, the orbit's pose).
     pub fn camera(&self) -> Camera {
-        let mut camera = self.orbit.camera(self.aspect);
+        self.camera_of(&self.orbit, self.aspect)
+    }
+
+    fn camera_of(&self, orbit: &Orbit, aspect: f32) -> Camera {
+        let mut camera = orbit.camera(aspect);
         camera.fov = FOV_DEG;
         camera
     }
 
     /// The frame for the renderer: the baked statics and the studio lights, with no dynamic draws.
     pub fn frame(&self) -> Frame {
+        self.frame_with(self.camera())
+    }
+
+    /// The thumbnail's frame at `aspect`: the start pose framed for that aspect (no spin, no user drive).
+    pub fn thumbnail_frame(&self, aspect: f32) -> Frame {
+        let mut orbit = Orbit::default();
+        self.framed(&mut orbit, aspect);
+        self.frame_with(self.camera_of(&orbit, aspect))
+    }
+
+    fn frame_with(&self, camera: Camera) -> Frame {
         Frame {
-            camera: self.camera(),
+            camera,
             world: studio_world(),
             statics: Arc::clone(&self.statics),
             statics_version: self.statics_version,
@@ -334,10 +385,15 @@ impl MachineStage {
 }
 
 impl Stage {
+    /// One machine of the current feed as a fresh stage at its start pose, or None when the feed has no such machine.
+    pub fn machine_stage_for(&self, id: &str) -> Option<MachineStage> {
+        let machine = self.fleet_data.as_ref().and_then(|f| f.machines.iter().find(|m| m.id == id))?;
+        MachineStage::new(machine, None)
+    }
+
     /// Shows one machine of the current feed on the stage (`Cmd::ShowMachine`). False when the feed has no such machine.
     pub fn show_machine(&mut self, id: &str) -> bool {
-        let machine = self.fleet_data.as_ref().and_then(|f| f.machines.iter().find(|m| m.id == id));
-        match machine.and_then(|m| MachineStage::new(m, None)) {
+        match self.machine_stage_for(id) {
             Some(stage) => {
                 self.machine = Some(stage);
                 true
@@ -368,6 +424,7 @@ impl Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{block_ready, Renderer};
     use crate::fleet::FleetResponse;
     use serde_json::json;
 
@@ -458,6 +515,27 @@ mod tests {
         let theta = stage.orbit.theta;
         assert_eq!(stage.step(0.5, 1.5, false), Motion::Rest, "a settled user view rests");
         assert_eq!(stage.orbit.theta, theta, "the spin stays off after the first input");
+    }
+
+    /// A device for the GPU test, or None on a machine with no adapter (the test is then skipped).
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = block_ready(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        block_ready(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    }
+
+    #[test]
+    fn a_thumbnail_is_rgba_of_the_asked_size() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("no wgpu adapter here: the thumbnail test is skipped");
+            return;
+        };
+        let m = machine(json!({ "id": "w", "name": "w", "kind": "workstation", "vendor": "dell", "memory_mib": 65536, "gpus": gpus(2, "NVIDIA") }));
+        let stage = MachineStage::new(&m, None).expect("a stage");
+        let mut renderer = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let px = renderer.thumbnail(&stage, 64, 64).expect("the readback");
+        assert_eq!(px.len(), 64 * 64 * 4);
+        assert!(px.iter().any(|b| *b != 0), "the thumbnail is empty");
     }
 
     #[test]

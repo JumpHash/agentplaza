@@ -16,7 +16,7 @@ use std::sync::Arc;
 use apz_engine::input::{Button, Event};
 use apz_engine::world::view::Label;
 use apz_engine::{Cmd, Engine, Motion, Pick};
-use js_sys::{Array, Float32Array, Function, Object, Reflect, Uint32Array};
+use js_sys::{Array, Float32Array, Function, Object, Promise, Reflect, Uint32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
@@ -180,6 +180,17 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
 
 #[wasm_bindgen]
 impl WebEngine {
+    /// One machine's stage pose rendered offscreen at `w` by `h` (each at most 512), as RGBA8 bytes. A Promise, since the
+    /// readback is async: it resolves once the GPU has copied the pixels back, and rejects for an unknown id.
+    pub fn thumbnail(&self, id: String, w: u32, h: u32) -> Promise {
+        let started = self.shared.borrow_mut().engine.thumbnail_begin(&id, w, h);
+        wasm_bindgen_futures::future_to_promise(async move {
+            let thumb = started.map_err(|e| JsValue::from_str(&e))?;
+            let pixels = thumb.pixels().await.map_err(|e| JsValue::from_str(&e))?;
+            Ok(Uint8Array::from(pixels.as_slice()).into())
+        })
+    }
+
     /// The backend the engine draws with: 'webgpu' or 'webgl2'.
     pub fn backend(&self) -> String {
         backend_name(self.shared.borrow().backend).to_string()

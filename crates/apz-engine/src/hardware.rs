@@ -1191,6 +1191,19 @@ fn span_of(node: &Obj, world: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
 /// `scale`, `rot` and `label` are applied as the schema says. Only the parts that move (animated,
 /// tagged, cutaway) are dynamic: the rest is baked by the scene.
 pub fn build(model: &Model, params: &Params) -> Built {
+    build_tinted(model, params, &[])
+}
+
+/// [`build`] with each shown GPU card's shroud tinted (the web's `retint`, `machine-stage.ts`): `tints[i]` is the tint of
+/// the i-th card in card order, None keeps the palette's shroud. Without a tint the model builds exactly as `build`.
+pub fn build_tinted(model: &Model, params: &Params, tints: &[Option<u32>]) -> Built {
+    let tinted;
+    let model = if tints.iter().any(Option::is_some) {
+        tinted = tint_cards(model, tints);
+        &tinted
+    } else {
+        model
+    };
     let mut vals = model.params.clone();
     vals.extend(params.values.iter().map(|(k, v)| (k.clone(), *v)));
     let mut b = Builder { vals, parts: HashMap::new(), live: Vec::new(), depth: 0, mats: HashMap::new(), fades: Vec::new(), lod: 0, fade: 0, dynamic: false };
@@ -1213,6 +1226,51 @@ pub fn build(model: &Model, params: &Params) -> Built {
         .collect();
     let fade_nodes = b.fades.iter().map(|(_, node)| node.clone()).collect();
     Built { root, parts: b.parts, fades, fade_nodes, live: b.live, t: 0.0 }
+}
+
+/// The model with its GPU cards retinted: card i (the i-th top-level card part, in model order) takes an inline material of
+/// `tints[i]` when it has one.
+fn tint_cards(model: &Model, tints: &[Option<u32>]) -> Model {
+    let mut out = model.clone();
+    let cards: Vec<usize> = out.parts.iter().enumerate().filter(|(_, p)| is_card(p)).map(|(i, _)| i).collect();
+    for (&card, tint) in cards.iter().zip(tints) {
+        if let Some(t) = tint {
+            let spec = MatSpec::Inline(InlineMat { color: Some(format!("#{t:06x}")), emissive: None, glow: 0.0, opacity: 1.0, additive: false, flat: false });
+            retint(&mut out.parts[card], &spec, true);
+        }
+    }
+    out
+}
+
+/// A top-level part gated by a `gpus` `when` that has a shroud, or is the laptop's bare chip (`ic`).
+fn is_card(p: &Part) -> bool {
+    p.when.as_deref().is_some_and(mentions_gpus) && (has_shroud(p) || is_mat(p.mat.as_ref(), "ic"))
+}
+
+/// Whether a `when` expression names the `gpus` param as a whole word (the web's `/\\bgpus\\b/`).
+fn mentions_gpus(when: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    when.match_indices("gpus").any(|(i, _)| {
+        !when[..i].chars().next_back().is_some_and(word) && !when[i + 4..].chars().next().is_some_and(word)
+    })
+}
+
+fn has_shroud(p: &Part) -> bool {
+    is_mat(p.mat.as_ref(), "gpu-shroud") || p.children.iter().any(has_shroud)
+}
+
+fn is_mat(spec: Option<&MatSpec>, name: &str) -> bool {
+    matches!(spec, Some(MatSpec::Name(n)) if n == name)
+}
+
+/// Points a card's shroud (and, on the top part, a bare chip) at `spec` (the web's `retint`).
+fn retint(p: &mut Part, spec: &MatSpec, top: bool) {
+    if is_mat(p.mat.as_ref(), "gpu-shroud") || (top && is_mat(p.mat.as_ref(), "ic")) {
+        p.mat = Some(spec.clone());
+    }
+    for c in &mut p.children {
+        retint(c, spec, false);
+    }
 }
 
 /// A repeat's copy count, read from `vals` (see `Count`), at most 256 (the web's `repeatCount`). A named count reads its
@@ -1730,6 +1788,28 @@ mod tests {
         let built = build(&m, &Params::default());
         assert_eq!(copies(built.parts.get("a").unwrap()), 2);
         assert_eq!(copies(built.parts.get("b").unwrap()), 2);
+    }
+
+    #[test]
+    fn a_card_tint_recolours_its_shroud_and_nothing_else() {
+        let m = model("exterior/workstation").unwrap();
+        let params = Params::default().with("gpus", 2.0);
+        let colours = |b: &Built| crate::scene::flatten(&b.root, crate::scene::Filter::Static).0.iter().map(|d| d.material.color).collect::<Vec<_>>();
+
+        let plain = colours(&build(m, &params));
+        // No override, and an all-None one, build the palette's shroud everywhere.
+        assert_eq!(colours(&build_tinted(m, &params, &[])), plain);
+        assert_eq!(colours(&build_tinted(m, &params, &[None, None])), plain);
+
+        // The first card's shroud takes the tint; the second card and every other draw are unchanged.
+        let on = colours(&build_tinted(m, &params, &[Some(0x76b900), None]));
+        assert_eq!(on.len(), plain.len());
+        let changed: Vec<usize> = (0..on.len()).filter(|&i| on[i] != plain[i]).collect();
+        assert!(!changed.is_empty(), "the tint reached no shroud");
+        for i in changed {
+            assert_eq!(plain[i], Color::hex(0x2a2d31), "a tinted draw was not the palette's shroud");
+            assert_eq!(on[i], Color::hex(0x76b900));
+        }
     }
 
     /// The copies a repeated part built: its instances when it is one instanced mesh, else its children.
