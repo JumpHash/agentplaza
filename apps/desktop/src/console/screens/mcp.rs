@@ -502,7 +502,7 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     };
     let mut parts: Vec<Element<'a, Msg>> = vec![ui::faint(transport_text(&server.transport)).into()];
     if !server.transport.command.is_empty() {
-        parts.push(ui::mono(format!("$ {}", server.transport.command.join(" ")), 12.0, ui::INK_2).into());
+        parts.push(ui::mono(format!("$ {}", server.transport.command.join(" ")), 12.0, crate::theme::palette().ink_2).into());
     }
     parts.push(ui::faint(format!("Env: {}", env_names(server))).into());
     if let Some(error) = &state.detail_error {
@@ -519,7 +519,7 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     let logs: Element<'a, Msg> = match &state.logs {
         None => ui::loading(),
         Some(lines) if lines.is_empty() => ui::faint("No log lines yet.").into(),
-        Some(lines) => column(lines.iter().map(|l| ui::mono(format!("{} {}", l.stream, l.line), 11.0, ui::INK_2).into()).collect::<Vec<Element<'a, Msg>>>()).spacing(2).into(),
+        Some(lines) => column(lines.iter().map(|l| ui::mono(format!("{} {}", l.stream, l.line), 11.0, crate::theme::palette().ink_2).into()).collect::<Vec<Element<'a, Msg>>>()).spacing(2).into(),
     };
     parts.push(scrollable(logs).height(Length::Fixed(240.0)).into());
     let actions: Vec<Element<'a, Msg>> = vec![
@@ -541,7 +541,7 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
 }
 
 fn tool_row<'a>(tool: &Tool) -> Element<'a, Msg> {
-    let parts: Vec<Element<'a, Msg>> = vec![ui::mono(tool.name.clone(), 12.0, ui::INK).into(), ui::prose(tool.description.clone()).into()];
+    let parts: Vec<Element<'a, Msg>> = vec![ui::mono(tool.name.clone(), 12.0, crate::theme::palette().ink).into(), ui::prose(tool.description.clone()).into()];
     column(parts).spacing(3).into()
 }
 
@@ -558,7 +558,7 @@ fn catalogue_section<'a>(state: &'a State) -> Element<'a, Msg> {
 fn preset_row<'a>(preset: &Preset) -> Element<'a, Msg> {
     let facts: Vec<String> = [preset.transport.clone(), preset.note.clone()].into_iter().filter(|s| !s.is_empty()).collect();
     let info: Vec<Element<'a, Msg>> = vec![
-        ui::mono(preset.name.clone(), 12.0, ui::INK).into(),
+        ui::mono(preset.name.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::prose(preset.description.clone()).into(),
         ui::faint(facts.join(" · ")).into(),
     ];

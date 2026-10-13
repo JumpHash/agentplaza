@@ -774,7 +774,7 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
     for origin in &state.origins {
         parts.push(
             row![
-                ui::mono(origin.clone(), 12.0, ui::INK_2),
+                ui::mono(origin.clone(), 12.0, crate::theme::palette().ink_2),
                 ui::btn_sm("Remove", None, ui::Kind::Ghost, Some(Msg::RemoveOrigin(origin.clone()))),
             ]
             .spacing(10)
@@ -801,7 +801,7 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
             parts.push(ui::faint("None.").into());
         }
         for origin in &status.effective_origins {
-            parts.push(ui::mono(origin.clone(), 12.0, ui::INK_2).into());
+            parts.push(ui::mono(origin.clone(), 12.0, crate::theme::palette().ink_2).into());
         }
     }
     parts.push(status_line(state));
@@ -827,7 +827,7 @@ fn status_line(state: &State) -> Element<'_, Msg> {
     let plural = if status.tokens == 1 { "" } else { "s" };
     let head: Vec<Element<'_, Msg>> = vec![
         ui::badge(&label, tone),
-        ui::mono(status.url.clone(), 12.0, ui::INK).into(),
+        ui::mono(status.url.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::btn_sm("Copy URL", None, ui::Kind::Ghost, Some(Msg::Copy(status.url.clone()))),
         ui::faint(format!("{} live token{plural}", status.tokens)).into(),
     ];
@@ -875,7 +875,7 @@ fn token_form(state: &State) -> Element<'_, Msg> {
 
 fn reveal_box(reveal: &Reveal) -> Element<'_, Msg> {
     let token_row: Vec<Element<'_, Msg>> = vec![
-        ui::mono(reveal.token.clone(), 12.0, ui::INK).into(),
+        ui::mono(reveal.token.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::btn_sm("Copy token", None, ui::Kind::Ghost, Some(Msg::Copy(reveal.token.clone()))),
     ];
     let mut parts: Vec<Element<'_, Msg>> = vec![
@@ -909,7 +909,7 @@ fn snippet<'a>(title: &str, text: &str, note: &str) -> Element<'a, Msg> {
     ];
     column![
         row(head).spacing(10).align_y(Alignment::Center),
-        ui::mono(text.to_string(), 11.0, ui::INK_2),
+        ui::mono(text.to_string(), 11.0, crate::theme::palette().ink_2),
         ui::faint(note.to_string()),
     ]
     .spacing(6)
@@ -943,7 +943,7 @@ fn token_row<'a>(state: &State, token: &HubToken) -> Element<'a, Msg> {
     };
     let facts = format!("{last} · {} calls · {}", token.calls, expiry_text(now, token.expires_ms));
     let head: Vec<Element<'a, Msg>> = vec![
-        ui::mono(token.name.clone(), 12.0, ui::INK).into(),
+        ui::mono(token.name.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::badge(&token.scope, ui::Tone::Info),
         ui::faint(token.id.clone()).into(),
     ];
@@ -990,7 +990,7 @@ fn calls_card(state: &State) -> Element<'_, Msg> {
 fn call_row<'a>(state: &State, call: &HubCall) -> Element<'a, Msg> {
     let result = if call.ok { ui::Tone::Ok } else { ui::Tone::Danger };
     let head: Vec<Element<'a, Msg>> = vec![
-        ui::mono(call.tool.clone(), 12.0, ui::INK).into(),
+        ui::mono(call.tool.clone(), 12.0, crate::theme::palette().ink).into(),
         ui::faint(name_of(state, &call.token_id)).into(),
         ui::badge(if call.ok { "ok" } else { "error" }, result),
         ui::faint(format!("{} ms", call.duration_ms)).into(),

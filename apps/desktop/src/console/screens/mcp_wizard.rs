@@ -2,8 +2,9 @@
 //! mcp-wizard-secrets.ts and mcp-wizard-test.ts, with the same six steps, labels and checks.
 //! An env or header secret is a vault secret name bound to this server as `mcp:<id>`; a plain
 //! setting is a literal. A secret value only passes through the create form, which clears it on
-//! submit. Steps 4 and 5 show what the hub holds: the tool picks, risk levels, roles and nodes are
-//! still edited in the web console.
+//! submit. Step 3 runs the test on the node the owner picks. Steps 4 and 5 edit the tool picks,
+//! risk levels, roles and nodes, and Next saves them as the web does. Cancel asks before it drops
+//! unsaved changes.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +19,12 @@ use crate::console::{client, ui, Ctx};
 const STEP_LABELS: [&str; 6] = ["Source", "Credentials", "Test", "Tools", "Access", "Enable"];
 const SECRET_WORDS: [&str; 4] = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
 /// The fields this wizard does not edit; they go back to the hub as the hub had them.
-const KEPT: [&str; 5] = ["tools", "access", "limits", "allow_private", "storage"];
+const KEPT: [&str; 3] = ["limits", "allow_private", "storage"];
+/// The risk levels a tool can be given; the empty value means auto (the hub's own).
+const RISKS: [&str; 3] = ["read", "write", "irreversible"];
+const TOOL_MODE: [(bool, &str); 2] = [(true, "All tools"), (false, "Pick tools")];
+const ROLE_MODE: [(bool, &str); 2] = [(true, "All roles"), (false, "Pick roles")];
+const NODE_MODE: [(bool, &str); 2] = [(true, "All nodes"), (false, "Pick nodes")];
 const ID_HINT: &str = "The ID must be 2 to 32 characters: lower-case letters, digits and hyphens, starting with a letter.";
 const NAME_HINT: &str = "Use 2 to 64 characters: a capital letter, then capitals, digits or underscores.";
 
@@ -74,6 +80,63 @@ pub enum Source {
     Remote,
 }
 
+/// A tool, role or node pick as the hub has it: everything ("all"), or the named ones (an empty list is nobody).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    All,
+    Only(Vec<String>),
+}
+
+impl Pick {
+    fn from_json(v: Option<&Value>) -> Pick {
+        match v {
+            Some(Value::String(s)) if s == "all" => Pick::All,
+            Some(Value::Array(list)) => Pick::Only(list.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            _ => Pick::Only(Vec::new()),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        match self {
+            Pick::All => json!("all"),
+            Pick::Only(names) => json!(names),
+        }
+    }
+
+    fn has(&self, name: &str) -> bool {
+        match self {
+            Pick::All => true,
+            Pick::Only(names) => names.iter().any(|n| n == name),
+        }
+    }
+
+    fn nobody(&self) -> bool {
+        matches!(self, Pick::Only(names) if names.is_empty())
+    }
+
+    /// The pick as the owner reads it: "all", the names, or "nobody" when empty.
+    fn text(&self) -> String {
+        match self {
+            Pick::All => "all".to_string(),
+            Pick::Only(names) if names.is_empty() => "nobody".to_string(),
+            Pick::Only(names) => names.join(", "),
+        }
+    }
+}
+
+/// Adds or removes a name from a pick that lists names; an "all" pick is left alone.
+fn pick_edit(pick: &mut Pick, name: String, on: bool) {
+    if let Pick::Only(names) = pick {
+        if on {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        } else {
+            names.retain(|n| *n != name);
+        }
+    }
+}
+
 /// The config being built. Field names follow the hub's `McpServerConfig`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
@@ -89,7 +152,15 @@ pub struct Draft {
     pub url: String,
     pub env: BTreeMap<String, Setting>,
     pub headers: BTreeMap<String, Setting>,
-    /// Tools, access, limits, allow_private and storage as the hub has them.
+    /// The tools agents may call (step 4).
+    pub tools: Pick,
+    /// A risk override per tool name; a missing name is auto.
+    pub tool_risk: BTreeMap<String, String>,
+    /// The roles that may use the server (step 5).
+    pub roles: Pick,
+    /// The nodes the server runs on (step 5).
+    pub nodes: Pick,
+    /// Limits, allow_private and storage as the hub has them.
     pub kept: Map<String, Value>,
 }
 
@@ -97,8 +168,6 @@ impl Draft {
     /// A new server: disabled, nobody can use it until the owner says so (the web's blankConfig).
     pub fn blank() -> Draft {
         let mut kept = Map::new();
-        kept.insert("tools".into(), json!({ "allow": "all", "risk": {} }));
-        kept.insert("access".into(), json!({ "roles": [], "nodes": [] }));
         kept.insert("limits".into(), json!({ "timeout_s": 60, "max_output_kb": 256, "idle_stop_min": 10 }));
         kept.insert("allow_private".into(), json!(false));
         kept.insert("storage".into(), json!({ "volume": false }));
@@ -113,6 +182,10 @@ impl Draft {
             url: String::new(),
             env: BTreeMap::new(),
             headers: BTreeMap::new(),
+            tools: Pick::All,
+            tool_risk: BTreeMap::new(),
+            roles: Pick::Only(Vec::new()),
+            nodes: Pick::Only(Vec::new()),
             kept,
         }
     }
@@ -133,6 +206,8 @@ impl Draft {
                 kept.insert(key.to_string(), x.clone());
             }
         }
+        let tools = v.get("tools");
+        let access = v.get("access");
         Draft {
             id: text(v, "id"),
             name: text(v, "name"),
@@ -148,6 +223,14 @@ impl Draft {
             url: text(&t, "url"),
             env: bag("env"),
             headers: bag("headers"),
+            tools: Pick::from_json(tools.and_then(|x| x.get("allow"))),
+            tool_risk: tools
+                .and_then(|x| x.get("risk"))
+                .and_then(Value::as_object)
+                .map(|o| o.iter().filter_map(|(k, r)| r.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+                .unwrap_or_default(),
+            roles: Pick::from_json(access.and_then(|x| x.get("roles"))),
+            nodes: Pick::from_json(access.and_then(|x| x.get("nodes"))),
             kept,
         }
     }
@@ -185,6 +268,8 @@ impl Draft {
             "transport": self.transport_json(),
             "env": Self::settings_json(&self.env),
             "headers": Self::settings_json(&self.headers),
+            "tools": { "allow": self.tools.to_json(), "risk": self.tool_risk },
+            "access": { "roles": self.roles.to_json(), "nodes": self.nodes.to_json() },
         });
         for (key, value) in &self.kept {
             body[key.as_str()] = value.clone();
@@ -225,11 +310,47 @@ pub struct VaultEntry {
     pub bindings: Vec<String>,
 }
 
+/// A tool the hub reports, from a test (`agent_name` and the hub's own `auto_risk`).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProbeTool {
     pub name: String,
     pub description: String,
+    pub agent_name: String,
+    pub auto_risk: String,
+}
+
+/// A tool row in step 4: from a passing test, or the hub's list of a saved server (`risk` there is its auto value).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ToolRow {
+    pub name: String,
+    pub tool: String,
+    pub description: String,
+    #[serde(rename = "risk")]
+    pub auto: String,
+}
+
+/// A role in step 5 (the hub's `GET /v1/roles`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RoleChoice {
+    pub id: String,
+    pub title: String,
+}
+
+/// A node in step 3 and step 5 (the hub's `GET /v1/nodes`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct NodeChoice {
+    pub id: String,
+    pub name: String,
+    pub revoked: bool,
+}
+
+/// The hub itself, which is always the first node.
+fn hub_node() -> NodeChoice {
+    NodeChoice { id: "n0".into(), name: "This hub".into(), revoked: false }
 }
 
 /// The hub's answer to a test: `ok: false` comes back as a 200 with `error`.
@@ -255,6 +376,8 @@ pub enum Then {
 pub struct State {
     pub mode: Mode,
     pub draft: Draft,
+    /// The draft as it was when the owner last saved or opened it; a difference is an unsaved change.
+    pub baseline: Draft,
     /// True once the server exists on the hub.
     pub saved: bool,
     pub catalog: Vec<Preset>,
@@ -273,6 +396,16 @@ pub struct State {
     pub create_value: String,
     pub probe: Option<Vec<ProbeTool>>,
     pub test: Option<TestResult>,
+    /// The tools step 4 lists; None until a test passes or a saved server's list loads.
+    pub tool_rows: Option<Vec<ToolRow>>,
+    pub loading_tools: bool,
+    /// The node the test runs on ("n0" is this hub).
+    pub node: String,
+    /// This hub first, then the live nodes.
+    pub nodes: Vec<NodeChoice>,
+    pub roles: Vec<RoleChoice>,
+    /// True while the owner is asked to discard unsaved changes.
+    pub confirming: bool,
     pub error: String,
     pub busy: bool,
 }
@@ -280,6 +413,8 @@ pub struct State {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Vault(Result<Option<Vec<VaultEntry>>, String>),
+    Roles(Result<Vec<RoleChoice>, String>),
+    Nodes(Result<Vec<NodeChoice>, String>),
     Go(usize),
     Back,
     Next,
@@ -287,6 +422,8 @@ pub enum Msg {
     Saved(Then, bool, Result<(), String>),
     RunTest,
     Tested(Result<TestResult, String>),
+    ToolsLoaded(Result<Vec<ToolRow>, String>),
+    PickNode(String),
     PickSource(Source),
     Id(String),
     Name(String),
@@ -306,7 +443,17 @@ pub enum Msg {
     CreateCancel,
     CreateSubmit,
     Created(usize, Result<VaultEntry, String>),
+    ToolsAll(bool),
+    ToolPick(String, bool),
+    /// A risk for a tool; the empty value is auto.
+    ToolRisk(String, String),
+    RolesAll(bool),
+    RolePick(String, bool),
+    NodesAll(bool),
+    NodePick(String, bool),
     Cancel,
+    Discard,
+    KeepEditing,
 }
 
 /// What an update leaves for the screen: keep the wizard open with a task, or close it after a save.
@@ -436,18 +583,9 @@ fn transport_text(d: &Draft) -> String {
 }
 
 fn tools_text(d: &Draft) -> String {
-    match d.kept.get("tools").and_then(|t| t.get("allow")) {
-        Some(Value::Array(list)) => format!("{} picked", list.len()),
-        _ => "all tools".to_string(),
-    }
-}
-
-/// A roles or nodes pick as the owner reads it: "all", the names, or "nobody" when empty.
-fn pick_text(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) if s.as_str() == "all" => "all".to_string(),
-        Some(Value::Array(list)) if !list.is_empty() => list.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
-        _ => "nobody".to_string(),
+    match &d.tools {
+        Pick::All => "all tools".to_string(),
+        Pick::Only(names) => format!("{} picked", names.len()),
     }
 }
 
@@ -477,6 +615,15 @@ fn idle() -> Outcome {
     Outcome::Stay(Task::none())
 }
 
+/// Cancel: closes at once when nothing has changed, otherwise asks the owner to discard the changes.
+fn cancel(st: &mut State) -> Outcome {
+    if st.draft != st.baseline {
+        st.confirming = true;
+        return idle();
+    }
+    Outcome::Closed(String::new())
+}
+
 // ---- State ------------------------------------------------------------------------------------
 
 impl State {
@@ -485,6 +632,7 @@ impl State {
         let mut st = State {
             mode: Mode::Create,
             draft: Draft::blank(),
+            baseline: Draft::blank(),
             saved: false,
             catalog: catalog.to_vec(),
             source: None,
@@ -499,6 +647,12 @@ impl State {
             create_value: String::new(),
             probe: None,
             test: None,
+            tool_rows: None,
+            loading_tools: false,
+            node: "n0".to_string(),
+            nodes: vec![hub_node()],
+            roles: Vec::new(),
+            confirming: false,
             error: String::new(),
             busy: false,
         };
@@ -516,6 +670,7 @@ impl State {
                 }
             }
         }
+        st.baseline = st.draft.clone();
         st
     }
 
@@ -574,10 +729,10 @@ impl State {
 
 // ---- Tasks ------------------------------------------------------------------------------------
 
-/// Loads the vault for the credentials step. A locked vault is a note, not an error.
+/// Loads the vault for the credentials step (a locked vault is a note, not an error), and the roles and nodes for steps 3 and 5.
 pub fn start(ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
-    client::task(
+    let vault = client::task(
         move || -> Result<Option<Vec<VaultEntry>>, String> {
             let status = client.get::<Value>("/v1/vault")?;
             if status.get("state").and_then(Value::as_str) != Some("unsealed") {
@@ -586,7 +741,12 @@ pub fn start(ctx: &Ctx) -> Task<Msg> {
             client.get::<Vec<VaultEntry>>("/v1/vault/secrets").map(Some)
         },
         Msg::Vault,
-    )
+    );
+    let client = ctx.client.clone();
+    let roles = client::task(move || client.get::<Vec<RoleChoice>>("/v1/roles"), Msg::Roles);
+    let client = ctx.client.clone();
+    let nodes = client::task(move || client.get::<Vec<NodeChoice>>("/v1/nodes"), Msg::Nodes);
+    Task::batch([vault, roles, nodes])
 }
 
 /// Writes the draft: POST when not yet saved (created disabled), then PATCH the editable fields.
@@ -624,10 +784,25 @@ fn test(st: &mut State, ctx: &Ctx) -> Outcome {
     st.error.clear();
     st.busy = true;
     let id = st.draft.id.clone();
+    let body = json!({ "node": st.node });
     let client = ctx.client.clone();
     Outcome::Stay(client::task(
-        move || client.post::<TestResult>(&format!("/v1/mcp/servers/{id}/test"), &json!({})),
+        move || client.post::<TestResult>(&format!("/v1/mcp/servers/{id}/test"), &body),
         Msg::Tested,
+    ))
+}
+
+/// Step 4 lists a saved server's tools when no test has run in this session.
+fn tools_on_enter(st: &mut State, ctx: &Ctx) -> Outcome {
+    if st.step != 4 || st.tool_rows.is_some() || st.loading_tools || !st.saved {
+        return idle();
+    }
+    st.loading_tools = true;
+    let client = ctx.client.clone();
+    let id = st.draft.id.clone();
+    Outcome::Stay(client::task(
+        move || client.get::<Vec<ToolRow>>(&format!("/v1/mcp/servers/{id}/tools")),
+        Msg::ToolsLoaded,
     ))
 }
 
@@ -704,6 +879,16 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
                 Err(e) => Vault::Note(e),
             };
         }
+        Msg::Roles(res) => match res {
+            Ok(list) => st.roles = list,
+            Err(e) => st.error = e,
+        },
+        Msg::Nodes(res) => match res {
+            Ok(list) => {
+                st.nodes = std::iter::once(hub_node()).chain(list.into_iter().filter(|n| !n.revoked && n.id != "n0")).collect();
+            }
+            Err(e) => st.error = e,
+        },
         Msg::Go(n) => st.go(n),
         Msg::Back => {
             let n = st.step - 1;
@@ -732,11 +917,14 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
             st.saved = now;
             match res {
                 Err(e) => st.error = e,
-                Ok(()) => match then {
-                    Then::Go(n) => st.go(n),
-                    Then::Test => return test(st, ctx),
-                    Then::Finish => return Outcome::Closed(format!("Saved {}.", st.draft.id)),
-                },
+                Ok(()) => {
+                    st.baseline = st.draft.clone();
+                    match then {
+                        Then::Go(n) => st.go(n),
+                        Then::Test => return test(st, ctx),
+                        Then::Finish => return Outcome::Closed(format!("Saved {}.", st.draft.id)),
+                    }
+                }
             }
         }
         Msg::RunTest => {
@@ -749,8 +937,25 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
             st.busy = false;
             let result = res.unwrap_or_else(|e| TestResult { error: Some(e), ..TestResult::default() });
             st.probe = result.ok.then(|| result.tools.clone());
+            st.tool_rows = st.probe.as_ref().map(|list| {
+                list.iter()
+                    .map(|t| ToolRow { name: t.name.clone(), tool: t.agent_name.clone(), description: t.description.clone(), auto: t.auto_risk.clone() })
+                    .collect()
+            });
             st.test = Some(result);
         }
+        Msg::ToolsLoaded(res) => {
+            st.loading_tools = false;
+            match res {
+                Ok(list) => st.tool_rows = Some(list),
+                Err(e) => {
+                    // An empty list keeps the step from asking again on every message.
+                    st.error = e;
+                    st.tool_rows = Some(Vec::new());
+                }
+            }
+        }
+        Msg::PickNode(id) => st.node = id,
         Msg::PickSource(source) => {
             st.choose(source);
             st.error.clear();
@@ -807,7 +1012,9 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
             st.create_value.clear();
         }
         Msg::CreateSubmit => return create(st, ctx),
-        Msg::Cancel => return Outcome::Closed(String::new()),
+        Msg::Cancel => return cancel(st),
+        Msg::Discard => return Outcome::Closed(String::new()),
+        Msg::KeepEditing => st.confirming = false,
         Msg::Created(row, res) => {
             st.busy = false;
             match res {
@@ -826,8 +1033,28 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
                 Err(e) => st.error = e,
             }
         }
+        Msg::ToolsAll(all) => {
+            st.draft.tools = if all {
+                Pick::All
+            } else {
+                // Switching to a pick starts with every listed tool picked, as the web does.
+                Pick::Only(st.tool_rows.as_deref().unwrap_or(&[]).iter().map(|t| t.name.clone()).collect())
+            };
+        }
+        Msg::ToolPick(name, on) => pick_edit(&mut st.draft.tools, name, on),
+        Msg::ToolRisk(name, risk) => {
+            if risk.is_empty() {
+                st.draft.tool_risk.remove(&name);
+            } else {
+                st.draft.tool_risk.insert(name, risk);
+            }
+        }
+        Msg::RolesAll(all) => st.draft.roles = if all { Pick::All } else { Pick::Only(Vec::new()) },
+        Msg::RolePick(id, on) => pick_edit(&mut st.draft.roles, id, on),
+        Msg::NodesAll(all) => st.draft.nodes = if all { Pick::All } else { Pick::Only(Vec::new()) },
+        Msg::NodePick(id, on) => pick_edit(&mut st.draft.nodes, id, on),
     }
-    idle()
+    tools_on_enter(st, ctx)
 }
 
 // ---- View -------------------------------------------------------------------------------------
@@ -856,7 +1083,7 @@ fn option<'a>(on: bool, title: &str, body: &str, note: &str, msg: Msg) -> Elemen
 
 /// A credential's name, required badge, help and format.
 fn spec_head<'a>(row: &Row) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::mono(row.spec.name.clone(), 12.0, ui::INK).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::mono(row.spec.name.clone(), 12.0, crate::theme::palette().ink).into()];
     if row.spec.required {
         items.push(ui::badge("Required", ui::Tone::Warn));
     }
@@ -1051,8 +1278,18 @@ fn step2(st: &State) -> Element<'_, Msg> {
 
 fn step3(st: &State) -> Element<'_, Msg> {
     let label = if st.test.is_some() { "Run test again" } else { "Run test" };
+    let nodes: Vec<Element<'_, Msg>> = st
+        .nodes
+        .iter()
+        .map(|n| {
+            let kind = if n.id == st.node { ui::Kind::Primary } else { ui::Kind::Secondary };
+            ui::btn_sm(&n.name, None, kind, gate(st.busy, Msg::PickNode(n.id.clone())))
+        })
+        .collect();
     let mut items: Vec<Element<'_, Msg>> = vec![
         ui::faint("Run the server once to check that it starts and lists its tools. Unsaved changes are saved first.").into(),
+        ui::label("Node").into(),
+        row(nodes).spacing(6).into(),
         ui::btn_sm(label, None, ui::Kind::Primary, gate(st.busy, Msg::RunTest)),
     ];
     if st.busy {
@@ -1076,37 +1313,82 @@ fn step3(st: &State) -> Element<'_, Msg> {
 }
 
 fn step4(st: &State) -> Element<'_, Msg> {
-    let mut items: Vec<Element<'_, Msg>> = vec![ui::faint(format!("Agents may call: {}.", tools_text(&st.draft))).into()];
-    match &st.probe {
+    let d = &st.draft;
+    let mut items: Vec<Element<'_, Msg>> = vec![ui::faint(format!("Agents may call: {}.", tools_text(d))).into()];
+    match &st.tool_rows {
         None => items.push(ui::faint("Run the test in step 3 to list the tools this server reports.").into()),
-        Some(list) => {
-            for tool in list {
-                let line: Vec<Element<'_, Msg>> = vec![
-                    ui::mono(tool.name.clone(), 12.0, ui::INK).into(),
-                    ui::prose(tool.description.clone()).into(),
-                ];
-                items.push(column(line).spacing(3).into());
+        Some(rows) if rows.is_empty() => items.push(ui::faint("The server reports no tools.").into()),
+        Some(rows) => {
+            let all = d.tools == Pick::All;
+            items.push(ui::seg(&TOOL_MODE, all, Msg::ToolsAll).into());
+            items.push(ui::faint("Risk sets how a call is treated. Auto uses the risk the hub derives from each tool's hints.").into());
+            for tool in rows {
+                let mut lines: Vec<Element<'_, Msg>> = Vec::new();
+                if all {
+                    lines.push(ui::mono(tool.name.clone(), 12.0, crate::theme::palette().ink).into());
+                } else {
+                    let name = tool.name.clone();
+                    lines.push(checkbox(d.tools.has(&tool.name)).label(tool.name.clone()).on_toggle(move |on| Msg::ToolPick(name.clone(), on)).into());
+                }
+                lines.push(ui::faint(format!("Agent name: {}", tool.tool)).into());
+                if !tool.description.is_empty() {
+                    lines.push(ui::prose(tool.description.clone()).into());
+                }
+                let current = d.tool_risk.get(&tool.name).cloned().unwrap_or_default();
+                let mut options: Vec<(String, String)> = vec![(String::new(), format!("auto ({})", tool.auto))];
+                options.extend(RISKS.iter().map(|r| (r.to_string(), r.to_string())));
+                let buttons: Vec<Element<'_, Msg>> = options
+                    .into_iter()
+                    .map(|(value, label)| {
+                        let kind = if value == current { ui::Kind::Primary } else { ui::Kind::Ghost };
+                        ui::btn_sm(&label, None, kind, Some(Msg::ToolRisk(tool.name.clone(), value)))
+                    })
+                    .collect();
+                lines.push(row(buttons).spacing(6).into());
+                items.push(column(lines).spacing(6).into());
             }
         }
     }
-    items.push(ui::faint("Tool picks and risk levels are changed in the web console for now.").into());
     column(items).spacing(10).width(Length::Fill).into()
 }
 
+/// A pick of named options (roles or nodes): all or some, with a checkbox per option when some.
+fn pick_group<'a>(
+    title: &str,
+    pick: &Pick,
+    modes: &'static [(bool, &'static str); 2],
+    options: Vec<(String, String)>,
+    all: fn(bool) -> Msg,
+    one: fn(String, bool) -> Msg,
+) -> Element<'a, Msg> {
+    let is_all = *pick == Pick::All;
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::label(title).into(), ui::seg(modes, is_all, all).into()];
+    if !is_all {
+        for (id, name) in options {
+            let on = pick.has(&id);
+            items.push(checkbox(on).label(name).on_toggle(move |v| one(id.clone(), v)).into());
+        }
+    }
+    column(items).spacing(8).width(Length::Fill).into()
+}
+
 fn step5(st: &State) -> Element<'_, Msg> {
-    let access = st.draft.kept.get("access");
-    let roles = pick_text(access.and_then(|a| a.get("roles")));
-    let nodes = pick_text(access.and_then(|a| a.get("nodes")));
+    let d = &st.draft;
+    let roles: Vec<(String, String)> = st
+        .roles
+        .iter()
+        .map(|r| (r.id.clone(), if r.title.is_empty() { r.id.clone() } else { r.title.clone() }))
+        .collect();
+    let nodes: Vec<(String, String)> = st.nodes.iter().map(|n| (n.id.clone(), n.name.clone())).collect();
     let mut items: Vec<Element<'_, Msg>> = vec![
         ui::faint("Only the roles and nodes picked here can reach this server.").into(),
-        ui::faint(format!("Roles: {roles}")).into(),
-        ui::faint(format!("Nodes: {nodes}")).into(),
-        ui::faint("Roles and nodes are changed in the web console for now.").into(),
+        pick_group("Roles", &d.roles, &ROLE_MODE, roles, Msg::RolesAll, Msg::RolePick),
+        pick_group("Nodes", &d.nodes, &NODE_MODE, nodes, Msg::NodesAll, Msg::NodePick),
     ];
-    if roles == "nobody" || nodes == "nobody" {
+    if d.roles.nobody() || d.nodes.nobody() {
         items.push(ui::error_line("Nobody can use this server until a role and a node are picked."));
     }
-    column(items).spacing(10).width(Length::Fill).into()
+    column(items).spacing(14).width(Length::Fill).into()
 }
 
 fn step6(st: &State) -> Element<'_, Msg> {
@@ -1118,7 +1400,6 @@ fn step6(st: &State) -> Element<'_, Msg> {
         .chain(d.headers.values())
         .filter(|s| matches!(s, Setting::Secret { .. }))
         .count();
-    let access = d.kept.get("access");
     let rows: Vec<(&str, String)> = vec![
         ("Name", if d.name.is_empty() { "—".to_string() } else { d.name.clone() }),
         ("ID", d.id.clone()),
@@ -1126,8 +1407,8 @@ fn step6(st: &State) -> Element<'_, Msg> {
         ("Secrets", secrets.to_string()),
         ("Settings", (total - secrets).to_string()),
         ("Tools", tools_text(d)),
-        ("Roles", pick_text(access.and_then(|a| a.get("roles")))),
-        ("Nodes", pick_text(access.and_then(|a| a.get("nodes")))),
+        ("Roles", d.roles.text()),
+        ("Nodes", d.nodes.text()),
     ];
     let mut items: Vec<Element<'_, Msg>> = rows
         .into_iter()
@@ -1157,7 +1438,7 @@ fn footer(st: &State) -> Element<'_, Msg> {
     row(items).spacing(12).into()
 }
 
-/// The wizard: the steps, the open step, any error, and the footer.
+/// The wizard: the steps, the open step, any error, the discard prompt when asked, and the footer.
 pub fn view(st: &State) -> Element<'_, Msg> {
     let title = match st.mode {
         Mode::Create => "Add MCP server".to_string(),
@@ -1184,6 +1465,14 @@ pub fn view(st: &State) -> Element<'_, Msg> {
     let mut items: Vec<Element<'_, Msg>> = vec![row(stepper).spacing(6).into(), body];
     if !st.error.is_empty() {
         items.push(ui::error_line(&st.error));
+    }
+    if st.confirming {
+        let prompt: Vec<Element<'_, Msg>> = vec![
+            ui::faint("Discard the unsaved changes?").into(),
+            ui::btn_sm("Keep editing", None, ui::Kind::Ghost, Some(Msg::KeepEditing)),
+            ui::btn_sm("Discard", None, ui::Kind::Primary, Some(Msg::Discard)),
+        ];
+        items.push(row(prompt).spacing(12).into());
     }
     items.push(footer(st));
     ui::card(&title, column(items).spacing(18).width(Length::Fill).into())
@@ -1223,7 +1512,21 @@ mod tests {
         assert_eq!(body["transport"], json!({ "kind": "stdio", "image": "ghcr.io/x/fs:1", "command": ["serve", "/data"] }));
         assert_eq!(body["env"], json!({ "ROOT": { "value": "/data" } }));
         assert_eq!(body["tools"], json!({ "allow": "all", "risk": {} }));
+        assert_eq!(body["access"], json!({ "roles": [], "nodes": [] }));
         assert!(body["transport"].get("url").is_none());
+    }
+
+    #[test]
+    fn mcp_wizard_tool_and_access_picks_go_in_the_request_body() {
+        let mut d = stdio_draft();
+        d.tools = Pick::Only(vec!["read_file".into()]);
+        d.tool_risk.insert("read_file".into(), "irreversible".into());
+        d.roles = Pick::Only(vec!["ops".into()]);
+        d.nodes = Pick::All;
+        let body = d.patch_body();
+        assert_eq!(body["tools"], json!({ "allow": ["read_file"], "risk": { "read_file": "irreversible" } }));
+        assert_eq!(body["access"], json!({ "roles": ["ops"], "nodes": "all" }));
+        assert_eq!(body["limits"]["timeout_s"], 60);
     }
 
     #[test]
@@ -1258,6 +1561,8 @@ mod tests {
         assert_eq!(draft.command, "serve /data");
         assert_eq!(draft.env.get("TOKEN"), Some(&Setting::Secret { secret: "fs_token".into(), format: None }));
         assert_eq!(draft.env.get("ROOT"), Some(&Setting::Value("/data".into())));
+        assert_eq!(draft.tools, Pick::Only(vec!["read_file".into()]));
+        assert_eq!(draft.nodes, Pick::All);
         let body = draft.patch_body();
         for key in ["name", "enabled", "transport", "env", "headers", "tools", "access", "limits", "allow_private", "storage"] {
             assert_eq!(body[key], view[key], "{key} round-trips");
@@ -1281,6 +1586,16 @@ mod tests {
         assert!(st.saved);
         assert_eq!(st.source, Some(Source::Preset("fs".into())));
         assert_eq!(st.rows.len(), 1);
+    }
+
+    #[test]
+    fn mcp_wizard_cancel_asks_only_when_there_are_changes() {
+        let mut st = State::new(None, None, &[]);
+        assert!(matches!(cancel(&mut st), Outcome::Closed(_)), "no changes: close at once");
+        assert!(!st.confirming);
+        st.draft.name = "Files".into();
+        assert!(matches!(cancel(&mut st), Outcome::Stay(_)), "a change: stay and ask");
+        assert!(st.confirming);
     }
 
     #[test]
