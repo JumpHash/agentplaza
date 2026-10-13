@@ -369,3 +369,14 @@ fn phone_twenty_seats_every_agent() {
     let lay = layout("phone", &input(20, 0));
     assert_eq!(lay.homes.len(), 20, "phone n=20 seats {} of 20", lay.homes.len());
 }
+
+#[test]
+fn the_nav_scene_of_a_layout_reaches_every_plate_and_door() {
+    for kind in ["edge", "laptop", "phone", "workstation", "server", "apple-soc"] {
+        let lay = layout(kind, &input(4, 0));
+        let scene = super::nav_scene(&lay, 0, None);
+        let c = crate::navgrid::connectivity(&scene.grid);
+        assert!(c.unreached.is_empty() && c.unconnected.is_empty(), "{kind}: unreached {:?}, unconnected {:?}", c.unreached, c.unconnected);
+        assert_eq!(scene.plans.len(), lay.rooms.len());
+    }
+}

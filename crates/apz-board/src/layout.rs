@@ -10,6 +10,7 @@
 
 mod aisle;
 mod board_grid;
+mod scene;
 mod columns;
 mod geom;
 mod mouth;
@@ -24,13 +25,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::hardware::{eval_when, parse_when, Library, Model, Part};
 use crate::grid::{Grid, NAV_CELL, NAV_STEP};
-use crate::navgrid::{self, landing_clear_at, LandingKind, NavBoard, NavBox, NavGrid, NavPlate, NavTerrace, NavTrace, PlateLanding, Slab};
-use crate::rooms::generate;
+use crate::navgrid::{self, landing_clear_at, Slab};
 use crate::walk::{SurfaceKind, WalkSet};
 use std::cmp::Ordering;
 use crate::Board;
 use aisle::{exit_of, gangway_of, open_share, perimeter_open, Site};
 use board_grid::board_grid;
+pub use scene::{nav_scene, room_plan, NavScene, RoomPlan};
 use columns::Lattice;
 use geom::{belongs, segment_blocked, Frame, Rect};
 use mouth::{mouth, Mouth};
@@ -962,7 +963,9 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
     let mut rejected: BTreeSet<String> = exits.iter().filter(|e| !landing_clear(e, &slabs, &slot_rects)).map(|e| e.key.clone()).collect();
     if rejected.is_empty() {
         let slots: Vec<([f64; 4], f64)> = (0..n).map(|i| (aisle_cand(i).rect, aisle_cand(i).top)).collect();
-        let grid = nav_scene(ctx, setup, &rooms_out, &exits, &slots);
+        let traces = scene::traces_of(ctx.model, s);
+        let landings: Vec<([f64; 4], f64, &Exit)> = slots.iter().zip(&exits).map(|(&(rect, top), e)| (rect, top, e)).collect();
+        let grid = scene::scene(setup.size, pcb_top, &setup.parts, traces, &landings, &rooms_out, None).grid;
         let first = rooms_out.len() as i32 + 1;
         for id in &grid.unreached {
             if let Some(e) = exits.get((id - first) as usize) {
@@ -1040,77 +1043,6 @@ fn landing_clear(e: &Exit, slabs: &[Slab], plates: &[[f64; 4]]) -> bool {
         }
     }
     true
-}
-
-/// The nav grid of a pass with its rooms in place (nav-scene.ts navScene with no machine): the board's part boxes and
-/// traces, the plates with their landings (region ids after the rooms'), and one terrace per room with the furniture the
-/// room generator lays out for it (roomPlan: the seed of `/<role>/<index>`, the inner side 2r - 0.15).
-fn nav_scene(ctx: &Ctx, setup: &ScaleSetup, rooms: &[Room], exits: &[Exit], slots: &[([f64; 4], f64)]) -> NavGrid {
-    let s = setup.s;
-    let traces = ctx
-        .model
-        .traces
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .map(|t| NavTrace { path: t.path.iter().map(|&[x, z]| [x * s, z * s]).collect(), width: t.width * s })
-        .collect();
-    let first = rooms.len() as i32 + 1;
-    let plates = exits
-        .iter()
-        .zip(slots)
-        .enumerate()
-        .map(|(k, (e, &([x0, z0, w, d], top)))| {
-            let kind = match e.kind {
-                ExitKind::Ramp => LandingKind::Ramp,
-                ExitKind::Lift => LandingKind::Lift,
-                ExitKind::Gangway => LandingKind::Gangway,
-            };
-            let landing = PlateLanding { ax: e.plate_at[0], az: e.plate_at[1], bx: e.board_at[0], bz: e.board_at[1], kind, nx: e.dir[0], nz: e.dir[1], bridge: e.bridge.clone() };
-            NavPlate { id: first + k as i32, x0, z0, w, d, y: top, landing: Some(landing) }
-        })
-        .collect();
-    let board = NavBoard { size: [setup.size[0], 0.0, setup.size[1]], pcb_top: setup.pcb_top, boxes: setup.parts.iter().map(|&(lo, hi)| NavBox { lo, hi }).collect(), traces, plates };
-    let data = generate::data();
-    let terraces: Vec<NavTerrace> = rooms
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let inner = 2.0 * r.r - 0.15;
-            let door = match r.door {
-                Door::N => generate::Door::N,
-                Door::S => generate::Door::S,
-                Door::E => generate::Door::E,
-                Door::W => generate::Door::W,
-            };
-            let input = generate::Input {
-                role: r.role.clone(),
-                w: inner,
-                d: inner,
-                door,
-                seed: generate::fnv1a32(format!("/{}/{}", r.role, i).as_bytes()),
-                agents: Some(r.members.len().max(1)),
-            };
-            let (door, solids, spots) = navgrid::furniture(&generate::generate(&input, data), &data.catalog);
-            NavTerrace {
-                id: i as i32 + 1,
-                cx: r.centre[0],
-                cz: r.centre[1],
-                half: r.half[0].min(r.half[1]),
-                hw: r.half[0],
-                hd: r.half[1],
-                round: r.round,
-                y: r.floor_y,
-                turn: r.turn,
-                w: inner,
-                d: inner,
-                door,
-                solids,
-                spots,
-            }
-        })
-        .collect();
-    navgrid::build(&board, &terraces)
 }
 
 /// Does a rect overlap another in area (touching edges do not count)?
