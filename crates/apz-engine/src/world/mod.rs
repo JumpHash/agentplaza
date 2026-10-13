@@ -318,7 +318,7 @@ impl Floor {
         let roots: Vec<(Obj, glam::Mat4)> =
             self.root.get().children.iter().filter(|c| c.get().dynamic).map(|c| (c.clone(), root_world)).collect();
         let (mut draws, mut lights) = scene::flatten_roots(&roots);
-        let (rig_draws, rig_lights) = scene::flatten_rigs(&self.deep_dynamic);
+        let (rig_draws, rig_lights) = scene::flatten_rigs_instanced(&self.deep_dynamic);
         draws.extend(rig_draws);
         lights.extend(rig_lights);
         lights.extend(self.static_lights.iter().copied());

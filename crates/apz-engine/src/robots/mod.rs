@@ -2,6 +2,7 @@
 //! build's file list, `validate`), the part geometry (`geometry`), the clips (`clips`), the baked rig
 //! (`rig`), the effects (`fx`) and the robot lab (`lab`, `APZ_ROBOT_LAB`). The API is `floor3d::robot`.
 
+pub mod audit;
 pub mod clips;
 pub mod files;
 pub mod fx;

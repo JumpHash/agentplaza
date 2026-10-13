@@ -1,0 +1,106 @@
+/* The prompt editor: markdown source with line numbers and a live preview, findings under it, versions, history, rules. */
+
+.prompt-editor { display: flex; flex-direction: column; gap: 20px; min-width: 0; padding-bottom: 40px; }
+.pe-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; min-width: 0; }
+.pe-title { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pe-title h1 { margin: 0; font-size: 24px; overflow-wrap: anywhere; }
+.pe-chips, .pe-score, .pe-view-head, .pe-pickbar, .pe-row-actions, .pe-vers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.pe-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.pe-tabs { min-width: 0; max-width: 100%; overflow-x: auto; }
+.pe-main { min-width: 0; }
+.pe-muted { margin: 0; color: var(--ink-3); font-size: 14px; line-height: 1.55; max-width: 72ch; }
+.pe-error { color: var(--danger); font-size: 14px; overflow-wrap: anywhere; }
+.pe-error[hidden] { display: none; }
+.pe-stats { color: var(--ink-3); font-size: 13px; font-variant-numeric: tabular-nums; }
+.pe-label { margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); }
+.pe-dirty[hidden] { display: none; }
+
+/* Edit: the source and the preview side by side, stacked on narrow screens */
+.pe-edit { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.pe-panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; min-width: 0; }
+.pe-pane { display: flex; flex-direction: column; min-width: 0; }
+.pe-code { display: flex; height: 60vh; min-height: 320px; min-width: 0; border: 1px solid var(--rule); background: var(--sheet); }
+.pe-gutter {
+  flex: none; overflow: hidden; padding: 10px 0; background: var(--surface-2); color: var(--ink-3);
+  font: 13px/1.6 var(--mono); text-align: right; user-select: none;
+}
+.pe-gutter span { display: block; min-width: 3ch; padding: 0 10px 0 12px; }
+.pe-gutter .sev-error { color: var(--danger); background: var(--danger-bg); font-weight: 600; }
+.pe-gutter .sev-warning { color: var(--warn); background: var(--warn-bg); }
+.pe-gutter .sev-info { color: var(--info); }
+.pe-src {
+  flex: 1 1 auto; height: 100%; min-width: 0; margin: 0; padding: 10px 12px; border: 0; border-radius: 0;
+  background: transparent; color: var(--ink); font: 13px/1.6 var(--mono); white-space: pre; overflow: auto; tab-size: 2; resize: none;
+}
+.pe-src:focus { outline: none; box-shadow: inset 0 -2px 0 var(--signal); }
+.pe-src::placeholder { color: var(--ink-3); }
+.pe-preview {
+  height: 60vh; min-height: 320px; min-width: 0; padding: 14px 18px; overflow: auto; overflow-wrap: anywhere;
+  border: 1px solid var(--rule); background: var(--paper);
+}
+
+/* Score and findings under the editor */
+.pe-findings { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pe-findings:empty { display: none; }
+.pe-findings h2 { margin: 6px 0 0; font-size: 16px; }
+.pe-findings-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pe-finding {
+  appearance: none; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline;
+  width: 100%; margin: 0; padding: 8px 12px; border: 1px solid var(--rule); border-radius: 0; background: var(--sheet);
+  color: var(--ink); font: inherit; font-size: 14px; text-align: left; cursor: pointer;
+}
+.pe-finding:hover:not(:disabled) { background: var(--hover); }
+.pe-finding:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.pe-sev { font-weight: 600; white-space: nowrap; }
+.pe-sev.danger { color: var(--danger); }
+.pe-sev.warn { color: var(--warn); }
+.pe-sev.info { color: var(--info); }
+.pe-where { color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pe-msg { min-width: 0; overflow-wrap: anywhere; }
+.pe-rule-id { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+@media (max-width: 640px) {
+  .pe-finding { grid-template-columns: auto minmax(0, 1fr); }
+  .pe-msg { grid-column: 1 / -1; }
+}
+
+/* Versions */
+.pe-versions { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.pe-row-actions { flex-wrap: nowrap; }
+.pe-view, .pe-compare {
+  display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 18px;
+  border: 1px solid var(--rule); background: var(--sheet);
+}
+.pe-view-head h2, .pe-compare h2 { margin: 0; font-size: 18px; }
+.pe-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pe-side h3 { margin: 0; font-size: 15px; }
+.pe-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; min-width: 0; }
+.pe-diff {
+  min-width: 0; overflow-x: auto; border: 1px solid var(--rule); background: var(--paper);
+  font: 13px/1.6 var(--mono);
+}
+.pe-line { display: grid; grid-template-columns: 4ch 4ch 2ch minmax(0, 1fr); }
+.pe-ln { padding: 0 8px 0 0; color: var(--ink-3); text-align: right; user-select: none; font-variant-numeric: tabular-nums; }
+.pe-sign { text-align: center; user-select: none; }
+.pe-line code { font: inherit; min-width: 0; padding-right: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.pe-line.add { background: var(--ok-bg); }
+.pe-line.add .pe-sign { color: var(--ok); }
+.pe-line.del { background: var(--danger-bg); }
+.pe-line.del .pe-sign { color: var(--danger); }
+
+/* Rules: the in-app best-practices guide */
+.pe-rules { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.pe-rule-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pe-rule-group h2 { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--ink); font-size: 18px; }
+.pe-rule-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--rule-faint); }
+.pe-rule-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; min-width: 0; }
+.pe-rule-head h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.pe-rule-head code { font-size: 12px; color: var(--ink-3); }
+.pe-rule-card p { margin: 0; color: var(--ink-2); font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+
+/* Dialogs */
+.pe-form { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+@media (max-width: 760px) {
+  .pe-panes, .pe-sides { grid-template-columns: minmax(0, 1fr); }
+  .pe-code, .pe-preview { height: 50vh; }
+}

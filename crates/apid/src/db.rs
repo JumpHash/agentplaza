@@ -253,7 +253,7 @@ impl Db {
     }
 
     /// Runs `op` on the connection; on a closed connection, reconnects once and retries.
-    fn run<T>(&self, mut op: impl FnMut(&mut postgres::Client) -> Result<T, postgres::Error>) -> Result<T, String> {
+    pub(crate) fn run<T>(&self, mut op: impl FnMut(&mut postgres::Client) -> Result<T, postgres::Error>) -> Result<T, String> {
         let slot = self.client.as_ref().ok_or_else(|| "no database".to_string())?;
         let mut client = slot.lock().unwrap_or_else(PoisonError::into_inner);
         match op(&mut *client) {

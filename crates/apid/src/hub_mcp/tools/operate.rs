@@ -2,12 +2,13 @@
 
 use serde_json::{json, Value};
 
-use super::{Ctx, Tool};
+use super::{version_arg, Ctx, Tool};
 use crate::hub_mcp::auth::Scope;
 
 pub struct MessageOrchestrator;
 pub struct TellAgent;
 pub struct StopAgent;
+pub struct PromptPropose;
 
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key).and_then(Value::as_str).ok_or_else(|| format!("{key} must be a string"))
@@ -15,6 +16,64 @@ fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 
 fn cid_arg(args: &Value) -> Result<u64, String> {
     args.get("cid").and_then(Value::as_u64).ok_or_else(|| "cid must be a whole number".to_string())
+}
+
+impl Tool for PromptPropose {
+    fn name(&self) -> &'static str {
+        "prompt_propose"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Adds a version to a prompt, authored over MCP. It never publishes; a version goes live only through a govern client or the owner."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "body": { "type": "string", "minLength": 1 },
+                "note": { "type": "string" },
+                "base_version": { "type": "integer", "minimum": 1 },
+            },
+            "required": ["id", "body", "base_version"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "version": { "type": "integer" },
+                "created": { "type": "boolean" },
+                "score": { "type": "integer" },
+                "errors": { "type": "integer" },
+            },
+            "required": ["version", "created", "score", "errors"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let note = match args.get("note") {
+            None | Some(Value::Null) => "",
+            Some(value) => value.as_str().ok_or("note must be a string")?,
+        };
+        ctx.plaza.prompt_propose(text_arg(args, "id")?, text_arg(args, "body")?, note, version_arg(args, "base_version")?)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        if out["created"] == true {
+            format!("Added version {} with score {}.", out["version"], out["score"])
+        } else {
+            format!("Same body as version {}; nothing added.", out["version"])
+        }
+    }
 }
 
 impl Tool for MessageOrchestrator {

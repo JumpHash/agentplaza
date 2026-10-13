@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use apz_http::Response;
 use serde_json::{json, Value};
 
-use super::{Ctx, Plaza, Tool};
+use super::{version_arg, Ctx, Plaza, Tool};
 use crate::hub_mcp::auth::Scope;
 use crate::state::App;
 
@@ -34,8 +34,14 @@ pub struct TreasurySummary;
 pub struct UsageSummary;
 pub struct ListLaws;
 pub struct SearchLibrary;
+pub struct PromptsList;
+pub struct PromptGet;
 
 impl Plaza for App {
+    fn prompts(&self) -> &crate::prompts::Prompts {
+        &self.prompts
+    }
+
     fn search_library(&self, query: &str, limit: usize) -> Vec<Value> {
         self.library.search(query, limit).iter().filter_map(|entry| serde_json::to_value(entry).ok()).collect()
     }
@@ -166,6 +172,106 @@ impl Plaza for App {
 
     fn stop_agent(&self, cid: u64, reason: &str) -> Result<Value, String> {
         gateway_reply(crate::fleet::gateway(self, cid, "POST", &format!("/v1/agents/{cid}/stop"), Some(&json!({ "reason": reason }))))
+    }
+}
+
+impl Tool for PromptsList {
+    fn name(&self) -> &'static str {
+        "prompts_list"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Observe
+    }
+
+    fn description(&self) -> &'static str {
+        "Lists the live prompts (system prompts, AGENTS.md files and fragments): id, kind, title, binding, live and latest version, and the live version's score."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "kind": { "type": "string", "enum": ["system", "agents_md", "fragment"] } },
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "prompts": { "type": "array", "items": { "type": "object" } } },
+            "required": ["prompts"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let kind = match args.get("kind") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or("kind must be a string")?),
+        };
+        Ok(json!({ "prompts": ctx.plaza.prompts_list(kind)? }))
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("{} prompt(s).", out["prompts"].as_array().map_or(0, Vec::len))
+    }
+}
+
+impl Tool for PromptGet {
+    fn name(&self) -> &'static str {
+        "prompt_get"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Observe
+    }
+
+    fn description(&self) -> &'static str {
+        "Reads one version of a prompt: its body, score and findings. Without a version, the live one, or the latest when none is live."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "version": { "type": "integer", "minimum": 1 },
+            },
+            "required": ["id"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "version": { "type": "integer" },
+                "body": { "type": "string" },
+                "score": { "type": "integer" },
+                "findings": { "type": "array" },
+            },
+            "required": ["id", "version", "body", "score", "findings"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        let version = match args.get("version") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(version_arg(args, "version")?),
+        };
+        ctx.plaza.prompt_get(id, version)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!(
+            "Prompt {} version {}, score {}.",
+            out["id"].as_str().unwrap_or("?"),
+            out["version"],
+            out["score"]
+        )
     }
 }
 

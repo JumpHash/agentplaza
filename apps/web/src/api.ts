@@ -990,3 +990,65 @@ export const hubMcpApi = {
     return get<{ calls: HubCall[] }>(`/v1/hub-mcp/calls${qs ? `?${qs}` : ''}`);
   },
 };
+
+// The prompt library (docs/design/prompt-library.md): system prompts, AGENTS.md and fragments, versioned and checked.
+export type PromptKind = 'system' | 'agents_md' | 'fragment';
+export type PromptSeverity = 'error' | 'warning' | 'info';
+export interface PromptFinding { rule: string; severity: PromptSeverity; line: number; message: string }
+export interface PromptStats { chars: number; words: number; lines: number; headings: number; est_tokens: number }
+export interface PromptReport {
+  kind: PromptKind; rules_version: number; findings: PromptFinding[]; score: number;
+  errors: number; warnings: number; infos: number; stats: PromptStats;
+}
+/** One prompt. `score` is the live version's (null when unpublished); `best_version` the highest-scoring version. */
+export interface PromptSummary {
+  id: string; kind: PromptKind; title: string; description: string; tags: string[]; binding: string | null;
+  active_version: number | null; latest_version: number; best_version: number | null; score: number | null;
+  created_ms: number; updated_ms: number; archived_ms: number | null;
+}
+export interface PromptVersionMeta {
+  version: number; note: string; author: string; created_ms: number; score: number;
+  errors: number; warnings: number; infos: number; rules_version: number; sha256: string;
+}
+/** A whole version. `stale` when it was scored under an older rule set; `recheck` is then today's report. */
+export interface PromptVersion extends PromptVersionMeta {
+  body: string; findings: PromptFinding[]; stats: PromptStats; stale: boolean; recheck: PromptReport | null;
+}
+export interface PromptDetail { prompt: PromptSummary; versions: PromptVersionMeta[]; live: PromptVersion | null }
+export interface PromptDiffLine { op: 'same' | 'add' | 'del'; old: number | null; new: number | null; text: string }
+export interface PromptDiff { from: PromptVersion; to: PromptVersion; lines: PromptDiffLine[] }
+export type PromptAction = 'create' | 'version' | 'publish' | 'unpublish' | 'edit' | 'archive' | 'restore';
+export interface PromptEvent { id: number; prompt_id: string; action: PromptAction; version: number | null; actor: string; at_ms: number }
+export interface PromptRule { id: string; severity: PromptSeverity; kinds: PromptKind[]; title: string; why: string }
+/** `templates`: the starter body for each kind (each scores 100). */
+export interface PromptRules { rules_version: number; rules: PromptRule[]; variables: string[]; templates: Record<PromptKind, string> }
+export interface PromptCreate {
+  id?: string; kind: PromptKind; title: string; description?: string; tags?: string[]; binding?: string | null;
+  body: string; note?: string;
+}
+export interface PromptMeta { title: string; description: string; tags: string[]; binding: string | null }
+
+const promptPath = (id: string) => `/v1/prompts/${encodeURIComponent(id)}`;
+
+export const promptsApi = {
+  list: (q: { kind?: PromptKind; archived?: boolean } = {}) =>
+    get<{ prompts: PromptSummary[] }>(`/v1/prompts${query({ kind: q.kind, archived: q.archived ? 'true' : undefined })}`),
+  get: (id: string) => get<PromptDetail>(promptPath(id)),
+  create: (body: PromptCreate) => post<{ prompt: PromptSummary }>('/v1/prompts', body),
+  saveMeta: (id: string, meta: PromptMeta) => put<{ prompt: PromptSummary }>(promptPath(id), meta),
+  version: (id: string, v: number) => get<PromptVersion>(`${promptPath(id)}/versions/${v}`),
+  /** The body as text/markdown, for a download link. */
+  rawUrl: (id: string, v: number) => `${promptPath(id)}/versions/${v}/raw`,
+  /** 409 when `base_version` is no longer the latest; `created` is false when the body equals the latest. */
+  addVersion: (id: string, body: string, note: string, base_version: number) =>
+    post<{ version: PromptVersionMeta; created: boolean }>(`${promptPath(id)}/versions`, { body, note, base_version }),
+  /** 422 when the version has error-level findings. */
+  publish: (id: string, version: number) => post<{ prompt: PromptSummary }>(`${promptPath(id)}/publish`, { version }),
+  unpublish: (id: string) => post<{ prompt: PromptSummary }>(`${promptPath(id)}/unpublish`),
+  archive: (id: string) => post<{ prompt: PromptSummary }>(`${promptPath(id)}/archive`),
+  restore: (id: string) => post<{ prompt: PromptSummary }>(`${promptPath(id)}/restore`),
+  diff: (id: string, from: number, to: number) => get<PromptDiff>(`${promptPath(id)}/diff${query({ from, to })}`),
+  history: (id: string) => get<{ events: PromptEvent[] }>(`${promptPath(id)}/history`),
+  check: (kind: PromptKind, body: string) => post<PromptReport>('/v1/prompts/check', { kind, body }),
+  rules: () => get<PromptRules>('/v1/prompts/rules'),
+};

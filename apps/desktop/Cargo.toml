@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+apz-prompt = { path = "../../crates/apz-prompt" }
 # The board core: one Rust crate for the board, shared with the web (WASM). See docs/design/apz-board.md.
 apz-board = { path = "../../crates/apz-board" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software

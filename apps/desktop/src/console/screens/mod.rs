@@ -7,6 +7,8 @@ pub mod wizard;
 pub mod overview;
 pub mod agents;
 pub mod projects;
+pub mod prompts;
+pub mod prompt_editor;
 pub mod tasks;
 pub mod git;
 pub mod library;
@@ -50,6 +52,7 @@ pub enum Id {
     Overview,
     Agents,
     Projects,
+    Prompts,
     Tasks,
     Git,
     Library,
@@ -87,6 +90,7 @@ pub enum Id {
 pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Overview, "Overview", "Plaza", "overview"),
     (Id::Agents, "Agents", "Plaza", "agents"),
+    (Id::Prompts, "Prompts", "Plaza", "edit"),
     (Id::Projects, "Projects", "Plaza", "projects"),
     (Id::Tasks, "Tasks", "Plaza", "tasks"),
     (Id::Git, "Git", "Plaza", "git"),
@@ -114,6 +118,7 @@ pub struct Screens {
     pub overview: overview::State,
     pub agents: agents::State,
     pub projects: projects::State,
+    pub prompts: prompts::State,
     pub tasks: tasks::State,
     pub git: git::State,
     pub library: library::State,
@@ -148,6 +153,7 @@ pub enum Msg {
     Overview(overview::Msg),
     Agents(agents::Msg),
     Projects(projects::Msg),
+    Prompts(prompts::Msg),
     Tasks(tasks::Msg),
     Git(git::Msg),
     Library(library::Msg),
@@ -183,6 +189,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Overview(m) => overview::go(m),
         Msg::Agents(m) => agents::go(m),
         Msg::Projects(m) => projects::go(m),
+        Msg::Prompts(m) => prompts::go(m),
         Msg::Tasks(m) => tasks::go(m),
         Msg::Git(m) => git::go(m),
         Msg::Library(m) => library::go(m),
@@ -234,6 +241,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Overview => overview::load(&mut screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::load(&mut screens.agents, ctx).map(Msg::Agents),
         Id::Projects => projects::load(&mut screens.projects, ctx).map(Msg::Projects),
+        Id::Prompts => prompts::load(&mut screens.prompts, ctx).map(Msg::Prompts),
         Id::Tasks => tasks::load(&mut screens.tasks, ctx).map(Msg::Tasks),
         Id::Git => git::load(&mut screens.git, ctx).map(Msg::Git),
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
@@ -269,6 +277,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Overview(m) => overview::update(&mut screens.overview, m, ctx).map(Msg::Overview),
         Msg::Agents(m) => agents::update(&mut screens.agents, m, ctx).map(Msg::Agents),
         Msg::Projects(m) => projects::update(&mut screens.projects, m, ctx).map(Msg::Projects),
+        Msg::Prompts(m) => prompts::update(&mut screens.prompts, m, ctx).map(Msg::Prompts),
         Msg::Tasks(m) => tasks::update(&mut screens.tasks, m, ctx).map(Msg::Tasks),
         Msg::Git(m) => git::update(&mut screens.git, m, ctx).map(Msg::Git),
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
@@ -322,6 +331,7 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
         Id::Projects => projects::view(&screens.projects, ctx).map(Msg::Projects),
+        Id::Prompts => prompts::view(&screens.prompts, ctx).map(Msg::Prompts),
         Id::Tasks => tasks::view(&screens.tasks, ctx).map(Msg::Tasks),
         Id::Git => git::view(&screens.git, ctx).map(Msg::Git),
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),

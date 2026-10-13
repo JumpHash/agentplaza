@@ -1,0 +1,13 @@
+[package]
+name = "apz-prompt"
+description = "AgentPlaza's prompt library core: best-practice checks and scores for system prompts and AGENTS.md, line diffs, template variables"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

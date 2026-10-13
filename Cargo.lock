@@ -82,6 +82,7 @@ dependencies = [
  "apz-http",
  "apz-os",
  "apz-plaza",
+ "apz-prompt",
  "apz-trust",
  "bytemuck",
  "chrono",
@@ -261,6 +262,7 @@ dependencies = [
  "apz-http",
  "apz-os",
  "apz-plaza",
+ "apz-prompt",
  "apz-proto",
  "apz-trust",
  "argon2",
@@ -391,6 +393,14 @@ dependencies = [
 
 [[package]]
 name = "apz-plaza"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apz-prompt"
 version = "0.1.0"
 dependencies = [
  "serde",

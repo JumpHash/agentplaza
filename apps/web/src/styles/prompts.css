@@ -1,0 +1,58 @@
+/* Prompts: the library's list and the new-prompt dialog. Square corners, the register's own variables. */
+
+.prompts-view { display: flex; flex-direction: column; gap: 24px; min-width: 0; padding-bottom: 40px; }
+
+/* Heading: the title and intro on the left, New prompt on the right */
+.prompts-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ink); padding-bottom: 12px; }
+.prompts-head h1 { margin: 0; font-size: 28px; }
+.prompts-intro { margin: 6px 0 0; max-width: 72ch; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
+
+/* Toolbar: the kind chips and the archived toggle, then the search and the count */
+.prompts-toolbar { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; border: 1px solid var(--rule); background: var(--sheet); min-width: 0; }
+.prompts-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; min-width: 0; }
+.prompts-row > input[type="search"] { flex: 1 1 260px; min-width: 0; }
+.prompts-chips { display: inline-flex; max-width: 100%; border: 1px solid var(--ink); }
+.prompts-chip {
+  appearance: none; border: 0; border-right: 1px solid var(--ink); border-radius: 0;
+  background: var(--sheet); color: var(--ink-2); padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.prompts-chip:last-child { border-right: 0; }
+.prompts-chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.prompts-chip:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.prompts-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.prompts-count { margin: 0; font-size: 13px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* The table: scrolls sideways inside its box, never the page */
+.prompts-table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }
+.prompts-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.prompts-title a { color: var(--ink); font-weight: 600; text-decoration: none; }
+.prompts-title a:hover { text-decoration: underline; }
+.prompts-id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
+.prompts-muted { color: var(--ink-3); font-size: 13px; }
+.prompts-score { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.prompts-best { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.prompts-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.prompts-tag { border: 1px solid var(--rule); padding: 1px 6px; font-size: 12px; color: var(--ink-2); }
+
+/* Empty and failed states */
+.prompts-empty { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 24px 18px; border: 1px dashed var(--rule); background: var(--sheet); }
+.prompts-empty h3 { margin: 0; font-size: 17px; }
+.prompts-empty p { margin: 0; max-width: 62ch; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
+.prompts-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px 18px; border: 1px solid var(--crit); background: var(--danger-bg); }
+.prompts-error p { margin: 0; color: var(--ink); font-size: 14px; }
+
+/* The new-prompt dialog */
+.prompts-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; width: min(560px, 100%); }
+.prompts-form .field { min-width: 0; }
+.prompts-form textarea { font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; min-height: 180px; }
+.prompts-binding { min-width: 0; }
+.prompts-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
+.prompts-hint { margin: 0; font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+.prompts-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding-top: 4px; }
+
+@media (max-width: 640px) {
+  .prompts-head h1 { font-size: 24px; }
+  .prompts-toolbar { padding: 12px; }
+  .prompts-chips { flex-wrap: wrap; }
+  .prompts-chip { border-bottom: 1px solid var(--ink); }
+}

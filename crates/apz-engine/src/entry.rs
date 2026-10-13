@@ -202,6 +202,29 @@ pub struct Stage {
     pub atom: f64,
 }
 
+/// Smootherstep (the web's `smoother`): 0 and 1 with zero first and second derivatives at the ends.
+pub fn smoother(t: f64) -> f64 {
+    let x = clamp01(t);
+    x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+}
+
+/// The exterior's distance fade (`EXT_NEAR`, `EXT_FAR`, world units): gone at or inside EXT_NEAR, whole beyond EXT_FAR.
+pub const EXT_NEAR: f64 = 8.0;
+pub const EXT_FAR: f64 = 12.0;
+/// The per-part occlusion ramp (`OCC_NEAR`, `OCC_FAR`, world units): transparent at or inside OCC_NEAR, whole beyond OCC_FAR.
+pub const OCC_NEAR: f64 = 0.1;
+pub const OCC_FAR: f64 = 1.2;
+
+/// The exterior's share seen at `dist` world units from its box to the camera (the web's `seen`, before the time fade).
+pub fn exterior_seen(dist: f64) -> f64 {
+    smoother(clamp01((dist - EXT_NEAR) / (EXT_FAR - EXT_NEAR)))
+}
+
+/// A part's share the camera may see at `dist` world units from its box (the web's `occlusionOf` ramp).
+pub fn occlusion_share(dist: f64) -> f64 {
+    smoother(clamp01((dist - OCC_NEAR) / (OCC_FAR - OCC_NEAR)))
+}
+
 /// The sequence at time `t` (seconds). A direct load (no exterior) plays the board's fade and the build wave only.
 pub fn stage_at(t: f64, direct: bool) -> Stage {
     let at = |k: [f64; 2]| span(t, k[0], k[1], ease_in_out);
@@ -267,6 +290,23 @@ mod tests {
             "easeOutBack" => ease_out_back,
             other => panic!("unknown ease {other} in the dump"),
         }
+    }
+
+    /// The distance fade at three distances each, with the values the web's formulas give (entry.ts: smoother of
+    /// clamp01((d - NEAR) / (FAR - NEAR))). The exterior: 0 at 6 (inside EXT_NEAR 8), 0.5 at 10 (the midpoint of 8..12),
+    /// 1 at 14 (beyond EXT_FAR). The occlusion ramp: 0 at 0.05 (inside OCC_NEAR 0.1), 0.5 at 0.65 (the midpoint of
+    /// 0.1..1.2), 1 at 2.0 (beyond OCC_FAR). smoother(0.25) = 0.015625 x 6.625 = 0.103515625.
+    #[test]
+    fn distance_fade_matches_the_web() {
+        let close = |got: f64, want: f64| (got - want).abs() <= 1e-9;
+        assert!(close(smoother(0.25), 0.103_515_625));
+        assert!(close(smoother(0.5), 0.5));
+        assert!(close(exterior_seen(6.0), 0.0));
+        assert!(close(exterior_seen(10.0), 0.5));
+        assert!(close(exterior_seen(14.0), 1.0));
+        assert!(close(occlusion_share(0.05), 0.0));
+        assert!(close(occlusion_share(0.65), 0.5));
+        assert!(close(occlusion_share(2.0), 1.0));
     }
 
     /// Every value the web's functions return, dumped by a node run of entry.ts (testdata/entry_parity.json), matches

@@ -33,6 +33,8 @@ interface WebEngine {
   busy(): boolean;
   frames_drawn(): number;
   draw_calls(): number;
+  draw_breakdown(): Uint32Array;
+  draw_stats(): string;
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   destroy(): void;
@@ -483,6 +485,64 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     raf = requestAnimationFrame(frame);
   };
 
+  // Debug hooks (window.__apz*) for tests and developers: the same names and return shapes as the three.js Floor,
+  // backed by the engine. The engine has no nav world (cells, lifts, shoves, the ground audit) and no camera setter
+  // yet, so those hooks answer null and log once; the entry clock and the robot list are not exposed either.
+  const installDebugHooks = (started: WebEngine): (() => void) => {
+    const w = window as unknown as Record<string, unknown>;
+    const logged = new Set<string>();
+    const stub = (hook: string) => (): null => {
+      if (!logged.has(hook)) {
+        logged.add(hook);
+        console.log(`${hook}: not in the engine yet`);
+      }
+      return null;
+    };
+    const stats = (): Record<string, unknown> => {
+      try {
+        return JSON.parse(started.draw_stats()) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    };
+    const hooks: Record<string, unknown> = {
+      __apzLookAt: stub('__apzLookAt'),
+      __apzScene: () => ({ frames: started.frames_drawn(), draws: started.draw_calls(), stats: stats() }),
+      __apzPerf: () => ({
+        frames: started.frames_drawn(),
+        draws: started.draw_calls(),
+        backend: started.backend(),
+        breakdown: Array.from(started.draw_breakdown()),
+        stats: stats(),
+      }),
+      __apzPrograms: () => {
+        const p = stats().programs;
+        if (Array.isArray(p)) return p;
+        if (p && typeof p === 'object') {
+          return Object.entries(p as Record<string, unknown>).map(([name, draws]) => ({ name, key: name, draws }));
+        }
+        return [];
+      },
+      __apzOpen: (id: string) => started.command('popup', id),
+      __apzEnter: (id: string) => started.command('enter', id),
+      __apzBack: () => started.command('back'),
+      __apzEntryTime: () => null,
+      __apzBots: () => [],
+      __apzTrace: () => ({ frames: started.frames_drawn(), draws: started.draw_calls() }),
+      __apzNavCell: stub('__apzNavCell'),
+      __apzNavAudit: stub('__apzNavAudit'),
+      __apzLifts: stub('__apzLifts'),
+      __apzLiftRide: stub('__apzLiftRide'),
+      __apzShove: stub('__apzShove'),
+      __apzGroundAudit: stub('__apzGroundAudit'),
+    };
+    for (const [name, fn] of Object.entries(hooks)) w[name] = fn;
+    return () => {
+      for (const name of Object.keys(hooks)) delete w[name];
+    };
+  };
+  let removeDebug: (() => void) | null = null;
+
   // Escape is answered here, before the engine's own handler: its popup closes first, then the board goes Back.
   const onKey = (ev: KeyboardEvent): void => {
     if (ev.key !== 'Escape' || closed) return;
@@ -531,6 +591,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     engine = started;
     // The engine's counters for the browser checks (this mount only: the flag is on the page's URL).
     (window as unknown as { apzEngine?: WebEngine }).apzEngine = started;
+    removeDebug = installDebugHooks(started);
     status.textContent = '';
     pushFeed();
     tryPendingEnter();
@@ -554,6 +615,8 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     window.removeEventListener('hashchange', onHash, true);
     const e = engine;
     engine = null;
+    removeDebug?.();
+    removeDebug = null;
     e?.destroy();
     root.innerHTML = '';
   };

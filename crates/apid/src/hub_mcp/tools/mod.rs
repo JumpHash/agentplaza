@@ -4,9 +4,13 @@ pub mod observe;
 pub mod operate;
 pub mod govern;
 
-use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use apz_prompt::Kind;
+use serde_json::{json, Value};
 
 use super::auth::{Scope, TokenRecord};
+use crate::prompts::{Prompts, StoreError};
 
 /// The read model and the owner's writes the tools call. Each method goes through the same service the HTTP API uses.
 pub trait Plaza: Sync {
@@ -31,6 +35,60 @@ pub trait Plaza: Sync {
     fn restart_agent(&self, cid: u64) -> Result<Value, String>;
     fn record_decision(&self, approval_id: &str, decision: &str, note: &str) -> Result<Value, String>;
     fn create_task(&self, input: &Value) -> Result<Value, String>;
+    /// The prompt library the prompt tools read and write.
+    fn prompts(&self) -> &Prompts;
+
+    /// The live prompts, by id. `kind` (`system`, `agents_md` or `fragment`) narrows them.
+    fn prompts_list(&self, kind: Option<&str>) -> Result<Vec<Value>, String> {
+        let kind = match kind {
+            Some(text) => Some(Kind::parse(text).ok_or_else(|| "kind must be system, agents_md or fragment".to_string())?),
+            None => None,
+        };
+        let store = self.prompts().store();
+        let mut rows = Vec::new();
+        for prompt in store.list(false)?.into_iter().filter(|prompt| kind.map_or(true, |wanted| prompt.kind == wanted)) {
+            let score = match prompt.active_version {
+                Some(live) => store.versions(&prompt.id)?.into_iter().find(|meta| meta.version == live).map(|meta| meta.score),
+                None => None,
+            };
+            rows.push(json!({
+                "id": prompt.id,
+                "kind": prompt.kind.as_str(),
+                "title": prompt.title,
+                "binding": prompt.binding,
+                "active_version": prompt.active_version,
+                "latest_version": prompt.latest_version,
+                "score": score,
+            }));
+        }
+        Ok(rows)
+    }
+
+    /// One version (default: the live one, else the latest), with its body, score and findings.
+    fn prompt_get(&self, id: &str, version: Option<u32>) -> Result<Value, String> {
+        let store = self.prompts().store();
+        let prompt = store.get(id)?.ok_or_else(|| format!("no prompt {id}"))?;
+        let wanted = version.or(prompt.active_version).unwrap_or(prompt.latest_version);
+        let found = store.version(id, wanted)?.ok_or_else(|| format!("{id} has no version {wanted}"))?;
+        let mut out = serde_json::to_value(&found).map_err(|err| err.to_string())?;
+        out["id"] = json!(id);
+        Ok(out)
+    }
+
+    /// Adds a version authored over MCP. It never publishes.
+    fn prompt_propose(&self, id: &str, body: &str, note: &str, base_version: u32) -> Result<Value, String> {
+        let (meta, created) = self
+            .prompts()
+            .add_version(id, base_version, body.to_string(), note.to_string(), MCP_ACTOR, now_ms())
+            .map_err(store_text)?;
+        Ok(json!({ "id": id, "version": meta.version, "created": created, "score": meta.score, "errors": meta.errors }))
+    }
+
+    /// Publishes one version as the live one; refused while it has error-level findings.
+    fn prompt_publish(&self, id: &str, version: u32) -> Result<Value, String> {
+        let prompt = self.prompts().publish(id, version, MCP_ACTOR, now_ms()).map_err(store_text)?;
+        Ok(json!({ "id": id, "active_version": prompt.active_version, "latest_version": prompt.latest_version }))
+    }
 }
 
 /// What a tool runs with.
@@ -68,12 +126,16 @@ pub static REGISTRY: &[&dyn Tool] = &[
     &observe::UsageSummary,
     &observe::ListLaws,
     &observe::SearchLibrary,
+    &observe::PromptsList,
+    &observe::PromptGet,
     &operate::MessageOrchestrator,
     &operate::TellAgent,
     &operate::StopAgent,
     &operate::RestartAgent,
     &operate::CreateTask,
+    &operate::PromptPropose,
     &govern::RequestDecision,
+    &govern::PromptPublish,
 ];
 
 pub fn find(name: &str) -> Option<&'static dyn Tool> {
@@ -84,6 +146,30 @@ pub fn find(name: &str) -> Option<&'static dyn Tool> {
 pub fn allowed(token: &TokenRecord, tool: &dyn Tool) -> bool {
     token.scope.permits(tool.scope())
         && (token.allowlist.is_empty() || token.allowlist.iter().any(|name| name.as_str() == tool.name()))
+}
+
+/// Who the prompt tools record as author and publisher: a tool does not see the caller's identity.
+pub const MCP_ACTOR: &str = "mcp";
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// A store refusal, as the message a tool returns.
+fn store_text(err: StoreError) -> String {
+    match err {
+        StoreError::NotFound => "no such prompt".to_string(),
+        StoreError::Conflict(text) | StoreError::Invalid(text) | StoreError::Failed(text) => text,
+    }
+}
+
+/// A whole-number argument from 1 up (a prompt version).
+pub fn version_arg(args: &Value, key: &str) -> Result<u32, String> {
+    args.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| *number >= 1)
+        .ok_or_else(|| format!("{key} must be a whole number from 1"))
 }
 
 /// The tools of `registry` that a token may see.

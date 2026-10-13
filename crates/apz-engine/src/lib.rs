@@ -35,6 +35,7 @@ pub mod scene;
 pub mod stage;
 pub mod textures;
 pub mod toon;
+pub mod warm;
 pub mod world;
 
 pub use engine::{agent_list, feed_from_json, Cmd, Engine, Feed, FrameOut, Pick, Renderer, Thumbnail};

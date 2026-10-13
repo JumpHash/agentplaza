@@ -1013,16 +1013,40 @@ pub struct Rig {
     loose: Vec<(Obj, Mat4)>,
     /// The merged rigid meshes, in the node's frame.
     merged: Vec<Draw>,
+    /// The content of `merged` (see [`rig_signature`]): rigs with equal keys draw alike.
+    sig: u64,
     children: Vec<Rig>,
 }
 
 /// The rig of dynamic `node`, whose parent sits at `chain` (see [`Rig`]).
 fn rig_of(node: &Obj, chain: Mat4) -> Rig {
-    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), children: Vec::new() };
+    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), sig: 0, children: Vec::new() };
     let mut meshes = Vec::new();
     gather(node, Mat4::IDENTITY, true, &mut rig, &mut meshes);
     rig.merged = merge_draws(meshes, true);
+    rig.sig = rig_signature(&rig.merged);
     rig
+}
+
+/// A content key for merged draws: equal keys hold the same vertices, material and state, in the same
+/// order (a 64-bit hash, so equal keys are taken as equal content).
+fn rig_signature(merged: &[Draw]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    merged.len().hash(&mut h);
+    for d in merged {
+        std::mem::discriminant(&d.kind).hash(&mut h);
+        (d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade).hash(&mut h);
+        format!("{}|{:?}|{:?}|{:?}", class_of(&d.material), d.material.color.to_array().map(f32::to_bits), d.material.shading, d.material.robot).hash(&mut h);
+        let g = &d.geo;
+        g.positions.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+        g.normals.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+        g.uvs.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+        g.colors.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+        g.indices.hash(&mut h);
+        g.slots.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// Gathers `node`'s draws into `rig`: `parent` is the transform from the rig's frame to the node's
@@ -1086,6 +1110,64 @@ pub fn flatten_rigs(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut lights = Vec::new();
     for rig in list {
         frame_rig(rig, Mat4::IDENTITY, &mut draws, &mut lights);
+    }
+    (draws, lights)
+}
+
+/// Walks one rig this frame like [`frame_rig`], but leaves its merged draws to the caller: `shown` gets
+/// each visible rig with its frame.
+fn frame_rig_into<'a>(rig: &'a Rig, parent: Mat4, shown: &mut Vec<(&'a Rig, Mat4)>, draws: &mut Vec<Draw>, lights: &mut Vec<PointLightDraw>) {
+    let frame = {
+        let n = rig.node.get();
+        if !n.visible {
+            return;
+        }
+        parent * rig.chain * local_of(&n)
+    };
+    shown.push((rig, frame));
+    for (node, rel) in &rig.loose {
+        emit(node, frame * *rel, draws, lights);
+    }
+    for child in &rig.children {
+        frame_rig_into(child, frame, shown, draws, lights);
+    }
+}
+
+/// [`flatten_rigs`], with the rigs of one content (the same hardware built alike, at several places)
+/// sharing one instanced draw per merged draw: its instances are those rigs' frames. Loose draws stay
+/// one each, as they move on their own.
+pub fn flatten_rigs_instanced(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) {
+    let mut draws = Vec::new();
+    let mut lights = Vec::new();
+    let mut shown = Vec::new();
+    for rig in list {
+        frame_rig_into(rig, Mat4::IDENTITY, &mut shown, &mut draws, &mut lights);
+    }
+    let mut at: HashMap<u64, usize> = HashMap::new();
+    let mut groups: Vec<(&Rig, Vec<Mat4>)> = Vec::new();
+    for (rig, frame) in shown {
+        match at.get(&rig.sig) {
+            Some(&i) => groups[i].1.push(frame),
+            None => {
+                at.insert(rig.sig, groups.len());
+                groups.push((rig, vec![frame]));
+            }
+        }
+    }
+    for (rig, frames) in &groups {
+        for d in &rig.merged {
+            if frames.len() == 1 || !matches!(d.kind, DrawKind::Mesh | DrawKind::Outline) {
+                draws.extend(frames.iter().map(|f| Draw { model: *f * d.model, ..d.clone() }));
+                continue;
+            }
+            let instances: Vec<Instance> = frames.iter().map(|f| Instance { matrix: *f * d.model, color: Color::WHITE }).collect();
+            let count = instances.len();
+            let kind = match d.kind {
+                DrawKind::Outline => DrawKind::OutlineInstanced(Arc::new(instances), count),
+                _ => DrawKind::Instanced(Arc::new(instances), count),
+            };
+            draws.push(Draw { kind, model: Mat4::IDENTITY, ..d.clone() });
+        }
     }
     (draws, lights)
 }

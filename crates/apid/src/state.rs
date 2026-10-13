@@ -151,6 +151,8 @@ pub struct App {
     /// The hub's identity and the owner's access (see hub_auth).
     pub hub_auth: crate::hub_auth::Hub,
     pub hub_mcp: crate::hub_mcp::HubMcp,
+    /// The prompt library: system prompts and AGENTS.md, versioned and checked (docs/design/prompt-library.md).
+    pub prompts: crate::prompts::Prompts,
     /// The secret vault (docs/design/vault.md): sealed or unsealed, encrypted at rest.
     pub vault: Arc<crate::vault::Store>,
     pub settings: settings::Store,
@@ -194,6 +196,11 @@ impl App {
         let vault_db = db.enabled().then(|| Arc::clone(&db));
         let roster_db = db.enabled().then(|| Arc::clone(&db));
         let hub_mcp_db = db.enabled().then(|| Arc::clone(&db));
+        let prompt_store: Arc<dyn crate::prompts::PromptStore> = if db.enabled() {
+            Arc::new(crate::prompts::store_db::DbPrompts::new(Arc::clone(&db)))
+        } else {
+            Arc::new(crate::prompts::store_mem::MemoryPrompts::open(&config.state_dir))
+        };
         let vault = Arc::new(crate::vault::Store::open(&config.state_dir, &config.vault_key, vault_db));
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
@@ -223,6 +230,7 @@ impl App {
             mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
             hub_auth,
             hub_mcp: crate::hub_mcp::HubMcp::open(crate::hub_mcp::default_origins(config.port, &config.public_url, config.tls || !config.bind.is_loopback()), config.tls || !config.bind.is_loopback(), hub_mcp_db),
+            prompts: crate::prompts::Prompts::new(prompt_store),
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, Arc::clone(&vault))?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
@@ -268,6 +276,13 @@ impl App {
         }
         // Postgres is the state of record: restore from it, then keep it current.
         crate::db::restore_all(&app);
+        // The built-in role prompts join the prompt library (new ones published, the owner's edits kept).
+        crate::prompts::seed::import(
+            &app.prompts,
+            &app.roles.prompts,
+            |role| crate::agents::role_label(role).to_string(),
+            apz_plaza::now_ms(),
+        );
         // The vault starts after the database is read: it initialises, unseals with its key file, or stays sealed.
         app.vault.boot(apz_plaza::now_ms()).map_err(|err| std::io::Error::other(err.message()))?;
         app.vault.startup(&app, app.config.env_file.as_deref(), &vault_env, apz_plaza::now_ms());

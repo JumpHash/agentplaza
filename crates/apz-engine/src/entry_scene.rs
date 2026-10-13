@@ -42,7 +42,51 @@ use super::entry::{self, Stage, KEY, ROOM_DROP, SINK, WAVE};
 use super::fleet::{FleetResponse, FleetScene};
 use super::hardware::{self, Model};
 use super::scene::{Camera, Color, Kind, Mat, Obj};
+use super::warm::BuildCache;
 use super::world::Floor;
+
+/// The built boards ENTER reuses, by `board_key`: a machine entered again takes its board from here, not a rebuild.
+pub type BoardCache = BuildCache<hardware::Built>;
+
+/// A machine's board key: the machine, its hardware model and the params its build reads.
+pub fn board_key(machine: &str, model: &str, params: &hardware::Params) -> String {
+    format!("{machine}|{model}|{:?}", params.values)
+}
+
+/// The machine's built board: the cached one when its key is held (taken out of the cache for use), else `build`.
+pub fn take_board(cache: &mut BoardCache, key: &str, build: impl FnOnce() -> hardware::Built) -> hardware::Built {
+    cache.take(key).unwrap_or_else(build)
+}
+
+/// Returns a board once its scene no longer shows it (the caller takes it out of the scene first). The cache keeps the
+/// newest boards and drops the ones it pushes out.
+pub fn release_board(cache: &mut BoardCache, key: &str, built: hardware::Built) {
+    cache.release(key.to_string(), built);
+}
+
+#[cfg(test)]
+mod board_cache_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn entering_the_same_machine_again_reuses_its_board() {
+        let model = hardware::model("exterior/workstation").expect("the fallback exterior is embedded");
+        let params = hardware::Params::default().with("gpus", 1.0);
+        let key = board_key("m-1", "exterior/workstation", &params);
+        let builds = Cell::new(0);
+        let build = || {
+            builds.set(builds.get() + 1);
+            hardware::build(model, &params)
+        };
+        let mut cache = BoardCache::new(3);
+        let first = take_board(&mut cache, &key, &build);
+        release_board(&mut cache, &key, first);
+        let again = take_board(&mut cache, &key, &build);
+        assert_eq!(builds.get(), 1, "the second entry takes the board from the cache");
+        release_board(&mut cache, &key, again);
+    }
+}
 
 /// A camera pose: where the eye sits and what it looks at.
 #[derive(Debug, Clone, Copy, PartialEq)]

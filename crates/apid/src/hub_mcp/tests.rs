@@ -10,14 +10,40 @@ use super::audit::MemoryAudit;
 use super::auth::{sha256_hex, MemoryTokens, NewToken, Scope, TokenRecord};
 use super::tools::{observe, visible, Ctx, Plaza, Tool, REGISTRY};
 use super::{routes, HubMcp, Host};
+use crate::prompts::store_mem::MemoryPrompts;
+use crate::prompts::{NewPrompt, Prompts};
+use apz_prompt::Kind;
 
 const ORIGIN: &str = "https://hub.test";
 const T0: u64 = 1_000_000;
 const MINUTE: u64 = 60_000;
 
-struct FakePlaza;
+struct FakePlaza {
+    prompts: Prompts,
+}
+
+fn fake_plaza() -> FakePlaza {
+    FakePlaza { prompts: Prompts::new(Arc::new(MemoryPrompts::in_memory())) }
+}
+
+/// Adds a prompt with a starter body (publishable) to the fake plaza's library, unpublished.
+fn seed_prompt(plaza: &FakePlaza, id: &str) {
+    let new = NewPrompt {
+        id: id.into(),
+        kind: Kind::System,
+        title: id.into(),
+        description: String::new(),
+        tags: Vec::new(),
+        binding: Some("role:coder".into()),
+    };
+    plaza.prompts.create(&new, apz_prompt::template(Kind::System).to_string(), "seed".into(), "owner", T0).expect("a prompt");
+}
 
 impl Plaza for FakePlaza {
+    fn prompts(&self) -> &Prompts {
+        &self.prompts
+    }
+
     fn create_task(&self, input: &Value) -> Result<Value, String> {
         if input["goal"] == "" { Err("goal must be a non-empty string".into()) } else { Ok(json!({ "id": "t2", "goal": input["goal"] })) }
     }
@@ -177,7 +203,7 @@ fn harness(enabled: bool) -> Harness {
         Box::new(MemoryAudit::default()),
         Box::new(move || reading.load(Ordering::SeqCst)),
     );
-    Harness { host: TestHost { hub, plaza: FakePlaza, clock }, router: routes(Router::new()) }
+    Harness { host: TestHost { hub, plaza: fake_plaza(), clock }, router: routes(Router::new()) }
 }
 
 fn header(name: &str, value: &str) -> (String, String) {
@@ -309,9 +335,9 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
     let observe_tools = [
         "plaza_status", "list_agents", "get_agent", "get_transcript", "list_tasks", "get_task", "list_board",
         "list_projects", "get_project", "list_approvals", "list_machines", "treasury_summary", "usage_summary",
-        "list_laws", "search_library",
+        "list_laws", "search_library", "prompts_list", "prompt_get",
     ];
-    let operate_tools = ["message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task"];
+    let operate_tools = ["message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task", "prompt_propose"];
     let all: Vec<&str> = observe_tools.iter().chain(operate_tools.iter()).copied().collect();
     assert_eq!(listed_names(&h, &reader, &s_reader), observe_tools);
     assert_eq!(listed_names(&h, &operator, &s_operator), all);
@@ -379,6 +405,73 @@ fn get_is_405_and_a_disabled_hub_answers_404() {
     let init = request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
     assert_eq!(off.call(&token, None, init).status, 404);
     assert_eq!(off.raw("GET", vec![bearer(&token)], Vec::new()).status, 404);
+}
+
+#[test]
+fn prompts_list_and_get_read_the_library() {
+    let h = harness(true);
+    seed_prompt(&h.host.plaza, "coder-system");
+    let (token, _) = h.mint(Scope::Observe, &[], None);
+    let session = h.session(&token);
+    let listed = body_of(&h.call(&token, Some(&session), tool_call("prompts_list", json!({}))));
+    let rows = &listed["result"]["structuredContent"]["prompts"];
+    assert_eq!(rows.as_array().map(Vec::len), Some(1));
+    assert_eq!(rows[0]["id"], "coder-system");
+    assert_eq!(rows[0]["kind"], "system");
+    assert_eq!(rows[0]["active_version"], Value::Null);
+    assert_eq!(rows[0]["latest_version"], 1);
+    assert_eq!(rows[0]["score"], Value::Null);
+    let fragments = body_of(&h.call(&token, Some(&session), tool_call("prompts_list", json!({ "kind": "fragment" }))));
+    assert_eq!(fragments["result"]["structuredContent"]["prompts"].as_array().map(Vec::len), Some(0));
+    let bad_kind = body_of(&h.call(&token, Some(&session), tool_call("prompts_list", json!({ "kind": "poem" }))));
+    assert_eq!(bad_kind["result"]["isError"], true);
+    // Nothing is live, so the latest version is read.
+    let got = body_of(&h.call(&token, Some(&session), tool_call("prompt_get", json!({ "id": "coder-system" }))));
+    assert_eq!(got["result"]["structuredContent"]["version"], 1);
+    assert_eq!(got["result"]["structuredContent"]["body"], apz_prompt::template(Kind::System));
+    let missing = body_of(&h.call(&token, Some(&session), tool_call("prompt_get", json!({ "id": "nope" }))));
+    assert_eq!(missing["result"]["isError"], true);
+}
+
+#[test]
+fn prompt_propose_is_operate_only_and_never_publishes() {
+    let h = harness(true);
+    seed_prompt(&h.host.plaza, "coder-system");
+    let (reader, _) = h.mint(Scope::Observe, &[], None);
+    let (operator, _) = h.mint(Scope::Operate, &[], None);
+    let reader_session = h.session(&reader);
+    let operator_session = h.session(&operator);
+    let args = json!({ "id": "coder-system", "body": "a new body", "note": "try", "base_version": 1 });
+    let refused = body_of(&h.call(&reader, Some(&reader_session), tool_call("prompt_propose", args.clone())));
+    assert!(refused["error"].is_object(), "an observe token must not reach prompt_propose");
+    let proposed = body_of(&h.call(&operator, Some(&operator_session), tool_call("prompt_propose", args)));
+    assert_eq!(proposed["result"]["isError"], false);
+    assert_eq!(proposed["result"]["structuredContent"]["version"], 2);
+    assert_eq!(proposed["result"]["structuredContent"]["created"], true);
+    let same = json!({ "id": "coder-system", "body": "a new body", "base_version": 2 });
+    let unchanged = body_of(&h.call(&operator, Some(&operator_session), tool_call("prompt_propose", same)));
+    assert_eq!(unchanged["result"]["structuredContent"]["created"], false);
+    assert_eq!(unchanged["result"]["structuredContent"]["version"], 2);
+    let stored = h.host.plaza.prompts.store().get("coder-system").expect("a read").expect("a prompt");
+    assert_eq!(stored.active_version, None, "a proposal must not publish");
+}
+
+#[test]
+fn prompt_publish_is_govern_only_and_refuses_a_version_with_errors() {
+    let h = harness(true);
+    seed_prompt(&h.host.plaza, "coder-system");
+    let broken = h.host.plaza.prompts.add_version("coder-system", 1, "```\nbroken".into(), "broken".into(), "owner", T0).expect("a version").0;
+    let (operator, _) = h.mint(Scope::Operate, &[], None);
+    let (governor, _) = h.mint(Scope::Govern, &[], None);
+    let operator_session = h.session(&operator);
+    let governor_session = h.session(&governor);
+    let by_operator = body_of(&h.call(&operator, Some(&operator_session), tool_call("prompt_publish", json!({ "id": "coder-system", "version": 1 }))));
+    assert!(by_operator["error"].is_object(), "an operate token must not reach prompt_publish");
+    let refused = body_of(&h.call(&governor, Some(&governor_session), tool_call("prompt_publish", json!({ "id": "coder-system", "version": broken.version }))));
+    assert_eq!(refused["result"]["isError"], true, "a version with errors must not publish");
+    let published = body_of(&h.call(&governor, Some(&governor_session), tool_call("prompt_publish", json!({ "id": "coder-system", "version": 1 }))));
+    assert_eq!(published["result"]["isError"], false);
+    assert_eq!(published["result"]["structuredContent"]["active_version"], 1);
 }
 
 #[test]
@@ -604,7 +697,7 @@ mod open_modes {
         )
         .listening(tls, defaults);
         hub.apply(&settings);
-        Harness { host: TestHost { hub, plaza: FakePlaza, clock }, router: routes(Router::new()) }
+        Harness { host: TestHost { hub, plaza: fake_plaza(), clock }, router: routes(Router::new()) }
     }
 
     fn settings(enabled: bool, bind: Bind, mode: AuthMode, scope: Scope) -> crate::hub_mcp::Settings {

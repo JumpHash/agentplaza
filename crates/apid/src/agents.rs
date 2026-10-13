@@ -355,11 +355,38 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         name: agent.name.clone(),
         role: agent.role.clone(),
         model: model_of(app, agent),
-        system: system_prompt(agent, role_prompt),
+        system: with_house_rules(
+            render_vars(&system_prompt(agent, role_prompt), agent),
+            app.prompts.bound_body("plaza").map(|rules| render_vars(&rules, agent)),
+        ),
         tools: crate::tools::specs_for_agent(app, agent),
         max_turns: limits.max_turns.unwrap_or(app.settings.get().max_turns),
         compress_at: limits.compress_at.unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
         keep_recent: limits.keep_recent.unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
+    }
+}
+
+/// Fills the prompt library's `{{variables}}` (apz_prompt::VARIABLES) for `agent`.
+fn render_vars(text: &str, agent: &Agent) -> String {
+    let tier = match tier_of(&agent.role) {
+        Tier::Orchestrator => "orchestrator",
+        _ => "worker",
+    };
+    let vars = std::collections::BTreeMap::from([
+        ("name", if agent.name.is_empty() { role_label(&agent.role).to_string() } else { agent.name.clone() }),
+        ("role", role_label(&agent.role).to_string()),
+        ("cid", agent.cid.to_string()),
+        ("tier", tier.to_string()),
+        ("plaza", "AgentPlaza".to_string()),
+    ]);
+    apz_prompt::render(text, &vars)
+}
+
+/// The plaza's AGENTS.md (the library prompt bound to `plaza`), appended to every agent's system prompt.
+fn with_house_rules(system: String, rules: Option<String>) -> String {
+    match rules {
+        Some(rules) if !rules.trim().is_empty() => format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim()),
+        _ => system,
     }
 }
 

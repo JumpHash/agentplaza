@@ -52,6 +52,25 @@ pub const HUB_MCP_TOKEN_REVOKE: &str = include_str!("../../sql/queries/hub_mcp_t
 pub const HUB_MCP_CALL_INSERT: &str = include_str!("../../sql/queries/hub_mcp_call_insert.sql");
 pub const HUB_MCP_CALL_PAGE: &str = include_str!("../../sql/queries/hub_mcp_call_page.sql");
 
+// The prompt library (prompt_*: migration 0006, docs/design/prompt-library.md; prompts/store_db.rs).
+pub const PROMPT_GET: &str = include_str!("../../sql/queries/prompt_get.sql");
+pub const PROMPT_LOCK: &str = include_str!("../../sql/queries/prompt_lock.sql");
+pub const PROMPT_LIST: &str = include_str!("../../sql/queries/prompt_list.sql");
+pub const PROMPT_VERSIONS: &str = include_str!("../../sql/queries/prompt_versions.sql");
+pub const PROMPT_VERSION_GET: &str = include_str!("../../sql/queries/prompt_version_get.sql");
+pub const PROMPT_FINDINGS: &str = include_str!("../../sql/queries/prompt_findings.sql");
+pub const PROMPT_EVENTS: &str = include_str!("../../sql/queries/prompt_events.sql");
+pub const PROMPT_BOUND: &str = include_str!("../../sql/queries/prompt_bound.sql");
+pub const PROMPT_BINDING_HOLDER: &str = include_str!("../../sql/queries/prompt_binding_holder.sql");
+pub const PROMPT_INSERT: &str = include_str!("../../sql/queries/prompt_insert.sql");
+pub const PROMPT_VERSION_INSERT: &str = include_str!("../../sql/queries/prompt_version_insert.sql");
+pub const PROMPT_FINDING_INSERT: &str = include_str!("../../sql/queries/prompt_finding_insert.sql");
+pub const PROMPT_EVENT_INSERT: &str = include_str!("../../sql/queries/prompt_event_insert.sql");
+pub const PROMPT_SET_LATEST: &str = include_str!("../../sql/queries/prompt_set_latest.sql");
+pub const PROMPT_SET_META: &str = include_str!("../../sql/queries/prompt_set_meta.sql");
+pub const PROMPT_SET_ACTIVE: &str = include_str!("../../sql/queries/prompt_set_active.sql");
+pub const PROMPT_SET_ARCHIVED: &str = include_str!("../../sql/queries/prompt_set_archived.sql");
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

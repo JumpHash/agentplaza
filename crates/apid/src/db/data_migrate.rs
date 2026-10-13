@@ -215,7 +215,7 @@ mod tests {
     fn data_migrations_exists_and_forbid_mutation_rejects_update_and_delete() {
         let Some(url) = crate::db::test_database("forbid_mutation") else { return };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(vec![1, 2, 3, 4, 5]));
+        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
         assert!(
             client.query_one(DATA_MIGRATIONS_EXISTS, &[]).expect("look up data_migrations").get::<_, bool>(0),
             "data_migrations exists after 0002"
@@ -236,7 +236,7 @@ mod tests {
     fn the_agents_stub_records_no_source_as_verified_and_runs_once() {
         let Some(url) = crate::db::test_database("data_agents") else { return };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(vec![1, 2, 3, 4, 5]));
+        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
         run(&mut client).expect("the first run");
         run(&mut client).expect("the second run");
         assert_eq!(client.query_one(AGENTS_ROW, &[]).expect("the agents row").get::<_, String>(0), "verified none");
@@ -260,7 +260,7 @@ mod tests {
     fn the_agents_blob_loads_once_and_a_second_run_changes_nothing() {
         let Some(url) = crate::db::test_database("data_agents_blob") else { return };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(vec![1, 2, 3, 4, 5]));
+        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
         client.batch_execute(AGENTS_SEED).expect("seed the agents blob");
         run(&mut client).expect("the first run");
         assert_eq!(agents_rows(&mut client), SEEDED_ROWS);
@@ -277,7 +277,7 @@ mod tests {
     fn a_duplicate_agent_in_the_blob_fails_closed() {
         let Some(url) = crate::db::test_database("data_agents_dup") else { return };
         let mut client = connect(&url);
-        assert_eq!(schema::migrate(&mut client), Ok(vec![1, 2, 3, 4, 5]));
+        assert_eq!(schema::migrate(&mut client), Ok(schema::MIGRATIONS.iter().map(|m| m.version).collect()));
         client.batch_execute(AGENTS_SEED_DUPLICATE).expect("seed the duplicate blob");
         let error = run(&mut client).expect_err("a duplicate cid must fail");
         assert!(error.contains("data migration agents failed"), "{error}");

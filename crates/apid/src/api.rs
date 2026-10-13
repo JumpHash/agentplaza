@@ -58,6 +58,7 @@ pub fn router() -> Router<App> {
     let router = crate::hub_auth::routes(router);
     let router = crate::hub_mcp::routes(router);
     let router = memory::routes(router);
+    let router = crate::prompts::routes::routes(router);
     let router = crate::foundry::routes::routes(router);
     let router = crate::foundry::registry::routes(router);
     // The species dealt to agents (`looks`): the list with counts, and the owner's choice of one.

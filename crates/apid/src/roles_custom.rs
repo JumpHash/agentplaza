@@ -192,8 +192,12 @@ pub fn tools_of(app: &App, role: &str) -> Vec<String> {
     }
 }
 
-/// The role's prompt (built-in prompt file, else the definition's prompt or one written from it).
+/// The role's prompt: the prompt library's published prompt bound to the role (docs/design/prompt-library.md),
+/// else the built-in prompt file, else the definition's prompt or one written from it.
 pub fn prompt_for(app: &App, role: &str) -> String {
+    if let Some(prompt) = app.prompts.bound_body(&format!("role:{role}")) {
+        return prompt;
+    }
     if let Some(prompt) = app.roles.prompts.get(role) {
         return prompt.clone();
     }

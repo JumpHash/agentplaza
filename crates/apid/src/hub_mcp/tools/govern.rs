@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use super::{Ctx, Tool};
+use super::{version_arg, Ctx, Tool};
 use crate::hub_mcp::auth::Scope;
 
 /// The recommendations clients have filed, oldest first. They are advice the owner reads; the approval
@@ -31,7 +31,55 @@ pub fn recommendation_for(approval_id: &str) -> Option<Value> {
         .cloned()
 }
 
+pub struct PromptPublish;
 pub struct RequestDecision;
+
+impl Tool for PromptPublish {
+    fn name(&self) -> &'static str {
+        "prompt_publish"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Govern
+    }
+
+    fn description(&self) -> &'static str {
+        "Publishes one version of a prompt as its live version. Refused while the version has error-level findings."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "version": { "type": "integer", "minimum": 1 },
+            },
+            "required": ["id", "version"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "active_version": { "type": "integer" },
+                "latest_version": { "type": "integer" },
+            },
+            "required": ["id", "active_version", "latest_version"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        ctx.plaza.prompt_publish(id, version_arg(args, "version")?)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("Published version {} of {}.", out["active_version"], out["id"].as_str().unwrap_or("?"))
+    }
+}
 
 impl Tool for RequestDecision {
     fn name(&self) -> &'static str {
