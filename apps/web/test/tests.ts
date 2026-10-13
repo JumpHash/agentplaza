@@ -7,6 +7,7 @@ import { level, membersOf, parentOf, trailOf } from '../src/views/society';
 import type { Bond, Conversation, PriceRates, SocietyAgent, UsageCall } from '../src/api';
 import { easeOut, niceScale, resample, tweenArray } from '../src/ui/chart';
 import { cacheSaving, fixtureCalls, ledgerSeries, ledgerSummary, mergeCalls, pageCalls, rankGroups, areaData, totalsOf, windowOf } from '../src/views/usage';
+import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, movesOf, partyOf, sortRows, windowOf as treasuryWindow } from '../src/views/treasury';
 import * as THREE from 'three';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -251,6 +252,48 @@ placeAtom(board, new THREE.Group());
 const traceModel = { schema: 1, kind: 'x', view: 'board', size: [10, 2, 10], parts: [], anchors: { camera: { at: [0, 10, 10], look: [0, 0, 0] }, atom: [0, 1, 0] }, traces: [{ path: [[0, 0], [4, 0], [4, 3]], y: 0.06, width: 0.25 }] } as unknown as Parameters<typeof traceMeshes>[0];
 eq(traceMeshes(traceModel).children.length, 2, 'a trace is one copper strip per segment');
 eq(currentPulses(traceModel).group.children.length, 1, 'a short trace carries one pulse');
+
+// Treasury: the range window, flow totals, chart data, journal paging merge and the party labels.
+const TDAY = 86_400_000;
+const NOW = 100 * TDAY;
+eq(treasuryWindow('7d', NOW, 0), { from: NOW - 7 * TDAY, to: NOW, bucket: 'hour' }, 'treasury 7 d is hourly');
+eq(treasuryWindow('30d', NOW, 0), { from: NOW - 30 * TDAY, to: NOW, bucket: 'day' }, 'treasury 30 d is daily');
+eq(treasuryWindow('all', NOW, NOW - 10 * TDAY), { from: NOW - 10 * TDAY, to: NOW, bucket: 'day' }, 'treasury all starts at the first account');
+eq(treasuryWindow('all', NOW, NOW + 5), { from: NOW - TDAY, to: NOW, bucket: 'day' }, 'treasury all with a future start spans a day');
+
+const tp = (at: number, over: Record<string, number> = {}) => ({
+  at_ms: at, end_ms: at + TDAY, entries: 2, minted: 0, escrowed: 0, paid: 0, refunded: 0, fined: 0, spent: 0,
+  by_kind: {}, plaza_budget_end: 100, circulating_end: 20, treasury_end: 3, ...over,
+});
+const pts = [tp(0, { minted: 50, paid: 5, spent: 2 }), tp(TDAY, { minted: 10, escrowed: 7, fined: 1, refunded: 4, spent: 3, entries: 3 })];
+eq(flowsOf(pts), { entries: 5, minted: 60, escrowed: 7, paid: 5, refunded: 4, fined: 1, spent: 5 }, 'flow totals sum over buckets');
+eq(flowsOf([]), { entries: 0, minted: 0, escrowed: 0, paid: 0, refunded: 0, fined: 0, spent: 0 }, 'flow totals of no buckets are zero');
+const bd = barData(pts, (at) => `t${at / TDAY}`);
+eq(bd.labels, ['t0', 't1'], 'bars are labelled per bucket');
+eq(bd.layers.map((l) => l.key), ['minted', 'escrowed', 'paid', 'refunded', 'fined', 'spent'], 'bars: one layer per kind, in order');
+eq(bd.layers[0]?.values, [50, 10], 'bars: minted values per bucket');
+const ad = balanceData(pts, (at) => `t${at / TDAY}`);
+eq(ad.layers.map((l) => [l.key, l.values]), [['plaza', [100, 100]], ['circulating', [20, 20]], ['treasury', [3, 3]]], 'balances: plaza, circulating, treasury');
+
+const je = (id: number, over: Record<string, unknown> = {}) => ({ id, kind: 'spend', amount: 1, created_at: id, memo: '', posted_by: 'x', postings: [], task_id: null, root_task: null, ...over });
+const j1 = [je(5), je(4)];
+eq(mergeJournal(j1, [je(4), je(3)]).map((e) => e.id), [5, 4, 3], 'journal: an older page extends the list without repeats');
+eq(mergeJournal([je(4), je(3)], [je(6), je(5)]).map((e) => e.id), [6, 5, 4, 3], 'journal: a newer head page goes first');
+eq(mergeJournal([], [je(2), je(1)]).map((e) => e.id), [2, 1], 'journal: the first page is newest first');
+eq(mergeJournal([je(4, { memo: 'old' })], [je(4, { memo: 'new' })])[0]?.memo, 'new', 'journal: the fresher copy of an id wins');
+
+eq(sortRows(['b', 'a', 'c'], (s) => s, 1), ['a', 'b', 'c'], 'sort strings ascending');
+eq(sortRows([3, 10, 2], (n) => n, -1), [10, 3, 2], 'sort numbers descending');
+
+const names = new Map([[7, 'Della']]);
+eq(partyOf({ account: 1, amount: -5, kind: 'wallet', owner_ref: '7' }, names), 'Della', 'a wallet is its agent');
+eq(partyOf({ account: 2, amount: 5, kind: 'town_budget', owner_ref: 'plaza' }, names), 'Plaza budget', 'the plaza budget account');
+eq(partyOf({ account: 3, amount: -5, kind: 'task_escrow', owner_ref: 't9' }, names), 'Escrow t9', 'an escrow names its task');
+eq(movesOf({ id: 1, kind: 'refund', amount: 500, created_at: 0, memo: '', posted_by: '', task_id: 't9', root_task: null, postings: [
+  { account: 12, amount: -500, kind: 'task_escrow', owner_ref: 't9' }, { account: 2, amount: 500, kind: 'town_budget', owner_ref: 'plaza' }] }, names),
+  { from: 'Escrow t9', to: 'Plaza budget' }, 'a refund moves from escrow to the plaza budget');
+eq(Math.abs(creditsUsd(1000) - 1) < 1e-9, true, 'a thousand credits are a dollar');
+eq(creditsOf(0.5), 500, 'half a dollar of model spend is five hundred credits');
 
 if (failures) {
   console.error(`${failures} failure(s)`);

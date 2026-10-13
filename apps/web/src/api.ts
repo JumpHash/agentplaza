@@ -215,8 +215,20 @@ export interface ThreadPage {
 export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
 export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
 export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
-export interface Posting { account: string; amount: number }
-export interface JournalEntry { id: number; kind: string; at: number; postings: Posting[]; memo: string; task: string | null }
+/** One leg of a journal entry: a debit is negative, a credit positive. `account` is the account id. */
+export interface Posting { account: number; amount: number; kind: string; owner_ref: string }
+/** A posted entry. `amount` is the size of the movement; `postings` say where it went. Newest first by `id`. */
+export interface JournalEntry { id: number; kind: string; amount: number; created_at: number; memo: string; posted_by: string; postings: Posting[]; task_id: string | null; root_task: string | null }
+export interface JournalPage { entries: JournalEntry[]; total: number; limit: number; truncated: boolean; next_before: number | null }
+export interface JournalQuery { before?: number; limit?: number; kind?: string; wallet?: number; task?: string }
+/** One bucket of the series: the flows inside [at_ms, end_ms) and the balances at its end. */
+export interface TreasuryPoint {
+  at_ms: number; end_ms: number; entries: number;
+  minted: number; escrowed: number; paid: number; refunded: number; fined: number; spent: number;
+  by_kind: Record<string, number>;
+  plaza_budget_end: number; circulating_end: number; treasury_end: number;
+}
+export interface TreasurySeries { from_ms: number; to_ms: number; bucket_ms: number; points: TreasuryPoint[] }
 export interface Wallet { cid: number; name: string; balance: number }
 export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
@@ -366,7 +378,11 @@ export const api = {
   motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
   decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
   treasury: () => get<Treasury>('/v1/treasury'),
-  treasuryJournal: () => get<{ entries: JournalEntry[] } | JournalEntry[]>('/v1/treasury/journal').then((r) => (Array.isArray(r) ? r : r.entries)),
+  /** Entries newest first. Pass the previous page's `next_before` to load older ones. */
+  treasuryJournal: (q: JournalQuery = {}) =>
+    get<JournalPage>(`/v1/treasury/journal${query({ before: q.before, limit: q.limit, kind: q.kind, wallet: q.wallet, task: q.task })}`),
+  /** Flows per bucket over [from, to) in unix ms, empty buckets included. Day buckets above 2000 buckets are refused. */
+  treasurySeries: (from: number, to: number, bucket: 'hour' | 'day') => get<TreasurySeries>(`/v1/treasury/series${query({ from, to, bucket })}`),
   treasuryWallets: () => get<Wallet[]>('/v1/treasury/wallets'),
   mintBudget: (amount: number) => post<unknown>('/v1/treasury/mint', { amount }),
   fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
