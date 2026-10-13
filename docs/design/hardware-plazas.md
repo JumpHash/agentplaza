@@ -87,8 +87,10 @@ y = 0 and span 40–80 units so rooms (3–6 units wide) fit on the components. 
   "mat": "pcb" | { "color": "#1f6b3a", "emissive": "#000", "glow": 0..4, "opacity": 0..1,
                    "additive": false, "flat": false },   // a palette name or an inline material
   "outline": true,                     // the toon ink outline (default true for solids, false for decals)
-  "repeat": { "count": 4, "step": [dx, dy, dz] },        // DIMM rows, fins, cells, LEDs; count may be a
-                                       // param name ("p_cores") as well as a number
+  "repeat": { "count": 4, "step": [dx, dy, dz],         // DIMM rows, fins, cells, LEDs; count may be a
+              "wrap": 4, "row": [dx, dy, dz] },         // param name ("p_cores") as well as a number;
+                                       // with "wrap", every `wrap` copies start a new row offset by `row`
+                                       // (a grid: 10 P-cores as rows of 4)
   "when": "gpus >= 1",                 // shown only if the expression on params holds: <param>, !<param>,
                                        // <param> >= n (params: gpus, p_cores, e_cores, gpu_cores, memory_gib, studio)
   "anim": Anim,
@@ -128,7 +130,8 @@ y = 0 and span 40–80 units so rooms (3–6 units wide) fit on the components. 
   "capacity": 4 }                      // how many rooms fit
 ```
 
-`Trace`: `{ "path": [[x, z], ...], "y": 0.06, "width": 0.25, "from": "cpu0", "to": "dimm_a" }` —
+`Trace`: `{ "path": [[x, z], ...], "y": 0.42, "width": 0.25, "from": "cpu0", "to": "dimm_a" }` (`y` is
+the absolute height: just above the PCB top) —
 polylines on the PCB, drawn as copper; current pulses travel along them; robots walk them.
 
 ## The atom at the centre
