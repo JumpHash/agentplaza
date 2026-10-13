@@ -29,6 +29,7 @@ pub mod field;
 pub mod grid;
 pub mod layout;
 pub mod mesh;
+pub mod nav;
 pub mod rooms;
 pub mod navgrid;
 pub mod plan;
