@@ -64,6 +64,8 @@ AgentPlaza
 Installed:
   /usr/bin/apid                 hub (the town server)
   /usr/bin/noded                node (runs agents in VMs)
+  /usr/bin/mcp_relay-x86_64     relay container binaries for MCP servers (static, musl), one per Docker
+  /usr/bin/mcp_relay-aarch64    architecture; apid picks the one its Docker engine runs
   /usr/bin/agentplaza-desktop   desktop app
   /usr/lib/systemd/user/        agentplaza-hub.service, agentplaza-node.service
   /usr/share/agentplaza/        shared data and icons
