@@ -48,9 +48,6 @@ pub struct Assembly<'a> {
 pub struct Assembled {
     pub walk: WalkSet,
     pub mouths: Vec<MouthIds>,
-    /// The owner of each surface is `plate:<id>`, `room:<id>`, `board`, `ramp:<plate>`, `cab:<plate>`, `landing:<plate>:<bottom|top>`
-    /// or `bridge:<plate>`. The acceptance reads the owners of reached surfaces.
-    pub owners: Vec<String>,
 }
 
 /// A piece under construction: its rect, kind and plane, its owner, its plate and room (when any), and the sides a link
@@ -283,7 +280,6 @@ pub fn assemble(a: &Assembly) -> Assembled {
     // Sides: Open where joined; otherwise the kind's free edge (a wall, or a Drop that blocks nothing).
     let room_rects: Vec<(usize, Rect)> = a.rooms.iter().map(|r| (r.plate, r.rect)).collect();
     let mut surfaces: Vec<WalkSurface> = Vec::with_capacity(pieces.len());
-    let mut owners: Vec<String> = Vec::with_capacity(pieces.len());
     for (id, p) in pieces.iter().enumerate() {
         let mut sides = Vec::with_capacity(4);
         for k in 0..4 {
@@ -311,9 +307,8 @@ pub fn assemble(a: &Assembly) -> Assembled {
             sides.push(side);
         }
         surfaces.push(WalkSurface { id: id as u32, kind: p.kind, poly: p.rect.poly(), height: p.plane, owner: p.owner.clone(), sides });
-        owners.push(p.owner.clone());
     }
-    Assembled { walk: WalkSet { surfaces, links }, mouths: ids, owners }
+    Assembled { walk: WalkSet { surfaces, links }, mouths: ids }
 }
 
 /// The midpoint of side k of a rect.

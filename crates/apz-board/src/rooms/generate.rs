@@ -367,7 +367,7 @@ pub fn template_for<'r>(role: &str, roles: &'r Roles) -> Option<&'r RoleTemplate
 }
 
 /// The precomputed minimum sizes: role -> the minSize for 1..6 agents (`null` = none up to 8).
-pub(crate) fn min_size_table() -> &'static BTreeMap<String, Vec<Option<f64>>> {
+pub fn min_size_table() -> &'static BTreeMap<String, Vec<Option<f64>>> {
     static TABLE: OnceLock<BTreeMap<String, Vec<Option<f64>>>> = OnceLock::new();
     TABLE.get_or_init(|| serde_json::from_str(MIN_SIZE_JSON).expect("assets/rooms/minsize.json parses"))
 }
@@ -1634,7 +1634,7 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
 /// One golden case of `assets/rooms/fixtures.json`: the input, the web's layout hash, and the counts of skipped
 /// and dropped items (the fixture file keeps counts, not the lists).
 #[cfg(test)]
-pub(crate) struct FixtureCase {
+pub struct FixtureCase {
     pub input: Input,
     pub hash: String,
     pub skipped: usize,
@@ -1643,7 +1643,7 @@ pub(crate) struct FixtureCase {
 
 /// The shared golden set, read from the repository's `assets/rooms/fixtures.json`.
 #[cfg(test)]
-pub(crate) fn fixture_cases() -> Vec<FixtureCase> {
+pub fn fixture_cases() -> Vec<FixtureCase> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/rooms/fixtures.json");
     let text = std::fs::read_to_string(path).expect("assets/rooms/fixtures.json is readable");
     let doc: Value = serde_json::from_str(&text).expect("fixtures.json parses");

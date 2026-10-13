@@ -9,6 +9,7 @@
 //! and the walk links that join the surfaces. Each such point is a `SECOND PASS` marker below.
 
 mod aisle;
+mod board_grid;
 mod columns;
 mod geom;
 mod mouth;
@@ -22,11 +23,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hardware::{eval_when, parse_when, Library, Model, Part};
-use crate::grid::{Grid, NAV_STEP};
+use crate::grid::{Grid, NAV_CELL, NAV_STEP};
+use crate::navgrid::{self, landing_clear_at, LandingKind, NavBoard, NavBox, NavGrid, NavPlate, NavTerrace, NavTrace, PlateLanding, Slab};
+use crate::rooms::generate;
 use crate::walk::{SurfaceKind, WalkSet};
 use std::cmp::Ordering;
 use crate::Board;
-use aisle::{aisle_walk, exit_of, gangway_of, open_share, perimeter_open, plan_grid, Site};
+use aisle::{exit_of, gangway_of, open_share, perimeter_open, Site};
+use board_grid::board_grid;
 use columns::Lattice;
 use geom::{belongs, segment_blocked, Frame, Rect};
 use mouth::{mouth, Mouth};
@@ -398,7 +402,6 @@ struct PartBox<'a> {
     name: &'a str,
     lo: [f64; 3],
     hi: [f64; 3],
-    top: Option<f64>,
 }
 
 /// A seat request: a role's agents, in one room (or the orchestrator's centre room).
@@ -634,6 +637,8 @@ struct ScaleSetup<'a> {
     atom: [f64; 3],
     size: [f64; 2],
     boxes: Vec<PartBox<'a>>,
+    /// Every part box (lo, hi), the GPU cards and attached parts included (board-layout.ts navBoardOf's partBoxes).
+    parts: Vec<([f64; 3], [f64; 3])>,
     tall: Vec<Rect>,
     cands: Vec<Cand>,
     grid0: Grid,
@@ -650,16 +655,9 @@ fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
     let pcb_top = p.get("pcb_top").copied().unwrap_or(PCB_TOP_DEFAULT) * s;
     let atom = model.anchors.as_ref().and_then(|a| a.atom).map(scale3).unwrap_or([0.0, pcb_top, 0.0]);
     let hidden = hidden_ids(&model.parts, p);
-    let boxes: Vec<PartBox<'a>> = board
-        .parts()
-        .iter()
-        .map(|it| PartBox {
-            name: &it.name,
-            lo: scale3(it.bounds.min),
-            hi: scale3(it.bounds.max),
-            top: it.top.map(|t| t * s),
-        })
-        .collect();
+    // Every part's box (board-layout.ts scaleBoxes(partBoxes)): the camera's view, the aisles' tall test, the planning grid
+    // and the nav grid all read them, the fitted GPU cards and the attached parts included.
+    let boxes: Vec<PartBox<'a>> = board.part_boxes().iter().map(|it| PartBox { name: &it.name, lo: scale3(it.bounds.min), hi: scale3(it.bounds.max) }).collect();
 
     // The slots the default camera sees, on a part that shows; an explicit `occluded` overrides the camera's view.
     let camera = model.anchors.as_ref().and_then(|a| a.camera.as_ref()).map(|c| scale3(c.at));
@@ -673,9 +671,12 @@ fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
             top: ctx.ground[i] * s,
             capacity: sl.capacity,
         };
+        // The camera test samples just above the slot's own top in the model (board-layout.ts slotBlockedShare uses
+        // `slot.top`), not its ground: a slot under a GPU card grounds on the card, and rays from up there are never blocked.
+        let seen_from = Cand { top: sl.top * s, ..cand.clone() };
         let occluded = match sl.occluded {
             Some(b) => b,
-            None => camera.is_some_and(|cam| blocked_share(&cand, cam, &boxes) > OCCLUSION_SHARE),
+            None => camera.is_some_and(|cam| blocked_share(&seen_from, cam, &boxes) > OCCLUSION_SHARE),
         };
         if !hidden.contains(&sl.on) && !occluded {
             visible.push(cand);
@@ -695,20 +696,24 @@ fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
         visible
     };
 
-    // The planning grid: the PCB and the candidate plates, as the board-only walk (aisle.rs).
+    // The planning grid: the board-only nav grid over the PCB, the part boxes and the candidate plates (board_grid.rs).
     let pcb = Rect { x0: -size[0] / 2.0, z0: -size[1] / 2.0, x1: size[0] / 2.0, z1: size[1] / 2.0 };
+    // The walk's holes are the parts the grid blocks (nav-grid.ts rule 4 on the PCB): every part box standing more than
+    // NAV_STEP above it, as the planning grid takes them.
     let tall: Vec<Rect> = boxes
         .iter()
-        .filter(|b| b.top.is_some_and(|t| t > pcb_top + NAV_STEP))
+        .filter(|b| b.hi[1] - pcb_top > NAV_STEP)
         .map(|b| Rect { x0: b.lo[0], z0: b.lo[2], x1: b.hi[0], z1: b.hi[2] })
         .collect();
     let plate_list: Vec<([f64; 4], f64)> = cands.iter().map(|c| (c.rect, c.top)).collect();
-    let grid0 = plan_grid(&aisle_walk(pcb, pcb_top, &tall, &plate_list));
+    // Every part box counts here (board-layout.ts navBoardOf takes partBoxes), the GPU cards and attached parts too.
+    let parts: Vec<([f64; 3], [f64; 3])> = boxes.iter().map(|b| (b.lo, b.hi)).collect();
+    let grid0 = board_grid(size, pcb_top, &parts, &plate_list);
     let main = grid0.main_component();
 
     let sup_at = |x: f64, z: f64| s * board.support_below(x / s, z / s, f64::INFINITY);
     let lattices: Vec<Lattice> = cands.iter().map(|c| Lattice::of(c.rect, &sup_at)).collect();
-    ScaleSetup { s, pcb, pcb_top, atom, size, boxes, tall, cands, grid0, main, lattices }
+    ScaleSetup { s, pcb, pcb_top, atom, size, boxes, parts, tall, cands, grid0, main, lattices }
 }
 
 /// One layout pass at the setup's scale with the `excluded` keys left out (board-layout.ts layoutAtScale, without the
@@ -916,11 +921,8 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         .map(|(i, e)| Gangway { plate: i, dir: e.dir, bridge: e.bridge.clone(), landing: e.board_at })
         .collect();
 
-    // The walk: each plate's mouth (mouth.rs), then the acceptance. A mouth must fit clear of the rooms (with their cliff
-    // band), the other plates and the mouths already accepted. A plate whose mouth
-    // does not fit, or whose plate or room does not reach the main component of the walk, rejects its exit (and a room that
-    // cannot reach it rejects its slot), so the scale plans again without them.
-    let mut rejected: BTreeSet<String> = BTreeSet::new();
+    // The walk: each plate's mouth (mouth.rs) where it fits clear of the rooms (with their cliff band), the other plates and
+    // the mouths already placed. The mouths give the walk surfaces and the lifts; the acceptance is the web's, below.
     let plate_geo: Vec<PlateGeo> = (0..n).map(|i| PlateGeo { id: i, rect: Rect::from_xywh(aisle_cand(i).rect), y: plate_top[i] }).collect();
     let room_geo: Vec<RoomGeo> = rooms_out
         .iter()
@@ -936,48 +938,39 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
     let mut mouths: Vec<(usize, Mouth)> = Vec::new();
     let mut accepted: Vec<(usize, Rect)> = Vec::new();
     for (i, e) in exits.iter().enumerate() {
-        let Some(m) = mouth(e, plate_top[i], pcb_top) else {
-            rejected.insert(e.key.clone());
-            continue;
-        };
+        let Some(m) = mouth(e, aisle_cand(i).rect, plate_top[i], pcb_top) else { continue };
         let footprint = mouth::footprint(&m);
         let clear = footprint.iter().all(|r| {
             room_geo.iter().all(|rr| !overlaps(r, &grow(&rr.rect, RAMP_DEPTH)))
                 && plate_geo.iter().all(|pg| pg.id == i || !overlaps(r, &pg.rect))
                 && accepted.iter().all(|(j, ar)| *j == i || !overlaps(r, ar))
         });
-        if !clear {
-            rejected.insert(e.key.clone());
-            continue;
+        if clear {
+            accepted.extend(footprint.iter().map(|r| (i, *r)));
+            mouths.push((i, m));
         }
-        accepted.extend(footprint.iter().map(|r| (i, *r)));
-        mouths.push((i, m));
     }
-
     let asm = surfaces::assemble(&Assembly { pcb, pcb_top, tall, plates: &plate_geo, rooms: &room_geo, mouths: &mouths });
-
-    // The reach: the walk cells of the main component, by the owner of their surface.
     #[cfg(test)]
     LAST_WALK.with(|w| *w.borrow_mut() = Some(asm.walk.clone()));
-    let grid_walk = crate::grid::build(&asm.walk);
-    let mut reached: BTreeSet<&str> = BTreeSet::new();
-    if grid_walk.main >= 0 {
-        for c in 0..grid_walk.cols * grid_walk.rows {
-            if grid_walk.walk[c] == 1 && grid_walk.component[c] == grid_walk.main && grid_walk.surface[c] >= 0 {
-                reached.insert(asm.owners[grid_walk.surface[c] as usize].as_str());
+
+    // The acceptance (board-layout.ts layoutAtScale and unreachedKeys): a landing must be clear of the rooms (landingClear);
+    // once every landing is, the nav grid with the rooms and their furniture in place must reach every plate (its own
+    // landing search, rule 6), and every room's door must reach the main component, else the room's slot is taken out.
+    let slabs: Vec<Slab> = rooms_out.iter().map(|r| Slab { cx: r.centre[0], cz: r.centre[1], half: r.half[0].min(r.half[1]), round: r.round }).collect();
+    let slot_rects: Vec<[f64; 4]> = (0..n).map(|i| aisle_cand(i).rect).collect();
+    let mut rejected: BTreeSet<String> = exits.iter().filter(|e| !landing_clear(e, &slabs, &slot_rects)).map(|e| e.key.clone()).collect();
+    if rejected.is_empty() {
+        let slots: Vec<([f64; 4], f64)> = (0..n).map(|i| (aisle_cand(i).rect, aisle_cand(i).top)).collect();
+        let grid = nav_scene(ctx, setup, &rooms_out, &exits, &slots);
+        let first = rooms_out.len() as i32 + 1;
+        for id in &grid.unreached {
+            if let Some(e) = exits.get((id - first) as usize) {
+                rejected.insert(e.key.clone());
             }
         }
-    }
-    for (i, e) in exits.iter().enumerate() {
-        if !reached.contains(format!("plate:{i}").as_str()) {
-            rejected.insert(e.key.clone());
-        }
-    }
-    // A room that cannot reach the main component takes its slot out, once no other candidate is rejected (the TS checks
-    // the connectivity only then).
-    if rejected.is_empty() {
-        for r in &room_geo {
-            if !reached.contains(format!("room:{}", r.id).as_str()) {
+        for tid in navgrid::connectivity(&grid).unconnected {
+            if let Some(r) = rooms_out.get((tid - 1) as usize) {
                 rejected.insert(format!("slot|{}", plates[r.plate].slot));
             }
         }
@@ -1023,6 +1016,101 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         walk: asm.walk,
     };
     Pass { layout, rejected }
+}
+
+/// Is an exit's landing clear of the rooms (board-layout.ts landingClear, nav-grid.ts rule 6): the board cell it reaches
+/// (and a lift's queue) is outside every slab and cliff band, its plate cell outside every slab, and a gangway's bridge
+/// outside every slab (a bridge may cross a band, not a wall).
+fn landing_clear(e: &Exit, slabs: &[Slab], plates: &[[f64; 4]]) -> bool {
+    let on_plate = |x: f64, z: f64| plates.iter().any(|&[px, pz, w, d]| x >= px && x < px + w && z >= pz && z < pz + d);
+    let [bx, bz] = e.board_at;
+    if !landing_clear_at(slabs, bx, bz, on_plate(bx, bz)) {
+        return false;
+    }
+    if e.kind == ExitKind::Gangway {
+        return e.bridge.iter().all(|&[x, z]| landing_clear_at(slabs, x, z, true));
+    }
+    if !landing_clear_at(slabs, e.plate_at[0], e.plate_at[1], true) {
+        return false;
+    }
+    if e.kind == ExitKind::Lift {
+        let (qx, qz) = (bx + e.dir[0] * NAV_CELL, bz + e.dir[1] * NAV_CELL);
+        if !landing_clear_at(slabs, qx, qz, on_plate(qx, qz)) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The nav grid of a pass with its rooms in place (nav-scene.ts navScene with no machine): the board's part boxes and
+/// traces, the plates with their landings (region ids after the rooms'), and one terrace per room with the furniture the
+/// room generator lays out for it (roomPlan: the seed of `/<role>/<index>`, the inner side 2r - 0.15).
+fn nav_scene(ctx: &Ctx, setup: &ScaleSetup, rooms: &[Room], exits: &[Exit], slots: &[([f64; 4], f64)]) -> NavGrid {
+    let s = setup.s;
+    let traces = ctx
+        .model
+        .traces
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|t| NavTrace { path: t.path.iter().map(|&[x, z]| [x * s, z * s]).collect(), width: t.width * s })
+        .collect();
+    let first = rooms.len() as i32 + 1;
+    let plates = exits
+        .iter()
+        .zip(slots)
+        .enumerate()
+        .map(|(k, (e, &([x0, z0, w, d], top)))| {
+            let kind = match e.kind {
+                ExitKind::Ramp => LandingKind::Ramp,
+                ExitKind::Lift => LandingKind::Lift,
+                ExitKind::Gangway => LandingKind::Gangway,
+            };
+            let landing = PlateLanding { ax: e.plate_at[0], az: e.plate_at[1], bx: e.board_at[0], bz: e.board_at[1], kind, nx: e.dir[0], nz: e.dir[1], bridge: e.bridge.clone() };
+            NavPlate { id: first + k as i32, x0, z0, w, d, y: top, landing: Some(landing) }
+        })
+        .collect();
+    let board = NavBoard { size: [setup.size[0], 0.0, setup.size[1]], pcb_top: setup.pcb_top, boxes: setup.parts.iter().map(|&(lo, hi)| NavBox { lo, hi }).collect(), traces, plates };
+    let data = generate::data();
+    let terraces: Vec<NavTerrace> = rooms
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let inner = 2.0 * r.r - 0.15;
+            let door = match r.door {
+                Door::N => generate::Door::N,
+                Door::S => generate::Door::S,
+                Door::E => generate::Door::E,
+                Door::W => generate::Door::W,
+            };
+            let input = generate::Input {
+                role: r.role.clone(),
+                w: inner,
+                d: inner,
+                door,
+                seed: generate::fnv1a32(format!("/{}/{}", r.role, i).as_bytes()),
+                agents: Some(r.members.len().max(1)),
+            };
+            let (door, solids, spots) = navgrid::furniture(&generate::generate(&input, data), &data.catalog);
+            NavTerrace {
+                id: i as i32 + 1,
+                cx: r.centre[0],
+                cz: r.centre[1],
+                half: r.half[0].min(r.half[1]),
+                hw: r.half[0],
+                hd: r.half[1],
+                round: r.round,
+                y: r.floor_y,
+                turn: r.turn,
+                w: inner,
+                d: inner,
+                door,
+                solids,
+                spots,
+            }
+        })
+        .collect();
+    navgrid::build(&board, &terraces)
 }
 
 /// Does a rect overlap another in area (touching edges do not count)?

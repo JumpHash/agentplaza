@@ -321,6 +321,47 @@ fn dump_layout_json() {
     }
 }
 
+/// The GPU-fitted boards: the workstation and the server at 1, 2 and 4 GPUs (the `gpu-pcie` parts the board model adds),
+/// every board count. The GPU cards are tall parts on the board, so they change which plates are flat and which aisles
+/// are clear. Release only, like the timing test; each case prints `TIMING kind gpus=g n ms seated|failed(reason)`.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "layout timing is asserted in release only")]
+fn gpu_boards_seat_every_agent() {
+    let failed = seat_cases(&[1]);
+    assert!(failed.is_empty(), "agents do not seat on the one-GPU boards: {failed:?}");
+}
+
+/// Two and four GPUs: the web cannot lay these out either (nothing within the scale cap), so they are not a port test yet.
+#[test]
+#[ignore = "the web cannot lay these out either (nothing within scale cap 3); a design change, not a port"]
+fn gpu_boards_with_two_or_four_gpus_seat_every_agent() {
+    let failed = seat_cases(&[2, 4]);
+    assert!(failed.is_empty(), "agents do not seat on the multi-GPU boards: {failed:?}");
+}
+
+/// Lays out each (board, GPU count, agent count) case, prints its TIMING line, and returns the cases that panic.
+fn seat_cases(gpu_counts: &[u32]) -> Vec<String> {
+    let mut failed = Vec::new();
+    for kind in ["workstation", "server"] {
+        for &gpus in gpu_counts {
+            for n in COUNTS {
+                let t = std::time::Instant::now();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| layout(kind, &input(n, gpus))));
+                let secs = t.elapsed().as_secs_f64();
+                let status = match &outcome {
+                    Ok(_) => "seated".to_string(),
+                    Err(payload) => format!("failed({})", panic_text(payload.as_ref())),
+                };
+                eprintln!("TIMING {kind} gpus={gpus} n={n} {:.0} {status}", secs * 1000.0);
+                if outcome.is_err() {
+                    failed.push(format!("{kind} gpus={gpus} n={n}"));
+                }
+            }
+        }
+    }
+    failed
+}
+
 /// Phone at 20 agents (the cap scale, 0.25 nav cells): every agent gets a home. Before the fix, 16 plates were unusable with
 /// "no perimeter point" because reach_main walked only height-legal moves, where board-layout.ts reachMain walks any open cell.
 #[test]

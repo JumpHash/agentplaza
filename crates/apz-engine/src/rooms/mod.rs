@@ -2,13 +2,11 @@
 //! the builder (`build`, build.ts) builds it from the catalogue, and `build_room` sizes it as the web's `buildRoom`
 //! does. The room lab (`lab`, `APZ_ROOM_LAB`) shows rooms on the machines' ground.
 
-/// The generator (`gen.rs`; `gen` is a reserved word, so the module is named `generate`).
-#[path = "gen.rs"]
-pub mod generate;
+/// The generator and the verifier live in `apz-board` (the board layout checks its rooms with their furniture).
+pub use apz_board::rooms::{generate, verify};
 pub mod build;
 pub mod kit;
 pub mod lab;
-pub mod verify;
 
 use super::props::Anim;
 use super::scene::{Color, Mat, Obj};

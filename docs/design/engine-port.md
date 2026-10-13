@@ -14,9 +14,9 @@ more. three.js is removed when every row below says **done**. Status comes from 
 | 6 | GPU reference cards (`gpus.ts`) | done (data and matching); wire the card choice into the board's `gpu-pcie` parts |
 | 7 | Lifts: cab, rails, doors, controller (`lift.ts`, `lift-ctrl.ts`) | missing; needs `apz-board` lifts and landings first |
 | 8 | Gangways and ramps (`gangway.ts`, `ramp.ts`) | missing; needs `apz-board` links |
-| 9 | Nav grid walking, A*, followers, avoidance, respawn (`nav-*.ts`) | in `apz-board` (grid, Lazy Theta*, flow fields); motion and the engine hookup are missing |
+| 9 | Nav grid walking, A*, followers, avoidance, respawn (`nav-*.ts`) | the web's nav grid is ported (`apz-board::navgrid`: portals, lifts, spots, drops, connectivity); `apz-board` has the planners (grid, Lazy Theta*, flow fields); the robot follower (`NavWorld`) and the engine hookup are missing |
 | 10 | Body clips: crouch, jump, air, fall, land (`robot.ts`) | done in the engine (`BodyMode`, tested pose for pose against the web formulas); `apz-board` motion does not drive it yet |
-| 11 | Board scale growth to seat agents (`board-layout.ts`) | partial: the engine's rooms and homes come from the `apz-board` layout on the desktop (computed off the frame, cached); the browser still uses the engine's older layout until a web worker runs it; boards with GPUs fitted fall back (an `apz-board` gap: the web cannot lay out 2+ GPU workstations either) |
+| 11 | Board scale growth to seat agents (`board-layout.ts`) | partial: `apz-board` plans and accepts as the web does: the planning grid and the acceptance grid are the web's nav grid (`apz-board::navgrid`, every rule of `nav-grid.ts`, the rooms with their generated furniture), so boards with one GPU fitted lay out (2 and 4 GPU workstations do not, on the web either); the browser still uses the engine's older layout until a web worker runs it |
 | 12 | Grounding, drawn tops and support (`ground.ts`, `drawn-tops.ts`) | in `apz-board` (support field); engine hookup missing |
 | 13 | Warm-up budget for board builds (`warm.ts`) | done: a re-entered machine's board comes from the build cache; budgeted steps exist (`warm.rs`) but the board build is still one call |
 | 14 | Shadow proxies (`bake.ts`) | missing |

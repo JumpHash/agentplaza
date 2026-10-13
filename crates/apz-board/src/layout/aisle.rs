@@ -1,7 +1,6 @@
 //! The aisle exits (board-layout.ts outwardSources, perimeterOpen, reachMain, exitOf and mainComponent): where a plate's
-//! aisle meets the main component of the board's own walk. Planning runs on `crate::grid::build` over the board's walk
-//! surfaces (the PCB pieces) and the candidate plates. The grid joins surfaces only through links, so the PCB pieces that
-//! meet at one height are joined here, for planning only; the layout's own links (lifts, ramps, doors) are the later pass's.
+//! aisle meets the main component of the board's own walk. Planning runs on the board-only nav grid (board_grid.rs):
+//! the PCB, every part box and the candidate plates, as the web's grid0.
 //!
 //! An exit is a Plate join: the plate's edge at the aisle end reaches the board cell where the search first meets the
 //! main component. Its kind is a Ramp when the plate stands within NAV_LIFT_RISE of the PCB, else a Lift (the lift's cab
@@ -11,10 +10,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::geom::{Frame, Rect};
+use super::geom::Frame;
 use super::rooms::{Config, AISLE};
-use crate::grid::{build, Grid, DIRS8, NAV_CELL};
-use crate::walk::{LinkKind, Plane, Side, SurfaceKind, WalkLink, WalkSet, WalkSurface};
+use crate::grid::{Grid, DIRS8, NAV_CELL};
 
 /// How far an exit's search may walk, in grid cells (board-layout.ts LANDING_REACH).
 pub const LANDING_REACH: usize = 40;
@@ -78,62 +76,14 @@ pub struct Gap {
     pub span: [f64; 2],
 }
 
-/// The board-only walk for aisle planning: the PCB at `pcb_top` less the holes (the plate footprints and the tall parts),
-/// its pieces joined where they share an edge, and the candidate plates `(rect, top)`, walled on every side.
-pub fn aisle_walk(pcb: Rect, pcb_top: f64, tall: &[Rect], plates: &[([f64; 4], f64)]) -> WalkSet {
-    let mut holes: Vec<Rect> = plates.iter().map(|(r, _)| Rect::from_xywh(*r)).collect();
-    holes.extend(tall.iter().copied());
-    let pieces = super::geom::subtract(pcb, &holes);
-    let mut surfaces: Vec<WalkSurface> = Vec::new();
-    let mut links: Vec<WalkLink> = Vec::new();
-    // Two pieces that share a boundary segment of positive length are joined (a partial edge joins too, as the cells do).
-    // A side against a plate is free (Drop); against a tall part or the board's edge it is a wall.
-    let mut sides_of: Vec<Vec<Side>> = pieces.iter().map(|r| (0..4).map(|k| super::surfaces::pcb_free_side(r, k, &pcb, tall)).collect()).collect();
-
-    for a in 0..pieces.len() {
-        for b in a + 1..pieces.len() {
-            if let Some((sa, sb, at)) = super::surfaces::shared_side(&pieces[a], &pieces[b]) {
-                sides_of[a][sa] = Side::Open;
-                sides_of[b][sb] = Side::Open;
-                links.push(WalkLink { from: a as u32, to: b as u32, kind: LinkKind::Step, via: None, at });
-            }
-        }
-    }
-    for (i, (r, sides)) in pieces.iter().zip(sides_of).enumerate() {
-        surfaces.push(WalkSurface {
-            id: i as u32,
-            kind: SurfaceKind::Board,
-            poly: r.poly(),
-            height: Plane::flat(pcb_top),
-            owner: "board".to_string(),
-            sides,
-        });
-    }
-    for (p, (r, top)) in plates.iter().enumerate() {
-        let id = surfaces.len() as u32;
-        surfaces.push(WalkSurface {
-            id,
-            kind: SurfaceKind::Plate,
-            poly: Rect::from_xywh(*r).poly(),
-            height: Plane::flat(*top),
-            owner: format!("plate:{p}"),
-            sides: vec![Side::Walled; 4],
-        });
-    }
-    WalkSet { surfaces, links }
-}
-
-/// The grid of the aisle walk (the planning grid of the layout).
-pub fn plan_grid(walk: &WalkSet) -> Grid {
-    build(walk)
-}
-
-/// The outward samples from an edge: for each edge point, the free cells 1..=8 edges out along `dir` (board-layout.ts
-/// outwardSources). The plate's own inside cell is not tested: its walled side already blocks the plate's edge cells, so
-/// the aisle end is taken as the plate edge.
+/// The outward samples from an edge: for each edge point whose plate cell just inside the edge is open (the landing's
+/// plate end), the unblocked cells 1..=8 half-cells out along `dir` (board-layout.ts outwardSources).
 fn outward_sources(grid: &Grid, edge: &[[f64; 2]], dir: [f64; 2], label: usize) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for &[x, z] in edge {
+        if !grid.cell_at(x - dir[0] * EDGE, z - dir[1] * EDGE).is_some_and(|c| grid.blocked[c] == 0 && grid.inflated[c] == 0) {
+            continue;
+        }
         for k in 1..=8 {
             if let Some(c) = grid.cell_at(x + dir[0] * k as f64 * EDGE, z + dir[1] * k as f64 * EDGE).filter(|&c| grid.blocked[c] == 0) {
                 out.push((c, label));

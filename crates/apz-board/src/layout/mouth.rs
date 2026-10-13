@@ -35,9 +35,9 @@ pub enum Mouth {
     Lift { cab: Rect, bottom: Rect, top: Rect, top_kind: SurfaceKind, edge: [f64; 2], door: Door, gangway: bool, bottom_y: f64, top_y: f64 },
 }
 
-/// The mouth of an exit of a plate at height `plate_y` above a PCB at `pcb_top`. None when the exit cannot be laid out (a
-/// gangway with no bridge length).
-pub fn mouth(exit: &Exit, plate_y: f64, pcb_top: f64) -> Option<Mouth> {
+/// The mouth of an exit of a plate `[x, z, w, d]` at height `plate_y` above a PCB at `pcb_top`. None when the exit cannot
+/// be laid out (a gangway with no bridge length).
+pub fn mouth(exit: &Exit, plate: [f64; 4], plate_y: f64, pcb_top: f64) -> Option<Mouth> {
     let dir = exit.dir;
     let edge = [exit.plate_at[0] + dir[0] * EDGE, exit.plate_at[1] + dir[1] * EDGE];
     let perp = [-dir[1], dir[0]];
@@ -62,7 +62,15 @@ pub fn mouth(exit: &Exit, plate_y: f64, pcb_top: f64) -> Option<Mouth> {
             Some(lift(dir, piece(centre, dir, perp, -CELL, CELL), piece(centre, dir, perp, CELL, 3.0 * CELL), top, SurfaceKind::Landing, false, edge, pcb_top, plate_y))
         }
         ExitKind::Gangway => {
-            // The bridge runs from the plate's edge to the cab's near side.
+            // The bridge runs from the plate's edge to the cab's near side. Its first cell is the plate's edge cell, whose
+            // far side need not be the plate's edge (a plate is not on the cell lattice), so it starts at the plate's edge.
+            let [px, pz, pw, pd] = plate;
+            let edge = match (dir[0] > 0.5, dir[0] < -0.5, dir[1] > 0.5) {
+                (true, _, _) => [px + pw, edge[1]],
+                (_, true, _) => [px, edge[1]],
+                (_, _, true) => [edge[0], pz + pd],
+                _ => [edge[0], pz],
+            };
             let cab_near = offset(centre, dir, -CELL);
             if dot([cab_near[0] - edge[0], cab_near[1] - edge[1]], dir) <= 1e-6 {
                 return None;

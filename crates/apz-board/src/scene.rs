@@ -38,6 +38,8 @@ struct Node {
     rest: bool,
     /// Under a part whose id matches the TEMPORARY GPU filter.
     excluded: bool,
+    /// A decal (plane, ring, label): drawn, but no part box (zfight.ts partBoxes gives decals none).
+    decal: bool,
     world: M4,
     kind: Kind,
     children: Vec<usize>,
@@ -52,6 +54,9 @@ struct Copy {
 /// A built board: its items in traversal order, the support field, and the number of part keys.
 pub(crate) struct Scene {
     pub items: Vec<Item>,
+    /// Every part's box, one per drawn copy, GPU parts and attached parts included, decals not (zfight.ts partBoxes):
+    /// what the layout plans with (occlusion, tall parts), unlike `items`, the resting set the grounding audit reads.
+    pub boxes: Vec<Item>,
     pub support: Support,
     pub part_count: usize,
 }
@@ -67,7 +72,7 @@ pub(crate) fn build(lib: &Library, model: &Model, params: &BTreeMap<String, f64>
             children.push(c);
         }
     }
-    let root = b.push(Node { name: String::new(), rest: false, excluded: false, world: IDENTITY, kind: Kind::Group, children });
+    let root = b.push(Node { name: String::new(), rest: false, excluded: false, decal: false, world: IDENTITY, kind: Kind::Group, children });
     b.finish(root)
 }
 
@@ -106,7 +111,7 @@ impl Builder<'_> {
         for (i, off) in offsets.iter().enumerate() {
             children.push(self.build_one(p, scope, i, *off, parent, anc));
         }
-        Some(self.push(Node { name: String::new(), rest: false, excluded: anc, world: *parent, kind: Kind::Group, children }))
+        Some(self.push(Node { name: String::new(), rest: false, excluded: anc, decal: false, world: *parent, kind: Kind::Group, children }))
     }
 
     /// buildOne: a group (a `use` or children only) or a mesh, with its children and its label.
@@ -162,13 +167,14 @@ impl Builder<'_> {
                 name: String::new(),
                 rest: false,
                 excluded,
+                decal: true,
                 world: label_world,
                 kind: Kind::Mesh { geo: geom::label(size), solid: true },
                 children: Vec::new(),
             });
             children.push(li);
         }
-        self.push(Node { name: id.unwrap_or("").to_string(), rest, excluded, world, kind, children })
+        self.push(Node { name: id.unwrap_or("").to_string(), rest, excluded, decal, world, kind, children })
     }
 
     /// buildInstanced: one InstancedMesh whose copies are instance matrices (rounded to f32, as a Float32Array holds them).
@@ -199,6 +205,7 @@ impl Builder<'_> {
             name: id.unwrap_or("").to_string(),
             rest,
             excluded,
+            decal,
             world: *parent,
             kind: Kind::Instanced { geo, locals, solid },
             children: Vec::new(),
@@ -231,7 +238,9 @@ impl Builder<'_> {
         }
         let mut items = Vec::new();
         visit(&nodes, &copies, root, &mut items);
-        Scene { items, support, part_count: keys.len() }
+        let mut boxes = Vec::new();
+        visit_boxes(&nodes, &copies, root, &mut boxes);
+        Scene { items, boxes, support, part_count: keys.len() }
     }
 }
 
@@ -377,6 +386,32 @@ fn visit(nodes: &[Node], copies: &[Vec<Copy>], idx: usize, out: &mut Vec<Item>) 
     }
     for &ch in &n.children {
         visit(nodes, copies, ch, out);
+    }
+}
+
+/// partBoxes: pre-order over the tree; every mesh copy that is not a decal gives its box, under the GPU filter or not.
+fn visit_boxes(nodes: &[Node], copies: &[Vec<Copy>], idx: usize, out: &mut Vec<Item>) {
+    let n = &nodes[idx];
+    if !n.decal {
+        match &n.kind {
+            Kind::Group => {}
+            Kind::Mesh { .. } => {
+                let c = &copies[idx][0];
+                if !c.bounds.is_empty() {
+                    out.push(Item { name: n.name.clone(), bounds: c.bounds, top: top_of(&c.ups) });
+                }
+            }
+            Kind::Instanced { .. } => {
+                for c in &copies[idx] {
+                    if !c.bounds.is_empty() {
+                        out.push(Item { name: n.name.clone(), bounds: c.bounds, top: top_of(&c.ups) });
+                    }
+                }
+            }
+        }
+    }
+    for &ch in &n.children {
+        visit_boxes(nodes, copies, ch, out);
     }
 }
 

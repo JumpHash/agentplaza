@@ -29,6 +29,8 @@ pub mod field;
 pub mod grid;
 pub mod layout;
 pub mod mesh;
+pub mod rooms;
+pub mod navgrid;
 pub mod plan;
 pub mod walk;
 pub mod zfight;
@@ -96,6 +98,8 @@ pub struct Item {
 #[derive(Debug, Clone)]
 pub struct Board {
     items: Vec<Item>,
+    /// Every part's box (GPU and attached parts too, decals not): what the default camera's view is tested against.
+    boxes: Vec<Item>,
     support: Support,
     part_count: usize,
     bounds: Aabb,
@@ -126,12 +130,18 @@ impl Board {
         }
         let mut merged = model.params.clone().unwrap_or_default();
         merged.extend(params.iter().map(|(k, v)| (k.clone(), *v)));
-        Board { items: scene.items, support: scene.support, part_count: scene.part_count, bounds, model: name, params: merged }
+        Board { items: scene.items, boxes: scene.boxes, support: scene.support, part_count: scene.part_count, bounds, model: name, params: merged }
     }
 
     /// The resting items, in the web's traversal order.
     pub fn parts(&self) -> &[Item] {
         &self.items
+    }
+
+    /// Every part's box, one per drawn copy, including the GPU cards and attached parts the resting items leave out, and no
+    /// decals (zfight.ts partBoxes): the boxes the default camera's view of a slot is tested against.
+    pub fn part_boxes(&self) -> &[Item] {
+        &self.boxes
     }
 
     /// The union of the items' boxes (a zero box when there are no items).
