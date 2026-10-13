@@ -1,0 +1,46 @@
+# Applied migrations are immutable (docs/dev/sql.md). On a pull request, and on a push to main, the
+# check compares the commits against their base: a migration already on the base that is modified,
+# deleted or renamed; an existing line of crates/*/sql/migrations/migrations.lock that changed or was
+# removed; or a new migration whose number is not the next one. The same check runs before every
+# commit when the clone uses .githooks (scripts/install-hooks.sh).
+#
+# Where: the org's self-hosted Linux runner, like the other workflows. The check is plain git and
+# bash; it needs the full history, so the checkout fetches it all.
+name: migrations
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  immutable-migrations:
+    name: applied migrations are immutable
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: check the migrations against the base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            base="$PR_BASE"
+          elif [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no previous commit to compare with (a new branch): nothing to check"
+            exit 0
+          else
+            base="$PUSH_BEFORE"
+          fi
+          scripts/check-migrations.sh "$base"
