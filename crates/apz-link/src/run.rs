@@ -127,8 +127,22 @@ fn local_json(port: u16, path: &str) -> Value {
 }
 
 /// The fields noded reports about the machine that a heartbeat carries to the hub.
-const NODED_MACHINE_FIELDS: [&str; 11] =
-    ["kind", "vendor", "model", "apple", "cpu", "os", "arch", "backend", "gpus", "memory_mib", "storage_gib"];
+const NODED_MACHINE_FIELDS: [&str; 14] = [
+    "kind",
+    "vendor",
+    "model",
+    "apple",
+    "cpu",
+    "os",
+    "arch",
+    "backend",
+    "gpus",
+    "accelerators",
+    "trainer",
+    "fabric",
+    "memory_mib",
+    "storage_gib",
+];
 
 /// The live load a heartbeat carries, from noded's `/v1/machine/stats`: `{cpu_pct, mem_used_mib}`;
 /// null when the daemon has no sample yet or does not answer.
@@ -165,6 +179,13 @@ mod machine_tests {
     fn live_stats_are_the_cpu_percent_and_memory_used() {
         let sample = json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3], "history": [] });
         assert_eq!(stats_report(&sample), json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 }));
+    }
+
+    #[test]
+    fn the_foundry_machine_facts_ride_the_heartbeat() {
+        for field in ["accelerators", "trainer", "fabric", "gpus"] {
+            assert!(NODED_MACHINE_FIELDS.contains(&field), "{field} is in the heartbeat");
+        }
     }
 
     #[test]

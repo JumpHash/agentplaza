@@ -10,6 +10,9 @@
 //! * `POST /v1/runs/{id}/vms/{index}/memory` — resize one VM's balloon
 //! * `GET /v1/ws` — a WebSocket (`apz.noded.v1`): one text message per event,
 //!   `{"event":"run"|"vm"|"serial","data":{…}}`; read-only, no browsers
+//! * `POST /v1/train` · `GET /v1/train` — start a trainer job · the running jobs
+//! * `GET /v1/train/{job_id}/events?after=N` · `POST /v1/train/{job_id}/stop` — what the job
+//!   printed since line N · stop it
 //!
 //! With `--agents <roles manifest>` it also boots the role fleet at start:
 //! one long-lived, harnessed VM per role. The plaza itself (agents, tasks,
@@ -19,12 +22,19 @@ pub mod events;
 pub mod fleet;
 pub mod registry;
 pub mod stats;
+pub mod train;
 
+use std::io::Read;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use apz_http::{Response, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::registry::{CreateRun, Detail, Registry, VmImages};
 
@@ -110,6 +120,8 @@ pub struct Node {
     started_at_ms: u64,
     stats: Arc<stats::Stats>,
     probed: Probed,
+    /// The fabric addresses and when they were read (see `cached_fabric`).
+    fabric: Mutex<Option<(Instant, Vec<String>)>>,
 }
 
 /// `GET /v1/machine`.
@@ -130,6 +142,12 @@ pub struct MachineView {
     pub apple: Option<Apple>,
     pub cpu: Cpu,
     pub gpus: Vec<Gpu>,
+    /// The devices that run trainers (GPUs, Apple's GPU); empty on a CPU-only machine.
+    pub accelerators: Vec<Accelerator>,
+    /// The trainer runtime this machine can run jobs in.
+    pub trainer: Trainer,
+    /// The addresses other machines may reach this one at, private ranges first.
+    pub fabric: Vec<String>,
     pub cpus: u32,
     pub memory_mib: u64,
     /// The size of the state directory's filesystem, in GiB; null when unknown.
@@ -148,6 +166,7 @@ impl Node {
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
             probed: probe_host(&apz_os::dirs::state()),
+            fabric: Mutex::new(None),
         }
     }
 
@@ -166,6 +185,9 @@ impl Node {
             apple: self.probed.apple.clone(),
             cpu: self.probed.cpu.clone(),
             gpus: host_gpus(),
+            accelerators: accelerators_now(&self.probed.facts.accelerators, &train::busy_devices(self.probed.facts.docker_host.as_deref())),
+            trainer: self.probed.facts.trainer.clone(),
+            fabric: cached_fabric(&self.fabric, Instant::now(), probe_fabric),
             cpus: host_cpus(),
             memory_mib: self.probed.memory_mib,
             storage_gib: self.probed.storage_gib,
@@ -386,6 +408,7 @@ struct Probed {
     cpu: Cpu,
     memory_mib: u64,
     storage_gib: Option<u64>,
+    facts: MachineFacts,
 }
 
 /// A Mac with Apple Silicon: its chip and core counts, GPU cores, Neural Engine cores and unified
@@ -419,6 +442,7 @@ fn probe_host(state_dir: &Path) -> Probed {
     let tree = device_tree_model();
     if cfg!(target_os = "macos") {
         let (kind, vendor, model, apple) = probe_mac();
+        let facts = probe_machine_facts(apple.as_ref());
         return Probed {
             kind,
             vendor,
@@ -427,6 +451,7 @@ fn probe_host(state_dir: &Path) -> Probed {
             cpu: probe_cpu(None),
             memory_mib: host_memory_mib(),
             storage_gib: storage_gib(state_dir),
+            facts,
         };
     }
     // Windows reads its system, enclosure and battery facts in one PowerShell call.
@@ -453,6 +478,7 @@ fn probe_host(state_dir: &Path) -> Probed {
         cpu: probe_cpu(tree.as_deref()),
         memory_mib,
         storage_gib: storage_gib(state_dir),
+        facts: probe_machine_facts(None),
     }
 }
 
@@ -793,7 +819,13 @@ fn sysctl(name: &str) -> Option<String> {
 /// The trimmed stdout of a command that succeeds, or None. On Windows the probe starts without a
 /// console window.
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let mut command = std::process::Command::new(program);
+    let output = hidden_command(program, args).output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// A command with no console window on Windows.
+fn hidden_command(program: &str, args: &[&str]) -> Command {
+    let mut command = Command::new(program);
     command.args(args);
     #[cfg(windows)]
     {
@@ -801,8 +833,426 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command.output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    command
+}
+
+/// What a command printed (untrimmed) and whether it exited successfully.
+#[derive(Debug)]
+pub struct Output {
+    pub ok: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Runs a command, reading both pipes while it runs, and kills it when it has not exited within
+/// `timeout`. None when it cannot start or is killed.
+fn command_within(program: &str, args: &[&str], timeout: Duration) -> Option<Output> {
+    let mut command = hidden_command(program, args);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    Some(Output { ok: status.success(), stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+}
+
+/// Reads a pipe to its end on a thread, so a command that writes a lot cannot block on a full pipe.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+/// A device that runs trainers: a GPU, or Apple Silicon's GPU. CPUs are not listed (the planner
+/// handles them). `index` is the vendor's own device number; `busy` is set while a training job
+/// on this node holds the device.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Accelerator {
+    pub index: u32,
+    /// `nvidia`, `amd`, `intel` or `apple`.
+    pub vendor: &'static str,
+    pub name: String,
+    pub memory_mib: Option<u64>,
+    /// `cuda`, `rocm`, `xpu` or `mps`.
+    pub backend: &'static str,
+    /// The CUDA compute capability (`8.6`); null elsewhere.
+    pub capability: Option<String>,
+    /// `pcie`, `nvlink`, or `soc` (unified memory).
+    pub link: &'static str,
+    pub busy: bool,
+    /// Refreshed on demand for NVIDIA devices; null elsewhere.
+    pub util_pct: Option<u32>,
+    pub mem_used_mib: Option<u64>,
+}
+
+/// The trainer runtime this node can run jobs in (see `train`). `runtime` is null when none
+/// applies; `ok` is false when the runtime is missing something, and `detail` says what.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Trainer {
+    pub runtime: Option<&'static str>,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// The machine facts probed once at start, next to the CPU and memory.
+#[derive(Debug, Clone)]
+struct MachineFacts {
+    accelerators: Vec<Accelerator>,
+    trainer: Trainer,
+    /// The docker engine trainers run in (`docker -H`); None for the default context.
+    docker_host: Option<String>,
+}
+
+/// How long the fabric addresses are kept before they are read again.
+const FABRIC_TTL: Duration = Duration::from_secs(30);
+
+/// The fabric addresses: the cached read while it is younger than `FABRIC_TTL`, else `probe` again.
+/// The lock is held while probing, so concurrent calls read once.
+fn cached_fabric(cache: &Mutex<Option<(Instant, Vec<String>)>>, now: Instant, probe: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((read_at, fabric)) = cache.as_ref() {
+        if now.saturating_duration_since(*read_at) < FABRIC_TTL {
+            return fabric.clone();
+        }
+    }
+    let fabric = probe();
+    *cache = Some((now, fabric.clone()));
+    fabric
+}
+
+const NVIDIA_QUERY: &str = "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,compute_cap";
+const NVIDIA_CSV: &str = "--format=csv,noheader,nounits";
+const ROCM_QUERY: [&str; 4] = ["--showproductname", "--showmeminfo", "vram", "--json"];
+const NVIDIA_REFRESH: Duration = Duration::from_secs(2);
+const WINDOWS_ADDRESSES: &str = "Get-NetIPAddress | ForEach-Object { $_.IPAddress }";
+
+/// Probes the accelerators, the docker engine, the trainer runtime and the fabric addresses.
+fn probe_machine_facts(apple: Option<&Apple>) -> MachineFacts {
+    let accelerators = probe_accelerators(apple);
+    let vendors: Vec<&str> = accelerators.iter().map(|device| device.vendor).collect();
+    let docker_host = train::docker_host();
+    let trainer = train::probe_trainer(&vendors, docker_host.as_deref());
+    MachineFacts { accelerators, trainer, docker_host }
+}
+
+fn probe_accelerators(apple: Option<&Apple>) -> Vec<Accelerator> {
+    let mut found = nvidia_probe();
+    found.extend(amd_probe());
+    found.extend(intel_probe(Path::new("/sys/class/drm")));
+    found.extend(apple.map(apple_accelerator));
+    found
+}
+
+fn nvidia_probe() -> Vec<Accelerator> {
+    let Some(query) = command_stdout("nvidia-smi", &[NVIDIA_QUERY, NVIDIA_CSV]) else {
+        return Vec::new();
+    };
+    let topo = command_stdout("nvidia-smi", &["topo", "-m"]).unwrap_or_default();
+    nvidia_accelerators(&query, &topo)
+}
+
+/// The NVIDIA devices from `nvidia-smi --query-gpu` (`0, NVIDIA GeForce RTX 3090, 24576, 5803,
+/// 36, 8.6`) and the topology matrix: NVLink when the matrix has an `NV<n>` link.
+fn nvidia_accelerators(query: &str, topo: &str) -> Vec<Accelerator> {
+    let link = if topo_has_nvlink(topo) { "nvlink" } else { "pcie" };
+    query
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+            let n = fields.len();
+            if n < 6 {
+                return None;
+            }
+            // The name may hold commas; the index is first and the four numbers last.
+            let number = |text: &str| text.parse::<u64>().ok();
+            Some(Accelerator {
+                index: fields[0].parse().ok()?,
+                vendor: "nvidia",
+                name: fields[1..n - 4].join(", "),
+                memory_mib: number(fields[n - 4]),
+                backend: "cuda",
+                capability: Some(fields[n - 1].to_string()).filter(|cc| cc != "[N/A]" && !cc.is_empty()),
+                link,
+                busy: false,
+                util_pct: number(fields[n - 2]).map(|pct| pct as u32),
+                mem_used_mib: number(fields[n - 3]),
+            })
+        })
+        .collect()
+}
+
+/// Whether `nvidia-smi topo -m` shows an NVLink between GPUs (`NV4`, `NV12`). The legend's `NV#` is
+/// not one, and escape codes around a link do not hide it.
+fn topo_has_nvlink(topo: &str) -> bool {
+    topo.match_indices("NV").any(|(at, _)| topo[at + 2..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
+fn amd_probe() -> Vec<Accelerator> {
+    command_stdout("rocm-smi", &ROCM_QUERY).map(|text| amd_accelerators(&text)).unwrap_or_default()
+}
+
+/// The AMD devices from `rocm-smi --showproductname --showmeminfo vram --json`: one object per
+/// `cardN`. Parsed defensively, since the keys have shifted between ROCm releases.
+fn amd_accelerators(text: &str) -> Vec<Accelerator> {
+    let Ok(Value::Object(cards)) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let mut found: Vec<Accelerator> = cards
+        .iter()
+        .filter_map(|(key, card)| {
+            let index = key.strip_prefix("card")?.parse::<u32>().ok()?;
+            let card = card.as_object()?;
+            let text_of = |field: &str| card.get(field).and_then(Value::as_str).map(str::to_string);
+            let name = text_of("Card series").or_else(|| text_of("Card model")).unwrap_or_else(|| format!("AMD GPU {index}"));
+            let memory_mib = card
+                .iter()
+                .find(|(field, _)| field.starts_with("VRAM Total Memory"))
+                .and_then(|(_, value)| value.as_u64().or_else(|| value.as_str()?.trim().parse().ok()))
+                .map(|bytes| bytes / MIB);
+            Some(Accelerator {
+                index,
+                vendor: "amd",
+                name,
+                memory_mib,
+                backend: "rocm",
+                capability: None,
+                link: "pcie",
+                busy: false,
+                util_pct: None,
+                mem_used_mib: None,
+            })
+        })
+        .collect();
+    found.sort_by_key(|device| device.index);
+    found
+}
+
+/// The discrete Intel GPUs under a DRM class directory: `card<N>` with the vendor `0x8086` and a
+/// discrete device id. Memory comes from the driver's `lmem_total_bytes` when it has one.
+fn intel_probe(drm: &Path) -> Vec<Accelerator> {
+    let Ok(entries) = std::fs::read_dir(drm) else {
+        return Vec::new();
+    };
+    let mut found: Vec<Accelerator> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let index = card_index(&entry.file_name().to_string_lossy())?;
+            let device = entry.path().join("device");
+            if read_trim(&device.join("vendor"))? != "0x8086" {
+                return None;
+            }
+            let device_id = read_trim(&device.join("device"))?;
+            if !intel_discrete(&device_id) {
+                return None;
+            }
+            let slot = std::fs::read_link(&device).ok()?.file_name()?.to_string_lossy().into_owned();
+            let name = lspci_name(&slot).unwrap_or_else(|| format!("Intel GPU {device_id}"));
+            let memory_mib = read_trim(&device.join("lmem_total_bytes")).and_then(|text| text.parse::<u64>().ok()).map(|bytes| bytes / MIB);
+            Some(Accelerator {
+                index,
+                vendor: "intel",
+                name,
+                memory_mib,
+                backend: "xpu",
+                capability: None,
+                link: "pcie",
+                busy: false,
+                util_pct: None,
+                mem_used_mib: None,
+            })
+        })
+        .collect();
+    found.sort_by_key(|device| device.index);
+    found
+}
+
+/// The N of a DRM card name (`card1`); None for connectors (`card1-HDMI-A-1`) and render nodes.
+fn card_index(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix("card")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Whether an Intel PCI device id is a discrete GPU: Ponte Vecchio (`0x0bd0`-`0x0bdb`), Arc
+/// Alchemist (`0x5690`-`0x56cf`) and Battlemage (`0xe200`-`0xe2ff`). Integrated graphics are not
+/// listed; a new discrete part needs a line here.
+fn intel_discrete(device_id: &str) -> bool {
+    let Some(id) = device_id.strip_prefix("0x").and_then(|hex| u32::from_str_radix(hex, 16).ok()) else {
+        return false;
+    };
+    matches!(id, 0x0bd0..=0x0bdb | 0x5690..=0x56cf | 0xe200..=0xe2ff)
+}
+
+/// The device's name from `lspci -s <slot>` (`03:00.0 VGA compatible controller: Intel Corporation
+/// DG2 [Arc A770] (rev 08)`), or None when lspci is missing.
+fn lspci_name(slot: &str) -> Option<String> {
+    let line = command_stdout("lspci", &["-s", slot])?;
+    name_from_lspci(&line)
+}
+
+fn name_from_lspci(line: &str) -> Option<String> {
+    let (_, rest) = line.split_once(": ")?;
+    let name = rest.rfind(" (rev ").map_or(rest, |at| &rest[..at]);
+    Some(name.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+fn read_trim(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok().map(|text| text.trim().to_string())
+}
+
+/// Apple Silicon's GPU: one `mps` device named by the chip, with the unified memory.
+fn apple_accelerator(apple: &Apple) -> Accelerator {
+    Accelerator {
+        index: 0,
+        vendor: "apple",
+        name: apple.chip.clone(),
+        memory_mib: apple.unified_memory_gib.map(|gib| gib * 1024),
+        backend: "mps",
+        capability: None,
+        link: "soc",
+        busy: false,
+        util_pct: None,
+        mem_used_mib: None,
+    }
+}
+
+/// The accelerators as they are now: the probed list with `busy` set from the jobs on this node and
+/// the NVIDIA utilization and memory read again, with a short timeout so a hung driver cannot stall
+/// `GET /v1/machine`.
+fn accelerators_now(cached: &[Accelerator], busy: &[(&'static str, u32)]) -> Vec<Accelerator> {
+    let fresh = if cached.iter().any(|device| device.vendor == "nvidia") {
+        command_within("nvidia-smi", &[NVIDIA_QUERY, NVIDIA_CSV], NVIDIA_REFRESH)
+            .filter(|output| output.ok)
+            .map(|output| nvidia_accelerators(&output.stdout, ""))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    cached
+        .iter()
+        .map(|device| {
+            let mut device = device.clone();
+            if let Some(now) = fresh.iter().find(|now| device.vendor == "nvidia" && now.index == device.index) {
+                device.util_pct = now.util_pct;
+                device.mem_used_mib = now.mem_used_mib;
+            }
+            device.busy = busy.contains(&(device.vendor, device.index));
+            device
+        })
+        .collect()
+}
+
+/// The addresses other machines may reach this one at: Windows' `Get-NetIPAddress`, macOS'
+/// `ifconfig`, Linux' `ip -j addr`.
+fn probe_fabric() -> Vec<String> {
+    let addresses = if cfg!(windows) {
+        powershell(WINDOWS_ADDRESSES).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+    } else if cfg!(target_os = "macos") {
+        command_stdout("ifconfig", &[]).map(|text| parse_ifconfig(&text)).unwrap_or_default()
+    } else {
+        command_stdout("ip", &["-j", "addr"]).map(|text| parse_ip_json(&text)).unwrap_or_default()
+    };
+    fabric_order(addresses)
+}
+
+/// The `local` addresses of `ip -j addr` (`[{"ifname":…,"addr_info":[{"family":"inet","local":…}]}]`),
+/// without the virtual interfaces that no other machine reaches.
+fn parse_ip_json(text: &str) -> Vec<String> {
+    let Ok(Value::Array(links)) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    links
+        .iter()
+        .filter(|link| !link["ifname"].as_str().is_some_and(virtual_interface))
+        .flat_map(|link| link["addr_info"].as_array().into_iter().flatten())
+        .filter_map(|info| info["local"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The `inet` and `inet6` addresses of `ifconfig`, without their `%zone` suffixes and the virtual
+/// interfaces' addresses.
+fn parse_ifconfig(text: &str) -> Vec<String> {
+    let mut virtual_link = false;
+    let mut addresses = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            virtual_link = line.split(':').next().is_some_and(virtual_interface);
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        if let Some("inet" | "inet6") = words.next() {
+            if let Some(address) = words.next().and_then(|address| address.split('%').next()) {
+                if !virtual_link {
+                    addresses.push(address.to_string());
+                }
+            }
+        }
+    }
+    addresses
+}
+
+/// Bridges, container and VM networks, and peer-to-peer links: their addresses are local to the
+/// machine (`docker0` is `172.17.0.1` on every host), so they are not a fabric.
+fn virtual_interface(name: &str) -> bool {
+    const PREFIXES: [&str; 8] = ["docker", "br-", "veth", "virbr", "cni", "flannel", "lxcbr", "bridge"];
+    const MAC_PEER: [&str; 2] = ["awdl", "llw"];
+    PREFIXES.iter().chain(MAC_PEER.iter()).any(|prefix| name.starts_with(prefix))
+}
+
+/// The usable addresses, each once: private IPv4 and unique-local IPv6 first, then other IPv4,
+/// then global IPv6. Loopback, unspecified, multicast and link-local addresses are dropped.
+fn fabric_order(addresses: Vec<String>) -> Vec<String> {
+    let mut usable: Vec<(u8, String)> = addresses
+        .into_iter()
+        .filter_map(|text| {
+            let address: IpAddr = text.split('%').next()?.trim().parse().ok()?;
+            Some((fabric_rank(address)?, address.to_string()))
+        })
+        .collect();
+    usable.sort();
+    usable.dedup();
+    usable.into_iter().map(|(_, address)| address).collect()
+}
+
+fn fabric_rank(address: IpAddr) -> Option<u8> {
+    match address {
+        IpAddr::V4(v4) => {
+            if v4.is_loopback() || v4.is_unspecified() || v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() {
+                None
+            } else if v4.is_private() {
+                Some(0)
+            } else {
+                Some(2)
+            }
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || first & 0xffc0 == 0xfe80 {
+                None
+            } else if first & 0xfe00 == 0xfc00 {
+                Some(1)
+            } else {
+                Some(3)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -999,6 +1449,15 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/vms/{index}/restart", |node, _, params| restart_vm(node, params.get("id"), params.get("index")))
         .post("/v1/runs/{id}/vms/{index}/wipe", |node, _, params| wipe_vm(node, params.get("id"), params.get("index")))
         .post("/v1/runs/{id}/vms/{index}/stop", |node, _, params| stop_vm(node, params.get("id"), params.get("index")))
+        // Trainer jobs: a container per job (or the native runner on macOS); see `train`.
+        .get("/v1/train", |node, _, _| train::list(node))
+        .post("/v1/train", |node, request, _| train::start(node, &request.body))
+        .get("/v1/train/{job_id}/events", |node, request, params| {
+            let after = request.query_param("after").and_then(|text| text.parse().ok()).unwrap_or(0);
+            train::events(node, params.get("job_id"), after)
+        })
+        .post("/v1/train/{job_id}/stop", |node, _, params| train::stop(node, params.get("job_id")))
+        .delete("/v1/train/{job_id}", |node, _, params| train::delete(node, params.get("job_id")))
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/restart` → 200 with the run's summary view.
@@ -1305,5 +1764,141 @@ mod identity_tests {
         assert_eq!(parse_core_pair("0|0"), None);
         assert_eq!(parse_core_pair("12"), None);
         assert_eq!(parse_core_pair(""), None);
+    }
+}
+
+#[cfg(test)]
+mod accelerator_tests {
+    use super::*;
+
+    const RTX_QUERY: &str = "0, NVIDIA GeForce RTX 3090, 24576, 5803, 36, 8.6\n";
+    const TWO_QUERY: &str = "0, NVIDIA A100 80GB PCIe, 81920, 0, 0, 8.0\n1, NVIDIA GeForce RTX 4090, 24564, 12, 97, 8.9\n";
+    const NV_TOPO: &str = "\tGPU0\tGPU1\tCPU Affinity\nGPU0\t X \tNV12\t0-23\nGPU1\tNV12\t X \t0-23\n\nLegend:\n  X    = Self\n  NV#  = Connection traversing bonded NVLinks\n";
+    const PCIE_TOPO: &str = "\tGPU0\tCPU Affinity\nGPU0\t X \t0-23\n\nLegend:\n  NV#  = Connection traversing bonded NVLinks\n";
+
+    #[test]
+    fn nvidia_rows_parse_with_utilization_and_capability() {
+        let devices = nvidia_accelerators(RTX_QUERY, PCIE_TOPO);
+        assert_eq!(devices.len(), 1);
+        let gpu = &devices[0];
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 3090");
+        assert_eq!((gpu.index, gpu.memory_mib, gpu.mem_used_mib, gpu.util_pct), (0, Some(24576), Some(5803), Some(36)));
+        assert_eq!(gpu.capability.as_deref(), Some("8.6"));
+        assert_eq!((gpu.vendor, gpu.backend, gpu.link, gpu.busy), ("nvidia", "cuda", "pcie", false));
+    }
+
+    #[test]
+    fn nvlink_is_an_nv_number_in_the_matrix_not_the_legend() {
+        let links: Vec<&str> = nvidia_accelerators(TWO_QUERY, NV_TOPO).iter().map(|device| device.link).collect();
+        assert_eq!(links, ["nvlink", "nvlink"]);
+        assert_eq!(nvidia_accelerators(TWO_QUERY, PCIE_TOPO)[0].link, "pcie");
+        assert!(topo_has_nvlink("GPU0 X \u{1b}[32mNV4\u{1b}[0m"));
+        assert!(!topo_has_nvlink("NV#  = Connection traversing bonded NVLinks"));
+    }
+
+    #[test]
+    fn nvidia_names_keep_their_commas_and_unavailable_fields_are_null() {
+        let devices = nvidia_accelerators("0, Weird, Name, 24576, 0, 0, [N/A]\n", "");
+        assert_eq!(devices[0].name, "Weird, Name");
+        assert_eq!(devices[0].capability, None);
+        assert_eq!(devices[0].util_pct, Some(0));
+        assert!(nvidia_accelerators("garbage\n", "").is_empty());
+    }
+
+    #[test]
+    fn amd_json_is_read_by_card_and_skips_other_keys() {
+        const ROCM: &str = r#"{"card0": {"Card series": "Instinct MI250X", "Card model": "0x0c34", "VRAM Total Memory (B)": "137438953472", "VRAM Total Used Memory (B)": "1024"}, "card1": {"Card model": "0x7480", "VRAM Total Memory (B)": 25753026560}, "system": {"Driver version": "6.1"}}"#;
+        let devices = amd_accelerators(ROCM);
+        let seen: Vec<(u32, &str, Option<u64>)> = devices.iter().map(|d| (d.index, d.name.as_str(), d.memory_mib)).collect();
+        assert_eq!(seen, [(0, "Instinct MI250X", Some(131072)), (1, "0x7480", Some(24560))]);
+        assert_eq!((devices[0].vendor, devices[0].backend), ("amd", "rocm"));
+        assert!(amd_accelerators("not json").is_empty());
+        assert!(amd_accelerators("{}").is_empty());
+    }
+
+    #[test]
+    fn intel_discrete_ids_are_the_arc_and_data_center_parts() {
+        assert!(intel_discrete("0x56a0"));
+        assert!(intel_discrete("0xe20b"));
+        assert!(intel_discrete("0x0bd5"));
+        assert!(!intel_discrete("0x9a49"), "integrated graphics");
+        assert!(!intel_discrete("nonsense"));
+    }
+
+    #[test]
+    fn lspci_names_drop_the_revision_and_drm_cards_are_numbered() {
+        let named = name_from_lspci("03:00.0 VGA compatible controller: Intel Corporation DG2 [Arc A770] (rev 08)");
+        assert_eq!(named.as_deref(), Some("Intel Corporation DG2 [Arc A770]"));
+        assert_eq!(name_from_lspci("no colon here"), None);
+        assert_eq!(card_index("card1"), Some(1));
+        assert_eq!(card_index("card1-HDMI-A-1"), None);
+        assert_eq!(card_index("renderD128"), None);
+        assert_eq!(card_index("card"), None);
+    }
+
+    #[test]
+    fn apple_gpu_is_one_mps_device_named_by_its_chip() {
+        let apple = Apple { chip: "Apple M3 Max".into(), p_cores: Some(12), e_cores: Some(4), gpu_cores: Some(40), neural_cores: 16, unified_memory_gib: Some(64) };
+        let gpu = apple_accelerator(&apple);
+        assert_eq!((gpu.index, gpu.vendor, gpu.backend, gpu.link), (0, "apple", "mps", "soc"));
+        assert_eq!((gpu.name.as_str(), gpu.memory_mib), ("Apple M3 Max", Some(65536)));
+    }
+
+    #[test]
+    fn busy_devices_are_marked_by_vendor_and_index() {
+        let cached = nvidia_accelerators(TWO_QUERY, NV_TOPO);
+        let busy = [("nvidia", 1)];
+        let marked: Vec<bool> = cached.iter().map(|device| busy.contains(&(device.vendor, device.index))).collect();
+        assert_eq!(marked, [false, true]);
+    }
+
+    #[test]
+    fn ip_json_addresses_drop_loopback_and_link_local_and_put_private_first() {
+        let text = r#"[{"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1"},{"family":"inet6","local":"::1"}]},{"ifname":"docker0","addr_info":[{"family":"inet","local":"172.17.0.1"}]},{"ifname":"br-3f1e","addr_info":[{"family":"inet","local":"172.18.0.1"}]},{"ifname":"enp6s0","addr_info":[{"family":"inet","local":"8.8.8.8"},{"family":"inet","local":"192.168.1.20"},{"family":"inet6","local":"fe80::1"},{"family":"inet6","local":"2001:db8::5"},{"family":"inet6","local":"fd00::7"}]},{"ifname":"wg0","addr_info":[{"family":"inet","local":"10.8.0.3"},{"family":"inet","local":"169.254.9.9"}]}]"#;
+        assert_eq!(fabric_order(parse_ip_json(text)), ["10.8.0.3", "192.168.1.20", "fd00::7", "8.8.8.8", "2001:db8::5"]);
+    }
+
+    #[test]
+    fn ifconfig_addresses_lose_their_zone_and_loopback() {
+        let text = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\tinet6 ::1 prefixlen 128\nen0: flags=8863<UP>\n\tinet6 fe80::1%en0 prefixlen 64 scopeid 0x4\n\tinet 192.168.0.12 netmask 0xffffff00 broadcast 192.168.0.255\n";
+        let shared = "bridge100: flags=8863<UP>\n\tinet 192.168.2.1 netmask 0xffffff00\n";
+        assert_eq!(fabric_order(parse_ifconfig(&format!("{text}{shared}"))), ["192.168.0.12"]);
+    }
+
+    #[test]
+    fn command_within_returns_the_output_and_kills_a_command_that_runs_too_long() {
+        let done = command_within("sh", &["-c", "printf hello; printf err >&2"], Duration::from_secs(5)).expect("sh runs");
+        assert!(done.ok);
+        assert_eq!((done.stdout.as_str(), done.stderr.as_str()), ("hello", "err"));
+        assert!(command_within("sh", &["-c", "sleep 5"], Duration::from_millis(100)).is_none());
+    }
+
+    #[test]
+    fn the_fabric_is_read_again_only_after_thirty_seconds() {
+        let cache = Mutex::new(None);
+        let start = Instant::now();
+        let mut reads = 0;
+        let mut read = |text: &str| {
+            reads += 1;
+            vec![text.to_string()]
+        };
+        assert_eq!(cached_fabric(&cache, start, || read("10.0.0.1")), ["10.0.0.1"]);
+        assert_eq!(cached_fabric(&cache, start + Duration::from_secs(29), || read("10.0.0.2")), ["10.0.0.1"]);
+        assert_eq!(cached_fabric(&cache, start + Duration::from_secs(31), || read("10.0.0.3")), ["10.0.0.3"]);
+        assert_eq!(reads, 2);
+    }
+
+    /// The live check on the machine it runs on: `cargo test -p noded -- --ignored --nocapture print_this_machine`.
+    #[test]
+    #[ignore]
+    fn print_this_machine() {
+        let facts = probe_machine_facts(None);
+        let shown = serde_json::json!({
+            "accelerators": facts.accelerators,
+            "trainer": facts.trainer,
+            "fabric": probe_fabric(),
+            "docker_host": facts.docker_host,
+        });
+        println!("{}", serde_json::to_string_pretty(&shown).expect("json"));
     }
 }
