@@ -10,6 +10,7 @@ pub mod boot;
 pub mod brands;
 pub mod cli_link;
 pub mod floor3d;
+pub mod chart;
 pub mod client;
 pub mod events;
 pub mod icons;
