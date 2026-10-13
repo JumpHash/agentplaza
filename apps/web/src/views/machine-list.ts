@@ -12,6 +12,7 @@ import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
 import { lookOf } from './floor3d/machine-model';
 import { getStage, specKey, THUMB_H, THUMB_W, thumbnail, type PictureSpec, type Stage } from './floor3d/machine-stage';
+import { engineWanted, startEngineStage, type EngineStage } from './engine-mount';
 
 export type Stats = NonNullable<MachineNode['stats']>;
 type VmDetail = Vm & { serial?: string };
@@ -53,9 +54,11 @@ export const isLive = (runs: Run[]): boolean => runs.some((r) => r.vms.some((vm)
 export const machineVms = (m: MachineNode): number => (m.runs ?? []).reduce((n, r) => n + r.vms.length, 0);
 /** A machine's agents: the count, or (on the stand-in hub) the array of their CIDs. */
 export const agentCount = (a: unknown): number => (Array.isArray(a) ? a.length : typeof a === 'number' ? a : 0);
-export const gib = (mib: number): string => (mib / 1024).toFixed(1);
+export const gib = (mib: number | undefined): string => (Number.isFinite(mib) ? ((mib as number) / 1024).toFixed(1) : '–');
 export const human = (mib: number): string => (mib >= 1024 ? `${gib(mib)} GiB` : `${Math.round(mib)} MiB`);
-const pct = (n: number): string => `${n.toFixed(1)}%`;
+// A value a node did not report (an older node, or a VM still starting) shows as a dash, never a crash.
+const fx1 = (n: number | undefined): string => (Number.isFinite(n) ? (n as number).toFixed(1) : '–');
+const pct = (n: number | undefined): string => (Number.isFinite(n) ? `${(n as number).toFixed(1)}%` : '–');
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 export function uptime(s: number): string {
@@ -428,7 +431,7 @@ export function machineDetail(m: MachineNode, byCid: Map<number, Agent>, rs: Run
           null,
           tally('CPU', `${Math.round(s.cpu_percent)}%`, null, sparkline(s.history)),
           tally('Memory', `${gib(s.mem_used_mib)} / ${gib(s.mem_total_mib)}`, 'GiB used of GiB', memBar(s)),
-          tally('Load', `${s.load[0].toFixed(1)} · ${s.load[1].toFixed(1)} · ${s.load[2].toFixed(1)}`, '1 / 5 / 15 min'),
+          tally('Load', (s.load ?? []).map(fx1).join(' · ') || '–', '1 / 5 / 15 min'),
           tally("Agents' VMs", String(s.vms_running), `${gib(s.guest_mem_mib)} GiB reserved`),
         ),
         h('p.faint', null, `Up ${uptime(s.uptime_s)}`),
@@ -483,7 +486,7 @@ export function machineRow(m: MachineNode, byCid: Map<number, Agent>, rs: RunSta
       pct: clamp((s.mem_used_mib / Math.max(s.mem_total_mib, 1)) * 100, 0, 100),
       text: `${gib(s.mem_used_mib)} / ${gib(s.mem_total_mib)} GiB`,
     });
-    bars.push({ label: 'Load', pct: clamp((s.load[0] / Math.max(m.cpus, 1)) * 100, 0, 100), text: s.load.map((x) => x.toFixed(1)).join(' · ') });
+    bars.push({ label: 'Load', pct: clamp(((s.load?.[0] ?? 0) / Math.max(m.cpus, 1)) * 100, 0, 100), text: (s.load ?? []).map(fx1).join(' · ') });
   }
   const facts: [string, string][] = [
     ['Platform', m.apple ? `macOS · ${m.arch}` : m.arch],
@@ -494,6 +497,7 @@ export function machineRow(m: MachineNode, byCid: Map<number, Agent>, rs: RunSta
   ];
   return {
     key: m.id,
+    machineId: m.id,
     name: m.name,
     subtitle: [KIND_LABEL[m.kind], m.model].filter(Boolean).join(' · '),
     status,
@@ -516,6 +520,8 @@ export interface ListBar {
 /** One row. `spec` is the picture (null when the kind is unknown: a generic icon is shown). */
 export interface ListRow {
   key: string;
+  /** The machine the row shows (its id in the engine's fleet), or null: the engine shows no orbit for the row. */
+  machineId: string | null;
   name: string;
   subtitle: string | null;
   status: { label: string; tone: Tone };
@@ -606,6 +612,7 @@ function paintThumb(it: Item): void {
   const ck = `${k}@${pr}`;
   let url = thumbs.get(ck);
   if (url === undefined) {
+    // TODO(engine-thumbnail): the engine's thumbnail() replaces this three.js PNG once it lands.
     url = thumbnail(spec, pr);
     thumbs.set(ck, url);
   }
@@ -677,6 +684,8 @@ export function machineList(): MachineList {
   // The stage, while a row holds its canvas, and the open row's stage slot.
   let held: Stage | null = null;
   let openBox: Box | null = null;
+  // The wasm engine's stage for the open row (under ?engine=wasm): its canvas sits over the row's stage slot.
+  let eng: { canvas: HTMLCanvasElement; stage: EngineStage } | null = null;
   let raf = 0;
   let lastNow = 0;
   let destroyed = false;
@@ -869,6 +878,7 @@ export function machineList(): MachineList {
 
   // Frees the stage at once (a removed row, or the list's end): no animation.
   function hardReset(): void {
+    stopEngine();
     if (held) {
       held.orbit(false);
       held.canvas.remove();
@@ -881,11 +891,45 @@ export function machineList(): MachineList {
     openBox = null;
   }
 
+  /** The open row's engine canvas: over its stage slot, faded in once the engine has drawn its first frame. */
+  function startEngineRow(machineId: string): void {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'mlist-engine-canvas';
+    canvas.style.opacity = '0';
+    canvas.style.transition = 'opacity 240ms ease';
+    canvas.style.touchAction = 'none';
+    root.append(canvas);
+    const stage = startEngineStage(canvas, machineId, () => {
+      canvas.style.opacity = '1';
+    });
+    eng = { canvas, stage };
+    placeEngine();
+  }
+
+  /** Keeps the engine canvas over the open row's stage slot (the panel's height moves the slot during a morph). */
+  function placeEngine(): void {
+    if (eng === null || openKey === null) return;
+    const slotEl = items.get(openKey)?.inner.querySelector<HTMLElement>('.mlist-stage-slot');
+    if (!slotEl) return;
+    const box = rel(slotEl);
+    placeCanvas(eng.canvas, box.x, box.y, box.w, box.h, 'none', true);
+  }
+
+  /** Destroys the engine and removes its canvas (the open row closed, or the list was destroyed). */
+  function stopEngine(): void {
+    if (eng === null) return;
+    eng.stage.destroy();
+    eng.canvas.remove();
+    eng = null;
+  }
+
   function beginOpen(it: Item): void {
     const spec = it.row.spec;
-    const st = spec ? getStage() : null;
+    // Under ?engine=wasm the open row's orbit is the engine's: the three.js stage (and its renderer) is not touched.
+    const engineId = engineWanted() ? it.row.machineId : null;
+    const st = spec && engineId === null ? getStage() : null;
     openKey = it.key;
-    it.onStage = st !== null && spec !== null;
+    it.onStage = (st !== null && spec !== null) || engineId !== null;
     it.panel.hidden = false;
     paintDetail(it);
     const h1 = it.panel.scrollHeight;
@@ -895,6 +939,7 @@ export function machineList(): MachineList {
     const slotEl = it.inner.querySelector<HTMLElement>('.mlist-stage-slot');
     const slot = slotEl ? rel(slotEl) : { x: 0, y: 0, w: THUMB_W, h: THUMB_H };
     openBox = slot;
+    if (engineId !== null) startEngineRow(engineId);
 
     if (st && spec && reducedMotion()) {
       // No animation: the final state at once.
@@ -935,6 +980,10 @@ export function machineList(): MachineList {
   }
 
   function beginClose(it: Item): void {
+    if (eng !== null) {
+      eng.canvas.style.opacity = '0';
+      eng.canvas.style.pointerEvents = 'none';
+    }
     const flight = held !== null && it.onStage;
     const h0 = it.panel.getBoundingClientRect().height;
     const pic = rel(it.pic);
@@ -955,6 +1004,7 @@ export function machineList(): MachineList {
   }
 
   function finishClose(it: Item): void {
+    stopEngine();
     if (held) {
       held.canvas.remove();
       held.release();
@@ -999,7 +1049,7 @@ export function machineList(): MachineList {
   // ---- the frame loop: morph steps, and the live stage's ticks while a row is open ----
 
   function needsLoop(): boolean {
-    return anim !== null || (held !== null && openKey !== null);
+    return anim !== null || (held !== null && openKey !== null) || (eng !== null && openKey !== null);
   }
 
   function ensureLoop(): void {
@@ -1032,6 +1082,7 @@ export function machineList(): MachineList {
     } else if (held && openKey !== null) {
       held.tick(dt);
     }
+    placeEngine();
     if (!raf && needsLoop()) raf = requestAnimationFrame(frame);
     if (!needsLoop()) lastNow = 0;
   }

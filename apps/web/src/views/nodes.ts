@@ -207,6 +207,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const s = nodeState(n);
     return {
       key: n.id,
+      machineId: m?.id ?? null,
       name: n.name,
       subtitle: m ? [KIND_LABEL[m.kind], m.model].filter(Boolean).join(' · ') : n.id,
       status: s,

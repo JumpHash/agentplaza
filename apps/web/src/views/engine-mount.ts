@@ -61,6 +61,105 @@ export function engineWanted(): boolean {
   return new URLSearchParams(location.search).get('engine') === 'wasm' && glueName() !== '';
 }
 
+/** Loads the glue and starts an engine on the canvas: the Floor's mount and the Machines rows share it. Throws without a glue. */
+export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
+  const name = glueName();
+  if (name === '') throw new Error('this build has no engine');
+  const glueUrl = new URL('./' + name, document.baseURI).href;
+  const backend: 'auto' | 'webgl2' = new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto';
+  const glue = (await import(/* @vite-ignore */ glueUrl)) as EngineGlue;
+  await glue.default();
+  return glue.start(canvas, { backend });
+}
+
+/** One machine's live orbit on the engine, for a Machines row: the caller owns the canvas and where it sits. */
+export interface EngineStage {
+  /** Stops the engine and the fleet poll. The caller removes the canvas. */
+  destroy(): void;
+}
+
+/**
+ * Starts the engine on `canvas`, fed the fleet like the Floor, and shows one machine (`show_machine`) once the fleet
+ * lists it. `onFirstFrame` runs once, when the engine has drawn its first frame. One engine per page: the caller
+ * destroys it before it starts another.
+ */
+export function startEngineStage(canvas: HTMLCanvasElement, machineId: string, onFirstFrame: () => void): EngineStage {
+  let closed = false;
+  let engine: WebEngine | null = null;
+  let fleet: FleetResponse | null = null;
+  let fleetError: string | null = null;
+  let agents: Agent[] | null = null;
+  let shown = false;
+  let raf = 0;
+  const timers: number[] = [];
+
+  const pushFeed = (): void => {
+    engine?.set_feed(JSON.stringify({ fleet, agents, fleet_error: fleetError }));
+  };
+  const tryShow = (): void => {
+    if (shown || engine === null || fleet === null) return;
+    if (!fleet.machines.some((x) => x.id === machineId)) return; // show_machine finds nothing until the fleet lists it
+    shown = true;
+    engine.command('show_machine', machineId);
+  };
+  const poll = (): void => {
+    api.fleet().then(
+      (f) => {
+        fleet = f;
+        fleetError = null;
+        pushFeed();
+        tryShow();
+      },
+      (e: unknown) => {
+        fleetError = e instanceof Error ? e.message : String(e); // keep the last fleet
+        pushFeed();
+      },
+    );
+    api.agents().then(
+      (list) => {
+        agents = list;
+        pushFeed();
+      },
+      () => undefined, // keep the last list until the next poll
+    );
+  };
+  const watch = (): void => {
+    raf = 0;
+    if (closed || engine === null) return;
+    if (engine.frames_drawn() > 0) {
+      onFirstFrame();
+      return;
+    }
+    raf = requestAnimationFrame(watch);
+  };
+
+  const boot = async (): Promise<void> => {
+    const started = await startEngine(canvas);
+    if (closed) {
+      started.destroy();
+      return;
+    }
+    engine = started;
+    pushFeed();
+    poll();
+    timers.push(window.setInterval(poll, FLEET_POLL_MS));
+    raf = requestAnimationFrame(watch);
+  };
+  boot().catch((e: unknown) => console.error('engine stage did not start', e));
+
+  return {
+    destroy() {
+      closed = true;
+      for (const t of timers) window.clearInterval(t);
+      if (raf !== 0) cancelAnimationFrame(raf);
+      raf = 0;
+      const e = engine;
+      engine = null;
+      e?.destroy();
+    },
+  };
+}
+
 /**
  * The Floor on the wasm engine: the Machines view, or with `initialId` (`#/floor/<id>`) that machine's board, entered
  * on mount. A pick opens the machine popup (the three.js Floor's card); its ENTER flies the engine into the board.
@@ -344,12 +443,8 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   };
   window.addEventListener('hashchange', onHash, true);
 
-  const glueUrl = new URL('./' + name, document.baseURI).href;
-  const backend: 'auto' | 'webgl2' = new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto';
   const boot = async (): Promise<void> => {
-    const glue = (await import(/* @vite-ignore */ glueUrl)) as EngineGlue;
-    await glue.default();
-    const started = await glue.start(canvas, { backend });
+    const started = await startEngine(canvas);
     if (closed) {
       started.destroy();
       return;
