@@ -846,6 +846,8 @@ pub struct Frame {
     pub fades: Arc<Vec<Fade>>,
     /// What the cutaways keep in view: the board's atom (None: the camera's target).
     pub focus: Option<Vec3>,
+    /// The Machines view instanced animation (cable packets and status rings), or None.
+    pub animated: Option<Arc<crate::fleet::FleetInstances>>,
 }
 
 /// A picture over the scene: a texture at a rectangle in widget pixels from its top-left (logical

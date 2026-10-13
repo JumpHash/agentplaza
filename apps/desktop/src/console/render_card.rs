@@ -143,6 +143,7 @@ fn card_frame(built: &Built, model: &Model, statics: (u64, &Arc<Vec<Draw>>, &[Po
     world.fog_near = 1.0e6;
     world.fog_far = 1.0e6 + 1.0;
     Frame {
+        animated: None,
         camera,
         world,
         statics: Arc::clone(statics),
@@ -287,6 +288,7 @@ fn portrait_frame(robot: &Robot, spec: PortraitSpec, version: u64, aspect: f32) 
     world.fog_near = 1.0e6;
     world.fog_far = 1.0e6 + 1.0;
     Frame {
+        animated: None,
         camera: Camera { eye: Vec3::new(1.0, 1.25, 3.4), target: Vec3::new(0.0, 0.72, 0.0), fov: 30.0, near: 0.1, far: 50.0, aspect },
         world,
         statics: Arc::new(Vec::new()),

@@ -321,6 +321,7 @@ impl Floor {
         let (draws, mut lights) = scene::flatten_roots(&roots);
         lights.extend(self.static_lights.iter().copied());
         Frame {
+            animated: None,
             camera: self.orbit.camera(aspect),
             world: self.world,
             statics: Arc::clone(&self.statics),

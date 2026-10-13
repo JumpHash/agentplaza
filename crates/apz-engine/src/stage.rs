@@ -628,6 +628,7 @@ pub fn tick(&mut self, now: Instant) -> Motion {
             if w > 0.0 && h > 0.0 {
                 let camera = self.machines.orbit.camera(w / h);
                 let mut frame = self.machines.frame(w / h);
+                frame.animated = self.fleet.as_ref().zip(self.fleet_data.as_ref()).map(|(f, d)| Arc::new(f.instances(d)));
                 if let Some(fleet) = &self.fleet {
                     frame.overlays = machine_overlays(fleet, &camera, w, h, self.scale, self.hovered_machine.as_deref());
                 }

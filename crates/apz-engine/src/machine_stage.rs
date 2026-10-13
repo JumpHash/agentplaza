@@ -376,6 +376,7 @@ impl MachineStage {
 
     fn frame_with(&self, camera: Camera) -> Frame {
         Frame {
+            animated: None,
             camera,
             world: studio_world(),
             statics: Arc::clone(&self.statics),

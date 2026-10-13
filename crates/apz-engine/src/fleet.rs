@@ -519,7 +519,7 @@ fn place_machine(
     ring.set_position(base[0], 0.05, base[2])
         .set_rotation(-FRAC_PI_2, 0.0, 0.0);
     ring.set_dynamic(true); // its colour follows the status every frame
-    group.add(&ring);
+    // Drawn instanced (fleet_anim.wgsl): the mesh stays out of the scene graph.
 
     let pose_mat = Mat4::from_rotation_translation(Quat::from_rotation_y(turn), Vec3::from(base));
     let world = |p: [f32; 3]| pose_mat.transform_point3(Vec3::from(p)).to_array();
@@ -550,7 +550,7 @@ fn prepare(m: &Machine) -> Option<(&'static hardware::Model, Built)> {
     Some((model, hardware::build(model, &params)))
 }
 
-fn flow(group: &Obj, geo: &Geo, color: Color, reversed: bool) -> Flow {
+fn flow(geo: &Geo, color: Color, reversed: bool) -> Flow {
     let mat = Mat::new(Material {
         shading: Shading::Basic,
         color,
@@ -566,7 +566,7 @@ fn flow(group: &Obj, geo: &Geo, color: Color, reversed: bool) -> Flow {
             let obj = Obj::mesh(geo, &mat);
             obj.set_visible(false);
             obj.set_dynamic(true); // a packet moves along its cable every frame
-            group.add(&obj);
+            // Drawn instanced (fleet_anim.wgsl): the object stays out of the scene graph.
             Packet { obj, p: None }
         })
         .collect();
@@ -604,8 +604,8 @@ fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene
         a: a.to_string(),
         b: b.to_string(),
         cable,
-        forward: flow(group, &packet, named("copper-live"), false),
-        backward: flow(group, &packet, named("led-info"), true),
+        forward: flow(&packet, named("copper-live"), false),
+        backward: flow(&packet, named("led-info"), true),
         points,
     }
 }
@@ -647,7 +647,8 @@ fn step_flow(flow: &mut Flow, dt: f32, rate: f32, points: &[[f32; 3]]) {
 
 /// One cable packet slot's instance data (`PacketIn` in fleet_anim.wgsl): the cable's ends, then
 /// `params` (phase, direction, alive, radius) and the colour.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct PacketInstance {
     pub from: [f32; 3],
     pub to: [f32; 3],
@@ -657,7 +658,8 @@ pub struct PacketInstance {
 
 /// One status ring's instance data (`RingIn`): `centre` (xyz, and w the outer radius), `pulse` (rate,
 /// phase, online, held intensity) and the colour.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct RingInstance {
     pub centre: [f32; 4],
     pub pulse: [f32; 4],
@@ -1031,7 +1033,7 @@ mod tests {
 
     /// The fleet's draw items on the 15-machine feed, measured when the budget test was written (its statics
     /// merged by material, its dynamic packets, cables and status rings unmerged). A ratchet: it must not grow.
-    const FLEET_DRAW_ITEMS: usize = 1014;
+    const FLEET_DRAW_ITEMS: usize = 999;
 
     fn fleet_draw_items() -> (usize, usize) {
         let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
@@ -1049,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the Machines view budget is 300 draw items; the fleet alone draws 1014 (see FLEET_DRAW_ITEMS)"]
+    #[ignore = "the Machines view budget is 300 draw items; the fleet alone draws 999 (see FLEET_DRAW_ITEMS)"]
     fn the_fifteen_machine_fleet_draws_within_budget() {
         let (statics, dynamic) = fleet_draw_items();
         assert!(statics + dynamic <= 300, "the Machines view draws {} items, over the 300 budget", statics + dynamic);
