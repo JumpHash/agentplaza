@@ -33,6 +33,7 @@ interface WebEngine {
   busy(): boolean;
   frames_drawn(): number;
   draw_calls(): number;
+  thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   destroy(): void;
 }
 
@@ -72,18 +73,24 @@ export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine>
   return glue.start(canvas, { backend });
 }
 
-/** One machine's live orbit on the engine, for a Machines row: the caller owns the canvas and where it sits. */
+/** A thumbnail request a destroyed engine never answered: the caller asks again on the engine that replaces it. */
+export const ENGINE_STOPPED = 'engine stopped';
+export const isEngineStopped = (e: unknown): boolean => e instanceof Error && e.message === ENGINE_STOPPED;
+
+/** One engine on a page: a machine's live orbit for a Machines row, or the thumbnails alone (no machine on show). */
 export interface EngineStage {
+  /** The engine's RGBA8 thumbnail of a machine, w by h (each side at most 512). Rejects ENGINE_STOPPED once destroyed. */
+  thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   /** Stops the engine and the fleet poll. The caller removes the canvas. */
   destroy(): void;
 }
 
 /**
- * Starts the engine on `canvas`, fed the fleet like the Floor, and shows one machine (`show_machine`) once the fleet
- * lists it. `onFirstFrame` runs once, when the engine has drawn its first frame. One engine per page: the caller
- * destroys it before it starts another.
+ * Starts the engine on `canvas`, fed the fleet like the Floor. With a `machineId`, shows that machine (`show_machine`)
+ * once the fleet lists it; `onFirstFrame` (optional) runs once, when the engine has drawn its first frame. One engine
+ * per page: the caller destroys it before it starts another.
  */
-export function startEngineStage(canvas: HTMLCanvasElement, machineId: string, onFirstFrame: () => void): EngineStage {
+export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | null, onFirstFrame?: () => void): EngineStage {
   let closed = false;
   let engine: WebEngine | null = null;
   let fleet: FleetResponse | null = null;
@@ -92,12 +99,21 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string, o
   let shown = false;
   let raf = 0;
   const timers: number[] = [];
+  let markFleet: () => void = () => undefined;
+  const fleetSeen = new Promise<void>((resolve) => {
+    markFleet = () => resolve();
+  });
+  let stopNow: () => void = () => undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    stopNow = () => reject(new Error(ENGINE_STOPPED));
+  });
+  stopped.catch(() => undefined);
 
   const pushFeed = (): void => {
     engine?.set_feed(JSON.stringify({ fleet, agents, fleet_error: fleetError }));
   };
   const tryShow = (): void => {
-    if (shown || engine === null || fleet === null) return;
+    if (machineId === null || shown || engine === null || fleet === null) return;
     if (!fleet.machines.some((x) => x.id === machineId)) return; // show_machine finds nothing until the fleet lists it
     shown = true;
     engine.command('show_machine', machineId);
@@ -109,6 +125,7 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string, o
         fleetError = null;
         pushFeed();
         tryShow();
+        markFleet();
       },
       (e: unknown) => {
         fleetError = e instanceof Error ? e.message : String(e); // keep the last fleet
@@ -125,7 +142,7 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string, o
   };
   const watch = (): void => {
     raf = 0;
-    if (closed || engine === null) return;
+    if (closed || engine === null || onFirstFrame === undefined) return;
     if (engine.frames_drawn() > 0) {
       onFirstFrame();
       return;
@@ -143,19 +160,47 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string, o
     pushFeed();
     poll();
     timers.push(window.setInterval(poll, FLEET_POLL_MS));
-    raf = requestAnimationFrame(watch);
+    if (onFirstFrame !== undefined) raf = requestAnimationFrame(watch);
   };
   boot().catch((e: unknown) => console.error('engine stage did not start', e));
 
   return {
+    thumbnail(id, w, h) {
+      return Promise.race([fleetSeen, stopped])
+        .then(() => {
+          if (closed || engine === null) throw new Error(closed ? ENGINE_STOPPED : 'the engine did not start');
+          return engine.thumbnail(id, w, h);
+        })
+        .catch((e: unknown) => {
+          throw closed ? new Error(ENGINE_STOPPED) : e;
+        });
+    },
     destroy() {
       closed = true;
+      stopNow();
       for (const t of timers) window.clearInterval(t);
       if (raf !== 0) cancelAnimationFrame(raf);
       raf = 0;
       const e = engine;
       engine = null;
       e?.destroy();
+    },
+  };
+}
+
+/** The page's thumbnail engine: a hidden 1 by 1 canvas, fed the fleet, no machine on show. The caller destroys it. */
+export function startThumbEngine(): EngineStage {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  canvas.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+  document.body.append(canvas);
+  const stage = startEngineStage(canvas, null);
+  return {
+    thumbnail: (id, w, h) => stage.thumbnail(id, w, h),
+    destroy() {
+      stage.destroy();
+      canvas.remove();
     },
   };
 }

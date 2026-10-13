@@ -303,6 +303,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
         Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
+        Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury).map(Msg::Treasury),

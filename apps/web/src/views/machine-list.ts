@@ -12,7 +12,7 @@ import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
 import { lookOf } from './floor3d/machine-model';
 import { getStage, specKey, THUMB_H, THUMB_W, thumbnail, type PictureSpec, type Stage } from './floor3d/machine-stage';
-import { engineWanted, startEngineStage, type EngineStage } from './engine-mount';
+import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
 
 export type Stats = NonNullable<MachineNode['stats']>;
 type VmDetail = Vm & { serial?: string };
@@ -602,8 +602,28 @@ function fallbackPicture(row: ListRow): Node {
   return deviceVisual(lookOf(row.spec.kind, row.spec.vendor), { gpu: row.spec.gpus.length > 0, active: row.active });
 }
 
-/** Paints the thumbnail into the picture box: the PNG when WebGL renders it, else the line art. */
-function paintThumb(it: Item): void {
+/** Shows a thumbnail (a PNG data URL, or null for the line art) in the picture box. */
+function showThumb(it: Item, k: string, url: string | null): void {
+  if (it.gone) return;
+  it.picKey = k;
+  if (url) replace(it.pic, h('img', { src: url, width: THUMB_W, height: THUMB_H, alt: '', draggable: 'false' }));
+  else replace(it.pic, fallbackPicture(it.row));
+}
+
+/** The engine's RGBA8 buffer as a PNG data URL (null when the buffer is not w by h pixels). */
+function pngOf(rgba: Uint8Array, w: number, h: number): string | null {
+  if (rgba.length !== w * h * 4) return null;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) return null;
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
+  return c.toDataURL('image/png');
+}
+
+/** The three.js thumbnail, for the page without ?engine=wasm: the PNG of the shared renderer, else the line art. */
+function paintThreeThumb(it: Item): void {
   const spec = it.row.spec;
   if (!spec) return;
   const k = specKey(spec);
@@ -612,16 +632,14 @@ function paintThumb(it: Item): void {
   const ck = `${k}@${pr}`;
   let url = thumbs.get(ck);
   if (url === undefined) {
-    // TODO(engine-thumbnail): the engine's thumbnail() replaces this three.js PNG once it lands.
     url = thumbnail(spec, pr);
     thumbs.set(ck, url);
   }
-  it.picKey = k;
-  if (url) replace(it.pic, h('img', { src: url, width: THUMB_W, height: THUMB_H, alt: '', draggable: 'false' }));
-  else replace(it.pic, fallbackPicture(it.row));
+  showThumb(it, k, url);
 }
 
 function prepare(spec: PictureSpec): void {
+  if (engineWanted()) return; // the engine draws the rows: no three.js stage
   const k = specKey(spec);
   if (prepared.has(k)) return;
   prepared.add(k);
@@ -690,6 +708,73 @@ export function machineList(): MachineList {
   let lastNow = 0;
   let destroyed = false;
   let uid = 0;
+  // The thumbnail engine (no row open): one per page, started when a thumbnail waits and destroyed once the queue drains.
+  let thumbStage: EngineStage | null = null;
+  let inflight = 0;
+
+  /** The engine that draws thumbnails: the open row's engine when there is one (one engine per page), else the thumbnail engine. */
+  const thumbSource = (): EngineStage => {
+    if (eng !== null) return eng.stage;
+    thumbStage ??= startThumbEngine();
+    return thumbStage;
+  };
+
+  const stopThumbStage = (): void => {
+    if (thumbStage === null) return;
+    thumbStage.destroy();
+    thumbStage = null;
+  };
+
+  /** Asks the engine for a row's thumbnail. A stopped engine puts the row back in the queue; a failed one shows the line art. */
+  function requestThumb(it: Item): void {
+    const spec = it.row.spec;
+    if (!spec) return;
+    const k = specKey(spec);
+    if (it.picKey === k) return;
+    const pr = pixelRatio();
+    const ck = `${k}@${pr}`;
+    const cached = thumbs.get(ck);
+    if (cached !== undefined) {
+      showThumb(it, k, cached);
+      return;
+    }
+    const w = Math.round(THUMB_W * pr);
+    const h = Math.round(THUMB_H * pr);
+    const machineId = it.row.machineId;
+    if (machineId === null) {
+      showThumb(it, k, null);
+      return;
+    }
+    inflight++;
+    thumbSource()
+      .thumbnail(machineId, w, h)
+      .then(
+        (rgba) => {
+          const url = pngOf(rgba, w, h);
+          thumbs.set(ck, url);
+          showThumb(it, k, url);
+        },
+        (e: unknown) => {
+          if (isEngineStopped(e)) {
+            if (!destroyed) wantThumb(it);
+            return;
+          }
+          console.error('engine thumbnail did not draw', e);
+          thumbs.set(ck, null);
+          showThumb(it, k, null);
+        },
+      )
+      .finally(() => {
+        inflight--;
+        if (inflight === 0 && queue.length === 0 && eng === null) stopThumbStage();
+      });
+  }
+
+  /** Paints a row's thumbnail: from the engine under ?engine=wasm (no three.js renderer is made), else from three.js. */
+  const paintThumb = (it: Item): void => {
+    if (engineWanted()) requestThumb(it);
+    else paintThreeThumb(it);
+  };
 
   const rel = (el: Element): Box => {
     const r = el.getBoundingClientRect();
@@ -939,7 +1024,10 @@ export function machineList(): MachineList {
     const slotEl = it.inner.querySelector<HTMLElement>('.mlist-stage-slot');
     const slot = slotEl ? rel(slotEl) : { x: 0, y: 0, w: THUMB_W, h: THUMB_H };
     openBox = slot;
-    if (engineId !== null) startEngineRow(engineId);
+    if (engineId !== null) {
+      stopThumbStage(); // one engine per page: the row's engine takes over the thumbnails
+      startEngineRow(engineId);
+    }
 
     if (st && spec && reducedMotion()) {
       // No animation: the final state at once.
@@ -1113,6 +1201,7 @@ export function machineList(): MachineList {
     destroy() {
       destroyed = true;
       hardReset();
+      stopThumbStage();
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       io.disconnect();

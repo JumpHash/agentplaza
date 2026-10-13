@@ -4,17 +4,22 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::advanced::widget::operation::{Operation, Outcome, Scrollable};
 use iced::advanced::widget::operate;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, mouse_area, row, scrollable, Space};
-use iced::{mouse, Alignment, Border, Color, Element, Length, Pixels, Point, Rectangle, Size, Task, Theme, Vector};
+use iced::widget::{column, container, mouse_area, row, scrollable, shader, Space};
+use iced::{mouse, Alignment, Border, Color, Element, Length, Pixels, Point, Rectangle, Size, Subscription, Task, Theme, Vector};
 use serde_json::Value;
 
+use apz_engine::input::Action;
+use apz_engine::{Cmd, Engine, Feed, Motion};
+
 use super::Id;
+use crate::console::floor3d::fleet::FleetResponse;
+use crate::console::floor_engine::EngineProgram;
 use crate::console::ui::{Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::console::{client, render_card, ui, Ctx};
 use crate::theme::{MONO};
@@ -44,6 +49,8 @@ pub struct State {
     tech_open: BTreeSet<String>,
     /// The VMs last read for each open run, so a refresh does not blank them.
     run_vms: HashMap<String, Result<Vec<VmRow>, String>>,
+    /// The machine whose 3D view is open (one at a time); its engine is dropped on collapse.
+    stage: Option<StageView>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +70,14 @@ pub enum Msg {
     ToggleTech(String),
     Kill(String),
     Killed(Result<(), String>),
+    /// Opens or closes one machine's 3D view.
+    ToggleStage(String),
+    /// The fleet for the 3D view (`GET /v1/fleet`, as the Floor reads it).
+    StageFleet(Result<Value, String>),
+    /// The 3D view's clock.
+    StageFrame(Instant),
+    /// A pointer action on the 3D view.
+    Stage(Action),
 }
 
 /// The Agents table's columns that sort.
@@ -201,6 +216,24 @@ struct VmRow {
     serial: Option<String>,
 }
 
+/// The 3D view's size in logical px: the widget and the engine's stage share it.
+const STAGE_W: f32 = 480.0;
+const STAGE_H: f32 = 300.0;
+
+/// One machine's 3D view: its engine, whether the engine has the machine on its stage, and the motion of its last frame.
+struct StageView {
+    id: String,
+    engine: Engine,
+    shown: bool,
+    motion: Motion,
+}
+
+impl std::fmt::Debug for StageView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StageView").field("id", &self.id).finish()
+    }
+}
+
 /// The navigation this message asks for, if any.
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
@@ -211,9 +244,9 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick): the overview, the
 /// machines and the agents, in one task.
-pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
-    client::task(
+    let main = client::task(
         move || {
             let overview = client.get::<Value>("/v1/overview").ok();
             let machines = client.get::<Value>("/v1/machines")?;
@@ -221,7 +254,31 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
             Ok(serde_json::json!({ "overview": overview, "machines": machines, "agents": agents }))
         },
         Msg::Loaded,
-    )
+    );
+    if state.stage.is_some() {
+        Task::batch([main, stage_fleet(ctx)])
+    } else {
+        main
+    }
+}
+
+/// Reads the fleet for the 3D view (`GET /v1/fleet`).
+fn stage_fleet(ctx: &Ctx) -> Task<Msg> {
+    let client = ctx.client.clone();
+    client::task(move || client.call("GET", "/v1/fleet", None), Msg::StageFleet)
+}
+
+/// The 3D view's clock: frames while it moves (30 a second on a software adapter, as the Floor), about 12 a second while
+/// it only turns, none at rest.
+pub fn subscription(state: &State) -> Subscription<Msg> {
+    match state.stage.as_ref().map(|s| s.motion) {
+        Some(Motion::Active) if crate::console::floor3d::render::light() => {
+            iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame)
+        }
+        Some(Motion::Active) => iced::window::frames().map(Msg::StageFrame),
+        Some(Motion::Ambient) => iced::time::every(Duration::from_millis(83)).map(Msg::StageFrame),
+        _ => Subscription::none(),
+    }
 }
 
 /// Reads one run with its VMs (the serial lines come with them).
@@ -308,6 +365,40 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Kill(id) => {
             let client = ctx.client.clone();
             client::task(move || client.call("DELETE", &format!("/v1/runs/{id}"), None).map(|_| ()), Msg::Killed)
+        }
+        Msg::ToggleStage(id) => {
+            if state.stage.as_ref().is_some_and(|s| s.id == id) {
+                state.stage = None;
+                Task::none()
+            } else {
+                state.stage = Some(StageView { id, engine: Engine::detached(), shown: false, motion: Motion::Active });
+                stage_fleet(ctx)
+            }
+        }
+        Msg::StageFleet(Ok(v)) => {
+            if let (Some(s), Ok(fleet)) = (state.stage.as_mut(), serde_json::from_value::<FleetResponse>(v)) {
+                s.engine.set_data(Feed { fleet: Some(fleet), agents: None, fleet_error: None });
+                if !s.shown {
+                    s.engine.command(Cmd::ShowMachine { id: s.id.clone() });
+                    s.shown = true;
+                }
+                s.motion = Motion::Active;
+            }
+            Task::none()
+        }
+        Msg::StageFleet(Err(_)) => Task::none(),
+        Msg::StageFrame(now) => {
+            if let Some(s) = state.stage.as_mut() {
+                s.motion = s.engine.advance(now, (STAGE_W, STAGE_H)).motion;
+            }
+            Task::none()
+        }
+        Msg::Stage(action) => {
+            if let Some(s) = state.stage.as_mut() {
+                s.engine.apply(action);
+                s.motion = Motion::Active;
+            }
+            Task::none()
         }
         Msg::Killed(Ok(())) => load(state, ctx),
         Msg::Killed(Err(e)) => {
@@ -797,18 +888,30 @@ fn device<'a>(m: &'a Machine, slot: usize) -> Element<'a, Msg> {
 
 // ---- A machine's section ----------------------------------------------------------------------
 
+/// The machine's 3D view: the engine's stage, drawn through the shared shader program at the stage's size.
+fn stage_view<'a>(s: &'a StageView) -> Element<'a, Msg> {
+    let program = EngineProgram { primitive: s.engine.scene(), wrap: Msg::Stage };
+    shader(program).width(Length::Fixed(STAGE_W)).height(Length::Fixed(STAGE_H)).into()
+}
+
 fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
     let slot = data.machines.iter().position(|x| x.id == m.id).unwrap_or(0);
     let figure: Element<'a, Msg> = device(m, slot);
-    let parts: Vec<Element<'a, Msg>> = vec![
+    let open = state.stage.as_ref().filter(|s| s.id == m.id);
+    let orbit_label = if open.is_some() { "Hide 3D view" } else { "Show 3D view" };
+    let mut parts: Vec<Element<'a, Msg>> = vec![
         ui::mono(m.name.to_uppercase(), 18.0, INK).into(),
         ui::faint(sentence(m)).into(),
+        ui::btn(orbit_label, None, ui::Kind::Secondary, Some(Msg::ToggleStage(m.id.clone()))),
         live_stats(m),
         resources(state, data, m),
         ui::label("Runs").into(),
         runs(state, m),
         technical(state, m),
     ];
+    if let Some(s) = open {
+        parts.insert(3, stage_view(s));
+    }
     container(row![figure, column(parts).spacing(16).width(Length::Fill)].spacing(24))
         .id(section_id(&m.id))
         .width(Length::Fill)

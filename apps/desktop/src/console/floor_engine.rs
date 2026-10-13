@@ -1,4 +1,4 @@
-//! The floor's iced adapter: the shader widget's program. It maps iced's pointer events into the
+//! The engine's iced adapter: the shader widget's program, shared by the Floor and the machine stage. It maps iced's pointer events into the
 //! engine's [`Pointer`] input, turns the engine's actions into the console's messages, and draws the
 //! engine's [`Frame`] through the engine's [`Renderer`].
 
@@ -9,13 +9,13 @@ use apz_engine::render;
 use apz_engine::scene::Frame;
 use apz_engine::Renderer;
 use iced::widget::shader::{self, Viewport};
-use iced::{mouse, wgpu, Point, Rectangle};
+use iced::{mouse, wgpu, Rectangle};
 
-use crate::console::screens::floor::Msg;
-
-/// The shader widget's program: draws the frame the screen built, turns pointer input into messages.
-pub struct FloorProgram {
+/// The shader widget's program: draws the frame the host built, and turns pointer input into the host's messages
+/// (`wrap` maps each engine action to one of them).
+pub struct EngineProgram<M> {
     pub primitive: Arc<Frame>,
+    pub wrap: fn(Action) -> M,
 }
 
 fn button(b: mouse::Button) -> Button {
@@ -25,7 +25,7 @@ fn button(b: mouse::Button) -> Button {
     }
 }
 
-impl shader::Program<Msg> for FloorProgram {
+impl<M> shader::Program<M> for EngineProgram<M> {
     type State = Pointer;
     type Primitive = FloorPrimitive;
 
@@ -35,7 +35,7 @@ impl shader::Program<Msg> for FloorProgram {
         event: &iced::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> Option<shader::Action<Msg>> {
+    ) -> Option<shader::Action<M>> {
         let at = cursor.position_in(bounds).map(|p| (p.x, p.y));
         let ev = match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(b)) => Event::Pressed { button: button(*b), at },
@@ -58,15 +58,7 @@ impl shader::Program<Msg> for FloorProgram {
             _ => Event::Wheel { lines: 0.0 },
         };
         let (action, captured) = st.update((bounds.width, bounds.height), ev)?;
-        let msg = match action {
-            Action::Resized { width, height } => Msg::Resized(width, height),
-            Action::Rotate { dx, dy, height } => Msg::Rotate { dx, dy, height },
-            Action::Pan { dx, dy, height } => Msg::Pan { dx, dy, height },
-            Action::Hover(p) => Msg::Hover(p.map(|(x, y)| Point::new(x, y))),
-            Action::Select((x, y)) => Msg::Select(Some(Point::new(x, y))),
-            Action::Dolly(steps) => Msg::Dolly(steps),
-        };
-        let published = shader::Action::publish(msg);
+        let published = shader::Action::publish((self.wrap)(action));
         Some(if captured { published.and_capture() } else { published })
     }
 

@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { buildModel, type Built, type Model, type Palette, type Params, type Part } from './hardware';
 import { MODELS, PALETTE } from './hardware-index';
 import { EXTERIOR, lookOf, type Look, type MachineKind } from './machine-model';
+import { engineWanted } from '../engine-mount';
 
 /** CSS px of a list thumbnail. */
 export const THUMB_W = 160;
@@ -603,6 +604,9 @@ export function thumbnail(spec: PictureSpec, pr: number): string | null {
 
 /** The one stage for the whole console (one renderer, one canvas); null without WebGL. */
 export function getStage(): Stage | null {
+  // Dev check: under ?engine=wasm the engine draws every machine, so no three.js stage may be made (on a dev host, throw).
+  const devHost = typeof location !== 'undefined' && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  if (devHost && engineWanted()) throw new Error('getStage(): the three.js stage must not be made under ?engine=wasm');
   loadCache();
   const sh = ensureShared();
   if (!sh) return null;

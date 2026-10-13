@@ -30,12 +30,13 @@ use serde_json::Value;
 
 use super::Id;
 use apz_engine::stage::{ms_since, perf_line, perf_log_on, perf_t, Stage, View};
+use apz_engine::input::Action;
 use apz_engine::{Engine, Motion};
 use crate::console::floor3d::fleet::{self, FleetResponse, Machine};
 use crate::console::floor3d::hardware::Status;
 use crate::console::floor3d::scene::Color as SceneColor;
 use crate::console::floor3d::world::view::Label;
-use crate::console::floor_engine::FloorProgram;
+use crate::console::floor_engine::EngineProgram;
 use crate::console::floor3d::world::display_name;
 use crate::console::{client, events, ui, Ctx};
 
@@ -245,6 +246,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     task
 }
 
+/// The floor's engine actions as its messages.
+fn floor_msg(action: Action) -> Msg {
+    match action {
+        Action::Resized { width, height } => Msg::Resized(width, height),
+        Action::Rotate { dx, dy, height } => Msg::Rotate { dx, dy, height },
+        Action::Pan { dx, dy, height } => Msg::Pan { dx, dy, height },
+        Action::Hover(p) => Msg::Hover(p.map(|(x, y)| Point::new(x, y))),
+        Action::Select((x, y)) => Msg::Select(Some(Point::new(x, y))),
+        Action::Dolly(steps) => Msg::Dolly(steps),
+    }
+}
+
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let (title, mut actions) = match &state.view {
         View::Machines => ("Machines".to_string(), Vec::new()),
@@ -258,7 +271,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let head = ui::view_head(&title, actions);
 
     let mut layers: Vec<Element<'a, Msg>> = vec![
-        shader(FloorProgram { primitive: Arc::clone(&state.frame) }).width(Length::Fill).height(Length::Fill).into(),
+        shader(EngineProgram { primitive: Arc::clone(&state.frame), wrap: floor_msg }).width(Length::Fill).height(Length::Fill).into(),
     ];
     let (w, h) = state.size;
     if w > 0.0 && h > 0.0 {
