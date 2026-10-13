@@ -12,3 +12,8 @@ pub mod store;
 pub mod jobs;
 pub mod routes;
 pub mod datasets;
+// Hugging Face: the client (search, detail, egress) and the imports (docs/design/foundry.md).
+pub mod hf;
+pub mod hf_import;
+// Text models: an ONNX graph beside its tokenizer.json, served with tract and tokenizers (phase 2).
+pub mod text;

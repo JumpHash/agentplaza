@@ -30,7 +30,7 @@ pub const COMPONENTS: &[&str] = &[
     "projects", "toolbox", "harness", "approvals", "library", "deliverables", "connectors",
     "names", "settings", "providers", "spawned", "laws", "rules", "society", "work",
     "control", "custom_roles", "agent_proposals", "nodes", "prices", "usage", "looks", "foundry",
-    "models",
+    "models", "sanctions",
 ];
 
 const SCHEMA: &str = "
@@ -100,6 +100,7 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "looks" => app.looks.snapshot(),
         "foundry" => app.foundry.snapshot(),
         "models" => app.models.snapshot(),
+        "sanctions" => crate::sanctions::snapshot(app),
         _ => String::new(),
     }
 }
@@ -137,6 +138,7 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "looks" => app.looks.restore(json),
         "foundry" => app.foundry.restore(json),
         "models" => app.models.restore(json),
+        "sanctions" => crate::sanctions::restore(app, json),
         other => Err(format!("unknown component {other}")),
     }
 }
@@ -237,7 +239,7 @@ impl Db {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).insert(component.to_string());
     }
 
-    fn is_held(&self, component: &str) -> bool {
+    pub fn is_held(&self, component: &str) -> bool {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).contains(component)
     }
 
@@ -421,6 +423,7 @@ pub fn restore_all(app: &App) {
     wire_violations(app);
     if !app.db.enabled() {
         eprintln!("db: no APZ_DATABASE_URL; state stays in files");
+        crate::sanctions::migrate(app);
         return;
     }
     for &name in COMPONENTS {
@@ -435,6 +438,9 @@ pub fn restore_all(app: &App) {
             // A failed read holds the component; its files stay the copy, not overwritten.
             None if app.db.is_held(name) => {}
             None => {
+                if name == "sanctions" {
+                    crate::sanctions::migrate(app);
+                }
                 eprintln!("db: {name} not in Postgres yet; importing");
                 if let Err(e) = app.db.store(name, &snapshot_of(app, name)) {
                     eprintln!("db: import of {name} failed: {e}");

@@ -11,4 +11,5 @@ ENV PYTHONPATH=/opt/apz \
     APZ_RECIPES=/opt/apz/recipes \
     PYTHONUNBUFFERED=1
 WORKDIR /opt/apz
-CMD ["python", "-m", "apz_train.run", "--help"]
+ENTRYPOINT ["python", "-m", "apz_train.run"]
+CMD ["--help"]

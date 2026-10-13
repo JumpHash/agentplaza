@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 use crate::agents::Agent;
 use crate::foundry::datasets::ExportSpec;
+use crate::foundry::hf;
 use crate::foundry::routes;
 use crate::prices::Tokens;
 use crate::state::App;
@@ -24,6 +25,7 @@ pub const TOOLS: &[&str] = &[
     "foundry_job_status",
     "foundry_request_shadow",
     "invoke_model",
+    "foundry_hf_search",
 ];
 
 /// The model's usage is metered under this name: `model:<id>`, cost 0.
@@ -71,6 +73,20 @@ pub fn spec(name: &str) -> Option<ToolSpec> {
                 "required": ["model", "input"]
             }),
         ),
+        "foundry_hf_search" => (
+            "Search the public Hugging Face hub, read-only: models with their task, library, downloads, likes, gated and license. Imports stay the owner's.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "search": { "type": "string" },
+                    "task": { "type": "string" },
+                    "library": { "type": "string" },
+                    "sort": { "type": "string", "enum": ["downloads", "likes", "lastModified", "trending"] },
+                    "limit": { "type": "integer" },
+                    "cursor": { "type": "string" }
+                }
+            }),
+        ),
         _ => return None,
     };
     Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema })
@@ -79,6 +95,7 @@ pub fn spec(name: &str) -> Option<ToolSpec> {
 /// Runs one of [`TOOLS`] for `agent`. The caller has checked the laws already.
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     match name {
+        "foundry_hf_search" => hf_search(app, input),
         "foundry_request_shadow" => {
             let id = str_arg(input, "model")?;
             let record = app.models.shadow(&id)?;
@@ -122,13 +139,16 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
 }
 
 /// Runs a shadow or promoted model on `input` and returns its output and latency in ms.
-fn invoke(app: &App, id: &str, input: &Value) -> Result<(Value, u128), String> {
+pub(crate) fn invoke(app: &App, id: &str, input: &Value) -> Result<(Value, u128), String> {
     let record = app.models.get(id).ok_or_else(|| format!("no model {id}"))?;
     if !matches!(record.state, crate::foundry::registry::State::Shadow | crate::foundry::registry::State::Promoted) {
         return Err(format!("model {id} is {}: only shadow and promoted models run", record.state.name()));
     }
-    let model = app.models.loaded(id).ok_or_else(|| format!("model {id} is not loaded"))?;
     let started = Instant::now();
+    if let Some(text) = app.models.text(id) {
+        return Ok((text.invoke(input)?, started.elapsed().as_millis()));
+    }
+    let model = app.models.loaded(id).ok_or_else(|| format!("model {id} is not loaded"))?;
     let output = model.invoke(input)?;
     Ok((output, started.elapsed().as_millis()))
 }
@@ -231,5 +251,65 @@ mod tests {
         assert!(msg.contains("GPU-hour cap"), "{msg}");
         let at_cap = parsed(json!({ "recipe": "r@1", "datasets": ["ds-1"], "budget_gpu_hours": 8.0 })).unwrap();
         assert!(jobs::budget_check(&at_cap).is_ok());
+    }
+}
+
+/// The breeder's `foundry_hf_search`: a read-only search of the Hugging Face hub, in the route's compact shape.
+/// Imports are not a breeder's: they stay owner-only.
+fn hf_search(app: &App, input: &Value) -> Result<String, String> {
+    let query = search_query(input)?;
+    let block = app.settings.get().fetch_block;
+    hf::search_page(&query, &block).map(|page| page.to_string()).map_err(|fail| fail.message)
+}
+
+/// The search the input asks for, with the same fields and limit rules as the route.
+fn search_query(input: &Value) -> Result<hf::Search, String> {
+    let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let limit = match input.get("limit") {
+        None | Some(Value::Null) => hf::DEFAULT_LIMIT,
+        Some(value) => value
+            .as_u64()
+            .filter(|n| (1..=100).contains(n))
+            .ok_or("limit must be a whole number from 1 to 100")? as usize,
+    };
+    Ok(hf::Search {
+        search: text("search"),
+        task: text("task"),
+        library: text("library"),
+        sort: text("sort"),
+        limit,
+        cursor: Some(text("cursor")).filter(|c| !c.is_empty()),
+    })
+}
+
+#[cfg(test)]
+mod hf_search_tests {
+    use super::*;
+
+    #[test]
+    fn the_breeder_has_a_read_only_hub_search_and_no_import() {
+        assert!(TOOLS.contains(&"foundry_hf_search"));
+        assert!(spec("foundry_hf_search").is_some());
+        assert!(!TOOLS.iter().any(|tool| tool.contains("import")), "imports stay owner-only");
+        assert_eq!(crate::laws::risk_class("foundry_hf_search"), "read");
+        assert!(matches!(crate::tools::runs("foundry_hf_search"), Some(crate::tools::Runs::Host)));
+    }
+
+    #[test]
+    fn the_roles_manifest_gives_the_breeder_the_search() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../../docs/agents/initial-roles.json")).unwrap();
+        let tools = manifest["roles"]["breeder"]["tools"].as_array().expect("the breeder's tools");
+        assert!(tools.iter().any(|tool| tool == "foundry_hf_search"));
+    }
+
+    #[test]
+    fn the_search_input_is_checked_like_the_route() {
+        let query = search_query(&json!({ "search": "sst2 onnx", "task": "text-classification" })).unwrap();
+        assert_eq!(query.limit, hf::DEFAULT_LIMIT);
+        assert_eq!(query.search, "sst2 onnx");
+        assert_eq!(query.task, "text-classification");
+        assert!(search_query(&json!({ "limit": 0 })).is_err());
+        assert!(search_query(&json!({ "limit": 101 })).is_err());
+        assert!(search_query(&json!({ "limit": "ten" })).is_err());
     }
 }

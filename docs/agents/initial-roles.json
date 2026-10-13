@@ -61,6 +61,7 @@
     "foundry_submit_job",
     "foundry_job_status",
     "foundry_request_shadow",
+    "foundry_hf_search",
     "invoke_model"
    ]
   },

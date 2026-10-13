@@ -49,6 +49,35 @@ pub struct Approval {
     pub created_ms: u64,
     pub state: State,
     pub reason: Option<String>,
+    /// What the decision is: `tool` (a held tool call), `sanction` or `payment`.
+    #[serde(default = "tool_kind")]
+    pub kind: String,
+    /// What the decision is about, in words. For a tool approval, the tool.
+    #[serde(default)]
+    pub subject: String,
+    /// The structured detail. For a tool approval, the input.
+    #[serde(default)]
+    pub detail: Value,
+}
+
+fn tool_kind() -> String {
+    "tool".to_string()
+}
+
+impl Approval {
+    /// Fills the tool-approval fields a snapshot from before they existed lacks: the
+    /// subject is the tool and the detail is the input. Other kinds are left as they are.
+    fn backfill(&mut self) {
+        if self.kind != "tool" {
+            return;
+        }
+        if self.subject.is_empty() {
+            self.subject = self.tool.clone();
+        }
+        if self.detail.is_null() {
+            self.detail = self.input.clone();
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -141,28 +170,21 @@ impl Store {
                 {
                     return (Some(format!("still waiting for the owner's approval ({})", a.id)), None);
                 }
-                let id = format!("a{}", inner.next);
-                inner.next += 1;
-                let item = Approval {
-                    id: id.clone(),
-                    cid,
-                    tool: tool.to_string(),
-                    input: input.clone(),
-                    created_ms: now_ms(),
-                    state: State::Pending,
-                    reason: None,
-                };
-                inner.queue.push(item.clone());
-                if inner.queue.len() > QUEUE_CAP {
-                    let excess = inner.queue.len() - QUEUE_CAP;
-                    inner.queue.drain(..excess);
-                }
+                let item = push_pending(&mut inner, cid, "tool", tool, input.clone());
                 let refusal = format!(
-                    "waiting for the owner's approval ({id}); you'll be told when it is decided, then run the same call again"
+                    "waiting for the owner's approval ({}); you'll be told when it is decided, then run the same call again",
+                    item.id
                 );
                 (Some(refusal), Some(item))
             }
         }
+    }
+
+    /// Queues a pending decision of `kind` about `subject` for agent `cid`, in any mode, and
+    /// returns it. The queue cap applies.
+    pub fn submit(&self, cid: u64, kind: &str, subject: &str, detail: Value) -> Approval {
+        let mut inner = self.lock();
+        push_pending(&mut inner, cid, kind, subject, detail)
     }
 
     /// Records the owner's decision on a pending approval.
@@ -194,6 +216,33 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Appends a pending item to the queue under the next id, drops the oldest past
+/// `QUEUE_CAP`, and returns the item. `tool` and `subject` are the same string, and
+/// `input` and `detail` are the same value, so a tool approval and a decision of
+/// another kind read alike.
+fn push_pending(inner: &mut Inner, cid: u64, kind: &str, subject: &str, detail: Value) -> Approval {
+    let id = format!("a{}", inner.next);
+    inner.next += 1;
+    let item = Approval {
+        id,
+        cid,
+        tool: subject.to_string(),
+        input: detail.clone(),
+        created_ms: now_ms(),
+        state: State::Pending,
+        reason: None,
+        kind: kind.to_string(),
+        subject: subject.to_string(),
+        detail,
+    };
+    inner.queue.push(item.clone());
+    if inner.queue.len() > QUEUE_CAP {
+        let excess = inner.queue.len() - QUEUE_CAP;
+        inner.queue.drain(..excess);
+    }
+    item
+}
+
 /// Called on the tool path before a call runs. Publishes a newly queued
 /// approval and returns the reason the call is held, or None to let it run.
 pub fn gate(app: &App, cid: u64, tool: &str, input: &Value) -> Option<String> {
@@ -204,6 +253,22 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value) -> Option<String> {
         app.bus.publish("approval", &item);
     }
     refusal
+}
+
+/// Queues a decision of `kind` about `subject` for the owner, whatever the agent's mode,
+/// publishes it, and returns it. The agent is `detail["cid"]`, or 0 when there is none.
+// Used by the sanctions and payments work, which is not wired yet.
+#[allow(dead_code)]
+pub fn submit(app: &App, kind: &str, subject: &str, detail: Value) -> Approval {
+    let item = app.approvals.submit(detail_cid(&detail), kind, subject, detail);
+    app.bus.publish("approval", &item);
+    item
+}
+
+/// The agent a decision's detail names (`cid`), or 0 when it names none.
+#[allow(dead_code)]
+fn detail_cid(detail: &Value) -> u64 {
+    detail.get("cid").and_then(Value::as_u64).unwrap_or(0)
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -219,6 +284,9 @@ struct DecideBody {
     approve: bool,
     #[serde(default)]
     reason: Option<String>,
+    /// For a sanction decision: `acknowledge`, `lift` or `retire` (see `sanctions::decided`).
+    #[serde(default)]
+    action: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -234,14 +302,37 @@ fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
     let body: DecideBody = match req.json() {
         Ok(body) => body,
-        Err(_) => return Response::error(400, "body must be {\"approve\": bool, \"reason\": string?}"),
+        Err(_) => {
+            return Response::error(
+                400,
+                "body must be {\"approve\": bool, \"reason\": string?, \"action\": string?}",
+            )
+        }
     };
-    let item = match app.approvals.decide(id, body.approve, body.reason) {
+    let approve = body.approve;
+    let item = match app.approvals.decide(id, approve, body.reason) {
         Ok(item) => item,
         Err(DecideError::NotFound) => return Response::error(404, "no such approval"),
         Err(DecideError::NotPending) => return Response::error(409, "this approval is already decided"),
     };
     app.bus.publish("approval", &item);
+    // The decision is recorded; each kind then does its own work with it.
+    let applied = match item.kind.as_str() {
+        "sanction" => crate::sanctions::decided(app, &item, approve, body.action.as_deref()),
+        "payment" => crate::payments::decided(app, &item, approve),
+        _ => {
+            tell_agent(app, &item);
+            Ok(())
+        }
+    };
+    match applied {
+        Ok(()) => Response::json(200, &item),
+        Err(e) => Response::error(409, &e),
+    }
+}
+
+/// Tells the agent a tool approval was decided, as a chat message.
+fn tell_agent(app: &App, item: &Approval) {
     let approved = item.state == State::Approved;
     let verb = if approved { "approved" } else { "denied" };
     let why = match &item.reason {
@@ -261,7 +352,6 @@ fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
         text,
         crate::scheduler::Origin::default(),
     );
-    Response::json(200, &item)
 }
 
 fn cid_param(p: &Params<'_>) -> Option<u64> {
@@ -312,6 +402,9 @@ impl Store {
         let snap: Snapshot = serde_json::from_str(json).map_err(|e| format!("bad approvals snapshot: {e}"))?;
         let bytes = serde_json::to_vec_pretty(&snap.modes).map_err(|e| e.to_string())?;
         let mut pending = snap.pending;
+        for item in &mut pending {
+            item.backfill();
+        }
         let excess = pending.len().saturating_sub(QUEUE_CAP);
         pending.drain(..excess);
         let mut inner = self.lock();
@@ -427,5 +520,65 @@ mod tests {
         let (refusal, created) = store.gate(4, "write_thing", "write", &json!({}));
         assert!(refusal.is_none() && created.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn submit_queues_a_pending_decision_in_any_mode() {
+        let dir = scratch("submit");
+        let store = Store::load(&dir);
+        store.set_mode(6, Mode::ReadOnly).unwrap();
+        let detail = json!({ "cid": 6, "amount": 900, "to": "bob" });
+        let item = store.submit(6, "payment", "pay 900 to bob", detail.clone());
+        assert_eq!(item.state, State::Pending);
+        assert_eq!(item.kind, "payment");
+        assert_eq!(item.subject, "pay 900 to bob");
+        assert_eq!(item.tool, "pay 900 to bob");
+        assert_eq!(item.detail, detail);
+        assert_eq!(item.input, detail);
+        assert_eq!(item.cid, 6);
+        assert_eq!(store.list()[0].id, item.id);
+        // Gate and submit share one id counter: the held call gets the next id.
+        store.set_mode(7, Mode::Ask).unwrap();
+        let (_, held) = store.gate(7, "write_thing", "write", &json!({}));
+        let held = held.expect("a held call queues an item");
+        let next: u64 = item.id[1..].parse::<u64>().unwrap() + 1;
+        assert_eq!(held.id, format!("a{next}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detail_names_the_agent_or_zero() {
+        assert_eq!(detail_cid(&json!({ "cid": 12, "law": "x" })), 12);
+        assert_eq!(detail_cid(&json!({ "law": "x" })), 0);
+        assert_eq!(detail_cid(&json!(null)), 0);
+    }
+
+    #[test]
+    fn an_old_snapshot_without_the_new_fields_restores_as_a_tool_approval() {
+        let old = r#"{"modes":{"5":"ask"},"pending":[{"id":"a3","cid":5,"tool":"write_thing","input":{"a":1},"created_ms":10,"state":"pending","reason":null}],"seq":4}"#;
+        let store = Store::load(&scratch("old"));
+        store.restore(old).unwrap();
+        assert_eq!(store.mode(5), Mode::Ask);
+        let item = store.list().into_iter().next().unwrap();
+        assert_eq!(item.kind, "tool");
+        assert_eq!(item.subject, "write_thing");
+        assert_eq!(item.detail, json!({ "a": 1 }));
+        // The snapshot it writes now carries the new fields, and reads back.
+        let other = Store::load(&scratch("old-other"));
+        other.restore(&store.snapshot()).unwrap();
+        assert_eq!(other.list()[0].kind, "tool");
+    }
+
+    #[test]
+    fn submit_holds_the_queue_cap() {
+        let store = Store::load(&scratch("cap"));
+        for i in 0..(QUEUE_CAP + 5) {
+            store.submit(1, "payment", &format!("pay {i}"), json!({ "cid": 1 }));
+        }
+        let list = store.list();
+        assert_eq!(list.len(), QUEUE_CAP);
+        // Newest first: the five oldest were dropped.
+        assert_eq!(list[0].subject, format!("pay {}", QUEUE_CAP + 4));
+        assert_eq!(list[QUEUE_CAP - 1].subject, "pay 5");
     }
 }

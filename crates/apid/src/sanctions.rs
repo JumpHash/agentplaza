@@ -9,20 +9,30 @@
 //! - `fine:N`: a `Fine` entry from the agent's earnings to the treasury. Capped by `max_fine` and by
 //!   [`WEEKLY_FINE_CAP`] over seven days; a fine the wallet cannot pay is recorded as not collected.
 //! - `probation:D` and `lockout:D`: the offending tool is suspended for D (the gate refuses it, see
-//!   [`suspended`]), and the owner is told.
-//! - `demotion`, `retirement`, `owner-review`: the owner is told. apid does not carry them out.
+//!   [`suspended`]). A lockout also asks the owner for an approval.
+//! - `demotion`, `retirement`, `owner-review`: the owner is asked for an approval. apid does not carry
+//!   them out.
+//!
+//! The owner answers the approval with [`decided`]: approve acknowledges the sanction, deny lifts an
+//! active suspension, and the action `retire` is only recorded. The owner may also lift a suspension
+//! at any time through `POST /v1/sanctions/{id}/lift` (see [`routes`]).
 //!
 //! Classification is always `negligent` (the schedule as written): no law carries a
 //! classification annotation yet, so an `induced` or `malicious` case cannot be told apart.
 //!
-//! The state lives in `<state-dir>/sanctions.json`. Only apid's one process reads it.
+//! The record is the `sanctions` component of the database (`db::COMPONENTS`). `<state-dir>/sanctions.json`
+//! is read once, for migration, when the database holds no such component. The file is also written on
+//! every change, so a run without a database keeps its record there.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
 
+use apz_http::{Params, Request, Response, Router};
 use apz_plaza::treasury::Treasury;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
+use crate::approvals::Approval;
 use crate::events::Bus;
 use crate::laws::Violation;
 use crate::memory::Memory;
@@ -33,6 +43,11 @@ use crate::state::App;
 pub const WEEKLY_FINE_CAP: u64 = FINES_PER_WEEK_MAX;
 /// Applied sanctions kept; the oldest go first.
 const KEEP: usize = 1000;
+/// The sanction name of a tool suspension's record.
+const SUSPENSION: &str = "tool-suspension:";
+/// Records `GET /v1/sanctions` returns when no limit is given.
+const DEFAULT_LIMIT: usize = 100;
+const MAX_LIMIT: usize = 10_000;
 
 const MINUTE_MS: u64 = 60_000;
 const DAY_MS: u64 = 24 * 60 * MINUTE_MS;
@@ -89,7 +104,7 @@ pub enum Step {
     Fine(u64),
     /// The offending tool is refused for `ms` (probation and lockout).
     Suspend { ms: u64, label: String },
-    /// Named by the schedule but not carried out here: the owner is told.
+    /// Named by the schedule but not carried out here: the owner is asked.
     Escalate(String),
 }
 
@@ -144,16 +159,38 @@ pub struct Case<'a> {
     pub at_ms: u64,
 }
 
-/// Where the sanctions' effects go: the treasury, the bus and the agent's memory.
+/// Where the sanctions' effects go: the treasury, the bus, the agent's memory, and the owner's approvals.
 pub struct Env<'a> {
     pub treasury: &'a Treasury,
     pub bus: &'a Bus,
     pub memory: Option<&'a Memory>,
+    /// Queues an approval for the owner from `(kind, subject, detail)` and returns its id. `None` queues none.
+    pub approvals: Option<&'a dyn Fn(&str, &str, Value) -> String>,
+}
+
+/// The owner's lift of a tool suspension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lifted {
+    pub at_ms: u64,
+    /// Always "owner".
+    pub by: String,
+    pub why: String,
+}
+
+/// The owner's latest decision on a sanction record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerAction {
+    /// "acknowledge" or "retire".
+    pub action: String,
+    pub at_ms: u64,
 }
 
 /// One sanction as applied (or not), kept on the agent's record and published as a `sanction` event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Applied {
+    /// Sequential from the ledger's counter, which is saved with the record: ids are not reused.
+    #[serde(default)]
+    pub id: u64,
     pub cid: u64,
     pub law: String,
     pub title: String,
@@ -171,34 +208,40 @@ pub struct Applied {
     pub entry: Option<u64>,
     /// When a tool suspension ends, in ms.
     pub until_ms: Option<u64>,
+    /// The approval that asks the owner about this step (escalations only).
+    #[serde(default)]
+    pub approval: Option<String>,
+    /// The owner's lift of a tool suspension.
+    #[serde(default)]
+    pub lifted: Option<Lifted>,
+    /// The owner's latest decision on this record.
+    #[serde(default)]
+    pub owner_action: Option<OwnerAction>,
 }
 
-impl Applied {
-    fn of(case: &Case, sanction: &str, outcome: &str) -> Applied {
-        Applied {
-            cid: case.cid,
-            law: case.law.to_string(),
-            title: case.title.to_string(),
-            severity: case.severity.key().to_string(),
-            count: case.count,
-            tool: case.tool.to_string(),
-            at_ms: case.at_ms,
-            sanction: sanction.to_string(),
-            outcome: outcome.to_string(),
-            fine: 0,
-            entry: None,
-            until_ms: None,
-        }
-    }
-}
-
-/// A tool an agent may not call until `until_ms`.
+/// A tool an agent may not call until `until_ms`. Its `id` is the id of its tool-suspension record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Suspension {
+    #[serde(default)]
+    pub id: u64,
     pub cid: u64,
     pub tool: String,
     pub law: String,
     pub until_ms: u64,
+    #[serde(default)]
+    pub lifted: bool,
+}
+
+/// A suspension as the API shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuspensionView {
+    pub id: u64,
+    pub cid: u64,
+    pub tool: String,
+    pub law: String,
+    pub until_ms: u64,
+    /// Until `until_ms`, and not lifted.
+    pub active: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -206,10 +249,60 @@ pub struct Suspension {
 struct State {
     applied: Vec<Applied>,
     suspensions: Vec<Suspension>,
+    /// The last id given out.
+    next_id: u64,
+}
+
+impl State {
+    /// Numbers the records of a snapshot from before ids (their id is 0), and keeps the counter past
+    /// every id. A suspension without an id takes the id of its tool-suspension record.
+    fn number(&mut self) {
+        for record in self.applied.iter_mut().filter(|a| a.id == 0) {
+            self.next_id += 1;
+            record.id = self.next_id;
+        }
+        self.next_id = self.applied.iter().map(|a| a.id).max().unwrap_or(0).max(self.next_id);
+        let (applied, next_id) = (&self.applied, &mut self.next_id);
+        for suspension in self.suspensions.iter_mut().filter(|s| s.id == 0) {
+            let from = applied.iter().find(|a| {
+                a.sanction.starts_with(SUSPENSION)
+                    && a.cid == suspension.cid
+                    && a.tool == suspension.tool
+                    && a.law == suspension.law
+                    && a.until_ms == Some(suspension.until_ms)
+            });
+            suspension.id = match from {
+                Some(record) => record.id,
+                None => {
+                    *next_id += 1;
+                    *next_id
+                }
+            };
+        }
+    }
+}
+
+/// Why a sanction cannot be lifted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiftError {
+    NotFound,
+    NotSuspension,
+    NotActive,
+}
+
+impl LiftError {
+    fn message(self, id: u64) -> String {
+        match self {
+            LiftError::NotFound => format!("no sanction {id}"),
+            LiftError::NotSuspension => format!("sanction {id} is not a tool suspension"),
+            LiftError::NotActive => format!("the suspension {id} is not active"),
+        }
+    }
 }
 
 /// The sanctions on record and the suspensions in force. One per apid process.
 pub struct Ledger {
+    /// `<state-dir>/sanctions.json`: read once for migration, written on every change.
     path: Option<PathBuf>,
     state: Mutex<State>,
     /// One sanction at a time: the weekly fine cap is read and then spent.
@@ -217,10 +310,8 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// Loads the record from `path`; a missing or unreadable file starts empty.
-    pub fn load(path: &Path) -> Ledger {
-        let state = std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-        Ledger { path: Some(path.to_path_buf()), state: Mutex::new(state), deciding: Mutex::new(()) }
+    fn new(path: Option<PathBuf>) -> Ledger {
+        Ledger { path, state: Mutex::new(State::default()), deciding: Mutex::new(()) }
     }
 
     /// Applies the schedule's steps for `case`. Nothing happens when sanctions are disabled.
@@ -230,15 +321,21 @@ impl Ledger {
         }
         let _one_at_a_time = self.deciding.lock().unwrap_or_else(PoisonError::into_inner);
         let mut applied = Vec::new();
+        // The end of this case's tool suspension, which a lockout escalation names.
+        let mut suspended_until: Option<u64> = None;
         for step in steps(case.severity, case.count) {
             let record = match step {
                 Step::Warning => {
                     note(env, case);
-                    Some(Applied::of(case, "warning", "applied"))
+                    Some(self.new_record(case, "warning", "applied"))
                 }
                 Step::Fine(credits) => self.fine(env, settings, case, credits),
-                Step::Suspend { ms, label } => self.suspend(settings, case, ms, &label),
-                Step::Escalate(name) => Some(Applied::of(case, &name, "escalated")),
+                Step::Suspend { ms, label } => {
+                    let record = self.suspend(settings, case, ms, &label);
+                    suspended_until = record.as_ref().and_then(|r| r.until_ms).or(suspended_until);
+                    record
+                }
+                Step::Escalate(name) => Some(self.escalate(env, case, &name, suspended_until)),
             };
             applied.extend(record);
         }
@@ -256,6 +353,33 @@ impl Ledger {
         applied
     }
 
+    /// A record of `case`, numbered from the counter (saved with the state, so ids are not reused).
+    fn new_record(&self, case: &Case, sanction: &str, outcome: &str) -> Applied {
+        let id = {
+            let mut state = self.lock();
+            state.next_id += 1;
+            state.next_id
+        };
+        Applied {
+            id,
+            cid: case.cid,
+            law: case.law.to_string(),
+            title: case.title.to_string(),
+            severity: case.severity.key().to_string(),
+            count: case.count,
+            tool: case.tool.to_string(),
+            at_ms: case.at_ms,
+            sanction: sanction.to_string(),
+            outcome: outcome.to_string(),
+            fine: 0,
+            entry: None,
+            until_ms: None,
+            approval: None,
+            lifted: None,
+            owner_action: None,
+        }
+    }
+
     /// A fine from the agent's earnings, within `max_fine` and the week's room under the cap.
     fn fine(&self, env: &Env, settings: &Sanctions, case: &Case, credits: u64) -> Option<Applied> {
         if !settings.fines {
@@ -269,35 +393,56 @@ impl Ledger {
         let amount = credits.min(settings.max_fine).min(room);
         if amount == 0 {
             let why = if room == 0 { "weekly fine cap reached" } else { "max_fine is 0" };
-            return Some(Applied::of(case, &sanction, &format!("not collected: {why}")));
+            return Some(self.new_record(case, &sanction, &format!("not collected: {why}")));
         }
         let memo = format!("sanction {} for {} (offence {})", case.law, case.tool, case.count);
         Some(match env.treasury.fine(case.cid, amount as i64, &memo) {
             Ok(entry) => {
-                let mut record = Applied::of(case, &sanction, "applied");
+                let mut record = self.new_record(case, &sanction, "applied");
                 record.fine = amount;
                 record.entry = Some(entry);
                 record
             }
-            Err(e) => Applied::of(case, &sanction, &format!("not collected: {e}")),
+            Err(e) => self.new_record(case, &sanction, &format!("not collected: {e}")),
         })
     }
 
-    /// Refuses the offending tool for `ms`.
+    /// Refuses the offending tool for `ms`. The suspension takes the id of its record.
     fn suspend(&self, settings: &Sanctions, case: &Case, ms: u64, label: &str) -> Option<Applied> {
         if !settings.suspensions {
             return None;
         }
         let until_ms = case.at_ms.saturating_add(ms);
+        let mut record = self.new_record(case, &format!("{SUSPENSION}{label}"), "applied");
+        record.until_ms = Some(until_ms);
         self.lock().suspensions.push(Suspension {
+            id: record.id,
             cid: case.cid,
             tool: case.tool.to_string(),
             law: case.law.to_string(),
             until_ms,
+            lifted: false,
         });
-        let mut record = Applied::of(case, &format!("tool-suspension:{label}"), "applied");
-        record.until_ms = Some(until_ms);
         Some(record)
+    }
+
+    /// A step the owner decides. Its record names the approval that asks, when one is queued.
+    fn escalate(&self, env: &Env, case: &Case, name: &str, suspended_until: Option<u64>) -> Applied {
+        let mut record = self.new_record(case, name, "escalated");
+        let for_owner = matches!(name, "owner-review" | "retirement" | "demotion") || name.starts_with("lockout");
+        if let (true, Some(ask)) = (for_owner, env.approvals) {
+            let until = if name.starts_with("lockout") { suspended_until } else { None };
+            let detail = json!({
+                "cid": case.cid,
+                "sanction_id": record.id,
+                "law": case.law,
+                "sanction": name,
+                "until_ms": until,
+            });
+            let subject = format!("{} {name} for agent {}", case.law, case.cid);
+            record.approval = Some(ask("sanction", &subject, detail));
+        }
+        record
     }
 
     /// The refusal for a call to `tool` while a suspension of it is in force, `None` when it may run.
@@ -310,13 +455,103 @@ impl Ledger {
         let found = state
             .suspensions
             .iter()
-            .filter(|s| s.cid == cid && s.tool == tool && s.until_ms > now_ms)
+            .filter(|s| s.cid == cid && s.tool == tool && !s.lifted && s.until_ms > now_ms)
             .max_by_key(|s| s.until_ms)?;
         let minutes = (found.until_ms - now_ms).div_ceil(MINUTE_MS);
         Some(format!(
             "refused: {tool} is suspended for this agent for about {minutes} more minute(s) by a sanction for law {}",
             found.law
         ))
+    }
+
+    /// The records and suspensions for a query, newest first, at most `limit` of each.
+    pub fn list(&self, cid: Option<u64>, law: Option<&str>, limit: usize, now_ms: u64) -> (Vec<Applied>, Vec<SuspensionView>) {
+        let state = self.lock();
+        let sanctions = state
+            .applied
+            .iter()
+            .rev()
+            .filter(|a| cid.is_none_or(|c| a.cid == c) && law.is_none_or(|l| a.law == l))
+            .take(limit)
+            .cloned()
+            .collect();
+        let suspensions = state
+            .suspensions
+            .iter()
+            .rev()
+            .filter(|s| cid.is_none_or(|c| s.cid == c) && law.is_none_or(|l| s.law == l))
+            .take(limit)
+            .map(|s| SuspensionView {
+                id: s.id,
+                cid: s.cid,
+                tool: s.tool.clone(),
+                law: s.law.clone(),
+                until_ms: s.until_ms,
+                active: !s.lifted && s.until_ms > now_ms,
+            })
+            .collect();
+        (sanctions, suspensions)
+    }
+
+    /// Lifts the tool suspension recorded as `id`, while it is in force.
+    pub fn lift(&self, id: u64, why: &str, now_ms: u64) -> Result<Applied, LiftError> {
+        let mut state = self.lock();
+        let at = state.applied.iter().position(|a| a.id == id).ok_or(LiftError::NotFound)?;
+        if !state.applied[at].sanction.starts_with(SUSPENSION) {
+            return Err(LiftError::NotSuspension);
+        }
+        let held = state
+            .suspensions
+            .iter()
+            .position(|s| s.id == id && !s.lifted && s.until_ms > now_ms)
+            .ok_or(LiftError::NotActive)?;
+        state.suspensions[held].lifted = true;
+        state.applied[at].lifted = Some(Lifted { at_ms: now_ms, by: "owner".to_string(), why: why.to_string() });
+        let record = state.applied[at].clone();
+        self.save(&state);
+        Ok(record)
+    }
+
+    /// Records the owner's decision `action` on the record `id`.
+    pub fn decide_record(&self, id: u64, action: &str, now_ms: u64) -> Result<Applied, LiftError> {
+        let mut state = self.lock();
+        let at = state.applied.iter().position(|a| a.id == id).ok_or(LiftError::NotFound)?;
+        state.applied[at].owner_action = Some(OwnerAction { action: action.to_string(), at_ms: now_ms });
+        let record = state.applied[at].clone();
+        self.save(&state);
+        Ok(record)
+    }
+
+    /// Whether the record `id` is a tool suspension.
+    pub fn is_suspension(&self, id: u64) -> bool {
+        self.lock().applied.iter().any(|a| a.id == id && a.sanction.starts_with(SUSPENSION))
+    }
+
+    /// The record as JSON: the database's `sanctions` component.
+    pub fn snapshot(&self) -> String {
+        serde_json::to_string(&*self.lock()).unwrap_or_default()
+    }
+
+    /// Replaces the record with a snapshot.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let mut state: State = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        state.number();
+        *self.lock() = state;
+        Ok(())
+    }
+
+    /// The migration: reads `sanctions.json` into the record, when there is one to read.
+    fn migrate_file(&self) {
+        let Some(path) = &self.path else { return };
+        let Ok(text) = std::fs::read_to_string(path) else { return };
+        match serde_json::from_str::<State>(&text) {
+            Ok(mut state) => {
+                state.number();
+                eprintln!("sanctions: migrated {} record(s) from {}", state.applied.len(), path.display());
+                *self.lock() = state;
+            }
+            Err(e) => eprintln!("sanctions: {} is not readable, starting empty: {e}", path.display()),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -335,11 +570,6 @@ impl Ledger {
             eprintln!("sanctions: could not save: {e}");
         }
     }
-
-    #[cfg(test)]
-    fn in_memory() -> Ledger {
-        Ledger { path: None, state: Mutex::new(State::default()), deciding: Mutex::new(()) }
-    }
 }
 
 /// The warning's note in the agent's memory (the daily journal).
@@ -356,7 +586,24 @@ fn note(env: &Env, case: &Case) {
 
 fn ledger(app: &App) -> &'static Ledger {
     static LEDGER: OnceLock<Ledger> = OnceLock::new();
-    LEDGER.get_or_init(|| Ledger::load(&app.config.state_dir.join("sanctions.json")))
+    LEDGER.get_or_init(|| Ledger::new(Some(app.config.state_dir.join("sanctions.json"))))
+}
+
+/// The database's `sanctions` component, as JSON.
+pub fn snapshot(app: &App) -> String {
+    ledger(app).snapshot()
+}
+
+/// Restores the database's `sanctions` component, replacing the record.
+pub fn restore(app: &App, json: &str) -> Result<(), String> {
+    ledger(app).restore(json)
+}
+
+/// The one-time migration from `sanctions.json`. Run when the database holds no `sanctions` component,
+/// or when there is no database. Nothing else reads the file.
+pub fn migrate(app: &App) {
+    static MIGRATED: Once = Once::new();
+    MIGRATED.call_once(|| ledger(app).migrate_file());
 }
 
 /// The sanction hook: every violation the laws record comes here (`db::wire_violations`).
@@ -370,7 +617,13 @@ pub fn on_violation(app: &App, cid: u64, violation: &Violation, tool: &str) {
         None => (violation.law.clone(), Severity::Info),
     };
     let count = app.laws.recent(cid, violation.at_ms).iter().filter(|v| v["law"] == violation.law.as_str()).count();
-    let env = Env { treasury: &app.plaza.treasury, bus: &app.bus, memory: Some(&app.memory) };
+    let ask = |kind: &str, subject: &str, detail: Value| crate::approvals::submit(app, kind, subject, detail).id;
+    let env = Env {
+        treasury: &app.plaza.treasury,
+        bus: &app.bus,
+        memory: Some(&app.memory),
+        approvals: Some(&ask),
+    };
     let case = Case { cid, law: &violation.law, title: &title, severity, count, tool, at_ms: violation.at_ms };
     ledger(app).apply(&env, &settings, &case);
 }
@@ -379,6 +632,89 @@ pub fn on_violation(app: &App, cid: u64, violation: &Violation, tool: &str) {
 pub fn suspended(app: &App, cid: u64, tool: &str) -> Option<String> {
     let settings = app.settings.get().sanctions;
     ledger(app).suspended(&settings, cid, tool, apz_plaza::now_ms())
+}
+
+/// Lifts a suspension and publishes its record as a `sanction` event.
+fn lift_on(ledger: &Ledger, bus: &Bus, id: u64, why: &str, now_ms: u64) -> Result<Applied, LiftError> {
+    let record = ledger.lift(id, why, now_ms)?;
+    bus.publish("sanction", &record);
+    Ok(record)
+}
+
+/// The owner's decision on the sanction `id`. Approve with no action or `acknowledge` acknowledges it.
+/// Deny with `lift`, or with no action on a suspension, lifts it (refused unless it is active). The
+/// action `retire` is recorded only: apid does not retire agents. Any other combination is refused.
+fn settle(ledger: &Ledger, bus: &Bus, id: u64, approve: bool, action: Option<&str>, why: &str, now_ms: u64) -> Result<(), String> {
+    let fail = |e: LiftError| e.message(id);
+    match (approve, action) {
+        (true, None | Some("acknowledge")) => {
+            let record = ledger.decide_record(id, "acknowledge", now_ms).map_err(fail)?;
+            bus.publish("sanction", &record);
+            Ok(())
+        }
+        (false, Some("lift")) => lift_on(ledger, bus, id, why, now_ms).map(|_| ()).map_err(fail),
+        (false, None) if ledger.is_suspension(id) => lift_on(ledger, bus, id, why, now_ms).map(|_| ()).map_err(fail),
+        (false, None) => Ok(()),
+        (false, Some("retire")) => {
+            let record = ledger.decide_record(id, "retire", now_ms).map_err(fail)?;
+            eprintln!(
+                "sanctions: the owner chose retire for agent {} (sanction {id}); apid does not retire agents, so nothing else changes",
+                record.cid
+            );
+            bus.publish("sanction", &record);
+            Ok(())
+        }
+        (_, Some(other)) => Err(format!("`{other}` is not a decision for a sanction when approve is {approve}")),
+    }
+}
+
+/// The owner's decision on a `sanction` approval (`approvals::decide`). The item's detail names the record.
+pub fn decided(app: &App, item: &Approval, approve: bool, action: Option<&str>) -> Result<(), String> {
+    let Some(id) = item.detail.get("sanction_id").and_then(Value::as_u64) else {
+        return Err("this sanction approval names no sanction".to_string());
+    };
+    let why = item.reason.as_deref().unwrap_or("");
+    settle(ledger(app), &app.bus, id, approve, action, why, apz_plaza::now_ms())
+}
+
+/// The sanctions routes. Owner-only like the rest of `/v1/`: `hub_auth::gate` asks for the owner token
+/// of any request that does not come from loopback.
+pub fn routes(router: Router<App>) -> Router<App> {
+    router
+        .get("/v1/sanctions", list_route)
+        .post("/v1/sanctions/{id}/lift", lift_route)
+}
+
+/// `GET /v1/sanctions?cid=&law=&limit=`: the sanctions and the suspensions, newest first.
+fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let cid = match req.query_param("cid").filter(|v| !v.is_empty()) {
+        Some(value) => match value.parse::<u64>() {
+            Ok(cid) => Some(cid),
+            Err(_) => return Response::error(400, "cid must be a number"),
+        },
+        None => None,
+    };
+    let law = req.query_param("law").filter(|v| !v.is_empty());
+    let limit = req.query_param("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let (sanctions, suspensions) = ledger(app).list(cid, law, limit, apz_plaza::now_ms());
+    Response::json(200, &json!({ "sanctions": sanctions, "suspensions": suspensions }))
+}
+
+/// `POST /v1/sanctions/{id}/lift` with `{"reason": str}`: the owner lifts an active suspension.
+fn lift_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
+    let Ok(id) = params.get("id").parse::<u64>() else {
+        return Response::error(404, "no such sanction");
+    };
+    let body: Value = match req.json() {
+        Ok(body) => body,
+        Err(e) => return Response::error(400, &format!("body must be {{\"reason\": string}}: {e}")),
+    };
+    let why = body.get("reason").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    match lift_on(ledger(app), &app.bus, id, &why, apz_plaza::now_ms()) {
+        Ok(record) => Response::json(200, &record),
+        Err(LiftError::NotFound) => Response::error(404, &LiftError::NotFound.message(id)),
+        Err(e) => Response::error(409, &e.message(id)),
+    }
 }
 
 #[cfg(test)]
@@ -417,7 +753,7 @@ mod tests {
             treasury,
             bus: Bus::default(),
             memory: Memory::new(scratch(name)),
-            ledger: Ledger::in_memory(),
+            ledger: Ledger::new(None),
             settings: Sanctions::default(),
         }
     }
@@ -426,9 +762,14 @@ mod tests {
         Case { cid: CID, law, title: "a law", severity, count, tool, at_ms: NOW }
     }
 
+    /// The id of the first tool-suspension record in `applied`.
+    fn suspension_id(applied: &[Applied]) -> u64 {
+        applied.iter().find(|a| a.sanction.starts_with(SUSPENSION)).expect("a suspension").id
+    }
+
     impl World {
         fn env(&self) -> Env<'_> {
-            Env { treasury: &self.treasury, bus: &self.bus, memory: Some(&self.memory) }
+            Env { treasury: &self.treasury, bus: &self.bus, memory: Some(&self.memory), approvals: None }
         }
 
         fn apply(&self, case: &Case) -> Vec<Applied> {
@@ -589,8 +930,9 @@ mod tests {
     fn a_suspension_survives_a_restart() {
         let path = scratch("restart").join("sanctions.json");
         let w = world("restart-env", 300);
-        Ledger::load(&path).apply(&w.env(), &w.settings, &case("T-010", Severity::Low, 3, "bash"));
-        let reloaded = Ledger::load(&path);
+        Ledger::new(Some(path.clone())).apply(&w.env(), &w.settings, &case("T-010", Severity::Low, 3, "bash"));
+        let reloaded = Ledger::new(Some(path));
+        reloaded.migrate_file();
         assert!(reloaded.suspended(&w.settings, CID, "bash", NOW + 1).is_some());
     }
 
@@ -610,5 +952,122 @@ mod tests {
         let old: crate::settings::Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
         assert_eq!(old.sanctions, Sanctions::default());
         assert!(Sanctions::default().enabled && Sanctions::default().fines && Sanctions::default().suspensions);
+    }
+
+    #[test]
+    fn the_list_filters_by_agent_and_law_newest_first() {
+        let w = world("list", 0);
+        w.apply(&case("T-001", Severity::Info, 1, "bash"));
+        w.apply(&Case { cid: 8, ..case("T-004", Severity::Info, 1, "bash") });
+        w.apply(&case("T-004", Severity::Info, 1, "read_file"));
+        let (all, _) = w.ledger.list(None, None, 100, NOW);
+        assert_eq!(all.len(), 3);
+        assert!(all.windows(2).all(|pair| pair[0].id > pair[1].id), "newest first");
+        assert_eq!(w.ledger.list(Some(CID), None, 100, NOW).0.len(), 2);
+        let (by_law, _) = w.ledger.list(None, Some("T-004"), 100, NOW);
+        assert_eq!(by_law.iter().map(|a| a.cid).collect::<Vec<_>>(), [CID, 8]);
+        assert!(w.ledger.list(Some(8), Some("T-001"), 100, NOW).0.is_empty());
+        assert_eq!(w.ledger.list(None, None, 1, NOW).0.len(), 1, "the limit");
+    }
+
+    #[test]
+    fn a_suspension_is_active_until_its_time() {
+        let w = world("active", 300);
+        w.apply(&case("T-010", Severity::Low, 3, "bash"));
+        let (_, suspensions) = w.ledger.list(None, None, 100, NOW + 1);
+        assert_eq!(suspensions.len(), 1);
+        assert!(suspensions[0].active);
+        let (_, later) = w.ledger.list(None, None, 100, NOW + 3 * DAY_MS);
+        assert!(!later[0].active, "active flips at until_ms");
+    }
+
+    #[test]
+    fn the_owner_lifts_a_suspension_once() {
+        let w = world("lift", 300);
+        let applied = w.apply(&case("T-010", Severity::Low, 3, "bash"));
+        let id = suspension_id(&applied);
+        let lifted = lift_on(&w.ledger, &w.bus, id, "appeal accepted", NOW + 1).expect("the first lift");
+        let lift = lifted.lifted.expect("the record shows the lift");
+        assert_eq!((lift.by.as_str(), lift.why.as_str(), lift.at_ms), ("owner", "appeal accepted", NOW + 1));
+        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW + 2).is_none(), "the tool runs again");
+        assert_eq!(lift_on(&w.ledger, &w.bus, id, "again", NOW + 2), Err(LiftError::NotActive), "a second lift is 409");
+        assert_eq!(lift_on(&w.ledger, &w.bus, 9_999, "", NOW + 2), Err(LiftError::NotFound), "an unknown id is 404");
+        let warning = applied[0].id;
+        assert_eq!(lift_on(&w.ledger, &w.bus, warning, "", NOW + 2), Err(LiftError::NotSuspension));
+    }
+
+    #[test]
+    fn a_decided_lift_marks_the_suspension_lifted() {
+        let w = world("decided", 300);
+        let id = suspension_id(&w.apply(&case("T-010", Severity::Low, 3, "bash")));
+        assert_eq!(settle(&w.ledger, &w.bus, id, false, Some("lift"), "", NOW + 1), Ok(()));
+        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW + 2).is_none());
+        assert!(settle(&w.ledger, &w.bus, id, false, Some("lift"), "", NOW + 2).is_err(), "not active any more");
+        assert!(settle(&w.ledger, &w.bus, id, true, Some("lift"), "", NOW + 2).is_err(), "approve cannot lift");
+        assert!(settle(&w.ledger, &w.bus, id, false, Some("acknowledge"), "", NOW + 2).is_err());
+    }
+
+    #[test]
+    fn acknowledge_and_retire_are_recorded_on_the_sanction() {
+        let w = world("acknowledge", 300);
+        let applied = w.apply(&case("C-001a", Severity::Critical, 1, "bash"));
+        let owner_review = applied.iter().find(|a| a.sanction == "owner-review").expect("the escalation").id;
+        assert_eq!(settle(&w.ledger, &w.bus, owner_review, true, None, "", NOW + 1), Ok(()));
+        assert_eq!(settle(&w.ledger, &w.bus, owner_review, false, Some("retire"), "", NOW + 2), Ok(()));
+        let (records, _) = w.ledger.list(None, None, 100, NOW);
+        let decided = records.iter().find(|a| a.id == owner_review).expect("the record");
+        assert_eq!(decided.owner_action.as_ref().map(|o| o.action.as_str()), Some("retire"), "the last decision");
+        assert!(settle(&w.ledger, &w.bus, owner_review, true, Some("retire"), "", NOW).is_err());
+        assert!(settle(&w.ledger, &w.bus, 9_999, true, None, "", NOW).is_err(), "an unknown sanction");
+    }
+
+    #[test]
+    fn an_escalation_asks_the_owner_through_an_approval() {
+        let w = world("escalate", 300);
+        let queue = crate::approvals::Store::load(&scratch("escalate-queue"));
+        let ask = |kind: &str, subject: &str, detail: Value| queue.submit(CID, kind, subject, detail).id;
+        let env = Env { treasury: &w.treasury, bus: &w.bus, memory: Some(&w.memory), approvals: Some(&ask) };
+        let applied = w.ledger.apply(&env, &w.settings, &case("C-001a", Severity::Critical, 1, "bash"));
+        let owner = applied.iter().find(|a| a.sanction == "owner-review").expect("an owner-review step");
+        let approval = owner.approval.clone().expect("the step names its approval");
+        let pending = queue.list();
+        let item = pending.iter().find(|a| a.id == approval).expect("the approval is queued");
+        assert_eq!(item.kind, "sanction");
+        assert_eq!(item.state, crate::approvals::State::Pending);
+        assert_eq!(item.detail["sanction_id"].as_u64(), Some(owner.id));
+        assert_eq!(item.subject, "C-001a owner-review for agent 7");
+        assert_eq!(pending.len(), 2, "the lockout and the owner-review ask; the suspension does not");
+        let suspension = applied.iter().find(|a| a.sanction == "tool-suspension:14d").expect("the suspension");
+        assert!(suspension.approval.is_none());
+    }
+
+    #[test]
+    fn the_snapshot_restores_the_record_and_its_counter() {
+        let w = world("snapshot", 300);
+        w.apply(&case("T-010", Severity::Low, 3, "bash"));
+        let json = w.ledger.snapshot();
+        let restored = Ledger::new(None);
+        restored.restore(&json).expect("the snapshot restores");
+        assert_eq!(restored.snapshot(), json, "the round trip keeps every field");
+        let next = restored.new_record(&case("T-001", Severity::Info, 1, "bash"), "warning", "applied");
+        assert_eq!(next.id, 4, "ids 1 to 3 are taken; the counter survives");
+        assert!(restored.suspended(&w.settings, CID, "bash", NOW + 1).is_some());
+        assert!(restored.restore("not json").is_err());
+    }
+
+    #[test]
+    fn the_old_file_migrates_and_numbers_its_records() {
+        let path = scratch("migrate").join("sanctions.json");
+        // A file from before ids: no id, no counter, no lift.
+        let old = r#"{"applied":[{"cid":7,"law":"T-001","title":"a law","severity":"info","count":1,"tool":"bash","at_ms":1800000000000,"sanction":"warning","outcome":"applied","fine":0,"entry":null,"until_ms":null},{"cid":7,"law":"T-010","title":"a law","severity":"low","count":3,"tool":"bash","at_ms":1800000000000,"sanction":"tool-suspension:3d","outcome":"applied","fine":0,"entry":null,"until_ms":1800259200000}],"suspensions":[{"cid":7,"tool":"bash","law":"T-010","until_ms":1800259200000}]}"#;
+        std::fs::write(&path, old).unwrap();
+        let ledger = Ledger::new(Some(path));
+        ledger.migrate_file();
+        let (sanctions, suspensions) = ledger.list(None, None, 100, NOW);
+        assert_eq!(sanctions.iter().map(|a| a.id).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(suspensions[0].id, 2, "the suspension takes its record's id");
+        assert!(suspensions[0].active);
+        assert!(ledger.suspended(&Sanctions::default(), CID, "bash", NOW + 1).is_some());
+        assert_eq!(lift_on(&ledger, &Bus::default(), 2, "migrated", NOW + 1).map(|a| a.id), Ok(2));
     }
 }

@@ -4,13 +4,15 @@
 //! hello, or a load with no look yet): among the dealable species (all but `oracle`), the ones
 //! with the fewest agents now, one of them picked at random. Agents count while they are on the
 //! roster; a retired or removed agent frees its species. The orchestrator is always `rover` and
-//! sits outside the count. Looks are the `looks` component; with no Postgres they live as long as
-//! the process (like the usage ledger and the prices).
+//! sits outside the count. Looks are the `looks` component, kept in `<state>/looks.json` and saved on every
+//! change (a few seconds later), so they outlive the process with or without Postgres.
 //!
 //! Species come from `assets/robots/index.json`, embedded at build time (see `build.rs`): each
 //! listed species file's `name` is its display name.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use apz_http::{Params, Request, Response};
@@ -19,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::agents::Agent;
 use crate::settings::ORCHESTRATOR_ROLE;
-use crate::state::App;
+use crate::state::{write_atomic, App};
 
 /// The species index, as the species authors maintain it.
 const INDEX: &str = include_str!("../../../assets/robots/index.json");
@@ -168,6 +170,12 @@ impl Rng {
 pub struct Looks {
     looks: Mutex<BTreeMap<u64, Look>>,
     rng: Mutex<Rng>,
+    /// The file the looks are kept in (`<state>/looks.json`); none for a looks with no file.
+    path: Option<PathBuf>,
+    /// Counts the changes to `looks`, bumped under its lock.
+    changes: AtomicU64,
+    /// The change count the file was last written at.
+    saved: Mutex<Option<u64>>,
 }
 
 impl Default for Looks {
@@ -177,11 +185,44 @@ impl Default for Looks {
             Ok(()) => u64::from_le_bytes(seed),
             Err(_) => apz_plaza::now_ms(),
         };
-        Self { looks: Mutex::new(BTreeMap::new()), rng: Mutex::new(Rng::seeded(seed)) }
+        Self {
+            looks: Mutex::new(BTreeMap::new()),
+            rng: Mutex::new(Rng::seeded(seed)),
+            path: None,
+            changes: AtomicU64::new(0),
+            saved: Mutex::new(None),
+        }
     }
 }
 
 impl Looks {
+    /// The looks kept in `path`, loaded now. A file that does not parse is kept aside as
+    /// `looks.json.rejected`, and the looks start empty.
+    pub fn open(path: PathBuf) -> Looks {
+        let looks = Looks { path: Some(path.clone()), ..Looks::default() };
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Err(e) = looks.restore(&text) {
+                eprintln!("looks: {} refused ({e}); kept aside", path.display());
+                let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
+            }
+        }
+        looks
+    }
+
+    /// Writes the looks to their file (through a temporary file) when they changed since the last
+    /// write; returns whether it wrote. A looks with no file writes nothing.
+    pub fn save(&self) -> Result<bool, String> {
+        let Some(path) = &self.path else { return Ok(false) };
+        let changes = self.changes.load(Ordering::SeqCst);
+        let mut saved = self.saved.lock().unwrap_or_else(PoisonError::into_inner);
+        if *saved == Some(changes) {
+            return Ok(false);
+        }
+        write_atomic(path, &self.snapshot()).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        *saved = Some(changes);
+        Ok(true)
+    }
+
     fn guard(&self) -> MutexGuard<'_, BTreeMap<u64, Look>> {
         self.looks.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -207,17 +248,22 @@ impl Looks {
             deal(&*looks, &roster, &catalog().dealable(), &mut |n| rng.below(n))
         };
         looks.insert(cid, Look { species: species.clone(), dealt_ms: now_ms });
+        self.changes.fetch_add(1, Ordering::SeqCst);
         species
     }
 
     /// The owner's choice (already checked with `check_choice`).
     pub fn set(&self, cid: u64, species: &str, now_ms: u64) {
-        self.guard().insert(cid, Look { species: species.to_owned(), dealt_ms: now_ms });
+        let mut looks = self.guard();
+        looks.insert(cid, Look { species: species.to_owned(), dealt_ms: now_ms });
+        self.changes.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Drops an agent's look (a retired model agent).
     pub fn forget(&self, cid: u64) {
-        self.guard().remove(&cid);
+        let mut looks = self.guard();
+        looks.remove(&cid);
+        self.changes.fetch_add(1, Ordering::SeqCst);
     }
 
     /// The whole state as JSON (the `looks` component).
@@ -228,7 +274,9 @@ impl Looks {
     /// Replaces the state from a snapshot.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let looks: BTreeMap<u64, Look> = serde_json::from_str(json).map_err(|e| format!("bad looks snapshot: {e}"))?;
-        *self.guard() = looks;
+        let mut guard = self.guard();
+        *guard = looks;
+        self.changes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -365,6 +413,27 @@ mod tests {
         let dealable = catalog.dealable();
         let (looks, _) = deal_many(20, &dealable, &mut Rng::seeded(9));
         assert!(looks.values().all(|look| look.species != ORACLE));
+    }
+
+    /// Species dealt and set are saved to `looks.json`; a reopen from the same file has the same looks.
+    #[test]
+    fn looks_survive_a_restart_without_the_database() {
+        let dir = std::env::temp_dir().join(format!("looks-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("looks.json");
+        let looks = Looks::open(path.clone());
+        let dealt = looks.ensure(7, "builder", 100, Vec::new);
+        looks.set(8, "tv", 200);
+        assert_eq!(looks.save(), Ok(true));
+        let before = looks.all();
+        drop(looks);
+
+        let reopened = Looks::open(path);
+        assert_eq!(reopened.all(), before);
+        assert_eq!(reopened.all()[&7].species, dealt);
+        assert_eq!(reopened.all()[&8], Look { species: "tv".into(), dealt_ms: 200 });
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -23,6 +23,7 @@ mod laws;
 mod library;
 mod memory;
 mod decisions;
+mod payments;
 mod plaza;
 mod prices;
 mod providers;

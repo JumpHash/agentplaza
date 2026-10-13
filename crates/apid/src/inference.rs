@@ -114,7 +114,7 @@ pub struct ModelCard {
 pub struct LoadedModel {
     card: ModelCard,
     plan: Arc<TypedRunnableModel>,
-    width: usize,
+    inputs: Vec<InputPin>,
 }
 
 impl Schema {
@@ -331,12 +331,81 @@ pub fn featurize(features: &[FeatureSpec], input: &Value) -> Result<Vec<f32>, St
     Ok(row)
 }
 
-/// The model's input length: a trainer card's feature count (each hash feature is one column, the
-/// bucket index), else the typed columns.
-fn row_width(card: &ModelCard) -> usize {
+/// What the loader pins on one graph input: its name (`None` for a card without `serving.inputs`),
+/// its element type and its width (columns per row).
+#[derive(Debug, Clone, PartialEq)]
+struct InputPin {
+    name: Option<String>,
+    dtype: Dtype,
+    width: usize,
+}
+
+/// The card's graph inputs in the graph's order. A card with a serving block takes its serving
+/// inputs (a trainer card's features, one column each); a card without one takes the typed columns
+/// as one float32 row.
+fn input_pins(card: &ModelCard) -> Result<Vec<InputPin>, String> {
     match &card.serving {
-        Some(serving) => serving.get("features").and_then(Value::as_array).map_or(0, Vec::len),
-        None => feature_width(&card.features),
+        Some(serving) => Ok(serving_inputs(serving)?
+            .into_iter()
+            .map(|input| InputPin {
+                name: input.name,
+                dtype: input.dtype,
+                width: input.features.len(),
+            })
+            .collect()),
+        None => Ok(vec![InputPin {
+            name: None,
+            dtype: Dtype::Float32,
+            width: feature_width(&card.features),
+        }]),
+    }
+}
+
+/// Refuses a graph whose inputs are not the card's: the same count, and each named input in the
+/// card's (graph's) order.
+fn check_graph_inputs(graph: &[String], pins: &[InputPin]) -> Result<(), String> {
+    if graph.len() != pins.len() {
+        return Err(format!(
+            "the ONNX graph takes {} inputs ({}) but the card declares {}",
+            graph.len(),
+            graph.join(", "),
+            pins.len()
+        ));
+    }
+    for (i, (found, pin)) in graph.iter().zip(pins).enumerate() {
+        if pin.name.as_deref().is_some_and(|name| name != found) {
+            return Err(format!(
+                "the ONNX graph's input {i} is `{found}` but the card's serving.inputs names `{}` there; the card lists the graph's inputs in graph order ({})",
+                pin.name.as_deref().unwrap_or_default(),
+                graph.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How the pinned inputs are named in the load error: the single-input card keeps its serving width.
+fn describe_pins(pins: &[InputPin]) -> String {
+    match pins {
+        [InputPin { name: None, width, .. }] => format!("{width} features (its serving block width)"),
+        _ => format!(
+            "inputs ({})",
+            pins.iter()
+                .map(|p| format!("{} {:?} x{}", p.name.as_deref().unwrap_or("input"), p.dtype, p.width))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// The error for an input whose row is not the width the card gives it.
+fn width_error(pin: &InputPin, got: usize) -> String {
+    match &pin.name {
+        None => format!(
+            "the feature vector has {got} columns but the model takes {} (the card's features)",
+            pin.width
+        ),
+        Some(name) => format!("input `{name}` has {got} columns but the model takes {}", pin.width),
     }
 }
 
@@ -345,9 +414,14 @@ fn row_width(card: &ModelCard) -> usize {
 /// (0 maps to 0); `zscore` is (x - mean) / std with `mean` and `std` on the feature. `hash` with
 /// blake2b (digest_size 8, little byte order) is the bucket of "key=value", where key is the feature
 /// name: the digest as a little-endian u64 modulo `buckets`, one column holding that index.
-/// Unlike the trainer's `encode`, a missing field is an error (the input schema requires them).
+const HASH_MISSING: &str = "__missing__";
+
+/// The trainer's `encode` rules for the values it can meet: a missing or null categorical is the bucket
+/// of "__missing__"; a numeric takes an int, float or bool as its number (a bool as 1 or 0) and anything
+/// else, a missing or null field included, as 0.
 pub fn featurize_serving(serving: &Value, input: &Value) -> Result<Vec<f64>, String> {
     let object = input.as_object().ok_or("input must be a JSON object")?;
+    let null = Value::Null;
     let features = serving
         .get("features")
         .and_then(Value::as_array)
@@ -358,14 +432,14 @@ pub fn featurize_serving(serving: &Value, input: &Value) -> Result<Vec<f64>, Str
             .get("name")
             .and_then(Value::as_str)
             .ok_or("serving: a feature has no name")?;
-        let field = object
-            .get(name)
-            .ok_or_else(|| format!("missing feature field `{name}`"))?;
+        let field = object.get(name).unwrap_or(&null);
         let value = match feature.get("kind").and_then(Value::as_str) {
             Some("numeric") => {
-                let x = field
-                    .as_f64()
-                    .ok_or_else(|| format!("feature `{name}` must be a number"))?;
+                let x = match field {
+                    Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                    Value::Bool(b) => f64::from(u8::from(*b)),
+                    _ => 0.0,
+                };
                 match feature.get("transform").and_then(Value::as_str) {
                     Some("signlog") => x.signum() * x.abs().ln_1p(),
                     Some("zscore") => {
@@ -393,9 +467,11 @@ pub fn featurize_serving(serving: &Value, input: &Value) -> Result<Vec<f64>, Str
                     .and_then(Value::as_u64)
                     .filter(|n| *n > 0)
                     .ok_or_else(|| format!("feature `{name}` has no buckets"))?;
-                let text = field
-                    .as_str()
-                    .ok_or_else(|| format!("feature `{name}` must be a string"))?;
+                let text = match field {
+                    Value::Null => HASH_MISSING,
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(format!("feature `{name}` must be a string")),
+                };
                 let digest = Blake2b::<U8>::digest(format!("{name}={text}").as_bytes());
                 let bytes: [u8; 8] = digest.into();
                 (u64::from_le_bytes(bytes) % buckets) as f64
@@ -413,6 +489,133 @@ fn serving_f64(feature: &Value, key: &str, name: &str) -> Result<f64, String> {
         .and_then(Value::as_f64)
         .filter(|x| x.is_finite())
         .ok_or_else(|| format!("feature `{name}` needs a finite `{key}`"))
+}
+
+/// A graph input's element type, as `serving.inputs` names it: float32 for numeric features, int64
+/// for hash bucket indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dtype {
+    Float32,
+    Int64,
+}
+
+/// One graph input's values, in its features' order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputValues {
+    Float32(Vec<f32>),
+    Int64(Vec<i64>),
+}
+
+/// A graph input as the serving block declares it: its name (`None` for a card without
+/// `serving.inputs`), its element type and the serving features that fill it, by index.
+#[derive(Debug, Clone, PartialEq)]
+struct ServingInput {
+    name: Option<String>,
+    dtype: Dtype,
+    features: Vec<usize>,
+}
+
+/// The graph inputs of a serving block, in the card's order (which is the graph's order). Without
+/// `inputs` the card is single-input: one float32 input carrying every feature. With `inputs`, each
+/// feature belongs to exactly one input, a float32 input takes numeric features and an int64 input
+/// takes hash features.
+fn serving_inputs(serving: &Value) -> Result<Vec<ServingInput>, String> {
+    let features = serving
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or("serving: features must be an array")?;
+    let Some(declared) = serving.get("inputs") else {
+        return Ok(vec![ServingInput {
+            name: None,
+            dtype: Dtype::Float32,
+            features: (0..features.len()).collect(),
+        }]);
+    };
+    let declared = declared.as_array().ok_or("serving: inputs must be an array")?;
+    if declared.is_empty() {
+        return Err("serving: inputs is empty".into());
+    }
+    let mut inputs: Vec<ServingInput> = Vec::with_capacity(declared.len());
+    let mut uses = vec![0usize; features.len()];
+    for input in declared {
+        let name = input
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|n| !n.is_empty())
+            .ok_or("serving: an input has no name")?;
+        if inputs.iter().any(|other| other.name.as_deref() == Some(name)) {
+            return Err(format!("serving: the input `{name}` is listed twice"));
+        }
+        let dtype = match input.get("dtype").and_then(Value::as_str) {
+            Some("float32") => Dtype::Float32,
+            Some("int64") => Dtype::Int64,
+            other => {
+                return Err(format!(
+                    "serving: input `{name}` has dtype {other:?}; only float32 and int64 are served"
+                ));
+            }
+        };
+        let wanted = match dtype {
+            Dtype::Float32 => "numeric",
+            Dtype::Int64 => "hash",
+        };
+        let names = input
+            .get("features")
+            .and_then(Value::as_array)
+            .filter(|names| !names.is_empty())
+            .ok_or_else(|| format!("serving: input `{name}` needs a non-empty features array"))?;
+        let mut indices = Vec::with_capacity(names.len());
+        for feature in names {
+            let feature = feature
+                .as_str()
+                .ok_or_else(|| format!("serving: input `{name}` lists a feature that is not a name"))?;
+            let index = features
+                .iter()
+                .position(|f| f.get("name").and_then(Value::as_str) == Some(feature))
+                .ok_or_else(|| {
+                    format!("serving: input `{name}` lists `{feature}`, which the serving block does not have")
+                })?;
+            let kind = features[index].get("kind").and_then(Value::as_str);
+            if kind != Some(wanted) {
+                return Err(format!(
+                    "serving: input `{name}` ({dtype:?}) takes {wanted} features, but `{feature}` is {kind:?}"
+                ));
+            }
+            uses[index] += 1;
+            indices.push(index);
+        }
+        inputs.push(ServingInput {
+            name: Some(name.to_string()),
+            dtype,
+            features: indices,
+        });
+    }
+    if let Some(index) = uses.iter().position(|&n| n != 1) {
+        let feature = features[index].get("name").and_then(Value::as_str).unwrap_or("?");
+        return Err(format!(
+            "serving: feature `{feature}` is in {} inputs; each feature belongs to exactly one",
+            uses[index]
+        ));
+    }
+    Ok(inputs)
+}
+
+/// The model's graph inputs for one input object, in the graph's order, each with its features in
+/// order: float32 for a numeric feature, the int64 bucket index for a hash feature. A card without
+/// `serving.inputs` gives one float32 input carrying every feature, as [`featurize_serving`] does.
+pub fn featurize_inputs(serving: &Value, input: &Value) -> Result<Vec<InputValues>, String> {
+    let row = featurize_serving(serving, input)?;
+    Ok(serving_inputs(serving)?
+        .iter()
+        .map(|declared| match declared.dtype {
+            Dtype::Float32 => {
+                InputValues::Float32(declared.features.iter().map(|&i| row[i] as f32).collect())
+            }
+            Dtype::Int64 => {
+                InputValues::Int64(declared.features.iter().map(|&i| row[i] as i64).collect())
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -443,6 +646,54 @@ mod serving_parity {
                 assert!(ok, "row {i} column {j}: got {g}, want {w}");
             }
         }
+    }
+
+    #[test]
+    fn featurize_inputs_splits_the_parity_rows_per_graph_input() {
+        let fixture: Value = serde_json::from_str(FIXTURE).expect("the parity fixture parses");
+        let declared = fixture["serving"]["inputs"]
+            .as_array()
+            .expect("the fixture declares serving.inputs");
+        for (i, row) in fixture["rows"].as_array().expect("the fixture has rows").iter().enumerate() {
+            let split = featurize_inputs(&fixture["serving"], &row["input"])
+                .unwrap_or_else(|e| panic!("row {i}: {e}"));
+            assert_eq!(split.len(), declared.len(), "row {i}: inputs");
+            for (input, values) in declared.iter().zip(&split) {
+                let name = input["name"].as_str().expect("an input name");
+                let want = row["inputs"][name]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("row {i}: no `{name}` input in the fixture"));
+                match values {
+                    InputValues::Float32(got) => {
+                        assert_eq!(got.len(), want.len(), "row {i} `{name}`: width");
+                        for (j, (g, w)) in got.iter().zip(want).enumerate() {
+                            // The trainer's float64 value cast to float32, exactly.
+                            let w = w.as_f64().expect("a number") as f32;
+                            assert!(*g == w, "row {i} `{name}` column {j}: got {g}, want {w}");
+                        }
+                    }
+                    InputValues::Int64(got) => {
+                        let want: Vec<i64> =
+                            want.iter().map(|x| x.as_i64().expect("an integer")).collect();
+                        assert_eq!(got, &want, "row {i} `{name}`");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_without_inputs_takes_every_feature_as_one_float32_input() {
+        let fixture: Value = serde_json::from_str(FIXTURE).expect("the parity fixture parses");
+        let mut serving = fixture["serving"].clone();
+        serving.as_object_mut().expect("a serving object").remove("inputs");
+        let row = &fixture["rows"][0]["input"];
+        let flat: Vec<f32> = featurize_serving(&serving, row)
+            .expect("the row featurizes")
+            .iter()
+            .map(|x| *x as f32)
+            .collect();
+        assert_eq!(featurize_inputs(&serving, row).unwrap(), vec![InputValues::Float32(flat)]);
     }
 
     #[test]
@@ -501,9 +752,16 @@ impl ModelCard {
     }
 }
 
+/// The input shape the loader pins on the graph: one row of `width` features, `[1, width]`. It is set
+/// before the graph is analysed and optimised, so a symbolic batch dim elsewhere cannot fail to unify.
+pub(crate) fn input_shape(width: usize) -> [usize; 2] {
+    [1, width]
+}
+
 impl LoadedModel {
-    /// Compiles `onnx` for the card: checks the card and the bytes' SHA-256, then sets the input to
-    /// one row of the feature width and optimizes the graph.
+    /// Compiles `onnx` for the card: checks the card and the bytes' SHA-256, checks the graph's inputs
+    /// are the card's (by count and name, in graph order), pins each input to one row of its width and
+    /// dtype, and optimizes the graph.
     pub fn load(onnx: &[u8], card: ModelCard) -> Result<Self, String> {
         card.check().map_err(|e| format!("model card: {e}"))?;
         let digest = sha256_hex(onnx);
@@ -513,16 +771,45 @@ impl LoadedModel {
                 card.onnx_sha256
             ));
         }
-        let width = row_width(&card);
-        let model = tract_onnx::onnx()
+        let pins = input_pins(&card).map_err(|e| format!("model card: {e}"))?;
+        let mut model = tract_onnx::onnx()
             .model_for_read(&mut Cursor::new(onnx))
             .map_err(|e| format!("reading the ONNX graph: {e:#}"))?;
-        let plan = model
-            .with_input_fact(0, InferenceFact::dt_shape(f32::datum_type(), [1, width]))
-            .and_then(|m| m.into_optimized())
+        let graph: Vec<String> = model
+            .input_outlets()
+            .map_err(|e| format!("the ONNX graph's inputs: {e:#}"))?
+            .iter()
+            .map(|outlet| model.node(outlet.node).name.clone())
+            .collect();
+        check_graph_inputs(&graph, &pins)?;
+        // The declared output facts can carry a symbolic batch dim ("batch") that the pinned input
+        // contradicts during analysis. Clear them so tract infers each output from the graph.
+        let outputs = model
+            .output_outlets()
+            .map_err(|e| format!("the ONNX graph's outputs: {e:#}"))?
+            .len();
+        for output in 0..outputs {
+            model
+                .set_output_fact(output, InferenceFact::default())
+                .map_err(|e| format!("clearing the declared fact of output {output}: {e:#}"))?;
+        }
+        let mut pinned = model;
+        for (i, pin) in pins.iter().enumerate() {
+            let fact = match pin.dtype {
+                Dtype::Float32 => InferenceFact::dt_shape(f32::datum_type(), input_shape(pin.width)),
+                Dtype::Int64 => InferenceFact::dt_shape(i64::datum_type(), input_shape(pin.width)),
+            };
+            pinned = pinned
+                .with_input_fact(i, fact)
+                .map_err(|e| format!("pinning the ONNX graph's input {i}: {e:#}"))?;
+        }
+        let plan = pinned
+            .into_optimized()
             .and_then(|m| m.into_runnable())
-            .map_err(|e| format!("compiling the ONNX graph for {width} features: {e:#}"))?;
-        Ok(Self { card, plan, width })
+            .map_err(|e| {
+                format!("the ONNX graph does not take the card's {}: {e:#}", describe_pins(&pins))
+            })?;
+        Ok(Self { card, plan, inputs: pins })
     }
 
     #[allow(dead_code)] // for holders of a loaded model alone; the registry reads its own records
@@ -538,19 +825,33 @@ impl LoadedModel {
             .input
             .validate(input)
             .map_err(|e| format!("input: {e}"))?;
-        let row: Vec<f32> = match &self.card.serving {
-            Some(serving) => featurize_serving(serving, input)?
-                .into_iter()
-                .map(|x| x as f32)
-                .collect(),
-            None => featurize(&self.card.features, input)?,
+        let values = match &self.card.serving {
+            Some(serving) => featurize_inputs(serving, input)?,
+            None => vec![InputValues::Float32(featurize(&self.card.features, input)?)],
         };
-        debug_assert_eq!(row.len(), self.width);
-        let tensor = Tensor::from_shape(&[1, row.len()], &row)
-            .map_err(|e| format!("input tensor: {e:#}"))?;
+        if values.len() != self.inputs.len() {
+            return Err(format!(
+                "the card's features give {} inputs but the model takes {}",
+                values.len(),
+                self.inputs.len()
+            ));
+        }
+        // One row per graph input, in the graph's order (the loader checked the names).
+        let mut tensors = tvec!();
+        for (pin, value) in self.inputs.iter().zip(values) {
+            let (width, tensor) = match value {
+                InputValues::Float32(row) => (row.len(), Tensor::from_shape(&[1, row.len()], &row)),
+                InputValues::Int64(row) => (row.len(), Tensor::from_shape(&[1, row.len()], &row)),
+            };
+            if width != pin.width {
+                return Err(width_error(pin, width));
+            }
+            let tensor = tensor.map_err(|e| format!("input tensor: {e:#}"))?;
+            tensors.push(TValue::from(tensor));
+        }
         let outputs = self
             .plan
-            .run(tvec!(TValue::from(tensor)))
+            .run(tensors)
             .map_err(|e| format!("running the model: {e:#}"))?;
         let first = outputs.first().ok_or("the model has no outputs")?;
         let scores: Vec<f32> = first
@@ -1037,6 +1338,206 @@ mod tests {
         assert_eq!(values.len(), 3);
         approx(values[0], 2.0);
         approx(values[1], -1.0);
+    }
+
+    #[test]
+    fn the_loader_pins_one_row_of_the_serving_width() {
+        assert_eq!(input_shape(3), [1, 3]);
+        assert_eq!(input_shape(0), [1, 0]);
+    }
+
+    #[test]
+    fn a_dynamic_batch_graph_loads_and_runs_one_row() {
+        // Exported with dynamic_axes on the input and the output (trainer/tests/make_tiny_onnx.py):
+        // the declared output is ["batch", 3], which the loader must not let fail the analysis.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tiny_dynamic.onnx");
+        let onnx = std::fs::read(&path).expect("the tiny_dynamic.onnx fixture");
+        let names = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9"];
+        let features: Vec<FeatureSpec> = names.iter().map(|n| numeric(n)).collect();
+        let model = LoadedModel::load(&onnx, card(&onnx, numeric_input(&names), features, None))
+            .expect("the dynamic-batch fixture loads");
+        let row = Tensor::from_shape(&[1, 10], &[0.5f32; 10]).unwrap();
+        let out = model.plan.run(tvec!(TValue::from(row))).unwrap();
+        assert_eq!(out[0].shape(), &[1, 3]);
+    }
+
+    #[test]
+    fn a_serving_block_the_graph_does_not_take_is_refused_at_load() {
+        // linear3 takes 3 columns; a card whose serving block lists 4 features must not load.
+        let mut card = xyz_card(LINEAR3);
+        card.serving = Some(json!({
+            "features": (0..4)
+                .map(|i| json!({ "name": format!("x{i}"), "kind": "numeric", "transform": "signlog" }))
+                .collect::<Vec<_>>(),
+            "output_activation": "logits"
+        }));
+        let err = LoadedModel::load(LINEAR3, card)
+            .err()
+            .expect("a 4-feature serving block must not load a 3-input graph");
+        assert!(err.contains("does not take the card's 4 features"), "{err}");
+    }
+
+    #[test]
+    fn invoke_refuses_a_feature_vector_of_the_wrong_width() {
+        let mut model = LoadedModel::load(LINEAR3, xyz_card(LINEAR3)).unwrap();
+        model.inputs[0].width = 4;
+        let err = model
+            .invoke(&json!({ "x0": 1.0, "x1": 0.0, "x2": 0.0 }))
+            .unwrap_err();
+        assert!(
+            err.contains("the feature vector has 3 columns but the model takes 4"),
+            "{err}"
+        );
+    }
+
+    /// A served hash feature over `buckets` buckets, as a serving block lists it.
+    fn hash_feature(name: &str, buckets: u64) -> Value {
+        json!({
+            "name": name, "kind": "hash", "hash": "blake2b", "digest_size": 8,
+            "buckets": buckets, "input": "key=value", "byte_order": "little"
+        })
+    }
+
+    /// A text whose hash feature `name` lands in bucket `want`, found with the served featurization.
+    fn text_for_bucket(name: &str, buckets: u64, want: u64) -> String {
+        let serving = json!({ "features": [hash_feature(name, buckets)] });
+        (0u64..)
+            .map(|i| format!("v{i}"))
+            .find(|text| {
+                let mut input = Map::new();
+                input.insert(name.to_string(), json!(text));
+                featurize_serving(&serving, &Value::Object(input)).unwrap()[0] == want as f64
+            })
+            .expect("some text lands in every bucket")
+    }
+
+    /// The card of the trainer's two-input graph: `num` is `num_width` numeric features passed through
+    /// (zscore with mean 0 and std 1), `cat` is `cat_width` hash features over eight buckets.
+    fn two_input_card(onnx: &[u8], num_width: usize, cat_width: usize) -> ModelCard {
+        let num: Vec<String> = (0..num_width).map(|j| format!("n{j}")).collect();
+        let cat: Vec<String> = (0..cat_width).map(|j| format!("c{j}")).collect();
+        let mut features: Vec<Value> = num
+            .iter()
+            .map(|n| json!({ "name": n, "kind": "numeric", "transform": "zscore", "mean": 0.0, "std": 1.0 }))
+            .collect();
+        features.extend(cat.iter().map(|c| hash_feature(c, 8)));
+        let mut properties = Map::new();
+        for n in &num {
+            properties.insert(n.clone(), json!({ "type": "number" }));
+        }
+        for c in &cat {
+            properties.insert(c.clone(), json!({ "type": "string" }));
+        }
+        let required: Vec<&String> = num.iter().chain(&cat).collect();
+        ModelCard {
+            id: "two_input".into(),
+            name: "Two input".into(),
+            version: "1".into(),
+            input: serde_json::from_value(json!({
+                "type": "object", "properties": properties, "required": required
+            }))
+            .unwrap(),
+            output: serde_json::from_value(json!({
+                "type": "object", "properties": { "values": { "type": "array" } }, "required": ["values"]
+            }))
+            .unwrap(),
+            features: num
+                .iter()
+                .map(|n| numeric(n))
+                .chain(cat.iter().map(|c| FeatureSpec {
+                    name: c.clone(),
+                    kind: FeatureKind::Hash,
+                    values: vec![],
+                    buckets: Some(8),
+                    scale: None,
+                }))
+                .collect(),
+            labels: None,
+            allowed_roles: vec!["breeder".into()],
+            onnx_sha256: sha256_hex(onnx),
+            created_ms: 1,
+            metrics: Value::Null,
+            serving: Some(json!({
+                "features": features,
+                "inputs": [
+                    { "name": "num", "dtype": "float32", "features": num },
+                    { "name": "cat", "dtype": "int64", "features": cat }
+                ],
+                "output_activation": "logits"
+            })),
+        }
+    }
+
+    #[test]
+    fn a_two_input_graph_answers_the_trainer_logits() {
+        // Written by trainer/tests/make_two_input_onnx.py: the graph and two rows of num, cat and logits.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let onnx = std::fs::read(dir.join("tiny_two_input.onnx"))
+            .expect("crates/apid/testdata/tiny_two_input.onnx (the trainer writes it)");
+        let fixture: Value = serde_json::from_slice(
+            &std::fs::read(dir.join("tiny_two_input.json")).expect("tiny_two_input.json, written with the .onnx"),
+        )
+        .expect("tiny_two_input.json parses");
+        let num = fixture["num"].as_array().expect("num rows");
+        let cat = fixture["cat"].as_array().expect("cat rows");
+        let logits = fixture["logits"].as_array().expect("logits rows");
+        // The widths come from the trainer's rows, not from a constant.
+        let num_width = num[0].as_array().expect("a num row").len();
+        let cat_width = cat[0].as_array().expect("a cat row").len();
+        let model = LoadedModel::load(&onnx, two_input_card(&onnx, num_width, cat_width))
+            .expect("the two-input graph loads for its card");
+        for r in 0..num.len() {
+            let mut input = Map::new();
+            for (j, x) in num[r].as_array().expect("a num row").iter().enumerate() {
+                input.insert(format!("n{j}"), x.clone());
+            }
+            // The embedding takes the bucket index, so each cat value is a text that hashes to it.
+            for (j, bucket) in cat[r].as_array().expect("a cat row").iter().enumerate() {
+                let name = format!("c{j}");
+                let text = text_for_bucket(&name, 8, bucket.as_u64().expect("a bucket"));
+                input.insert(name, json!(text));
+            }
+            let out = model
+                .invoke(&Value::Object(input))
+                .unwrap_or_else(|e| panic!("row {r}: {e}"));
+            let got = out["values"].as_array().expect("values");
+            let want = logits[r].as_array().expect("logits");
+            assert_eq!(got.len(), want.len(), "row {r}: logits");
+            for (k, (g, w)) in got.iter().zip(want).enumerate() {
+                let (g, w) = (g.as_f64().unwrap(), w.as_f64().unwrap());
+                assert!((g - w).abs() < 1e-4, "row {r} logit {k}: {g} is not {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_whose_inputs_do_not_match_the_graph_is_refused() {
+        // linear3 takes one input, which the card does not name `num`.
+        let numeric_feature = |n: &str| json!({ "name": n, "kind": "numeric", "transform": "signlog" });
+        let mut card = xyz_card(LINEAR3);
+        card.serving = Some(json!({
+            "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
+            "inputs": [{ "name": "num", "dtype": "float32", "features": ["x0", "x1", "x2"] }]
+        }));
+        let err = LoadedModel::load(LINEAR3, card.clone()).err().expect("a mismatched input name must not load");
+        assert!(err.contains("serving.inputs names `num`"), "{err}");
+
+        card.serving = Some(json!({
+            "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
+            "inputs": [
+                { "name": "a", "dtype": "float32", "features": ["x0"] },
+                { "name": "b", "dtype": "float32", "features": ["x1", "x2"] }
+            ]
+        }));
+        let err = LoadedModel::load(LINEAR3, card.clone()).err().expect("two declared inputs must not load a one-input graph");
+        assert!(err.contains("takes 1 inputs") && err.contains("declares 2"), "{err}");
+
+        card.serving = Some(json!({
+            "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
+            "inputs": [{ "name": "x", "dtype": "int64", "features": ["x0", "x1", "x2"] }]
+        }));
+        let err = LoadedModel::load(LINEAR3, card).err().expect("an int64 input takes hash features only");
+        assert!(err.contains("takes hash features"), "{err}");
     }
 
     #[test]

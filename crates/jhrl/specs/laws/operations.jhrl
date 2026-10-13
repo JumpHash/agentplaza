@@ -38,3 +38,4 @@ operation device.read(principal: Agent, resource: Device, context: {on_node: Str
 operation training.submit(principal: Agent, resource: Town, context: {gpu_hours: Long})
 operation model.invoke(principal: Agent, resource: Model, context: {role_allowed: Bool})
 operation device.actuate(principal: Agent, resource: Device, context: {within_envelope: Bool, on_node: String, owner_approval: Approval optional})
+operation payment.send(principal: Agent, resource: Town, context: {amount: Long})

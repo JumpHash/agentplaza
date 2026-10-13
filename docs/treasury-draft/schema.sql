@@ -33,7 +33,8 @@ CREATE TYPE treasury.entry_kind AS ENUM (
   'clawback',        -- warranty claim: contractor earnings -> escrow/treasury
   'fine',            -- sanction: earnings -> treasury (from earnings only, never escrow)
   'fee',             -- appeal filing fee (earnings -> treasury), refunded on success (treasury -> earnings)
-  'budget_move'      -- owner or council moves budget between towns (0137); over 10% of the source needs the owner (0067)
+  'budget_move',     -- owner or council moves budget between towns (0137); over 10% of the source needs the owner (0067)
+  'model'            -- a model call's metered cost: task escrow (or the agent's wallet when no task) -> external_spend
 );
 
 -- Which account kinds each entry kind may debit (amount < 0) and credit (amount > 0).
@@ -59,7 +60,9 @@ INSERT INTO treasury.posting_rules VALUES
   ('clawback',    'treasury',       'credit'),
   ('fine',        'agent_earnings', 'debit'),  ('fine',        'treasury',       'credit'),
   ('fee',         'agent_earnings', 'debit'),  ('fee',         'treasury',       'credit'),
-  ('fee',         'treasury',       'debit'),  ('fee',         'agent_earnings', 'credit');
+  ('fee',         'treasury',       'debit'),  ('fee',         'agent_earnings', 'credit'),
+  ('model',       'task_escrow',    'debit'),  ('model',       'agent_earnings', 'debit'),
+  ('model',       'external_spend', 'credit');
 
 -- Total margin per task chain, as a percentage of the chain's real cost (0111).
 CREATE FUNCTION treasury.margin_cap_pct() RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT 20';
@@ -73,7 +76,7 @@ CREATE TABLE treasury.entries (
   posted_by   text NOT NULL,                -- always orchestrator code, never an agent (0039)
   created_at  timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT posted_by_service CHECK (posted_by IN ('treasury-service', 'agora-service', 'tribunal-service')),
-  CONSTRAINT task_money_names_chain CHECK (kind IN ('fine', 'fee') OR root_task IS NOT NULL)   -- money that moves for a task names its chain
+  CONSTRAINT task_money_names_chain CHECK (kind IN ('fine', 'fee', 'model') OR root_task IS NOT NULL)   -- money that moves for a task names its chain; a model call without a task pays from the wallet
 );
 
 CREATE TABLE treasury.postings (

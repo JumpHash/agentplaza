@@ -146,6 +146,8 @@ pub struct App {
     pub agents: agents::Roster,
     /// The model registry: the records on disk and the compiled models in memory.
     pub models: crate::foundry::registry::Models,
+    /// The Hugging Face import queue and the owner's token (foundry/hf_import.rs).
+    pub hf: crate::foundry::hf_import::Imports,
     /// Agent names by CID, persisted at `<state-dir>/names.json`.
     pub names: agents::Names,
     /// Operator-spawned agents and model overrides, at `<state-dir>/spawned.json`.
@@ -195,7 +197,7 @@ impl App {
             nodes: crate::nodes::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::default(),
-            looks: crate::looks::Looks::default(),
+            looks: crate::looks::Looks::open(config.state_dir.join("looks.json")),
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
             hub_auth,
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
@@ -205,6 +207,7 @@ impl App {
             spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
             agents: agents::Roster::default(),
             models: crate::foundry::registry::Models::open(&config.state_dir),
+            hf: crate::foundry::hf_import::Imports::open(&config.state_dir),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
             plaza: plaza::Plaza::new(snapshot.as_deref()),
@@ -244,6 +247,7 @@ impl App {
         app.models.revive(&app.agents, &app.looks);
         crate::db::spawn_writer(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
+        spawn_component_savers(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
         // On loopback the hub serves plain HTTP as before. Bound anywhere else it is a hub other
@@ -296,6 +300,25 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Saves the Foundry (`<state>/foundry/state.json`) and the looks (`<state>/looks.json`) every three
+/// seconds whenever they changed. Their files are the copy at start when Postgres does not hold them
+/// yet; a component whose load failed is not written (db::Db::is_held).
+fn spawn_component_savers(app: Arc<App>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if !app.db.is_held("foundry") {
+            if let Err(err) = app.foundry.save() {
+                eprintln!("apid: cannot save the foundry: {err}");
+            }
+        }
+        if !app.db.is_held("looks") {
+            if let Err(err) = app.looks.save() {
+                eprintln!("apid: cannot save the looks: {err}");
+            }
+        }
+    });
+}
+
 /// Saves the treasury to `<state-dir>/treasury.json` every three seconds whenever
 /// its version has moved; the first tick always writes.
 fn spawn_treasury_saver(app: Arc<App>) {
@@ -318,7 +341,7 @@ fn spawn_treasury_saver(app: Arc<App>) {
 
 /// Writes `text` to `path` through a temporary file and a rename, so a crash
 /// mid-write leaves the previous snapshot whole.
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)

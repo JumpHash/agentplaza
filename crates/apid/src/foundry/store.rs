@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::foundry::datasets::Dataset;
 use crate::foundry::diloco::Hub;
+use crate::state::write_atomic;
 
 /// The recipe the in-repo trainer ships; seeded as a local dev recipe.
 pub const SEED_RECIPE: &str = "rung-predictor@1";
@@ -79,6 +81,10 @@ pub struct Job {
     pub outputs_remote: bool,
     pub metrics: Value,
     pub error: Option<String>,
+    /// The islands whose models were not registered: the other islands of a multi-island job,
+    /// best eval first. Empty for a single island.
+    #[serde(default)]
+    pub candidates: Vec<String>,
 }
 
 /// Everything persisted.
@@ -95,12 +101,34 @@ pub struct Foundry {
     state: RwLock<State>,
     /// The DiLoCo hub of each loose job. Live state: not persisted, lost on restart.
     pub hubs: RwLock<BTreeMap<String, Arc<Hub>>>,
+    /// Counts the changes to `state` (bumped under the write lock, see `write`).
+    changes: AtomicU64,
+    /// The change count the state file was last written at.
+    saved: Mutex<Option<u64>>,
 }
 
 impl Foundry {
-    /// Opens the store under `dir`, seeding the local dev recipe when it is missing.
+    /// Opens the store under `dir`: the state from `<dir>/state.json` (a file that does not parse is
+    /// kept aside as `state.json.rejected`), then the local dev recipe seeded when it is missing.
     pub fn open(dir: PathBuf, now_ms: u64) -> Foundry {
-        let foundry = Foundry { dir, state: RwLock::new(State::default()), hubs: RwLock::new(BTreeMap::new()) };
+        let path = dir.join("state.json");
+        let mut state = State::default();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            match serde_json::from_str::<State>(&text) {
+                Ok(loaded) => state = loaded,
+                Err(e) => {
+                    eprintln!("foundry: {} does not parse ({e}); kept aside", path.display());
+                    let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
+                }
+            }
+        }
+        let foundry = Foundry {
+            dir,
+            state: RwLock::new(state),
+            hubs: RwLock::new(BTreeMap::new()),
+            changes: AtomicU64::new(0),
+            saved: Mutex::new(None),
+        };
         foundry.seed(now_ms);
         foundry
     }
@@ -150,14 +178,36 @@ impl Foundry {
         f(&self.state.read().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// Changes the state.
+    /// Changes the state. The change count moves while the lock is held, so a save that reads the
+    /// count and then takes the state sees every change it counted.
     pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, State> {
-        self.state.write().unwrap_or_else(|e| e.into_inner())
+        let guard = self.state.write().unwrap_or_else(|e| e.into_inner());
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        guard
     }
 
     /// The JSON the db writer stores (series capped by construction).
     pub fn snapshot(&self) -> String {
         self.read(|s| serde_json::to_string(s)).unwrap_or_default()
+    }
+
+    /// The file the state is kept in: `<dir>/state.json`.
+    pub fn state_path(&self) -> PathBuf {
+        self.dir.join("state.json")
+    }
+
+    /// Writes the state to `state.json` (through a temporary file) when it changed since the last
+    /// write; returns whether it wrote. Called every few seconds by the state savers (state.rs).
+    pub fn save(&self) -> Result<bool, String> {
+        let changes = self.changes.load(Ordering::SeqCst);
+        let mut saved = self.saved.lock().unwrap_or_else(PoisonError::into_inner);
+        if *saved == Some(changes) {
+            return Ok(false);
+        }
+        let path = self.state_path();
+        write_atomic(&path, &self.snapshot()).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        *saved = Some(changes);
+        Ok(true)
     }
 
     /// Restores a snapshot, then seeds the dev recipe again when the snapshot lacks it.
@@ -177,6 +227,61 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The state is kept in `state.json`: mutate, save, drop, reopen from the same directory and the
+    /// state is the same. No database is involved.
+    #[test]
+    fn the_state_survives_a_restart_without_the_database() {
+        let dir = std::env::temp_dir().join(format!("foundry-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let foundry = Foundry::open(dir.clone(), 1);
+        foundry.write().recipes.insert(
+            "rung-test@1".into(),
+            Recipe {
+                id: "rung-test@1".into(),
+                name: "test".into(),
+                repo: "forge:owner/recipes".into(),
+                commit: "c0ffee".into(),
+                schema: json!({}),
+                vetted_by: Some("owner".into()),
+                vetted_ms: Some(2),
+                local_dev: false,
+            },
+        );
+        foundry.write().datasets.insert(
+            "ds-test".into(),
+            Dataset {
+                id: "ds-test".into(),
+                name: "test rows".into(),
+                kind: "cascade".into(),
+                created_ms: 3,
+                from_ms: 0,
+                to_ms: 9,
+                rows: 4,
+                frozen_rows: 1,
+                label_balance: BTreeMap::from([("cat".to_string(), 2)]),
+                taint: Vec::new(),
+                provenance: json!({}),
+                file: "datasets/ds-test.jsonl".into(),
+                frozen_file: "datasets/ds-test.frozen.jsonl".into(),
+                sha256: "ab".into(),
+            },
+        );
+        foundry.write().jobs.insert(
+            "job-1".into(),
+            Job { id: "job-1".into(), status: "queued".into(), recipe: SEED_RECIPE.into(), mode: "loose".into(), ..Job::default() },
+        );
+        assert_eq!(foundry.save(), Ok(true));
+        assert_eq!(foundry.save(), Ok(false), "an unchanged state is not written again");
+        assert!(dir.join("state.json").exists());
+        let before = foundry.snapshot();
+        drop(foundry);
+
+        let reopened = Foundry::open(dir.clone(), 99);
+        assert_eq!(reopened.snapshot(), before);
+        assert!(reopened.read(|s| s.datasets.contains_key("ds-test") && s.jobs.contains_key("job-1")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn seed_recipe_is_vetted_as_a_local_dev_pin() {

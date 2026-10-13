@@ -138,7 +138,10 @@ class RungNet(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, num, cat):
-        return self.mlp(torch.cat([num, self.emb(cat).flatten(1)], dim=1))
+        # Reshape by the runtime batch (cat.shape[0]), never by a constant: flatten(1) on the example's
+        # batch of 1 gets traced with that 1 baked into the ONNX graph, and the batch can no longer vary.
+        emb = self.emb(cat).reshape(cat.shape[0], -1)
+        return self.mlp(torch.cat([num, emb], dim=1))
 
 
 def bind(cfg):
@@ -218,6 +221,12 @@ def serving_schema():
             "required": ["label", "probabilities"],
         },
         "features": ([numeric_feature(k) for k in NUM] + [hash_feature(k) for k in CAT]),
+        # The graph's inputs in graph order (example_input() order): `num` takes the numeric features,
+        # `cat` the hashed categoricals, so the loader can feed each input from the card.
+        "inputs": [
+            {"name": "num", "dtype": "float32", "features": list(NUM)},
+            {"name": "cat", "dtype": "int64", "features": list(CAT)},
+        ],
         "labels": list(CLASSES),
         "output_activation": "logits",  # RungNet.forward returns logits; softmax is applied at serving
         "allowed_roles": ["orchestrator", "builder", "plaza"],

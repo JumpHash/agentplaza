@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 use apz_http::client::Target;
 use apz_http::ws::{self, Message, Origins, Socket};
 use apz_http::{Request, Response, Router};
+use apz_plaza::treasury::Treasury;
 use serde_json::{json, Value};
 
 use crate::agents::Agent;
 use crate::internal::authorized;
-use crate::prices::Tokens;
+use crate::prices::{Tokens, USD_PER_CREDIT};
 use crate::settings::{tier_of, Tier};
 use crate::state::App;
 
@@ -280,8 +281,121 @@ fn record_usage(app: &App, cid: u64, model: &str, metered: Metered) {
             "cost_usd": metered.cost_usd,
         }),
     );
-    let task = app.work.current(cid).and_then(|item| item.origin.task);
+    let task = current_task(app, cid);
+    bill_call(app, cid, task.as_deref(), model, t, metered.cost_usd);
     crate::usage::meter(app, cid, model, t, metered.cost_usd, task, "gateway");
+}
+
+/// The task agent `cid` is working on, if any: the one its usage is charged to.
+fn current_task(app: &App, cid: u64) -> Option<String> {
+    app.work.current(cid).and_then(|item| item.origin.task)
+}
+
+/// The money a model call is paid from: the task's escrow when the agent works on a task that
+/// still has money in it, else the agent's wallet. Returns the task to charge (`None` for the
+/// wallet) and the balance there.
+fn paying_from(task: Option<&str>, escrow: i128, wallet: i128) -> (Option<&str>, i128) {
+    match task {
+        Some(task) if escrow > 0 => (Some(task), escrow),
+        _ => (None, wallet),
+    }
+}
+
+/// The 402 message when agent `cid` cannot pay for a model call, or `None` when it can (or when
+/// charging is off).
+fn refusal(charging: bool, task: Option<&str>, escrow: i128, wallet: i128) -> Option<String> {
+    if !charging || paying_from(task, escrow, wallet).1 > 0 {
+        return None;
+    }
+    Some(match task {
+        Some(_) => format!(
+            "cannot pay for this model call: wallet balance {wallet} credits, the task's escrow has {escrow}; top up or finish the task"
+        ),
+        None => format!("cannot pay for this model call: wallet balance {wallet} credits; top up or finish the task"),
+    })
+}
+
+/// The pre-call check: the refusal for agent `cid`'s model call, read from the treasury now.
+fn payment_refusal(app: &App, cid: u64) -> Option<String> {
+    let charging = app.settings.get().payments.charge_models;
+    let task = current_task(app, cid);
+    let treasury = &app.plaza.treasury;
+    let escrow = task.as_deref().map_or(0, |task| treasury.escrow_balance(task));
+    refusal(charging, task.as_deref(), escrow, treasury.wallet(cid))
+}
+
+/// The credits one call costs: its reported USD cost, else `estimate` (USD), over
+/// [`USD_PER_CREDIT`], rounded up to a whole credit. Zero when there is nothing to charge.
+fn credits_for(cost_usd: Option<f64>, estimate: impl FnOnce() -> f64) -> i64 {
+    let usd = cost_usd.unwrap_or_else(estimate);
+    if !usd.is_finite() || usd <= 0.0 {
+        return 0;
+    }
+    // The tolerance keeps float noise (50.00000000000001 credits) from rounding a whole credit up.
+    (usd / USD_PER_CREDIT - 1e-9).ceil() as i64
+}
+
+/// What one model call's charge came to: the credits wanted, those charged, the balance of the
+/// payer, and the error when the treasury refused the charge.
+#[derive(Debug, Clone, PartialEq)]
+struct Settled {
+    wanted: i64,
+    charged: i64,
+    available: i128,
+    error: Option<String>,
+}
+
+/// Charges `credits` for agent `cid`'s call to its payer (see [`paying_from`]), capped at that
+/// payer's balance so no balance goes negative.
+fn settle(treasury: &Treasury, cid: u64, task: Option<&str>, credits: i64, memo: &str) -> Settled {
+    let escrow = task.map_or(0, |task| treasury.escrow_balance(task));
+    let (charge_task, available) = paying_from(task, escrow, treasury.wallet(cid));
+    let amount = i64::try_from(available.max(0)).unwrap_or(i64::MAX).min(credits);
+    let (charged, error) = if amount > 0 {
+        match treasury.charge_model(cid, charge_task, amount, memo) {
+            Ok(_) => (amount, None),
+            Err(e) => (0, Some(e.to_string())),
+        }
+    } else {
+        (0, None)
+    };
+    Settled { wanted: credits, charged, available, error }
+}
+
+/// Bills `credits` of one call to its payer when charging is on. `Some` only when the charge
+/// came up short (or was refused).
+fn bill(treasury: &Treasury, charging: bool, cid: u64, task: Option<&str>, credits: i64, model: &str) -> Option<Settled> {
+    if !charging || credits <= 0 {
+        return None;
+    }
+    let settled = settle(treasury, cid, task, credits, &format!("model {model} call"));
+    (settled.charged < settled.wanted).then_some(settled)
+}
+
+/// Bills agent `cid`'s model call after it ran. A shortfall is noted in the transcript.
+fn bill_call(app: &App, cid: u64, task: Option<&str>, model: &str, tokens: Tokens, cost_usd: Option<f64>) {
+    let charging = app.settings.get().payments.charge_models;
+    let credits = credits_for(cost_usd, || {
+        let settings = app.settings.get();
+        app.prices.lookup(model, &settings.prices).map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens))
+    });
+    if let Some(settled) = bill(&app.plaza.treasury, charging, cid, task, credits, model) {
+        let available = settled.available.clamp(0, i128::from(i64::MAX)) as i64;
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            0,
+            "model_charge_shortfall",
+            json!({
+                "model": model,
+                "task": task,
+                "wanted": settled.wanted,
+                "charged": settled.charged,
+                "available": available,
+                "error": settled.error,
+            }),
+        );
+    }
 }
 
 /// An upstream client that returns error statuses as responses, so their bodies pass through.
@@ -345,6 +459,9 @@ fn relay(app: &App, req: &Request, cid: u64, provider: &str, path: &str) -> Resu
             .map_err(|message| Response::json(403, &json!({ "error": message })))?;
     }
     let model = body.get("model").and_then(Value::as_str).unwrap_or_default().to_string();
+    if let Some(message) = payment_refusal(app, cid) {
+        return Err(Response::json(402, &json!({ "error": message })));
+    }
     let (base, key) = provider_upstream(app, provider)?;
     let headers = anthropic_headers(req);
     let resp = upstream_post(provider, &base, &key, path, &headers, &body).map_err(|e| Response::error(502, &e))?;
@@ -436,18 +553,18 @@ fn grant_for(app: &App, req: &Request, cid: u64, provider: &str) -> Result<Grant
 }
 
 /// The gateway's policy for one WebSocket call, as over HTTP, read live: STOP ALL holds the call,
-/// and the agent's current model and the list it is held to apply (a change since the socket
-/// opened counts).
+/// the agent's current model and the list it is held to apply (a change since the socket opened
+/// counts), and an agent that cannot pay is refused with the same message as over HTTP's 402.
 fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<(), String> {
     let app = grant.app.upgrade().ok_or("the hub is shutting down")?;
     if app.control.paused() {
         return Err("the plaza is held (STOP ALL); waiting for the owner to resume".into());
     }
     let agent = app.agents.get(grant.cid).ok_or("unknown agent")?;
-    match held_to(&app, &agent) {
-        Some(list) => check_model(body, provider, &crate::agents::model_of(&app, &agent), &list),
-        None => Ok(()),
+    if let Some(list) = held_to(&app, &agent) {
+        check_model(body, provider, &crate::agents::model_of(&app, &agent), &list)?;
     }
+    payment_refusal(&app, grant.cid).map_or(Ok(()), Err)
 }
 
 fn limits() -> ws::Limits {
@@ -873,5 +990,97 @@ data: [DONE]\n\n";
             json!({ "id": "c1", "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0 } })
         );
         assert_eq!(sse_frame(&json!(7), "ping", "not json")["data"], json!("not json"));
+    }
+
+    const PAYER: u64 = 7;
+
+    /// A treasury where agent `PAYER` has `wallet` credits (paid from the task "job", whose
+    /// escrow keeps 1000 credits), built as the sanctions tests build one.
+    fn funded(wallet: i64) -> Treasury {
+        let treasury = Treasury::new(apz_plaza::events::EventBus::new());
+        if wallet > 0 {
+            // The treasury's margin rule: pay at most a fifth of the task's real cost.
+            treasury.fund_task("job", 6 * wallet + 1000).expect("the task is funded");
+            treasury.charge_spend(Some("job"), 5 * wallet, "real cost").expect("the cost is spent");
+            treasury.pay_agent("job", PAYER, wallet).expect("the agent is paid");
+        }
+        treasury
+    }
+
+    #[test]
+    fn a_broke_agent_is_refused_and_a_funded_one_passes() {
+        let message = refusal(true, None, 0, 0).expect("no wallet, no task: refused");
+        assert!(message.contains("cannot pay for this model call"));
+        assert!(refusal(true, Some("job"), 0, 0).expect("an empty escrow and no wallet: refused").contains("escrow has 0"));
+        assert_eq!(refusal(true, None, 0, 25), None);
+        assert_eq!(refusal(true, Some("job"), 40, 0), None, "the task's escrow pays");
+        assert_eq!(refusal(true, Some("job"), 0, 25), None, "an empty escrow falls back to the wallet");
+    }
+
+    #[test]
+    fn a_broke_agent_is_refused_on_the_socket_path_with_the_relay_message() {
+        // `admit` (both sockets) sends the helper's message as its error frame, as `relay` sends it as the 402 body.
+        let socket = refusal(true, None, 0, 0).expect("a broke agent's socket call is refused");
+        assert!(socket.starts_with("cannot pay for this model call"));
+        assert_eq!(refusal(true, None, 0, 25), None, "a funded agent's socket call is admitted");
+        assert_eq!(refusal(false, None, 0, 0), None, "charging off: a socket call is admitted and nothing is charged");
+    }
+
+    #[test]
+    fn charging_off_never_refuses_and_charges_nothing() {
+        assert_eq!(refusal(false, None, 0, 0), None);
+        let treasury = funded(100);
+        assert_eq!(bill(&treasury, false, PAYER, None, 50, "m"), None);
+        assert_eq!(treasury.wallet(PAYER), 100);
+    }
+
+    #[test]
+    fn the_settings_default_charges_models() {
+        assert!(crate::settings::Settings::default().payments.charge_models);
+    }
+
+    #[test]
+    fn credits_are_the_cost_over_usd_per_credit_rounded_up() {
+        assert_eq!(credits_for(Some(0.05), || 1.0), 50, "reported cost wins over the estimate");
+        assert_eq!(credits_for(Some(0.0011), || 0.0), 2, "a fraction of a credit rounds up");
+        assert_eq!(credits_for(None, || 0.003), 3, "the estimate is used without a reported cost");
+        assert_eq!(credits_for(Some(0.0), || 1.0), 0, "a zero cost is not charged");
+        assert_eq!(credits_for(None, || 0.0), 0, "an unpriced call is not charged");
+    }
+
+    #[test]
+    fn a_call_is_charged_its_credits_from_the_wallet() {
+        let treasury = funded(100);
+        let settled = settle(&treasury, PAYER, None, 50, "model call");
+        assert_eq!((settled.wanted, settled.charged), (50, 50));
+        assert_eq!(settled.error, None);
+        assert_eq!(treasury.wallet(PAYER), 50);
+    }
+
+    #[test]
+    fn a_charge_larger_than_the_balance_is_capped_and_never_negative() {
+        let treasury = funded(30);
+        let settled = bill(&treasury, true, PAYER, None, 50, "model call").expect("short, so noted");
+        assert_eq!((settled.wanted, settled.charged, settled.available), (50, 30, 30));
+        assert_eq!(treasury.wallet(PAYER), 0);
+        // A broke agent is charged nothing, and the call still goes through.
+        let broke = funded(0);
+        let settled = bill(&broke, true, PAYER, None, 5, "model call").expect("short, so noted");
+        assert_eq!((settled.charged, settled.available), (0, 0));
+        assert_eq!(broke.wallet(PAYER), 0);
+    }
+
+    #[test]
+    fn a_task_escrow_pays_first_and_is_capped_there() {
+        let treasury = funded(30);
+        // The task keeps 1000 in escrow: a 1200 charge is capped there, the wallet is untouched.
+        let settled = settle(&treasury, PAYER, Some("job"), 1200, "model call");
+        assert_eq!((settled.charged, settled.available), (1000, 1000));
+        assert_eq!(treasury.escrow_balance("job"), 0);
+        assert_eq!(treasury.wallet(PAYER), 30);
+        // With the escrow empty, the wallet pays.
+        let settled = settle(&treasury, PAYER, Some("job"), 10, "model call");
+        assert_eq!((settled.charged, settled.available), (10, 30));
+        assert_eq!(treasury.wallet(PAYER), 20);
     }
 }

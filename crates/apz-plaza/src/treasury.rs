@@ -233,11 +233,14 @@ pub enum EntryKind {
     BudgetMove,
     /// Agent-to-agent move of earnings: no task money, so it names no chain.
     Transfer,
+    /// A model call's metered cost: the task's escrow (or, with no task, the
+    /// agent's wallet) to `external_spend`. Names a chain only when it has a task.
+    Model,
 }
 
 impl EntryKind {
     /// Every kind, in the schema's enum order.
-    pub const ALL: [EntryKind; 10] = [
+    pub const ALL: [EntryKind; 11] = [
         EntryKind::Mint,
         EntryKind::Spend,
         EntryKind::Subcontract,
@@ -248,6 +251,7 @@ impl EntryKind {
         EntryKind::Fee,
         EntryKind::BudgetMove,
         EntryKind::Transfer,
+        EntryKind::Model,
     ];
 
     /// The kind's name, exactly as the schema's enum spells it.
@@ -263,14 +267,19 @@ impl EntryKind {
             EntryKind::Fee => "fee",
             EntryKind::BudgetMove => "budget_move",
             EntryKind::Transfer => "transfer",
+            EntryKind::Model => "model",
         }
     }
 
     /// Whether the entry must name a chain: the schema's
     /// `task_money_names_chain` exempts `fine` and `fee`, and `transfer`, which
-    /// moves earnings and no task money.
+    /// moves earnings and no task money. A `model` entry names one only when
+    /// it has a task (see [`Treasury::charge_model`]).
     fn names_a_chain(self) -> bool {
-        !matches!(self, EntryKind::Fine | EntryKind::Fee | EntryKind::Transfer)
+        !matches!(
+            self,
+            EntryKind::Fine | EntryKind::Fee | EntryKind::Transfer | EntryKind::Model
+        )
     }
 }
 
@@ -337,6 +346,9 @@ pub const POSTING_RULES: &[(EntryKind, AccountKind, Side)] = &[
     (EntryKind::Spend, AccountKind::TownBudget, Side::Debit),
     (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Debit),
     (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Credit),
+    (EntryKind::Model, AccountKind::TaskEscrow, Side::Debit),
+    (EntryKind::Model, AccountKind::AgentEarnings, Side::Debit),
+    (EntryKind::Model, AccountKind::ExternalSpend, Side::Credit),
 ];
 
 /// Whether the schema's `posting_rules` allow `entry_kind` to post `side` to
@@ -1114,6 +1126,42 @@ impl Treasury {
         if let Some(task) = task_id {
             spec = spec.task(task);
         }
+        self.post(&spec)
+    }
+
+    /// Charges `credits` of model cost: a `model` entry to `external_spend`
+    /// (the provider is credited). With `task`, the task's escrow pays and the
+    /// entry names that chain; without one, agent `cid`'s wallet pays. Refused
+    /// when the payer would go below its limit.
+    pub fn charge_model(
+        &self,
+        cid: u64,
+        task: Option<&str>,
+        credits: i64,
+        memo: &str,
+    ) -> Result<u64, PostError> {
+        if credits <= 0 {
+            return Err(PostError::NonPositive { amount: credits });
+        }
+        let spec = match task {
+            Some(task) => EntrySpec::new(
+                EntryKind::Model,
+                vec![
+                    PostingSpec::new(AccountKind::TaskEscrow, task, -credits),
+                    PostingSpec::new(AccountKind::ExternalSpend, "providers", credits),
+                ],
+            )
+            .task(task)
+            .root(task),
+            None => EntrySpec::new(
+                EntryKind::Model,
+                vec![
+                    PostingSpec::new(AccountKind::AgentEarnings, &agent_owner(cid), -credits),
+                    PostingSpec::new(AccountKind::ExternalSpend, "providers", credits),
+                ],
+            ),
+        }
+        .memo(memo);
         self.post(&spec)
     }
 
@@ -2087,7 +2135,7 @@ mod tests {
     /// `docs/treasury-draft/schema.sql` — the same table [`POSTING_RULES`]
     /// encodes, listed here independently so a transcription error in the
     /// constant is caught.
-    const SCHEMA_RULES: [(EntryKind, AccountKind, Side); 28] = [
+    const SCHEMA_RULES: [(EntryKind, AccountKind, Side); 31] = [
         (EntryKind::Mint, AccountKind::Mint, Side::Debit),
         (EntryKind::Mint, AccountKind::TaskEscrow, Side::Credit),
         (EntryKind::Mint, AccountKind::TownBudget, Side::Credit),
@@ -2116,6 +2164,9 @@ mod tests {
         (EntryKind::Spend, AccountKind::TownBudget, Side::Debit),
         (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Debit),
         (EntryKind::Transfer, AccountKind::AgentEarnings, Side::Credit),
+        (EntryKind::Model, AccountKind::TaskEscrow, Side::Debit),
+        (EntryKind::Model, AccountKind::AgentEarnings, Side::Debit),
+        (EntryKind::Model, AccountKind::ExternalSpend, Side::Credit),
     ];
 
     #[test]
@@ -3080,6 +3131,53 @@ mod economy_tests {
         assert_eq!(treasury.refund_task_to_budget("t1").expect("nothing left"), None);
         assert!(treasury.verify_journal().is_ok());
         assert_eq!(treasury.view().totals.balance, 0);
+    }
+
+    #[test]
+    fn a_model_charge_debits_its_payer_and_credits_external_spend() {
+        let treasury = treasury();
+        treasury.fund_task("t1", 200).expect("fund");
+        // With a task, the task's escrow pays and the entry names the chain.
+        let with_task = treasury
+            .charge_model(7, Some("t1"), 30, "model call")
+            .expect("a model call on the task");
+        assert_eq!(treasury.escrow_balance("t1"), 170);
+        assert_eq!(treasury.wallet(7), 0);
+        // Without a task, the agent's wallet pays. Earn 15 first: a spend of
+        // 100 makes the chain's real cost, and a payment of 15 is inside the cap.
+        treasury.charge_spend(Some("t1"), 100, "real cost").expect("spend");
+        treasury.pay_agent("t1", 7, 15).expect("pay");
+        assert_eq!(treasury.wallet(7), 15);
+        let without_task = treasury
+            .charge_model(7, None, 10, "model call")
+            .expect("a model call from the wallet");
+        assert_eq!(treasury.wallet(7), 5);
+        assert_eq!(treasury.escrow_balance("t1"), 55);
+        // A wallet cannot go below zero, and a non-positive charge is refused.
+        assert!(treasury.charge_model(7, None, 6, "too much").is_err());
+        assert!(matches!(
+            treasury.charge_model(7, None, 0, "nothing"),
+            Err(PostError::NonPositive { amount: 0 })
+        ));
+        {
+            let inner = treasury.lock();
+            let kind_of = |id: u64| {
+                inner
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map(|entry| (entry.kind, entry.root_task.clone()))
+            };
+            assert_eq!(kind_of(with_task), Some((EntryKind::Model, Some("t1".to_string()))));
+            assert_eq!(kind_of(without_task), Some((EntryKind::Model, None)));
+            // The provider is credited by the two model calls and the spend: 30 + 100 + 10.
+            let external = inner
+                .find_account(AccountKind::ExternalSpend, "providers")
+                .expect("the provider account")
+                .id;
+            assert_eq!(inner.balance(external), 140);
+        }
+        assert!(treasury.verify_journal().is_ok());
     }
 
     #[test]

@@ -23,6 +23,11 @@ apz-os = { path = "../apz-os" }
 # Model agents' ONNX inference: pure Rust, no native deps. The default `transformers` feature
 # (attention ops) is off: model cards describe plain feed-forward nets.
 tract-onnx = { version = "0.23.8", default-features = false }
+# The WordPiece / BPE tokenizers of Hugging Face text models (tokenizer.json, read offline). Pure Rust:
+# the default onig (C) and esaxx (C++) features are off; fancy-regex does the pre-tokenizer regexes.
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+# Free disk space on every platform the hub runs on (already in the lock at this version).
+sysinfo = "0.33"
 
 [build-dependencies]
 serde_json.workspace = true

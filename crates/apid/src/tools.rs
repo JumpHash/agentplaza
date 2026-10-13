@@ -104,6 +104,7 @@ const GATED: &[&str] = &[
     "foundry_submit_job",
     "foundry_job_status",
     "foundry_request_shadow",
+    "foundry_hf_search",
     "invoke_model",
 ];
 
@@ -713,6 +714,17 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 .and_then(Value::as_i64)
                 .ok_or_else(|| "missing integer `amount`".to_string())?;
             let memo = str_arg(input, "memo")?;
+            // A payment over the owner's threshold is held: the treasury has no holds, so nothing moves
+            // until the owner approves it (approvals::decide -> payments::decided runs the transfer).
+            if crate::payments::held(amount, app.settings.get().payments.approve_over) {
+                let subject = format!("pay {amount} to {to}");
+                let detail = json!({"cid": agent.cid, "to": to, "amount": amount, "memo": memo});
+                let item = crate::approvals::submit(app, "payment", &subject, detail);
+                return Ok(format!(
+                    "awaiting owner approval ({}): paying {amount} to {to} is held until the owner decides",
+                    item.id
+                ));
+            }
             let entry = app
                 .plaza
                 .treasury

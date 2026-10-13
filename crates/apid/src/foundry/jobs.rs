@@ -364,12 +364,54 @@ fn register_finished(models: &crate::foundry::registry::Models, store: &Foundry,
     if models.list().iter().any(|m| m.source_job.as_deref() == Some(job_id)) {
         return;
     }
-    if let Err(e) = models.register_from_job(out, Some(job_id)) {
+    let (dir, candidates) = pick_model(out);
+    let registered = match dir {
+        Some(dir) => models.register_from_job(&dir, Some(job_id)).map(|_| ()),
+        None => Err("no model_card.json in the job's output".to_string()),
+    };
+    let mut state = store.write();
+    let Some(job) = state.jobs.get_mut(job_id) else { return };
+    job.candidates = candidates;
+    if let Err(e) = registered {
         eprintln!("foundry: job {job_id}: the model was not registered: {e}");
-        if let Some(job) = store.write().jobs.get_mut(job_id) {
-            job.error = Some(format!("model not registered: {e}"));
-        }
+        job.error = Some(format!("model not registered: {e}"));
     }
+}
+
+/// The directory a finished job's model is registered from, and the islands whose models are
+/// kept as candidates instead. A top-level `out/model_card.json` (a merged or outer model) wins
+/// outright. Otherwise each island directory under `out/` with a card is ranked by its validation
+/// eval (`metrics.val`): the higher `accuracy` wins; a card without accuracy ranks by its `nll`
+/// (lower is better, so it scores as `-nll`), then by its `loss` (also `-loss`); a card with none
+/// of these ranks last. Ties go to the
+/// lower island id. A single island is the winner with no candidates.
+fn pick_model(out: &Path) -> (Option<PathBuf>, Vec<String>) {
+    if out.join("model_card.json").is_file() {
+        return (Some(out.to_path_buf()), Vec::new());
+    }
+    let Ok(entries) = std::fs::read_dir(out) else { return (None, Vec::new()) };
+    let mut ranked: Vec<(Option<f64>, String, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().join("model_card.json").is_file())
+        .filter_map(|e| {
+            let id = e.file_name().into_string().ok()?;
+            Some((card_score(&e.path().join("model_card.json")), id, e.path()))
+        })
+        .collect();
+    let rank = |score: Option<f64>| score.unwrap_or(f64::NEG_INFINITY);
+    ranked.sort_by(|a, b| rank(b.0).total_cmp(&rank(a.0)).then_with(|| a.1.cmp(&b.1)));
+    let candidates = ranked.iter().skip(1).map(|r| r.1.clone()).collect();
+    (ranked.first().map(|r| r.2.clone()), candidates)
+}
+
+/// The eval score of a trainer card, higher is better (see [`pick_model`]).
+fn card_score(card_path: &Path) -> Option<f64> {
+    let card: Value = serde_json::from_str(&std::fs::read_to_string(card_path).ok()?).ok()?;
+    let val = &card["metrics"]["val"];
+    val["accuracy"]
+        .as_f64()
+        .or_else(|| val["nll"].as_f64().map(|nll| -nll))
+        .or_else(|| val["loss"].as_f64().map(|loss| -loss))
 }
 
 /// Device time from dispatch to `now`, in GPU-hours, for one run.
@@ -607,7 +649,7 @@ mod tests {
             id: "tj-poll".into(), status: "running".into(), created_ms: 0, updated_ms: 0, recipe: "rung-predictor@1".into(),
             datasets: vec![], mode: "single".into(), budget_gpu_hours: 1.0, gpu_hours: 0.0, doc: json!({}), plan: json!({}),
             runs: vec![Run { node_job: "tj-poll-i1".into(), node: "n0".into(), island: "i1".into(), devices: vec![0], started_ms: 0, ended_ms: None, state: "running".into(), exit_code: None, next: 0, gpu_hours: 0.0 }],
-            series: vec![], seq: 0, outputs: vec![], outputs_remote: false, metrics: json!(null), error: None,
+            series: vec![], seq: 0, outputs: vec![], outputs_remote: false, metrics: json!(null), error: None, candidates: Vec::new(),
         };
         store.write().jobs.insert("tj-poll".into(), job);
         let models = crate::foundry::registry::Models::open(&dir.join("state"));
@@ -629,7 +671,7 @@ mod tests {
             id: id.into(), status: "running".into(), created_ms: 0, updated_ms: 0, recipe: "rung-predictor@1".into(),
             datasets: vec![], mode: "single".into(), budget_gpu_hours: 1.0, gpu_hours: 0.0, doc: json!({}), plan: json!({}),
             runs: vec![Run { node_job: format!("{id}-i1"), node: "n0".into(), island: "i1".into(), devices: vec![0], started_ms: 0, ended_ms: None, state: "running".into(), exit_code: None, next: 0, gpu_hours: 0.0 }],
-            series: vec![], seq: 0, outputs: vec![], outputs_remote: false, metrics: json!(null), error: None,
+            series: vec![], seq: 0, outputs: vec![], outputs_remote: false, metrics: json!(null), error: None, candidates: Vec::new(),
         }
     }
 
@@ -681,6 +723,78 @@ mod tests {
         let job = store.read(|s| s.jobs["tj-once"].clone());
         assert_eq!(job.status, "done");
         assert!(job.error.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One island's output as the trainer leaves it: `out/<island>/` with the model and a card
+    /// whose validation accuracy is `accuracy`.
+    fn write_island(store: &Foundry, id: &str, island: &str, accuracy: f64) {
+        let out = store.jobs_dir().join(id).join("out").join(island);
+        std::fs::create_dir_all(&out).expect("island out");
+        std::fs::write(out.join("model.onnx"), LINEAR3).expect("onnx");
+        let serving = json!({
+            "input": {"type": "object", "properties": {"x0": {"type": "number"}, "x1": {"type": "number"}, "x2": {"type": "number"}}, "required": ["x0", "x1", "x2"]},
+            "output": {"type": "object", "properties": {"label": {"type": "string", "enum": ["cat", "dog", "bird"]}, "probabilities": {"type": "object"}}, "required": ["label", "probabilities"]},
+            "features": [{"name": "x0", "kind": "numeric"}, {"name": "x1", "kind": "numeric"}, {"name": "x2", "kind": "numeric"}],
+            "labels": ["cat", "dog", "bird"],
+            "allowed_roles": ["breeder"]
+        });
+        let card = json!({"recipe": "rung_predictor", "job_id": id, "metrics": {"val": {"accuracy": accuracy}}, "serving": serving});
+        std::fs::write(out.join("model_card.json"), card.to_string()).expect("card");
+    }
+
+    #[test]
+    fn a_card_with_only_nll_ranks_by_the_lower_nll() {
+        let dir = scratch("nll");
+        let out = dir.join("out");
+        for (island, nll) in [("i1", 0.5), ("i2", 0.3)] {
+            let island_dir = out.join(island);
+            std::fs::create_dir_all(&island_dir).expect("island out");
+            let card = json!({"metrics": {"val": {"nll": nll}}});
+            std::fs::write(island_dir.join("model_card.json"), card.to_string()).expect("card");
+        }
+        let (best, candidates) = pick_model(&out);
+        let want = out.join("i2");
+        assert_eq!(best, Some(want), "the lower nll wins");
+        assert_eq!(candidates, vec!["i1".to_string()]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_single_island_job_registers_its_model_from_the_island_directory() {
+        let dir = scratch("nested");
+        let store = Foundry::open(dir.clone(), 1);
+        let models = crate::foundry::registry::Models::open(&dir.join("state"));
+        write_island(&store, "tj-nested", "i1", 0.9);
+        store.write().jobs.insert("tj-nested".into(), running("tj-nested"));
+        let fake = Fake::new(usize::MAX, exit_with(0));
+        poll(&fake, &store, &models, "tj-nested", 3_600_000);
+        let registered = models.list();
+        assert_eq!(registered.len(), 1, "one model, from out/i1");
+        assert_eq!(registered[0].source_job.as_deref(), Some("tj-nested"));
+        let job = store.read(|s| s.jobs["tj-nested"].clone());
+        assert_eq!(job.status, "done");
+        assert!(job.error.is_none());
+        assert!(job.candidates.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_multi_island_job_registers_the_best_island_and_keeps_the_others_as_candidates() {
+        let dir = scratch("multi");
+        let store = Foundry::open(dir.clone(), 1);
+        let models = crate::foundry::registry::Models::open(&dir.join("state"));
+        write_island(&store, "tj-multi", "i1", 0.7);
+        write_island(&store, "tj-multi", "i2", 0.9);
+        store.write().jobs.insert("tj-multi".into(), running("tj-multi"));
+        let fake = Fake::new(usize::MAX, exit_with(0));
+        poll(&fake, &store, &models, "tj-multi", 3_600_000);
+        let registered = models.list();
+        assert_eq!(registered.len(), 1, "one model, the better island");
+        assert_eq!(registered[0].card.metrics["val"]["accuracy"], json!(0.9));
+        let job = store.read(|s| s.jobs["tj-multi"].clone());
+        assert!(job.error.is_none());
+        assert_eq!(job.candidates, vec!["i1".to_string()]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

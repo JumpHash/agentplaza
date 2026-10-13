@@ -93,6 +93,23 @@ pub struct Settings {
     pub sanctions: Sanctions,
     /// How the plaza's laws are applied (see `laws.rs`).
     pub laws: LawsSettings,
+    /// How payments and model calls are gated and charged (see `payments.rs`, `llm_proxy.rs`).
+    pub payments: Payments,
+    /// The Lab's settings (`docs/design/foundry.md`, "Hugging Face").
+    pub foundry: FoundrySettings,
+}
+
+/// The Lab's settings. `hf_max_gb`: the most a Hugging Face import may download, in GiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FoundrySettings {
+    pub hf_max_gb: u32,
+}
+
+impl Default for FoundrySettings {
+    fn default() -> Self {
+        Self { hf_max_gb: 20 }
+    }
 }
 
 impl Default for Settings {
@@ -112,6 +129,8 @@ impl Default for Settings {
             retention: Retention::default(),
             sanctions: Sanctions::default(),
             laws: LawsSettings::default(),
+            payments: Payments::default(),
+            foundry: FoundrySettings::default(),
         }
     }
 }
@@ -147,6 +166,24 @@ pub struct LawsSettings {
     /// Whether an operation that has permit laws is refused unless one of them allows it. Off: only
     /// forbids refuse, and a permit only allows.
     pub strict_permits: bool,
+}
+
+/// How payments and model calls are gated and charged. Any `u64` is a valid threshold, so
+/// there is nothing to refuse at save time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Payments {
+    /// A payment over this many credits waits for the owner's approval. `0` means every payment asks.
+    pub approve_over: u64,
+    /// Whether model calls are charged to the agent's task escrow (or its wallet when it has no
+    /// task), and refused when it cannot pay.
+    pub charge_models: bool,
+}
+
+impl Default for Payments {
+    fn default() -> Self {
+        Self { approve_over: 500, charge_models: true }
+    }
 }
 
 /// The fewest a retention count may be, so the plaza keeps a usable window.
@@ -317,6 +354,9 @@ impl Store {
             if !LEVELS.contains(&effort.as_str()) {
                 return Err(format!("unknown effort {effort:?}; expected one of {}", LEVELS.join(", ")));
             }
+        }
+        if !(1..=500).contains(&new.foundry.hf_max_gb) {
+            return Err(format!("foundry.hf_max_gb must be 1..=500, got {}", new.foundry.hf_max_gb));
         }
         if let Some(bad) = new.fetch_block.iter().find(|h| !is_bare_host(h) || h.trim_start_matches("*.").contains('*')) {
             return Err(format!("fetch_block entry {bad:?} is not a bare hostname (or *.domain)"));
@@ -575,6 +615,38 @@ mod tests {
         assert_eq!(policy.conversations_older_than_ms, Some(30 * 86_400_000));
         assert_eq!(policy.posts_max, 1024);
         assert_eq!(policy.posts_older_than_ms, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn payments_default_and_settings_saved_without_them_load_the_defaults() {
+        assert_eq!(Payments::default(), Payments { approve_over: 500, charge_models: true });
+        assert_eq!(Settings::default().payments, Payments::default());
+
+        // Settings saved before payments existed carry no such key: they load the defaults.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("payments");
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.payments, Payments::default());
+
+        // A partial block keeps the fields it names and defaults the rest.
+        let partial: Settings =
+            serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}})).unwrap();
+        assert_eq!(partial.payments, Payments { approve_over: 0, charge_models: true });
+    }
+
+    #[test]
+    fn payments_round_trip_through_the_store() {
+        let dir = temp_dir("payments");
+        let store = Store::load(&dir, false).unwrap();
+        let mut s = Settings::default();
+        s.payments = Payments { approve_over: 0, charge_models: false };
+        assert_eq!(store.put(s.clone()).unwrap(), s);
+        assert_eq!(Store::load(&dir, false).unwrap().get().payments, s.payments);
+
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

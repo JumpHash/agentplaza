@@ -1006,6 +1006,14 @@ fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, role: &str, store
             let allowed = crate::foundry::registry::allowed_roles(&id).iter().any(|allowed| allowed == role);
             vec![("model.invoke", model, Context::from([("role_allowed".to_string(), Value::Bool(allowed))]))]
         }
+        // A payment is a send of credits from the town. The owner's threshold is not known here: plaza_pay
+        // holds a large payment for approval, so the law never forbids it (S-007a).
+        "plaza_pay" => {
+            let town = Entity { ty: "Town".into(), id: TOWN.into() };
+            store.insert(&town, BTreeMap::from([("name".to_string(), Value::str(TOWN))]));
+            let amount = input.get("amount").and_then(Json::as_i64).unwrap_or(0);
+            vec![("payment.send", town, Context::from([("amount".to_string(), Value::int(amount.into()))]))]
+        }
         _ => Vec::new(),
     }
 }
@@ -1046,7 +1054,7 @@ pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks" | "plaza_agents" | "memory_read"
         | "memory_search" | "memory_list" | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
-        | "todo_write" | "checkpoint_diff" | "checkpoint_list" => "read",
+        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => crate::connectors::risk_of(t).unwrap_or("write"),
         _ => "write",
@@ -1287,10 +1295,17 @@ mod tests {
     }
 
     #[test]
-    fn payments_are_not_refused_while_owner_approvals_do_not_exist() {
+    fn a_payment_is_checked_as_a_send_and_never_forbidden_whatever_its_amount() {
         let laws = Laws::load(&scratch("pay"));
-        let verdict = laws.check("7", "finance", "plaza_pay", &json!({"to": 9, "amount": 5, "memo": "thanks"}));
-        assert!(verdict.forbid.is_empty(), "{verdict:?}");
+        for amount in [5, 900] {
+            let verdict = laws.check("7", "finance", "plaza_pay", &json!({"to": 9, "amount": amount, "memo": "thanks"}));
+            assert!(verdict.forbid.is_empty(), "{verdict:?}");
+            assert!(verdict.requested.iter().any(|op| op == "payment.send"), "{verdict:?}");
+            assert!(verdict.permit.iter().any(|id| id == "S-007a"), "{verdict:?}");
+        }
+        // Strict permits: a held payment is still not refused by the laws.
+        laws.set_strict(true);
+        assert!(laws.refusal(7, "finance", "plaza_pay", &json!({"to": 9, "amount": 900, "memo": "thanks"})).is_none());
     }
 
     #[test]

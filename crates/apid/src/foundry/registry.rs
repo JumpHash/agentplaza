@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Response, Router};
 use apz_proto::chat::Usage;
@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::agents::{Agent, Roster, Status};
+use super::text::{self, TextContract, TextModel};
 use crate::inference::{FeatureSpec, LoadedModel, ModelCard, Registry as Loaded, Schema};
 use crate::looks::{Looks, ORACLE};
 use crate::state::App;
@@ -48,6 +49,8 @@ pub enum State {
     Shadow,
     Promoted,
     Retired,
+    /// Downloaded from Hugging Face without a serving contract: listed, never compiled or promoted.
+    Imported,
 }
 
 impl State {
@@ -57,8 +60,27 @@ impl State {
             State::Shadow => "shadow",
             State::Promoted => "promoted",
             State::Retired => "retired",
+            State::Imported => "imported",
         }
     }
+}
+
+/// Where a registered model came from: a Hugging Face repo at a commit (`hf_import.rs`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub hf: String,
+    pub revision: String,
+    /// `base` or `servable`, as the import asked.
+    #[serde(rename = "as")]
+    pub as_: String,
+    /// The download directory.
+    pub path: String,
+    /// Why the model is not servable, when it is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servable_reason: Option<String>,
+    /// The repo's Hugging Face task (`pipeline_tag`), when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// How often a shadow model agreed with the path it runs beside, and what its use would have saved.
@@ -98,6 +120,9 @@ pub struct ModelRecord {
     pub shadow: ShadowStats,
     pub created_ms: u64,
     pub state_changed_ms: u64,
+    /// The Hugging Face source, for models imported from the hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
 }
 
 /// The inference contract a job's card carries under `serving`.
@@ -120,6 +145,8 @@ pub struct Models {
     generation: std::sync::atomic::AtomicU64,
     /// What `derived_ids` built, with the generation it was built at.
     derived: Mutex<Option<(u64, Vec<String>)>>,
+    /// The text models, run from their download directories (text.rs), by id.
+    text: Mutex<BTreeMap<String, Arc<TextModel>>>,
 }
 
 impl Models {
@@ -146,6 +173,7 @@ impl Models {
             loaded: Loaded::default(),
             generation: std::sync::atomic::AtomicU64::new(0),
             derived: Mutex::new(None),
+            text: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -192,7 +220,14 @@ impl Models {
         let records: Vec<ModelRecord> = self.records().values().cloned().collect();
         let now = apz_plaza::now_ms();
         for record in records {
-            if record.state == State::Retired {
+            if matches!(record.state, State::Retired | State::Imported) {
+                continue;
+            }
+            if let Some(contract) = text_contract(&record) {
+                match record.source.as_ref().map(|s| TextModel::load(Path::new(&s.path), &contract)) {
+                    Some(Ok(model)) => self.text_insert(&record.card.id, model),
+                    other => eprintln!("foundry: text model {} does not load: {:?}", record.card.id, other.and_then(|r| r.err())),
+                }
                 continue;
             }
             let compiled = match self.compile(&record) {
@@ -236,6 +271,163 @@ impl Models {
         self.import_dir(dir, None)
     }
 
+    /// Registers a Hugging Face download (`hf_import.rs`). A directory with a serving contract and an
+    /// ONNX graph registers like `import` (state `trained`) and gets the source attached. Anything else
+    /// registers as `imported`: listed, never compiled, never promoted. Idempotent per repo and revision.
+    pub fn register_hf(&self, dir: &Path, source: Source, id: &str, size_bytes: u64) -> Result<ModelRecord, String> {
+        let same = |s: &Source| s.hf == source.hf && s.revision == source.revision && s.as_ == source.as_;
+        if let Some(existing) = self.list().into_iter().find(|r| r.source.as_ref().is_some_and(same)) {
+            return Ok(existing);
+        }
+        let mut source = source;
+        let mut problem = servable_problem(dir, &source.as_);
+        if problem.is_some() && source.as_ == "servable" {
+            if let Some(task) = source.task.clone() {
+                match self.register_text(dir, &source, &task, id, size_bytes) {
+                    Ok(record) => return Ok(record),
+                    Err(e) => problem = Some(e),
+                }
+            }
+        }
+        if problem.is_none() {
+            match self.import_dir(dir, None) {
+                Ok(record) => return self.attach_source(&record.card.id, source),
+                Err(e) => problem = Some(e),
+            }
+        }
+        source.servable_reason = problem;
+        let now = apz_plaza::now_ms();
+        let mut records = self.records_mut();
+        if records.contains_key(id) {
+            return Err(format!("a model with id {id} is already registered"));
+        }
+        let empty = Schema { kind: "object".into(), properties: BTreeMap::new(), required: Vec::new() };
+        let card = ModelCard {
+            id: id.to_string(),
+            name: source.hf.clone(),
+            version: "1".into(),
+            input: empty.clone(),
+            output: empty,
+            features: Vec::new(),
+            labels: None,
+            allowed_roles: Vec::new(),
+            onnx_sha256: String::new(),
+            created_ms: now,
+            metrics: Value::Null,
+            serving: None,
+        };
+        let record = ModelRecord {
+            card,
+            state: State::Imported,
+            source_job: None,
+            agent_cid: None,
+            provenance: Value::Null,
+            calibration: json!({}),
+            size_bytes,
+            parameters: 0,
+            shadow: ShadowStats::default(),
+            created_ms: now,
+            state_changed_ms: now,
+            source: Some(source),
+        };
+        save(&self.model_dir(id), &record)?;
+        records.insert(id.to_string(), record.clone());
+        Ok(record)
+    }
+
+    fn attach_source(&self, id: &str, source: Source) -> Result<ModelRecord, String> {
+        let mut records = self.records_mut();
+        let record = records.get_mut(id).ok_or_else(|| no_model(id))?;
+        record.source = Some(source);
+        save(&self.model_dir(id), record)?;
+        Ok(record.clone())
+    }
+
+    /// Registers a text model (text.rs): derives its contract from the download, loads it, writes the contract
+    /// into the download's model card and records the model as trained.
+    fn register_text(&self, dir: &Path, source: &Source, task: &str, id: &str, size_bytes: u64) -> Result<ModelRecord, String> {
+        let graph = text::graph_in(dir)?;
+        let contract = text::derive(dir, &graph, task)?;
+        let model = TextModel::load(dir, &contract)?;
+        let onnx = fs::read(dir.join(&graph)).map_err(|e| format!("reading {graph}: {e}"))?;
+        let now = apz_plaza::now_ms();
+        let mut records = self.records_mut();
+        if records.contains_key(id) {
+            return Err(format!("a model with id {id} is already registered"));
+        }
+        text::write_contract(dir, &contract)?;
+        let (input, output) = text::schemas(task);
+        let card = ModelCard {
+            id: id.to_string(),
+            name: source.hf.clone(),
+            version: "1".into(),
+            input,
+            output,
+            features: Vec::new(),
+            labels: contract.labels.clone(),
+            allowed_roles: vec!["breeder".into()],
+            onnx_sha256: sha256_hex(&onnx),
+            created_ms: now,
+            metrics: Value::Null,
+            serving: Some(serde_json::to_value(&contract).map_err(|e| e.to_string())?),
+        };
+        let record = ModelRecord {
+            card,
+            state: State::Trained,
+            source_job: None,
+            agent_cid: None,
+            provenance: Value::Null,
+            calibration: json!({}),
+            size_bytes,
+            parameters: 0,
+            shadow: ShadowStats::default(),
+            created_ms: now,
+            state_changed_ms: now,
+            source: Some(source.clone()),
+        };
+        save(&self.model_dir(id), &record)?;
+        self.text_insert(id, model);
+        records.insert(id.to_string(), record.clone());
+        Ok(record)
+    }
+
+    /// Re-registers an `imported` model from its download: a text model, or a feature contract, that the hub
+    /// can serve becomes `trained`. The old record is replaced; a text model keeps its id.
+    pub fn rederive(&self, id: &str, task: Option<String>) -> Result<ModelRecord, String> {
+        let mut records = self.records_mut();
+        let current = records.get(id).cloned().ok_or_else(|| no_model(id))?;
+        if current.state != State::Imported {
+            return Err(format!("{id} is {}: only imported models are re-derived", current.state.name()));
+        }
+        let mut source = current.source.clone().ok_or_else(|| format!("{id} has no Hugging Face source"))?;
+        if task.is_some() {
+            source.task = task;
+        }
+        records.remove(id);
+        drop(records);
+        match self.register_hf(&PathBuf::from(&source.path), source, id, current.size_bytes) {
+            Ok(record) => {
+                if record.card.id != id {
+                    let _ = fs::remove_dir_all(self.model_dir(id));
+                }
+                Ok(record)
+            }
+            Err(e) => {
+                self.records_mut().insert(id.to_string(), current);
+                Err(e)
+            }
+        }
+    }
+
+    fn text_insert(&self, id: &str, model: TextModel) {
+        self.text.lock().unwrap_or_else(PoisonError::into_inner).insert(id.to_string(), Arc::new(model));
+    }
+
+    /// The text model for `id`, when it is one.
+    pub fn text(&self, id: &str) -> Option<Arc<TextModel>> {
+        self.text.lock().unwrap_or_else(PoisonError::into_inner).get(id).cloned()
+    }
+
     fn import_dir(&self, dir: &Path, source_job: Option<&str>) -> Result<ModelRecord, String> {
         let text = fs::read_to_string(dir.join("model_card.json"))
             .map_err(|e| format!("reading model_card.json: {e}"))?;
@@ -245,7 +437,8 @@ impl Models {
             .ok_or("the card has no serving contract (serving: input, output, features, allowed_roles)")?;
         let serving: Serving =
             serde_json::from_value(serving_value.clone()).map_err(|e| format!("serving: {e}"))?;
-        let onnx = fs::read(dir.join("model.onnx")).map_err(|e| format!("reading model.onnx: {e}"))?;
+        let onnx_path = onnx_path(dir);
+        let onnx = fs::read(&onnx_path).map_err(|e| format!("reading {}: {e}", onnx_path.display()))?;
         check_serving(&serving)?;
 
         let sha = sha256_hex(&onnx);
@@ -280,6 +473,7 @@ impl Models {
             shadow: ShadowStats::default(),
             created_ms: card.created_ms,
             state_changed_ms: card.created_ms,
+            source: None,
         };
         let mut records = self.records_mut();
         if records.contains_key(&id) {
@@ -307,6 +501,10 @@ impl Models {
     /// are not compiled here: startup calls [`Models::revive`] after the restore, as it always did.
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let restored: BTreeMap<String, ModelRecord> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        // The card files follow the restored records, so the list also survives a restart without Postgres.
+        for record in restored.values() {
+            save(&self.model_dir(&record.card.id), record)?;
+        }
         *self.records_mut() = restored;
         Ok(())
     }
@@ -452,6 +650,45 @@ fn check_serving(serving: &Serving) -> Result<(), String> {
     Ok(())
 }
 
+/// Why a download cannot be served, `None` when it can: a base model is for recipes; a servable one needs
+/// an ONNX graph and a `model_card.json` with a serving block.
+fn servable_problem(dir: &Path, kind: &str) -> Option<String> {
+    if kind == "base" {
+        return Some("a base model is for fine-tuning recipes, not for serving".into());
+    }
+    let contract = fs::read_to_string(dir.join("model_card.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|card| card.get("serving").cloned());
+    match contract {
+        None => Some("no feature contract: model_card.json has no serving block".into()),
+        Some(serving) => match serde_json::from_value::<Serving>(serving) {
+            Err(e) => Some(format!("the serving contract is not valid: {e}")),
+            Ok(_) if !onnx_path(dir).exists() => Some("no model.onnx (or onnx/model.onnx) in the download".into()),
+            Ok(_) => None,
+        },
+    }
+}
+
+/// The text contract of a record, when it is a text model.
+fn text_contract(record: &ModelRecord) -> Option<TextContract> {
+    let serving = record.card.serving.as_ref()?;
+    if serving.get("kind").and_then(Value::as_str) != Some("text") {
+        return None;
+    }
+    serde_json::from_value(serving.clone()).ok()
+}
+
+/// Where a download's graph is: `model.onnx` at the top, or `onnx/model.onnx` (the Hugging Face layout).
+fn onnx_path(dir: &Path) -> PathBuf {
+    let top = dir.join("model.onnx");
+    if top.exists() {
+        top
+    } else {
+        dir.join("onnx").join("model.onnx")
+    }
+}
+
 /// Ids name a directory: letters, digits, `-`, `_`, `.`, never a leading dot.
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -500,8 +737,21 @@ struct ImportBody {
 /// the machine itself) to `/v1` routes that are not public.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/foundry/models", |app, _req, _p| {
-            Response::json(200, &json!({ "models": app.models.list().iter().map(view).collect::<Vec<_>>() }))
+        .get("/v1/foundry/models", |app, req, _p| {
+            // `kind=base`: the Hugging Face base models a recipe can fine-tune (docs/design/foundry.md).
+            let base_only = match req.query_param("kind") {
+                None => false,
+                Some("base") => true,
+                Some(other) => return Response::error(400, &format!("kind must be base, got {other:?}")),
+            };
+            let models: Vec<Value> = app
+                .models
+                .list()
+                .iter()
+                .filter(|r| !base_only || r.source.as_ref().is_some_and(|s| s.as_ == "base"))
+                .map(view)
+                .collect();
+            Response::json(200, &json!({ "models": models }))
         })
         .get("/v1/foundry/models/{id}", |app, _req, p| match app.models.get(&p.get("id").to_string()) {
             Some(record) => Response::json(200, &view(&record)),
@@ -522,6 +772,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .post("/v1/foundry/models/{id}/promote", |app, _req, p| {
             outcome(app.models.promote(&app.agents, &app.looks, &p.get("id").to_string()))
+        })
+        .post("/v1/foundry/models/{id}/invoke", |app, req, p| {
+            let input: Value = match crate::agents::body(req) {
+                Ok(input) => input,
+                Err(resp) => return resp,
+            };
+            match crate::foundry::breeder::invoke(app, &p.get("id").to_string(), &input) {
+                Ok((output, ms)) => Response::json(200, &json!({ "output": output, "ms": ms })),
+                Err(e) => Response::error(400, &e),
+            }
         })
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
             outcome(app.models.retire(&app.agents, &app.looks, &p.get("id").to_string()))
@@ -720,6 +980,26 @@ mod tests {
         let _ = fs::remove_dir_all(&other_root);
     }
 
+    /// The list survives a restart with no database: every record is on disk as its card.json, and a
+    /// reopen reads the same records, the promoted one with its shadow stats.
+    #[test]
+    fn the_model_list_survives_a_restart_without_the_database() {
+        let root = scratch("list-restart");
+        let models = Models::open(&root);
+        let (roster, looks) = fresh_roster();
+        let id = models.register_from_job(&job_dir(&root, "job-r", Some(serving())), Some("job-r")).unwrap().card.id;
+        models.shadow(&id).unwrap();
+        models.record_shadow(&id, true, 0.5).unwrap();
+        models.promote(&roster, &looks, &id).unwrap();
+        let before = models.list();
+        drop(models);
+        let reopened = Models::open(&root);
+        assert_eq!(reopened.list(), before);
+        assert_eq!(reopened.get(&id).map(|r| r.state), Some(State::Promoted));
+        assert_eq!(reopened.get(&id).map(|r| r.shadow.runs), Some(1));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Runs only with APZ_TEST_DATABASE_URL set (as db.rs's round trip does). Stores under a
     /// test-only component name, never `models`, and removes its row afterwards.
     #[test]
@@ -754,6 +1034,104 @@ mod tests {
         client.execute("DELETE FROM plaza_state WHERE component = $1", &[&component]).unwrap();
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&other_root);
+    }
+
+    #[test]
+    fn a_hugging_face_download_without_a_contract_registers_as_imported_and_once() {
+        let dir = std::env::temp_dir().join(format!("apid-hf-register-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let download = dir.join("download");
+        fs::create_dir_all(download.join("onnx")).unwrap();
+        fs::write(download.join("onnx").join("model.onnx"), b"graph").unwrap();
+        fs::write(download.join("config.json"), b"{}").unwrap();
+        let models = Models::open(&dir.join("state"));
+        let source = Source {
+            hf: "org/x".into(),
+            revision: "a".repeat(40),
+            as_: "servable".into(),
+            path: download.display().to_string(),
+            servable_reason: None,
+            task: None,
+        };
+        let record = models.register_hf(&download, source.clone(), "hf-org-x-aaaaaaaa", 5).unwrap();
+        assert_eq!(record.state, State::Imported);
+        let reason = record.source.as_ref().and_then(|s| s.servable_reason.clone()).unwrap_or_default();
+        assert!(reason.contains("model_card.json"), "{reason}");
+        // The same repo and revision registers once.
+        let again = models.register_hf(&download, source, "hf-org-x-aaaaaaaa", 5).unwrap();
+        assert_eq!(again.card.id, record.card.id);
+        assert_eq!(models.list().len(), 1);
+        // An imported model is never compiled or promoted: shadow needs a trained model.
+        assert!(models.shadow(&record.card.id).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hugging_face_text_model_registers_as_trained_with_its_contract_and_runs() {
+        let dir = std::env::temp_dir().join(format!("apid-hf-text-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let download = dir.join("download");
+        fs::create_dir_all(download.join("onnx")).unwrap();
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/text");
+        fs::copy(format!("{fixture}/classifier.onnx"), download.join("onnx").join("model_quantized.onnx")).unwrap();
+        for name in ["config.json", "tokenizer.json"] {
+            fs::copy(format!("{fixture}/{name}"), download.join(name)).unwrap();
+        }
+        let models = Models::open(&dir.join("state"));
+        let source = Source {
+            hf: "org/sst".into(),
+            revision: "b".repeat(40),
+            as_: "servable".into(),
+            path: download.display().to_string(),
+            servable_reason: None,
+            task: Some("text-classification".into()),
+        };
+        let record = models.register_hf(&download, source.clone(), "hf-org-sst-bbbbbbbb", 1).unwrap();
+        assert_eq!(record.state, State::Trained);
+        assert_eq!(record.card.serving.as_ref().and_then(|s| s["kind"].as_str()), Some("text"));
+        let model = models.text(&record.card.id).expect("the text model is loaded");
+        let out = model.invoke(&json!({ "text": "good great movie" })).unwrap();
+        assert_eq!(out["label"], "POSITIVE");
+        // The same repo and revision registers once, and the contract is in the download's card.
+        let again = models.register_hf(&download, source, "hf-org-sst-bbbbbbbb", 1).unwrap();
+        assert_eq!(again.card.id, record.card.id);
+        let card: Value = serde_json::from_str(&fs::read_to_string(download.join("model_card.json")).unwrap()).unwrap();
+        assert_eq!(card["serving"]["max_len"], 8);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rederived_import_becomes_a_text_model_under_the_same_id() {
+        let dir = std::env::temp_dir().join(format!("apid-hf-rederive-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let download = dir.join("download");
+        fs::create_dir_all(download.join("onnx")).unwrap();
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/text");
+        fs::copy(format!("{fixture}/config.json"), download.join("config.json")).unwrap();
+        let models = Models::open(&dir.join("state"));
+        let source = Source {
+            hf: "org/old".into(),
+            revision: "c".repeat(40),
+            as_: "servable".into(),
+            path: download.display().to_string(),
+            servable_reason: None,
+            task: None,
+        };
+        // An import from before the text runtime: no graph, no tokenizer, no recorded task.
+        let old = models.register_hf(&download, source, "hf-org-old-cccccccc", 1).unwrap();
+        assert_eq!(old.state, State::Imported);
+        // The files are there now: the graph and the tokenizer.
+        fs::copy(format!("{fixture}/classifier.onnx"), download.join("onnx").join("model.onnx")).unwrap();
+        fs::copy(format!("{fixture}/tokenizer.json"), download.join("tokenizer.json")).unwrap();
+        // Re-derived with the task the lookup found: a trained text model under the same id, and it runs.
+        let upgraded = models.rederive("hf-org-old-cccccccc", Some("text-classification".into())).unwrap();
+        assert_eq!(upgraded.state, State::Trained);
+        assert_eq!(upgraded.card.id, "hf-org-old-cccccccc");
+        let out = models.text(&upgraded.card.id).expect("the text model is loaded").invoke(&json!({ "text": "good great movie" })).unwrap();
+        assert_eq!(out["label"], "POSITIVE");
+        // Only imported models are re-derived.
+        assert!(models.rederive("hf-org-old-cccccccc", None).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub fn router() -> Router<App> {
     let router = crate::connectors::routes(router);
     let router = crate::llm_proxy::routes(router);
     let router = crate::approvals::routes(router);
+    let router = crate::sanctions::routes(router);
     let router = crate::library::routes(router);
     let router = crate::deliverables::routes(router);
     let router = crate::toolbox::routes(router);

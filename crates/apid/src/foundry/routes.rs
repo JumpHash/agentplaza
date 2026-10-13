@@ -29,6 +29,7 @@ impl NodeCalls for Fleet<'_> {
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
+    let router = super::hf_import::routes(router);
     router
         .get("/v1/foundry/recipes", |app, _, _| Response::json(200, &app.foundry.read(|s| s.recipes.values().cloned().collect::<Vec<_>>())))
         .post("/v1/foundry/recipes/{id}/vet", |app, req, p| vet(app, p.get("id"), &req.body))
@@ -268,6 +269,7 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
         Err((_, msg)) => ("failed".to_string(), Some(msg), Vec::new()),
     };
     let job = Job {
+        candidates: Vec::new(),
         id: spec.job_id.clone(),
         status,
         created_ms: now,
@@ -301,7 +303,9 @@ fn job_list(jobs: &[Job]) -> Value {
 fn job_summary(job: &Job) -> Value {
     json!({"id": job.id, "status": job.status, "mode": job.mode, "recipe": job.recipe, "datasets": job.datasets,
            "created_ms": job.created_ms, "updated_ms": job.updated_ms, "gpu_hours": job.gpu_hours,
-           "budget_gpu_hours": job.budget_gpu_hours, "error": job.error, "runs": job.runs.len()})
+           "budget_gpu_hours": job.budget_gpu_hours, "error": job.error, "runs": job.runs.len(),
+           // The breeder (agent cid) that submitted it, if an agent did; the owner's own jobs have none.
+           "agent": job.doc.get("agent").and_then(Value::as_u64)})
 }
 
 /// One job in full: the summary, its plan, runs, series, metrics and outputs.

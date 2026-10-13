@@ -165,3 +165,125 @@ is filed. Each registry model in state `shadow` whose card id starts with `rung`
 `{"label": rung}` as the real decision. The runs happen on a thread from the app's weak handle, so the call never
 waits for them, and they only read the call: the real rung stays as filed. Each run logs one stderr line (agreed,
 differed or did not run); agreement and cost saved go to the model's shadow stats.
+
+## Hugging Face: search, import, base models (the hub side)
+
+Status: contract (2026-10-13), built in `crates/apid/src/foundry/hf.rs` (the HF client, the search and
+detail mapping, the importable hints, the egress rules) and `foundry/hf_import.rs` (the import queue, the
+resumable downloads, the verification, the registration). Owner only: the gate in front of `/v1` admits
+the owner, so these routes are never reachable from a VM. Every change is a bus frame, never SSE.
+
+### Routes
+
+| Method | Path | What |
+|---|---|---|
+| GET | `/v1/foundry/hf/status` | `{hf_token_set, hf_max_gb, free_bytes, downloads_dir}` (`free_bytes` null when unknown) |
+| PUT | `/v1/foundry/hf/token` | body `{value}`; stores the token (0600, never echoed); reply `{hf_token_set: true}` |
+| DELETE | `/v1/foundry/hf/token` | removes it; reply `{hf_token_set: false}` |
+| GET | `/v1/foundry/hf/models` | search, see below |
+| GET | `/v1/foundry/hf/models/{id}` | detail; `{id}` may contain a slash (`org/name`), so the route captures the rest of the path |
+| POST | `/v1/foundry/hf/import` | starts an import (202), see below |
+| GET | `/v1/foundry/hf/imports` | `{imports: [...]}`, newest first |
+| GET | `/v1/foundry/hf/imports/{n}` | one import |
+| DELETE | `/v1/foundry/hf/imports/{n}` | a running import is cancelled (its `.part` files stay, so a re-import resumes); a finished, failed or cancelled one is removed from the list and its `.part` files are deleted (downloaded files stay: the registry may point at them) |
+| GET | `/v1/foundry/models?kind=base` | the registry's records whose `source.as` is `base`; without `kind`, all records as before |
+| POST | `/v1/foundry/models/{id}/invoke` | runs a shadow or promoted model on the JSON body (`{text}` for a text model), answers `{output, ms}`; owner only. The breeder's `invoke_model` runs the same path |
+| POST | `/v1/foundry/models/{id}/rederive` | re-reads an `imported` model's download and upgrades it to `trained` when the hub can serve it (a text model, or a feature contract). An import from before the text runtime has no recorded task, so the repo's task is looked up first; the id is kept for text models. Owner only |
+
+Search: `GET /v1/foundry/hf/models?search=&task=&library=&sort=&limit=&cursor=`
+- `task` maps to HF `pipeline_tag`; `library` maps to HF `library` (`onnx`, `safetensors`, `transformers`, `gguf`, ...).
+- `sort`: `downloads` (default), `likes`, `lastModified`, `trending` (sent to HF as `trendingScore`). Always descending.
+- `limit`: 1..=100, default 30. `cursor`: the opaque value from `next_cursor`.
+- Reply:
+```jsonc
+{ "items": [{ "id": "Xenova/distilbert-base-uncased-finetuned-sst-2-english", "author": "Xenova",
+              "task": "text-classification", "library": "transformers.js", "tags": ["onnx", "..."],
+              "downloads": 26244, "likes": 14, "last_modified": "2025-06-30T05:13:56.000Z",
+              "gated": false, "private": false, "license": "apache-2.0" }],
+  "next_cursor": "eyJ..." }   // null on the last page
+```
+
+Detail: `GET /v1/foundry/hf/models/{id}?revision=` (`revision` defaults to `main`)
+```jsonc
+{ "id": "...", "author": "Xenova", "sha": "0b69...", "url": "https://huggingface.co/...",
+  "task": "text-classification", "library": "transformers.js", "tags": [], "license": "apache-2.0",
+  "gated": false, "private": false, "downloads": 26244, "likes": 14, "last_modified": "...",
+  "summary": "The README's first paragraph, trimmed to 400 characters ('' when there is no README)",
+  "files": [{ "path": "onnx/model.onnx", "size": 267955711, "sha256": "252c...", "lfs": true }],
+  "importable": {
+    "servable": false, "servable_reason": "...",
+    "base": true, "base_reason": null } }
+```
+- `files[].sha256` is the LFS oid from the tree API; `null` for git-stored files.
+- `importable.servable`: the repo has an ONNX graph and either a `model_card.json` (the feature contract, checked for real at import) or a `tokenizer.json` with a served task (`text-classification` or `feature-extraction`: the text runtime, below). For any other task the reason says so.
+- `importable.base`: a `config.json` plus `*.safetensors` or `pytorch_model.bin`. Usable as a fine-tune base by trainer recipes.
+
+Import: `POST /v1/foundry/hf/import` body `{id, revision?, files?: [...], as: "base"|"servable"}`
+- `revision` defaults to `main`; it is resolved to a commit sha first, and the download directory is keyed by that sha.
+- `files`: paths from the tree. Without it the default set is: for `base`, `config.json`, the tokenizer files, `*.safetensors`, `*.safetensors.index.json`, `pytorch_model.bin`, `generation_config.json`; for `servable`, `config.json`, `model_card.json`, `onnx/model.onnx` or `model.onnx`, and `tokenizer.json`. Paths must be relative with no `..` (refused otherwise).
+- Refusals: 400 bad id, `as` or `files`; 403 a gated model the owner has not accepted (`{error, url}`; the owner accepts the terms on huggingface.co, never us); 403 `huggingface.co` on the owner's `fetch_block`; 404 unknown repo or revision; 409 the same repo and revision is already importing; 413 the selected files total more than `foundry.hf_max_gb`; 507 not enough free disk (or free disk unreadable); 502 Hugging Face did not answer as expected.
+- Reply 202: `{import: <import record>}`.
+
+Import record:
+```jsonc
+{ "n": 3, "id": "Xenova/distilbert-base-uncased-finetuned-sst-2-english", "revision": "main", "sha": "0b69...",
+  "as": "servable", "state": "downloading", "dir": "<state>/foundry/hf/Xenova/distilbert-base-uncased-finetuned-sst-2-english/0b69.../",
+  "files": [{ "path": "onnx/model.onnx", "size": 267955711, "sha256": "252c...", "bytes": 1048576, "state": "downloading" }],
+  "bytes": 1048576, "total": 268000000,
+  "model_id": null, "servable": null, "reason": null, "error": null,
+  "created_ms": 0, "updated_ms": 0 }
+```
+- `state`: `queued`, `downloading`, `verifying`, `registering`, `done`, `failed`, `cancelled`, `interrupted`. `interrupted` means apid restarted during the import: POST it again to resume from the `.part` files.
+- `files[].state`: `pending`, `downloading`, `verified` (LFS files compared to their sha256; others to their size), `done`, `failed`.
+- `model_id`: the registry id once registered. `servable`: true when the model has a serving contract (served), false when it is registered as `imported`. `reason`: why it is not servable.
+
+Downloads: one import runs at a time (the rest are `queued`). Streamed to `<file>.part` and resumed with
+`Range: bytes=<n>-` (a server that ignores the range restarts the file). The sha256 of an LFS file is verified
+before the rename to the final name; a mismatch deletes the `.part` and fails the file. The size of the
+selection is checked against `foundry.hf_max_gb` (GiB, default 20, range 1..=500) and against free disk
+(`df`; the import needs its remaining bytes plus 1 GiB free). The bearer token goes only to `huggingface.co`,
+never to the CDN hosts. Redirects are followed by hand: each hop must be `https` and on the allowed hosts
+(`huggingface.co`, `hf.co` and their subdomains: `cdn-lfs*.hf.co`, `cas-bridge.xethub.hf.co`, ...), and no hop
+may be on the owner's `fetch_block`. Every request has timeouts and the User-Agent `apid-foundry/<version>`.
+
+Registration: a finished import is registered in the registry with `source: {hf, revision, as, path, servable_reason?}`.
+- `servable` with a `model_card.json` that has a `serving` block and an ONNX graph: registered through the same
+  path as `models/import` (state `trained`), then the source is attached.
+- A `servable` text model (an ONNX graph and a `tokenizer.json`, for a served task): its contract is derived from
+  the download's `config.json` (labels from `id2label`, length from `max_position_embeddings`, capped at 128) and
+  written into the download's `model_card.json` as `serving: {kind: "text", task, max_len, labels, graph}`.
+  It is registered as state `trained` (promote and shadow work as for any model), and its card's `allowed_roles`
+  is `["breeder"]`.
+- Otherwise (every `base` import, and a `servable` without a serving contract): registered as state `imported`.
+  It is not servable, is never compiled, and promote and shadow refuse it; `servable_reason` says why.
+- Registration is idempotent: the same repo and revision registers once.
+
+Progress frames (bus kind `foundry`; the data is the frame):
+`{"kind":"hf_import","import":3,"id":"Xenova/...","file":"onnx/model.onnx","bytes":1048576,"total":268000000,"state":"downloading"}`
+Byte progress is sent at most every 512 KiB or 500 ms per file, plus one frame at each file and import state
+change. `state` is the import's or the file's state; `file` is empty on import-level frames.
+
+Token: `PUT /v1/foundry/hf/token` stores it in `<state>/foundry/hf/token` (mode 0600, the way provider secrets
+are stored). It is never sent to a VM, never logged, never returned; the API reports only `hf_token_set`.
+
+Settings: `foundry.hf_max_gb` (in `GET/PUT /v1/settings`; default 20, 1..=500).
+
+Files: the router learns one pattern, `{name..}` (the last segment captures the rest of the path), in
+`crates/apz-http/src/router.rs`. Everything else is `foundry/hf.rs` and `foundry/hf_import.rs`, plus small hooks
+in `foundry/mod.rs`, `foundry/routes.rs`, `foundry/registry.rs` (State `imported`, `ModelRecord.source`),
+`settings.rs` and `state.rs` (the import queue on `App`).
+
+### Text models (phase 2)
+
+A text model runs in the hub with tract (the ONNX graph) beside the `tokenizers` crate (`tokenizer.json`, read
+offline; nothing is fetched at runtime). The graph keeps its symbolic batch and sequence dims; each call pads or
+truncates the input to `max_len` and runs `[1, max_len]` tensors. Two tasks:
+- `text-classification`: input `{text}`, output `{label, scores: [{label, score}]}`; softmax scores, highest first,
+  labels from config.json's `id2label`.
+- `feature-extraction`: input `{text}`, output `{embedding: [...]}`; the mean of the unmasked token vectors, L2-normalised.
+Any other task is refused at import with its reason. Invoke a shadow or promoted model with
+`POST /v1/foundry/models/{id}/invoke` (body `{text}`), or through `invoke_model` for permitted roles.
+Models imported before this version stay `imported`: the registry matches an import by repo and revision, so
+`POST /v1/foundry/models/{id}/rederive` upgrades them without a new download. The breeder has a read-only `foundry_hf_search` tool (the route's compact shape); imports stay owner-only.
+
+Not done in this version: deleting a registered model's files; more than one import at a time; a model card for `base` records beyond the HF summary; upgrading imports made before phase 2 (they stay `imported`).
