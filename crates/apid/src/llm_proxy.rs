@@ -332,6 +332,10 @@ fn upstream_post(
 
 /// Relays one model call for agent `cid` to `provider`'s `path`, streaming when asked.
 fn relay(app: &App, req: &Request, cid: u64, provider: &str, path: &str) -> Result<Response, Response> {
+    // Held by STOP ALL like every other model call (`internal::model_call`), not only the sockets.
+    if app.control.paused() {
+        return Err(Response::error(409, "the plaza is held (STOP ALL); waiting for the owner to resume"));
+    }
     let agent = app.agents.get(cid).ok_or_else(|| Response::error(404, "unknown agent"))?;
     let mut body: Value = req.json().map_err(|e| Response::error(400, &e.to_string()))?;
     // Workers may call any model; the orchestrator is held to its list.

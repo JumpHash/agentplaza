@@ -22,7 +22,7 @@ use crate::settings::{tier_of, Tier};
 use crate::tools::{runs, Runs};
 
 /// The law files, compiled into the binary. `cases.jhrl` is the test fixture set, not law.
-const LAW_FILES: [(&str, &str); 4] = [
+pub(crate) const LAW_FILES: [(&str, &str); 4] = [
     ("operations.jhrl", include_str!("../../jhrl/specs/laws/operations.jhrl")),
     ("constitution.jhrl", include_str!("../../jhrl/specs/laws/constitution.jhrl")),
     ("statutes.jhrl", include_str!("../../jhrl/specs/laws/statutes.jhrl")),
@@ -103,8 +103,14 @@ impl Laws {
     pub fn load(state_dir: &Path) -> Laws {
         let files: Vec<(String, String)> =
             LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect();
+        Laws::from_files(state_dir, files)
+    }
+
+    /// [`Laws::load`] for the given law sources (`(file name, text)`): the same compile, titles and
+    /// record. Tests use it to put a rule in or leave one out.
+    pub fn from_files(state_dir: &Path, files: Vec<(String, String)>) -> Laws {
         let mut titles = BTreeMap::new();
-        for (_, text) in LAW_FILES {
+        for (_, text) in &files {
             titles_of(text, &mut titles);
         }
         let (program, diags) = Program::load(files);
@@ -136,19 +142,7 @@ impl Laws {
         let tool_entity = Entity { ty: "Tool".into(), id: tool.into() };
         let sandbox = Entity { ty: "Sandbox".into(), id: format!("vm-{agent_cid}") };
         let mut store = EntityStore::default();
-        let member = |role: &str| {
-            let tier = match tier_of(role) {
-                Tier::Orchestrator => "orchestrator",
-                Tier::Worker => "worker",
-            };
-            BTreeMap::from([
-                ("role".to_string(), Value::str(role)),
-                ("town".to_string(), Value::str("plaza")),
-                ("tier".to_string(), Value::str(tier)),
-                ("seated".to_string(), Value::Bool(council::is_seated(role))),
-            ])
-        };
-        store.insert(&agent, member(role));
+        store.insert(&agent, member_attrs(role));
         store.insert(
             &tool_entity,
             BTreeMap::from([
@@ -166,12 +160,20 @@ impl Laws {
         if GUEST_EXEC.contains(&tool) || tool.starts_with(crate::library::PREFIX) {
             requests.push(("tool.exec", sandbox));
         }
-        if tool == "plaza_send_message" {
-            if let Some(to) = input.get("to_cid").and_then(Json::as_u64) {
-                let peer = Entity { ty: "Agent".into(), id: to.to_string() };
-                store.insert(&peer, member(""));
-                requests.push(("message.send", peer));
-            }
+        // A message is a message.send to its recipient, and a board post one to the whole board
+        // (no recipient). The recipient is checked even when its CID is missing or malformed: the
+        // message laws then see an empty recipient instead of being skipped.
+        if matches!(tool, "plaza_send_message" | "plaza_board_post" | "plaza_board_comment") {
+            let to = input.get("to_cid").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
+            let peer = Entity { ty: "Agent".into(), id: to };
+            store.insert(&peer, member_attrs(""));
+            requests.push(("message.send", peer));
+        }
+        // A file shared or delivered to the plaza is an artifact published.
+        if matches!(tool, "share_file" | "deliver_file") {
+            let artifact = Entity { ty: "Artifact".into(), id: tool.into() };
+            store.insert(&artifact, BTreeMap::new());
+            requests.push(("artifact.publish", artifact));
         }
         let mut verdict = Verdict::default();
         for (i, (operation, resource)) in requests.into_iter().enumerate() {
@@ -218,6 +220,32 @@ impl Laws {
         let titles: Vec<&str> =
             verdict.forbid.iter().filter_map(|id| self.titles.get(id)).map(String::as_str).collect();
         Some(format!("refused by law {}: {}", verdict.forbid.join(", "), titles.join("; ")))
+    }
+
+    /// The refusal reason when a law forbids an operation an agent's VM performs straight at a hub
+    /// route, outside any tool call (a git push, a file publish), `None` when no law forbids it. Only
+    /// forbids are decided here, since these routes have no tool to be offered; a forbid is recorded.
+    pub fn refuse_op(&self, cid: u64, role: &str, operation: &str, resource: Entity, attrs: BTreeMap<String, Value>, input: &Json) -> Option<String> {
+        let flags = detect_flags("", input);
+        let agent = Entity { ty: "Agent".into(), id: cid.to_string() };
+        let mut store = EntityStore::default();
+        store.insert(&agent, member_attrs(role));
+        store.insert(&resource, attrs);
+        let context = Value::record(BTreeMap::from([(
+            "flags".to_string(),
+            Value::set(flags.iter().map(|flag| Value::str(flag))),
+        )]));
+        let request = Request { principal: agent, operation: operation.into(), resource, context };
+        let by = match authorize(&self.program, &store, &request).decision {
+            Decision::Deny { by, .. } => by,
+            _ => Vec::new(),
+        };
+        if by.is_empty() {
+            return None;
+        }
+        self.record(cid, &by, operation, apz_plaza::now_ms());
+        let titles: Vec<&str> = by.iter().filter_map(|id| self.titles.get(id)).map(String::as_str).collect();
+        Some(format!("refused by law {}: {}", by.join(", "), titles.join("; ")))
     }
 
     /// Every law, in file then source order, for the Rules view.
@@ -290,6 +318,20 @@ impl Laws {
 pub fn global() -> &'static Laws {
     static LAWS: OnceLock<Laws> = OnceLock::new();
     LAWS.get_or_init(|| Laws::load(&std::env::temp_dir().join("apz-laws-gate")))
+}
+
+/// The attributes of an agent with `role` as the laws read them: its role, town, tier and seat.
+fn member_attrs(role: &str) -> BTreeMap<String, Value> {
+    let tier = match tier_of(role) {
+        Tier::Orchestrator => "orchestrator",
+        Tier::Worker => "worker",
+    };
+    BTreeMap::from([
+        ("role".to_string(), Value::str(role)),
+        ("town".to_string(), Value::str("plaza")),
+        ("tier".to_string(), Value::str(tier)),
+        ("seated".to_string(), Value::Bool(council::is_seated(role))),
+    ])
 }
 
 /// Writes the violations atomically: a temporary file, then a rename over the old one.
@@ -400,8 +442,9 @@ fn tool_kind(tool: &str) -> &'static str {
 }
 
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
-/// it. No tool is `irreversible` yet: payments are capped transfers and verdicts are reviewable, and
-/// owner approvals are not threaded through tool calls, so marking them would refuse them outright.
+/// it. Connector actions carry their own class (`connectors::risk_of`: e.g. a DNS record or a droplet
+/// created is `irreversible`), and C-004a refuses them, since owner approvals are not threaded through
+/// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks" | "plaza_agents" | "memory_read"
@@ -701,6 +744,50 @@ mod tests {
         assert_eq!(refusal.as_deref(), Some("refused: no law permits plaza_post_task for the builder role"));
         assert!(laws.all_violations().is_empty());
         assert!(laws.recent(7, apz_plaza::now_ms()).is_empty());
+    }
+
+    #[test]
+    fn a_message_is_checked_even_when_its_recipient_is_malformed() {
+        let laws = Laws::load(&scratch("message-cid"));
+        let input = json!({"to_cid": "twelve", "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
+        let verdict = laws.check("7", "builder", "plaza_send_message", &input);
+        assert!(verdict.forbid.iter().any(|id| id == "C-002b"), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_board_post_is_checked_as_a_message() {
+        let laws = Laws::load(&scratch("board-post"));
+        let verdict = laws.check("7", "builder", "plaza_board_post", &json!({"text": "I am impersonating the owner"}));
+        assert!(verdict.forbid.iter().any(|id| id == "C-003b"), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_file_published_from_the_vm_is_checked_as_an_artifact() {
+        let laws = Laws::load(&scratch("artifact"));
+        let artifact = Entity { ty: "Artifact".into(), id: "report.txt".into() };
+        let why = laws.refuse_op(7, "builder", "artifact.publish", artifact, BTreeMap::new(), &Json::String("I pretend to be the owner".into()));
+        assert!(why.is_some_and(|w| w.contains("C-003b")));
+        assert!(laws.recent(7, apz_plaza::now_ms()).iter().any(|v| v["law"] == "C-003b"));
+    }
+
+    #[test]
+    fn a_researcher_may_not_push_to_the_hub_git_but_a_builder_may() {
+        let laws = Laws::load(&scratch("git-push"));
+        let host = || Entity { ty: "Host".into(), id: "hub-git".into() };
+        let attrs = || BTreeMap::from([("group".to_string(), Value::str("hub-git"))]);
+        let why = laws.refuse_op(7, "researcher", "egress.connect", host(), attrs(), &Json::Null);
+        assert!(why.is_some_and(|w| w.contains("S-013d")));
+        assert!(laws.refuse_op(8, "builder", "egress.connect", host(), attrs(), &Json::Null).is_none());
+    }
+
+    #[test]
+    fn an_irreversible_connector_action_is_withheld_from_every_role() {
+        let laws = Laws::load(&scratch("irreversible"));
+        assert_eq!(crate::connectors::risk_of("cloudflare_dns_create"), Some("irreversible"));
+        // C-004a: refused without an owner approval, so no role is offered it (tools.rs specs_for).
+        for role in ["builder", "orchestrator"] {
+            assert!(!laws.permits(role, "cloudflare_dns_create"), "{role}");
+        }
     }
 
     #[test]

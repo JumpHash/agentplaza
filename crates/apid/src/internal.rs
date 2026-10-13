@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agents::{model_of, profile, Agent};
+use crate::laws::Laws;
 use crate::settings::tier_of;
 use crate::state::App;
 use crate::tools::{run_host, runs, Runs};
@@ -321,17 +322,15 @@ fn tool_request(
         json!({ "call": call, "name": name, "input": input }),
     );
     let granted: Vec<String> = profile(app, agent).tools.into_iter().map(|t| t.name).collect();
-    // The plaza's laws come first: a forbid refuses the call and goes on the agent's record.
-    let refused = app.laws.refusal(cid, &agent.role, name, input);
+    // The plaza's laws and the grant come first (see `gate_call`).
+    let verdict = gate_call(&app.laws, cid, &agent.role, &granted, name, input);
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue.
-    let runnable = refused.is_none() && decide(&granted, name, runs(name)).is_ok();
-    let gate = if runnable { crate::approvals::gate(app, cid, name, input) } else { None };
+    let gate = if verdict.is_ok() { crate::approvals::gate(app, cid, name, input) } else { None };
     let mut program = None;
-    let (decision, output, is_error) = match decide(&granted, name, runs(name)) {
-        _ if refused.is_some() => (Decision::Deny, refused.unwrap_or_default(), true),
+    let (decision, output, is_error) = match verdict {
         _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),
-        Err(reason) => (Decision::Deny, reason.to_string(), true),
+        Err(reason) => (Decision::Deny, reason, true),
         // An agent-made tool from the library: allowed with its program, which the guest runs.
         Ok(Runs::Guest) if name.starts_with(crate::library::PREFIX) => match crate::library::program(app, cid, name) {
             Some(found) => {
@@ -363,6 +362,23 @@ fn tool_request(
         }),
     );
     HostMessage::ToolDecision { call, decision, output, is_error, program }
+}
+
+/// The law gate and the grant for one tool request, decided before anything runs: `Ok(where)` when
+/// the call may run; `Err(reason)` when a law refuses it (a forbid is also recorded on the agent)
+/// or no law permits it, or the agent's grant does not cover it.
+pub(crate) fn gate_call(
+    laws: &Laws,
+    cid: u64,
+    role: &str,
+    granted: &[String],
+    name: &str,
+    input: &Value,
+) -> Result<Runs, String> {
+    if let Some(refused) = laws.refusal(cid, role, name, input) {
+        return Err(refused);
+    }
+    decide(granted, name, runs(name)).map_err(str::to_string)
 }
 
 /// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not.
@@ -426,5 +442,92 @@ mod tests {
         let summary = request_summary("m", &[Message::assistant(vec![])], &[]);
         assert_eq!(summary["last_user"], "");
         assert_eq!(summary["messages"], 1);
+    }
+}
+
+/// The law gate on the tool-request path: `gate_call`, which `tool_request` runs before anything
+/// else, with the real laws and the real offer list. The App adds only the transcript, the owner's
+/// approvals and the host run after this gate, so no App (and no network) is needed here.
+#[cfg(test)]
+mod law_gate_tests {
+    use super::*;
+    use crate::laws::{Laws, LAW_FILES};
+
+    /// A rule an owner might add: no reading files, for any agent.
+    const OWNER_RULE: &str = r#"law "O-001" "No reading files" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Test rule: no agent may read a file."
+  forbid tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "read_file"
+}
+"#;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("apid-gate-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("violations.json"));
+        dir
+    }
+
+    fn compiled_in() -> Vec<(String, String)> {
+        LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect()
+    }
+
+    #[test]
+    fn a_forbidden_call_is_refused_with_its_law_and_recorded() {
+        let laws = Laws::load(&scratch("forbidden"));
+        let granted = crate::tools::offered_names("builder");
+        let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
+        let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
+        assert!(reason.starts_with("refused by law ") && reason.contains("C-002b"), "{reason}");
+        assert!(laws.all_violations().iter().any(|(cid, v)| *cid == 7 && v.law == "C-002b"));
+        assert!(!laws.recent(7, apz_plaza::now_ms()).is_empty());
+    }
+
+    #[test]
+    fn a_permitted_call_runs_where_its_tool_runs() {
+        let laws = Laws::load(&scratch("permitted"));
+        let granted = crate::tools::offered_names("builder");
+        assert_eq!(gate_call(&laws, 7, "builder", &granted, "read_file", &json!({"path": "a.md"})), Ok(Runs::Guest));
+        assert_eq!(gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})), Ok(Runs::Host));
+        assert!(laws.all_violations().is_empty());
+    }
+
+    #[test]
+    fn an_unknown_tool_is_denied_by_default_and_not_recorded() {
+        let laws = Laws::load(&scratch("unknown"));
+        let granted = vec!["launch_missiles".to_string()];
+        let reason = gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({})).unwrap_err();
+        assert_eq!(reason, "refused: no law permits launch_missiles for the builder role");
+        assert!(laws.all_violations().is_empty());
+    }
+
+    #[test]
+    fn a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted() {
+        let laws = Laws::load(&scratch("withheld"));
+        // Posting a task is the orchestrator's (T-003): a builder is not offered it.
+        assert!(!crate::tools::offered_names("builder").iter().any(|name| name == "plaza_post_task"));
+        // The model may still call it by name; the gate refuses it by default and does not record it.
+        let granted = vec!["plaza_post_task".to_string()];
+        let reason = gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({})).unwrap_err();
+        assert!(reason.contains("no law permits plaza_post_task"), "{reason}");
+        assert!(laws.all_violations().is_empty());
+    }
+
+    #[test]
+    fn a_rule_added_takes_effect_and_a_rule_removed_stops_applying() {
+        let granted = crate::tools::offered_names("builder");
+        let input = json!({"path": "notes.md"});
+        let mut with_rule = compiled_in();
+        with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
+        let added = Laws::from_files(&scratch("rule-added"), with_rule);
+        let reason = gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
+        assert!(reason.contains("O-001"), "{reason}");
+        let removed = Laws::from_files(&scratch("rule-removed"), compiled_in());
+        assert_eq!(gate_call(&removed, 7, "builder", &granted, "read_file", &input), Ok(Runs::Guest));
     }
 }

@@ -374,7 +374,20 @@ pub fn routes(router: Router<App>) -> Router<App> {
 
 /// Checks the internal token and the cid as the other gateway routes do, then relays.
 fn internal(app: &App, req: &Request, p: &Params<'_>, tail: &str) -> Response {
-    authorized(app, req, p.get("cid"), |cid| Ok(relay(app, req, cid, p.get("owner"), p.get("repo"), tail)))
+    authorized(app, req, p.get("cid"), |cid| {
+        // A push writes to the hub's repositories: a law may forbid it to the agent's role (S-013d,
+        // researchers never write to repositories). The agent's VM reaches this route directly, so
+        // the plaza's tool check does not see it.
+        if tail == "git-receive-pack" {
+            let role = app.agents.get(cid).map(|agent| agent.role).unwrap_or_default();
+            let host = jhrl::authz::Entity { ty: "Host".into(), id: "hub-git".into() };
+            let attrs = BTreeMap::from([("group".to_string(), jhrl::value::Value::str("hub-git"))]);
+            if let Some(why) = app.laws.refuse_op(cid, &role, "egress.connect", host, attrs, &Value::Null) {
+                return Ok(Response::error(403, &why));
+            }
+        }
+        Ok(relay(app, req, cid, p.get("owner"), p.get("repo"), tail))
+    })
 }
 
 // The console's routes. Each answers in a small stable shape (not Forgejo's raw JSON):

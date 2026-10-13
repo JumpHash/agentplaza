@@ -131,7 +131,8 @@ pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
     // contract
     let granted = crate::roles_custom::tools_of(app, role);
     let mut specs: Vec<ToolSpec> = offered(role, &granted).iter().filter_map(|name| spec(name)).collect();
-    specs.extend(crate::connectors::specs_for(app, role));
+    // A connector tool is offered only when the laws permit it (C-004a holds back the irreversible ones).
+    specs.extend(crate::connectors::specs_for(app, role).into_iter().filter(|spec| permitted(role, &spec.name)));
     specs
 }
 

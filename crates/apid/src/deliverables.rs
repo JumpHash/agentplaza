@@ -317,6 +317,14 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
     if req.body.is_empty() {
         return Response::error(400, "the body is empty");
     }
+    // Publishing a file is an artifact.publish, checked whichever way the agent reaches this route:
+    // the share/deliver tools, or a PUT from its own VM (C-003b reads the content for impersonation).
+    let role = app.agents.get(cid).map(|agent| agent.role).unwrap_or_default();
+    let content = serde_json::Value::String(String::from_utf8_lossy(&req.body).into_owned());
+    let artifact = jhrl::authz::Entity { ty: "Artifact".into(), id: name.clone() };
+    if let Some(why) = app.laws.refuse_op(cid, &role, "artifact.publish", artifact, BTreeMap::new(), &content) {
+        return Response::error(403, &why);
+    }
     let kind = if query(req, "kind").as_deref() == Some("shared") { "shared" } else { "deliverable" };
     let to = match parse_cids(query(req, "to").as_deref()) {
         Ok(to) => to,

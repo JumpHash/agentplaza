@@ -401,6 +401,13 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     text
 }
 
+/// The role a connection runs with: the one the plaza spawned it with. The role a guest claims in its
+/// hello is not trusted (any VM could claim `orchestrator`), and a connection the plaza never spawned
+/// has no role, so it gets only the grants every agent has.
+pub(crate) fn role_on_hello(spawned_role: Option<String>) -> String {
+    spawned_role.unwrap_or_default()
+}
+
 /// A session said hello: register the agent (idle) and return its profile.
 pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     // contract
@@ -410,7 +417,7 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     let agent = Agent {
         cid,
         name: app.names.get(cid).unwrap_or_default(),
-        role: role.to_owned(),
+        role: role_on_hello(app.spawned.role_of(cid)),
         model_override: previous.as_ref().and_then(|old| old.model_override.clone()).or(registered),
         status: Status::Idle,
         connected_at_ms: now,
