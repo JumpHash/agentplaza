@@ -4,22 +4,25 @@
 
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2, TAU};
+use std::time::Duration;
+use web_time::Instant;
 
 use glam::{Mat4, Quat, Vec3};
 
-use super::board_layout::{layout_on_board, trace_graph, BoardParams};
+use super::board_layout::{layout_on_board, trace_graph, BoardDistrict, BoardLayout, BoardParams, Bounds, TraceGraph};
 use super::{AgentInfo, Board, Bot, Colors, District, DistrictLight, Floor, Shared, TracePulses};
-use crate::console::floor3d::canvas::Canvas;
-use crate::console::floor3d::controls::FOV_DEG;
-use crate::console::floor3d::geometry;
-use crate::console::floor3d::hardware::{self, Model, Params, Pulses, Status};
-use crate::console::floor3d::outskirts;
-use crate::console::floor3d::props::{Box2, PropPalette};
-use crate::console::floor3d::robot::{robot_variant, Robot};
-use crate::console::floor3d::rooms::{self, BuiltRoom, KitPalette};
-use crate::console::floor3d::scene::{Color, Kind, Mat, Material, Obj, Shading, Tex};
-use crate::console::floor3d::textures::{self, Rng};
-use crate::console::floor3d::toon;
+use crate::canvas::Canvas;
+use crate::controls::FOV_DEG;
+use crate::geometry;
+use crate::hardware::{self, Model, Params, Pulses, Status};
+use crate::outskirts;
+use crate::props::{Box2, PropPalette};
+use crate::robot::{species_of, Robot};
+use crate::rooms::generate::{room_seed, Door};
+use crate::rooms::{self, RoomOptions, WALL_MARGIN};
+use crate::scene::{Color, Kind, Mat, Material, Obj, Shading, Tex};
+use crate::textures::{self, Rng};
+use crate::toon;
 
 // ---- Constants (floor.ts 25–40) -----------------------------------------------------------------
 
@@ -63,11 +66,6 @@ fn children(o: &Obj) -> Vec<Obj> {
 
 fn prop_palette(c: &Colors) -> PropPalette {
     PropPalette { sheet: c.sheet, rule: c.rule, ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
-}
-
-/// The rooms keep their own light paper (documents, signs) under the night lighting.
-fn kit_palette(c: &Colors) -> KitPalette {
-    KitPalette { sheet: Color::hex(0xe9edf7), rule: Color::hex(0xa9b4cc), ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
 }
 
 /// A colour as CSS for the canvas.
@@ -146,7 +144,8 @@ pub(super) fn base(floor: &mut Floor) {
     board_ground.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, BOARD_GROUND_Y, 0.0).set_shadows(false, true);
     floor.board_ground = board_ground;
 
-    floor.root.add(&outskirts::build_backdrop());
+    floor.backdrop = outskirts::build_backdrop();
+    floor.root.add(&floor.backdrop);
     floor.root.add(&floor.district_group);
 
     // Dust: sparse motes drifting in the air. Seeds: per mote x, y, z and rise speed.
@@ -236,10 +235,57 @@ fn bounds_of(group: &Obj, part: &Obj) -> Option<(Vec3, Vec3)> {
     out
 }
 
+/// A district's place on the board, what seeds and fits its room: the machine's id (`''` without a board's machine),
+/// the district's index in the layout, its desks (the homes that point at it, at least one) and the board's copper.
+struct RoomSite<'a> {
+    machine: &'a str,
+    index: usize,
+    agents: usize,
+    graph: &'a TraceGraph,
+}
+
+/// `doorSide(cx, cz, turn, graph)`: the side of a room that faces the trace point nearest it, in the room's turned
+/// frame (n = -z, e = +x, s = +z, w = -x). With no trace point, or the room on one, the door is 's'.
+fn door_side(cx: f32, cz: f32, turn: f32, graph: &TraceGraph) -> Door {
+    let (cx, cz, turn) = (f64::from(cx), f64::from(cz), f64::from(turn));
+    let mut best: Option<([f64; 2], f64)> = None;
+    for p in &graph.nodes {
+        let p = [f64::from(p[0]), f64::from(p[1])];
+        let dist = (p[0] - cx).hypot(p[1] - cz);
+        if best.is_none_or(|(_, b)| dist < b) {
+            best = Some((p, dist));
+        }
+    }
+    let Some((p, dist)) = best else { return Door::S };
+    if dist < 1e-9 {
+        return Door::S;
+    }
+    let (wx, wz) = (p[0] - cx, p[1] - cz);
+    let (c, s) = (turn.cos(), turn.sin());
+    let (lx, lz) = (wx * c - wz * s, wx * s + wz * c);
+    if lx.abs() > lz.abs() {
+        if lx > 0.0 { Door::E } else { Door::W }
+    } else if lz > 0.0 {
+        Door::S
+    } else {
+        Door::N
+    }
+}
+
 /// `districtMesh(d)` on a board: a room's terrace, its flat top at `y` (the slot's top) and its sloped
 /// band running down to the PCB at `base`, so it stands on the chip; its floor, room, plaque and
 /// outline. Adds the room's footprints, monitors and animation to `floor`.
-fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32) -> Obj {
+/// The rooms of a board still to build: `step_rooms` builds one district per step.
+pub(super) struct RoomsJob {
+    base: f32,
+    items: Vec<BoardDistrict>,
+    desks: Vec<usize>,
+    graph: TraceGraph,
+    machine: String,
+    next: usize,
+}
+
+fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32, site: &RoomSite) -> Obj {
     let c = floor.colors;
     let g = Obj::group();
     let orch = d.role == "orchestrator";
@@ -271,16 +317,26 @@ fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32) -> Obj {
     // The room faces the centre: square rooms turn in quarter turns so they stay square to their slab.
     let facing = (-d.cx).atan2(-d.cy);
     let turn = if d.round { facing } else { ((facing / FRAC_PI_2) + 0.5).floor() * FRAC_PI_2 };
-    let BuiltRoom { group: room, floor: room_floor, screens, animate } =
-        rooms::build_room(&d.role, d.r, d.hue, &kit_palette(&c));
+    // The room's seed (machine, role, district index) and walkway side: the trace point nearest the room, in the
+    // room's turned frame. Its inner size is the cell less the wall margin. A cell below the role's minimum is built
+    // at its size and warned (`rooms::build_room`), not enlarged: the board's slot sizes need raising for those roles.
+    // TODO: room.spots (where each robot stands in this room) are not stored on the district yet; the behaviour engine reads them.
+    let seed = room_seed(site.machine, &d.role, site.index);
+    let door = door_side(d.cx, d.cy, turn, site.graph);
+    let inner = 2.0 * f64::from(d.r) - WALL_MARGIN;
+    let options = RoomOptions { seed, door, w: inner, d: inner, agents: Some(site.agents) };
+    let built = rooms::build_room(&d.role, d.r, d.hue, &rooms::kit_palette(&c), &options);
+    // The floor covers the cell, or the built room where that is larger (its walls stand just outside the inner size).
     let top_geo = if d.round {
         geometry::circle(d.r, 48, 0.0, TAU)
     } else {
-        geometry::plane(2.0 * d.r, 2.0 * d.r, 1, 1)
+        let cell = f64::from(2.0 * d.r);
+        geometry::plane(cell.max(built.w + WALL_MARGIN) as f32, cell.max(built.d + WALL_MARGIN) as f32, 1, 1)
     };
-    let top = Obj::mesh(&top_geo, &room_floor);
+    let top = Obj::mesh(&top_geo, &built.floor);
     top.set_rotation(-FRAC_PI_2, 0.0, turn).set_position(d.cx, top_y + 0.004, d.cy).set_shadows(false, true);
     g.add(&top);
+    let room = built.group;
     room.set_position(d.cx, top_y, d.cy).set_rotation(0.0, turn, 0.0);
     g.add(&room);
     for part in children(&room) {
@@ -294,8 +350,8 @@ fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32) -> Obj {
         }
         floor.prop_boxes.push(Box2 { x0: lo.x, x1: hi.x, z0: lo.z, z1: hi.z });
     }
-    floor.lit_by_role.insert(d.role.clone(), DistrictLight { screens, lit: false });
-    floor.prop_anim.push(animate);
+    floor.lit_by_role.insert(d.role.clone(), DistrictLight { screens: built.screens, lit: false });
+    floor.prop_anim.push(built.animate);
 
     // Role plaque lies flat on the floor at the room's open front, readable from the centre.
     let plaque_mat = Mat::new(Material {
@@ -346,6 +402,7 @@ fn glowing_parts(built: &hardware::Built, model: &Model) -> HashMap<String, Vec<
                 (m.emissive != Color::BLACK).then_some(m.emissive_intensity)
             };
             if let Some(base) = glowing {
+                o.set_dynamic(true); // its glow changes every frame
                 mats.push((mat, base));
             }
         });
@@ -360,7 +417,7 @@ fn glowing_parts(built: &hardware::Built, model: &Model) -> HashMap<String, Vec<
 fn create_bot(floor: &Floor, agent: &AgentInfo, district: usize, hx: f32, hy: f32) -> Bot {
     let d = &floor.districts[district];
     let orch = is_orchestrator(agent);
-    let robot = Robot::with_variant(d.hue, orch, &floor.robot_palette, agent_hue(agent.cid), robot_variant(agent.cid));
+    let robot = Robot::with_variant(d.hue, orch, &floor.robot_palette, agent_hue(agent.cid), species_of(agent.species.as_deref(), agent.cid));
     robot.group.traverse(&mut |o: &Obj| {
         o.set_shadows(true, true);
     });
@@ -435,16 +492,26 @@ impl Floor {
         let obj = Obj::group();
         obj.add(&built.root);
         obj.add(&hardware::traces(model));
+        // The atom's wrap is the child `place_atom` appends: its node is kept for the ENTER's glow.
+        let before = obj.get().children.len();
         let atom = hardware::place_atom(model, &obj, &prop_palette(&self.colors));
+        let atom_node = obj.get().children.get(before).cloned();
         let pulses = trace_pulses(model);
         for tp in &pulses {
             obj.add(&tp.pulses.obj);
         }
-        obj.set_dynamic(true); // the lights, the pulses and the atom move every frame
+        // Only the parts that move are dynamic (the built model's animated parts, the pulses and the
+        // atom, set in `hardware`): the rest of the board is baked with the statics.
         let glow = glowing_parts(&built, model);
-        let bp = BoardParams { params: params.clone(), ..BoardParams::default() };
-        let layout = layout_on_board(&[], model, &bp);
         let graph = trace_graph(model);
+        // Empty until `sync` lays out the roster (it always follows, so the empty layout is never read).
+        let layout = BoardLayout {
+            districts: Vec::new(),
+            homes: HashMap::new(),
+            atom: [0.0; 3],
+            bounds: Bounds { cx: 0.0, cz: 0.0, w: 0.0, d: 0.0 },
+            pcb_top: 0.0,
+        };
 
         self.root.remove(&self.ground);
         self.root.add(&self.board_ground);
@@ -457,6 +524,7 @@ impl Floor {
             obj,
             built,
             atom,
+            atom_node,
             pulses,
             glow,
             level: HashMap::new(),
@@ -470,6 +538,7 @@ impl Floor {
 
     /// Takes the board, its robots and rooms out of the scene.
     fn clear_board(&mut self) {
+        self.rooms_job = None;
         self.root.remove(&self.board_ground);
         if let Some(old) = self.board.take() {
             self.root.remove(&old.obj);
@@ -488,42 +557,103 @@ impl Floor {
         self.selected = None;
     }
 
-    /// Rebuilds the rooms of the board's current layout (`buildWorld`).
-    fn build_rooms(&mut self) {
+    /// Starts the rooms of the board's current layout (`buildWorld`): the old ones come out now, and
+    /// `step_rooms` builds the new ones, a district at a time.
+    fn start_rooms(&mut self) {
         let Some(board) = self.board.as_ref() else { return };
-        let base = board.layout.pcb_top;
-        let items = board.layout.districts.clone();
+        // Each district's desks: the homes that point at it, at least one.
+        let mut desks = vec![0usize; board.layout.districts.len()];
+        for &(idx, _, _) in board.layout.homes.values() {
+            if let Some(n) = desks.get_mut(idx) {
+                *n += 1;
+            }
+        }
+        let job = RoomsJob {
+            base: board.layout.pcb_top,
+            items: board.layout.districts.clone(),
+            desks,
+            graph: board.graph.clone(),
+            machine: self.machine_id.clone(),
+            next: 0,
+        };
         for child in children(&self.district_group) {
             self.district_group.remove(&child);
         }
         self.lit_by_role.clear();
         self.prop_anim.clear();
         self.prop_boxes.clear();
-        for bd in &items {
-            let g = district_mesh(self, &bd.district, bd.y, base);
-            self.district_group.add(&g);
-        }
+        self.rooms_job = (!job.items.is_empty()).then_some(job);
         self.statics_dirty = true; // the rooms changed: re-bake the statics
     }
 
+    /// Builds the queued rooms a district at a time until `budget` is spent (one district at least). Returns
+    /// whether rooms are still queued. The web's warm queue spends its frame budget on its jobs the same way.
+    pub fn step_rooms(&mut self, budget: Duration) -> bool {
+        let t0 = Instant::now();
+        let Some(mut job) = self.rooms_job.take() else { return false };
+        loop {
+            let index = job.next;
+            let bd = &job.items[index];
+            let site = RoomSite { machine: &job.machine, index, agents: job.desks[index].max(1), graph: &job.graph };
+            let g = district_mesh(self, &bd.district, bd.y, job.base, &site);
+            self.district_group.add(&g);
+            self.statics_dirty = true;
+            job.next += 1;
+            if job.next == job.items.len() {
+                return false;
+            }
+            if t0.elapsed() >= budget {
+                break;
+            }
+        }
+        self.rooms_job = Some(job);
+        true
+    }
+
+    /// Builds every queued room now.
+    pub fn finish_rooms(&mut self) {
+        self.step_rooms(Duration::MAX);
+    }
+
+    /// Whether rooms are still queued (`step_rooms` builds them).
+    pub fn rooms_pending(&self) -> bool {
+        self.rooms_job.is_some()
+    }
+
     /// Keeps the board in step with the agents on the machine: one room per role on the board's
-    /// slots, rebuilt when the layout changes, and a robot per agent.
+    /// slots, rebuilt when the layout changes, and a robot per agent. Every room is built here.
     pub fn sync(&mut self, list: &[AgentInfo]) {
-        let Some(board) = self.board.as_mut() else { return };
-        let bp = BoardParams { params: board.params.clone(), ..BoardParams::default() };
-        let layout = layout_on_board(list, board.model, &bp);
+        self.begin_sync(list);
+        self.finish_rooms();
+    }
+
+    /// `sync` without the rooms: the layout and the robots now, the rooms queued for `step_rooms`.
+    /// The layout is cached per board and roster: a sync that finds the same ones reuses it.
+    pub fn begin_sync(&mut self, list: &[AgentInfo]) {
+        let Some(board) = self.board.as_ref() else { return };
+        let bp = BoardParams { params: board.params.clone() };
+        let key = format!("{}|{:?}", board.key, list);
+        let cached = self.layout_cache.as_ref().filter(|(k, _)| *k == key).map(|(_, layout)| layout.clone());
+        let layout = match cached {
+            Some(layout) => layout,
+            None => {
+                let layout = layout_on_board(list, board.model, &bp);
+                self.layout_cache = Some((key, layout.clone()));
+                layout
+            }
+        };
         let mut homes: Vec<_> = layout.homes.iter().map(|(cid, h)| (*cid, *h)).collect();
         homes.sort_by_key(|(cid, _)| *cid);
-        let sig = format!("{:?}|{:?}", layout.districts, homes);
-        let changed = board.sig != sig;
-        board.sig = sig;
+        // The machine's id seeds the rooms: a change of machine rebuilds them even when the layout is the same.
+        let sig = format!("{:?}|{:?}|{}", layout.districts, homes, self.machine_id);
         self.districts = layout.districts.iter().map(|bd| bd.district.clone()).collect();
         let homes = layout.homes.clone();
-        if let Some(board) = self.board.as_mut() {
-            board.layout = layout;
-        }
+        let Some(board) = self.board.as_mut() else { return };
+        let changed = board.sig != sig;
+        board.sig = sig;
+        board.layout = layout;
         if changed {
-            self.build_rooms();
+            self.start_rooms();
         }
 
         let mut seen = HashSet::new();
@@ -684,7 +814,7 @@ mod tests {
     use super::*;
 
     fn agent(cid: u64, role: &str) -> AgentInfo {
-        AgentInfo { cid, name: format!("agent {cid}"), role: role.into(), status: "idle".into(), tier: if role == "orchestrator" { "orchestrator".into() } else { "worker".into() }, model: String::new() }
+        AgentInfo { cid, name: format!("agent {cid}"), role: role.into(), status: "idle".into(), tier: if role == "orchestrator" { "orchestrator".into() } else { "worker".into() }, model: String::new(), species: None }
     }
 
     #[test]
@@ -709,5 +839,23 @@ mod tests {
         let once = floor.root.get().children.len();
         floor.show_board("again".into(), model, Params::default(), Status::Online);
         assert_eq!(floor.root.get().children.len(), once, "a second board replaces the first, it does not add to the scene");
+    }
+
+    #[test]
+    fn the_door_faces_the_nearest_trace_point_in_the_rooms_turned_frame() {
+        let graph = |nodes: Vec<[f32; 2]>| TraceGraph { nodes, edges: Vec::new() };
+        // No copper, or the room on a trace point: 's' (doorSide's default).
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(Vec::new())), Door::S);
+        assert_eq!(door_side(1.0, 1.0, 0.0, &graph(vec![[1.0, 1.0]])), Door::S);
+        // A point to the +z side (south), to +x (east), to -z (north) and to -x (west), unturned.
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(vec![[0.0, 5.0]])), Door::S);
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(vec![[5.0, 0.0]])), Door::E);
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(vec![[0.0, -5.0]])), Door::N);
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(vec![[-5.0, 0.0]])), Door::W);
+        // Turned a quarter (the room faces the centre), a south point is seen on the west side of the room.
+        assert_eq!(door_side(0.0, 0.0, FRAC_PI_2, &graph(vec![[0.0, 5.0]])), Door::W);
+        // The nearest point wins; on a tie the first one does.
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(vec![[0.0, -2.0], [3.0, 0.0]])), Door::N);
+        assert_eq!(door_side(0.0, 0.0, 0.0, &graph(vec![[2.0, 0.0], [0.0, 2.0]])), Door::E);
     }
 }

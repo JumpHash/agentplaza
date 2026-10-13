@@ -19,16 +19,6 @@ pub enum FloorKind { Planks, Parquet, Checker, Hazard, Slate, Carpet, Blueprint,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WallKind { Panel, Brick, Hedge, Glass, Fence, Stone, None }
 
-/// A room style: its sign, size (half-width or radius, 3–5), shape, floor, walls, furnishing.
-pub struct RoomStyle {
-    pub name: &'static str,
-    pub size: f32,
-    pub round: bool,
-    pub floor: FloorKind,
-    pub wall: WallKind,
-    pub build: fn(&mut Room),
-}
-
 /// The colours the kit tints from.
 #[derive(Debug, Clone, Copy)]
 pub struct KitPalette {
@@ -380,11 +370,13 @@ pub struct Room {
     pub boxes: Vec<Box2>,
 }
 
-/// A mesh standing at (x, y, z) under `parent`, casting and receiving shadows (kit.ts `put`).
-fn put(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
+/// A mesh standing at (x, y, z) under `parent`, receiving shadows (kit.ts `put`). It casts unless it is `thin`
+/// (kit.ts `thinPart`: a trim, a decal or a thin rod never casts); an item's own cast gate is applied on top of it
+/// by build.rs (`cast_policy`).
+fn put(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32, thin: bool) -> Obj {
     let m = Obj::mesh(geo, mat);
     m.set_position(x, y, z);
-    m.set_shadows(true, true);
+    m.set_shadows(!thin, true);
     parent.add(&m);
     m
 }
@@ -414,24 +406,31 @@ impl Room {
     /// `box(parent, w, h, d, mat, x, y, z)`: a box standing on y (its base at y).
     #[allow(clippy::too_many_arguments)]
     pub fn box_(&mut self, parent: &Obj, w: f32, h: f32, d: f32, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
-        put(parent, &geometry::box_geo(w, h, d), mat, x, y + h / 2.0, z)
+        // thinPart: a box thinner than 0.02 in any side never casts.
+        let thin = w.min(h).min(d) < 0.02;
+        put(parent, &geometry::box_geo(w, h, d), mat, x, y + h / 2.0, z, thin)
     }
 
     /// `cyl(parent, rTop, rBottom, h, mat, x, y, z, seg)`: a cylinder standing on y.
     #[allow(clippy::too_many_arguments)]
     pub fn cyl(&mut self, parent: &Obj, r_top: f32, r_bottom: f32, h: f32, mat: &Mat, x: f32, y: f32, z: f32, seg: u32) -> Obj {
-        put(parent, &geometry::cylinder(r_top, r_bottom, h, seg), mat, x, y + h / 2.0, z)
+        // thinPart: a cylinder of radius under 0.05 never casts (the rods and the posts).
+        let thin = r_top.max(r_bottom) < 0.05;
+        put(parent, &geometry::cylinder(r_top, r_bottom, h, seg), mat, x, y + h / 2.0, z, thin)
     }
 
     /// `ball(parent, r, mat, x, y, z)`: a sphere centred at (x, y, z).
     pub fn ball(&mut self, parent: &Obj, r: f32, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
-        put(parent, &geometry::sphere(r, 16, 12), mat, x, y, z)
+        // thinPart: a sphere under 0.02 across never casts.
+        let thin = 2.0 * r < 0.02;
+        put(parent, &geometry::sphere(r, 16, 12), mat, x, y, z, thin)
     }
 
-    /// `cone(parent, r, h, mat, x, y, z, seg)`: a cone standing on y.
+    /// `cone(parent, r, h, mat, x, y, z, seg)`: a cone standing on y. Never thin: three's ConeGeometry has no
+    /// radiusTop, so kit.ts's cylinder rule never marks it (its `thinPart` is false).
     #[allow(clippy::too_many_arguments)]
     pub fn cone(&mut self, parent: &Obj, r: f32, h: f32, mat: &Mat, x: f32, y: f32, z: f32, seg: u32) -> Obj {
-        put(parent, &geometry::cone(r, h, seg), mat, x, y + h / 2.0, z)
+        put(parent, &geometry::cone(r, h, seg), mat, x, y + h / 2.0, z, false)
     }
 
     /// `rug(w, d, mat, x, z, round)`: a flat rug or floor marking; walkable, no footprint.
@@ -494,7 +493,7 @@ impl Room {
         let it = self.item(x, z, rot_y);
         let k = self.k.clone();
         let spines = [k.red.clone(), k.blue.clone(), k.yellow.clone(), k.green.clone(), k.purple.clone()];
-        self.box_(&it, w, h, 0.4, &k.dark_wood, 0.0, 0.0, -0.02);
+        self.box_(&it, w, h, 0.4, &k.dark_wood, 0.0, 0.0, 0.0);
         let rows = (h / 0.42).round().max(2.0) as u32;
         for row in 0..rows {
             let y = 0.1 + (row as f32 * (h - 0.2)) / rows as f32;
@@ -503,7 +502,7 @@ impl Room {
                 let bw = 0.06 + self.rand.next() * 0.06;
                 let bh = 0.2 + self.rand.next() * 0.1;
                 let idx = (self.rand.next() * spines.len() as f32).floor() as usize;
-                self.box_(&it, bw, bh, 0.26, &spines[idx], bx + bw / 2.0, y, 0.06);
+                self.box_(&it, bw, bh, 0.26, &spines[idx], bx + bw / 2.0, y, 0.04);
                 bx += bw + 0.012;
             }
         }
@@ -550,6 +549,127 @@ impl Room {
             }
         }));
         self.footprint(x, z, 0.0, 0.05, 0.05);
+        it
+    }
+
+    // ---- Builders for the room generator (rooms/gen.ts). Each item's origin is its floor centre (y = 0);
+    // a builder keeps the old pieces above as they are. No footprint: the web's new builders record none.
+
+    /// `deskTop(x, z, rotY)`: a desk's table only, top at y = 0.56, footprint 1.0 x 0.55 (no chair, no monitor).
+    pub fn desk_top(&mut self, x: f32, z: f32, rot_y: f32) -> Obj {
+        let it = self.item(x, z, rot_y);
+        let k = self.k.clone();
+        self.box_(&it, 1.0, 0.06, 0.55, &k.wood, 0.0, 0.5, 0.0);
+        self.box_(&it, 0.08, 0.5, 0.5, &k.wood, -0.42, 0.0, 0.0);
+        self.box_(&it, 0.08, 0.5, 0.5, &k.wood, 0.42, 0.0, 0.0);
+        it
+    }
+
+    /// `monitor(x, z, rotY, y)`: a monitor standing on a desk. Its origin is the desk top (`y` is the host's top);
+    /// the screen lights up while agents work (dynamic, so it is never baked). Footprint 0.62 x 0.18, height 0.56.
+    pub fn monitor(&mut self, x: f32, z: f32, rot_y: f32, y: f32) -> Obj {
+        let it = self.item(x, z, rot_y);
+        it.set_position(x, y, z);
+        let k = self.k.clone();
+        self.box_(&it, 0.3, 0.02, 0.18, &k.metal, 0.0, 0.0, 0.0);
+        self.box_(&it, 0.07, 0.18, 0.05, &k.metal, 0.0, 0.02, 0.0);
+        self.box_(&it, 0.62, 0.38, 0.04, &k.screen, 0.0, 0.18, -0.02).set_dynamic(true);
+        it
+    }
+
+    /// `poster(x, z, rotY)`: a framed picture on a wall, 0.5 wide, 0.6 high, 0.1 deep; its bottom is the group's y = 0.
+    pub fn poster(&mut self, x: f32, z: f32, rot_y: f32) -> Obj {
+        let it = self.item(x, z, rot_y);
+        let k = self.k.clone();
+        self.box_(&it, 0.5, 0.04, 0.1, &k.dark_wood, 0.0, 0.0, 0.0);
+        self.box_(&it, 0.5, 0.04, 0.1, &k.dark_wood, 0.0, 0.56, 0.0);
+        self.box_(&it, 0.04, 0.52, 0.1, &k.dark_wood, -0.23, 0.04, 0.0);
+        self.box_(&it, 0.04, 0.52, 0.1, &k.dark_wood, 0.23, 0.04, 0.0);
+        self.box_(&it, 0.42, 0.52, 0.02, &k.paper, 0.0, 0.04, 0.0);
+        self.box_(&it, 0.2, 0.24, 0.01, &k.accent, -0.07, 0.2, 0.015);
+        let sun = self.cyl(&it, 0.07, 0.07, 0.01, &k.signal, 0.0, 0.0, 0.0, 16);
+        sun.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.1, 0.38, 0.015);
+        self.box_(&it, 0.3, 0.03, 0.01, &k.dark, 0.0, 0.14, 0.015);
+        self.box_(&it, 0.2, 0.03, 0.01, &k.dark, -0.05, 0.08, 0.015);
+        it
+    }
+
+    /// `clock(x, z, rotY)`: a round wall clock, a face 0.36 across and 0.08 deep; its bottom is the group's y = 0.
+    pub fn clock(&mut self, x: f32, z: f32, rot_y: f32) -> Obj {
+        let it = self.item(x, z, rot_y);
+        let k = self.k.clone();
+        let rim = self.cyl(&it, 0.18, 0.18, 0.08, &k.wood, 0.0, 0.0, 0.0, 24);
+        rim.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.18, 0.0);
+        let face = self.cyl(&it, 0.14, 0.14, 0.012, &k.white, 0.0, 0.0, 0.0, 24);
+        face.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.18, 0.035);
+        self.box_(&it, 0.012, 0.13, 0.003, &k.dark, 0.0, 0.18, 0.0425);
+        self.box_(&it, 0.09, 0.012, 0.003, &k.dark, 0.045, 0.174, 0.0425);
+        it
+    }
+
+    /// `sofa(x, z, rotY)`: a two-seat sofa, 1.6 wide, 0.8 high, 0.7 deep, its seat facing +z; centred on the origin.
+    pub fn sofa(&mut self, x: f32, z: f32, rot_y: f32) -> Obj {
+        let it = self.item(x, z, rot_y);
+        let k = self.k.clone();
+        self.box_(&it, 1.2, 0.22, 0.7, &k.accent, 0.0, 0.0, 0.0);
+        self.box_(&it, 1.6, 0.58, 0.18, &k.accent, 0.0, 0.22, -0.26);
+        for sx in [-0.71, 0.71] {
+            self.box_(&it, 0.18, 0.44, 0.52, &k.accent, sx, 0.0, 0.09);
+        }
+        for sx in [-0.31, 0.31] {
+            self.box_(&it, 0.6, 0.14, 0.52, &k.accent_soft, sx, 0.22, 0.09);
+        }
+        it
+    }
+
+    /// `bin(x, z)`: a waste bin, 0.3 x 0.6 x 0.3, with a lid-coloured band on top.
+    pub fn bin(&mut self, x: f32, z: f32) -> Obj {
+        let it = self.item(x, z, 0.0);
+        let k = self.k.clone();
+        self.box_(&it, 0.3, 0.54, 0.3, &k.metal, 0.0, 0.0, 0.0);
+        self.box_(&it, 0.3, 0.06, 0.3, &k.accent, 0.0, 0.54, 0.0);
+        it
+    }
+
+    /// `coatStand(x, z)`: a round foot 0.4 across, a pole and three hooks; 1.8 high.
+    pub fn coat_stand(&mut self, x: f32, z: f32) -> Obj {
+        let it = self.item(x, z, 0.0);
+        let k = self.k.clone();
+        self.cyl(&it, 0.2, 0.2, 0.04, &k.dark, 0.0, 0.0, 0.0, 20);
+        self.cyl(&it, 0.025, 0.025, 1.68, &k.dark_wood, 0.0, 0.04, 0.0, 8);
+        self.ball(&it, 0.06, &k.dark, 0.0, 1.74, 0.0);
+        for i in 0..3 {
+            let a = i as f32 * TAU / 3.0;
+            let hook = self.box_(&it, 0.18, 0.03, 0.03, &k.dark_wood, 0.0, 0.0, 0.0);
+            hook.set_position(a.sin() * 0.09, 1.5, a.cos() * 0.09).set_rotation(0.0, a - FRAC_PI_2, 0.0);
+        }
+        it
+    }
+
+    /// `safe(x, z, rotY)`: a wall safe, dark metal 0.7 x 0.9 x 0.6, a gold dial and a handle on the front (+z).
+    pub fn safe(&mut self, x: f32, z: f32, rot_y: f32) -> Obj {
+        let it = self.item(x, z, rot_y);
+        let k = self.k.clone();
+        self.box_(&it, 0.7, 0.9, 0.58, &k.dark, 0.0, 0.0, 0.0);
+        let dial = self.cyl(&it, 0.1, 0.1, 0.02, &k.gold, 0.0, 0.0, 0.0, 20);
+        dial.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.5, 0.3);
+        self.box_(&it, 0.04, 0.12, 0.03, &k.metal, 0.22, 0.4, 0.29);
+        it
+    }
+
+    /// `smallCrate(x, z, rotY)`: the room's 0.5 cube crate.
+    pub fn small_crate(&mut self, x: f32, z: f32, rot_y: f32) -> Obj {
+        self.crate_(x, z, 0.5, rot_y)
+    }
+
+    /// `propPlaceholder(x, z, rotY, w, h, d, label)`: stands in for a station prop with no file (or an unknown
+    /// model): a plain box of its footprint and height, in a neutral colour.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prop_placeholder(&mut self, x: f32, z: f32, rot_y: f32, w: f32, h: f32, d: f32, label: &str) -> Obj {
+        let it = self.item(x, z, rot_y);
+        it.set_name(&format!("prop:{label}"));
+        let neutral = self.k.mat(Color::hex(0xb9bfc9));
+        self.box_(&it, w, h, d, &neutral, 0.0, 0.0, 0.0);
         it
     }
 }

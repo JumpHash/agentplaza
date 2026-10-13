@@ -1,0 +1,450 @@
+//! Robot effects, as `robots/fx.ts`: small billboards and glow cones from one pool shared by every robot in the
+//! scene (sparks, zzz, dots, hearts, keys, steam, ink, glow). A robot spawns them under a bone; they move, grow and
+//! fade, then go back to the pool. The desktop has no sprite, so each billboard is a flat quad with a texture drawn
+//! in code, turned to the camera's usual view (the floor's isometric angle); a glow is a cone that hangs from its
+//! bone and is not turned. Not built: trail, and a glow's floor spot, since the desktop's Obj has no parent pointer
+//! and Fx only sees the head bone, so it cannot find the floor under the robot. The other kinds of clips.json
+//! (notes, bubbles, confetti) are logged once and do nothing.
+
+use std::f32::consts::{PI, TAU};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use glam::{Quat, Vec3};
+
+use super::super::geometry::plane;
+use super::super::scene::{Color, Geo, Geometry, Mat, Material, Obj, Shading, Side, Tex, Texture};
+use super::super::textures::Rng;
+use super::super::world::layout::{AZIMUTH, POLAR};
+use super::files::warn_once;
+
+/// The live effects of the whole scene at once: beyond this, new ones are dropped (the budget).
+pub const LIVE_MAX: usize = 60;
+/// A glow's colour when the caller gives none: the lamp's warm light.
+const WARM: u32 = 0xffc46b;
+
+/// The kinds built now. A kind's index is its pool and texture.
+const KINDS: [&str; 8] = ["sparks", "zzz", "dots", "hearts", "keys", "steam", "ink", "glow"];
+const TEXTURE_SIZE: usize = 64;
+/// The six spheres of an ink blot: (centre x, centre y, radius) on the texture, as fx.ts.
+const INK: [(f32, f32, f32); 6] = [(32.0, 32.0, 13.0), (22.0, 27.0, 11.0), (42.0, 27.0, 11.0), (21.0, 40.0, 10.0), (43.0, 40.0, 10.0), (32.0, 44.0, 11.0)];
+/// The three puffs of a steam cloud: (centre x, centre y, radius) on the texture, as fx.ts.
+const STEAM: [(f32, f32, f32); 3] = [(24.0, 38.0, 14.0), (41.0, 32.0, 16.0), (33.0, 44.0, 12.0)];
+
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+static POOL: Mutex<Vec<Puff>> = Mutex::new(Vec::new());
+static TEXTURES: OnceLock<Vec<Tex>> = OnceLock::new();
+static QUAD: OnceLock<Geo> = OnceLock::new();
+static CONE: OnceLock<Geo> = OnceLock::new();
+
+/// The opacity over a life, as a fraction of the peak (k in 0..1), as fx.ts FADE.
+#[derive(Clone, Copy)]
+enum Fade {
+    /// 1 − k².
+    Squared,
+    /// Up quickly, then out: min(1, 6k)(1 − k) (steam).
+    Puff,
+    /// 1 − k (ink).
+    Linear,
+    /// sin(πk): up and back down (a glow).
+    Arc,
+}
+
+impl Fade {
+    fn value(self, k: f32) -> f32 {
+        match self {
+            Fade::Squared => 1.0 - k * k,
+            Fade::Puff => (6.0 * k).min(1.0) * (1.0 - k),
+            Fade::Linear => 1.0 - k,
+            Fade::Arc => (PI * k).sin(),
+        }
+    }
+}
+
+/// The look of a kind, as fx.ts LOOK (the desktop does not spin, tint or sway its pieces).
+#[derive(Clone, Copy)]
+struct Look {
+    /// Seconds alive.
+    life: f32,
+    /// Size in world units (a cone is scaled by this too).
+    size: f32,
+    /// The scale over the life, as multiples of `size` (a pop eases out).
+    grow: [f32; 2],
+    /// Units per second upward (negative falls).
+    rise: f32,
+    /// A random extra rise, units per second (sparks only).
+    rise_jitter: f32,
+    /// Random sideways speed, units per second.
+    spread: f32,
+    /// Peak opacity.
+    peak: f32,
+    fade: Fade,
+    /// The scale eases out (fast at first, then it settles).
+    pop: bool,
+    /// A glow's cone: not turned to the camera, and drawn with its colour.
+    cone: bool,
+    additive: bool,
+}
+
+fn look_of(kind: usize) -> Look {
+    let base = Look { life: 0.5, size: 0.14, grow: [1.0, 1.0], rise: 0.0, rise_jitter: 0.0, spread: 0.0, peak: 1.0, fade: Fade::Squared, pop: false, cone: false, additive: false };
+    match KINDS[kind] {
+        "sparks" => Look { life: 0.5, size: 0.14, rise: 0.2, rise_jitter: 0.3, spread: 0.5, ..base },
+        "zzz" => Look { life: 1.6, size: 0.24, grow: [0.7, 1.2], rise: 0.32, spread: 0.12, ..base },
+        "dots" => Look { life: 1.2, size: 0.26, spread: 0.12, ..base },
+        "hearts" => Look { life: 1.5, size: 0.2, rise: 0.45, spread: 0.12, ..base },
+        "keys" => Look { life: 0.4, size: 0.14, grow: [0.4, 1.1], rise: 0.25, spread: 0.12, pop: true, ..base },
+        "steam" => Look { life: 1.2, size: 0.26, grow: [0.6, 1.9], rise: 0.3, spread: 0.08, peak: 0.85, fade: Fade::Puff, ..base },
+        "ink" => Look { life: 1.0, size: 0.42, grow: [0.6, 1.3], rise: 0.04, peak: 0.8, fade: Fade::Linear, ..base },
+        _ => Look { life: 1.0, size: 1.0, peak: 0.6, fade: Fade::Arc, cone: true, additive: true, ..base },
+    }
+}
+
+fn kind_index(kind: &str) -> Option<usize> {
+    KINDS.iter().position(|k| *k == kind)
+}
+
+fn hex(v: u32) -> [f32; 3] {
+    [((v >> 16) & 0xff) as f32, ((v >> 8) & 0xff) as f32, (v & 0xff) as f32]
+}
+
+fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+/// The distance from `p` to the segment `a`–`b`.
+fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+}
+
+/// Source-over: `src` (colour, coverage) laid over `dst`, both non-premultiplied.
+fn over(dst: ([f32; 3], f32), src: ([f32; 3], f32)) -> ([f32; 3], f32) {
+    let a = src.1 + dst.1 * (1.0 - src.1);
+    if a <= 0.0 {
+        return ([0.0; 3], 0.0);
+    }
+    let c = [0, 1, 2].map(|i| (src.0[i] * src.1 + dst.0[i] * dst.1 * (1.0 - src.1)) / a);
+    (c, a)
+}
+
+/// Whether (px, py) lies in a rounded rectangle (x, y, w, h, corner radius r).
+fn in_rounded(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, r: f32) -> bool {
+    let cx = px.clamp(x + r, x + w - r);
+    let cy = py.clamp(y + r, y + h - r);
+    (px - cx).powi(2) + (py - cy).powi(2) <= r * r
+}
+
+/// The parameter t (0..1, clamped) of a two-circle radial gradient at `p`: the circle of centre `f` and radius
+/// `r0` grows to centre `c` and radius `r1`; the largest t whose circle passes through `p` (canvas's rule).
+fn gradient_t(p: (f32, f32), f: (f32, f32), r0: f32, c: (f32, f32), r1: f32) -> f32 {
+    let dot = |a: (f32, f32), b: (f32, f32)| a.0 * b.0 + a.1 * b.1;
+    let (cd, pd, dr) = ((c.0 - f.0, c.1 - f.1), (p.0 - f.0, p.1 - f.1), r1 - r0);
+    // a t² − 2 b t + cc = 0 for |pd − t cd| = r0 + t dr.
+    let a = dot(cd, cd) - dr * dr;
+    let b = dot(pd, cd) + r0 * dr;
+    let cc = dot(pd, pd) - r0 * r0;
+    let disc = b * b - a * cc;
+    if disc < 0.0 {
+        return 0.0;
+    }
+    let s = disc.sqrt();
+    let best = [(b + s) / a, (b - s) / a].into_iter().filter(|t| r0 + t * dr >= 0.0).fold(f32::MIN, f32::max);
+    best.clamp(0.0, 1.0)
+}
+
+/// One sphere of an ink blot at `p`: lighter at its top-left, navy-purple, darker at the rim (fx.ts's gradient).
+fn ink_shade(p: (f32, f32), cx: f32, cy: f32, r: f32) -> [f32; 3] {
+    let t = gradient_t(p, (cx - r * 0.35, cy - r * 0.35), r * 0.1, (cx, cy), r);
+    let (c0, c1, c2) = (hex(0x5b4d9c), hex(0x2c2462), hex(0x17123a));
+    if t < 0.6 {
+        mix(c0, c1, t / 0.6)
+    } else {
+        mix(c1, c2, (t - 0.6) / 0.4)
+    }
+}
+
+/// One steam puff at distance `d` from its centre (in radii): light grey-blue, a darker rim, clear at the edge.
+fn puff_texel(d: f32) -> ([f32; 3], f32) {
+    let (c0, c1, c2) = (hex(0xccd9e7), hex(0xb4c5d8), hex(0x8298b2));
+    if d <= 0.7 {
+        (mix(c0, c1, d / 0.7), 0.95 + (0.9 - 0.95) * (d / 0.7))
+    } else if d <= 0.9 {
+        let t = (d - 0.7) / 0.2;
+        (mix(c1, c2, t), 0.9 + (0.8 - 0.9) * t)
+    } else {
+        (c2, 0.8 * (1.0 - (d - 0.9) / 0.1))
+    }
+}
+
+/// A keycap: a dark ink outline, a cyan cap inset within it, and a small white glint at its top-left.
+fn keycap(x: f32, y: f32) -> ([f32; 3], f32) {
+    let mut px = ([0.0; 3], 0.0);
+    if in_rounded(x, y, 8.0, 10.0, 48.0, 44.0, 10.0) {
+        px = over(px, (hex(0x17141f), 1.0));
+    }
+    if in_rounded(x, y, 12.0, 14.0, 40.0, 36.0, 7.0) {
+        px = over(px, (hex(0x33c2ea), 1.0));
+    }
+    if in_rounded(x, y, 17.0, 19.0, 13.0, 6.0, 3.0) {
+        px = over(px, (hex(0xffffff), 0.9));
+    }
+    px
+}
+
+/// One texel of a kind: its colour (sRGB) and coverage (0 to 1). Pixel centres, y down.
+fn texel(kind: usize, x: f32, y: f32) -> ([f32; 3], f32) {
+    let on = |v: bool| if v { 1.0 } else { 0.0 };
+    match KINDS[kind] {
+        "sparks" => {
+            // A radial glow: white-hot at the centre, amber, fading out at the rim.
+            let d = (x - 32.0).hypot(y - 32.0) / 30.0;
+            if d < 0.4 {
+                (mix(hex(0xfff6c2), hex(0xffc23d), d / 0.4), 1.0)
+            } else {
+                (hex(0xffc23d), (1.0 - (d - 0.4) / 0.6).max(0.0))
+            }
+        }
+        "zzz" => {
+            // A zed: a top bar, a diagonal and a bottom bar.
+            let d = [((18.0, 16.0), (46.0, 16.0)), ((46.0, 16.0), (18.0, 48.0)), ((18.0, 48.0), (46.0, 48.0))]
+                .iter()
+                .map(|(a, b)| segment_distance((x, y), *a, *b))
+                .fold(f32::MAX, f32::min);
+            (hex(0x8fb8ff), on(d <= 2.5))
+        }
+        "dots" => (hex(0x5b6475), on([14.0, 32.0, 50.0].iter().any(|cx| (x - cx).hypot(y - 32.0) <= 6.0))),
+        "hearts" => {
+            // The heart curve (x² + y² − 1)³ − x²y³ ≤ 0, y up.
+            let (hx, hy) = ((x - 32.0) / 20.0, (34.0 - y) / 20.0);
+            let f = (hx * hx + hy * hy - 1.0).powi(3) - hx * hx * hy.powi(3);
+            (hex(0xff6b8a), on(f <= 0.0))
+        }
+        "keys" => keycap(x, y),
+        "steam" => {
+            // Three overlapping puffs, each laid over the last.
+            let mut px = ([0.0; 3], 0.0);
+            for (cx, cy, r) in STEAM {
+                let d = (x - cx).hypot(y - cy) / r;
+                if d <= 1.0 {
+                    px = over(px, puff_texel(d));
+                }
+            }
+            px
+        }
+        "ink" => {
+            // Six opaque spheres; a later one covers an earlier one.
+            let mut px = ([0.0; 3], 0.0);
+            for (cx, cy, r) in INK {
+                if (x - cx).hypot(y - cy) <= r {
+                    px = (ink_shade((x, y), cx, cy, r), 1.0);
+                }
+            }
+            px
+        }
+        "glow" => {
+            // A cone's texture: clear at the apex (the top row, uv v = 1), bright at the base (the bottom row).
+            let t = y / TEXTURE_SIZE as f32;
+            let a = if t < 0.5 { 0.3 * t / 0.5 } else { 0.3 + 0.6 * (t - 0.5) / 0.5 };
+            (hex(0xffffff), a)
+        }
+        _ => ([0.0; 3], 0.0),
+    }
+}
+
+/// The texture of each kind, drawn once.
+fn textures() -> &'static [Tex] {
+    TEXTURES.get_or_init(|| {
+        (0..KINDS.len())
+            .map(|kind| {
+                let n = TEXTURE_SIZE;
+                let mut rgba = Vec::with_capacity(n * n * 4);
+                for y in 0..n {
+                    for x in 0..n {
+                        let (rgb, a) = texel(kind, x as f32 + 0.5, y as f32 + 0.5);
+                        rgba.extend_from_slice(&[rgb[0] as u8, rgb[1] as u8, rgb[2] as u8, (a * 255.0) as u8]);
+                    }
+                }
+                Arc::new(Texture::new(n as u32, n as u32, rgba))
+            })
+            .collect()
+    })
+}
+
+/// The unit quad every billboard shares (its own size is its node's scale), facing +z.
+fn quad() -> &'static Geo {
+    QUAD.get_or_init(|| plane(1.0, 1.0, 1, 1))
+}
+
+/// The glow's cone, shared: three's `ConeGeometry(0.22, 1.1, 14, 1, true)` translated by −0.55 in y, so the apex
+/// sits at the origin and the open base at y = −1.1 (no cap). uv v is 1 at the apex and 0 at the base.
+fn cone() -> &'static Geo {
+    CONE.get_or_init(|| {
+        let (r, h, seg) = (0.22_f32, 1.1_f32, 14_usize);
+        let slope = r / h;
+        let mut positions = Vec::with_capacity(2 * (seg + 1));
+        let mut normals = Vec::with_capacity(2 * (seg + 1));
+        let mut uvs = Vec::with_capacity(2 * (seg + 1));
+        for row in 0..2 {
+            let (radius, y, v) = if row == 0 { (0.0, 0.0, 1.0) } else { (r, -h, 0.0) };
+            for x in 0..=seg {
+                let u = x as f32 / seg as f32;
+                let (s, c) = (u * TAU).sin_cos();
+                positions.push([radius * s, y, radius * c]);
+                normals.push(Vec3::new(s, slope, c).normalize().to_array());
+                uvs.push([u, v]);
+            }
+        }
+        let mut indices = Vec::with_capacity(seg * 6);
+        for x in 0..seg {
+            let (a, b, c, d) = (x as u32, (seg + 1 + x) as u32, (seg + 2 + x) as u32, (x + 1) as u32);
+            indices.extend_from_slice(&[a, b, d, b, c, d]);
+        }
+        Geometry::new(positions, normals, uvs, indices)
+    })
+}
+
+/// The billboard's orientation: its face turned to the camera's usual view direction (the floor's isometric
+/// angle, the eye's direction from the target).
+fn facing() -> Quat {
+    let (sp, cp) = (POLAR.sin(), POLAR.cos());
+    Quat::from_rotation_arc(Vec3::Z, Vec3::new(sp * AZIMUTH.sin(), cp, sp * AZIMUTH.cos()))
+}
+
+/// A pooled effect: its quad or cone and its own material (its opacity and colour are its own).
+struct Puff {
+    kind: usize,
+    obj: Obj,
+    mat: Mat,
+}
+
+fn make(kind: usize) -> Puff {
+    let look = look_of(kind);
+    let mat = Mat::new(Material {
+        shading: Shading::Basic,
+        map: Some(Arc::clone(&textures()[kind])),
+        transparent: true,
+        depth_write: false,
+        additive: look.additive,
+        side: if look.cone { Side::Double } else { Side::Front },
+        ..Material::default()
+    });
+    let obj = if look.cone {
+        Obj::mesh(cone(), &mat)
+    } else {
+        let obj = Obj::mesh(quad(), &mat);
+        obj.set_quaternion(facing());
+        obj
+    };
+    Puff { kind, obj, mat }
+}
+
+fn take(kind: usize) -> Puff {
+    let pooled = POOL.lock().ok().and_then(|mut pool| {
+        let at = pool.iter().rposition(|p| p.kind == kind)?;
+        Some(pool.swap_remove(at))
+    });
+    pooled.unwrap_or_else(|| make(kind))
+}
+
+/// A finished effect leaves its parent and goes back to the pool.
+fn give_back(parent: &Obj, puff: Puff) {
+    parent.remove(&puff.obj);
+    LIVE.fetch_sub(1, Ordering::Relaxed);
+    if let Ok(mut pool) = POOL.lock() {
+        pool.push(puff);
+    }
+}
+
+struct Item {
+    puff: Puff,
+    parent: Obj,
+    look: Look,
+    age: f32,
+    vx: f32,
+    vy: f32,
+    at: Vec3,
+}
+
+/// A robot's live effects.
+pub struct Fx {
+    items: Vec<Item>,
+    rng: Rng,
+}
+
+impl Fx {
+    pub fn new(seed: u32) -> Fx {
+        Fx { items: Vec::new(), rng: Rng::new(seed) }
+    }
+
+    /// Spawns one effect under `parent` at `at`, in the warm light's colour (a glow's colour only). False when the
+    /// kind is not built or the scene is full.
+    pub fn spawn(&mut self, kind: &str, parent: &Obj, at: Vec3) -> bool {
+        self.spawn_colored(kind, parent, at, WARM)
+    }
+
+    /// As `spawn`, with a glow's colour (hex, sRGB); the other kinds ignore it.
+    pub fn spawn_colored(&mut self, kind: &str, parent: &Obj, at: Vec3, color: u32) -> bool {
+        let Some(k) = kind_index(kind) else {
+            warn_once(&format!("effect \"{kind}\" is not built yet (a no-op)"));
+            return false;
+        };
+        if LIVE.load(Ordering::Relaxed) >= LIVE_MAX {
+            return false;
+        }
+        let look = look_of(k);
+        let puff = take(k);
+        puff.obj.set_position(at.x, at.y, at.z).set_scalar(look.size);
+        puff.mat.get().color = if look.cone { Color::hex(color) } else { Color::WHITE };
+        puff.mat.get().opacity = look.peak * look.fade.value(0.0);
+        parent.add(&puff.obj);
+        let vx = (self.rng.next() - 0.5) * look.spread;
+        let mut vy = look.rise;
+        if look.rise_jitter > 0.0 {
+            vy += look.rise_jitter * self.rng.next();
+        }
+        self.items.push(Item { puff, parent: parent.clone(), look, age: 0.0, vx, vy, at });
+        LIVE.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Advances every live effect: it moves, grows (a pop eases out), fades; and goes back to the pool when done.
+    pub fn update(&mut self, dt: f32) {
+        let mut i = 0;
+        while i < self.items.len() {
+            let it = &mut self.items[i];
+            it.age += dt;
+            if it.age >= it.look.life {
+                let done = self.items.swap_remove(i);
+                give_back(&done.parent, done.puff);
+                continue;
+            }
+            let look = it.look;
+            let k = it.age / look.life;
+            let e = if look.pop { 1.0 - (1.0 - k).powi(3) } else { k };
+            let s = look.size * (look.grow[0] + (look.grow[1] - look.grow[0]) * e);
+            it.puff.obj.set_position(it.at.x + it.vx * it.age, it.at.y + it.vy * it.age, it.at.z).set_scalar(s);
+            it.puff.mat.get().opacity = look.peak * look.fade.value(k);
+            i += 1;
+        }
+    }
+
+    /// Every live effect goes back to the pool (a robot's end, or a change of species).
+    pub fn clear(&mut self) {
+        for it in self.items.drain(..) {
+            give_back(&it.parent, it.puff);
+        }
+    }
+}
+
+impl Drop for Fx {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// A seed for one robot's effects (from its id): each robot's sprinkle differs.
+pub fn seed(n: u64) -> u32 {
+    (n.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as u32
+}

@@ -109,19 +109,31 @@ fn recipient_of(tool: &str, inp: &Value) -> Option<u64> {
 }
 
 impl Floor {
-    /// One frame: `dt` seconds since the last, `now_ms` the wall clock.
-    pub fn step(&mut self, dt: f32, now_ms: f64) {
+    /// One frame: `dt` seconds since the last (capped; the Active motion), `now_ms` the wall clock, and `ambient` the
+    /// ambient clock in seconds with `ambient_dt` its real step. The stars, planet, dust, props and board atom read
+    /// `ambient`, so they look the same at any tick rate.
+    pub fn step(&mut self, dt: f32, now_ms: f64, ambient: f32, ambient_dt: f32) {
         let dt = dt.min(0.05); // the web caps a frame at 50 ms
         self.time += dt;
         self.now_ms = now_ms;
         self.update_bots(dt, now_ms);
         self.update_packets();
-        self.update_dust();
-        self.stars.set_rotation(0.0, self.time * 0.004, 0.0);
-        self.planet.get().rotation.y = self.time * 0.05;
-        self.step_board(dt);
+        self.update_dust(ambient);
+        self.stars.set_rotation(0.0, ambient * 0.004, 0.0);
+        self.planet.get().rotation.y = ambient * 0.05;
+        self.step_board(dt, ambient, ambient_dt);
         for anim in self.prop_anim.iter_mut() {
-            anim(self.time);
+            anim(ambient);
+        }
+    }
+
+    /// The floor's motion: Active while robots stand on it (they walk and animate their clips) or packets fly;
+    /// otherwise Ambient, since the stars and the planet turn on the clock with every step.
+    pub fn motion(&self) -> crate::stage::Motion {
+        if !self.bots.is_empty() || !self.packets.is_empty() {
+            crate::stage::Motion::Active
+        } else {
+            crate::stage::Motion::Ambient
         }
     }
 
@@ -162,8 +174,8 @@ impl Floor {
 
     /// The board's frame: a slot whose rooms have working agents glows brighter, its traces carry
     /// more pulses, and the built parts and the atom animate. A machine without a board does nothing.
-    fn step_board(&mut self, dt: f32) {
-        let time = self.time;
+    fn step_board(&mut self, dt: f32, ambient: f32, ambient_dt: f32) {
+        let time = ambient;
         let Some(board) = self.board.as_mut() else { return };
         let mut busy: HashSet<String> = HashSet::new();
         let mut working = 0usize;
@@ -191,10 +203,10 @@ impl Floor {
         for tp in board.pulses.iter_mut() {
             let end = |s: &Option<String>| s.as_ref().and_then(|s| board.level.get(s)).copied().unwrap_or(0.0);
             let busy_end = end(&tp.from).max(end(&tp.to));
-            tp.pulses.update(dt, 0.4 + 0.6 * busy_end);
+            tp.pulses.update(ambient_dt, 0.4 + 0.6 * busy_end);
         }
         let share = working as f32 / self.bots.len().max(1) as f32;
-        board.built.update(dt, &hardware::State { status: board.status, activity: share, open: 1.0 });
+        board.built.update(ambient_dt, ambient, &hardware::State { status: board.status, activity: share, open: 1.0 });
         if let Some(anim) = board.atom.as_mut() {
             anim(time);
         }
@@ -601,8 +613,7 @@ impl Floor {
     }
 
     /// Dust motes drift up and sway; rewritten as the dust cloud's points.
-    fn update_dust(&mut self) {
-        let t = self.time;
+    fn update_dust(&mut self, t: f32) {
         let points: Vec<[f32; 3]> = self
             .dust_seeds
             .iter()
@@ -666,7 +677,7 @@ mod tests {
                 role: "worker".to_string(),
                 status: status.to_string(),
                 tier: "worker".to_string(),
-                model: "test".to_string(),
+                model: "test".to_string(), species: None,
             },
             district: 0,
             home: (0.0, 0.0),
@@ -703,12 +714,12 @@ mod tests {
         let b = bot_at(&floor, 2, 2.0, 0.0, "idle");
         floor.bots.push(a);
         floor.bots.push(b);
-        floor.step(0.0, 0.0);
+        floor.step(0.0, 0.0, 0.0, 0.0);
         floor.send_packet(1, 2, true);
         assert_eq!(floor.packets.len(), 1);
-        floor.step(0.016, PACKET_MS - 1.0);
+        floor.step(0.016, PACKET_MS - 1.0, 0.0, 0.0);
         assert_eq!(floor.packets.len(), 1, "still in flight just before PACKET_MS");
-        floor.step(0.016, PACKET_MS + 1.0);
+        floor.step(0.016, PACKET_MS + 1.0, 0.0, 0.0);
         assert!(floor.packets.is_empty(), "gone once PACKET_MS has passed");
     }
 
@@ -725,7 +736,7 @@ mod tests {
                 role: role.to_string(),
                 status: status.to_string(),
                 tier: "worker".to_string(),
-                model: "test".to_string(),
+                model: "test".to_string(), species: None,
             })
             .collect();
         floor.sync(&list);
@@ -737,7 +748,7 @@ mod tests {
         let mut floor = board_floor(&["builder", "librarian"], "working");
         let slot = floor.board.as_ref().expect("a board").layout.districts[0].slot.clone();
         for _ in 0..80 {
-            floor.step(0.05, 0.0);
+            floor.step(0.05, 0.0, 0.0, 0.0);
         }
         let level = floor.board.as_ref().expect("a board").level.get(&slot).copied().unwrap_or(0.0);
         assert!(level > 0.95, "a slot with a working room settles at full level, got {level}");
@@ -765,7 +776,7 @@ mod tests {
         bot.tx = 3.0;
         bot.ty = 0.0;
         floor.bots.push(bot);
-        floor.step(0.05, 500.0); // the frame cap: a 50 ms step
+        floor.step(0.05, 500.0, 0.0, 0.0); // the frame cap: a 50 ms step
         let bot = &floor.bots[0];
         assert!(bot.moving, "a bot short of its target is moving");
         // One step of SPEED * dt = 0.08 straight toward +x (the target lies along grid x).

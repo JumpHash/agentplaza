@@ -4,6 +4,7 @@
 //! with the agent list, `board_layout` places the rooms, `motion` moves it each frame, `view` is the
 //! iced side (the shader widget, pointer input, labels, card, legend).
 
+pub mod behaviour;
 pub mod board_layout;
 pub mod labels;
 pub mod layout;
@@ -21,7 +22,7 @@ use super::props::{Anim, Box2, PropPalette};
 use board_layout::{BoardLayout, TraceGraph};
 use layout::{AZIMUTH, POLAR};
 use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
-use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
+use super::scene::{self, Color, Draw, Filter, Frame, Geo, Lod, Mat, Obj, PointLightDraw, World};
 
 /// The name the floor shows (`floorName` in roles.ts): the agent's own name, or "agent <cid>" while
 /// it has not chosen one (the hub returns an empty name until then).
@@ -45,6 +46,8 @@ pub struct AgentInfo {
     pub tier: String,
     /// The model id, for the card.
     pub model: String,
+    /// The robot species the hub sent (None: the cid's deal, `robot::species_of`).
+    pub species: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +134,8 @@ pub struct Board {
     pub built: Built,
     /// The atom's animation, when the board has an atom anchor.
     pub atom: Option<Anim>,
+    /// The atom's wrap node (the group `place_atom` adds), for the ENTER's scale and fade (`entry_scene`).
+    pub atom_node: Option<Obj>,
     pub pulses: Vec<TracePulses>,
     /// Each slot's glowing materials with their rest intensity.
     pub glow: HashMap<String, Vec<(Mat, f32)>>,
@@ -203,8 +208,12 @@ pub struct Floor {
     /// The Machines view's ground, and the dark ground under a machine's board.
     pub ground: Obj,
     pub board_ground: Obj,
+    /// The skyline behind the Machines' ground: shown at night, hidden on the board (`entry_scene`).
+    pub backdrop: Obj,
     /// The machine's board, once the Machine view has one.
     pub board: Option<Board>,
+    /// The machine whose board this is, as the web's route names it (`''` on the fleet): it seeds the rooms.
+    pub machine_id: String,
     /// The starfield (it turns slowly) and its ringed planet (it spins).
     pub stars: Obj,
     pub planet: Obj,
@@ -231,6 +240,10 @@ pub struct Floor {
     pub now_ms: f64,
     /// Set whenever static parts of the scene change (the world was rebuilt): re-bake.
     pub statics_dirty: bool,
+    /// The board's rooms still to build, a district per step (`layout.rs`'s `step_rooms`).
+    rooms_job: Option<layout::RoomsJob>,
+    /// The last board layout, with the key it is for (the board and the roster): `begin_sync` reuses it.
+    layout_cache: Option<(String, board_layout::BoardLayout)>,
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
     static_lights: Vec<PointLightDraw>,
@@ -249,7 +262,9 @@ impl Floor {
             district_group: Obj::group(),
             ground: Obj::group(),
             board_ground: Obj::group(),
+            backdrop: Obj::group(),
             board: None,
+            machine_id: String::new(),
             stars: Obj::group(),
             planet: Obj::group(),
             dust: Obj::group(),
@@ -274,6 +289,8 @@ impl Floor {
             statics: Arc::new(Vec::new()),
             statics_version: 0,
             static_lights: Vec::new(),
+            rooms_job: None,
+            layout_cache: None,
             deep_dynamic: Vec::new(),
         };
         layout::base(&mut floor);
@@ -312,6 +329,12 @@ impl Floor {
             lights,
             time: self.time,
             overlays: Vec::new(),
+            lod: self.board.as_ref().map(|b| Lod {
+                center: Vec3::new(0.0, b.model.size[1] * 0.5, 0.0),
+                radius: 0.5 * Vec3::from(b.model.size).length(),
+            }),
+            fades: Arc::new(self.board.as_ref().map(|b| b.built.fades.clone()).unwrap_or_default()),
+            focus: self.board.as_ref().and_then(|b| b.model.anchors.atom).map(Vec3::from),
         }
     }
 

@@ -1,21 +1,21 @@
-//! The Floor's wgpu renderer, inside iced's shader widget: a [`Frame`] in, the picture out.
+//! The Floor's wgpu renderer: pipelines, instancing and the frame's passes. A host (the desktop's iced shader widget, or the browser canvas) calls `Pipeline::new`, `Primitive::prepare` and `Primitive::draw`.
 //!
 //! Per frame: upload the globals (camera, sun, hemisphere, fog, point lights) and one instance
 //! row per drawn thing; draw the sun's shadow map; draw the scene into a 4x MSAA target (opaque
 //! by render order, then transparent back to front, as three.js does); resolve; copy into the
-//! widget's rectangle of iced's frame. Meshes and textures stay on the GPU while they are used.
+//! target rectangle of the host's frame. Meshes and textures stay on the GPU while they are used.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use iced::wgpu;
-use iced::wgpu::util::DeviceExt;
-use iced::widget::shader::{self, Viewport};
-use iced::Rectangle;
 
-use super::scene::{Draw, DrawKind, Frame, Shading, Side, Texture};
+use super::scene::{merge, world_sphere, Draw, DrawKind, Fade, Frame, Frustum, Geo, Lod, Shading, Side, Texture};
+
+/// A rectangle in pixels: the host's widget or target rectangle.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Rect { pub x: f32, pub y: f32, pub width: f32, pub height: f32 }
 
 const SAMPLES: u32 = 4;
 
@@ -32,6 +32,126 @@ pub fn set_light(on: bool) {
 pub fn light() -> bool {
     LIGHT.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+/// `APZ_PERF`: the renderer's numbers, logged once a second: frames, CPU time per frame (the
+/// `prepare` work), draw calls, triangles and instances. The GPU time needs timestamp queries,
+/// which the host's device does not enable, so it is reported as not available.
+#[derive(Default)]
+struct PerfStats {
+    since: Option<web_time::Instant>,
+    frames: u32,
+    cpu: std::time::Duration,
+    draws: u64,
+    static_draws: u64,
+    tris: u64,
+    instances: u64,
+    culled: u64,
+}
+
+static PERF_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static PERF: std::sync::Mutex<PerfStats> = std::sync::Mutex::new(PerfStats {
+    since: None,
+    frames: 0,
+    cpu: std::time::Duration::ZERO,
+    draws: 0,
+    static_draws: 0,
+    tris: 0,
+    instances: 0,
+    culled: 0,
+});
+
+/// Whether `APZ_PERF` is set.
+fn perf_on() -> bool {
+    *PERF_ON.get_or_init(|| crate::env_var("APZ_PERF").is_some())
+}
+
+/// Adds one frame to the `APZ_PERF` counters and logs them once a second.
+fn perf_frame(cpu: std::time::Duration, draws: usize, static_draws: usize, tris: u64, instances: usize, culled: usize) {
+    if !perf_on() {
+        return;
+    }
+    let now = web_time::Instant::now();
+    let mut s = PERF.lock().unwrap_or_else(|p| p.into_inner());
+    let since = *s.since.get_or_insert(now);
+    s.frames += 1;
+    s.cpu += cpu;
+    s.draws += draws as u64;
+    s.static_draws += static_draws as u64;
+    s.tris += tris;
+    s.instances += instances as u64;
+    s.culled += culled as u64;
+    let span = now.saturating_duration_since(since).as_secs_f64();
+    if span >= 1.0 {
+        let n = f64::from(s.frames.max(1));
+        eprintln!(
+            "agentplaza-desktop: render {:.1} fps, CPU {:.2} ms per frame, GPU n/a, {:.0} draw calls ({:.0} static, the rest dynamic), {:.0} dynamic draws culled, {:.0} triangles, {:.0} instances",
+            f64::from(s.frames) / span,
+            s.cpu.as_secs_f64() * 1000.0 / n,
+            s.draws as f64 / n,
+            s.static_draws as f64 / n,
+            s.culled as f64 / n,
+            s.tris as f64 / n,
+            s.instances as f64 / n,
+        );
+        *s = PerfStats { since: Some(now), ..PerfStats::default() };
+    }
+}
+/// The draw passes the counters split a frame's draw calls into, in table order.
+pub const DRAW_PASSES: [&str; 5] = ["shadow", "scene mesh", "scene quad", "overlay", "blit"];
+const PASS_SHADOW: usize = 0;
+const PASS_MESH: usize = 1;
+const PASS_QUAD: usize = 2;
+const PASS_OVERLAY: usize = 3;
+const PASS_BLIT: usize = 4;
+
+impl Pipeline {
+    /// Counts one draw call of pass `pass` (an index of [`DRAW_PASSES`]).
+    fn count(&self, pass: usize) {
+        self.draws[pass].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The draw calls of the frame so far, by pass (the order of [`DRAW_PASSES`]).
+    pub fn draw_breakdown(&self) -> [u32; 5] {
+        std::array::from_fn(|i| self.draws[i].load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The draw calls of the frame so far, all passes.
+    pub fn draw_calls(&self) -> u32 {
+        self.draw_breakdown().iter().sum()
+    }
+}
+
+/// The per-pass draw counts summed over the frames of the current `APZ_PERF` window.
+struct PassLog {
+    since: Option<web_time::Instant>,
+    frames: u32,
+    draws: [u64; 5],
+}
+
+static PASS_LOG: std::sync::Mutex<PassLog> = std::sync::Mutex::new(PassLog { since: None, frames: 0, draws: [0; 5] });
+
+/// Adds one frame's draw counts to the `APZ_PERF` window and logs the per-pass table once a second: the draws per
+/// frame of each pass, which is where the Machines view's draw budget goes.
+fn perf_passes(counts: [u32; 5]) {
+    if !perf_on() {
+        return;
+    }
+    let now = web_time::Instant::now();
+    let mut s = PASS_LOG.lock().unwrap_or_else(|p| p.into_inner());
+    let since = *s.since.get_or_insert(now);
+    s.frames += 1;
+    for (total, n) in s.draws.iter_mut().zip(counts) {
+        *total += u64::from(n);
+    }
+    let span = now.saturating_duration_since(since).as_secs_f64();
+    if span >= 1.0 {
+        let n = f64::from(s.frames.max(1));
+        let parts: Vec<String> = DRAW_PASSES.iter().zip(s.draws).map(|(name, d)| format!("{name} {:.0}", d as f64 / n)).collect();
+        eprintln!("agentplaza-desktop: draws per frame by pass: {}", parts.join(", "));
+        *s = PassLog { since: Some(now), frames: 0, draws: [0; 5] };
+    }
+}
+
 const SHADOW_SIZE: u32 = 2048;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADER: &str = include_str!("floor.wgsl");
@@ -76,6 +196,9 @@ struct Vertex {
     position: [f32; 3],
     normal: [f32; 3],
     uv: [f32; 2],
+    color: [f32; 3],
+    /// The robot slot (0 unchanged, 1 shell, 2 shell2, 3 panel, 4 glass); see `RobotHues`.
+    slot: u32,
 }
 
 /// One drawn thing (or one instance, or one point): its matrix and material values.
@@ -86,6 +209,8 @@ struct Row {
     color: [f32; 4],
     emissive: [f32; 4],
     uv: [f32; 4],
+    /// The robot hues (rgb; shell, shell2, panel), used when the flags carry 8 (robot).
+    robot: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -138,6 +263,8 @@ struct Key {
     blend: Blend,
     depth_write: bool,
     depth_test: bool,
+    /// A decal: its depth is biased toward the camera, so it wins the depth test on the solid under it.
+    decal: bool,
     samples: u32,
 }
 
@@ -148,6 +275,8 @@ struct Cmd {
     mesh: Option<u64>,
     tex: u64,
     rows: std::ops::Range<u32>,
+    /// The draw's render order.
+    order: i32,
 }
 
 struct GpuMesh {
@@ -156,9 +285,20 @@ struct GpuMesh {
     count: u32,
 }
 
+/// A mesh's buffers are destroyed when it is dropped: the scene's geometry ids change on every rebuild, so the
+/// renderer re-uploads and drops meshes often. On the web a dropped GPUBuffer is freed only by garbage collection,
+/// and the device runs out of memory first (createBuffer throws); destroy frees them at once.
+impl Drop for GpuMesh {
+    fn drop(&mut self) {
+        self.vertices.destroy();
+        self.indices.destroy();
+    }
+}
+
 struct GpuTex {
     group: wgpu::BindGroup,
 }
+
 
 /// The offscreen targets, sized to the widget in physical pixels.
 struct Targets {
@@ -168,10 +308,12 @@ struct Targets {
     msaa: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
     resolve: wgpu::TextureView,
+    /// The resolved picture's texture (the card probe copies its corner from it).
+    resolve_tex: wgpu::Texture,
     blit_group: wgpu::BindGroup,
 }
 
-/// The renderer's GPU state, shared by every floor primitive (iced keeps one).
+/// The renderer's GPU state, shared by every floor primitive (the host keeps one).
 pub struct Pipeline {
     format: wgpu::TextureFormat,
     module: wgpu::ShaderModule,
@@ -199,12 +341,34 @@ pub struct Pipeline {
     // This frame's work, made in `prepare`, drawn in `render`.
     cmds: Vec<Cmd>,
     shadow_cmds: Vec<(u64, std::ops::Range<u32>)>,
-    physical: Rectangle<f32>,
+    /// The statics, as last built: their source, the stamp they were built with, their rows (the
+    /// start of the rows buffer) and their commands. Rebuilt only when they change.
+    static_src: Option<Arc<Vec<Draw>>>,
+    stamp: Option<Stamp>,
+    static_rows: Vec<Row>,
+    static_opaque: Vec<Cmd>,
+    static_transparent: Vec<(Cmd, Vec3)>,
+    static_shadow: Vec<(u64, std::ops::Range<u32>)>,
+    static_meshes: HashSet<u64>,
+    static_textures: HashSet<u64>,
+    /// Which detail levels showed last frame (for the hysteresis).
+    lod_on: [bool; 2],
+    /// Each cutaway's opacity now, and the frame time it was last eased at.
+    fade_alpha: HashMap<u32, f32>,
+    fade_time: Option<f32>,
+    physical: Rect,
     background: wgpu::Color,
+    /// The clear's alpha: 1 for the floor; a card pipeline sets 0 so its clear is transparent (no backdrop).
+    pub clear_alpha: f32,
+    /// Whether this pipeline's corner pixel is read back once (`APZ_CARD_PROBE`); set by the machine card pipeline only.
+    pub probe_corner: bool,
+    /// The draw calls issued for this frame: the scene passes in `prepare`, then the host pass in `draw`.
+    /// Draw calls of the frame so far, by pass (see [`DRAW_PASSES`]). Reset by each [`Primitive::prepare`].
+    pub draws: [std::sync::atomic::AtomicU32; 5],
 }
 
-impl shader::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+impl Pipeline {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("floor"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -376,7 +540,9 @@ impl shader::Pipeline for Pipeline {
                 module: &blit_module,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                // Premultiplied: the picture's colour is premultiplied by its alpha (a card's clear is 0), so a transparent
+                // texel leaves the page showing through it. The floor's alpha is 1 everywhere: its picture is unchanged.
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview: None,
             cache: None,
@@ -443,8 +609,22 @@ impl shader::Pipeline for Pipeline {
             targets: None,
             cmds: Vec::new(),
             shadow_cmds: Vec::new(),
-            physical: Rectangle::default(),
+            static_src: None,
+            stamp: None,
+            static_rows: Vec::new(),
+            static_opaque: Vec::new(),
+            static_transparent: Vec::new(),
+            static_shadow: Vec::new(),
+            static_meshes: HashSet::new(),
+            static_textures: HashSet::new(),
+            lod_on: [false; 2],
+            fade_alpha: HashMap::new(),
+            fade_time: None,
+            physical: Rect::default(),
             background: wgpu::Color::BLACK,
+            clear_alpha: 1.0,
+            draws: Default::default(),
+            probe_corner: false,
         };
         // The white 1x1 map that unmapped materials sample (texture id 0).
         let white = Texture { id: 0, ..Texture::new(1, 1, vec![255; 4]) };
@@ -454,13 +634,14 @@ impl shader::Pipeline for Pipeline {
 }
 
 fn mesh_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
+    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 10 => Float32x3, 11 => Uint32];
     wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
 }
 
 fn row_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-        3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
+    const ATTRS: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
+        3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
+        12 => Float32x4, 13 => Float32x4, 14 => Float32x4
     ];
     wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Row>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &ATTRS }
 }
@@ -517,9 +698,15 @@ impl Pipeline {
         self.textures.insert(tex.id, GpuTex { group });
     }
 
-    fn upload_mesh(&mut self, device: &wgpu::Device, geo: &super::scene::Geometry) {
+    fn upload_mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, geo: &super::scene::Geometry) {
         let mut vertices: Vec<Vertex> = (0..geo.positions.len())
-            .map(|i| Vertex { position: geo.positions[i], normal: geo.normals[i], uv: geo.uvs[i] })
+            .map(|i| Vertex {
+                position: geo.positions[i],
+                normal: geo.normals[i],
+                uv: geo.uvs[i],
+                color: geo.colors.get(i).copied().unwrap_or([1.0; 3]),
+                slot: u32::from(geo.slots.get(i).copied().unwrap_or(0)),
+            })
             .collect();
         let mut indices: Vec<u32> = if geo.indices.is_empty() { (0..geo.positions.len() as u32).collect() } else { geo.indices.clone() };
         let count = indices.len() as u32;
@@ -530,16 +717,24 @@ impl Pipeline {
         if indices.is_empty() {
             indices.push(0);
         }
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Unmapped buffers filled with write_buffer: a buffer mapped at creation takes the device's staging memory,
+        // which runs out when a busy scene re-uploads many meshes at once (WebGPU's createBuffer throws then).
+        let vertex_bytes: &[u8] = bytemuck::cast_slice(&vertices);
+        let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
+        let vertices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("floor vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
+            size: vertex_bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        queue.write_buffer(&vertices, 0, vertex_bytes);
+        let indices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("floor indices"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
+            size: index_bytes.len() as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        queue.write_buffer(&indices, 0, index_bytes);
         self.meshes.insert(geo.id, GpuMesh { vertices, indices, count });
     }
 
@@ -579,7 +774,7 @@ impl Pipeline {
                 depth_write_enabled: key.depth_write,
                 depth_compare: if key.depth_test { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always },
                 stencil: Default::default(),
-                bias: Default::default(),
+                bias: if key.decal { wgpu::DepthBiasState { constant: -2, slope_scale: -1.0, clamp: 0.0 } } else { Default::default() },
             }),
             multisample: wgpu::MultisampleState { count: key.samples, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(wgpu::FragmentState {
@@ -614,7 +809,17 @@ impl Pipeline {
         };
         let msaa = (samples > 1).then(|| make("floor msaa", self.format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT));
         let depth = make("floor depth", DEPTH, samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
-        let resolve = make("floor resolve", self.format, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+        let resolve_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("floor resolve"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let resolve = resolve_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let blit_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("floor blit"),
             layout: &self.blit_layout,
@@ -623,7 +828,7 @@ impl Pipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear_clamp) },
             ],
         });
-        self.targets = Some(Targets { size, samples, msaa, depth, resolve, blit_group });
+        self.targets = Some(Targets { size, samples, msaa, depth, resolve, resolve_tex, blit_group });
     }
 }
 
@@ -650,16 +855,220 @@ fn mip_chain(width: u32, height: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
     levels
 }
 
-/// The floor for one frame: what iced's shader widget hands the renderer.
+/// The floor for one frame: what the host hands the renderer.
 #[derive(Debug, Clone)]
 pub struct Primitive {
     pub frame: Arc<Frame>,
 }
 
-fn key_of(draw: &Draw) -> Key {
+/// Where a level of detail switches on or off: this far (as a fraction) inside or past its threshold.
+const LOD_HYSTERESIS: f32 = 0.05;
+/// The opacity a cutaway fades to while it stands between the eye and the focus.
+const FADE_TO: f32 = 0.25;
+/// An instanced part casts a shadow only when its geometry is at least this big (units): a resistor
+/// in a copper array does not.
+const SHADOW_MIN_INSTANCE: f32 = 1.0;
+
+/// What the cached statics were built for: a change of any of these rebuilds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    shadows: bool,
+    ink: [u32; 3],
+    samples: u32,
+    /// The detail levels shown (see `Pipeline::detail_mask`).
+    mask: u8,
+}
+
+/// Whether a draw shows at a detail mask: level 0 always, level 1 and 2 by their bits (2 and 4).
+fn visible_at(d: &Draw, mask: u8) -> bool {
+    d.lod == 0 || (mask >> d.lod) & 1 == 1
+}
+
+/// Whether a dynamic draw's bounds touch a view volume: a mesh's (or hull's) sphere under its matrix,
+/// or, for an instanced draw, one sphere around all its instances. Points are always kept.
+fn bounds_visible(d: &Draw, volume: &Frustum) -> bool {
+    match &d.kind {
+        DrawKind::Points(_) => true,
+        DrawKind::Mesh | DrawKind::Outline => {
+            let (c, r) = world_sphere(&d.geo, d.model);
+            volume.sphere_visible(c, r)
+        }
+        DrawKind::Instanced(instances, count) | DrawKind::OutlineInstanced(instances, count) => {
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for inst in instances.iter().take(*count) {
+                let (c, r) = world_sphere(&d.geo, d.model * inst.matrix);
+                lo = lo.min(c - Vec3::splat(r));
+                hi = hi.max(c + Vec3::splat(r));
+            }
+            if lo.x > hi.x {
+                return false;
+            }
+            volume.sphere_visible(0.5 * (lo + hi), 0.5 * (hi - lo).length())
+        }
+    }
+}
+
+/// Whether a draw casts a shadow: meshes, and instanced parts big enough to matter.
+fn casts_shadow(d: &Draw) -> bool {
+    match &d.kind {
+        DrawKind::Mesh => true,
+        DrawKind::Instanced(..) => d.geo.radius >= SHADOW_MIN_INSTANCE,
+        _ => false,
+    }
+}
+
+/// Whether a draw is drawn after the opaque ones, back to front: transparent, additive, a shadow
+/// catcher, or faded.
+fn is_transparent(d: &Draw, alpha: f32) -> bool {
+    d.material.transparent || d.material.additive || matches!(d.material.shading, Shading::Shadow) || alpha < 1.0
+}
+
+/// Whether the segment `a`..`b` passes through the box `min`..`max` (the slab test).
+fn segment_hits(min: Vec3, max: Vec3, a: Vec3, b: Vec3) -> bool {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for i in 0..3 {
+        if d[i].abs() < 1e-6 {
+            if a[i] < min[i] || a[i] > max[i] {
+                return false;
+            }
+        } else {
+            let inv = 1.0 / d[i];
+            let (mut ta, mut tb) = ((min[i] - a[i]) * inv, (max[i] - a[i]) * inv);
+            if ta > tb {
+                std::mem::swap(&mut ta, &mut tb);
+            }
+            t0 = t0.max(ta);
+            t1 = t1.min(tb);
+            if t0 > t1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+impl Pipeline {
+    /// Which detail levels show from the eye: bit 1 for detail 1 (the eye within 160 units of the
+    /// board's bounds), bit 2 for detail 2 (within 90), as the web's DETAIL_RANGE: the board's default
+    /// view shows both, a far view drops them, and zooming in brings them back. A level switches on
+    /// inside its threshold less 5 % and off past it plus 5 %. Without a board, every level shows.
+    fn detail_mask(&mut self, lod: Option<Lod>, eye: Vec3) -> u8 {
+        let Some(lod) = lod else { return 0b110 };
+        let distance = (eye.distance(lod.center) - lod.radius).max(0.0);
+        let mut mask = 0;
+        for (i, limit) in [160.0f32, 90.0].into_iter().enumerate() {
+            let on = &mut self.lod_on[i];
+            *on = if *on { distance < limit * (1.0 + LOD_HYSTERESIS) } else { distance < limit * (1.0 - LOD_HYSTERESIS) };
+            if *on {
+                mask |= 2 << i;
+            }
+        }
+        mask
+    }
+
+    /// Eases each cutaway's opacity toward 25 % while the segment from the eye to the focus passes
+    /// through its box, and back to 100 % once it does not (settled in about 0.3 s).
+    fn fade_step(&mut self, fades: &[Fade], eye: Vec3, focus: Vec3, time: f32) {
+        let dt = self.fade_time.map_or(0.0, |t| (time - t).clamp(0.0, 0.1));
+        self.fade_time = Some(time);
+        let k = 1.0 - (-dt * 12.0).exp();
+        for f in fades {
+            let target = if segment_hits(f.min, f.max, eye, focus) { FADE_TO } else { 1.0 };
+            let a = self.fade_alpha.entry(f.id).or_insert(1.0);
+            *a += (target - *a) * k;
+        }
+    }
+
+    /// Whether the cached statics were built from this Frame's statics with this stamp.
+    fn statics_are(&self, src: &Arc<Vec<Draw>>, stamp: Stamp) -> bool {
+        self.static_src.as_ref().is_some_and(|s| Arc::ptr_eq(s, src)) && self.stamp == Some(stamp)
+    }
+
+    /// Builds the statics' rows, draws and shadows: one row per copy, the uploads of their meshes
+    /// and textures, and the commands in their order. Rebuilt when the statics or the stamp change;
+    /// their rows are then written to the start of the rows buffer.
+    fn build_statics(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, src: &Arc<Vec<Draw>>, stamp: Stamp, ink: [f32; 3], samples: u32) {
+        self.static_rows.clear();
+        self.static_opaque.clear();
+        self.static_transparent.clear();
+        self.static_shadow.clear();
+        self.static_meshes.clear();
+        self.static_textures.clear();
+        // The meshes that cast shadows are merged into one geometry for the shadow pass.
+        let mut casters: Vec<(Geo, Mat4)> = Vec::new();
+        for d in src.iter().filter(|d| visible_at(d, stamp.mask)) {
+            let a = d.material.opacity;
+            if stamp.shadows && d.cast_shadow && matches!(d.kind, DrawKind::Mesh) && !is_transparent(d, a) {
+                casters.push((Arc::clone(&d.geo), d.model));
+            }
+            let rows = rows_of(d, ink, stamp.shadows, a);
+            if rows.is_empty() {
+                continue;
+            }
+            let start = self.static_rows.len() as u32;
+            self.static_rows.extend(rows);
+            let range = start..self.static_rows.len() as u32;
+            let key = Key { samples, ..key_of(d, a) };
+            self.ensure_pipeline(device, key);
+            let mesh = match d.kind {
+                DrawKind::Points(_) => None,
+                _ => {
+                    if !self.meshes.contains_key(&d.geo.id) {
+                        self.upload_mesh(device, queue, &d.geo);
+                    }
+                    self.static_meshes.insert(d.geo.id);
+                    Some(d.geo.id)
+                }
+            };
+            let tex = match &d.material.map {
+                Some(t) => {
+                    if !self.textures.contains_key(&t.id) {
+                        self.upload_texture(device, queue, t);
+                    }
+                    self.static_textures.insert(t.id);
+                    t.id
+                }
+                None => 0,
+            };
+            if d.cast_shadow && stamp.shadows && casts_shadow(d) && !matches!(d.kind, DrawKind::Mesh) {
+                if let Some(id) = mesh {
+                    self.static_shadow.push((id, range.clone()));
+                }
+            }
+            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order };
+            if is_transparent(d, a) {
+                self.static_transparent.push((cmd, d.model.w_axis.truncate()));
+            } else {
+                self.static_opaque.push(cmd);
+            }
+        }
+        if !casters.is_empty() {
+            let merged = merge(&casters);
+            if !self.meshes.contains_key(&merged.id) {
+                self.upload_mesh(device, queue, &merged);
+            }
+            self.static_meshes.insert(merged.id);
+            let start = self.static_rows.len() as u32;
+            self.static_rows.push(Row {
+                model: Mat4::IDENTITY.to_cols_array_2d(),
+                color: [1.0, 1.0, 1.0, 1.0],
+                emissive: [0.0; 4],
+                uv: [1.0, 1.0, 0.0, 0.0],
+                robot: [[0.0; 4]; 3],
+            });
+            self.static_shadow.push((merged.id, start..start + 1));
+        }
+        self.static_opaque.sort_by_key(|c| c.order);
+        self.static_src = Some(Arc::clone(src));
+        self.stamp = Some(stamp);
+    }
+}
+
+fn key_of(draw: &Draw, alpha: f32) -> Key {
     let m = &draw.material;
     let prog = match (&draw.kind, m.shading) {
-        (DrawKind::Outline, _) => Prog::Outline,
+        (DrawKind::Outline | DrawKind::OutlineInstanced(..), _) => Prog::Outline,
         (DrawKind::Points(_), _) => Prog::Points,
         (_, Shading::Sky { .. }) => Prog::Sky,
         (_, Shading::Grass) => Prog::Grass,
@@ -676,21 +1085,21 @@ fn key_of(draw: &Draw) -> Key {
     };
     let blend = if m.additive {
         Blend::Additive
-    } else if m.transparent || matches!(m.shading, Shading::Shadow) {
+    } else if m.transparent || matches!(m.shading, Shading::Shadow) || alpha < 1.0 {
         Blend::Alpha
     } else {
         Blend::Opaque
     };
-    // three.js writes depth for transparent materials too, unless told not to.
+    // three.js writes depth for transparent materials too, unless told not to. A faded cutaway does not.
     let depth_write = match prog {
         Prog::Outline => true,
         Prog::Sky => false,
-        _ => m.depth_write && !m.additive,
+        _ => m.depth_write && !m.additive && !(alpha < 1.0 && draw.fade != 0),
     };
-    Key { prog, cull, blend, depth_write, depth_test: m.depth_test, samples: SAMPLES }
+    Key { prog, cull, blend, depth_write, depth_test: m.depth_test, decal: m.decal, samples: SAMPLES }
 }
 
-fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool) -> Vec<Row> {
+fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<Row> {
     let m = &draw.material;
     let mut flags = 0.0;
     if draw.receive_shadow && shadows {
@@ -702,13 +1111,19 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool) -> Vec<Row> {
     if m.side == Side::Double {
         flags += 4.0;
     }
+    // 8: a robot material (its vertex slots 1 to 3 take the hues below).
+    let hues = m.robot.map_or([[0.0; 4]; 3], |h| [[h.shell.r, h.shell.g, h.shell.b, 0.0], [h.shell2.r, h.shell2.g, h.shell2.b, 0.0], [h.panel.r, h.panel.g, h.panel.b, 0.0]]);
+    if m.robot.is_some() {
+        flags += 8.0;
+    }
     let emissive = m.emissive.scale(m.emissive_intensity);
     let uv = m.map.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |t| [t.repeat[0], t.repeat[1], t.offset[0], t.offset[1]]);
     let row = |model: Mat4, color: [f32; 3], uv: [f32; 4]| Row {
         model: model.to_cols_array_2d(),
-        color: [color[0], color[1], color[2], m.opacity],
+        color: [color[0], color[1], color[2], alpha],
         emissive: [emissive.r, emissive.g, emissive.b, flags],
         uv,
+        robot: hues,
     };
     match &draw.kind {
         DrawKind::Mesh => vec![row(draw.model, m.color.to_array(), uv)],
@@ -718,6 +1133,9 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool) -> Vec<Row> {
             .take(*count)
             .map(|inst| row(draw.model * inst.matrix, m.color.mul(inst.color).to_array(), uv))
             .collect(),
+        DrawKind::OutlineInstanced(instances, count) => {
+            instances.iter().take(*count).map(|inst| row(draw.model * inst.matrix, world_ink, uv)).collect()
+        }
         DrawKind::Points(points) => {
             let size = if let Shading::Points { size } = m.shading { size } else { 0.1 };
             points.iter().map(|p| row(draw.model * Mat4::from_translation(Vec3::from(*p)), m.color.to_array(), [size, 0.0, 0.0, 0.0])).collect()
@@ -725,17 +1143,18 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool) -> Vec<Row> {
     }
 }
 
-impl shader::Primitive for Primitive {
-    type Pipeline = Pipeline;
-
-    fn prepare(&self, p: &mut Pipeline, device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rectangle, viewport: &Viewport) {
-        let scale = viewport.scale_factor();
+impl Primitive {
+    pub fn prepare(&self, p: &mut Pipeline, device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rect, scale: f32) {
+        for count in &p.draws {
+            count.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+        let started = web_time::Instant::now();
         let full = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
         let light = light();
         let (samples, shadows) = if light { (1, false) } else { (SAMPLES, true) };
         // Light mode draws the 3D at half resolution; the blit stretches it over the widget.
         let size = if light { ((full.0 / 2).max(1), (full.1 / 2).max(1)) } else { full };
-        p.physical = Rectangle { x: bounds.x * scale, y: bounds.y * scale, width: full.0 as f32, height: full.1 as f32 };
+        p.physical = Rect { x: bounds.x * scale, y: bounds.y * scale, width: full.0 as f32, height: full.1 as f32 };
         p.ensure_targets(device, size, samples);
 
         let f = &self.frame;
@@ -782,47 +1201,70 @@ impl shader::Primitive for Primitive {
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         let bg = w.background;
+        // Premultiplied: the clear's alpha scales its colour, so a card's clear of 0 is fully transparent.
+        let a = f64::from(p.clear_alpha);
         p.background = if p.format.is_srgb() {
-            wgpu::Color { r: f64::from(bg.r), g: f64::from(bg.g), b: f64::from(bg.b), a: 1.0 }
+            wgpu::Color { r: f64::from(bg.r) * a, g: f64::from(bg.g) * a, b: f64::from(bg.b) * a, a }
         } else {
             let [r, g, b] = bg.to_srgb();
-            wgpu::Color { r: f64::from(r), g: f64::from(g), b: f64::from(b), a: 1.0 }
+            wgpu::Color { r: f64::from(r) * a, g: f64::from(g) * a, b: f64::from(b) * a, a }
         };
 
-        // Order: opaque by render order; then transparent by render order, farthest first.
-        let mut opaque: Vec<&Draw> = Vec::new();
-        let mut transparent: Vec<(&Draw, f32)> = Vec::new();
-        for d in f.statics.iter().chain(&f.draws) {
-            if d.material.transparent || d.material.additive || matches!(d.material.shading, Shading::Shadow) {
-                transparent.push((d, d.model.w_axis.truncate().distance(camera.eye)));
-            } else {
-                opaque.push(d);
-            }
-        }
-        opaque.sort_by_key(|d| d.render_order);
-        transparent.sort_by(|a, b| a.0.render_order.cmp(&b.0.render_order).then(b.1.total_cmp(&a.1)));
-
         let ink = w.ink.to_array();
-        let mut rows: Vec<Row> = Vec::new();
+        // Detail levels (by the eye's distance, with hysteresis) and the cutaways' fades.
+        let eye = camera.eye;
+        let mask = p.detail_mask(f.lod, eye);
+        p.fade_step(&f.fades, eye, f.focus.unwrap_or(camera.target), f.time);
+        let fades_now = p.fade_alpha.clone();
+        let alpha = |d: &Draw| -> f32 {
+            let fade = if d.fade != 0 { fades_now.get(&d.fade).copied().unwrap_or(1.0) } else { 1.0 };
+            d.material.opacity * fade
+        };
+        let stamp = Stamp { shadows, ink: ink.map(f32::to_bits), samples, mask };
+        let statics_changed = !p.statics_are(&f.statics, stamp);
+        if statics_changed {
+            p.build_statics(device, queue, &f.statics, stamp, ink, samples);
+        }
+
+        // The dynamic draws: whatever moves this frame, one draw per mesh and material.
+        let row_size = std::mem::size_of::<Row>();
+        let base = p.static_rows.len() as u32;
+        let mut dyn_rows: Vec<Row> = Vec::new();
+        let mut dyn_opaque: Vec<Cmd> = Vec::new();
+        let mut dyn_transparent: Vec<(Cmd, f32)> = Vec::new();
+        let mut dyn_shadow: Vec<(u64, std::ops::Range<u32>)> = Vec::new();
         let mut used_meshes = HashSet::new();
         let mut used_textures = HashSet::from([0u64]);
-        p.cmds.clear();
-        p.shadow_cmds.clear();
-        for d in opaque.into_iter().chain(transparent.into_iter().map(|(d, _)| d)) {
-            let new_rows = rows_of(d, ink, shadows);
-            if new_rows.is_empty() {
+        // Culling: a dynamic draw outside the camera's view is left out of the main pass, and one outside
+        // the sun's shadow volume out of the shadow pass. A caster off screen stays while it is inside the
+        // volume, since it can shadow what is on screen.
+        let main_frustum = Frustum::from_view_proj(proj * view);
+        let shadow_frustum = Frustum::from_view_proj(light_proj * light_view);
+        let mut culled = 0usize;
+        for d in f.draws.iter().filter(|d| visible_at(d, mask)) {
+            let a = alpha(d);
+            let in_main = bounds_visible(d, &main_frustum);
+            let in_shadow = shadows && d.cast_shadow && casts_shadow(d) && bounds_visible(d, &shadow_frustum);
+            if !in_main {
+                culled += 1;
+            }
+            if !in_main && !in_shadow {
                 continue;
             }
-            let start = rows.len() as u32;
-            rows.extend(new_rows);
-            let range = start..rows.len() as u32;
-            let key = Key { samples, ..key_of(d) };
+            let rows = rows_of(d, ink, shadows, a);
+            if rows.is_empty() {
+                continue;
+            }
+            let start = base + dyn_rows.len() as u32;
+            dyn_rows.extend(rows);
+            let range = start..base + dyn_rows.len() as u32;
+            let key = Key { samples, ..key_of(d, a) };
             p.ensure_pipeline(device, key);
             let mesh = match d.kind {
                 DrawKind::Points(_) => None,
                 _ => {
                     if !p.meshes.contains_key(&d.geo.id) {
-                        p.upload_mesh(device, &d.geo);
+                        p.upload_mesh(device, queue, &d.geo);
                     }
                     used_meshes.insert(d.geo.id);
                     Some(d.geo.id)
@@ -838,13 +1280,39 @@ impl shader::Primitive for Primitive {
                 }
                 None => 0,
             };
-            if d.cast_shadow && shadows {
+            if in_shadow {
                 if let Some(id) = mesh {
-                    p.shadow_cmds.push((id, range.clone()));
+                    dyn_shadow.push((id, range.clone()));
                 }
             }
-            p.cmds.push(Cmd { key, mesh, tex, rows: range });
+            if !in_main {
+                continue;
+            }
+            let cmd = Cmd { key, mesh, tex, rows: range, order: d.render_order };
+            if is_transparent(d, a) {
+                dyn_transparent.push((cmd, d.model.w_axis.truncate().distance(eye)));
+            } else {
+                dyn_opaque.push(cmd);
+            }
         }
+
+        // Order: opaque by render order (the statics first on a tie); then transparent by render
+        // order, farthest first.
+        let mut cmds = std::mem::take(&mut p.cmds);
+        cmds.clear();
+        cmds.extend(p.static_opaque.iter().cloned());
+        cmds.extend(dyn_opaque);
+        cmds.sort_by_key(|c| c.order);
+        let mut transparent: Vec<(Cmd, f32)> = p.static_transparent.iter().map(|(c, at)| (c.clone(), at.distance(eye))).collect();
+        transparent.extend(dyn_transparent);
+        transparent.sort_by(|a, b| a.0.order.cmp(&b.0.order).then(b.1.total_cmp(&a.1)));
+        cmds.extend(transparent.into_iter().map(|(c, _)| c));
+        p.cmds = cmds;
+        let mut shadow_cmds = std::mem::take(&mut p.shadow_cmds);
+        shadow_cmds.clear();
+        shadow_cmds.extend(p.static_shadow.iter().cloned());
+        shadow_cmds.extend(dyn_shadow);
+        p.shadow_cmds = shadow_cmds;
         // Overlays: their rectangles in the widget's NDC, their textures uploaded.
         let mut rects: Vec<[f32; 4]> = Vec::with_capacity(f.overlays.len());
         p.overlay_cmds.clear();
@@ -873,11 +1341,13 @@ impl shader::Primitive for Primitive {
                 queue.write_buffer(buffer, 0, bytes);
             }
         }
-        p.meshes.retain(|id, _| used_meshes.contains(id));
-        p.textures.retain(|id, _| used_textures.contains(id));
+        p.meshes.retain(|id, _| used_meshes.contains(id) || p.static_meshes.contains(id));
+        p.textures.retain(|id, _| used_textures.contains(id) || p.static_textures.contains(id));
 
-        let bytes: &[u8] = bytemuck::cast_slice(&rows);
-        let need = bytes.len().max(std::mem::size_of::<Row>());
+        // The rows: the statics' (uploaded when they change), then this frame's dynamic ones.
+        let static_bytes = p.static_rows.len() * row_size;
+        let need = (static_bytes + dyn_rows.len() * row_size).max(row_size);
+        let mut fresh = false;
         if p.rows.as_ref().is_none_or(|(_, cap)| *cap < need) {
             let cap = need.next_power_of_two();
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -887,20 +1357,36 @@ impl shader::Primitive for Primitive {
                 mapped_at_creation: false,
             });
             p.rows = Some((buffer, cap));
+            fresh = true;
         }
         if let Some((buffer, _)) = &p.rows {
-            if !bytes.is_empty() {
-                queue.write_buffer(buffer, 0, bytes);
+            if (fresh || statics_changed) && static_bytes > 0 {
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&p.static_rows));
+            }
+            if !dyn_rows.is_empty() {
+                queue.write_buffer(buffer, static_bytes as u64, bytemuck::cast_slice(&dyn_rows));
             }
         }
         record(p, device, queue);
+        probe_card_corner(p, device, queue);
+        if perf_on() {
+            let tris: u64 = p
+                .cmds
+                .iter()
+                .filter_map(|c| c.mesh.and_then(|id| p.meshes.get(&id)).map(|m| u64::from(m.count / 3) * u64::from(c.rows.end - c.rows.start)))
+                .sum();
+            let instances = p.static_rows.len() + dyn_rows.len();
+            let static_draws = p.static_opaque.len() + p.static_transparent.len() + p.static_shadow.len();
+            perf_frame(started.elapsed(), p.cmds.len() + p.shadow_cmds.len(), static_draws, tris, instances, culled);
+        }
     }
 
-    fn draw(&self, p: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
-        // iced has set the viewport and scissor to the widget: copy the finished picture in.
+    pub fn draw(&self, p: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
+        // The host has set the viewport and scissor to the target rectangle: copy the finished picture in.
         if let Some(targets) = &p.targets {
             pass.set_pipeline(&p.blit_pipeline);
             pass.set_bind_group(0, &targets.blit_group, &[]);
+            p.count(PASS_BLIT);
             pass.draw(0..3, 0..1);
         }
         // The overlays (labels), at full resolution over the picture, in order.
@@ -910,16 +1396,64 @@ impl shader::Primitive for Primitive {
             for (i, id) in p.overlay_cmds.iter().enumerate() {
                 if let Some(tex) = p.textures.get(id) {
                     pass.set_bind_group(0, &tex.group, &[]);
+                    p.count(PASS_OVERLAY);
                     pass.draw(0..6, i as u32..i as u32 + 1);
                 }
             }
+        }
+        if perf_on() {
+            perf_passes(p.draw_breakdown());
         }
         true
     }
 }
 
-/// The shadow and scene passes, on the floor's own encoder, submitted at once: they run before iced's
-/// frame, which then only copies the finished picture (`Primitive::draw`). No pass of iced's is split.
+/// Set once the card probe has logged (`APZ_CARD_PROBE`).
+static CARD_PROBED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `APZ_CARD_PROBE`: once per process, the corner pixel of a machine card's offscreen target is read back from the GPU
+/// after its frame is drawn and before the blit copies it into the page, and logged. A card's corner is empty, so it
+/// shows the clear: (0, 0, 0, 0) when the target is transparent.
+fn probe_card_corner(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
+    if !p.probe_corner || p.clear_alpha >= 1.0 || crate::env_var("APZ_CARD_PROBE").is_none() {
+        return;
+    }
+    let (Some(targets), Some(_)) = (&p.targets, &p.rows) else { return };
+    if CARD_PROBED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("card probe"),
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("card probe") });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: &targets.resolve_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None } },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    if matches!(rx.recv(), Ok(Ok(()))) {
+        let px = slice.get_mapped_range();
+        eprintln!(
+            "agentplaza-desktop: card corner (0,0) of the {}x{} offscreen target before the blit: rgba({}, {}, {}, {}), format {:?}",
+            targets.size.0, targets.size.1, px[0], px[1], px[2], px[3], p.format
+        );
+        drop(px);
+        buffer.unmap();
+    }
+}
+
+/// The shadow and scene passes, on the floor's own encoder, submitted at once: they run before the host's
+/// frame, which then only copies the finished picture (`Primitive::draw`). No pass of the host's is split.
 fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
     let (Some(targets), Some((rows, _))) = (&p.targets, &p.rows) else {
         return;
@@ -945,6 +1479,7 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                 if let Some(mesh) = p.meshes.get(id) {
                     pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                     pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    p.count(PASS_SHADOW);
                     pass.draw_indexed(0..mesh.count, 0, range.clone());
                 }
             }
@@ -972,6 +1507,10 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
             pass.set_bind_group(0, &p.globals_group, &[]);
             let mut current: Option<Key> = None;
             for cmd in &p.cmds {
+                // A card's clear is transparent: its sky dome would paint an opaque square behind the machine, so only the meshes draw.
+                if p.clear_alpha < 1.0 && cmd.key.prog == Prog::Sky {
+                    continue;
+                }
                 let Some(pipeline) = p.pipelines.get(&cmd.key) else { continue };
                 if current != Some(cmd.key) {
                     pass.set_pipeline(pipeline);
@@ -985,10 +1524,12 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                         pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                         pass.set_vertex_buffer(1, rows.slice(..));
                         pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                        p.count(PASS_MESH);
                         pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
                     }
                     None if cmd.key.prog == Prog::Points => {
                         pass.set_vertex_buffer(0, rows.slice(..));
+                        p.count(PASS_QUAD);
                         pass.draw(0..6, cmd.rows.clone());
                     }
                     None => {}
@@ -1014,6 +1555,8 @@ mod tests {
     fn globals_match_the_shaders_layout() {
         // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4, all 16-byte aligned.
         assert_eq!(std::mem::size_of::<Globals>(), 4 * 64 + 11 * 16 + 8 * 16 + 16);
-        assert_eq!(std::mem::size_of::<Row>(), 112);
+        // 112 bytes of material and transform, plus the robot hues (shell, shell2, panel) as three vec4s.
+        assert_eq!(std::mem::size_of::<Row>(), 112 + 3 * 16);
     }
 }
+

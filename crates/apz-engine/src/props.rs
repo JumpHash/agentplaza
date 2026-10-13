@@ -5,10 +5,10 @@
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 
-use glam::{Mat4, Vec3};
+use glam::{EulerRot, Mat4, Vec3};
 
 use super::geometry;
-use super::scene::{Color, Geo, Geometry, Kind, Mat, Material, Obj, Shading, Side, Tex, Texture};
+use super::scene::{Color, Geo, Instance, Kind, Mat, Material, Obj, Shading};
 use super::textures::{self, Rng};
 use super::toon::{outline, toon_mat};
 
@@ -64,17 +64,6 @@ pub fn glowing(color: u32, intensity: f32) -> Mat {
 /// `toonMat({ color, roughness, metalness })`: toon.ts drops roughness and metalness.
 fn std_mat(color: Color) -> Mat {
     toon_mat(Material { color, ..Material::default() })
-}
-
-/// `toonMat({ map })`.
-fn textured(map: Tex) -> Mat {
-    toon_mat(Material { map: Some(map), ..Material::default() })
-}
-
-/// A CSS `rgb()` string for a colour (`getStyle()`).
-fn css(c: Color) -> String {
-    let [r, g, b] = c.to_srgb_u8();
-    format!("rgb({r},{g},{b})")
 }
 
 /// `part(parent, geo, mat, x, y, z)`: a mesh placed under `parent`.
@@ -157,12 +146,6 @@ fn expand_box(o: &Obj, parent: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
     }
 }
 
-/// The smallest angle between two bearings, in radians.
-fn ang_dist(a: f32, b: f32) -> f32 {
-    let d = a - b;
-    d.sin().atan2(d.cos()).abs()
-}
-
 /// Distance from (px, pz) to the segment from the origin to (bx, bz).
 pub fn seg_dist(px: f32, pz: f32, bx: f32, bz: f32) -> f32 {
     let len2 = (bx * bx + bz * bz).max(1e-6);
@@ -180,16 +163,36 @@ fn bench(mat: &Mat) -> Obj {
     b
 }
 
-/// One electron shell of the xenon atom.
+/// One electron shell of the xenon atom: its group (the track hangs in it), its Euler tilt, its
+/// radius, its electron count and its angular speed (radians per second).
 struct Shell {
     group: Obj,
-    electrons: Vec<Obj>,
+    rot: Vec3,
     r: f32,
+    n: usize,
     speed: f32,
 }
 
+/// The electrons of every shell at `t` seconds, scaled by the nucleus beat: one instance each, in
+/// the globe's frame (a shell's tilt, then the electron on its circle).
+fn electron_instances(shells: &[Shell], t: f32, beat: f32) -> Vec<Instance> {
+    let mut out = Vec::with_capacity(shells.iter().map(|s| s.n).sum());
+    for sh in shells {
+        let tilt = Mat4::from_euler(EulerRot::XYZ, sh.rot.x, sh.rot.y, sh.rot.z);
+        let scale = Mat4::from_scale(Vec3::splat(1.0 + 0.25 * beat));
+        let n = sh.n as f32;
+        for i in 0..sh.n {
+            let a = t * sh.speed + (i as f32 / n) * TAU;
+            let at = Mat4::from_translation(Vec3::new(a.cos() * sh.r, 0.0, a.sin() * sh.r));
+            out.push(Instance { matrix: tilt * at * scale, color: Color::WHITE });
+        }
+    }
+    out
+}
+
 /// `buildPlaza(palette)`: a round paved square with a darker ring, four benches and a slowly
-/// turning hologram (the xenon atom) above the dais. The group is dynamic (the atom turns).
+/// turning hologram (the xenon atom, see [`atom`]) above the dais. The group is dynamic (the atom
+/// turns).
 pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     let g = Obj::group();
     let stone = palette.rule.lerp(palette.sheet, 0.4);
@@ -222,11 +225,24 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
         g.add(&b);
     }
 
-    // A xenon atom above the orchestrator: a pulsing, glowing nucleus and its 54 electrons on five
-    // shells (2, 8, 18, 18, 8), each shell tilted its own way, the inner ones spinning faster.
+    let (globe, anim) = atom(palette);
+    g.add(&globe);
+    shadows(&g);
+    no_cast(&globe);
+    outline(&g, 0.12);
+    g.get().dynamic = true;
+    (g, anim)
+}
+
+/// The xenon atom, its globe at rest (y 4.2, scale 1.5): a pulsing nucleus of 24 nucleons (12
+/// protons, 12 neutrons), a halo and an aura (additive spheres), a point light, and 54 electrons on
+/// five tilted shells. Each nucleon kind and the electrons are one instanced draw, and the animation
+/// rewrites their instance matrices each frame; the halo, aura and light change in place, so nothing
+/// is rebuilt. The globe bobs as a whole, so every part of the atom moves. Returns the globe and its
+/// animation (`t` seconds since start).
+pub fn atom(palette: &PropPalette) -> (Obj, Anim) {
     let xenon = Color::hex(0x9fa8ff);
     let globe = Obj::group();
-    let nucleus = Obj::group();
     let proton = toon_mat(Material {
         color: palette.signal,
         emissive: palette.signal,
@@ -241,12 +257,23 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     });
     let nucleon_geo = geometry::sphere(0.13, 14, 10);
     let mut nr = Rng::new(54);
-    for i in 0..24 {
+    // The rest positions: index 0 the neutrons (even i), index 1 the protons (odd i).
+    let mut nucleons: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
+    for i in 0..24usize {
         let v = Vec3::new(nr.next() - 0.5, nr.next() - 0.5, nr.next() - 0.5).normalize() * (nr.next().cbrt() * 0.24);
-        let m = if i % 2 == 1 { &proton } else { &neutron };
-        part(&nucleus, &nucleon_geo, m, v.x, v.y, v.z);
+        nucleons[usize::from(i % 2 == 1)].push(v);
     }
-    globe.add(&nucleus);
+    let nucleus: Vec<Obj> = [&neutron, &proton]
+        .into_iter()
+        .zip(&nucleons)
+        .map(|(mat, rest)| {
+            let instances = rest.iter().map(|v| Instance { matrix: Mat4::from_translation(*v), color: Color::WHITE }).collect();
+            let obj = Obj::instanced(&nucleon_geo, mat, instances);
+            obj.set_shadows(false, true);
+            globe.add(&obj);
+            obj
+        })
+        .collect();
     let halo_mat = Mat::new(Material {
         shading: Shading::Basic,
         color: xenon,
@@ -288,32 +315,34 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
     for (k, &n) in [2usize, 8, 18, 18, 8].iter().enumerate() {
         let r = 0.62 + k as f32 * 0.27;
         let shell = Obj::group();
-        let (rx, ry, rz) = (nr.next() * PI, nr.next() * PI, nr.next() * PI);
-        shell.set_rotation(rx, ry, rz);
+        let rot = Vec3::new(nr.next() * PI, nr.next() * PI, nr.next() * PI);
+        shell.set_rotation(rot.x, rot.y, rot.z);
         let track = Obj::mesh(&geometry::torus(r, 0.012, 6, 96, TAU), &ring_mat);
         track.set_rotation(PI / 2.0, 0.0, 0.0);
         track.no_outline(); // a fine glowing track, not an inked hoop
         shell.add(&track);
-        let mut electrons = Vec::with_capacity(n);
-        for _ in 0..n {
-            electrons.push(part(&shell, &electron_geo, &electron_mat, 0.0, 0.0, 0.0));
-        }
         globe.add(&shell);
         let speed = 1.9 / (1.0 + k as f32 * 0.45) * if k % 2 == 1 { -1.0 } else { 1.0 };
-        shells.push(Shell { group: shell, electrons, r, speed });
+        shells.push(Shell { group: shell, rot, r, n, speed });
     }
+    let electrons = Obj::instanced(&electron_geo, &electron_mat, electron_instances(&shells, 0.0, 0.0));
+    electrons.set_shadows(false, true);
+    globe.add(&electrons);
+    shadows(&globe);
+    no_cast(&globe);
     outline(&globe, 0.05);
     globe.set_scalar(1.5);
     globe.set_position(0.0, 4.2, 0.0);
-    g.add(&globe);
 
     let globe_anim = globe.clone();
     let animate: Anim = Box::new(move |t: f32| {
         globe_anim.set_position(0.0, 4.2 + (t * 0.9).sin() * 0.1, 0.0);
         // The nucleus beats, its halo and light breathing with it.
         let beat = (t * 2.4).sin().max(0.0).powf(6.0);
-        nucleus.set_scalar(1.0 + 0.12 * beat);
-        nucleus.set_rotation(0.0, t * 0.6, 0.0);
+        let spin = Mat4::from_rotation_y(t * 0.6) * Mat4::from_scale(Vec3::splat(1.0 + 0.12 * beat));
+        for (obj, rest) in nucleus.iter().zip(&nucleons) {
+            obj.set_instances(rest.iter().map(|v| Instance { matrix: spin * Mat4::from_translation(*v), color: Color::WHITE }).collect());
+        }
         halo.set_scalar(1.0 + 0.35 * beat + 0.05 * (t * 7.0).sin());
         halo_mat.get().opacity = 0.3 + 0.35 * beat;
         aura_mat.get().opacity = 0.07 + 0.08 * beat;
@@ -321,142 +350,13 @@ pub fn build_plaza(palette: &PropPalette) -> (Obj, Anim) {
         if let Kind::PointLight { intensity, .. } = &mut glow.get().kind {
             *intensity = 1.6 + 2.4 * beat;
         }
-        for sh in shells.iter() {
-            sh.group.get().rotation.y += 0.002;
-            let n = sh.electrons.len() as f32;
-            for (i, e) in sh.electrons.iter().enumerate() {
-                let a = t * sh.speed + (i as f32 / n) * TAU;
-                e.set_position(a.cos() * sh.r, 0.0, a.sin() * sh.r);
-                e.set_scalar(1.0 + 0.25 * beat);
-            }
+        for sh in shells.iter_mut() {
+            sh.rot.y += 0.002;
+            sh.group.get().rotation = sh.rot;
         }
+        electrons.set_instances(electron_instances(&shells, t, beat));
     });
-    shadows(&g);
-    no_cast(&globe);
-    outline(&g, 0.12);
-    g.get().dynamic = true;
-    (g, animate)
-}
-
-/// `buildPlazaFurniture(palette, bearings)`: the fountain and market stalls on the plaza ring,
-/// placed in the gaps between the paths.
-pub fn build_plaza_furniture(palette: &PropPalette, bearings: &[f32]) -> Furniture {
-    let g = Obj::group();
-    let mut boxes: Vec<Box2> = Vec::new();
-    const RING: f32 = 4.0;
-
-    // Eight candidate spots around the ring, kept off the paths and spread at least two apart.
-    let mut chosen: Vec<f32> = Vec::new();
-    for k in 0..8 {
-        let a = PI / 8.0 + (k as f32 * PI) / 4.0;
-        if bearings.iter().any(|&b| ang_dist(a, b) < 0.3) {
-            continue;
-        }
-        if chosen.iter().all(|&c| ang_dist(a, c) > 1.0) {
-            chosen.push(a);
-        }
-    }
-
-    let water_base: Tex = textures::water();
-    let stone_mat = textured(textures::polish(palette.sheet));
-    let water_mat = toon_mat(Material {
-        map: Some(Arc::clone(&water_base)),
-        emissive: Color::hex(0x2ad0ff),
-        emissive_intensity: 0.55,
-        transparent: true,
-        opacity: 0.9,
-        ..Material::default()
-    });
-    let counter_mat = toon_mat(Material {
-        map: Some(textures::metal()),
-        color: Color::hex(HULL),
-        ..Material::default()
-    });
-    let pole_mat = textured(textures::metal());
-    let awning_key = format!("awning:{}:{}", css(palette.signal), css(palette.sheet));
-    let signal = palette.signal;
-    let awning_tex = textures::canvas_texture(&awning_key, 256, 64, 1.0, |cg, w, h, _| {
-        for i in 0..8 {
-            let c = if i % 2 == 1 { signal } else { Color::hex(0xd8deef) };
-            cg.set_fill(&css(c));
-            cg.fill_rect(i as f32 * w / 8.0, 0.0, w / 8.0, h);
-        }
-    });
-    let awning_mat = toon_mat(Material {
-        map: Some(awning_tex),
-        side: Side::Double,
-        ..Material::default()
-    });
-
-    for (i, &a) in chosen.iter().enumerate() {
-        let x = a.cos() * RING;
-        let z = a.sin() * RING;
-        let node = Obj::group();
-        node.set_position(x, 0.0, z);
-        if i == 0 {
-            // The fountain: a basin with a glowing pool and a spout of light.
-            let basin = part(&node, &geometry::cylinder(0.62, 0.7, 0.26, 32), &stone_mat, 0.0, 0.13, 0.0);
-            let pool = part(&node, &geometry::circle(0.55, 32, 0.0, TAU), &water_mat, 0.0, 0.27, 0.0);
-            pool.set_rotation(-PI / 2.0, 0.0, 0.0);
-            part(&node, &geometry::cylinder(0.05, 0.07, 0.6, 8), &stone_mat, 0.0, 0.56, 0.0);
-            part(&node, &geometry::sphere(0.11, 12, 8), &water_mat, 0.0, 0.92, 0.0);
-            boxes.push(footprint(&basin, node.local_matrix()));
-        } else {
-            // A market stall: a metal counter under a striped awning, turned to face the plaza's centre.
-            node.set_rotation(0.0, (-x).atan2(-z), 0.0);
-            let counter = part(&node, &geometry::box_geo(1.1, 0.72, 0.5), &counter_mat, 0.0, 0.36, 0.0);
-            part(&node, &geometry::box_geo(0.26, 0.18, 0.26), &std_mat(palette.ok), 0.25, 0.81, 0.0);
-            part(&node, &geometry::box_geo(0.24, 0.16, 0.24), &std_mat(palette.signal), -0.3, 0.8, 0.05);
-            for px in [-0.5f32, 0.5] {
-                part(&node, &geometry::cylinder(0.03, 0.03, 2.0, 6), &pole_mat, px, 1.0, 0.42);
-            }
-            let awning = part(&node, &geometry::box_geo(1.4, 0.04, 0.95), &awning_mat, 0.0, 2.0, 0.1);
-            awning.set_rotation(0.2, 0.0, 0.0); // the front edge drops toward the customers
-            boxes.push(footprint(&counter, node.local_matrix()));
-        }
-        shadows(&node);
-        g.add(&node);
-    }
-
-    let animate: Anim = Box::new(move |t: f32| {
-        // The water scrolls: the same texture, offset along v.
-        water_mat.get().map = Some(Arc::new(Texture {
-            offset: [0.0, (t * 0.04) % 1.0],
-            ..(*water_base).clone()
-        }));
-    });
-    outline(&g, 0.12);
-    Furniture { group: g, boxes, animate }
-}
-
-/// `buildPaths(from, palette)`: plated strips from the origin out to each point (y = 0), for the
-/// paths between the centre and the districts, each with a light line down either edge.
-pub fn build_paths(from: &[Vec3], palette: &PropPalette) -> Obj {
-    let g = Obj::group();
-    let mat = std_mat(palette.rule.lerp(palette.sheet, 0.35));
-    let light = Mat::basic(palette.info);
-    for to in from {
-        let len = to.x.hypot(to.z);
-        if len < 0.5 {
-            continue;
-        }
-        // Repeat the stones along the strip instead of stretching one tile over it.
-        let base = geometry::box_geo(len, 0.03, 0.9);
-        let k = len / 0.9;
-        let uvs: Vec<[f32; 2]> = base.uvs.iter().map(|uv| [uv[0] * k, uv[1]]).collect();
-        let geo = Geometry::new(base.positions.clone(), base.normals.clone(), uvs, base.indices.clone());
-        let strip = Obj::mesh(&geo, &mat);
-        strip.set_position(to.x / 2.0, 0.015, to.z / 2.0);
-        strip.set_rotation(0.0, -to.z.atan2(to.x), 0.0);
-        strip.get().receive_shadow = true;
-        for side in [-0.41f32, 0.41] {
-            let line = Obj::mesh(&geometry::box_geo(len, 0.02, 0.05), &light);
-            line.set_position(0.0, 0.02, side);
-            strip.add(&line);
-        }
-        g.add(&strip);
-    }
-    g
+    (globe, animate)
 }
 
 #[cfg(test)]
@@ -486,5 +386,34 @@ mod tests {
     fn build_plaza_returns_a_non_empty_group() {
         let (g, _anim) = build_plaza(&palette());
         assert!(count_meshes(&g) > 0);
+    }
+
+    /// The instance matrices must equal the scene-graph transforms they replace: an electron under its
+    /// tilted shell (rotation, then position and scale), and a nucleon under the beating nucleus.
+    #[test]
+    fn atom_instances_match_the_scene_graph_they_replace() {
+        let (t, beat) = (0.7f32, 0.5f32);
+        let (rot, r, n) = (Vec3::new(0.3, 1.1, -0.4), 0.9f32, 3usize);
+        let shells = vec![Shell { group: Obj::group(), rot, r, n, speed: 1.3 }];
+        let instances = electron_instances(&shells, t, beat);
+        let shell = Obj::group();
+        shell.set_rotation(rot.x, rot.y, rot.z);
+        for (i, inst) in instances.iter().enumerate() {
+            let a = t * 1.3 + (i as f32 / n as f32) * TAU;
+            let e = Obj::group();
+            e.set_position(a.cos() * r, 0.0, a.sin() * r).set_scalar(1.0 + 0.25 * beat);
+            shell.add(&e);
+            let reference = shell.local_matrix() * e.local_matrix();
+            shell.remove(&e);
+            assert!(inst.matrix.abs_diff_eq(reference, 1e-5), "electron {i}");
+        }
+        let v = Vec3::new(0.1, -0.2, 0.05);
+        let spin = Mat4::from_rotation_y(t * 0.6) * Mat4::from_scale(Vec3::splat(1.0 + 0.12 * beat));
+        let nucleus = Obj::group();
+        nucleus.set_rotation(0.0, t * 0.6, 0.0).set_scalar(1.0 + 0.12 * beat);
+        let nucleon = Obj::group();
+        nucleon.set_position(v.x, v.y, v.z);
+        nucleus.add(&nucleon);
+        assert!((spin * Mat4::from_translation(v)).abs_diff_eq(nucleus.local_matrix() * nucleon.local_matrix(), 1e-5));
     }
 }

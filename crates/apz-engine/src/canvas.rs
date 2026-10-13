@@ -776,6 +776,7 @@ fn parse_font(css: &str) -> Option<FontSpec> {
 /// The faces, indexed by `mono * 2 + bold`: the first system font found (DejaVu where Linux keeps
 /// it, the platform's own sans and mono on macOS and Windows), else the bundled Martian Mono, so
 /// labels always draw.
+#[cfg(not(target_arch = "wasm32"))]
 const FONT_FILES: [&[&str]; 4] = [
     &[
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
@@ -809,8 +810,8 @@ const FONT_FILES: [&[&str]; 4] = [
 
 /// The bundled fallback (regular, bold), always present.
 const BUNDLED: [&[u8]; 2] = [
-    include_bytes!("../../../../../assets/fonts/MartianMono-Regular.ttf"),
-    include_bytes!("../../../../../assets/fonts/MartianMono-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/MartianMono-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/MartianMono-Bold.ttf"),
 ];
 
 const UNLOADED: OnceLock<Option<FontVec>> = OnceLock::new();
@@ -820,13 +821,20 @@ static FONTS: [OnceLock<Option<FontVec>>; 4] = [UNLOADED; 4];
 fn font_for(spec: &FontSpec) -> Option<&'static FontVec> {
     let i = (spec.mono as usize) * 2 + spec.bold as usize;
     FONTS[i]
-        .get_or_init(|| {
-            FONT_FILES[i]
-                .iter()
-                .find_map(|path| std::fs::read(path).ok().and_then(|d| FontVec::try_from_vec(d).ok()))
-                .or_else(|| FontVec::try_from_vec(BUNDLED[spec.bold as usize].to_vec()).ok())
-        })
+        .get_or_init(|| system_face(i).or_else(|| FontVec::try_from_vec(BUNDLED[spec.bold as usize].to_vec()).ok()))
         .as_ref()
+}
+
+/// The desktop's own face for slot `i`, the first of its files that reads. A browser has no file system: the
+/// bundled face is used there.
+#[cfg(not(target_arch = "wasm32"))]
+fn system_face(i: usize) -> Option<FontVec> {
+    FONT_FILES[i].iter().find_map(|path| std::fs::read(path).ok().and_then(|d| FontVec::try_from_vec(d).ok()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn system_face(_i: usize) -> Option<FontVec> {
+    None
 }
 
 #[cfg(test)]

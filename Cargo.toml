@@ -32,6 +32,13 @@ ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
 blake2 = "0.10"
 hmac = "0.12"
+# The vault (crates/apid/src/vault): RustCrypto AEAD, KDF, key derivation, zeroed secrets.
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+hkdf = "0.12"
+zeroize = "1"
+secrecy = "0.10"
+base64 = "0.22"
 
 # Debug builds keep line tables only (backtraces still name file:line) and
 # drop debug info for dependencies entirely: this is most of target/'s size.

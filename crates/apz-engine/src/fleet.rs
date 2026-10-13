@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use glam::{Mat4, Quat, Vec3};
 use serde::Deserialize;
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use super::geometry;
 use super::hardware::{self, Built, Params, State, Status};
 use super::props::{self, PropPalette};
-use super::scene::{Color, Geo, Mat, Material, Obj, Shading};
+use super::scene::{self, Color, Geo, Mat, Material, Obj, Shading};
 
 // ---- Data: GET /v1/fleet ----------------------------------------------------------------------
 
@@ -273,7 +273,7 @@ fn activity(m: &Machine) -> f32 {
 
 // ---- Palette ----------------------------------------------------------------------------------
 
-const PALETTE_SRC: &str = include_str!("../../../../../assets/hardware/palette.json");
+const PALETTE_SRC: &str = include_str!("../../../assets/hardware/palette.json");
 
 #[derive(Deserialize)]
 struct PaletteFile {
@@ -457,8 +457,8 @@ pub struct FleetFrame {
 
 /// Builds the machines scene from a fleet snapshot.
 pub fn build_fleet(fleet: &FleetResponse, palette: &PropPalette) -> FleetScene {
+    // Static (baked with the Machines view): only what moves or changes colour is dynamic.
     let group = Obj::group();
-    group.set_dynamic(true);
     let mut scene = FleetScene {
         group,
         machines: BTreeMap::new(),
@@ -481,10 +481,11 @@ fn place_machine(
     m: &Machine,
     hub: bool,
     model: &hardware::Model,
-    built: Built,
+    mut built: Built,
     pose: ([f32; 3], f32),
 ) -> MachineScene {
     let (base, turn) = pose;
+    built.freeze_cutaways(); // no fades in this view
     let root = Obj::group();
     root.add(&built.root);
     root.set_position(base[0], base[1], base[2])
@@ -505,6 +506,7 @@ fn place_machine(
     );
     ring.set_position(base[0], 0.05, base[2])
         .set_rotation(-FRAC_PI_2, 0.0, 0.0);
+    ring.set_dynamic(true); // its colour follows the status every frame
     group.add(&ring);
 
     let pose_mat = Mat4::from_rotation_translation(Quat::from_rotation_y(turn), Vec3::from(base));
@@ -550,6 +552,7 @@ fn flow(group: &Obj, geo: &Geo, color: Color, reversed: bool) -> Flow {
         .map(|_| {
             let obj = Obj::mesh(geo, &mat);
             obj.set_visible(false);
+            obj.set_dynamic(true); // a packet moves along its cable every frame
             group.add(&obj);
             Packet { obj, p: None }
         })
@@ -565,6 +568,8 @@ fn flow(group: &Obj, geo: &Geo, color: Color, reversed: bool) -> Flow {
 fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene {
     let cable = Mat::toon(named("cable"));
     let segment = geometry::cylinder(CABLE_RADIUS, CABLE_RADIUS, 1.0, 6);
+    // One mesh for the whole cable: its segments merged, so the cable is one draw.
+    let mut parts: Vec<(Geo, Mat4)> = Vec::new();
     for pair in points.windows(2) {
         let (p0, p1) = (Vec3::from(pair[0]), Vec3::from(pair[1]));
         let d = p1 - p0;
@@ -573,10 +578,12 @@ fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene
             continue;
         }
         let mid = (p0 + p1) * 0.5;
-        let seg = Obj::mesh(&segment, &cable);
-        seg.set_position(mid.x, mid.y, mid.z)
-            .set_quaternion(Quat::from_rotation_arc(Vec3::Y, d / len))
-            .set_scale(1.0, len, 1.0);
+        let m = Mat4::from_scale_rotation_translation(Vec3::new(1.0, len, 1.0), Quat::from_rotation_arc(Vec3::Y, d / len), mid);
+        parts.push((Arc::clone(&segment), m));
+    }
+    if !parts.is_empty() {
+        let seg = Obj::mesh(&scene::merge(&parts), &cable);
+        seg.set_dynamic(true); // its cable's colour follows the link every frame
         group.add(&seg);
     }
     let packet = geometry::sphere(0.14, 8, 6);
@@ -708,13 +715,17 @@ impl FleetScene {
     /// Advances the scene by `dt` seconds with the fleet's latest snapshot. Rebuilds when the
     /// machines or the links change; otherwise it updates status colours, fan spin, activity LEDs,
     /// the status rings, the hover lift, the atoms and the packets.
-    pub fn update(&mut self, dt: f32, fleet: &FleetResponse) {
+    /// Advances the scene. Returns whether a machine is still lifting (its baked pose changes), so
+    /// the Machines view re-bakes its statics.
+    pub fn update(&mut self, dt: f32, ambient: f32, ambient_dt: f32, fleet: &FleetResponse) -> bool {
+        let mut lifting = false;
         let layout = layout_of(fleet);
         if self.layout.as_ref() != Some(&layout) {
             self.rebuild(fleet, layout);
         }
-        self.time += dt;
-        let time = self.time;
+        // The ambient visuals read the clock in seconds, not the capped frame step; `dt` only moves the hover lift.
+        self.time = ambient;
+        let time = ambient;
         let pulse = 1.0 + 0.5 * (TAU * time / PULSE_PERIOD).sin();
 
         for m in &fleet.machines {
@@ -726,7 +737,8 @@ impl FleetScene {
             node.status = status_of(&m.status);
             let online = node.status == Status::Online;
             node.built.update(
-                dt,
+                ambient_dt,
+                time,
                 &State {
                     status: node.status,
                     activity: activity(m),
@@ -742,7 +754,9 @@ impl FleetScene {
                 mat.emissive_intensity = if online { pulse } else { 0.2 };
             }
             let target = if hovered { HOVER_LIFT } else { 0.0 };
+            let before = node.lift;
             node.lift += (target - node.lift) * (1.0 - (-dt * HOVER_RATE).exp());
+            lifting |= (node.lift - before).abs() > 1e-6;
             node.root
                 .set_position(node.base[0], node.base[1] + node.lift, node.base[2]);
             if let Some(atom) = &node.atom {
@@ -769,8 +783,25 @@ impl FleetScene {
             let rate = packet_rate(online, working(&link.a), working(&link.b));
             let base = named("cable");
             link.cable.get().color = if online { base } else { base.scale(0.5) };
-            step_flow(&mut link.forward, dt, rate, &link.points);
-            step_flow(&mut link.backward, dt, rate, &link.points);
+            step_flow(&mut link.forward, ambient_dt, rate, &link.points);
+            step_flow(&mut link.backward, ambient_dt, rate, &link.points);
+        }
+        lifting
+    }
+
+    /// The fleet's motion: Active while a machine's hover lift is still travelling, Ambient while any machine exists
+    /// (its ring pulses, fans, LEDs and atom run on the clock), Rest for an empty fleet.
+    pub fn motion(&self) -> crate::stage::Motion {
+        let lifting = self.machines.iter().any(|(id, m)| {
+            let target = if self.hovered.as_deref() == Some(id.as_str()) { HOVER_LIFT } else { 0.0 };
+            (m.lift - target).abs() > 1e-4
+        });
+        if lifting {
+            crate::stage::Motion::Active
+        } else if self.machines.is_empty() {
+            crate::stage::Motion::Rest
+        } else {
+            crate::stage::Motion::Ambient
         }
     }
 
@@ -986,7 +1017,7 @@ mod tests {
 
         // Same layout: no rebuild, so the scene keeps its children.
         let children = scene.group.get().children.len();
-        scene.update(0.016, &fleet);
+        scene.update(0.016, 0.016, 0.016, &fleet);
         assert_eq!(scene.group.get().children.len(), children);
 
         // A new machine: the scene rebuilds with four.
@@ -997,7 +1028,7 @@ mod tests {
             kind: "laptop".into(),
             ..Machine::default()
         });
-        scene.update(0.016, &grown);
+        scene.update(0.016, 0.016, 0.016, &grown);
         assert_eq!(scene.machines.len(), 4);
         assert!(scene.frame().radius > 0.0);
     }

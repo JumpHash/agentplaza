@@ -194,6 +194,12 @@ pub struct Geometry {
     pub indices: Vec<u32>,
     pub center: [f32; 3],
     pub radius: f32,
+    /// The vertex colours of a batch of meshes that differ only in colour (linear rgb, multiplied
+    /// into the material's). Empty: white.
+    pub colors: Vec<[f32; 3]>,
+    /// The per-vertex material slot (toon robots only; see [`RobotHues`]): 0 unchanged, 1 shell,
+    /// 2 shell2, 3 panel, 4 fixed glass. One per vertex; empty: all 0.
+    pub slots: Vec<u8>,
 }
 
 pub type Geo = Arc<Geometry>;
@@ -212,7 +218,7 @@ impl Geometry {
         }
         let center = if positions.is_empty() { Vec3::ZERO } else { (lo + hi) * 0.5 };
         let radius = positions.iter().map(|p| Vec3::from(*p).distance(center)).fold(0.0, f32::max);
-        Arc::new(Geometry { id: next_id(), positions, normals, uvs, indices, center: center.to_array(), radius })
+        Arc::new(Geometry { id: next_id(), positions, normals, uvs, indices, center: center.to_array(), radius, colors: Vec::new(), slots: Vec::new() })
     }
 }
 
@@ -291,10 +297,22 @@ pub struct Material {
     pub additive: bool,
     pub depth_write: bool,
     pub depth_test: bool,
+    /// A flat decal (a plane, a ring, a label) on a solid's top: drawn with a depth bias so it wins the depth test.
+    pub decal: bool,
     pub side: Side,
     /// Fogged (three's `fog: true`, the default for its built-in materials).
     pub fog: bool,
     pub visible: bool,
+    /// The robot colours for vertices in slots 1 to 3 (toon only). None: slots are ignored.
+    pub robot: Option<RobotHues>,
+}
+
+/// The per-robot hues a vertex slot picks: slot 1 = `shell`, 2 = `shell2`, 3 = `panel`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RobotHues {
+    pub shell: Color,
+    pub shell2: Color,
+    pub panel: Color,
 }
 
 impl Default for Material {
@@ -310,9 +328,11 @@ impl Default for Material {
             additive: false,
             depth_write: true,
             depth_test: true,
+            decal: false,
             side: Side::Front,
             fog: true,
             visible: true,
+            robot: None,
         }
     }
 }
@@ -395,6 +415,11 @@ pub struct Node {
     pub no_outline: bool,
     /// `userData.walk`: robots walk over it (rugs, floor markings): it has no footprint.
     pub walk: bool,
+    /// Camera-distance detail: 0 always shown, 1 medium, 2 fine (see [`Lod`]).
+    pub lod: u8,
+    /// The cutaway this node belongs to (0: none). Its draws fade while they stand between the
+    /// camera and the focus (see [`Fade`]).
+    pub fade: u32,
     /// An opaque tag for picking (a robot's cid) and lookups.
     pub tag: Option<u64>,
     pub children: Vec<Obj>,
@@ -427,6 +452,8 @@ impl Obj {
             hull: None,
             no_outline: false,
             walk: false,
+            lod: 0,
+            fade: 0,
             tag: None,
             children: Vec::new(),
         })))
@@ -562,6 +589,14 @@ impl Obj {
         }
     }
 
+    /// Replaces an instanced mesh's instances; its draw count follows the list.
+    pub fn set_instances(&self, instances: Vec<Instance>) {
+        if let Kind::Instanced { instances: list, count, .. } = &mut self.get().kind {
+            *count = instances.len();
+            *list = Arc::new(instances);
+        }
+    }
+
     /// The local matrix (T · R · S).
     pub fn local_matrix(&self) -> Mat4 {
         local_of(&self.get())
@@ -598,6 +633,36 @@ fn local_of(node: &Node) -> Mat4 {
 }
 
 // ---- Camera, lights, frame ---------------------------------------------------------------------
+
+/// A view volume's six planes (for culling): each is `(n, d)` with `n · p + d >= 0` inside. Built
+/// from a view-projection matrix with wgpu's 0..1 depth, so it serves the camera and the sun's
+/// orthographic shadow volume alike.
+#[derive(Debug, Clone, Copy)]
+pub struct Frustum {
+    planes: [Vec4; 6],
+}
+
+impl Frustum {
+    /// The planes of `view_proj` (Gribb and Hartmann), each normalised.
+    pub fn from_view_proj(m: Mat4) -> Frustum {
+        let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
+        let raw = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2];
+        let planes = raw.map(|p| p / p.truncate().length().max(1e-12));
+        Frustum { planes }
+    }
+
+    /// Whether the sphere (`center`, `radius`) touches the volume.
+    pub fn sphere_visible(&self, center: Vec3, radius: f32) -> bool {
+        self.planes.iter().all(|p| p.truncate().dot(center) + p.w >= -radius)
+    }
+}
+
+/// The world-space bounding sphere of a geometry under `m`: its centre transformed, and its radius
+/// scaled by the longest of the matrix's axes (exact for uniform scale, conservative otherwise).
+pub fn world_sphere(geo: &Geometry, m: Mat4) -> (Vec3, f32) {
+    let scale = m.x_axis.truncate().length().max(m.y_axis.truncate().length()).max(m.z_axis.truncate().length());
+    (m.transform_point3(Vec3::from(geo.center)), geo.radius * scale)
+}
 
 /// A perspective camera looking at `target` (three's `PerspectiveCamera` + `lookAt`).
 #[derive(Debug, Clone, Copy)]
@@ -710,6 +775,8 @@ pub enum DrawKind {
     Outline,
     /// Instances of `geo`, each with its own matrix (relative to `model`) and colour.
     Instanced(Arc<Vec<Instance>>, usize),
+    /// The ink hull of an instanced mesh: `geo` is the hull, drawn at each instance.
+    OutlineInstanced(Arc<Vec<Instance>>, usize),
     /// Points at these positions (relative to `model`).
     Points(Arc<Vec<[f32; 3]>>),
 }
@@ -725,6 +792,27 @@ pub struct Draw {
     pub cast_shadow: bool,
     pub receive_shadow: bool,
     pub render_order: i32,
+    /// The detail level of its node (0 always shown; see [`Lod`]).
+    pub lod: u8,
+    /// The cutaway it belongs to (0: none; see [`Fade`]).
+    pub fade: u32,
+}
+
+/// A model's detail by camera distance: its centre and its radius R. Detail 1 is shown while the
+/// camera is within 160 units of that sphere, detail 2 within 90 (the renderer adds hysteresis).
+#[derive(Debug, Clone, Copy)]
+pub struct Lod {
+    pub center: Vec3,
+    pub radius: f32,
+}
+
+/// A cutaway's box in world space: its draws fade while the segment from the camera to the focus
+/// passes through the box.
+#[derive(Debug, Clone, Copy)]
+pub struct Fade {
+    pub id: u32,
+    pub min: Vec3,
+    pub max: Vec3,
 }
 
 /// A point light in world space.
@@ -752,6 +840,12 @@ pub struct Frame {
     pub time: f32,
     /// 2D pictures drawn over the scene (the robots' name labels), back to front.
     pub overlays: Vec<Overlay>,
+    /// The board's detail centre and radius (None: every detail level is shown).
+    pub lod: Option<Lod>,
+    /// The board's cutaways and their boxes.
+    pub fades: Arc<Vec<Fade>>,
+    /// What the cutaways keep in view: the board's atom (None: the camera's target).
+    pub focus: Option<Vec3>,
 }
 
 /// A picture over the scene: a texture at a rectangle in widget pixels from its top-left (logical
@@ -791,7 +885,7 @@ fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &m
         }
         let world = parent * local_of(&n);
         let dynamic = dynamic_above || n.dynamic;
-        (world, dynamic, n.children.clone(), (n.kind.clone(), n.hull.clone(), n.cast_shadow, n.receive_shadow, n.render_order))
+        (world, dynamic, n.children.clone(), (n.kind.clone(), n.hull.clone(), n.cast_shadow, n.receive_shadow, n.render_order, n.lod, n.fade))
     };
     let wanted = match filter {
         Filter::All => true,
@@ -799,10 +893,10 @@ fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &m
         Filter::Dynamic => dynamic,
     };
     if wanted {
-        let (kind, hull, cast_shadow, receive_shadow, render_order) = item;
+        let (kind, hull, cast_shadow, receive_shadow, render_order, lod, fade) = item;
         let draw = |kind: DrawKind, geo: &Geo, mat: &Mat| {
             let material = mat.snapshot();
-            material.visible.then(|| Draw { kind, geo: Arc::clone(geo), mat_id: mat.id(), material, model: world, cast_shadow, receive_shadow, render_order })
+            material.visible.then(|| Draw { kind, geo: Arc::clone(geo), mat_id: mat.id(), material, model: world, cast_shadow, receive_shadow, render_order, lod, fade })
         };
         match &kind {
             Kind::Group => {}
@@ -814,7 +908,20 @@ fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &m
                     }
                 }
             }
-            Kind::Instanced { geo, mat, instances, count } => draws.extend(draw(DrawKind::Instanced(Arc::clone(instances), *count), geo, mat)),
+            Kind::Instanced { geo, mat, instances, count } => {
+                if let Some(d) = draw(DrawKind::Instanced(Arc::clone(instances), *count), geo, mat) {
+                    let outline = hull.as_ref().map(|hull| Draw {
+                        kind: DrawKind::OutlineInstanced(Arc::clone(instances), *count),
+                        geo: Arc::clone(hull),
+                        mat_id: 0,
+                        cast_shadow: false,
+                        receive_shadow: false,
+                        ..d.clone()
+                    });
+                    draws.push(d);
+                    draws.extend(outline);
+                }
+            }
             Kind::Points { positions, mat } => draws.extend(draw(DrawKind::Points(Arc::clone(positions)), &empty_geo(), mat)),
             Kind::PointLight { color, intensity, distance, decay } => lights.push(PointLightDraw {
                 position: world.w_axis.truncate(),
@@ -870,44 +977,83 @@ fn empty_geo() -> Geo {
 /// with the vertices moved to world space (the web floor's `bakeStatic`). Hulls merge too.
 pub fn bake(root: &Obj) -> Vec<Draw> {
     let (draws, _) = flatten(root, Filter::Static);
-    let mut groups: Vec<(Draw, Vec<(Geo, Mat4)>)> = Vec::new();
-    let mut index: HashMap<(u64, bool, bool, i32, u8, u64), usize> = HashMap::new();
+    // One merged draw per key. Toon meshes key by everything but their base colour: a batch of them
+    // carries each part's colour as vertex colour, under one material (the first's, in white).
+    type Part = (Geo, Mat4, Option<[f32; 3]>);
+    let mut groups: Vec<(Draw, Vec<Part>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
     let mut rest = Vec::new();
     for d in draws {
-        let tag = match d.kind {
-            DrawKind::Mesh => 0u8,
-            DrawKind::Outline => 1,
+        let (key, tint) = match d.kind {
+            DrawKind::Mesh if d.material.shading == Shading::Toon => {
+                (format!("c|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod), Some(d.material.color.to_array()))
+            }
+            DrawKind::Mesh => (format!("m|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod), None),
+            // Outlines share one ink: key them by nothing but their kind.
+            DrawKind::Outline => (format!("o|{}|{}", d.render_order, d.lod), None),
             _ => {
                 rest.push(d);
                 continue;
             }
         };
-        // Outlines share one ink: key them by nothing but their kind. Textured materials with
-        // different maps stay apart (the map is part of the material).
-        let key = (d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, tag, if tag == 1 { 0 } else { d.mat_id });
         match index.get(&key) {
-            Some(&at) => groups[at].1.push((Arc::clone(&d.geo), d.model)),
+            Some(&at) => groups[at].1.push((Arc::clone(&d.geo), d.model, tint)),
             None => {
                 index.insert(key, groups.len());
-                let parts = vec![(Arc::clone(&d.geo), d.model)];
+                let parts = vec![(Arc::clone(&d.geo), d.model, tint)];
                 groups.push((d, parts));
             }
         }
     }
     let mut out: Vec<Draw> = groups
         .into_iter()
-        .map(|(first, parts)| Draw { geo: merge(&parts), model: Mat4::IDENTITY, ..first })
+        .map(|(mut first, parts)| {
+            if parts.iter().any(|p| p.2.is_some()) {
+                first.material.color = Color::WHITE;
+            }
+            Draw { geo: merge_tinted(&parts), model: Mat4::IDENTITY, ..first }
+        })
         .collect();
     out.extend(rest);
     out
 }
 
+/// What makes two toon materials differ in more than their base colour: everything but `color`.
+fn class_of(m: &Material) -> String {
+    format!(
+        "{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{:?}|{}|{}|{:?}",
+        m.emissive,
+        m.emissive_intensity,
+        m.opacity,
+        m.transparent,
+        m.additive,
+        m.depth_write,
+        m.depth_test,
+        m.decal,
+        m.side,
+        m.fog,
+        m.visible,
+        m.map.as_ref().map(|t| t.id)
+    )
+}
+
 /// Geometries moved by their matrices into one (normals by the normal matrix).
 pub fn merge(parts: &[(Geo, Mat4)]) -> Geo {
-    let total: usize = parts.iter().map(|(g, _)| g.positions.len()).sum();
+    let tinted: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts.iter().map(|(g, m)| (Arc::clone(g), *m, None)).collect();
+    merge_tinted(&tinted)
+}
+
+/// [`merge`], with each part's vertex colour (None: white). A merge with no colours at all has none.
+pub fn merge_tinted(parts: &[(Geo, Mat4, Option<[f32; 3]>)]) -> Geo {
+    let total: usize = parts.iter().map(|(g, _, _)| g.positions.len()).sum();
+    let tinted = parts.iter().any(|p| p.2.is_some());
     let (mut positions, mut normals, mut uvs, mut indices) =
         (Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total), Vec::new());
-    for (geo, m) in parts {
+    let mut colors: Vec<[f32; 3]> = Vec::with_capacity(if tinted { total } else { 0 });
+    for (geo, m, tint) in parts {
+        if tinted {
+            colors.extend(std::iter::repeat(tint.unwrap_or([1.0; 3])).take(geo.positions.len()));
+        }
         let base = positions.len() as u32;
         let normal_matrix = Mat3::from_mat4(*m).inverse().transpose();
         positions.extend(geo.positions.iter().map(|p| m.transform_point3(Vec3::from(*p)).to_array()));
@@ -919,7 +1065,11 @@ pub fn merge(parts: &[(Geo, Mat4)]) -> Geo {
             indices.extend(geo.indices.iter().map(|i| base + i));
         }
     }
-    Geometry::new(positions, normals, uvs, indices)
+    let mut merged = Geometry::new(positions, normals, uvs, indices);
+    if tinted {
+        Arc::get_mut(&mut merged).expect("a fresh geometry has one owner").colors = colors;
+    }
+    merged
 }
 
 #[cfg(test)]

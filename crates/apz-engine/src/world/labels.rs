@@ -10,8 +10,8 @@ use std::sync::{Mutex, OnceLock};
 
 use super::view::Label;
 use super::Floor;
-use crate::console::floor3d::canvas::Canvas;
-use crate::console::floor3d::scene::{Color, Overlay, Tex};
+use crate::canvas::Canvas;
+use crate::scene::{Color, Overlay, Tex};
 
 // The console's dark theme (tokens.css): a night-navy sheet, pale ink, a black print shadow.
 const SHEET: &str = "#111726";
@@ -189,7 +189,7 @@ fn draw_full(label: &Label, scale: f32) -> (Canvas, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::floor3d::world::AgentInfo;
+    use crate::world::AgentInfo;
 
     fn info(cid: u64, status: &str) -> AgentInfo {
         AgentInfo {
@@ -198,15 +198,15 @@ mod tests {
             role: "researcher".to_string(),
             status: status.to_string(),
             tier: "worker".to_string(),
-            model: "model".to_string(),
+            model: "model".to_string(), species: None,
         }
     }
 
     /// A floor with one agent in `status` on the workstation's board, the view reset to a 640 × 480 stage.
     fn floor_with(status: &str) -> Floor {
         let mut floor = Floor::new();
-        let model = crate::console::floor3d::hardware::model("board/workstation").expect("the workstation board parses");
-        floor.show_board("test".into(), model, crate::console::floor3d::hardware::Params::default(), crate::console::floor3d::hardware::Status::Online);
+        let model = crate::hardware::model("board/workstation").expect("the workstation board parses");
+        floor.show_board("test".into(), model, crate::hardware::Params::default(), crate::hardware::Status::Online);
         floor.sync(&[info(1, status)]);
         floor.reset_view(640.0 / 480.0);
         floor
@@ -272,7 +272,7 @@ mod tests {
             let back = (cam.eye - cam.target).normalize();
             let right = glam::Vec3::Y.cross(back).normalize();
             let up = back.cross(right);
-            let tan_v = (crate::console::floor3d::controls::FOV_DEG / 2.0).to_radians().tan();
+            let tan_v = (crate::controls::FOV_DEG / 2.0).to_radians().tan();
             let tan_h = tan_v * aspect;
             let (mut wide, mut tall) = (0.0f32, 0.0f32);
             for p in floor.fit_points() {

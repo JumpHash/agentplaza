@@ -26,7 +26,9 @@ pub fn outline(root: &Obj, min_size: f32) {
         let candidate = {
             let node = o.get();
             match &node.kind {
-                Kind::Mesh { geo, mat } if !node.no_outline && node.hull.is_none() => Some((Arc::clone(geo), mat.clone())),
+                Kind::Mesh { geo, mat } | Kind::Instanced { geo, mat, .. } if !node.no_outline && node.hull.is_none() => {
+                    Some((Arc::clone(geo), mat.clone()))
+                }
                 _ => None,
             }
         };
@@ -144,7 +146,7 @@ pub fn starfield(n: u32, radius: f32, rand: &mut Rng) -> Starfield {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::floor3d::scene::Geometry;
+    use crate::scene::Geometry;
 
     #[test]
     fn sky_is_a_back_side_dome_drawn_first() {

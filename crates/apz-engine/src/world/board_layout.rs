@@ -9,36 +9,36 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::layout::role_hue;
 use super::{AgentInfo, District};
-use crate::console::floor3d::hardware::{self, Model, Params};
-use crate::console::floor3d::rooms::room_style;
-use crate::console::screens::society::role_family;
+use crate::hardware::{self, Model, Params};
+use crate::rooms;
+use crate::roles::role_family;
 
-/// The surface the robots walk on between the rooms (`params.pcb_top`, the default).
+/// The surface the robots walk on between the rooms when the board has no `pcb_top` param (the web's `?? 0.4`).
 const PCB_TOP: f32 = 0.4;
 /// The sloped band around a room, in units: from the room's height down to the PCB top.
 const RAMP: f32 = 1.0;
 /// A room's footprint as a share of its cell.
 const ROOM_SHARE: f32 = 0.9;
-/// Homes sit this far apart at most, and never closer than 0.5.
+/// Homes sit this far apart at most.
 const HOME_GAP: f32 = 3.0;
-/// The margin kept between the outermost homes and the cell edge.
-const HOME_MARGIN: f32 = 0.9;
+/// The share of a cell's short side that the homes of a row spread across (the web's `0.8`).
+const HOME_SHARE: f32 = 0.8;
 /// The orchestrator's hue: the Floor's dais.
 const ORCHESTRATOR_HUE: f32 = 25.0;
+/// The slack on size comparisons (the web's 1e-9, in f32).
+const EPS: f32 = 1e-4;
+/// The camera occlusion (the web's OCCLUSION_GRID, OCCLUSION_HEIGHT, OCCLUSION_SHARE): a slot's samples are a
+/// 3 by 3 grid on its top, 1 unit above it; the slot is hidden when MORE than a third of them are blocked.
+const OCCLUSION_GRID: usize = 3;
+const OCCLUSION_HEIGHT: f64 = 1.0;
+const OCCLUSION_SHARE: f64 = 1.0 / 3.0;
 
-/// The layout's inputs besides the agents: the `when` params (as `hardware::build` takes them)
-/// and the PCB top.
+/// The layout's inputs besides the agents: the `when` params (as `hardware::build` takes them). The PCB top is the
+/// board's `pcb_top` param, overridden by these (the web's `{...board.params, ...params}`).
 #[allow(dead_code)] // the Floor integration consumes it next
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BoardParams {
     pub params: Params,
-    pub pcb_top: f32,
-}
-
-impl Default for BoardParams {
-    fn default() -> Self {
-        Self { params: Params::default(), pcb_top: PCB_TOP }
-    }
 }
 
 /// The board's footprint, centred on the origin, as its `size` says.
@@ -55,6 +55,9 @@ pub struct Bounds {
 #[allow(dead_code)] // the Floor integration consumes it next
 #[derive(Debug, Clone)]
 pub struct BoardDistrict {
+    /// The room's key: its role, or `unnamed:<cid>` for an agent with no role (its `district.role` is then
+    /// `other`, the family). The web keeps the key in its grouping only; this is the same key.
+    pub key: String,
     pub district: District,
     /// The slot's top: the room's floor height.
     pub y: f32,
@@ -94,10 +97,13 @@ struct Live {
     capacity: usize,
     /// Indices into the groups, in placement order.
     rooms: Vec<usize>,
+    /// The largest minimum side among its rooms, over `ROOM_SHARE` (the web's `need`): its cells must reach it.
+    need: f32,
 }
 
 /// One room: the orchestrator's agents, or a role's agents.
 struct Group<'a> {
+    key: String,
     role: String,
     orch: bool,
     members: Vec<&'a AgentInfo>,
@@ -122,12 +128,30 @@ fn rect_distance(r: [f32; 4], p: [f32; 2]) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
-/// The first slot with free capacity that `want` accepts. The orchestrator takes the one nearest
-/// the atom; a role takes the first in the board's order.
-fn first_free(live: &[Live], want: impl Fn(&Live) -> bool, orch: bool, atom: [f32; 2]) -> Option<usize> {
+/// The short side of a cell when `rect` is split into `n` cells (the cells `cell` gives).
+fn cell_side(rect: [f32; 4], n: usize) -> f32 {
+    let (_, _, w, d) = cell(rect, n, 0);
+    w.min(d)
+}
+
+/// The rooms a slot holds with cells at least `need` (already over `ROOM_SHARE`) on their short side: its capacity, lowered in count
+/// as needed (fewer, larger cells). 0 when not even one cell reaches `need`.
+fn holds_at_least(s: &Live, need: f32) -> usize {
+    (1..=s.capacity).rev().find(|&n| cell_side(s.rect, n) >= need - EPS).unwrap_or(0)
+}
+
+/// Whether a room with minimum side `m` has a place in the slot: one more room, its cells at least `m / ROOM_SHARE`
+/// (the room's footprint is `ROOM_SHARE` of its cell; the web's `hasRoom`), and at least the slot's largest so far.
+fn fits(s: &Live, m: f32) -> bool {
+    s.rooms.len() < holds_at_least(s, s.need.max(m / ROOM_SHARE))
+}
+
+/// The first slot with a place for a room of minimum side `m` that `want` accepts. The orchestrator
+/// takes the one nearest the atom; a role takes the first in the board's order.
+fn first_free(live: &[Live], want: impl Fn(&Live) -> bool, orch: bool, atom: [f32; 2], m: f32) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (i, s) in live.iter().enumerate() {
-        if s.rooms.len() >= s.capacity || !want(s) {
+        if !fits(s, m) || !want(s) {
             continue;
         }
         if !orch {
@@ -141,54 +165,69 @@ fn first_free(live: &[Live], want: impl Fn(&Live) -> bool, orch: bool, atom: [f3
     best.map(|(i, _)| i)
 }
 
-/// The slot for a family's room: the preferred kinds in order, then any slot with room, then (when
-/// every slot is full) the slot with the most area per room, the new room counted.
-fn choose(live: &[Live], family: &str, orch: bool, atom: [f32; 2]) -> usize {
+/// The slot for a family's room of minimum side `m`: the preferred kinds in order, then any slot with room.
+/// None when no slot holds the room at `m` (the web's `place` returning -1): the room then joins a built room.
+fn choose(live: &[Live], family: &str, orch: bool, atom: [f32; 2], m: f32) -> Option<usize> {
     for kind in prefers(family) {
-        if let Some(i) = first_free(live, |s| s.kind == *kind, orch, atom) {
-            return i;
+        if let Some(i) = first_free(live, |s| s.kind == *kind, orch, atom, m) {
+            return Some(i);
         }
     }
-    if let Some(i) = first_free(live, |_| true, orch, atom) {
-        return i;
-    }
-    let mut best = 0;
-    let mut best_area = f32::NEG_INFINITY;
-    for (i, s) in live.iter().enumerate() {
-        let area = s.rect[2] * s.rect[3] / (s.rooms.len() + 1) as f32;
-        if area > best_area {
-            best = i;
-            best_area = area;
-        }
-    }
-    best
+    first_free(live, |_| true, orch, atom, m)
 }
 
-/// Cell `k` of `n` cells tiling `rect`: `(cx, cz, w, d)`. The columns run along the longer side.
+/// A room's family: the orchestrator's is `command`, a role's is its name's (the web's `roleFamily`).
+fn family_of(g: &Group<'_>) -> &'static str {
+    if g.orch {
+        "command"
+    } else {
+        role_family(&g.role, "worker")
+    }
+}
+
+/// Cell `k` of `n` cells tiling `rect`: `(cx, cz, w, d)` (the web's `gridCells`). The factor pair of `n`
+/// whose cells are nearest square splits the longer side; a tie goes to the later factor.
 fn cell(rect: [f32; 4], n: usize, k: usize) -> (f32, f32, f32, f32) {
     let [x, z, w, d] = rect;
     let along_x = w >= d;
     let (long, short) = if along_x { (w, d) } else { (d, w) };
+    let (long, short) = (long.max(1e-6), short.max(1e-6));
     let n = n.max(1);
-    let k_short = ((n as f32 * short / long).sqrt().floor() as usize).clamp(1, n);
-    let k_long = (n + k_short - 1) / k_short;
-    let (cell_long, cell_short) = (long / k_long as f32, short / k_short as f32);
-    let (col, row) = (k % k_long, k / k_long);
-    let along = (col as f32 + 0.5) * cell_long;
-    let across = (row as f32 + 0.5) * cell_short;
+    let mut along = 1;
+    let mut best = f32::INFINITY;
+    for f in (1..=n).filter(|f| n % f == 0) {
+        let score = ((long / f as f32) / (short / (n / f) as f32)).ln().abs();
+        if score <= best {
+            best = score;
+            along = f;
+        }
+    }
+    let across = n / along;
+    let (cell_long, cell_short) = (long / along as f32, short / across as f32);
+    let along_at = ((k % along) as f32 + 0.5) * cell_long;
+    let across_at = ((k / along) as f32 + 0.5) * cell_short;
     if along_x {
-        (x + along, z + across, cell_long, cell_short)
+        (x + along_at, z + across_at, cell_long, cell_short)
     } else {
-        (x + across, z + along, cell_short, cell_long)
+        (x + across_at, z + along_at, cell_short, cell_long)
     }
 }
 
-/// The homes of a room's agents: a square grid, 3 apart (less when the cell is small), centred on
-/// the room. `members` are sorted by cid.
+/// The gap between neighbouring homes (the web's `step`): 0.8 of the cell's short side shared by the
+/// `side - 1` gaps of a row, at most `HOME_GAP`; 0 for a single column.
+fn home_step(cell_min: f32, side: usize) -> f32 {
+    if side > 1 {
+        (HOME_SHARE * cell_min / (side - 1) as f32).min(HOME_GAP)
+    } else {
+        0.0
+    }
+}
+
+/// The homes of a room's agents: a square grid of `side` = ceil(sqrt(agents)) per row, spaced by
+/// `home_step`, centred on the room. `members` are sorted by cid.
 fn place_homes(homes: &mut HashMap<u64, (usize, f32, f32)>, index: usize, d: &District, members: &[&AgentInfo], cell_min: f32) {
     let side = ((members.len() as f32).sqrt().ceil().max(1.0)) as usize;
-    let avail = cell_min / 2.0 - HOME_MARGIN;
-    let gap = if side > 1 { (2.0 * avail / (side - 1) as f32).clamp(0.5, HOME_GAP) } else { HOME_GAP };
+    let gap = home_step(cell_min, side);
     let span = (side - 1) as f32 * gap / 2.0;
     for (i, a) in members.iter().enumerate() {
         let gx = d.cx - span + (i % side) as f32 * gap;
@@ -203,21 +242,121 @@ fn shown_parts(board: &Model, params: &Params) -> HashSet<String> {
     hardware::build(board, params).parts.into_keys().collect()
 }
 
+/// A room's minimum side for `agents` agents (`rooms::min_side`: the minsize table, else computed). A size
+/// no side fits is 0, with a warning: the room is placed by the rules alone and its slot is not grown for it.
+fn min_side_of(min_side: &impl Fn(&str, usize) -> f64, role: &str, agents: usize) -> f32 {
+    let m = min_side(role, agents);
+    if m.is_finite() {
+        return m as f32;
+    }
+    eprintln!("agentplaza-desktop: board layout: no room size fits {role} with {agents} agent(s); its slot is left as it is");
+    0.0
+}
+
+/// Is the segment from `from` to `to` blocked by the box (lo, hi) strictly between its ends? A slab test; a segment
+/// that only touches a face does not count (the web's `segmentBlocked`).
+fn segment_blocked(from: [f64; 3], to: [f64; 3], lo: [f64; 3], hi: [f64; 3]) -> bool {
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for k in 0..3 {
+        let o = from[k];
+        let d = to[k] - o;
+        if d.abs() < 1e-12 {
+            if o < lo[k] || o > hi[k] {
+                return false;
+            }
+            continue;
+        }
+        let (mut a, mut b) = ((lo[k] - o) / d, (hi[k] - o) / d);
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        t0 = t0.max(a);
+        t1 = t1.min(b);
+        if t0 > t1 {
+            return false;
+        }
+    }
+    t1 - t0 > 1e-9 && t0 < 1.0 - 1e-9 && t1 > 1e-9
+}
+
+/// The part a box belongs to: its id, or its path under the id (`gpu_1/pcb` or `gpu_1.pcb`) (the web's `boxOfPart`).
+fn box_of_part(b: &hardware::PartBox, part: &str) -> bool {
+    b.id == part || b.path == part || b.path.strip_prefix(part).is_some_and(|rest| rest.starts_with('/') || rest.starts_with('.'))
+}
+
+/// The share of a slot's samples whose segment from the camera is blocked by a part other than the slot's own (the
+/// web's `slotBlockedShare`). The samples are a grid over the slot's rect, OCCLUSION_HEIGHT above its top.
+fn slot_blocked_share(slot: &hardware::Slot, camera: [f64; 3], boxes: &[hardware::PartBox]) -> f64 {
+    let [x, z, w, d] = slot.rect.map(f64::from);
+    let n = OCCLUSION_GRID;
+    let others: Vec<([f64; 3], [f64; 3])> = boxes
+        .iter()
+        .filter(|b| !box_of_part(b, &slot.on))
+        .map(|b| (b.lo.map(f64::from), b.hi.map(f64::from)))
+        .collect();
+    let mut blocked = 0usize;
+    for i in 0..n {
+        for j in 0..n {
+            let to = [
+                x + (w * (i as f64 + 0.5)) / n as f64,
+                f64::from(slot.top) + OCCLUSION_HEIGHT,
+                z + (d * (j as f64 + 0.5)) / n as f64,
+            ];
+            if others.iter().any(|&(lo, hi)| segment_blocked(camera, to, lo, hi)) {
+                blocked += 1;
+            }
+        }
+    }
+    blocked as f64 / (n * n) as f64
+}
+
+/// The ids of the slots the board's default camera cannot see: more than OCCLUSION_SHARE of a slot's samples are blocked
+/// (the web's `occludedSlotIds`). A board without a camera anchor occludes nothing.
+fn occluded_slot_ids(board: &Model, boxes: &[hardware::PartBox]) -> HashSet<String> {
+    let Some(camera) = board.anchors.camera.as_ref() else {
+        return HashSet::new();
+    };
+    let at = camera.at.map(f64::from);
+    board
+        .slots
+        .iter()
+        .filter(|s| slot_blocked_share(s, at, boxes) > OCCLUSION_SHARE)
+        .map(|s| s.id.clone())
+        .collect()
+}
+
 /// `layoutOnBoard(list, board, params)`: one room per role on the board's slots. The orchestrator
 /// takes the cpu slot nearest the atom and sits on the atom; the roles follow by name. Slots whose
-/// `on` part is not shown don't exist. No role is dropped: when every slot is full, the room
-/// shrinks to fit the slot with the most area per room.
+/// `on` part is not shown don't exist. A room goes to the first slot (in its family's order) that
+/// holds it at its minimum side; a room no slot holds that way moves on. The slot's cells grow to
+/// its rooms' minimums. A role no slot holds at its minimum joins a built room (the nearest of its family that
+/// still reaches its minimum, else the largest built room), so every agent keeps a desk.
 #[allow(dead_code)] // the Floor integration consumes it next
 pub fn layout_on_board(list: &[AgentInfo], board: &Model, params: &BoardParams) -> BoardLayout {
-    let pcb_top = params.pcb_top;
+    layout_on_board_with(list, board, params, rooms::min_side)
+}
+
+/// `layout_on_board` with each room's minimum side from `min_side(role, agents)` (the web's `table`
+/// argument): f64::INFINITY where no size fits. Tests that place by the rules alone pass `|_, _| 0.0`.
+pub fn layout_on_board_with(
+    list: &[AgentInfo],
+    board: &Model,
+    params: &BoardParams,
+    min_side: impl Fn(&str, usize) -> f64,
+) -> BoardLayout {
+    // The web's `p.pcb_top ?? 0.4` over `{...board.params, ...params}`: the caller's params win.
+    let pcb_top = params.params.values.get("pcb_top").or_else(|| board.params.get("pcb_top")).map_or(PCB_TOP, |v| *v as f32);
     let bounds = Bounds { cx: 0.0, cz: 0.0, w: board.size[0], d: board.size[2] };
+    // The web's default for a board with no atom: the footprint's centre at the PCB top (`anchors?.atom ?? [0, pcbTop, 0]`).
     let atom = board.anchors.atom.unwrap_or([bounds.cx, pcb_top, bounds.cz]);
     let shown = shown_parts(board, &params.params);
+    let occluded = occluded_slot_ids(board, &hardware::part_boxes(board, &params.params));
 
     let mut live: Vec<Live> = board
         .slots
         .iter()
-        .filter(|s| s.capacity > 0 && shown.contains(&s.on))
+        // A slot is used when its part shows and the camera sees it; an explicit `occluded` on the slot overrides the camera.
+        .filter(|s| shown.contains(&s.on) && !s.occluded.unwrap_or_else(|| occluded.contains(&s.id)))
         .map(|s| Live {
             id: s.id.clone(),
             kind: s.kind.clone(),
@@ -225,85 +364,162 @@ pub fn layout_on_board(list: &[AgentInfo], board: &Model, params: &BoardParams) 
             rect: s.rect,
             capacity: s.capacity as usize,
             rooms: Vec::new(),
+            need: 0.0,
         })
         .collect();
     if live.is_empty() {
         // A board with no usable slot still holds its roles: the whole footprint is one room's worth.
         live.push(Live {
             id: String::new(),
-            kind: "any".into(),
+            kind: "soc".into(),
             top: pcb_top,
             rect: [bounds.cx - bounds.w / 2.0, bounds.cz - bounds.d / 2.0, bounds.w, bounds.d],
             capacity: 1,
             rooms: Vec::new(),
+            need: 0.0,
         });
     }
 
-    let mut by_role: BTreeMap<String, Vec<&AgentInfo>> = BTreeMap::new();
+    // Rooms by key (sorted by key, as the web's `groups.keys().sort()`). An agent with no role gets a room of
+    // its own, keyed `unnamed:<cid>` and built as the `other` family.
+    let mut by_key: BTreeMap<String, (String, Vec<&AgentInfo>)> = BTreeMap::new();
     let mut orch: Vec<&AgentInfo> = Vec::new();
     for a in list {
         if a.tier == "orchestrator" {
             orch.push(a);
+        } else if a.role.is_empty() {
+            by_key.entry(format!("unnamed:{}", a.cid)).or_insert_with(|| ("other".into(), Vec::new())).1.push(a);
         } else {
-            by_role.entry(a.role.clone()).or_default().push(a);
+            by_key.entry(a.role.clone()).or_insert_with(|| (a.role.clone(), Vec::new())).1.push(a);
         }
     }
     let mut groups: Vec<Group> = Vec::new();
     if !orch.is_empty() {
-        groups.push(Group { role: "orchestrator".into(), orch: true, members: orch });
+        groups.push(Group { key: "orchestrator".into(), role: "orchestrator".into(), orch: true, members: orch });
     }
-    for (role, members) in by_role {
-        groups.push(Group { role, orch: false, members });
+    for (key, (role, members)) in by_key {
+        groups.push(Group { key, role, orch: false, members });
     }
     for g in &mut groups {
         g.members.sort_by_key(|a| a.cid);
     }
 
     let atom2 = [atom[0], atom[2]];
+    // Each room in order (the orchestrator first, then the roles by name): its minimum side, and the slot it takes
+    // (the web's seatRoom). A room no slot holds at that size has no slot: it joins a built room below.
+    let mut min_sides = vec![0f32; groups.len()];
+    let mut slot_of: Vec<Option<usize>> = vec![None; groups.len()];
     for (gi, g) in groups.iter().enumerate() {
-        let family = if g.orch { "command" } else { role_family(&g.role, "worker") };
-        let si = choose(&live, family, g.orch, atom2);
-        live[si].rooms.push(gi);
+        let m = min_side_of(&min_side, &g.role, g.members.len());
+        min_sides[gi] = m;
+        if let Some(si) = choose(&live, family_of(g), g.orch, atom2, m) {
+            live[si].rooms.push(gi);
+            live[si].need = live[si].need.max(m / ROOM_SHARE);
+            slot_of[gi] = Some(si);
+        }
     }
 
-    // Each room's cell in its slot, in order; the orchestrator takes the cell nearest the atom (the
-    // first on ties) and the room that held that cell takes the orchestrator's, as the web does.
-    let mut cell_of = vec![(0usize, 0usize); groups.len()];
-    for (si, s) in live.iter().enumerate() {
-        let mut ks: Vec<usize> = (0..s.rooms.len()).collect();
-        if let Some(p) = s.rooms.iter().position(|&gi| groups[gi].orch) {
-            let n = s.rooms.len().max(s.capacity);
+    // Each slot's cells: as many as it holds at its rooms' minimums (its capacity when none is known), or one per room
+    // when it overflows. The orchestrator takes the free cell nearest the atom; the others take the first free cell.
+    let cell_count: Vec<usize> = live.iter().map(|s| holds_at_least(s, s.need).max(s.rooms.len())).collect();
+    let mut taken: Vec<Vec<bool>> = cell_count.iter().map(|&n| vec![false; n]).collect();
+    let mut cells = vec![(0f32, 0f32, 0f32, 0f32); groups.len()];
+    for (gi, g) in groups.iter().enumerate() {
+        let Some(si) = slot_of[gi] else { continue };
+        let (s, n) = (&live[si], cell_count[si]);
+        let free = (0..n).filter(|&k| !taken[si][k]);
+        let k = if g.orch {
             let dist = |k: usize| {
                 let (cx, cz, _, _) = cell(s.rect, n, k);
-                (cx - atom[0]).powi(2) + (cz - atom[2]).powi(2)
+                (cx - atom[0]).hypot(cz - atom[2])
             };
-            let best = (0..n).fold(0, |b, k| if dist(k) < dist(b) { k } else { b });
-            match ks.iter().position(|&k| k == best) {
-                Some(q) => ks.swap(p, q),
-                None => ks[p] = best,
-            }
+            free.min_by(|&a, &b| dist(a).total_cmp(&dist(b)))
+        } else {
+            free.into_iter().next()
         }
-        for (i, &gi) in s.rooms.iter().enumerate() {
-            cell_of[gi] = (si, ks[i]);
+        .unwrap_or(0);
+        taken[si][k] = true;
+        let (cx, cz, w, d) = cell(s.rect, n, k);
+        if w.min(d) < min_sides[gi] - EPS {
+            eprintln!(
+                "agentplaza-desktop: board layout: {}'s cell is {:.2} wide, under its minimum {}; slot {} is full",
+                g.role,
+                w.min(d),
+                min_sides[gi],
+                s.id
+            );
         }
+        cells[gi] = (cx, cz, w, d);
     }
 
-    let mut districts = Vec::with_capacity(groups.len());
+    // Joins (the web's join step): a room no slot holds at its minimum takes no cell. Its agents join the nearest built
+    // room of its family (nearest by the distance from that room's slot to the centre of the family's first slot kind,
+    // else to the atom; ties by role) whose cell still reaches the minimum for its new desk count. If none does, the
+    // largest built room on the board takes them, with a warning. Joining adds desks, not cells.
+    let built: Vec<usize> = (0..groups.len()).filter(|&gi| slot_of[gi].is_some()).collect();
+    let min_wide = |gi: usize| cells[gi].2.min(cells[gi].3);
+    for gi in 0..groups.len() {
+        if slot_of[gi].is_some() {
+            continue;
+        }
+        if built.is_empty() {
+            eprintln!("agentplaza-desktop: board layout: no room is built, so {}'s agents have no desk", groups[gi].role);
+            break;
+        }
+        let family = family_of(&groups[gi]);
+        let (px, pz) = match live.iter().find(|s| prefers(family).contains(&s.kind.as_str())) {
+            Some(s) => (s.rect[0] + s.rect[2] / 2.0, s.rect[1] + s.rect[3] / 2.0),
+            None => (atom2[0], atom2[1]),
+        };
+        let slot_rect = |h: usize| live[slot_of[h].expect("a built room has a slot")].rect;
+        let mut hosts: Vec<usize> = built.iter().copied().filter(|&h| family_of(&groups[h]) == family).collect();
+        hosts.sort_by(|&a, &b| {
+            rect_distance(slot_rect(a), [px, pz])
+                .total_cmp(&rect_distance(slot_rect(b), [px, pz]))
+                .then_with(|| groups[a].role.cmp(&groups[b].role))
+        });
+        let joining = groups[gi].members.len();
+        let fits = |h: usize| {
+            let m = min_side(&groups[h].role, groups[h].members.len() + joining);
+            m.is_finite() && min_wide(h) >= m as f32 - EPS
+        };
+        let host = match hosts.iter().copied().find(|&h| fits(h)) {
+            Some(h) => h,
+            None => {
+                let best = built.iter().copied().reduce(|best, b| if min_wide(b) > min_wide(best) { b } else { best });
+                let best = best.expect("a built room exists");
+                eprintln!(
+                    "agentplaza-desktop: board layout: no room reaches {}'s minimum with one more desk; {}'s room takes the desk",
+                    groups[gi].role, groups[best].role
+                );
+                best
+            }
+        };
+        let joiners = std::mem::take(&mut groups[gi].members);
+        groups[host].members.extend(joiners);
+    }
+
+    // The rooms of the built groups, in group order; each room's agents (its own and any that joined) sit in a square
+    // grid of homes, sorted by cid.
+    let mut districts = Vec::with_capacity(built.len());
     let mut homes = HashMap::new();
-    for (gi, g) in groups.iter().enumerate() {
-        let (si, k) = cell_of[gi];
-        let s = &live[si];
-        let (cx, cz, w, d) = cell(s.rect, s.rooms.len().max(s.capacity), k);
+    for &gi in &built {
+        let g = &groups[gi];
+        let s = &live[slot_of[gi].expect("a built room has a slot")];
+        let (cx, cz, w, d) = cells[gi];
         let district = District {
             role: g.role.clone(),
             cx,
             cy: cz,
             r: w.min(d) / 2.0 * ROOM_SHARE,
             hue: if g.orch { ORCHESTRATOR_HUE } else { role_hue(&g.role) },
-            round: g.orch || room_style(&g.role).round,
+            // The web's `shape`: the centre seat is round, every role's room is square (`roomStyle`).
+            round: g.orch,
         };
-        place_homes(&mut homes, districts.len(), &district, &g.members, w.min(d));
-        districts.push(BoardDistrict { district, y: s.top, slot: s.id.clone(), w, d });
+        let mut members = g.members.clone();
+        members.sort_by_key(|a| a.cid);
+        place_homes(&mut homes, districts.len(), &district, &members, w.min(d));
+        districts.push(BoardDistrict { key: g.key.clone(), district, y: s.top, slot: s.id.clone(), w, d });
     }
 
     BoardLayout { districts, homes, atom, bounds, pcb_top }
@@ -438,7 +654,7 @@ pub fn path_on_traces(graph: &TraceGraph, from: [f32; 2], to: [f32; 2]) -> Vec<[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::floor3d::hardware::MODELS;
+    use crate::hardware::MODELS;
 
     /// The fixture board, the same JSON in the web test: three slots (cpu cap 2 on cpu0 at top 1,
     /// gpu cap 2 on gpu0 at top 2, memory cap 1 on dimm at top 3), the gpu hidden by
@@ -465,7 +681,7 @@ mod tests {
     }
 
     fn agent(cid: u64, role: &str, tier: &str) -> AgentInfo {
-        AgentInfo { cid, name: role.into(), role: role.into(), status: "idle".into(), tier: tier.into(), model: String::new() }
+        AgentInfo { cid, name: role.into(), role: role.into(), status: "idle".into(), tier: tier.into(), model: String::new(), species: None }
     }
 
     fn fixture_roles() -> Vec<AgentInfo> {
@@ -498,11 +714,16 @@ mod tests {
         (a - b).abs() < 1e-4
     }
 
+    /// No minimum room sizes: the fixture's own rules (the web's `NO_MINIMUMS`).
+    fn no_minimums(_: &str, _: usize) -> f64 {
+        0.0
+    }
+
     #[test]
     fn fixture_families_take_their_preferred_slots() {
         let board = fixture();
         let list = fixture_roles();
-        let layout = layout_on_board(&list, &board, &BoardParams::default());
+        let layout = layout_on_board_with(&list, &board, &BoardParams::default(), no_minimums);
         // orchestrator: cpu (nearest the atom); builder and qa: gpu; librarian: memory;
         // finance (money): power and io are absent, so the first slot with room, cpu.
         assert_eq!(
@@ -540,7 +761,7 @@ mod tests {
         let list = fixture_roles();
         let mut params = BoardParams::default();
         params.params = params.params.with("gpus", 0.0);
-        let layout = layout_on_board(&list, &board, &params);
+        let layout = layout_on_board_with(&list, &board, &params, no_minimums);
         assert!(layout.districts.iter().all(|d| d.slot != "gpu"), "the hidden gpu slot does not exist");
         let slot = |role: &str| district(&layout, role).slot.clone();
         assert_eq!(slot("builder"), "cpu");
@@ -548,8 +769,9 @@ mod tests {
         assert_eq!(slot("finance"), "mem");
     }
 
+    /// More roles than rooms: the roles that find no free cell join a built room, so every agent keeps a desk.
     #[test]
-    fn overflow_drops_no_role() {
+    fn overflow_joins_drop_no_agent() {
         let board = fixture();
         let list = vec![
             agent(1, "orchestrator", "orchestrator"),
@@ -561,12 +783,11 @@ mod tests {
             agent(7, "finance", "worker"),
             agent(8, "mayor", "worker"),
         ];
-        // Five rooms fit (cpu 2, gpu 2, memory 1); eight roles are placed anyway.
+        // Five rooms fit (cpu 2, gpu 2, memory 1); the roles past them join a built room.
         let layout = layout_on_board(&list, &board, &BoardParams::default());
-        let mut roles: Vec<String> = layout.districts.iter().map(|d| d.district.role.clone()).collect();
-        roles.sort();
-        assert_eq!(roles, vec!["builder", "finance", "librarian", "mayor", "orchestrator", "planner", "qa", "reviewer"]);
-        assert_eq!(layout.homes.len(), 8);
+        assert!(layout.districts.len() <= 5, "at most five rooms: {}", layout.districts.len());
+        assert_eq!(layout.homes.len(), 8, "every agent has a home");
+        assert!(layout.homes.values().all(|&(room, _, _)| room < layout.districts.len()));
         assert!(layout.districts.iter().all(|d| d.w > 0.0 && d.d > 0.0));
     }
 
@@ -599,10 +820,16 @@ mod tests {
         assert_eq!(path_on_traces(&apart, [0.0, 0.0], [5.0, 5.0]), vec![[0.0, 0.0], [5.0, 5.0]]);
     }
 
-    /// The 16 roles of docs/agents/initial-roles.json, as the fleet has them.
+    /// docs/agents/initial-roles.json, parsed: `{ "source": ..., "roles": { role: ... } }`.
+    fn initial_roles_json() -> serde_json::Value {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/agents/initial-roles.json");
+        let text = std::fs::read_to_string(path).expect("docs/agents/initial-roles.json reads");
+        serde_json::from_str(&text).expect("initial-roles.json parses")
+    }
+
+    /// The roles of docs/agents/initial-roles.json, one agent each, as the fleet has them.
     fn initial_roles() -> Vec<AgentInfo> {
-        let text = include_str!("../../../../../../docs/agents/initial-roles.json");
-        let v: serde_json::Value = serde_json::from_str(text).expect("initial-roles.json parses");
+        let v = initial_roles_json();
         let roles = v["roles"].as_object().expect("a roles object");
         roles
             .keys()
@@ -614,17 +841,20 @@ mod tests {
     #[test]
     fn every_board_model_places_all_initial_roles() {
         let list = initial_roles();
-        assert_eq!(list.len(), 16);
+        let file_roles = initial_roles_json()["roles"].as_object().expect("a roles object").len();
+        assert_eq!(list.len(), file_roles, "one agent per role in initial-roles.json");
         for &(name, _) in MODELS.iter().filter(|(n, _)| n.starts_with("board/")) {
             let board = hardware::model(name).expect("the embedded board parses");
             let layout = layout_on_board(&list, board, &BoardParams::default());
-            let mut got: Vec<&str> = layout.districts.iter().map(|d| d.district.role.as_str()).collect();
-            got.sort();
-            let mut want: Vec<&str> = list.iter().map(|a| a.role.as_str()).collect();
-            want.sort();
-            assert_eq!(got, want, "{name}: every role has a district");
-            assert_eq!(layout.homes.len(), 16, "{name}: every agent has a home");
-            println!("== {name} (pcb_top {PCB_TOP}, atom {:?})", layout.atom);
+            // A role with no free cell joins a built room, so not every role has a room of its own; every room is a
+            // role of the roster and every agent has a home in one of the rooms.
+            let want: Vec<&str> = list.iter().map(|a| a.role.as_str()).collect();
+            for bd in &layout.districts {
+                assert!(want.contains(&bd.district.role.as_str()), "{name}: room {} is a role of the roster", bd.district.role);
+            }
+            assert_eq!(layout.homes.len(), file_roles, "{name}: every agent has a home");
+            assert!(layout.homes.values().all(|&(room, _, _)| room < layout.districts.len()), "{name}: every home is in a room");
+            println!("== {name} (pcb_top {}, atom {:?})", layout.pcb_top, layout.atom);
             for bd in &layout.districts {
                 let family = if bd.district.role == "orchestrator" { "command" } else { role_family(&bd.district.role, "worker") };
                 println!(
@@ -633,5 +863,157 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The web's home step: 0.8 of the cell's short side over the side - 1 gaps of a row, at most 3; 0 for one column.
+    #[test]
+    fn home_step_is_the_webs_formula() {
+        for (cell, side, want) in [(6.0f32, 1usize, 0.0f32), (6.0, 2, 3.0), (3.0, 2, 2.4), (4.0, 3, 1.6), (5.0, 4, 4.0 / 3.0), (2.0, 3, 0.8)] {
+            let got = home_step(cell, side);
+            assert!((got - want).abs() < 1e-6, "cell {cell}, side {side}: got {got}, want {want}");
+        }
+    }
+
+    /// Two agents with no role get two rooms of their own (keys unnamed:<cid>), both the `other` family.
+    #[test]
+    fn unnamed_agents_each_get_a_district_of_the_other_family() {
+        let list = vec![agent(1, "orchestrator", "orchestrator"), agent(7, "", "worker"), agent(9, "", "worker")];
+        let layout = layout_on_board_with(&list, &fixture(), &BoardParams::default(), no_minimums);
+        assert_eq!(layout.districts.len(), 3, "the orchestrator and one room per unnamed agent");
+        for key in ["unnamed:7", "unnamed:9"] {
+            let d = layout.districts.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("a district keyed {key}"));
+            assert_eq!(d.district.role, "other");
+            assert_eq!(role_family(&d.district.role, "worker"), "other");
+        }
+        assert_ne!(layout.homes[&7].0, layout.homes[&9].0, "each unnamed agent has its own room");
+    }
+
+    /// The web's measured case (floor3d/board-layout.ts OCCLUSION_SHARE note): on the workstation the m2_2 slot is 4 of 9
+    /// samples blocked and hidden, the RAM slot 3 of 9 and usable.
+    #[test]
+    fn occlusion_hides_the_m2_slot_the_camera_misses() {
+        let board = hardware::model("board/workstation").expect("the workstation parses");
+        let boxes = hardware::part_boxes(board, &Params::default());
+        let hidden = occluded_slot_ids(board, &boxes);
+        assert!(hidden.contains("slot_m2_2"), "m2_2 is hidden: {hidden:?}");
+        assert!(!hidden.contains("slot_mem"), "the RAM slot stays usable: {hidden:?}");
+    }
+
+    /// The PCB top is the board's `pcb_top` param (the workstation's 0.336), then the caller's override, then the default.
+    #[test]
+    fn pcb_top_comes_from_the_board_params() {
+        let workstation = hardware::model("board/workstation").expect("the workstation parses");
+        assert_eq!(layout_on_board(&[], workstation, &BoardParams::default()).pcb_top, 0.336);
+        let laptop = hardware::model("board/laptop").expect("the laptop parses");
+        assert_eq!(layout_on_board(&[], laptop, &BoardParams::default()).pcb_top, PCB_TOP);
+        let over = BoardParams { params: Params::default().with("pcb_top", 0.5) };
+        assert_eq!(layout_on_board(&[], workstation, &over).pcb_top, 0.5);
+    }
+
+    /// The web's layoutOnBoard, dumped by a node run of board-layout.ts (testdata/board_parity.json: each case's
+    /// board and agents, and the web's rooms and homes). The Rust layout must put every room on the same slot and
+    /// cell, under the same key, and every home at the same spot. Every case is checked: each prints its first few
+    /// mismatches (role, field, both values), and the test fails at the end if any case differs.
+    #[test]
+    #[ignore = "superseded by the shared apz-board crate (owner decision 2026-10-13)"]
+    fn board_parity_with_the_web() {
+        // Mismatches shown per case; the count of all of them is printed too.
+        const SHOWN: usize = 5;
+        // f32 rounding: the board's rects are f32 (hardware::Slot), so a cell can differ from the web's f64 by a few
+        // ulps (the worst seen: 1.9e-6 on a coordinate of 27.7). A relative 1e-6 bounds that.
+        let close = |got: f32, want: f32| (got - want).abs() <= 1e-6 * want.abs().max(1.0);
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/world/testdata/board_parity.json");
+        let text = std::fs::read_to_string(path).expect("testdata/board_parity.json reads");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("board_parity.json parses");
+        let num = |x: &serde_json::Value| x.as_f64().expect("a number") as f32;
+        let mut failing: Vec<String> = Vec::new();
+        for case in v["cases"].as_array().expect("a cases array") {
+            let board_name = case["board"].as_str().expect("a board");
+            let label = format!("{} on {board_name}", case["name"].as_str().unwrap_or(""));
+            let mut board = hardware::model(board_name).expect("the embedded board parses").clone();
+            // A case with no atom: the web's dump removed the board's anchors.atom, so the Rust board loses it too.
+            if case["noAtom"].as_bool().expect("a noAtom flag") {
+                board.anchors.atom = None;
+            }
+            let list: Vec<AgentInfo> = case["agents"]
+                .as_array()
+                .expect("agents")
+                .iter()
+                .map(|a| agent(a["cid"].as_u64().expect("a cid"), a["role"].as_str().unwrap(), a["tier"].as_str().unwrap()))
+                .collect();
+            // The case's params (the GPU count of an occlusion case), passed as the web's layoutOnBoard(..., params).
+            let mut bp = BoardParams::default();
+            for (k, v) in case["params"].as_object().expect("a params object") {
+                bp.params = bp.params.with(k, v.as_f64().expect("a number param"));
+            }
+            let layout = layout_on_board(&list, &board, &bp);
+
+            // Each mismatch as "role field: rust X, web Y", in the order the checks run.
+            let mut bad: Vec<String> = Vec::new();
+            let want_atom = case["atom"].as_array().expect("an atom");
+            for (k, got, want_v) in [("x", layout.atom[0], num(&want_atom[0])), ("y", layout.atom[1], num(&want_atom[1])), ("z", layout.atom[2], num(&want_atom[2]))] {
+                if !close(got, want_v) {
+                    bad.push(format!("atom {k}: rust {got}, web {want_v}"));
+                }
+            }
+            let want_rooms = case["districts"].as_array().expect("districts");
+            if layout.districts.len() != want_rooms.len() {
+                bad.push(format!("room count: rust {}, web {}", layout.districts.len(), want_rooms.len()));
+            }
+            for (bd, want) in layout.districts.iter().zip(want_rooms) {
+                let role = bd.district.role.as_str();
+                let texts = [
+                    ("key", bd.key.as_str(), want["key"].as_str().unwrap_or("")),
+                    ("role", role, want["role"].as_str().unwrap_or("")),
+                    ("slot", bd.slot.as_str(), want["slot"].as_str().unwrap_or("")),
+                ];
+                for (k, got, want_s) in texts {
+                    if got != want_s {
+                        bad.push(format!("{role} {k}: rust {got}, web {want_s}"));
+                    }
+                }
+                let nums = [("y", bd.y), ("cx", bd.district.cx), ("cy", bd.district.cy), ("w", bd.w), ("d", bd.d), ("hue", bd.district.hue)];
+                for (k, got) in nums {
+                    let want_v = num(&want[k]);
+                    if !close(got, want_v) {
+                        bad.push(format!("{role} {k}: rust {got}, web {want_v}"));
+                    }
+                }
+            }
+
+            let want_homes = case["homes"].as_array().expect("homes");
+            if layout.homes.len() != want_homes.len() {
+                bad.push(format!("home count: rust {}, web {}", layout.homes.len(), want_homes.len()));
+            }
+            for h in want_homes {
+                let cid = h["cid"].as_u64().expect("a cid");
+                let Some(&(room, x, z)) = layout.homes.get(&cid) else {
+                    bad.push(format!("agent {cid} home: none in rust, web room {}", h["district"]));
+                    continue;
+                };
+                let role = layout.districts.get(room).map_or("?", |d| d.district.role.as_str());
+                let want_room = h["district"].as_u64().expect("a room index") as usize;
+                if room != want_room {
+                    bad.push(format!("{role} agent {cid} room: rust {room}, web {want_room}"));
+                }
+                if !close(x, num(&h["x"])) {
+                    bad.push(format!("{role} agent {cid} x: rust {x}, web {}", h["x"]));
+                }
+                if !close(z, num(&h["z"])) {
+                    bad.push(format!("{role} agent {cid} z: rust {z}, web {}", h["z"]));
+                }
+            }
+
+            if bad.is_empty() {
+                println!("== {label}: all {} rooms and {} homes match", layout.districts.len(), layout.homes.len());
+            } else {
+                println!("== {label}: {} mismatch(es), first {}:", bad.len(), bad.len().min(SHOWN));
+                for line in bad.iter().take(SHOWN) {
+                    println!("   {line}");
+                }
+                failing.push(label);
+            }
+        }
+        assert!(failing.is_empty(), "board parity fails on {} case(s): {failing:?}", failing.len());
     }
 }

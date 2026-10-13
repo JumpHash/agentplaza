@@ -43,6 +43,10 @@ struct VertexIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // The vertex's own colour: white, except in a batch of meshes that differ only in colour.
+    @location(10) color: vec3<f32>,
+    // The robot slot: 0 unchanged, 1 shell, 2 shell2, 3 panel, 4 glass (robot materials only).
+    @location(11) slot: u32,
 };
 
 struct InstanceIn {
@@ -56,6 +60,10 @@ struct InstanceIn {
     @location(8) emissive: vec4<f32>,
     // xy: uv repeat; zw: uv offset.
     @location(9) uv_xform: vec4<f32>,
+    // rgb: the robot hues (shell, shell2, panel); used when the flags carry 8.
+    @location(12) robot_shell: vec4<f32>,
+    @location(13) robot_shell2: vec4<f32>,
+    @location(14) robot_panel: vec4<f32>,
 };
 
 struct Varyings {
@@ -68,6 +76,11 @@ struct Varyings {
     @location(5) view_depth: f32,
     // x: grass tip shade (1 elsewhere).
     @location(6) extra: vec4<f32>,
+    // Robot slots, flat (the vertex's own, not blended across a triangle): rgb: the slot's base
+    // colour (hue x vertex colour) for slots 1 to 3; w: 1 when that applies. Zero elsewhere.
+    @location(7) @interpolate(flat) robot: vec4<f32>,
+    // 1 on a robot's glass (slot 4): no emissive.
+    @location(8) @interpolate(flat) glass: f32,
 };
 
 fn model_of(i: InstanceIn) -> mat4x4<f32> {
@@ -104,7 +117,23 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
     let m = model_of(i);
     var o: Varyings;
     o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
-    return finish(o, m * vec4<f32>(v.position, 1.0), world_normal(m, v.normal), v.uv, i);
+    var r = finish(o, m * vec4<f32>(v.position, 1.0), world_normal(m, v.normal), v.uv, i);
+    r.color = vec4<f32>(r.color.rgb * v.color, r.color.a);
+    if has(i.emissive.a, 8.0) {
+        // Slots 1 to 3 take the robot's hue (x the vertex colour); 4 is glass (no emissive).
+        var hue = vec3<f32>(0.0);
+        if v.slot == 1u {
+            hue = i.robot_shell.rgb;
+        } else if v.slot == 2u {
+            hue = i.robot_shell2.rgb;
+        } else if v.slot == 3u {
+            hue = i.robot_panel.rgb;
+        }
+        let paint = v.slot >= 1u && v.slot <= 3u;
+        r.robot = vec4<f32>(select(vec3<f32>(0.0), hue * v.color, paint), select(0.0, 1.0, paint));
+        r.glass = select(0.0, 1.0, v.slot == 4u);
+    }
+    return r;
 }
 
 // Grass: each blade bends by its height, the wind a function of where the tuft stands.
@@ -243,8 +272,13 @@ fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
 
 fn base_color(v: Varyings) -> vec4<f32> {
     var c = v.color;
+    if v.robot.w > 0.5 {
+        c = vec4<f32>(v.robot.rgb, v.color.a);
+    }
+    // Sampled outside the branch: WebGPU requires textureSample in uniform control flow. The value is the same.
+    let texel = textureSample(map_tex, map_sampler, v.uv);
     if has(v.emissive.a, 2.0) {
-        c *= textureSample(map_tex, map_sampler, v.uv);
+        c *= texel;
     }
     return c;
 }
@@ -283,7 +317,9 @@ fn toon(v: Varyings, front: bool) -> vec4<f32> {
         irradiance += ramp(dot(n, l)) * g.point_color[k].rgb * attenuation(d, g.point_pos[k].w, g.point_color[k].w);
     }
     irradiance += mix(g.hemi_ground.rgb, g.hemi_sky.rgb, 0.5 * n.y + 0.5);
-    let lit = c.rgb / PI * irradiance + v.emissive.rgb;
+    // A robot's glass (slot 4) takes no emissive.
+    let emissive = select(v.emissive.rgb, vec3<f32>(0.0), v.glass > 0.5);
+    let lit = c.rgb / PI * irradiance + emissive;
     return vec4<f32>(encode(fogged(lit, v.view_depth)), c.a);
 }
 

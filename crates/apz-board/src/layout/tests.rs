@@ -1,0 +1,258 @@
+//! The layout's tests: every board kind at 1, 4, 8 and 20 agents (finite scale, plates on their drawn supports, a PCB
+//! surface, homes inside their rooms), the walk surfaces (ids, convex counter-clockwise rectangles, no overlaps at one
+//! height), determinism, and the plate height against the support at its centre.
+
+use std::collections::BTreeMap;
+
+use super::geom::{shoelace, subtract, Frame, Rect};
+use super::*;
+use crate::walk::{SurfaceKind, WalkSurface};
+
+const KINDS: [&str; 6] = ["edge", "laptop", "phone", "apple-soc", "server", "workstation"];
+const COUNTS: [usize; 4] = [1, 4, 8, 20];
+const ROLES: [&str; 8] = ["architect", "builder", "qa", "librarian", "finance", "edge-operator", "mayor", "planner"];
+
+/// The input for `n` agents: one orchestrator, then roles in turn (the first agent is the orchestrator).
+fn input(n: usize, gpus: u32) -> LayoutInput {
+    let agents = (0..n)
+        .map(|i| AgentSpec {
+            id: format!("agent-{i:02}"),
+            role: if i == 0 { "orchestrator".to_string() } else { ROLES[i % ROLES.len()].to_string() },
+            seat_hint: None,
+        })
+        .collect();
+    LayoutInput { agents, gpus, scale_cap: 3.0 }
+}
+
+/// The board at `gpus` with the same params `layout` uses.
+fn board(kind: &str, gpus: u32) -> Board {
+    let mut params = BTreeMap::new();
+    params.insert("gpus".to_string(), f64::from(gpus));
+    Board::from_kind(kind, &params)
+}
+
+/// The support under (x, z) at world scale `s`, as `layout` reads it.
+fn support_at(board: &Board, s: f64, x: f64, z: f64) -> f64 {
+    s * board.support_below(x / s, z / s, f64::INFINITY)
+}
+
+/// The centre of a rect [x, z, w, d].
+fn centre(rect: [f64; 4]) -> [f64; 2] {
+    [rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0]
+}
+
+/// The overlap area of two axis-aligned rects.
+fn overlap(a: &WalkSurface, b: &WalkSurface) -> f64 {
+    let (ra, rb) = (bounds_of(&a.poly), bounds_of(&b.poly));
+    let w = ra.x1.min(rb.x1) - ra.x0.max(rb.x0);
+    let d = ra.z1.min(rb.z1) - ra.z0.max(rb.z0);
+    if w > 0.0 && d > 0.0 {
+        w * d
+    } else {
+        0.0
+    }
+}
+
+fn bounds_of(poly: &[[f64; 2]]) -> Rect {
+    let xs = poly.iter().map(|p| p[0]);
+    let zs = poly.iter().map(|p| p[1]);
+    Rect {
+        x0: xs.clone().fold(f64::INFINITY, f64::min),
+        x1: xs.fold(f64::NEG_INFINITY, f64::max),
+        z0: zs.clone().fold(f64::INFINITY, f64::min),
+        z1: zs.fold(f64::NEG_INFINITY, f64::max),
+    }
+}
+
+#[test]
+fn every_board_and_count_lays_out() {
+    for kind in KINDS {
+        for n in COUNTS {
+            let lay = layout(kind, &input(n, 0));
+            let tag = format!("{kind} n={n}");
+            assert!(lay.board_scale.is_finite() && (1.0..=3.0 + 1e-9).contains(&lay.board_scale), "{tag}: scale {}", lay.board_scale);
+            assert_eq!(lay.homes.len(), n, "{tag}: one home per agent");
+            assert!(lay.walk.surfaces.iter().any(|s| s.kind == SurfaceKind::Board), "{tag}: no PCB surface");
+            assert!(lay.gangways.iter().all(|g| g.plate < lay.plates.len()) && lay.lifts.is_empty() && lay.landings.is_empty(), "{tag}: second-pass lists");
+            assert!(lay.walk.links.is_empty(), "{tag}: links are the second pass");
+            let b = board(kind, 0);
+            for p in &lay.plates {
+                assert!(p.y.is_finite() && p.support.is_finite() && p.bottom.is_finite(), "{tag}: plate {} finite", p.id);
+                let sup = lattice_max(&b, lay.board_scale, p.rect);
+                assert!((p.support - sup).abs() < 1e-9, "{tag}: plate {} support {} vs drawn {}", p.id, p.support, sup);
+                assert!(p.y + 1e-9 >= p.support, "{tag}: plate {} floats below its support", p.id);
+                let back = Rect::from_xywh(p.rect).xywh();
+                assert!((0..4).all(|k| (back[k] - p.rect[k]).abs() < 1e-9), "{tag}: rect round trip");
+            }
+            for h in &lay.homes {
+                let r = &lay.rooms[h.room];
+                assert!((h.at[0] - r.centre[0]).abs() <= r.half[0] + 1e-9 && (h.at[1] - r.centre[1]).abs() <= r.half[1] + 1e-9, "{tag}: home of {} outside its room", h.agent);
+            }
+            let seated: usize = lay.rooms.iter().map(|r| r.members.len()).sum();
+            assert_eq!(seated, n, "{tag}: every agent is in a room");
+        }
+    }
+}
+
+#[test]
+fn walk_surfaces_are_indexed_convex_and_counter_clockwise() {
+    for kind in KINDS {
+        for n in COUNTS {
+            let lay = layout(kind, &input(n, 0));
+            let tag = format!("{kind} n={n}");
+            let surfaces = &lay.walk.surfaces;
+            for (i, s) in surfaces.iter().enumerate() {
+                assert_eq!(s.id as usize, i, "{tag}: id is the index");
+                assert_eq!(s.sides.len(), s.poly.len(), "{tag}: one side per edge");
+                assert!(s.poly.len() >= 3, "{tag}: polygon");
+                assert!(shoelace(&s.poly) < 0.0, "{tag}: surface {i} is not counter-clockwise from above");
+                let k = s.poly.len();
+                for j in 0..k {
+                    let (a, b, c) = (s.poly[j], s.poly[(j + 1) % k], s.poly[(j + 2) % k]);
+                    let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+                    assert!(cross < 1e-12, "{tag}: surface {i} is not convex at vertex {j}");
+                }
+            }
+            for (i, a) in surfaces.iter().enumerate() {
+                for b in &surfaces[i + 1..] {
+                    if a.height == b.height {
+                        assert!(overlap(a, b) < 1e-9, "{tag}: surfaces {} and {} overlap at one height", a.owner, b.owner);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn layout_is_deterministic() {
+    for kind in KINDS {
+        for n in COUNTS {
+            let a = layout(kind, &input(n, 0));
+            let b = layout(kind, &input(n, 0));
+            assert_eq!(a, b, "{kind} n={n}");
+            assert_eq!(serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap(), "{kind} n={n}: JSON");
+        }
+    }
+}
+
+#[test]
+fn plate_height_is_the_support_under_it() {
+    for kind in KINDS {
+        for n in COUNTS {
+            let lay = layout(kind, &input(n, 0));
+            let b = board(kind, 0);
+            let s = lay.board_scale;
+            for p in &lay.plates {
+                let at_centre = {
+                    let c = centre(p.rect);
+                    support_at(&b, s, c[0], c[1])
+                };
+                assert!(p.support + 1e-9 >= at_centre, "{kind} n={n}: plate {} is below its centre's support", p.id);
+                // Where the footprint is flat (every sample at one height), the plate rests on that height at its centre.
+                let [x0, z0, w, d] = p.rect;
+                let flat = (0..5).all(|i| {
+                    (0..5).all(|j| (support_at(&b, s, x0 + (i as f64 + 0.5) / 5.0 * w, z0 + (j as f64 + 0.5) / 5.0 * d) - at_centre).abs() < 1e-9)
+                });
+                if flat {
+                    assert!((p.support - at_centre).abs() < 1e-9, "{kind} n={n}: plate {} height {} vs centre {}", p.id, p.support, at_centre);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn columns_and_rooms_hold_their_plates() {
+    for kind in KINDS {
+        let lay = layout(kind, &input(8, 0));
+        for c in &lay.columns {
+            assert!(c.bottom < c.top, "{kind}: column {} has no height", c.plate);
+            let p = &lay.plates[c.plate];
+            assert!((c.top - p.bottom).abs() < 1e-9, "{kind}: column top is the plate's underside");
+        }
+        for r in &lay.rooms {
+            assert!((r.floor_y - lay.plates[r.plate].y).abs() < 1e-9, "{kind}: room {} floor is its plate's top", r.id);
+            let (ax, az) = (r.aisle_dir[0], r.aisle_dir[1]);
+            assert!((ax.abs() + az.abs() - 1.0).abs() < 1e-9, "{kind}: aisle direction is an axis");
+        }
+    }
+}
+
+#[test]
+fn frame_and_subtract_helpers() {
+    let f = Frame::of([1.0, 2.0, 6.0, 3.0]);
+    assert!(f.along_x && (f.l - 6.0).abs() < 1e-12 && (f.s - 3.0).abs() < 1e-12);
+    assert_eq!(f.point(1.0, 0.5), [2.0, 2.5]);
+    let g = Frame::of([1.0, 2.0, 3.0, 6.0]);
+    assert!(!g.along_x && g.point(1.0, 0.5) == [1.5, 3.0]);
+    let outer = Rect { x0: 0.0, z0: 0.0, x1: 10.0, z1: 10.0 };
+    let hole = Rect { x0: 2.0, z0: 3.0, x1: 4.0, z1: 5.0 };
+    let pieces = subtract(outer, &[hole]);
+    let area: f64 = pieces.iter().map(|r| (r.x1 - r.x0) * (r.z1 - r.z0)).sum();
+    assert!((area - 96.0).abs() < 1e-9, "area {area}");
+    assert!(pieces.len() <= 4);
+}
+
+/// The highest support over the plate lattice (columns::SUPPORT_CELL centres), at the world scale `s`.
+fn lattice_max(board: &Board, s: f64, rect: [f64; 4]) -> f64 {
+    let lat = super::columns::Lattice::of(rect, &|x, z| support_at(board, s, x, z));
+    lat.highest()
+}
+
+/// The plate rule (the user's decision): a plate rests on the highest support sample under its footprint, plus PLATE.
+/// Every support sample under the footprint is at or below the underside, and every gap between a sample and the
+/// underside is covered by a column that stands on that sample's block.
+#[test]
+fn plate_rests_on_highest_support() {
+    for kind in KINDS {
+        for n in [1usize, 8] {
+            let lay = layout(kind, &input(n, 0));
+            let b = board(kind, 0);
+            let s = lay.board_scale;
+            for p in &lay.plates {
+                let under = p.y - PLATE;
+                assert!((p.bottom - under).abs() < 1e-9, "{kind} n={n}: plate {} underside {} vs y - PLATE {}", p.id, p.bottom, under);
+                let lat = super::columns::Lattice::of(p.rect, &|x, z| support_at(&b, s, x, z));
+                assert!((lat.highest() - under).abs() < 1e-9, "{kind} n={n}: plate {} highest support {} vs underside {}", p.id, lat.highest(), under);
+                let cell_w = p.rect[2] / lat.nx as f64;
+                let cell_d = p.rect[3] / lat.nz as f64;
+                for j in 0..lat.nz {
+                    for i in 0..lat.nx {
+                        let sup = lat.sup[j * lat.nx + i];
+                        assert!(sup <= under + 1e-9, "{kind} n={n}: plate {} sample {sup} above its underside {under}", p.id);
+                        if under - sup <= super::columns::GROUND_TOL {
+                            continue;
+                        }
+                        let x = p.rect[0] + (i as f64 + 0.5) * cell_w;
+                        let z = p.rect[1] + (j as f64 + 0.5) * cell_d;
+                        let covered = lay.columns.iter().any(|c| {
+                            c.plate == p.id
+                                && c.rect[0] - 1e-9 <= x
+                                && x <= c.rect[0] + c.rect[2] + 1e-9
+                                && c.rect[1] - 1e-9 <= z
+                                && z <= c.rect[1] + c.rect[3] + 1e-9
+                                && c.bottom <= sup + 1e-9
+                                && (c.top - under).abs() < 1e-9
+                        });
+                        assert!(covered, "{kind} n={n}: plate {} gap under sample ({x:.3}, {z:.3}) is not covered by a column", p.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+#[test]
+#[ignore]
+fn probe_tmp() {
+    for (kind, n) in [("edge", 1usize)] {
+        let t = std::time::Instant::now();
+        let r = std::panic::catch_unwind(|| layout(kind, &input(n, 0)));
+        match r {
+            Ok(l) => eprintln!("PROBE {kind} n={n}: ok scale {} plates {} homes {} lifts {} landings {} links {} in {:?}", l.board_scale, l.plates.len(), l.homes.len(), l.lifts.len(), l.landings.len(), l.walk.links.len(), t.elapsed()),
+            Err(e) => eprintln!("PROBE {kind} n={n}: panic {:?} in {:?}", e.downcast_ref::<String>(), t.elapsed()),
+        }
+    }
+}

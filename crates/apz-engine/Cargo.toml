@@ -1,0 +1,32 @@
+[package]
+name = "apz-engine"
+description = "AgentPlaza's one 3D engine: the Floor's wgpu renderer and scenes, platform-agnostic (no window, no iced). The host hands it a wgpu Device, Queue and target view."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The same wgpu as iced 0.14 uses (27.0.1 in Cargo.lock), so iced's Device, Queue and TextureView are ours.
+wgpu = "27.0.1"
+glam = { version = "0.30", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+ab_glyph = "0.2"
+tiny-skia = "0.11"
+# `Instant` for the frame clock: std on native, performance.now() in the browser.
+web-time = "1"
+
+# The browser: WebGPU, with WebGL2 as the fallback (the engine's two backends on wasm32).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "27.0.1", features = ["webgpu", "webgl"] }
+
+# The WebGL2 shader test (tests/webgl2_shaders.rs) parses and writes GLSL ES with the same naga wgpu 27 uses.
+[dev-dependencies]
+naga = { version = "27", features = ["wgsl-in", "glsl-out"] }
+
+

@@ -1,16 +1,23 @@
-//! `floor3d/robot.ts`: the plaza robot in one of five designs (a WALL·E-like rover, a hover bubble,
-//! a TV head on a ball wheel, a can with a dome head, a kitty with ears) and its animation. Every
-//! design has the same parts (a base, a body, a head with glowing eyes, two arms), so they share
-//! one animation. The scene places it; the robot animates itself.
+//! `floor3d/robot.ts`: a plaza robot, built from its species' JSON (`assets/robots/species/<id>.json`)
+//! and animated by the shared and species clips (`assets/robots/clips.json`). The species decides the
+//! parts, bones, eyes and motion; the clips decide what it does. The scene places it; the robot owns its
+//! own animation. The data, the rig and the effects are in `robots/`.
 
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
+use std::collections::BTreeMap;
+use std::f32::consts::PI;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
-use super::geometry::{box_geo, circle, cone, cylinder, rounded_box, sphere, sphere_part, torus, transformed};
-use super::scene::{Color, Geo, Mat, Material, Obj, Shading};
-use super::toon::{outline, toon_mat};
+use super::robots::clips::{eval_clip, rest_of};
+use super::robots::files::{registry, warn_once};
+use super::robots::fx::{seed, Fx};
+use super::robots::rig::{add_bone, bake_species, bake_tool, instantiate, robot_mats, BoneGeo, Rig, RobotMats, SpeciesGeo};
+use super::robots::types::{Clip, Species, Tool};
+use super::scene::{Color, Obj};
 
+/// What a robot is doing: the state picks its clip and its eyes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RobotState {
     Idle,
@@ -19,6 +26,7 @@ pub enum RobotState {
     Offline,
 }
 
+/// A still pose for a portrait: the shared clips of the same names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RobotPose {
     Wave,
@@ -27,31 +35,27 @@ pub enum RobotPose {
     Cheer,
 }
 
-/// The robot designs (`RobotVariant` in robot.ts). An agent keeps its own; the orchestrator is
-/// always the rover.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RobotVariant {
-    Rover,
-    Hover,
-    Tv,
-    Can,
-    Kitty,
+/// A cid's species when the hub's record names none: the id from `index.json`'s order without the oracle (reserved for
+/// model agents, so the hub never deals it to a robot; the web's `robotVariant` skips it too), `cid % len` (neighbouring
+/// cids get different ones).
+pub fn robot_variant(cid: u64) -> &'static str {
+    let list = &registry().index.species;
+    let dealt = |id: &&String| id.as_str() != "oracle";
+    let n = list.iter().filter(dealt).count();
+    if n == 0 {
+        return "rover";
+    }
+    list.iter().filter(dealt).nth((cid % n as u64) as usize).map_or("rover", String::as_str)
 }
 
-pub const ROBOT_VARIANTS: [RobotVariant; 5] = [
-    RobotVariant::Rover,
-    RobotVariant::Hover,
-    RobotVariant::Tv,
-    RobotVariant::Can,
-    RobotVariant::Kitty,
-];
-
-/// An agent's design: neighbouring cids (a district's members) get different ones.
-pub fn robot_variant(cid: u64) -> RobotVariant {
-    ROBOT_VARIANTS[(cid % ROBOT_VARIANTS.len() as u64) as usize]
+/// A robot's species: the hub's `species` on the agent record (an unknown id is the rover, as `Robot::with_variant` draws
+/// it), else `robot_variant(cid)` when the record has none.
+pub fn species_of(hub: Option<&str>, cid: u64) -> &'static str {
+    let Some(id) = hub.map(str::trim).filter(|s| !s.is_empty()) else { return robot_variant(cid) };
+    registry().index.species.iter().map(String::as_str).find(|s| *s == id).unwrap_or("rover")
 }
 
-/// The console palette the robot is painted in (`Palette` in robot.ts).
+/// The console palette the robot is painted in (`Palette` in robot.ts): read from `palette.json`.
 #[derive(Debug, Clone, Copy)]
 pub struct RobotPalette {
     pub ink: Color,
@@ -64,458 +68,218 @@ pub struct RobotPalette {
     pub ink_muted: Color,
 }
 
-/// The robots' own paint, the same in the light and the dark theme (`ROBOT_PALETTE` in robot.ts).
-/// A function because `Color::hex` is not `const`.
+/// The robots' own paint, the same in the light and the dark theme (`ROBOT_PALETTE` in robot.ts). A
+/// colour that does not parse is magenta, so a bad palette file shows.
 pub fn robot_palette() -> RobotPalette {
+    let p = &registry().palette;
+    let c = |hex: &str| Color::css(hex).unwrap_or(Color::hex(0xff00ff));
     RobotPalette {
-        ink: Color::hex(0x262c3a),
-        sheet: Color::hex(0xffffff),
-        paper: Color::hex(0xeef1f6),
-        rule: Color::hex(0x9aa5b8),
-        signal: Color::hex(0xff7a2e),
-        ok: Color::hex(0x3ee08f),
-        info: Color::hex(0x4cc9ff),
-        ink_muted: Color::hex(0x5b6475),
+        ink: c(&p.ink),
+        sheet: c(&p.sheet),
+        paper: c(&p.paper),
+        rule: c(&p.rule),
+        signal: c(&p.signal),
+        ok: c(&p.ok),
+        info: c(&p.info),
+        ink_muted: c(&p.ink_muted),
     }
 }
 
-// Layout in robot units: about one unit tall before the orchestrator's scale.
 const SCALE: f32 = 1.3; // a touch bigger than the furniture, so the robots read from afar
 const ORCH_SCALE: f32 = 1.25 * SCALE;
-const LABEL_LIFT: f32 = 0.35;
+const BLEND: f32 = 8.0; // the rate each joint moves toward its target (k = min(1, dt·8))
+const WALK_FEET_RATE: f32 = 9.0; // rad/s of the feet's step while walking
+const FLOAT_OFFLINE: f32 = -0.07; // a hover robot sets down when offline
+/// A bone's joints: rotation x, y, z, offset x, y, z, and scale. The eye lids follow them all.
+const PROPS: usize = 7;
+const PROP_NAMES: [&str; PROPS] = ["rot.x", "rot.y", "rot.z", "pos.x", "pos.y", "pos.z", "scale"];
+
+static SPECIES_GEO: Mutex<BTreeMap<(String, bool), Arc<SpeciesGeo>>> = Mutex::new(BTreeMap::new());
+static TOOL_GEO: Mutex<BTreeMap<String, Arc<BoneGeo>>> = Mutex::new(BTreeMap::new());
+static ROBOTS: AtomicU64 = AtomicU64::new(1);
+
+fn species_geo(sp: &Species, palette: &RobotPalette, orchestrator: bool) -> Arc<SpeciesGeo> {
+    let mut cache = SPECIES_GEO.lock().unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(cache.entry((sp.id.clone(), orchestrator)).or_insert_with(|| Arc::new(bake_species(sp, palette, orchestrator))))
+}
+
+fn tool_geo(id: &str, tool: &Tool, palette: &RobotPalette) -> Arc<BoneGeo> {
+    let mut cache = TOOL_GEO.lock().unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(cache.entry(id.to_string()).or_insert_with(|| Arc::new(bake_tool(tool, palette))))
+}
+
+/// A species' clip by name: its own (an override first), else the shared one.
+fn clip_named(sp: &'static Species, name: &str) -> Option<&'static Clip> {
+    if let Some(own) = sp.overrides.get(name).and_then(|o| sp.clips.get(o)) {
+        return Some(own);
+    }
+    sp.clips.get(name).or_else(|| registry().clips.get(name))
+}
+
+/// The walk clip of the species' locomotion; the treads walk when it has none (with one warning).
+fn walk_clip(sp: &'static Species) -> Option<&'static Clip> {
+    let walk = format!("walk.{}", sp.locomotion);
+    clip_named(sp, &walk).or_else(|| {
+        warn_once(&format!("no clip \"{walk}\" for locomotion \"{}\" (the treads walk is used)", sp.locomotion));
+        clip_named(sp, "walk.treads")
+    })
+}
+
+/// A bone's rest position in the robot's root: the sum of its `at`s up its parents.
+fn rest_position(sp: &Species, name: &str) -> Vec3 {
+    let mut p = Vec3::ZERO;
+    let mut cur = name;
+    for _ in 0..=sp.bones.len() {
+        let Some(def) = sp.bones.get(cur) else { break };
+        p += Vec3::from(def.at);
+        cur = def.parent.as_str();
+    }
+    p
+}
+
+fn axis(a: &str) -> Option<usize> {
+    match a {
+        "x" => Some(0),
+        "y" => Some(1),
+        "z" => Some(2),
+        _ => None,
+    }
+}
+
+/// A held tool or carried item: its meshes under a new holder at `bone`.
+fn attach(bone: &Obj, geo: &BoneGeo, mats: &RobotMats) -> Obj {
+    let holder = Obj::group();
+    bone.add(&holder);
+    add_bone(&holder, geo, mats, &mut Vec::new());
+    holder
+}
+
+/// A clip that started at `start` and plays until it is replaced (a pose, a held clip).
+#[derive(Clone, Copy)]
+struct Timed {
+    clip: &'static Clip,
+    start: f32,
+}
+
+/// A one-shot: plays for `dur` seconds, then the state's clip returns.
+#[derive(Clone, Copy)]
+struct Once {
+    clip: &'static Clip,
+    start: f32,
+    dur: f32,
+}
+
+/// The state's clips (`None` when the species and the shared file have none).
+#[derive(Clone, Copy)]
+struct StateClips {
+    idle: Option<&'static Clip>,
+    working: Option<&'static Clip>,
+    offline: Option<&'static Clip>,
+    walking: Option<&'static Clip>,
+}
 
 /// One robot. `group` goes into the scene (marked dynamic); position and turn it from outside.
 pub struct Robot {
     pub group: Obj,
+    sp: &'static Species,
     palette: RobotPalette,
-    head: Obj,
-    head_top: f32,
-    body_group: Obj,
-    base_group: Obj,
-    arm_l: Obj,
-    arm_r: Obj,
-    pupils: Vec<Obj>,
-    /// Wheels and rotors: they turn about their own x (or y, when `yaw`) while walking.
-    spin: Vec<(Obj, bool)>,
-    /// Feet that step while walking.
-    feet: Vec<Obj>,
-    /// Floats on a thruster (bobs, lands when offline).
-    hover: bool,
-    pupil_mat: Mat,
-    thruster_mat: Mat,
-    /// The antenna light's material (orchestrator only).
-    light_mat: Option<Mat>,
-    /// The materials that take the highlight glow (the shell and running gear).
-    shell: Vec<Mat>,
+    orchestrator: bool,
+    mats: RobotMats,
+    rig: Rig,
+    clips: StateClips,
+    /// The offset from gripR to gripL at rest: a two-handed tool aims along it.
+    to_grip_l: Vec3,
     state: RobotState,
-    pupil_intensity: f32,
-}
-
-/// The materials a design is built from.
-struct Mats {
-    sheet: Mat,
-    paper: Mat,
-    panel: Mat,
-    rivet: Mat,
-    ink: Mat,
-    signal: Mat,
-    glass: Mat,
-    pupil: Mat,
-    thruster: Mat,
-}
-
-/// The parts a design builds; the shared animation drives them.
-struct Parts {
-    head: Obj,
-    /// The top of the head above its pivot, for the label.
-    head_top: f32,
-    arm_l: Obj,
-    arm_r: Obj,
-    /// The glowing eyes: they blink (scale y).
-    pupils: Vec<Obj>,
-    spin: Vec<(Obj, bool)>,
-    feet: Vec<Obj>,
-    hover: bool,
-}
-
-/// A toon material in `color` (roughness and metalness are not part of `Material`, as in toon.rs).
-fn toon(color: Color) -> Mat {
-    toon_mat(Material { color, ..Material::default() })
-}
-
-/// A toon material that glows in `color` at `intensity`.
-fn glow(color: Color, intensity: f32) -> Mat {
-    toon_mat(Material {
-        color,
-        emissive: color,
-        emissive_intensity: intensity,
-        ..Material::default()
-    })
-}
-
-/// A toon material that takes the highlight glow: it is also recorded in `shell`.
-fn shell_mat(shell: &mut Vec<Mat>, color: Color) -> Mat {
-    let m = toon(color);
-    shell.push(m.clone());
-    m
-}
-
-/// `add(parent, geometry, material, x, y, z)`: a shadow-casting mesh at a position.
-fn add(parent: &Obj, geo: &Geo, mat: &Mat, x: f32, y: f32, z: f32) -> Obj {
-    let mesh = Obj::mesh(geo, mat);
-    mesh.set_position(x, y, z).set_shadows(true, true);
-    parent.add(&mesh);
-    mesh
-}
-
-fn rot_x(geo: &Geo, a: f32) -> Geo {
-    transformed(geo, Mat4::from_rotation_x(a))
-}
-
-fn rot_y(geo: &Geo, a: f32) -> Geo {
-    transformed(geo, Mat4::from_rotation_y(a))
-}
-
-fn rot_z(geo: &Geo, a: f32) -> Geo {
-    transformed(geo, Mat4::from_rotation_z(a))
-}
-
-fn scaled(geo: &Geo, x: f32, y: f32, z: f32) -> Geo {
-    transformed(geo, Mat4::from_scale(Vec3::new(x, y, z)))
-}
-
-/// A shoulder pivot with a straight arm hanging from it and a hand at its end.
-fn arm(parent: &Obj, x: f32, y: f32, len: f32, arm_mat: &Mat, hand: &dyn Fn(&Obj)) -> Obj {
-    let pivot = Obj::group();
-    pivot.set_position(x, y, 0.0);
-    parent.add(&pivot);
-    let geo = transformed(&cylinder(0.045, 0.04, len, 12), Mat4::from_translation(Vec3::new(0.0, -len / 2.0, 0.0)));
-    add(&pivot, &geo, arm_mat, 0.0, 0.0, 0.0);
-    let grip = Obj::group();
-    grip.set_position(0.0, -len, 0.0);
-    pivot.add(&grip);
-    hand(&grip);
-    pivot
-}
-
-/// A round mitten hand.
-fn mitten(grip: &Obj, mat: &Mat) {
-    add(grip, &sphere(0.065, 14, 10), mat, 0.0, 0.0, 0.0);
-}
-
-/// Two eye sockets (dark glass, glowing pupils) on a face at depth `z`; returns the pupils.
-fn eyes(head: &Obj, m: &Mats, xs: &[f32], y: f32, z: f32, glass_r: f32, pupil_r: f32) -> Vec<Obj> {
-    let glass_geo = circle(glass_r, 24, 0.0, TAU);
-    let pupil_geo = circle(pupil_r, 24, 0.0, TAU);
-    xs.iter()
-        .map(|&x| {
-            add(head, &glass_geo, &m.glass, x, y, z);
-            add(head, &pupil_geo, &m.pupil, x, y, z + 0.004)
-        })
-        .collect()
-}
-
-/// The original: boxy body on tank treads, binocular eyes on a neck, claw arms.
-fn build_rover(body: &Obj, base: &Obj, m: &Mats) -> Parts {
-    const BODY_Y: f32 = 0.46;
-    const HEAD_H: f32 = 0.24;
-    let tread = rounded_box(0.16, 0.22, 0.86, 3, 0.07);
-    add(base, &tread, &m.ink, -0.36, 0.11, 0.0);
-    add(base, &tread, &m.ink, 0.36, 0.11, 0.0);
-    let wheel = rot_z(&cylinder(0.08, 0.08, 0.03, 16), FRAC_PI_2); // axle along x
-    let mut spin = Vec::new();
-    for side in [-1.0_f32, 1.0] {
-        for z in [-0.28_f32, 0.0, 0.28] {
-            spin.push((add(base, &wheel, &m.rivet, side * 0.445, 0.11, z), false));
-        }
-    }
-
-    add(body, &rounded_box(0.62, 0.5, 0.6, 4, 0.12), &m.sheet, 0.0, BODY_Y, 0.0);
-    add(body, &rounded_box(0.36, 0.26, 0.03, 2, 0.01), &m.panel, 0.0, BODY_Y, 0.315);
-    add(body, &box_geo(0.28, 0.012, 0.012), &m.rivet, 0.0, BODY_Y, 0.33);
-    let rivet = sphere(0.018, 8, 6);
-    for x in [-0.15_f32, 0.15] {
-        for y in [BODY_Y - 0.1, BODY_Y + 0.1] {
-            add(body, &rivet, &m.rivet, x, y, 0.33);
-        }
-    }
-    add(body, &cylinder(0.07, 0.08, 0.14, 12), &m.ink, 0.0, 0.78, 0.0);
-
-    let claw_base = rounded_box(0.1, 0.05, 0.08, 2, 0.02);
-    let finger = box_geo(0.025, 0.08, 0.03);
-    let claw = |grip: &Obj| {
-        add(grip, &claw_base, &m.ink, 0.0, 0.0, 0.0);
-        add(grip, &finger, &m.ink, -0.035, -0.05, 0.0);
-        add(grip, &finger, &m.ink, 0.035, -0.05, 0.0);
-    };
-    let arm_l = arm(body, -0.34, 0.6, 0.3, &m.sheet, &claw);
-    let arm_r = arm(body, 0.34, 0.6, 0.3, &m.sheet, &claw);
-
-    let head = Obj::group();
-    head.set_position(0.0, 0.82, 0.0);
-    body.add(&head);
-    add(&head, &rounded_box(0.62, HEAD_H, 0.42, 3, 0.09), &m.paper, 0.0, HEAD_H / 2.0, 0.0);
-    let eye = rot_x(&cylinder(0.13, 0.13, 0.18, 24), FRAC_PI_2); // axis along z, so the eyes face forward
-    for x in [-0.16_f32, 0.16] {
-        add(&head, &eye, &m.paper, x, 0.12, 0.2);
-    }
-    let pupils = eyes(&head, m, &[-0.16, 0.16], 0.12, 0.292, 0.1, 0.07);
-    Parts { head, head_top: HEAD_H, arm_l, arm_r, pupils, spin, feet: Vec::new(), hover: false }
-}
-
-/// A round bubble floating on a glowing thruster ring, with a goggle visor and mitten hands.
-fn build_hover(body: &Obj, base: &Obj, m: &Mats) -> Parts {
-    // The thruster: a dark ring with a glowing disc under it; the ring turns.
-    let rotor = Obj::group();
-    rotor.set_position(0.0, 0.16, 0.0);
-    base.add(&rotor);
-    add(&rotor, &rot_x(&torus(0.22, 0.05, 10, 28, TAU), FRAC_PI_2), &m.ink, 0.0, 0.0, 0.0);
-    let vane = box_geo(0.4, 0.02, 0.05);
-    add(&rotor, &vane, &m.rivet, 0.0, 0.0, 0.0);
-    add(&rotor, &rot_y(&vane, FRAC_PI_2), &m.rivet, 0.0, 0.0, 0.0);
-    add(base, &rot_x(&circle(0.19, 24, 0.0, TAU), FRAC_PI_2), &m.thruster, 0.0, 0.13, 0.0); // faces down
-
-    // The bubble body with a metal seam round its middle.
-    add(body, &scaled(&sphere(0.31, 28, 20), 1.0, 0.92, 1.0), &m.sheet, 0.0, 0.46, 0.0);
-    add(body, &rot_x(&torus(0.305, 0.022, 8, 36, TAU), FRAC_PI_2), &m.rivet, 0.0, 0.42, 0.0);
-    add(body, &circle(0.08, 20, 0.0, TAU), &m.panel, 0.0, 0.36, 0.296);
-
-    let hand = |grip: &Obj| mitten(grip, &m.paper);
-    let arm_l = arm(body, -0.31, 0.5, 0.2, &m.sheet, &hand);
-    let arm_r = arm(body, 0.31, 0.5, 0.2, &m.sheet, &hand);
-
-    // The head: a white dome with a dark goggle visor wrapped round its front.
-    let head = Obj::group();
-    head.set_position(0.0, 0.7, 0.0);
-    body.add(&head);
-    add(&head, &sphere(0.25, 28, 20), &m.paper, 0.0, 0.14, 0.0);
-    // The visor: a flattened dark lens bulging out of the dome's front.
-    add(&head, &scaled(&sphere(0.21, 24, 14), 1.0, 0.55, 0.6), &m.glass, 0.0, 0.15, 0.15);
-    let pupil_geo = scaled(&circle(0.045, 20, 0.0, TAU), 1.0, 1.35, 1.0);
-    let pupils = [-0.085_f32, 0.085].iter().map(|&x| add(&head, &pupil_geo, &m.pupil, x, 0.15, 0.278)).collect();
-    // Two little antenna nubs.
-    let nub = cylinder(0.012, 0.012, 0.1, 6);
-    let nub_ball = sphere(0.03, 10, 8);
-    for x in [-0.12_f32, 0.12] {
-        add(&head, &nub, &m.ink, x, 0.38, 0.0);
-        add(&head, &nub_ball, &m.signal, x, 0.44, 0.0);
-    }
-    Parts { head, head_top: 0.44, arm_l, arm_r, pupils, spin: vec![(rotor, true)], feet: Vec::new(), hover: true }
-}
-
-/// A box head with a screen face (eyes and a smile) on a short neck, rolling on one ball wheel.
-fn build_tv(body: &Obj, base: &Obj, m: &Mats) -> Parts {
-    // The ball wheel in a fork; the stripe shows it rolling.
-    let wheel = Obj::group();
-    wheel.set_position(0.0, 0.15, 0.0);
-    base.add(&wheel);
-    add(&wheel, &sphere(0.15, 20, 14), &m.ink, 0.0, 0.0, 0.0);
-    add(&wheel, &rot_y(&torus(0.15, 0.022, 8, 28, TAU), FRAC_PI_2), &m.rivet, 0.0, 0.0, 0.0); // round the axle (x)
-    let fork = rounded_box(0.05, 0.2, 0.14, 2, 0.02);
-    add(base, &fork, &m.sheet, -0.19, 0.2, 0.0);
-    add(base, &fork, &m.sheet, 0.19, 0.2, 0.0);
-
-    // A compact body with three buttons, and a neck.
-    add(body, &rounded_box(0.48, 0.32, 0.4, 4, 0.1), &m.sheet, 0.0, 0.44, 0.0);
-    let button = sphere(0.03, 10, 8);
-    add(body, &button, &m.signal, -0.09, 0.44, 0.2);
-    add(body, &button, &m.panel, 0.0, 0.44, 0.2);
-    add(body, &button, &m.rivet, 0.09, 0.44, 0.2);
-    add(body, &cylinder(0.06, 0.07, 0.1, 12), &m.ink, 0.0, 0.64, 0.0);
-
-    let ball = |grip: &Obj| {
-        add(grip, &sphere(0.055, 12, 10), &m.rivet, 0.0, 0.0, 0.0);
-    };
-    let arm_l = arm(body, -0.28, 0.54, 0.24, &m.ink, &ball);
-    let arm_r = arm(body, 0.28, 0.54, 0.24, &m.ink, &ball);
-
-    // The head: a white set with a dark screen; on it, two round eyes and a smile.
-    let head = Obj::group();
-    head.set_position(0.0, 0.68, 0.0);
-    body.add(&head);
-    add(&head, &rounded_box(0.62, 0.44, 0.44, 4, 0.12), &m.paper, 0.0, 0.22, 0.0);
-    add(&head, &rounded_box(0.48, 0.32, 0.04, 3, 0.06), &m.glass, 0.0, 0.22, 0.212);
-    let eye = circle(0.06, 22, 0.0, TAU);
-    let pupils = [-0.11_f32, 0.11].iter().map(|&x| add(&head, &eye, &m.pupil, x, 0.25, 0.236)).collect();
-    let smile = rot_z(&torus(0.06, 0.013, 6, 16, PI), PI); // the lower half: a smile
-    add(&head, &smile, &m.pupil, 0.0, 0.17, 0.236);
-    // An antenna with a ball on top.
-    add(&head, &cylinder(0.012, 0.012, 0.14, 6), &m.ink, 0.16, 0.5, 0.0);
-    add(&head, &sphere(0.04, 12, 8), &m.signal, 0.16, 0.58, 0.0);
-    Parts { head, head_top: 0.6, arm_l, arm_r, pupils, spin: vec![(wheel, false)], feet: Vec::new(), hover: false }
-}
-
-/// A round can on two stubby feet, with a dome head and one big eye.
-fn build_can(body: &Obj, base: &Obj, m: &Mats) -> Parts {
-    let foot_geo = rounded_box(0.16, 0.08, 0.24, 2, 0.035);
-    let leg_geo = cylinder(0.045, 0.05, 0.14, 10);
-    let mut feet = Vec::new();
-    for x in [-0.12_f32, 0.12] {
-        let foot = Obj::group();
-        foot.set_position(x, 0.0, 0.0);
-        base.add(&foot);
-        add(&foot, &foot_geo, &m.ink, 0.0, 0.04, 0.03);
-        add(&foot, &leg_geo, &m.rivet, 0.0, 0.14, 0.0);
-        feet.push(foot);
-    }
-
-    // The can, banded top and bottom, with a front panel.
-    add(body, &cylinder(0.27, 0.27, 0.44, 28), &m.sheet, 0.0, 0.42, 0.0);
-    let band = rot_x(&torus(0.27, 0.022, 8, 32, TAU), FRAC_PI_2);
-    add(body, &band, &m.rivet, 0.0, 0.22, 0.0);
-    add(body, &band, &m.rivet, 0.0, 0.62, 0.0);
-    add(body, &rounded_box(0.2, 0.16, 0.04, 2, 0.015), &m.panel, 0.0, 0.42, 0.262);
-
-    let hand = |grip: &Obj| mitten(grip, &m.ink);
-    let arm_l = arm(body, -0.3, 0.56, 0.24, &m.sheet, &hand);
-    let arm_r = arm(body, 0.3, 0.56, 0.24, &m.sheet, &hand);
-
-    // The dome head with one big eye in a dark housing, and a light on top.
-    let head = Obj::group();
-    head.set_position(0.0, 0.64, 0.0);
-    body.add(&head);
-    add(&head, &sphere_part(0.27, 28, 14, 0.0, TAU, 0.0, FRAC_PI_2), &m.paper, 0.0, 0.0, 0.0);
-    add(&head, &rot_x(&circle(0.27, 28, 0.0, TAU), FRAC_PI_2), &m.paper, 0.0, 0.0, 0.0); // the dome's floor
-    add(&head, &rot_x(&cylinder(0.11, 0.11, 0.1, 24), FRAC_PI_2), &m.ink, 0.0, 0.12, 0.23);
-    let pupils = eyes(&head, m, &[0.0], 0.12, 0.282, 0.09, 0.06);
-    add(&head, &cylinder(0.035, 0.045, 0.05, 10), &m.ink, 0.0, 0.29, 0.0);
-    add(&head, &sphere(0.04, 12, 8), &m.signal, 0.0, 0.33, 0.0);
-    Parts { head, head_top: 0.36, arm_l, arm_r, pupils, spin: Vec::new(), feet, hover: false }
-}
-
-/// A big round head with ears, a small body on a four-wheeled chassis.
-fn build_kitty(body: &Obj, base: &Obj, m: &Mats) -> Parts {
-    add(base, &rounded_box(0.44, 0.1, 0.4, 2, 0.04), &m.ink, 0.0, 0.13, 0.0);
-    let wheel = rot_z(&cylinder(0.085, 0.085, 0.06, 16), FRAC_PI_2);
-    let mut spin = Vec::new();
-    for x in [-0.23_f32, 0.23] {
-        for z in [-0.12_f32, 0.12] {
-            spin.push((add(base, &wheel, &m.rivet, x, 0.085, z), false));
-        }
-    }
-
-    add(body, &rounded_box(0.42, 0.28, 0.36, 4, 0.1), &m.sheet, 0.0, 0.32, 0.0);
-    add(body, &circle(0.09, 20, 0.0, TAU), &m.panel, 0.0, 0.31, 0.182); // the belly
-
-    let hand = |grip: &Obj| mitten(grip, &m.paper);
-    let arm_l = arm(body, -0.25, 0.4, 0.16, &m.sheet, &hand);
-    let arm_r = arm(body, 0.25, 0.4, 0.16, &m.sheet, &hand);
-
-    let head = Obj::group();
-    head.set_position(0.0, 0.48, 0.0);
-    body.add(&head);
-    add(&head, &rounded_box(0.68, 0.46, 0.5, 5, 0.17), &m.paper, 0.0, 0.23, 0.0);
-    // Ears: the body's colour outside, the district's inside.
-    let ear_geo = cone(0.1, 0.17, 4);
-    let inner_geo = cone(0.055, 0.1, 4);
-    for side in [-1.0_f32, 1.0] {
-        let ear = add(&head, &ear_geo, &m.sheet, side * 0.2, 0.5, 0.0);
-        ear.set_rotation(0.0, FRAC_PI_4, -side * 0.3);
-        let inner = add(&head, &inner_geo, &m.panel, side * 0.205, 0.49, 0.045);
-        inner.set_rotation(0.0, FRAC_PI_4, -side * 0.3);
-    }
-    let pupils = eyes(&head, m, &[-0.14, 0.14], 0.25, 0.252, 0.1, 0.065);
-    let cheek = circle(0.04, 16, 0.0, TAU);
-    add(&head, &cheek, &m.panel, -0.25, 0.14, 0.252);
-    add(&head, &cheek, &m.panel, 0.25, 0.14, 0.252);
-    let mouth = rot_z(&torus(0.03, 0.01, 6, 12, PI), PI);
-    add(&head, &mouth, &m.ink, -0.03, 0.15, 0.252);
-    add(&head, &mouth, &m.ink, 0.03, 0.15, 0.252);
-    Parts { head, head_top: 0.58, arm_l, arm_r, pupils, spin, feet: Vec::new(), hover: false }
+    eye_intensity: f32,
+    last_t: f32,
+    held_clip: Option<Timed>,
+    once_clip: Option<Once>,
+    /// The held tool: its bone, and its holder group under it.
+    held_tool: Option<(Obj, Obj)>,
+    /// The carried item: the carry bone, and its holder group under it.
+    carried: Option<(Obj, Obj)>,
+    /// The blended joints (see `PROPS`), then the eye lids.
+    cur: Vec<f32>,
+    /// The angles accumulated by rate channels and spins: each bone's rot x, y, z.
+    acc: Vec<f32>,
+    /// This frame's clip targets, by joint: the value, and whether it snaps.
+    targets: Vec<Option<(f32, bool)>>,
+    /// Each bone's offset this frame: the feet's step and the float's bob.
+    extras: Vec<Vec3>,
+    fx: Fx,
+    /// The clip whose effects are timed (its address), and each effect's timer.
+    fx_clip: Option<usize>,
+    fx_timer: Vec<f32>,
 }
 
 impl Robot {
     /// `makeRobot(hue, orchestrator, palette, bodyHue)` with the rover design; hues in degrees.
     pub fn new(hue: f32, orchestrator: bool, palette: &RobotPalette, body_hue: f32) -> Robot {
-        Robot::with_variant(hue, orchestrator, palette, body_hue, RobotVariant::Rover)
+        Robot::with_variant(hue, orchestrator, palette, body_hue, "rover")
     }
 
-    /// `makeRobot(hue, orchestrator, palette, bodyHue, variant)`: the orchestrator is always a
-    /// rover, larger and with an antenna light; an agent takes its `variant`.
-    pub fn with_variant(
-        hue: f32,
-        orchestrator: bool,
-        palette: &RobotPalette,
-        body_hue: f32,
-        variant: RobotVariant,
-    ) -> Robot {
+    /// `makeRobot(hue, orchestrator, palette, bodyHue, variant)`: `variant` is a species id. The
+    /// orchestrator is always the rover, larger and with its antenna light; an unknown species is the rover.
+    pub fn with_variant(hue: f32, orchestrator: bool, palette: &RobotPalette, body_hue: f32, variant: &str) -> Robot {
+        let reg = registry();
+        let wanted = if orchestrator { "rover" } else { variant };
+        let sp: &'static Species = match reg.species.get(wanted) {
+            Some(sp) => sp,
+            None => {
+                warn_once(&format!("species \"{wanted}\" is not valid (see registry().errors); the rover is used"));
+                reg.species.get("rover").expect("the rover species is valid")
+            }
+        };
         let palette = *palette;
-        let kind = if orchestrator { RobotVariant::Rover } else { variant };
         let root = Obj::group();
         root.set_name(if orchestrator { "robot-orchestrator" } else { "robot" });
         root.set_scalar(if orchestrator { ORCH_SCALE } else { SCALE });
         root.set_dynamic(true);
 
-        let mut shell = Vec::new();
-        let m = Mats {
-            sheet: shell_mat(&mut shell, Color::hsl(body_hue / 360.0, 0.62, 0.62)),
-            paper: shell_mat(&mut shell, palette.paper),
-            panel: shell_mat(&mut shell, Color::hsl(hue / 360.0, 0.55, 0.78)),
-            rivet: shell_mat(&mut shell, palette.rule),
-            ink: shell_mat(&mut shell, palette.ink),
-            signal: shell_mat(&mut shell, palette.signal),
-            // Glass and lights are not part of the glow, so the highlight never washes out the eyes.
-            glass: toon(palette.ink),
-            pupil: glow(palette.ok, 1.2),
-            thruster: Mat::new(Material { shading: Shading::Basic, color: palette.info, ..Material::default() }),
-        };
-        let pupil_mat = m.pupil.clone();
-        let thruster_mat = m.thruster.clone();
-
-        // The base (treads, wheels, feet or thruster) bobs when walking; the body carries the rest.
-        let base_group = Obj::group();
-        root.add(&base_group);
-        let body_group = Obj::group();
-        root.add(&body_group);
-        let parts = match kind {
-            RobotVariant::Rover => build_rover(&body_group, &base_group, &m),
-            RobotVariant::Hover => build_hover(&body_group, &base_group, &m),
-            RobotVariant::Tv => build_tv(&body_group, &base_group, &m),
-            RobotVariant::Can => build_can(&body_group, &base_group, &m),
-            RobotVariant::Kitty => build_kitty(&body_group, &base_group, &m),
-        };
-
-        let mut light_mat = None;
-        if orchestrator {
-            add(&parts.head, &cylinder(0.01, 0.01, 0.16, 6), &m.ink, 0.22, parts.head_top + 0.08, -0.05);
-            let light = glow(palette.signal, 1.2);
-            add(&parts.head, &sphere(0.03, 10, 8), &light, 0.22, parts.head_top + 0.17, -0.05);
-            // Signal-orange trim across the front of the body, above the panel.
-            add(&body_group, &rounded_box(0.36, 0.03, 0.02, 2, 0.008), &m.signal, 0.0, 0.62, 0.31);
-            light_mat = Some(light);
-        }
-
-        outline(&root, 0.03);
-
+        let mats = robot_mats(&palette, hue, body_hue);
+        let geo = species_geo(sp, &palette, orchestrator);
+        let rig = instantiate(sp, &geo, &mats, &root);
+        let bones = rig.bones.len();
+        let joints = bones * PROPS + 1;
+        let rest_joint = |j: usize| if j == bones * PROPS { 1.0 } else { rest_of(PROP_NAMES[j % PROPS]) };
         let mut robot = Robot {
             group: root,
+            sp,
             palette,
-            head: parts.head,
-            head_top: parts.head_top,
-            body_group,
-            base_group,
-            arm_l: parts.arm_l,
-            arm_r: parts.arm_r,
-            pupils: parts.pupils,
-            spin: parts.spin,
-            feet: parts.feet,
-            hover: parts.hover,
-            pupil_mat,
-            thruster_mat,
-            light_mat,
-            shell,
+            orchestrator,
+            mats,
+            rig,
+            clips: StateClips {
+                idle: clip_named(sp, "idle"),
+                working: clip_named(sp, "type"),
+                offline: clip_named(sp, "offline"),
+                walking: walk_clip(sp),
+            },
+            to_grip_l: rest_position(sp, "gripL") - rest_position(sp, "gripR"),
             state: RobotState::Idle,
-            pupil_intensity: 1.2,
+            eye_intensity: 1.3,
+            last_t: 0.0,
+            held_clip: None,
+            once_clip: None,
+            held_tool: None,
+            carried: None,
+            cur: (0..joints).map(rest_joint).collect(),
+            acc: vec![0.0; bones * 3],
+            targets: vec![None; joints],
+            extras: vec![Vec3::ZERO; bones],
+            fx: Fx::new(seed(ROBOTS.fetch_add(1, Ordering::Relaxed))),
+            fx_clip: None,
+            fx_timer: Vec::new(),
         };
         robot.apply_state(RobotState::Idle);
+        robot.apply();
         robot
     }
 
-    /// The world point just above the head (the group is a direct child of the scene root).
-    /// Includes the body group the head hangs from, as three's `head.localToWorld` does.
+    /// The world point at the species' label height above the root (the status label's anchor).
     pub fn label_anchor(&self) -> Vec3 {
-        let head_to_world = self.group.world_matrix_of(&self.head).unwrap_or(Mat4::IDENTITY);
-        head_to_world.transform_point3(Vec3::new(0.0, self.head_top + LABEL_LIFT, 0.0))
+        let to_world = self.group.world_matrix_of(&self.group).unwrap_or(Mat4::IDENTITY);
+        to_world.transform_point3(Vec3::new(0.0, self.sp.label_top, 0.0))
     }
 
     pub fn set_state(&mut self, state: RobotState) {
@@ -524,220 +288,367 @@ impl Robot {
         }
     }
 
-    fn apply_state(&mut self, next: RobotState) {
-        self.state = next;
-        let colour = match next {
+    fn eye_colour(&self, state: RobotState) -> Color {
+        match state {
             RobotState::Offline => self.palette.ink_muted,
             RobotState::Working => self.palette.info,
             _ => self.palette.ok,
-        };
-        {
-            let mut pupil = self.pupil_mat.get();
-            pupil.color = colour;
-            pupil.emissive = colour;
         }
-        self.pupil_intensity = match next {
+    }
+
+    fn apply_state(&mut self, next: RobotState) {
+        self.state = next;
+        let colour = self.eye_colour(next);
+        {
+            let mut eye = self.mats.eye.get();
+            eye.color = colour;
+            eye.emissive = colour;
+        }
+        self.eye_intensity = match next {
             RobotState::Offline => 0.2,
             RobotState::Working => 2.0,
             _ => 1.3,
         };
-        self.thruster_mat.get().color = if next == RobotState::Offline { self.palette.ink_muted } else { self.palette.info };
+        self.mats.thruster.get().color = if next == RobotState::Offline { self.palette.ink_muted } else { self.palette.info };
     }
 
-    /// `dt` seconds since the last frame, `t` seconds since start.
+    /// The state's clip: idle, type (working), the walk for the locomotion, or offline.
+    fn state_clip(&self) -> Option<&'static Clip> {
+        match self.state {
+            RobotState::Idle => self.clips.idle,
+            RobotState::Working => self.clips.working,
+            RobotState::Walking => self.clips.walking,
+            RobotState::Offline => self.clips.offline,
+        }
+    }
+
+    /// A bone's group by name.
+    fn bone_obj(&self, name: &str) -> Option<Obj> {
+        self.rig.index_of(name).map(|b| self.rig.bones[b].clone())
+    }
+
+    /// The joint index of a channel's bone and prop (`lid` has no bone of its own).
+    fn joint_of(&self, bone: &str, prop: &str) -> Option<usize> {
+        if prop == "lid" {
+            return Some(self.lid());
+        }
+        let p = PROP_NAMES.iter().position(|p| *p == prop)?;
+        Some(self.rig.index_of(bone)? * PROPS + p)
+    }
+
+    /// The accumulator index of a rotation prop ("rot.x") of a bone.
+    fn acc_of(&self, bone: &str, prop: &str) -> Option<usize> {
+        Some(self.rig.index_of(bone)? * 3 + axis(prop.strip_prefix("rot.")?)?)
+    }
+
+    fn lid(&self) -> usize {
+        self.rig.bones.len() * PROPS
+    }
+
+    /// The rest value of a joint.
+    fn rest(&self, j: usize) -> f32 {
+        if j == self.lid() {
+            1.0
+        } else {
+            rest_of(PROP_NAMES[j % PROPS])
+        }
+    }
+
+    /// The clip playing now and its elapsed time: a one-shot over a held clip over the state's clip.
+    fn active(&mut self, t: f32) -> Option<(&'static Clip, f64)> {
+        if let Some(o) = self.once_clip {
+            if t - o.start >= o.dur {
+                self.once_clip = None;
+            } else {
+                return Some((o.clip, f64::from(t - o.start)));
+            }
+        }
+        if let Some(h) = self.held_clip {
+            let since = f64::from(t - h.start);
+            let elapsed = match h.clip.dur {
+                Some(d) => since % f64::from(d),
+                None => since,
+            };
+            return Some((h.clip, elapsed));
+        }
+        self.state_clip().map(|c| (c, 0.0))
+    }
+
+    /// The clip's effects, spawned on their interval while it plays.
+    fn clip_fx(&mut self, clip: &'static Clip, dt: f32) {
+        let key = clip as *const Clip as usize;
+        if self.fx_clip != Some(key) {
+            self.fx_clip = Some(key);
+            self.fx_timer.clear();
+        }
+        for (i, f) in clip.fx.iter().enumerate() {
+            let every = f.every.unwrap_or(0.6);
+            let next = self.fx_timer.get(i).copied().unwrap_or(every) - dt;
+            let value = if next <= 0.0 {
+                self.spawn_at(&f.kind, &f.at);
+                every
+            } else {
+                next
+            };
+            if self.fx_timer.len() <= i {
+                self.fx_timer.resize(i + 1, every);
+            }
+            self.fx_timer[i] = value;
+        }
+    }
+
+    /// The bone an effect is anchored to, and the point on it: `head` is 0.3 above its pivot.
+    fn anchor(&self, name: &str) -> (Obj, Vec3) {
+        if name != "head" {
+            if let Some(obj) = self.bone_obj(name) {
+                return (obj, Vec3::ZERO);
+            }
+        }
+        (self.bone_obj("head").unwrap_or_else(|| self.group.clone()), Vec3::new(0.0, 0.3, 0.0))
+    }
+
+    fn spawn_at(&mut self, kind: &str, anchor: &str) {
+        let (obj, at) = self.anchor(anchor);
+        self.fx.spawn(kind, &obj, at);
+    }
+
+    /// Sets the joints to a clip's targets at once (a pose: no blend).
+    fn snap_to(&mut self, clip: &'static Clip, t: f32) {
+        let sp = self.sp;
+        let mut targets = std::mem::take(&mut self.targets);
+        targets.iter_mut().for_each(|x| *x = None);
+        eval_clip(clip, f64::from(t), &sp.gait, 0.0, |ch, value| {
+            if let Some(j) = self.joint_of(&ch.bone, &ch.prop) {
+                targets[j] = Some((value as f32, false));
+            }
+        });
+        for j in 0..self.cur.len() {
+            let v = targets[j].map_or_else(|| self.rest(j), |(v, _)| v);
+            self.cur[j] = v;
+        }
+        self.targets = targets;
+        self.apply();
+    }
+
+    /// Writes the joints to the bones: the rest pose, the joints, the offsets, then the eye lids.
+    fn apply(&mut self) {
+        for (b, obj) in self.rig.bones.iter().enumerate() {
+            let c = b * PROPS;
+            let a = b * 3;
+            let rest = self.rig.rest[b];
+            let e = self.extras[b];
+            obj.set_rotation(self.cur[c] + self.acc[a], self.cur[c + 1] + self.acc[a + 1], self.cur[c + 2] + self.acc[a + 2]);
+            obj.set_position(rest[0] + self.cur[c + 3] + e.x, rest[1] + self.cur[c + 4] + e.y, rest[2] + self.cur[c + 5] + e.z);
+            obj.set_scalar(self.cur[c + 6]);
+        }
+        let lid = self.cur[self.lid()];
+        for p in &self.rig.pupils {
+            p.set_scale(1.0, lid, 1.0);
+        }
+    }
+
+    /// Advances the animation: `dt` seconds since the last frame, `t` seconds since start.
     pub fn update(&mut self, dt: f32, t: f32) {
-        let k = (dt * 8.0).min(1.0);
-        let s = self.state;
+        self.last_t = t;
+        let k = (dt * BLEND).min(1.0);
+        let sp = self.sp;
+        let active = self.active(t);
+        let mut targets = std::mem::take(&mut self.targets);
+        targets.iter_mut().for_each(|x| *x = None);
+        if let Some((clip, elapsed)) = active {
+            eval_clip(clip, f64::from(t), &sp.gait, elapsed, |ch, value| {
+                if let Some(j) = self.joint_of(&ch.bone, &ch.prop) {
+                    targets[j] = Some((value as f32, ch.snap == Some(true)));
+                }
+            });
+            for ch in &clip.channels {
+                if let Some(rate) = ch.rate {
+                    if let Some(a) = self.acc_of(&ch.bone, &ch.prop) {
+                        self.acc[a] += rate * dt;
+                    }
+                }
+            }
+            self.clip_fx(clip, dt);
+        }
+        self.targets = targets;
 
-        // Head: idle tilts, working nods, walking glances, offline droops and stays still.
-        let (head_x, head_z) = match s {
-            RobotState::Idle => (0.03 * (t * 0.5).sin(), 0.12 * (t * 0.9).sin()),
-            RobotState::Working => (0.14 + 0.08 * (t * 5.0).sin(), 0.04 * (t * 1.3).sin()),
-            RobotState::Walking => (0.04, 0.06 * (t * 3.0).sin()),
-            RobotState::Offline => (0.5, 0.12),
-        };
-        {
-            let mut head = self.head.get();
-            let rx = head.rotation.x;
-            head.rotation.x = rx + (head_x - rx) * k;
-            let rz = head.rotation.z;
-            head.rotation.z = rz + (head_z - rz) * k;
+        // Blend every joint toward its target; a joint no clip names eases back to rest.
+        for j in 0..self.cur.len() {
+            let (goal, snap) = match self.targets[j] {
+                Some((v, s)) => (v, s),
+                None => (self.rest(j), false),
+            };
+            let v = self.cur[j];
+            self.cur[j] = if snap { goal } else { v + (goal - v) * k };
         }
 
-        // Body: slight bob when idle, a sway when walking, slumped when offline. A hover robot
-        // floats on its thruster, and sets down when offline.
-        let (body_y, body_sway) = match s {
-            RobotState::Idle => (0.012 * (t * 1.6).sin(), 0.0),
-            RobotState::Working => (0.004 * (t * 2.5).sin(), 0.0),
-            RobotState::Walking => (0.01 * (t * 6.0).sin().abs(), 0.05 * (t * 6.0).sin()),
-            RobotState::Offline => (-0.02, 0.0),
-        };
-        let lift = if self.hover {
-            if s == RobotState::Offline { -0.07 } else { 0.035 * (t * 2.2).sin() }
-        } else {
-            0.0
-        };
-        {
-            let mut body = self.body_group.get();
-            body.position.y = body_y + lift;
-            body.rotation.z = body_sway;
-        }
-
-        // The base bobs while walking (not on a thruster); wheels roll and feet step while walking;
-        // a rotor always turns.
-        let bob = if s == RobotState::Walking && !self.hover { 0.012 * (t * 10.0).sin().abs() } else { 0.0 };
-        self.base_group.get().position.y = bob + lift;
-        for (obj, yaw) in &self.spin {
-            if *yaw {
-                let speed = match s {
-                    RobotState::Offline => 0.0,
-                    RobotState::Walking => 9.0,
-                    _ => 3.0,
-                };
-                obj.get().rotation.y += dt * speed;
-            } else if s == RobotState::Walking {
-                obj.get().rotation.x += dt * 8.0;
+        // Spins: the species' rates by state (a rotor, a ball wheel).
+        for s in &sp.spin {
+            let rate = match self.state {
+                RobotState::Walking => s.walk,
+                RobotState::Offline => s.offline.unwrap_or(0.0),
+                _ => s.idle,
+            };
+            if let (Some(b), Some(ax)) = (self.rig.index_of(&s.bone), axis(&s.axis)) {
+                self.acc[b * 3 + ax] += rate * dt;
             }
         }
-        for (i, foot) in self.feet.iter().enumerate() {
-            let p = if s == RobotState::Walking { (t * 9.0 + i as f32 * PI).sin() } else { 0.0 };
-            let mut node = foot.get();
-            node.position.z = 0.06 * p;
-            node.position.y = 0.035 * p.max(0.0);
+
+        // Feet step alternately while walking; floating robots bob, and sit down when offline.
+        for e in &mut self.extras {
+            *e = Vec3::ZERO;
+        }
+        for (i, bone) in sp.feet.iter().enumerate() {
+            let p = if self.state == RobotState::Walking { (WALK_FEET_RATE * t + i as f32 * PI).sin() } else { 0.0 };
+            if let Some(b) = self.rig.index_of(bone) {
+                self.extras[b].y += 0.035 * p.max(0.0);
+                self.extras[b].z += 0.06 * p;
+            }
+        }
+        if sp.floats {
+            let lift = if self.state == RobotState::Offline { FLOAT_OFFLINE } else { 0.035 * (2.2 * t).sin() };
+            for name in ["base", "body"] {
+                if let Some(b) = self.rig.index_of(name) {
+                    self.extras[b].y += lift;
+                }
+            }
         }
 
-        // Arms: quick alternating typing when working, a swing when walking, rest otherwise.
-        let (arm_l_x, arm_r_x) = match s {
-            RobotState::Working => {
-                let p = (t * 11.0).sin();
-                (-0.9 + 0.2 * p, -0.9 - 0.2 * p)
-            }
-            RobotState::Walking => {
-                let w = 0.25 * (t * 6.0).sin();
-                (w, -w)
-            }
-            RobotState::Idle => {
-                let i = 0.05 * (t * 1.1).sin();
-                (i, -i)
-            }
-            RobotState::Offline => (0.2, 0.2),
-        };
-        self.arm_l.get().rotation.x = arm_l_x;
-        self.arm_r.get().rotation.x = arm_r_x;
-
-        // Eyes: occasional blink when idle, half-lidded when offline, brighter and pulsing when working.
-        let mut lid = 1.0_f32;
-        if s == RobotState::Idle && t % 3.6 < 0.14 {
-            lid = 0.1;
-        } else if s == RobotState::Offline {
-            lid = 0.45;
-        }
-        for p in &self.pupils {
-            p.get().scale.y = lid;
-        }
-        self.pupil_mat.get().emissive_intensity = if s == RobotState::Working {
-            self.pupil_intensity + 0.3 * (t * 5.0).sin()
-        } else {
-            self.pupil_intensity
-        };
-
-        if let Some(light) = &self.light_mat {
-            light.get().emissive_intensity = 1.1 + 0.5 * (t * 3.0).sin();
+        self.apply();
+        self.fx.update(dt);
+        self.mats.eye.get().emissive_intensity = if self.state == RobotState::Working { self.eye_intensity + 0.3 * (5.0 * t).sin() } else { self.eye_intensity };
+        if self.orchestrator {
+            self.mats.light.get().emissive_intensity = 1.1 + 0.5 * (3.0 * t).sin();
         }
     }
 
+    /// The highlight: the matte takes the signal glow (not the glass, which never glows).
     pub fn set_highlighted(&mut self, on: bool) {
-        for m in &self.shell {
-            let mut mat = m.get();
-            mat.emissive = if on { self.palette.signal } else { Color::BLACK };
-            mat.emissive_intensity = if on { 0.35 } else { 0.0 };
+        let mut matte = self.mats.matte.get();
+        matte.emissive = if on { self.palette.signal } else { Color::BLACK };
+        matte.emissive_intensity = if on { 0.35 } else { 0.0 };
+    }
+
+    /// Strikes a still pose (for a portrait), held until the next play or pose.
+    pub fn pose(&mut self, kind: RobotPose) {
+        let name = match kind {
+            RobotPose::Wave => "wave",
+            RobotPose::Proud => "proud",
+            RobotPose::Think => "think",
+            RobotPose::Cheer => "cheer",
+        };
+        let Some(clip) = clip_named(self.sp, name) else {
+            return warn_once(&format!("no pose clip \"{name}\""));
+        };
+        self.held_clip = Some(Timed { clip, start: self.last_t });
+        self.once_clip = None;
+        let now = self.last_t;
+        self.snap_to(clip, now);
+    }
+
+    /// Plays a clip: held when it loops (or with `looped`), else a one-shot that returns to the state's clip.
+    /// `None` ends a held clip.
+    pub fn play(&mut self, clip_id: Option<&str>, looped: Option<bool>) {
+        let Some(id) = clip_id else {
+            self.held_clip = None;
+            return;
+        };
+        let Some(clip) = clip_named(self.sp, id) else {
+            return warn_once(&format!("no clip \"{id}\" for species \"{}\"", self.sp.id));
+        };
+        if looped.unwrap_or(clip.looped != Some(false)) {
+            self.held_clip = Some(Timed { clip, start: self.last_t });
+            self.once_clip = None;
+        } else {
+            self.once_clip = Some(Once { clip, start: self.last_t, dur: clip.dur.unwrap_or(1.6) });
         }
     }
 
-    /// Strikes a still pose (for a portrait); the next `update` moves it again.
-    pub fn pose(&mut self, kind: RobotPose) {
-        self.arm_l.get().rotation = Vec3::ZERO;
-        self.arm_r.get().rotation = Vec3::ZERO;
-        self.head.get().rotation = Vec3::ZERO;
-        match kind {
-            RobotPose::Wave => {
-                self.arm_r.get().rotation.z = 2.5;
-                self.arm_l.get().rotation.z = -0.25;
-                self.head.get().rotation.z = -0.15;
-            }
-            RobotPose::Proud => {
-                self.arm_l.get().rotation.z = -0.55;
-                self.arm_r.get().rotation.z = 0.55;
-                self.head.get().rotation.x = -0.12;
-            }
-            RobotPose::Think => {
-                self.arm_r.get().rotation.x = -1.9;
-                self.arm_r.get().rotation.z = -0.35;
-                self.head.get().rotation.z = 0.2;
-                self.head.get().rotation.x = 0.08;
-            }
-            RobotPose::Cheer => {
-                self.arm_l.get().rotation.z = -2.7;
-                self.arm_r.get().rotation.z = 2.7;
-                self.head.get().rotation.x = -0.15;
-            }
+    /// Holds a tool in the grip: one hand, or both (a two-handed tool aims at the other grip). `None` puts it down.
+    pub fn hold(&mut self, tool_id: Option<&str>) {
+        if let Some((bone, holder)) = self.held_tool.take() {
+            bone.remove(&holder);
         }
+        let Some(id) = tool_id else { return };
+        let Some(tool) = registry().tools.get(id) else {
+            return warn_once(&format!("no tool \"{id}\""));
+        };
+        let bone_name = if tool.grip == "carry" { "carry" } else { "gripR" };
+        let Some(bone) = self.bone_obj(bone_name) else { return };
+        let holder = attach(&bone, &tool_geo(id, tool, &self.palette), &self.mats);
+        if tool.grip == "two" {
+            holder.set_quaternion(Quat::from_rotation_arc(Vec3::X, self.to_grip_l.normalize_or_zero()));
+        } else if tool.grip == "one" {
+            // The parts hang along −y; a fist turns them ahead (−y → +z), or stands them up.
+            let angle = match tool.aim.as_deref() {
+                Some("down") => 0.0,
+                Some("up") => std::f32::consts::PI,
+                _ => -std::f32::consts::FRAC_PI_2,
+            };
+            holder.set_quaternion(Quat::from_rotation_x(angle));
+        }
+        self.held_tool = Some((bone, holder));
+    }
+
+    /// Carries an item at the carry bone (a crate). `None` puts it down.
+    pub fn carry(&mut self, item_id: Option<&str>) {
+        if let Some((bone, holder)) = self.carried.take() {
+            bone.remove(&holder);
+        }
+        let Some(id) = item_id else { return };
+        let Some(item) = registry().tools.get(id) else {
+            return warn_once(&format!("no item \"{id}\""));
+        };
+        let Some(bone) = self.bone_obj("carry") else { return };
+        let holder = attach(&bone, &tool_geo(id, item, &self.palette), &self.mats);
+        self.carried = Some((bone, holder));
+    }
+
+    /// Spawns one effect at the head (sparks, zzz, dots, hearts, keys).
+    pub fn fx(&mut self, kind: &str) {
+        self.spawn_at(kind, "head");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::scene::Kind;
     use super::*;
 
-    /// The local matrix of every node under `root`, depth first.
-    fn local_matrices(root: &Obj) -> Vec<Mat4> {
-        let mut out = Vec::new();
-        root.traverse(&mut |o: &Obj| out.push(o.local_matrix()));
-        out
-    }
-
-    fn mesh_count(root: &Obj) -> usize {
-        let mut meshes = 0;
-        root.traverse(&mut |o: &Obj| {
-            if matches!(o.get().kind, Kind::Mesh { .. }) {
-                meshes += 1;
-            }
-        });
-        meshes
+    #[test]
+    fn robot_variant_cycles_through_the_species() {
+        let list: Vec<&str> = registry().index.species.iter().map(String::as_str).filter(|s| *s != "oracle").collect();
+        assert_eq!(robot_variant(0), list[0]);
+        assert_eq!(robot_variant(list.len() as u64), list[0]);
+        assert_eq!(robot_variant(1), list[1]);
     }
 
     #[test]
-    fn robot_builds_its_parts() {
-        let robot = Robot::new(200.0, false, &robot_palette(), 120.0);
-        assert!(mesh_count(&robot.group) > 0);
-    }
-
-    #[test]
-    fn robot_walking_moves_its_parts() {
-        let mut robot = Robot::new(200.0, false, &robot_palette(), 120.0);
-        let before = local_matrices(&robot.group);
-        robot.set_state(RobotState::Walking);
-        robot.update(0.016, 1.0);
-        assert_ne!(before, local_matrices(&robot.group));
-    }
-
-    #[test]
-    fn every_variant_builds_and_walks() {
-        for variant in ROBOT_VARIANTS {
-            let mut robot = Robot::with_variant(200.0, false, &robot_palette(), 120.0, variant);
-            assert!(mesh_count(&robot.group) > 0, "{variant:?} built no meshes");
-            let before = local_matrices(&robot.group);
-            robot.set_state(RobotState::Walking);
-            robot.update(0.016, 1.0);
-            assert_ne!(before, local_matrices(&robot.group), "{variant:?} did not move while walking");
+    fn fallback_never_deals_the_oracle() {
+        assert!(registry().index.species.iter().any(|s| s == "oracle"), "the oracle is in the index");
+        for cid in 0..10_000u64 {
+            assert_ne!(robot_variant(cid), "oracle", "cid {cid}");
+            assert_ne!(species_of(None, cid), "oracle", "cid {cid}");
+            assert_ne!(species_of(Some(""), cid), "oracle", "cid {cid}");
         }
     }
 
     #[test]
-    fn robot_variant_cycles_through_the_designs() {
-        assert_eq!(robot_variant(0), RobotVariant::Rover);
-        assert_eq!(robot_variant(4), RobotVariant::Kitty);
-        assert_eq!(robot_variant(5), RobotVariant::Rover);
+    fn a_record_species_still_wins_when_it_is_the_oracle() {
+        for cid in [0u64, 1, 7, 9_999] {
+            assert_eq!(species_of(Some("oracle"), cid), "oracle", "the record's own species, cid {cid}");
+        }
+    }
+
+    #[test]
+    fn species_comes_from_the_agent_record() {
+        let named = registry().index.species.last().expect("a species").as_str();
+        assert_eq!(species_of(Some(named), 0), named, "the record's species wins over the cid");
+        assert_eq!(species_of(Some(named), 1), named, "the record's species wins over the cid");
+    }
+
+    #[test]
+    fn species_falls_back_to_the_cid_when_the_record_has_none() {
+        assert_eq!(species_of(None, 3), robot_variant(3));
+        assert_eq!(species_of(Some("  "), 3), robot_variant(3));
     }
 }
