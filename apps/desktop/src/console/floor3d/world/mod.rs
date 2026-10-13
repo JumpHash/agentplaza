@@ -1,7 +1,8 @@
-//! The floor itself (`floor.ts`): districts by role around the orchestrator's dais, a robot per
-//! agent, wandering and socialising, packets when work changes hands, labels and the agent card.
-//! `layout` builds the world and keeps it in step with the agent list, `motion` moves it each
-//! frame, `view` is the iced side (the shader widget, pointer input, labels, card, legend).
+//! The floor itself (`floor.ts`): a machine's board (`Board`: its rooms on the components, the
+//! copper, the atom), a robot per agent, wandering, walking the copper and socialising, packets when
+//! work changes hands, labels and the agent card. `layout` builds the scene and keeps it in step
+//! with the agent list, `board_layout` places the rooms, `motion` moves it each frame, `view` is the
+//! iced side (the shader widget, pointer input, labels, card, legend).
 
 pub mod board_layout;
 pub mod labels;
@@ -15,7 +16,9 @@ use std::sync::Arc;
 use glam::{Quat, Vec3};
 
 use super::controls::{Orbit, FOV_DEG};
+use super::hardware::{Built, Model, Params, Pulses, Status};
 use super::props::{Anim, Box2, PropPalette};
+use board_layout::{BoardLayout, TraceGraph};
 use layout::{AZIMUTH, POLAR};
 use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
 use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
@@ -103,6 +106,40 @@ pub struct Bot {
     pub pad_mat: Mat,
     pub token: Obj,
     pub highlighted: bool,
+    /// The walkway the robot follows to `route_goal` (its next waypoint first), across the copper.
+    pub route: Vec<[f32; 2]>,
+    pub route_goal: Option<[f32; 2]>,
+}
+
+/// One trace's pulses, and the slots at its two ends (their activity lights the pulses).
+pub struct TracePulses {
+    pub pulses: Pulses,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// A machine's board, shown in the Machine view: its model built at the origin, the copper and its
+/// pulses, the atom over the centre, the rooms on its slots (`sync`), and what the frames drive.
+pub struct Board {
+    /// The model, params and status the board was built with: a change rebuilds it.
+    pub key: String,
+    pub model: &'static Model,
+    pub params: Params,
+    pub status: Status,
+    /// The board's group in the root: the built parts, the copper and the pulses.
+    pub obj: Obj,
+    pub built: Built,
+    /// The atom's animation, when the board has an atom anchor.
+    pub atom: Option<Anim>,
+    pub pulses: Vec<TracePulses>,
+    /// Each slot's glowing materials with their rest intensity.
+    pub glow: HashMap<String, Vec<(Mat, f32)>>,
+    /// Each slot's activity (0..1, eased toward its rooms' work).
+    pub level: HashMap<String, f32>,
+    pub layout: BoardLayout,
+    pub graph: TraceGraph,
+    /// The layout's signature: the rooms are rebuilt when it changes.
+    pub sig: String,
 }
 
 /// A message flying between two robots.
@@ -163,9 +200,11 @@ pub struct Shared {
 pub struct Floor {
     pub root: Obj,
     pub district_group: Obj,
-    pub path_group: Obj,
-    pub plaza: Obj,
-    pub plaza_anim: Anim,
+    /// The Machines view's ground, and the dark ground under a machine's board.
+    pub ground: Obj,
+    pub board_ground: Obj,
+    /// The machine's board, once the Machine view has one.
+    pub board: Option<Board>,
     /// The starfield (it turns slowly) and its ringed planet (it spins).
     pub stars: Obj,
     pub planet: Obj,
@@ -176,7 +215,6 @@ pub struct Floor {
     pub robot_palette: RobotPalette,
     pub shared: Shared,
     pub districts: Vec<District>,
-    pub district_sig: String,
     pub bots: Vec<Bot>,
     pub packets: Vec<Packet>,
     pub prop_boxes: Vec<Box2>,
@@ -209,9 +247,9 @@ impl Floor {
         let mut floor = Floor {
             root: Obj::group(),
             district_group: Obj::group(),
-            path_group: Obj::group(),
-            plaza: Obj::group(),
-            plaza_anim: Box::new(|_| {}),
+            ground: Obj::group(),
+            board_ground: Obj::group(),
+            board: None,
             stars: Obj::group(),
             planet: Obj::group(),
             dust: Obj::group(),
@@ -220,7 +258,6 @@ impl Floor {
             robot_palette,
             shared,
             districts: Vec::new(),
-            district_sig: String::new(),
             bots: Vec::new(),
             packets: Vec::new(),
             prop_boxes: Vec::new(),
@@ -286,9 +323,7 @@ impl Floor {
     /// districts and no robots. The fleet's group goes into its root.
     pub fn machines() -> Floor {
         let floor = Floor::new();
-        floor.root.remove(&floor.plaza);
         floor.root.remove(&floor.district_group);
-        floor.root.remove(&floor.path_group);
         floor
     }
 

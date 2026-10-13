@@ -202,9 +202,11 @@ mod tests {
         }
     }
 
-    /// A floor with one agent in `status`, the view reset to a 640 × 480 stage.
+    /// A floor with one agent in `status` on the workstation's board, the view reset to a 640 × 480 stage.
     fn floor_with(status: &str) -> Floor {
         let mut floor = Floor::new();
+        let model = crate::console::floor3d::hardware::model("board/workstation").expect("the workstation board parses");
+        floor.show_board("test".into(), model, crate::console::floor3d::hardware::Params::default(), crate::console::floor3d::hardware::Status::Online);
         floor.sync(&[info(1, status)]);
         floor.reset_view(640.0 / 480.0);
         floor

@@ -1,12 +1,13 @@
-//! The agent page's side panels (`agent-detail.ts` side column, `agent-harness.ts`,
-//! `memory.ts`): model and reasoning effort (the model picker), harness limits and loops,
-//! permissions, and memory.
+//! The agent page's side panels (`agent-detail.ts` side column, `agent-harness.ts`): model and
+//! reasoning effort (the model picker), harness limits and loops, permissions. Also the memory
+//! library the page's Memory tab shows (`memory.ts`): the notes, a find box, and a reader.
 
-use iced::widget::{column, row, text_input};
-use iced::{Element, Task};
+use iced::widget::{button, column, container, row, scrollable, text_input, Space};
+use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::agent::ago;
 use crate::console::picker::{self, Choice, Picker, PickerMsg};
 use crate::console::{client, ui, Ctx};
 
@@ -52,12 +53,14 @@ pub struct Side {
     keep: String,
     steer: String,
     loops: Vec<Loop>,
+    new_loop: bool,
     loop_prompt: String,
     loop_every: String,
     loop_max: String,
-    // Memory: the notes and the one being read.
+    // Memory: the notes, the find box, and the one being read.
     memory_loaded: bool,
     notes: Vec<Note>,
+    search: String,
     reading: Option<Note>,
 }
 
@@ -88,6 +91,8 @@ pub struct Loop {
     #[serde(default)]
     pub created_ms: u64,
     #[serde(default)]
+    pub last_work: Option<u64>,
+    #[serde(default)]
     pub last_summary: Option<String>,
 }
 
@@ -107,6 +112,17 @@ pub struct Note {
     pub body: String,
     #[serde(default)]
     pub backlinks: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<Provenance>,
+}
+
+/// Where a note came from: the task and the work item that wrote it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Provenance {
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub work: Option<u64>,
 }
 
 /// What a control call does to the panels once it succeeds.
@@ -140,11 +156,14 @@ pub enum SideMsg {
     LoopPrompt(String),
     LoopEvery(String),
     LoopMax(String),
+    ToggleNewLoop,
     StartLoop,
     LoopStarted(Result<Value, String>),
     StopLoop(String),
     LoopStopped(Result<Value, String>),
     Memory(Result<Vec<Note>, String>),
+    Search(String),
+    SearchSubmit,
     OpenNote(String),
     NoteRead(Result<Note, String>),
 }
@@ -383,6 +402,10 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             side.loop_max = s;
             Task::none()
         }
+        SideMsg::ToggleNewLoop => {
+            side.new_loop = !side.new_loop;
+            Task::none()
+        }
         SideMsg::StartLoop => {
             let text = side.loop_prompt.trim().to_string();
             if text.is_empty() {
@@ -401,6 +424,7 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
         }
         SideMsg::LoopStarted(Ok(_)) => {
             side.loop_prompt.clear();
+            side.new_loop = false;
             side.notice = Some("Loop started".into());
             fetch_loops(ctx, cid)
         }
@@ -442,6 +466,18 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             side.error = Some(e);
             Task::none()
         }
+        SideMsg::Search(s) => {
+            side.search = s;
+            Task::none()
+        }
+        // Enter opens the first note whose title holds the find text, as the web does.
+        SideMsg::SearchSubmit => {
+            let q = side.search.trim().to_lowercase();
+            match side.notes.iter().find(|n| n.title.to_lowercase().contains(&q)) {
+                Some(n) => fetch_note(ctx, cid, n.slug.clone()),
+                None => Task::none(),
+            }
+        }
         SideMsg::OpenNote(slug) => fetch_note(ctx, cid, slug),
         SideMsg::NoteRead(Ok(note)) => {
             side.reading = Some(note);
@@ -467,7 +503,6 @@ pub fn view<'a>(side: &'a Side, ctx: &'a Ctx) -> Element<'a, SideMsg> {
     parts.push(model_card(side));
     parts.push(harness_card(side));
     parts.push(permission_card(side));
-    parts.push(memory_card(side));
     column(parts).spacing(16).into()
 }
 
@@ -492,7 +527,7 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         field("Turns per work item", "default", &side.turns, SideMsg::TurnsIn),
         field("Compress at (KB)", "default", &side.compress, SideMsg::CompressIn),
         field("Keep recent turns", "default", &side.keep, SideMsg::KeepIn),
-        ui::btn("Save limits", None, ui::Kind::Primary, Some(SideMsg::SaveLimits)),
+        row![Space::new().width(Length::Fill), ui::btn("Save limits", None, ui::Kind::Primary, Some(SideMsg::SaveLimits))],
     ]
     .spacing(10);
 
@@ -538,6 +573,18 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     ]
     .spacing(8);
 
+    // The web opens the new loop in a dialog from the Loops head; here it opens in place.
+    let loops_head = row![
+        ui::label("Loops"),
+        Space::new().width(Length::Fill),
+        ui::btn("New loop", None, ui::Kind::Secondary, Some(SideMsg::ToggleNewLoop)),
+    ]
+    .align_y(Alignment::Center);
+    let mut loop_block: Vec<Element<'a, SideMsg>> = vec![loops_head.into(), loop_list];
+    if side.new_loop {
+        loop_block.push(new_loop.into());
+    }
+
     ui::card(
         "Harness",
         column![
@@ -545,10 +592,7 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             limits,
             ui::label("Running work"),
             column(running).spacing(8),
-            ui::label("Loops"),
-            loop_list,
-            ui::label("New loop"),
-            new_loop,
+            column(loop_block).spacing(10),
         ]
         .spacing(12)
         .into(),
@@ -561,39 +605,69 @@ fn permission_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     } else if side.permission.is_none() {
         ui::faint("Loading…").into()
     } else {
-        let mut items: Vec<Element<'a, SideMsg>> = Vec::new();
-        for (mode, label, hint) in PERMISSIONS {
-            let active = side.permission.as_deref() == Some(mode);
-            let kind = if active { ui::Kind::Primary } else { ui::Kind::Secondary };
-            items.push(column![ui::btn(label, None, kind, Some(SideMsg::ChoosePermission(mode.to_string()))), ui::faint(hint)].spacing(4).into());
-        }
-        column(items).spacing(10).into()
+        // One full-width choice per mode, its hint under its name (the web's `.perm-option`).
+        let items: Vec<Element<'a, SideMsg>> = PERMISSIONS
+            .into_iter()
+            .map(|(mode, label, hint)| {
+                let active = side.permission.as_deref() == Some(mode);
+                let body = column![ui::mono(label.to_uppercase(), 12.0, ui::INK), ui::faint(hint)].spacing(2).width(Length::Fill);
+                button(body)
+                    .padding([8, 10])
+                    .width(Length::Fill)
+                    .style(move |_: &Theme, _: button::Status| button::Style {
+                        background: Some(if active { Color { a: 0.08, ..crate::theme::SIGNAL } } else { ui::SHEET }.into()),
+                        text_color: ui::INK,
+                        border: Border {
+                            color: if active { ui::SIGNAL } else { ui::RULE },
+                            width: if active { 2.0 } else { 1.0 },
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .on_press(SideMsg::ChoosePermission(mode.to_string()))
+                    .into()
+            })
+            .collect();
+        column(items).spacing(6).into()
     };
     ui::card("Permissions", body)
 }
 
-fn memory_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
-    let body: Element<'a, SideMsg> = if !side.memory_loaded {
-        ui::loading()
-    } else if side.notes.is_empty() {
-        ui::empty("memory", "No memories yet", "Notes the agent writes appear here, linked like a little brain.")
-    } else {
-        let rows: Vec<Element<'a, SideMsg>> = side
-            .notes
-            .iter()
-            .map(|n| {
-                let open = side.reading.as_ref().is_some_and(|r| r.slug == n.slug);
-                note_row(n, open)
-            })
-            .collect();
-        let reader: Element<'a, SideMsg> = match &side.reading {
-            Some(doc) => reader_view(doc),
-            None => ui::faint("Choose a note to read it.").into(),
-        };
-        let count = format!("{} {}", side.notes.len(), if side.notes.len() == 1 { "note" } else { "notes" });
-        column![ui::faint(count), column(rows).spacing(8), reader].spacing(12).into()
+/// The Memory tab: the notes with a find box, the chosen one read beside them (`memory.ts`, as a
+/// list where the web draws a graph).
+pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
+    if !side.memory_loaded {
+        return ui::loading();
+    }
+    if side.notes.is_empty() {
+        return ui::empty("memory", "No memories yet", "Notes the agent writes appear here, linked like a little brain.");
+    }
+    let count = format!("{} {}", side.notes.len(), if side.notes.len() == 1 { "note" } else { "notes" });
+    let find = text_input("Find a note…", &side.search)
+        .on_input(SideMsg::Search)
+        .on_submit(SideMsg::SearchSubmit)
+        .style(crate::theme::input)
+        .width(Length::Fixed(240.0));
+    let head = row![ui::faint(count), Space::new().width(Length::Fill), find].align_y(Alignment::Center);
+
+    let q = side.search.trim().to_lowercase();
+    let rows: Vec<Element<'a, SideMsg>> = side
+        .notes
+        .iter()
+        .filter(|n| q.is_empty() || n.title.to_lowercase().contains(&q))
+        .map(|n| note_row(n, side.reading.as_ref().is_some_and(|r| r.slug == n.slug)))
+        .collect();
+    let list = scrollable(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
+    let reader: Element<'a, SideMsg> = match &side.reading {
+        Some(doc) => reader_view(doc),
+        None => ui::faint("Choose a note to read it.").into(),
     };
-    ui::card("Memory", body)
+    let panes = row![
+        container(list).width(Length::Fixed(260.0)),
+        container(scrollable(reader).height(Length::Fixed(480.0))).width(Length::Fill),
+    ]
+    .spacing(24);
+    column![head, panes].spacing(12).into()
 }
 
 fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
@@ -609,6 +683,9 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
         ui::faint(format!("runs {}/{}", l.runs, max)),
     ]
     .spacing(8);
+    if let Some(at) = l.last_work {
+        meta = meta.push(ui::faint(format!("last {}", ago(at))));
+    }
     if l.state == "running" {
         meta = meta.push(ui::btn("Stop", None, ui::Kind::Danger, Some(SideMsg::StopLoop(l.id.clone()))));
     }
@@ -635,10 +712,32 @@ fn note_row<'a>(n: &'a Note, open: bool) -> Element<'a, SideMsg> {
     .into()
 }
 
+/// One note open: its kind and tags, its title, the stamp (when it was updated and by which work),
+/// its body, and the notes that link to it.
 fn reader_view<'a>(doc: &'a Note) -> Element<'a, SideMsg> {
-    let mut items: Vec<Element<'a, SideMsg>> = vec![ui::mono(doc.title.clone(), 14.0, ui::INK).into(), ui::markdown(&doc.body)];
+    let tone = match doc.kind.as_str() {
+        "person" => ui::Tone::Signal,
+        "journal" => ui::Tone::Warn,
+        _ => ui::Tone::Info,
+    };
+    let tags = doc.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+    let mut stamp = vec![format!("Updated {}", ago(doc.updated_ms))];
+    if let Some(p) = &doc.provenance {
+        if let Some(task) = &p.task {
+            stamp.push(format!("task {task}"));
+        }
+        if let Some(work) = p.work {
+            stamp.push(format!("work #{work}"));
+        }
+    }
+    let mut items: Vec<Element<'a, SideMsg>> = vec![
+        row![ui::badge(&doc.kind, tone), ui::faint(tags)].spacing(8).align_y(Alignment::Center).into(),
+        ui::mono(doc.title.clone(), 18.0, ui::INK).into(),
+        ui::faint(stamp.join(" · ")).into(),
+        ui::markdown(&doc.body),
+    ];
     if !doc.backlinks.is_empty() {
-        items.push(ui::faint(format!("Linked from: {}", doc.backlinks.join(", "))).into());
+        items.push(column![ui::label("Linked from"), ui::faint(doc.backlinks.join(", "))].spacing(4).into());
     }
     column(items).spacing(10).into()
 }
@@ -834,4 +933,32 @@ fn fetch_memory(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
 fn fetch_note(ctx: &Ctx, cid: u64, slug: String) -> Task<SideMsg> {
     let c = ctx.client.clone();
     client::task(move || c.get::<Note>(&format!("/v1/agents/{cid}/memory/{slug}")), SideMsg::NoteRead)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effort_pins_ride_on_the_model_name() {
+        assert_eq!(effort_of("openai/gpt@high"), "high");
+        assert_eq!(effort_of("openai/gpt@turbo"), "");
+        assert_eq!(strip_effort("openai/gpt@high"), "openai/gpt");
+        assert_eq!(with_effort("openai/gpt", "max"), "openai/gpt@max");
+        assert_eq!(with_effort("", "max"), "");
+    }
+
+    #[test]
+    fn limits_are_blank_or_a_number_of_zero_or_more() {
+        assert_eq!(parse_limit(""), Ok(None));
+        assert_eq!(parse_limit(" 12 "), Ok(Some(12.0)));
+        assert_eq!(parse_limit("-1"), Err(()));
+        assert_eq!(parse_limit("x"), Err(()));
+    }
+
+    #[test]
+    fn kilobytes_show_one_decimal_at_most() {
+        assert_eq!(kb_text(2048), "2");
+        assert_eq!(kb_text(1536), "1.5");
+    }
 }

@@ -2,27 +2,25 @@
 //! height, slopes, falling, collisions), packets fly, dust drifts, props and rooms animate.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use glam::{Quat, Vec3};
 use serde_json::Value;
 
+use super::super::hardware;
 use super::super::props::Box2;
 use super::super::robot::RobotState;
 use super::super::scene::Obj;
 use super::super::textures::Rng;
+use super::board_layout::{board_height_at, path_on_traces, BoardLayout};
 use super::{display_name, Bot, District, Floor, Packet, Phase, Social};
 
 const PACKET_MS: f64 = 1500.0;
 const SPEED: f32 = 1.6; // grid units per second; one grid cell is one world unit
 const MAX_PACKETS: usize = 60;
-const SLAB_H: f32 = 0.5; // district slab height
-const DAIS_H: f32 = 0.8; // orchestrator dais height
-const DAIS_R: f32 = 2.3;
-const RAMP: f32 = 1.5; // width of the sloped band around a district slab
-const DAIS_RAMP: f32 = 2.2; // width of the dais's sloped skirt
 const GRAVITY: f32 = 9.8; // world units per second squared
-const SOCIAL_NEAR: f32 = 9.5; // districts this close count as neighbours for a visit or a chat
-const STROLL_R: f32 = 3.1; // the stroll ring just outside the dais
+const SOCIAL_NEAR: f32 = 9.5; // rooms this close count as neighbours for a visit or a chat
+const STROLL_R: f32 = 3.1; // the stroll ring just outside the centre
 const ROBOT_R: f32 = 0.55; // robot footprint radius for collisions
 const DEG: f32 = std::f32::consts::PI / 180.0;
 const STEER: [f32; 5] = [0.0, 30.0 * DEG, -30.0 * DEG, 60.0 * DEG, -60.0 * DEG]; // headings tried when blocked
@@ -63,43 +61,16 @@ fn near(p: &Box2, x: f32, y: f32) -> bool {
     x > p.x0 - ROBOT_R && x < p.x1 + ROBOT_R && y > p.z0 - ROBOT_R && y < p.z1 + ROBOT_R
 }
 
-fn top_of(d: &District) -> f32 {
-    if d.role == "orchestrator" {
-        DAIS_H
-    } else {
-        SLAB_H
-    }
-}
-
-/// Whether two districts are close enough for a visit or a chat.
+/// Whether two rooms are close enough for a visit or a chat.
 fn nearby(a: &District, c: &District) -> bool {
     a.role == c.role || (a.cx - c.cx).hypot(a.cy - c.cy) <= SOCIAL_NEAR
 }
 
-/// The top of whatever lies under (x, y): a dais, a district slab, or the bare floor.
-fn surface_at(districts: &[District], x: f32, y: f32) -> f32 {
-    let mut top = 0.0f32;
-    for d in districts {
-        let orch = d.role == "orchestrator";
-        // Distance out from the walkable top: round for the dais and round rooms, square for the rest.
-        let out = if orch {
-            (x - d.cx).hypot(y - d.cy) - DAIS_R
-        } else if d.round {
-            (x - d.cx).hypot(y - d.cy) - d.r
-        } else {
-            (x - d.cx).abs().max((y - d.cy).abs()) - d.r
-        };
-        let band = if orch { DAIS_RAMP } else { RAMP };
-        let h = if out <= 0.0 {
-            top_of(d)
-        } else if out < band {
-            top_of(d) * (1.0 - out / band)
-        } else {
-            0.0
-        };
-        top = top.max(h);
-    }
-    top
+/// The room whose cell holds (x, y), if any.
+fn room_at(layout: &BoardLayout, x: f32, y: f32) -> Option<usize> {
+    layout.districts.iter().position(|bd| {
+        (x - bd.district.cx).abs() <= bd.w / 2.0 && (y - bd.district.cy).abs() <= bd.d / 2.0
+    })
 }
 
 /// Whether bot `i` centred at (x, y) would clash with a prop, or overlap another robot.
@@ -148,9 +119,84 @@ impl Floor {
         self.update_dust();
         self.stars.set_rotation(0.0, self.time * 0.004, 0.0);
         self.planet.get().rotation.y = self.time * 0.05;
-        (self.plaza_anim)(self.time);
+        self.step_board(dt);
         for anim in self.prop_anim.iter_mut() {
             anim(self.time);
+        }
+    }
+
+    /// The height of the surface under (x, y): the board's, or the bare floor without a board.
+    fn ground_at(&self, x: f32, y: f32) -> f32 {
+        self.board.as_ref().map_or(0.0, |b| board_height_at(x, y, &b.layout))
+    }
+
+    /// The point robot `i` walks to on the way to `goal`. A goal in another room is reached along the
+    /// copper: the route is set once per goal (from the robot's place then), and its waypoints are
+    /// taken in turn. Otherwise, or without a board, the goal itself.
+    fn waypoint(&mut self, i: usize, goal: (f32, f32)) -> (f32, f32) {
+        let Some(board) = self.board.as_ref() else { return goal };
+        let (x, y) = (self.bots[i].x, self.bots[i].y);
+        let key = [goal.0, goal.1];
+        if self.bots[i].route_goal != Some(key) {
+            self.bots[i].route_goal = Some(key);
+            self.bots[i].route.clear();
+            if room_at(&board.layout, goal.0, goal.1) != Some(self.bots[i].district) {
+                // The path starts at the robot's own place: that point is where it already stands.
+                let path = path_on_traces(&board.graph, [x, y], key);
+                self.bots[i].route = path.into_iter().skip(1).collect();
+            }
+        }
+        let bot = &mut self.bots[i];
+        while let Some(p) = bot.route.first().copied() {
+            if (p[0] - bot.x).hypot(p[1] - bot.y) < 0.05 {
+                bot.route.remove(0);
+            } else {
+                break;
+            }
+        }
+        match bot.route.first() {
+            Some(p) => (p[0], p[1]),
+            None => goal,
+        }
+    }
+
+    /// The board's frame: a slot whose rooms have working agents glows brighter, its traces carry
+    /// more pulses, and the built parts and the atom animate. A machine without a board does nothing.
+    fn step_board(&mut self, dt: f32) {
+        let time = self.time;
+        let Some(board) = self.board.as_mut() else { return };
+        let mut busy: HashSet<String> = HashSet::new();
+        let mut working = 0usize;
+        for bot in &self.bots {
+            if bot.agent.status == "working" {
+                working += 1;
+                if let Some(bd) = board.layout.districts.get(bot.district) {
+                    busy.insert(bd.slot.clone());
+                }
+            }
+        }
+        // Each slot's level eases toward 1 while one of its rooms works, toward 0 when none does.
+        let ease = (dt * 4.0).min(1.0);
+        for bd in &board.layout.districts {
+            let target = if busy.contains(&bd.slot) { 1.0 } else { 0.0 };
+            let level = board.level.entry(bd.slot.clone()).or_insert(0.0);
+            *level += (target - *level) * ease;
+        }
+        for (slot, mats) in &board.glow {
+            let level = board.level.get(slot).copied().unwrap_or(0.0);
+            for (mat, base) in mats {
+                mat.get().emissive_intensity = base * (1.0 + 2.0 * level);
+            }
+        }
+        for tp in board.pulses.iter_mut() {
+            let end = |s: &Option<String>| s.as_ref().and_then(|s| board.level.get(s)).copied().unwrap_or(0.0);
+            let busy_end = end(&tp.from).max(end(&tp.to));
+            tp.pulses.update(dt, 0.4 + 0.6 * busy_end);
+        }
+        let share = working as f32 / self.bots.len().max(1) as f32;
+        board.built.update(dt, &hardware::State { status: board.status, activity: share, open: 1.0 });
+        if let Some(anim) = board.atom.as_mut() {
+            anim(time);
         }
     }
 
@@ -413,12 +459,15 @@ impl Floor {
             let (dx, dy) = (gx - x0, gy - y0);
             let dist = dx.hypot(dy);
             self.bots[i].moving = dist > 0.02;
-            // Step toward the goal. A blocked step tries nearby headings, else the robot waits this frame.
+            // Step toward the next waypoint (the goal itself when the walk is in one room). A blocked
+            // step tries nearby headings, else the robot waits this frame.
+            let (wx, wy) = self.waypoint(i, (gx, gy));
+            let (ex, ey) = (wx - x0, wy - y0);
             let check_props = (home.0 - x0).hypot(home.1 - y0) > 0.9;
             let mut travel: Option<f32> = None;
             if self.bots[i].moving {
-                let step = (SPEED * dt).min(dist);
-                let to_goal = dx.atan2(dy);
+                let step = (SPEED * dt).min(ex.hypot(ey));
+                let to_goal = ex.atan2(ey);
                 for off in STEER {
                     let ang = to_goal + off;
                     let nx = x0 + ang.sin() * step;
@@ -464,7 +513,7 @@ impl Floor {
             let moving = self.bots[i].moving;
             let want = match talker {
                 Some(j) => Some((self.bots[j].x - x).atan2(self.bots[j].y - y)),
-                None if moving => Some(travel.unwrap_or_else(|| dx.atan2(dy))),
+                None if moving => Some(travel.unwrap_or_else(|| ex.atan2(ey))),
                 None => None,
             };
             if let Some(want) = want {
@@ -488,7 +537,7 @@ impl Floor {
                 self.bots[i].robot.set_highlighted(highlight);
             }
             // Gravity: walk up slopes, fall where the ground drops away.
-            let ground = surface_at(&self.districts, x, y);
+            let ground = self.ground_at(x, y);
             {
                 let b = &mut self.bots[i];
                 if b.py > ground + 0.001 {
@@ -504,8 +553,8 @@ impl Floor {
             }
             // Lean with the ground: the slope's normal from the surface around the robot, then the heading.
             let e = 0.3;
-            let sx = (surface_at(&self.districts, x + e, y) - surface_at(&self.districts, x - e, y)) / (2.0 * e);
-            let sz = (surface_at(&self.districts, x, y + e) - surface_at(&self.districts, x, y - e)) / (2.0 * e);
+            let sx = (self.ground_at(x + e, y) - self.ground_at(x - e, y)) / (2.0 * e);
+            let sz = (self.ground_at(x, y + e) - self.ground_at(x, y - e)) / (2.0 * e);
             let slope = Vec3::new(-sx, 1.0, -sz).normalize();
             let working = status == "working";
             let role = if working {
@@ -641,6 +690,8 @@ mod tests {
             pad_mat: Mat::toon(Color::hex(0)),
             token: Obj::group(),
             highlighted: false,
+            route: Vec::new(),
+            route_goal: None,
         }
     }
 
@@ -659,6 +710,50 @@ mod tests {
         assert_eq!(floor.packets.len(), 1, "still in flight just before PACKET_MS");
         floor.step(0.016, PACKET_MS + 1.0);
         assert!(floor.packets.is_empty(), "gone once PACKET_MS has passed");
+    }
+
+    fn board_floor(roles: &[&str], status: &str) -> Floor {
+        let model = hardware::model("board/workstation").expect("the workstation board parses");
+        let mut floor = Floor::new();
+        floor.show_board("test".into(), model, hardware::Params::default().with("gpus", 1.0), hardware::Status::Online);
+        let list: Vec<AgentInfo> = roles
+            .iter()
+            .enumerate()
+            .map(|(i, role)| AgentInfo {
+                cid: i as u64 + 1,
+                name: format!("agent {i}"),
+                role: role.to_string(),
+                status: status.to_string(),
+                tier: "worker".to_string(),
+                model: "test".to_string(),
+            })
+            .collect();
+        floor.sync(&list);
+        floor
+    }
+
+    #[test]
+    fn a_busy_room_lifts_its_slot_level() {
+        let mut floor = board_floor(&["builder", "librarian"], "working");
+        let slot = floor.board.as_ref().expect("a board").layout.districts[0].slot.clone();
+        for _ in 0..80 {
+            floor.step(0.05, 0.0);
+        }
+        let level = floor.board.as_ref().expect("a board").level.get(&slot).copied().unwrap_or(0.0);
+        assert!(level > 0.95, "a slot with a working room settles at full level, got {level}");
+    }
+
+    #[test]
+    fn a_walk_across_rooms_takes_the_copper() {
+        let mut floor = board_floor(&["builder", "librarian"], "idle");
+        let goal = {
+            let bd = &floor.board.as_ref().expect("a board").layout.districts[1];
+            (bd.district.cx, bd.district.cy)
+        };
+        let wp = floor.waypoint(0, goal);
+        assert!(floor.bots[0].route_goal == Some([goal.0, goal.1]), "the route is set for the goal");
+        assert!(!floor.bots[0].route.is_empty(), "the walk to another room has a route");
+        assert!(wp != goal || floor.bots[0].route.len() == 1, "the first step is a waypoint of the copper");
     }
 
     #[test]

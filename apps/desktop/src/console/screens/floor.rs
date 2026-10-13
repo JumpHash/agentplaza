@@ -5,8 +5,9 @@
 //! - the Machines view (`View::Machines`): the fleet from `GET /v1/fleet` on the Floor's sky and
 //!   ground (`State::machines` + `State::fleet`). Hover lifts a machine, a click opens its popup,
 //!   and the popup's ENTER opens the machine's view;
-//! - a machine's view (`View::Machine`): today's plaza (`State::floor`), the same for every machine
-//!   until the board replaces it. `View::Plaza` is the plaza shown directly when the fleet cannot be read.
+//! - a machine's view (`View::Machine`): the machine's board (`State::floor`): its model built
+//!   from the fleet, with the rooms of the agents on it and their robots. `View::Plaza` shows the
+//!   default workstation's board with every agent when the fleet cannot be read.
 //!
 //! Captures: `APZ_FLOOR_MACHINE=<id>` opens that machine's view at start, and `APZ_FLOOR_POPUP=<id>`
 //! opens that machine's popup in the Machines view.
@@ -22,7 +23,7 @@ use serde_json::Value;
 use super::Id;
 use crate::console::floor3d::controls::FOV_DEG;
 use crate::console::floor3d::fleet::{self, build_fleet, FleetResponse, FleetScene, Machine};
-use crate::console::floor3d::hardware::Status;
+use crate::console::floor3d::hardware::{self, Params, Status};
 use crate::console::floor3d::scene::{Color as SceneColor, Frame};
 use crate::console::floor3d::world::view::{machine_overlays, FloorProgram, Label};
 use crate::console::floor3d::world::{display_name, AgentInfo, Floor};
@@ -46,15 +47,17 @@ const FLEET_EVERY: Duration = Duration::from_secs(5);
 pub enum View {
     /// The fleet: every machine, with its popup.
     Machines,
-    /// One machine's view (for now, today's plaza).
+    /// One machine's view: its board.
     Machine(String),
-    /// The plaza shown directly, because the fleet could not be read.
+    /// The default workstation's board, shown directly because the fleet could not be read.
     Plaza,
 }
 
 pub struct State {
-    /// The per-machine view: today's plaza of agents.
+    /// The per-machine view: the machine's board with its agents.
     pub floor: Floor,
+    /// The agents from `GET /v1/agents`: the board's rooms and robots are the ones on its machine.
+    agents: Vec<AgentInfo>,
     /// The Machines view's scene: the Floor's sky and ground, with the fleet's group in its root.
     pub machines: Floor,
     /// The fleet scene, built from the first snapshot.
@@ -98,6 +101,7 @@ impl Default for State {
         let frame = Arc::new(if view == View::Machines { machines.frame(1.0) } else { floor.frame(1.0) });
         State {
             floor,
+            agents: Vec::new(),
             machines,
             fleet: None,
             fleet_data: None,
@@ -227,10 +231,65 @@ fn reset_plaza(state: &mut State) {
     }
 }
 
-/// The first fit of the plaza: once it has agents and the stage has a size.
+/// The first fit of the board: once there is a board and the stage has a size.
 fn fit_plaza(state: &mut State) {
-    if !state.floor.bots.is_empty() {
+    if state.floor.board.is_some() {
         reset_plaza(state);
+    }
+}
+
+/// The machine whose board the Machine view shows: the one the view names, else the hub, else the
+/// first. None without a fleet.
+fn board_machine(state: &State) -> Option<&Machine> {
+    let data = state.fleet_data.as_ref()?;
+    let named = match &state.view {
+        View::Machine(id) => data.machines.iter().find(|m| &m.id == id),
+        _ => None,
+    };
+    named.or_else(|| data.machines.iter().find(|m| m.role == "hub")).or_else(|| data.machines.first())
+}
+
+/// The params a machine's board is built with: its GPUs, its Apple chip's cores and memory, and
+/// whether it is a Mac Studio (the model's `when` parts read them).
+fn board_params(m: &Machine) -> Params {
+    let mut params = Params::default().with("gpus", m.gpus.len() as f64);
+    if let Some(apple) = &m.apple {
+        params = params
+            .with("p_cores", apple.p_cores as f64)
+            .with("e_cores", apple.e_cores as f64)
+            .with("gpu_cores", apple.gpu_cores as f64)
+            .with("memory_gib", apple.unified_memory_gib as f64);
+    }
+    let studio = m.model.as_deref().is_some_and(|name| name.contains("Studio"));
+    params.with("studio", if studio { 1.0 } else { 0.0 })
+}
+
+/// Shows the Machine view's board: the machine's own model with its params, or the default
+/// workstation without a fleet, and the agents on the machine (the hub's own when it names none).
+/// The board is rebuilt only when its model, params or status change; the rooms and robots follow
+/// the agents every time.
+fn refresh_board(state: &mut State) {
+    if matches!(state.view, View::Machines) {
+        return;
+    }
+    let (name, params, on, status) = match board_machine(state) {
+        Some(m) => {
+            let (_, board) = hardware::models_for(&m.kind, m.vendor.as_deref());
+            let on: Vec<AgentInfo> = state.agents.iter().filter(|a| m.agents.contains(&a.cid)).cloned().collect();
+            (board, board_params(m), on, fleet::status_of(&m.status))
+        }
+        None => ("board/workstation", Params::default(), state.agents.clone(), Status::Online),
+    };
+    let Some(model) = hardware::model(name) else { return };
+    let key = format!("{name}|{:?}|{status:?}", params.values);
+    if state.floor.board.as_ref().map(|b| b.key.as_str()) != Some(key.as_str()) {
+        state.floor.show_board(key, model, params, status);
+        // A new board is framed afresh.
+        state.moved = false;
+    }
+    state.floor.sync(&on);
+    if !state.floor.fitted {
+        fit_plaza(state);
     }
 }
 
@@ -259,6 +318,7 @@ fn set_view(state: &mut State, view: View) {
     state.view = view;
     state.popup = None;
     state.moved = false;
+    refresh_board(state);
     fit_active(state);
 }
 
@@ -311,11 +371,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Agents(Ok(v)) => {
             state.error = None;
-            let list = agent_list(&v);
-            state.floor.sync(&list);
-            if !state.floor.fitted {
-                fit_plaza(state);
-            }
+            state.agents = agent_list(&v);
+            refresh_board(state);
         }
         Msg::Agents(Err(e)) => state.error = Some(e),
         Msg::Fleet(res) => {
@@ -330,11 +387,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         state.fleet = Some(fleet);
                     }
                     state.fleet_data = Some(data);
-                    // The plaza fallback gives way to the machines once they can be read.
+                    // The fallback gives way to the machines once they can be read.
                     if state.view == View::Plaza {
                         set_view(state, View::Machines);
                     } else if state.view == View::Machines && !state.moved {
                         fit_machines(state);
+                    } else if matches!(state.view, View::Machine(_)) {
+                        // The machine's own model, once the fleet names it.
+                        refresh_board(state);
                     }
                 }
                 Err(e) => {

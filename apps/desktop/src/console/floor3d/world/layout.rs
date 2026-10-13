@@ -1,17 +1,20 @@
-//! `floor.ts` lines ~123–710: district layout by role, the world's base (sky, ground, clouds,
-//! plaza, grass and dust), district slabs, rooms and plaques, robots in and out, and the view's fit.
+//! `floor.ts` lines ~123–710: the world's base (sky, ground, backdrop, dust), a machine's board (the
+//! rooms on its slots, the robots in and out, the copper they walk on, the atom), and the view's fit.
+//! The ring plaza (districts round a dais, with spokes and outskirts) is gone: the board replaces it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2, TAU};
 
 use glam::{Mat4, Quat, Vec3};
 
-use super::{AgentInfo, Bot, Colors, District, DistrictLight, Floor, Shared};
+use super::board_layout::{layout_on_board, trace_graph, BoardParams};
+use super::{AgentInfo, Board, Bot, Colors, District, DistrictLight, Floor, Shared, TracePulses};
 use crate::console::floor3d::canvas::Canvas;
 use crate::console::floor3d::controls::FOV_DEG;
 use crate::console::floor3d::geometry;
-use crate::console::floor3d::props::{self, Box2, PropPalette, Site};
+use crate::console::floor3d::hardware::{self, Model, Params, Pulses, Status};
 use crate::console::floor3d::outskirts;
+use crate::console::floor3d::props::{Box2, PropPalette};
 use crate::console::floor3d::robot::{robot_variant, Robot};
 use crate::console::floor3d::rooms::{self, BuiltRoom, KitPalette};
 use crate::console::floor3d::scene::{Color, Kind, Mat, Material, Obj, Shading, Tex};
@@ -20,53 +23,38 @@ use crate::console::floor3d::toon;
 
 // ---- Constants (floor.ts 25–40) -----------------------------------------------------------------
 
-#[allow(dead_code)] // read by motion.rs
 pub const PACKET_MS: f64 = 1500.0;
-#[allow(dead_code)] // read by motion.rs
+
 pub const SPEED: f32 = 1.6; // grid units per second; one grid cell is one world unit
-#[allow(dead_code)] // read by motion.rs
 pub const MAX_PACKETS: usize = 60;
-pub const SLAB_H: f32 = 0.5; // district slab height
-pub const DAIS_H: f32 = 0.8; // orchestrator dais height
-pub const DAIS_R: f32 = 2.3;
-pub const RAMP: f32 = 1.5; // width of the sloped band around a district slab
-pub const DAIS_RAMP: f32 = 2.2; // width of the dais's sloped skirt
-#[allow(dead_code)] // read by motion.rs
+pub const SLAB_H: f32 = 0.5; // a room's terrace: the height of its flat top above its slot
+pub const RAMP: f32 = 1.5; // width of the sloped band around a room's terrace
 pub const GRAVITY: f32 = 9.8; // world units per second squared
 pub const POLAR: f32 = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 pub const AZIMUTH: f32 = FRAC_PI_4;
-/// The share of the stage's half-width and half-height the plaza may fill: 0.85 leaves 7.5 % of
-/// the stage clear on each side.
+
 const FIT_FILL: f32 = 0.85;
-/// Height the fit allows above the plaza for the robots and their labels, grid units.
-const LABEL_HEADROOM: f32 = 4.0;
-#[allow(dead_code)] // read by motion.rs
-pub const SOCIAL_NEAR: f32 = 9.5; // districts this close count as neighbours for a visit or a chat
-#[allow(dead_code)] // read by motion.rs
-pub const STROLL_R: f32 = 3.1; // the stroll ring just outside the dais
-#[allow(dead_code)] // read by motion.rs
+
+pub const SOCIAL_NEAR: f32 = 9.5; // rooms this close count as neighbours for a visit or a chat
+pub const STROLL_R: f32 = 3.1; // the stroll ring just outside the centre
+
 pub const ROBOT_R: f32 = 0.55; // robot footprint radius for collisions
 const DEG: f32 = PI / 180.0;
-/// Headings tried when a step is blocked, radians.
-#[allow(dead_code)] // read by motion.rs
 pub const STEER: [f32; 5] = [0.0, 30.0 * DEG, -30.0 * DEG, 60.0 * DEG, -60.0 * DEG];
 pub const DUST_N: usize = 90;
 
-/// The district hues: a curated cartoon set (coral, tangerine, butter, lime, mint, teal, sky,
-/// periwinkle, lavender, rose).
+/// The dark ground under a board, well below it.
+const BOARD_GROUND_Y: f32 = -4.0;
+
 const HUES: [f32; 10] = [8.0, 28.0, 46.0, 88.0, 140.0, 172.0, 198.0, 222.0, 262.0, 340.0];
-/// Gap between two rooms' arcs on the ring.
-const GAP: f32 = 2.4;
+
+#[allow(dead_code)] // read by motion.rs
 /// `--ink-2`, the plaque's ink. The web reads it from CSS; `Colors` does not carry it.
 const INK2: &str = "#4c544d";
 
 /// The orchestrator: `tier === 'orchestrator'`.
 fn is_orchestrator(a: &AgentInfo) -> bool {
     a.tier == "orchestrator"
-}
-
-fn top_of(d: &District) -> f32 {
-    if d.role == "orchestrator" { DAIS_H } else { SLAB_H }
 }
 
 fn children(o: &Obj) -> Vec<Obj> {
@@ -103,66 +91,6 @@ pub fn role_hue(role: &str) -> f32 {
     HUES[(hash % HUES.len() as u32) as usize]
 }
 
-/// `layoutDistricts(list)`: districts by role around the central dais, and each agent's home:
-/// cid → (district index, x, y).
-pub fn layout_districts(list: &[AgentInfo]) -> (Vec<District>, HashMap<u64, (usize, f32, f32)>) {
-    let mut groups: BTreeMap<String, Vec<&AgentInfo>> = BTreeMap::new();
-    for a in list {
-        let key = if is_orchestrator(a) { String::new() } else { a.role.clone() };
-        groups.entry(key).or_default().push(a);
-    }
-    let mut districts = Vec::new();
-    let mut homes = HashMap::new();
-    if let Some(centre) = groups.get("") {
-        let d = District { role: "orchestrator".into(), cx: 0.0, cy: 0.0, r: 2.0, hue: 25.0, round: true };
-        place(&mut districts, &mut homes, d, centre);
-    }
-    let roles: Vec<String> = groups.keys().filter(|k| !k.is_empty()).cloned().collect();
-    // Each room is its style's size (bigger when crowded). Rooms share the ring by width: each gets
-    // an arc as wide as itself plus a gap, and the ring is as large as the arcs need.
-    let size_of = |role: &str| -> f32 {
-        let n = groups.get(role).map_or(0, |m| m.len()) as f32;
-        rooms::room_style(role).size.max(1.5 * n.sqrt().ceil().max(1.0) + 1.5)
-    };
-    let widths: Vec<f32> = roles.iter().map(|r| 2.0 * (size_of(r) + RAMP) + GAP).collect();
-    let total: f32 = widths.iter().sum();
-    let ring_r = (10.0 + RAMP).max(total / TAU);
-    let mut arc = 0.0;
-    for (i, role) in roles.iter().enumerate() {
-        let members = &groups[role.as_str()];
-        let angle = ((arc + widths[i] / 2.0) / total) * TAU - FRAC_PI_2;
-        arc += widths[i];
-        let r = size_of(role);
-        let style = rooms::room_style(role);
-        // A square room's corners reach further out than its side: push it out so it clears its neighbours.
-        let out = if style.round { ring_r } else { ring_r + r * 0.3 };
-        let d = District {
-            role: role.clone(),
-            cx: angle.cos() * out,
-            cy: angle.sin() * out,
-            r,
-            hue: role_hue(role),
-            round: style.round,
-        };
-        place(&mut districts, &mut homes, d, members);
-    }
-    (districts, homes)
-}
-
-/// Adds a district and gives its members their console slots (3 apart, by cid).
-fn place(districts: &mut Vec<District>, homes: &mut HashMap<u64, (usize, f32, f32)>, d: District, members: &[&AgentInfo]) {
-    let side = (members.len() as f32).sqrt().ceil().max(1.0) as usize;
-    let mut sorted = members.to_vec();
-    sorted.sort_by_key(|a| a.cid);
-    let span = 1.5 * (side as f32 - 1.0); // homes sit 3 apart
-    for (i, a) in sorted.iter().enumerate() {
-        let gx = d.cx - span + (i % side) as f32 * 3.0;
-        let gy = d.cy - span + (i / side) as f32 * 3.0;
-        homes.insert(a.cid, (districts.len(), gx, gy));
-    }
-    districts.push(d);
-}
-
 /// The shared pad, packet, halo and token geometry and materials (floor.ts mount).
 pub(super) fn shared(colors: &Colors) -> Shared {
     // Halos: transparent, additive, opacity 0.35, no depth write.
@@ -190,10 +118,10 @@ pub(super) fn shared(colors: &Colors) -> Shared {
     }
 }
 
-/// Sky, ground, clouds, plaza and dust, added to `floor.root`. The fog and lights are `World`'s
-/// defaults, which are floor.ts's values.
+/// Sky, stars, the ground, the backdrop and dust, added to `floor.root`. The Machines view keeps the
+/// ground; a machine's board stands on the dark ground (`show_board`). The fog and lights are
+/// `World`'s defaults, which are floor.ts's values.
 pub(super) fn base(floor: &mut Floor) {
-    let c = floor.colors;
 
     // Night: a deep blue zenith banded down to a violet horizon glow, stars and a ringed planet.
     floor.root.add(&toon::sky(Color::hex(0x05071a), Color::hex(0x3a2275), Color::hex(0x090c18)));
@@ -204,23 +132,24 @@ pub(super) fn base(floor: &mut Floor) {
     floor.stars.set_dynamic(true); // turns every frame
     floor.root.add(&floor.stars);
 
-    // Ground: one smooth sheet out to the horizon, lighter round the plaza.
+    // Ground: one smooth sheet out to the horizon.
     let ground_map = textures::ground();
     let ground_mat = toon::toon_mat(Material { map: Some(ground_map), ..Material::default() });
     let ground = Obj::mesh(&geometry::plane(500.0, 500.0, 1, 1), &ground_mat);
     ground.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, -0.01, 0.0).set_shadows(false, true);
     floor.root.add(&ground);
+    floor.ground = ground;
+
+    // The dark ground a board stands above.
+    let dark_mat = toon::toon_mat(Material { color: Color::hex(0x0b0f1e), ..Material::default() });
+    let board_ground = Obj::mesh(&geometry::plane(500.0, 500.0, 1, 1), &dark_mat);
+    board_ground.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, BOARD_GROUND_Y, 0.0).set_shadows(false, true);
+    floor.board_ground = board_ground;
+
     floor.root.add(&outskirts::build_backdrop());
+    floor.root.add(&floor.district_group);
 
-    floor.root.add(&floor.district_group).add(&floor.path_group);
-
-    let (plaza, anim) = props::build_plaza(&prop_palette(&c));
-    floor.plaza = plaza;
-    floor.plaza_anim = anim;
-    floor.plaza.set_dynamic(true); // the xenon atom and its rings animate
-    floor.root.add(&floor.plaza);
-
-    // Dust: sparse motes drifting over the plaza. Seeds: per mote x, y, z and rise speed.
+    // Dust: sparse motes drifting in the air. Seeds: per mote x, y, z and rise speed.
     let mut rnd = Rng::new(17);
     floor.dust_seeds = (0..DUST_N)
         .map(|_| {
@@ -258,7 +187,6 @@ fn plaque_texture(text: &str, orch: bool, c: &Colors) -> Tex {
     cv.close_path();
     cv.set_fill(&css(c.sheet));
     cv.fill();
-    cv.set_line_width(6.0);
     cv.set_stroke(&css(if orch { c.signal } else { c.rule }));
     cv.stroke();
     cv.set_fill(INK2);
@@ -308,80 +236,68 @@ fn bounds_of(group: &Obj, part: &Obj) -> Option<(Vec3, Vec3)> {
     out
 }
 
-/// `districtMesh(d)`: a district's slab (or the dais), its floor, room, plaque and outline.
-/// Adds the room's footprints, monitors and animation to `floor`.
-fn district_mesh(floor: &mut Floor, d: &District) -> Obj {
+/// `districtMesh(d)` on a board: a room's terrace, its flat top at `y` (the slot's top) and its sloped
+/// band running down to the PCB at `base`, so it stands on the chip; its floor, room, plaque and
+/// outline. Adds the room's footprints, monitors and animation to `floor`.
+fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32) -> Obj {
     let c = floor.colors;
     let g = Obj::group();
     let orch = d.role == "orchestrator";
-    if orch {
-        let dais_mat = toon::toon_mat(Material { color: Color::hex(0x4a5690), ..Material::default() });
-        let dais = Obj::mesh(&geometry::cylinder(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48), &dais_mat);
-        dais.set_position(d.cx, DAIS_H / 2.0, d.cy).set_shadows(true, true);
-        let rim = Obj::mesh(&geometry::torus(DAIS_R, 0.05, 8, 64, TAU), &Mat::basic(c.signal));
-        rim.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(d.cx, DAIS_H + 0.01, d.cy);
-        // A cyan ring of light round the foot of the skirt.
-        let foot = Obj::mesh(&geometry::torus(DAIS_R + DAIS_RAMP, 0.06, 8, 96, TAU), &Mat::basic(c.info));
-        foot.set_rotation(FRAC_PI_2, 0.0, 0.0).set_position(d.cx, 0.04, d.cy);
-        foot.get().no_outline = true;
-        g.add(&dais).add(&rim).add(&foot);
+    let top_y = y + SLAB_H;
+    let height = (top_y - base).max(SLAB_H);
+    let body = if d.round {
+        geometry::cylinder(d.r, d.r + RAMP, height, 48)
     } else {
-        // A terrace: the flat top plus a sloped band all round, so robots can walk on and off; its
-        // floor is the room's own, laid as a separate surface so the texture runs square to the room.
-        let body = if d.round {
-            geometry::cylinder(d.r, d.r + RAMP, SLAB_H, 48)
+        let square = geometry::cylinder(d.r * SQRT_2, (d.r + RAMP) * SQRT_2, height, 4);
+        geometry::transformed(&square, Mat4::from_rotation_y(FRAC_PI_4))
+    };
+    let slab = Obj::mesh(&body, &textures::slab_side(d.hue));
+    slab.set_position(d.cx, base + height / 2.0, d.cy).set_shadows(true, true);
+    g.add(&slab);
+    // Neon in the district's hue along the top edge and round the foot on the PCB.
+    let neon = Mat::basic(Color::hsl(d.hue / 360.0, 0.95, 0.62));
+    for (rr, ny) in [(d.r, top_y + 0.01), (d.r + RAMP, base + 0.03)] {
+        let ring = if d.round {
+            geometry::torus(rr, 0.045, 6, 72, TAU)
         } else {
-            let square = geometry::cylinder(d.r * SQRT_2, (d.r + RAMP) * SQRT_2, SLAB_H, 4);
-            geometry::transformed(&square, Mat4::from_rotation_y(FRAC_PI_4))
+            geometry::torus(rr * SQRT_2, 0.045, 6, 4, TAU)
         };
-        let slab = Obj::mesh(&body, &textures::slab_side(d.hue));
-        slab.set_position(d.cx, SLAB_H / 2.0, d.cy).set_shadows(true, true);
-        g.add(&slab);
-        // Neon in the district's hue along the slab's top edge and round its foot.
-        let neon = Mat::basic(Color::hsl(d.hue / 360.0, 0.95, 0.62));
-        for (rr, y) in [(d.r, SLAB_H + 0.01), (d.r + RAMP, 0.03)] {
-            let ring = if d.round {
-                geometry::torus(rr, 0.045, 6, 72, TAU)
-            } else {
-                geometry::torus(rr * SQRT_2, 0.045, 6, 4, TAU)
-            };
-            let edge = Obj::mesh(&ring, &neon);
-            edge.set_rotation(FRAC_PI_2, 0.0, if d.round { 0.0 } else { FRAC_PI_4 }).set_position(d.cx, y, d.cy);
-            edge.get().no_outline = true;
-            g.add(&edge);
-        }
-
-        // The room faces the plaza: square rooms turn in quarter turns so they stay square to their slab.
-        let facing = (-d.cx).atan2(-d.cy);
-        let turn = if d.round { facing } else { ((facing / FRAC_PI_2) + 0.5).floor() * FRAC_PI_2 };
-        let BuiltRoom { group: room, floor: room_floor, screens, animate } =
-            rooms::build_room(&d.role, d.r, d.hue, &kit_palette(&c));
-        let top_geo = if d.round {
-            geometry::circle(d.r, 48, 0.0, TAU)
-        } else {
-            geometry::plane(2.0 * d.r, 2.0 * d.r, 1, 1)
-        };
-        let top = Obj::mesh(&top_geo, &room_floor);
-        top.set_rotation(-FRAC_PI_2, 0.0, turn).set_position(d.cx, SLAB_H + 0.004, d.cy).set_shadows(false, true);
-        g.add(&top);
-        room.set_position(d.cx, SLAB_H, d.cy).set_rotation(0.0, turn, 0.0);
-        g.add(&room);
-        for part in children(&room) {
-            // Rugs and floor markings (`userData.walk`) do not block the floor.
-            if part.get().walk {
-                continue;
-            }
-            let Some((lo, hi)) = bounds_of(&room, &part) else { continue };
-            if lo.y > SLAB_H + 2.2 {
-                continue; // overhead pieces do not block the floor
-            }
-            floor.prop_boxes.push(Box2 { x0: lo.x, x1: hi.x, z0: lo.z, z1: hi.z });
-        }
-        floor.lit_by_role.insert(d.role.clone(), DistrictLight { screens, lit: false });
-        floor.prop_anim.push(animate);
+        let edge = Obj::mesh(&ring, &neon);
+        edge.set_rotation(FRAC_PI_2, 0.0, if d.round { 0.0 } else { FRAC_PI_4 }).set_position(d.cx, ny, d.cy);
+        edge.get().no_outline = true;
+        g.add(&edge);
     }
 
-    // Role plaque lies flat on the back edge of the slab (the dais for the orchestrator).
+    // The room faces the centre: square rooms turn in quarter turns so they stay square to their slab.
+    let facing = (-d.cx).atan2(-d.cy);
+    let turn = if d.round { facing } else { ((facing / FRAC_PI_2) + 0.5).floor() * FRAC_PI_2 };
+    let BuiltRoom { group: room, floor: room_floor, screens, animate } =
+        rooms::build_room(&d.role, d.r, d.hue, &kit_palette(&c));
+    let top_geo = if d.round {
+        geometry::circle(d.r, 48, 0.0, TAU)
+    } else {
+        geometry::plane(2.0 * d.r, 2.0 * d.r, 1, 1)
+    };
+    let top = Obj::mesh(&top_geo, &room_floor);
+    top.set_rotation(-FRAC_PI_2, 0.0, turn).set_position(d.cx, top_y + 0.004, d.cy).set_shadows(false, true);
+    g.add(&top);
+    room.set_position(d.cx, top_y, d.cy).set_rotation(0.0, turn, 0.0);
+    g.add(&room);
+    for part in children(&room) {
+        // Rugs and floor markings (`userData.walk`) do not block the floor.
+        if part.get().walk {
+            continue;
+        }
+        let Some((lo, hi)) = bounds_of(&room, &part) else { continue };
+        if lo.y > SLAB_H + 2.2 {
+            continue; // overhead pieces do not block the floor
+        }
+        floor.prop_boxes.push(Box2 { x0: lo.x, x1: hi.x, z0: lo.z, z1: hi.z });
+    }
+    floor.lit_by_role.insert(d.role.clone(), DistrictLight { screens, lit: false });
+    floor.prop_anim.push(animate);
+
+    // Role plaque lies flat on the floor at the room's open front, readable from the centre.
     let plaque_mat = Mat::new(Material {
         shading: Shading::Basic,
         map: Some(plaque_texture(&d.role.to_uppercase(), orch, &c)),
@@ -390,53 +306,54 @@ fn district_mesh(floor: &mut Floor, d: &District) -> Obj {
         ..Material::default()
     });
     let plaque = Obj::mesh(&geometry::plane(2.6, 0.65, 1, 1), &plaque_mat);
-    if orch {
-        plaque.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(d.cx, top_of(d) + 0.01, d.cy - 1.6);
-        g.add(&plaque);
-    } else {
-        // Flat on the floor at the room's open front, readable from the plaza.
-        let holder = Obj::group();
-        holder.set_position(d.cx, top_of(d) + 0.012, d.cy).set_rotation(0.0, (-d.cx).atan2(-d.cy), 0.0);
-        plaque.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.0, d.r - 0.5);
-        holder.add(&plaque);
-        g.add(&holder);
-    }
+    let holder = Obj::group();
+    holder.set_position(d.cx, top_y + 0.012, d.cy).set_rotation(0.0, (-d.cx).atan2(-d.cy), 0.0);
+    plaque.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.0, d.r - 0.5);
+    holder.add(&plaque);
+    g.add(&holder);
     toon::outline(&g, 0.12);
     g
 }
 
-/// Districts and their paths, rebuilt whenever the layout changes (`buildWorld`).
-fn build_world(floor: &mut Floor) {
-    let ds = floor.districts.clone();
-    for child in children(&floor.district_group) {
-        floor.district_group.remove(&child);
+/// The copper's pulses: one set per trace, with the slots its ends join.
+fn trace_pulses(model: &Model) -> Vec<TracePulses> {
+    let mut one = model.clone();
+    let mut out = Vec::new();
+    for t in &model.traces {
+        if t.path.len() < 2 {
+            continue;
+        }
+        one.traces = vec![t.clone()];
+        out.push(TracePulses { pulses: Pulses::new(&one), from: t.from.clone(), to: t.to.clone() });
     }
-    floor.lit_by_role.clear();
-    floor.prop_anim.clear();
-    floor.prop_boxes.clear();
-    for d in &ds {
-        let g = district_mesh(floor, d);
-        floor.district_group.add(&g);
-    }
+    out
+}
 
-    for child in children(&floor.path_group) {
-        floor.path_group.remove(&child);
+/// Each slot's emissive materials, with their rest intensity: a slot's glow scales them.
+fn glowing_parts(built: &hardware::Built, model: &Model) -> HashMap<String, Vec<(Mat, f32)>> {
+    let mut out = HashMap::new();
+    for slot in &model.slots {
+        let Some(part) = built.parts.get(&slot.on) else { continue };
+        let mut mats = Vec::new();
+        part.traverse(&mut |o: &Obj| {
+            let mat = match &o.get().kind {
+                Kind::Mesh { mat, .. } => Some(mat.clone()),
+                _ => None,
+            };
+            let Some(mat) = mat else { return };
+            let glowing = {
+                let m = mat.get();
+                (m.emissive != Color::BLACK).then_some(m.emissive_intensity)
+            };
+            if let Some(base) = glowing {
+                mats.push((mat, base));
+            }
+        });
+        if !mats.is_empty() {
+            out.insert(slot.id.clone(), mats);
+        }
     }
-    let pp = prop_palette(&floor.colors);
-    let from: Vec<Vec3> = ds.iter().map(|d| Vec3::new(d.cx, 0.0, d.cy)).collect();
-    floor.path_group.add(&props::build_paths(&from, &pp));
-    let bearings: Vec<f32> = ds.iter().map(|d| d.cy.atan2(d.cx)).collect();
-    let fountain = props::build_plaza_furniture(&pp, &bearings);
-    fountain.group.set_dynamic(true); // the water animates
-    floor.path_group.add(&fountain.group);
-    floor.prop_anim.push(fountain.animate);
-    floor.prop_boxes.extend(fountain.boxes);
-    let sites: Vec<Site> = ds.iter().map(|d| Site { cx: d.cx, cy: d.cy, r: d.r }).collect();
-    let (scatter, scatter_boxes) = outskirts::build_scatter(&sites, &pp);
-    floor.path_group.add(&scatter);
-    floor.prop_boxes.extend(scatter_boxes);
-
-    floor.statics_dirty = true; // the world was rebuilt: re-bake the statics
+    out
 }
 
 /// `createBot(agent, district, hx, hy)`: a robot, its console pad and its task token.
@@ -458,7 +375,7 @@ fn create_bot(floor: &Floor, agent: &AgentInfo, district: usize, hx: f32, hy: f3
         ..Material::default()
     });
     let pad = Obj::mesh(&floor.shared.pad_geo, &pad_mat);
-    pad.set_dynamic(true).set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(hx, top_of(d) + 0.02, hy);
+    pad.set_dynamic(true).set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(hx, floor.top_at(district) + 0.02, hy);
     floor.root.add(&pad);
 
     let token = Obj::mesh(&floor.shared.token_geo, &floor.shared.token);
@@ -491,6 +408,8 @@ fn create_bot(floor: &Floor, agent: &AgentInfo, district: usize, hx: f32, hy: f3
         pad_mat,
         token,
         highlighted: false,
+        route: Vec::new(),
+        route_goal: None,
     }
 }
 
@@ -502,15 +421,109 @@ fn remove_bot(root: &Obj, bot: &Bot) {
 }
 
 impl Floor {
-    /// Keeps the floor in step with the agents: rebuilds the districts when the roles change
-    /// (`districtSig`), adds and removes robots, updates names, states and labels' data.
+    /// The height of the surface a robot in district `idx` stands on: its room's top.
+    pub fn top_at(&self, idx: usize) -> f32 {
+        self.board.as_ref().and_then(|b| b.layout.districts.get(idx)).map_or(0.0, |bd| bd.y + SLAB_H)
+    }
+
+    /// Shows a machine's board in the Machine view: its model built at the origin with `params`, the
+    /// copper and its pulses, the atom over the centre, and the dark ground under it. Takes out the
+    /// previous board, its robots and rooms; `sync` places the rooms and robots.
+    pub fn show_board(&mut self, key: String, model: &'static Model, params: Params, status: Status) {
+        self.clear_board();
+        let built = hardware::build(model, &params);
+        let obj = Obj::group();
+        obj.add(&built.root);
+        obj.add(&hardware::traces(model));
+        let atom = hardware::place_atom(model, &obj, &prop_palette(&self.colors));
+        let pulses = trace_pulses(model);
+        for tp in &pulses {
+            obj.add(&tp.pulses.obj);
+        }
+        obj.set_dynamic(true); // the lights, the pulses and the atom move every frame
+        let glow = glowing_parts(&built, model);
+        let bp = BoardParams { params: params.clone(), ..BoardParams::default() };
+        let layout = layout_on_board(&[], model, &bp);
+        let graph = trace_graph(model);
+
+        self.root.remove(&self.ground);
+        self.root.add(&self.board_ground);
+        self.root.add(&obj);
+        self.board = Some(Board {
+            key,
+            model,
+            params,
+            status,
+            obj,
+            built,
+            atom,
+            pulses,
+            glow,
+            level: HashMap::new(),
+            layout,
+            graph,
+            sig: String::new(),
+        });
+        self.statics_dirty = true;
+        self.fitted = false;
+    }
+
+    /// Takes the board, its robots and rooms out of the scene.
+    fn clear_board(&mut self) {
+        self.root.remove(&self.board_ground);
+        if let Some(old) = self.board.take() {
+            self.root.remove(&old.obj);
+        }
+        for bot in self.bots.drain(..) {
+            remove_bot(&self.root, &bot);
+        }
+        for child in children(&self.district_group) {
+            self.district_group.remove(&child);
+        }
+        self.districts.clear();
+        self.lit_by_role.clear();
+        self.prop_anim.clear();
+        self.prop_boxes.clear();
+        self.hovered = None;
+        self.selected = None;
+    }
+
+    /// Rebuilds the rooms of the board's current layout (`buildWorld`).
+    fn build_rooms(&mut self) {
+        let Some(board) = self.board.as_ref() else { return };
+        let base = board.layout.pcb_top;
+        let items = board.layout.districts.clone();
+        for child in children(&self.district_group) {
+            self.district_group.remove(&child);
+        }
+        self.lit_by_role.clear();
+        self.prop_anim.clear();
+        self.prop_boxes.clear();
+        for bd in &items {
+            let g = district_mesh(self, &bd.district, bd.y, base);
+            self.district_group.add(&g);
+        }
+        self.statics_dirty = true; // the rooms changed: re-bake the statics
+    }
+
+    /// Keeps the board in step with the agents on the machine: one room per role on the board's
+    /// slots, rebuilt when the layout changes, and a robot per agent.
     pub fn sync(&mut self, list: &[AgentInfo]) {
-        let (districts, homes) = layout_districts(list);
-        self.districts = districts;
-        let sig = format!("{:?}", self.districts);
-        if sig != self.district_sig {
-            self.district_sig = sig;
-            build_world(self);
+        let Some(board) = self.board.as_mut() else { return };
+        let bp = BoardParams { params: board.params.clone(), ..BoardParams::default() };
+        let layout = layout_on_board(list, board.model, &bp);
+        let mut homes: Vec<_> = layout.homes.iter().map(|(cid, h)| (*cid, *h)).collect();
+        homes.sort_by_key(|(cid, _)| *cid);
+        let sig = format!("{:?}|{:?}", layout.districts, homes);
+        let changed = board.sig != sig;
+        board.sig = sig;
+        self.districts = layout.districts.iter().map(|bd| bd.district.clone()).collect();
+        let homes = layout.homes.clone();
+        if let Some(board) = self.board.as_mut() {
+            board.layout = layout;
+        }
+        if changed {
+            self.build_rooms();
         }
 
         let mut seen = HashSet::new();
@@ -533,7 +546,7 @@ impl Floor {
                     self.bots.len() - 1
                 }
             };
-            let top = top_of(&self.districts[idx]);
+            let top = self.top_at(idx);
             let bot = &mut self.bots[i];
             bot.agent = agent.clone();
             bot.district = idx;
@@ -562,50 +575,41 @@ impl Floor {
         }
     }
 
-    /// The radius of the disc about the origin that holds every district's slab and its ramp, the
-    /// orchestrator's dais, and the robots' labels above them (`LABEL_HEADROOM`, grid units). The
-    /// view no longer fits this sphere; it stays as the bound the fit test checks against.
-    #[allow(dead_code)] // read by the fit test only
-    pub fn plaza_radius(&self) -> f32 {
-        let mut reach = DAIS_R + DAIS_RAMP;
-        for d in &self.districts {
-            // A square's farthest corner from the origin; a round room's rim.
-            let far = if d.round {
-                d.cx.hypot(d.cy) + d.r
-            } else {
-                (d.cx.abs() + d.r).hypot(d.cy.abs() + d.r)
-            };
-            reach = reach.max(far + RAMP);
-        }
-        reach.hypot(LABEL_HEADROOM)
-    }
-
-    /// The points the fit frames, world units: each district's footprint with its ramp, on the
-    /// ground and at its top; the dais's rim on the ground and at its top; and each robot's home
-    /// up to the height of its label. The outskirts are left out.
+    /// The points the fit frames, world units: the board's footprint on the PCB and at the tallest
+    /// room's top; each room's footprint with its ramp, on the PCB and at its top; the atom; and each
+    /// robot's home up to the height of its label.
     pub(super) fn fit_points(&self) -> Vec<Vec3> {
+        let Some(board) = &self.board else { return vec![Vec3::ZERO] };
+        let pcb = board.layout.pcb_top;
+        let bounds = board.layout.bounds;
+        let mut top = pcb;
         let mut pts = Vec::new();
-        for d in &self.districts {
-            let top = top_of(d);
-            for (x, z) in footprint(d) {
-                pts.push(Vec3::new(x, 0.0, z));
-                pts.push(Vec3::new(x, top, z));
+        for bd in &board.layout.districts {
+            let t = bd.y + SLAB_H;
+            top = top.max(t);
+            for (x, z) in footprint(&bd.district) {
+                pts.push(Vec3::new(x, pcb, z));
+                pts.push(Vec3::new(x, t, z));
             }
         }
-        for (x, z) in rim(0.0, 0.0, DAIS_R + DAIS_RAMP) {
-            pts.push(Vec3::new(x, 0.0, z));
-            pts.push(Vec3::new(x, DAIS_H, z));
+        let (x0, x1) = (bounds.cx - bounds.w / 2.0, bounds.cx + bounds.w / 2.0);
+        let (z0, z1) = (bounds.cz - bounds.d / 2.0, bounds.cz + bounds.d / 2.0);
+        for (x, z) in [(x0, z0), (x1, z0), (x1, z1), (x0, z1)] {
+            pts.push(Vec3::new(x, pcb, z));
+            pts.push(Vec3::new(x, top, z));
         }
+        let [ax, ay, az] = board.layout.atom;
+        pts.push(Vec3::new(ax, ay + 1.0, az));
         // A robot stands about 1.5 units tall, its label just above it.
         const ROBOT_AND_LABEL: f32 = 2.0;
         for bot in &self.bots {
             let (x, z) = bot.home;
-            pts.push(Vec3::new(x, DAIS_H + ROBOT_AND_LABEL, z));
+            pts.push(Vec3::new(x, self.top_at(bot.district) + ROBOT_AND_LABEL, z));
         }
         pts
     }
 
-    /// `resetView()`: the isometric-ish view that frames the plaza in an `aspect` (width / height)
+    /// `resetView()`: the isometric-ish view that frames the board in an `aspect` (width / height)
     /// stage. The eye keeps its angles (`POLAR`, `AZIMUTH`) and the distance is solved so that each
     /// fit point sits within `FIT_FILL` of the stage's half-width and half-height. A point `v` from
     /// the target is `dist - v·dir` deep, so it needs `dist >= v·dir + max(|across| / (FIT_FILL ·
@@ -627,9 +631,9 @@ impl Floor {
                 far.max(v.dot(dir) + across.max(lift))
             })
         };
-        // The near side of the plaza projects larger, so a target at the origin leaves the plaza low
-        // on the stage. Each pass solves the distance, then moves the target across and up to the
-        // middle of the points' extent on the stage; a few passes settle it.
+        // The near side of the board projects larger, so a target at the origin leaves it low on the
+        // stage. Each pass solves the distance, then moves the target across and up to the middle of
+        // the points' extent on the stage; a few passes settle it.
         let mut target = Vec3::new(0.0, 0.4, 0.0);
         for _ in 0..4 {
             let dist = solve(target);
@@ -651,7 +655,7 @@ impl Floor {
     }
 }
 
-/// Ground points around a district's footprint, its ramp included: a square's corners, or a round
+/// Ground points around a room's footprint, its ramp included: a square's corners, or a round
 /// room's rim.
 fn footprint(d: &District) -> Vec<(f32, f32)> {
     let reach = d.r + RAMP;
@@ -684,18 +688,26 @@ mod tests {
     }
 
     #[test]
-    fn layout_districts_two_roles_four_homes() {
+    fn sync_puts_a_room_per_role_and_a_robot_per_agent_on_the_board() {
+        let model = hardware::model("board/workstation").expect("the workstation board parses");
         let list = [agent(1, "coder"), agent(2, "coder"), agent(3, "writer"), agent(4, "writer")];
-        let (districts, homes) = layout_districts(&list);
-        assert_eq!(districts.len(), 2);
-        assert_eq!(homes.len(), 4);
+        let mut floor = Floor::new();
+        floor.show_board("test".into(), model, Params::default().with("gpus", 1.0), Status::Online);
+        floor.sync(&list);
+        assert_eq!(floor.districts.len(), 2, "one room per role");
+        assert_eq!(floor.bots.len(), 4, "one robot per agent");
+        assert!(floor.districts.iter().all(|d| d.r > 0.0));
+        assert!(floor.bots.iter().all(|b| b.py == 0.0), "robots start on the PCB, not on the ground");
     }
 
     #[test]
-    fn layout_sync_creates_four_bots() {
-        let list = [agent(1, "coder"), agent(2, "coder"), agent(3, "writer"), agent(4, "writer")];
+    fn a_board_drops_the_ring_and_keeps_its_own_ground() {
+        let model = hardware::model("board/workstation").expect("the workstation board parses");
         let mut floor = Floor::new();
-        floor.sync(&list);
-        assert_eq!(floor.bots.len(), 4);
+        floor.show_board("test".into(), model, Params::default(), Status::Online);
+        assert!(floor.board.is_some());
+        let once = floor.root.get().children.len();
+        floor.show_board("again".into(), model, Params::default(), Status::Online);
+        assert_eq!(floor.root.get().children.len(), once, "a second board replaces the first, it does not add to the scene");
     }
 }

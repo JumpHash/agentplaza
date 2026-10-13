@@ -1,21 +1,32 @@
-//! One agent's page (parity with the web console's agent detail): the profile card, the transcript
-//! and chat, restart / stop / cancel, wipe and retire. The right column is the agent side panels
-//! (`agent_side`: model, harness, permissions, details, queue, memory).
+//! One agent's page (parity with the web console's agent detail): the back link and actions, the
+//! profile card, the transcript and chat (or the memory library), and the side column: model,
+//! harness, permissions (`agent_side`), then details and queue. Restart, wipe and retire ask first;
+//! cancel and stop act at once.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use iced::font::Weight;
 use iced::keyboard;
-use iced::widget::{checkbox, column, container, row, scrollable, text_editor, Space};
-use iced::{Element, Length, Task};
+use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_editor, Space};
+use iced::{Alignment, Border, Color, Element, Font, Length, Task, Theme};
 use serde_json::{json, Value};
 
 use super::{agent_side, Id};
+use crate::console::floor3d::world::layout::{agent_hue, role_hue};
 use crate::console::{client, ui, Ctx};
+use crate::theme::{CRIT, HOVER, INFO, MONO, OK, SERIF, WARN};
 
 /// The profile and infractions refresh at most this often; the transcript on every poll.
 const EXTRAS_EVERY: Duration = Duration::from_secs(15);
 const SIDE_WIDTH: f32 = 320.0;
 const TRANSCRIPT_HEIGHT: f32 = 480.0;
+/// The portrait's square, and the infractions shown before "Show all".
+const PORTRAIT: f32 = 168.0;
+const INFRACTIONS_SHOWN: usize = 10;
+
+const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
+const MONO_BOLD: Font = Font { weight: Weight::Bold, ..MONO };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -26,6 +37,7 @@ pub enum Tab {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialog {
+    Restart,
     Wipe { memory: bool, transcript: bool, identity: bool },
     Retire,
 }
@@ -40,7 +52,6 @@ pub enum Wipe {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     Cancel,
-    Restart,
     Stop,
 }
 
@@ -48,9 +59,12 @@ pub enum Act {
 pub struct State {
     pub cid: u64,
     pub error: Option<String>,
+    /// The line a finished action leaves (the web's toast): "Restarting", "Stopped", …
+    pub notice: Option<String>,
     pub agent: Option<Value>,
     pub profile: Option<Value>,
     pub infractions: Vec<Value>,
+    pub infractions_all: bool,
     pub entries: Vec<Value>,
     pub last_seq: u64,
     pub extras_at: Option<Instant>,
@@ -60,6 +74,8 @@ pub struct State {
     pub tab: Tab,
     pub composer: text_editor::Content,
     pub dialog: Option<Dialog>,
+    /// The tool blocks and results the reader has opened, by (entry seq, block index).
+    pub open: HashSet<(u64, usize)>,
     pub side: agent_side::Side,
 }
 
@@ -85,7 +101,9 @@ pub enum Msg {
     Toggle(Wipe),
     Dismiss,
     Proceed,
-    Done { retired: bool, result: Result<(), String> },
+    Done { retired: bool, note: &'static str, result: Result<(), String> },
+    Expand((u64, usize)),
+    ShowAll,
     Side(agent_side::SideMsg),
 }
 
@@ -181,13 +199,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Run(act) => {
-            let verb = match act {
-                Act::Cancel => "cancel",
-                Act::Restart => "restart",
-                Act::Stop => "stop",
+            let (verb, note) = match act {
+                Act::Cancel => ("cancel", "Cancelled"),
+                Act::Stop => ("stop", "Stopped"),
             };
-            let path = format!("/v1/agents/{}/{}", state.cid, verb);
-            dispatch(state, ctx, path, json!({}), false)
+            let path = format!("/v1/agents/{}/{verb}", state.cid);
+            dispatch(state, ctx, path, json!({}), false, note)
         }
         Msg::Ask(dialog) => {
             state.dialog = Some(dialog);
@@ -211,15 +228,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Proceed => {
             let cid = state.cid;
             match state.dialog.take() {
+                Some(Dialog::Restart) => dispatch(state, ctx, format!("/v1/agents/{cid}/restart"), json!({}), false, "Restarting"),
                 Some(Dialog::Wipe { memory, transcript, identity }) => {
                     let body = json!({ "memory": memory, "transcript": transcript, "identity": identity });
-                    dispatch(state, ctx, format!("/v1/agents/{cid}/wipe"), body, false)
+                    dispatch(state, ctx, format!("/v1/agents/{cid}/wipe"), body, false, "Wiped")
                 }
-                Some(Dialog::Retire) => dispatch(state, ctx, format!("/v1/agents/{cid}/retire"), json!({}), true),
+                Some(Dialog::Retire) => dispatch(state, ctx, format!("/v1/agents/{cid}/retire"), json!({}), true, "Retired"),
                 None => Task::none(),
             }
         }
-        Msg::Done { retired, result } => {
+        Msg::Done { retired, note, result } => {
             state.busy = false;
             match result {
                 Ok(()) => {
@@ -227,9 +245,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     if retired {
                         return Task::done(Msg::Go(Id::Agents));
                     }
+                    state.notice = Some(note.to_string());
                 }
                 Err(e) => state.error = Some(e),
             }
+            Task::none()
+        }
+        Msg::Expand(key) => {
+            if !state.open.remove(&key) {
+                state.open.insert(key);
+            }
+            Task::none()
+        }
+        Msg::ShowAll => {
+            state.infractions_all = !state.infractions_all;
             Task::none()
         }
         Msg::Side(m) => agent_side::update(&mut state.side, m, ctx).map(Msg::Side),
@@ -237,10 +266,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Posts one head action; the head buttons stay disabled until it answers.
-fn dispatch(state: &mut State, ctx: &Ctx, path: String, body: Value, retired: bool) -> Task<Msg> {
+fn dispatch(state: &mut State, ctx: &Ctx, path: String, body: Value, retired: bool, note: &'static str) -> Task<Msg> {
     state.busy = true;
+    state.notice = None;
     let client = ctx.client.clone();
-    client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Done { retired, result: r.map(|_| ()) })
+    client::task(move || client.post::<Value>(&path, &body), move |r| Msg::Done { retired, note, result: r.map(|_| ()) })
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
@@ -253,50 +283,75 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         if working {
             actions.push(ui::btn("Cancel work", Some("ban"), ui::Kind::Secondary, pick(Msg::Run(Act::Cancel))));
         }
-        actions.push(ui::btn("Restart", None, ui::Kind::Secondary, pick(Msg::Run(Act::Restart))));
+        actions.push(ui::btn("Restart", None, ui::Kind::Secondary, pick(Msg::Ask(Dialog::Restart))));
         actions.push(ui::btn("Stop", Some("stop"), ui::Kind::Danger, pick(Msg::Run(Act::Stop))));
         actions.push(ui::btn("Wipe…", None, ui::Kind::Secondary, pick(Msg::Ask(Dialog::Wipe { memory: false, transcript: false, identity: false }))));
         actions.push(ui::btn("Retire", None, ui::Kind::Danger, pick(Msg::Ask(Dialog::Retire))));
     }
-    let head = ui::view_head(&name, actions);
 
-    let mut body: Vec<Element<'a, Msg>> = vec![ui::btn("Agents", None, ui::Kind::Ghost, Some(Msg::Go(Id::Agents)))];
-    if let Some(e) = &state.error {
-        body.push(ui::error_line(e));
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(n) = &state.notice {
+        body.push(ui::faint(n.as_str()).into());
     }
     if let Some(d) = &state.dialog {
         body.push(dialog_card(d, &name, busy));
     }
     match state.agent.as_ref() {
-        Some(a) => body.push(profile_card(state, a)),
-        None if state.error.is_none() => body.push(ui::loading()),
-        None => {}
-    }
-    body.push(
-        row![tab_btn("Transcript", Tab::Transcript, state.tab), tab_btn("Memory", Tab::Memory, state.tab)]
-            .spacing(8)
-            .into(),
-    );
-    match state.tab {
-        Tab::Transcript => {
-            body.push(ui::card("Transcript", transcript_view(state)));
-            body.push(composer_view(state));
+        Some(a) => {
+            if let Some(e) = &state.error {
+                body.push(ui::error_line(e));
+            }
+            body.push(profile_card(state, a));
         }
-        Tab::Memory => body.push(ui::empty("memory", "Memory", "The agent's memory notes are in the Memory panel beside this page.")),
+        None => match &state.error {
+            Some(e) => body.push(ui::empty("alert", "Could not load this agent", e)),
+            None => body.push(ui::loading()),
+        },
     }
-    let main = column(body).spacing(16).width(Length::Fill);
-    let side = container(agent_side::view(&state.side, ctx).map(Msg::Side)).width(Length::Fixed(SIDE_WIDTH));
-    ui::sheet(head, scrollable(row![main, side].spacing(24)).into())
+
+    let tabs = ui::tabs(&[(Tab::Transcript, "Transcript"), (Tab::Memory, "Memory")], state.tab, Msg::Tab);
+    let content: Element<'a, Msg> = match state.tab {
+        Tab::Transcript => column![transcript_card(state), composer_view(state)].spacing(16).width(Length::Fill).into(),
+        Tab::Memory => agent_side::memory_view(&state.side).map(Msg::Side),
+    };
+    let main = column![tabs, content].spacing(16).width(Length::Fill);
+
+    let mut side: Vec<Element<'a, Msg>> = vec![agent_side::view(&state.side, ctx).map(Msg::Side)];
+    if let Some(a) = state.agent.as_ref() {
+        side.push(details_card(a));
+        side.push(queue_card(a));
+    }
+    let side = container(column(side).spacing(16)).width(Length::Fixed(SIDE_WIDTH));
+    body.push(row![main, side].spacing(24).into());
+
+    ui::sheet(head(actions), scrollable(column(body).spacing(16).width(Length::Fill)).into())
 }
 
-fn tab_btn<'a>(label: &str, tab: Tab, current: Tab) -> Element<'a, Msg> {
-    let kind = if tab == current { ui::Kind::Primary } else { ui::Kind::Ghost };
-    ui::btn(label, None, kind, Some(Msg::Tab(tab)))
+/// The web's head: the back link on its own line, the actions right-aligned under it.
+fn head<'a>(actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let back = button(text("Agents").font(SERIF).size(13.0).color(ui::INK_3))
+        .padding(0)
+        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: ui::INK_3, border: Border::default(), ..Default::default() })
+        .on_press(Msg::Go(Id::Agents));
+    let mut line = row![Space::new().width(Length::Fill)].spacing(8).align_y(Alignment::Center);
+    for action in actions {
+        line = line.push(action);
+    }
+    container(column![back, line].spacing(8)).padding([24, 0]).width(Length::Fill).into()
 }
 
 fn dialog_card<'a>(d: &Dialog, name: &str, busy: bool) -> Element<'a, Msg> {
     let proceed = if busy { None } else { Some(Msg::Proceed) };
     match d {
+        Dialog::Restart => ui::card(
+            &format!("Restart {name}?"),
+            column![
+                ui::faint("Its VM restarts."),
+                row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)), ui::btn("Restart", None, ui::Kind::Primary, proceed)].spacing(8),
+            ]
+            .spacing(10)
+            .into(),
+        ),
         Dialog::Wipe { memory, transcript, identity } => ui::card(
             &format!("Wipe {name}"),
             column![
@@ -311,7 +366,7 @@ fn dialog_card<'a>(d: &Dialog, name: &str, busy: bool) -> Element<'a, Msg> {
             .into(),
         ),
         Dialog::Retire => ui::card(
-            &format!("Retire {name}"),
+            &format!("Retire {name}?"),
             column![
                 ui::faint("Its VM stops for good and it leaves the roster."),
                 row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)), ui::btn("Retire", None, ui::Kind::Danger, proceed)].spacing(8),
@@ -322,130 +377,208 @@ fn dialog_card<'a>(d: &Dialog, name: &str, busy: bool) -> Element<'a, Msg> {
     }
 }
 
+/// The profile: the portrait with its stamp, the name and role, the money, standing, conduct and
+/// record tiles, then the infractions (`agent-profile.ts`). The portrait is the agent's hue and
+/// initial until the desktop draws portraits.
 fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     let p = state.profile.as_ref();
-    let name = agent_name(a);
+    let pv = |k: &str| f(p, k);
+    let orchestrator = s(a, "tier") == "orchestrator";
+    let hue = if orchestrator { 25.0 } else { role_hue(s(a, "role")) };
     let (status_text, status_tone) = match s(a, "status") {
         "working" => ("Working", ui::Tone::Info),
         "idle" => ("Idle", ui::Tone::Ok),
         _ => ("Offline", ui::Tone::Muted),
     };
-    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "A".to_string());
-    let portrait = container(ui::mono(initial, 40.0, ui::INK))
-        .width(Length::Fixed(120.0))
-        .height(Length::Fixed(120.0))
-        .center_x(Length::Fixed(120.0))
-        .center_y(Length::Fixed(120.0));
-    let tier = if s(a, "tier") == "orchestrator" { "ORCHESTRATOR" } else { "CITIZEN" };
-    let ident = column![
-        row![ui::prose(name.clone()), ui::badge(status_text, status_tone)].spacing(12),
-        ui::mono(format!("{} · {} · agent #{}", s(a, "role_label"), s(a, "model"), u(a, "cid")), 12.0, ui::INK_2),
-        ui::label(tier),
-    ]
-    .spacing(6);
 
-    let pv = |k: &str| f(p, k);
-    let tk = |k: &str| f(p.and_then(|p| p.get("tasks")), k);
+    let name = agent_name(a).to_uppercase();
+    let initial = name.chars().next().map(String::from).unwrap_or_else(|| "A".to_string());
+    let stamp = container(text(if orchestrator { "ORCHESTRATOR" } else { "CITIZEN" }).font(MONO_BOLD).size(11.0).color(ui::SIGNAL))
+        .padding([4, 8])
+        .style(frame(Some(ui::SHEET), ui::SIGNAL));
+    let portrait = container(ui::mono(initial, 64.0, ui::INK))
+        .width(Length::Fixed(PORTRAIT))
+        .height(Length::Fixed(PORTRAIT))
+        .center_x(Length::Fixed(PORTRAIT))
+        .center_y(Length::Fixed(PORTRAIT))
+        .style(frame(Some(mix(hsl(agent_hue(u(a, "cid")), 0.6, 0.75), ui::SHEET, 0.45)), ui::INK));
+    let portrait = column![portrait, stamp].spacing(10).align_x(Alignment::Center);
+
+    let stripe = hsl(hue, 0.55, 0.4);
+    let role_chip = row![
+        container(Space::new().width(Length::Fixed(4.0)).height(Length::Fill)).style(move |_: &Theme| container::Style {
+            background: Some(stripe.into()),
+            ..Default::default()
+        }),
+        container(text(s(a, "role_label").to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(ui::INK)).padding([6, 10]).style(frame(Some(ui::SHEET), ui::INK)),
+    ]
+    .height(Length::Shrink);
+    let tags = row![role_chip, ui::mono(s(a, "model"), 12.0, ui::INK_2), ui::faint(format!("agent #{}", u(a, "cid")))]
+        .spacing(12)
+        .align_y(Alignment::Center);
+    let ident = column![row![text(name).font(MONO_BOLD).size(34.0).color(ui::INK), ui::badge(status_text, status_tone)].spacing(12).align_y(Alignment::Center), tags]
+        .spacing(12)
+        .width(Length::Fill);
+
     let usage = a.get("usage");
     let tokens = f(usage, "input_tokens") + f(usage, "output_tokens");
-    let (balance, balance_sub) = match p {
-        Some(_) => (format!("{} cr", compact(pv("wallet"))), format!("earned {} · spent {}", compact(pv("earned")), compact(pv("spent")))),
-        None => ("—".to_string(), String::new()),
-    };
     let conf = pv("confidence");
-    let (rep, rep_sub) = match p {
-        Some(_) if conf >= 0.05 => (format!("{} / 100", pv("reputation").round()), format!("{}% confident", (conf * 100.0).round())),
-        Some(_) => ("Unrated".to_string(), "no rated work yet".to_string()),
-        None => ("—".to_string(), String::new()),
+    let rep: Element<'a, Msg> = match p {
+        Some(_) if conf >= 0.05 => meter(pv("reputation"), 100.0, OK, format!("{} / 100", pv("reputation").round())),
+        Some(_) => figure_faint("Unrated"),
+        None => figure("—".into()),
     };
-    let (conduct, conduct_sub) = match p {
-        Some(_) => (conduct_text(pv("conduct")).to_string(), format!("{} violations · {} refusals", violations(p).len(), pv("denials").round())),
-        None => ("—".to_string(), String::new()),
+    let rep_sub = match p {
+        Some(_) if conf >= 0.05 => format!("{}% confident", (conf * 100.0).round()),
+        Some(_) => "no rated work yet".to_string(),
+        None => String::new(),
     };
-    let (tasks, tasks_sub) = match p {
-        Some(_) => (format!("{} verified", tk("verified")), format!("{} done · {} failed · {} posted", tk("done"), tk("failed"), tk("posted"))),
-        None => ("—".to_string(), String::new()),
+    let conduct: Element<'a, Msg> = match p {
+        Some(_) => meter(pv("conduct"), 100.0, conduct_tone(pv("conduct")), conduct_text(pv("conduct")).to_string()),
+        None => figure("—".into()),
     };
-    let (network, network_sub) = match p {
-        Some(_) => (format!("{} contacts", pv("contacts")), format!("{} memories", pv("memory_notes"))),
-        None => ("—".to_string(), String::new()),
-    };
-    let tokens_sub = p.map(|p| format!("joined {}", ago(u(p, "joined_ms")))).unwrap_or_default();
+    let tk = |k: &str| f(p.and_then(|p| p.get("tasks")), k);
+    let fines = p.and_then(|p| p.get("fines"));
     let tiles_a = row![
-        tile("Balance", balance, balance_sub),
+        tile("Balance", p.map(|_| figure(format!("{} cr", compact(pv("wallet"))))).unwrap_or_else(|| figure("—".into())), match p {
+            Some(_) => format!("earned {} · spent {}", compact(pv("earned")), compact(pv("spent"))),
+            None => String::new(),
+        }),
         tile("Reputation", rep, rep_sub),
-        tile("Conduct", conduct, conduct_sub),
+        tile("Conduct", conduct, match p {
+            Some(_) => format!("{} violations · {} refusals", violations(p).len(), pv("denials").round()),
+            None => String::new(),
+        }),
     ]
     .spacing(12);
     let tiles_b = row![
-        tile("Tasks", tasks, tasks_sub),
-        tile("Network", network, network_sub),
-        tile("Tokens", compact(tokens), tokens_sub),
+        tile("Tasks", p.map(|_| figure(format!("{} verified", tk("verified")))).unwrap_or_else(|| figure("—".into())), match p {
+            Some(_) => format!("{} done · {} failed · {} posted", tk("done"), tk("failed"), tk("posted")),
+            None => String::new(),
+        }),
+        tile("Network", p.map(|_| figure(format!("{} contacts", pv("contacts")))).unwrap_or_else(|| figure("—".into())), match p {
+            Some(_) => format!("{} memories", pv("memory_notes")),
+            None => String::new(),
+        }),
+        tile("Tokens", figure(compact(tokens)), match p {
+            Some(p) => format!("joined {}", ago(u(p, "joined_ms"))),
+            None => String::new(),
+        }),
     ]
     .spacing(12);
 
     let mut record: Vec<Element<'a, Msg>> = Vec::new();
     let viol = violations(p);
-    if p.is_some() && (!viol.is_empty() || f(p.and_then(|p| p.get("fines")), "count") > 0.0) {
+    if p.is_some() && (!viol.is_empty() || f(fines, "count") > 0.0) {
         record.push(ui::label("Record").into());
         for v in viol.iter().take(5) {
-            record.push(
-                row![ui::badge(s(v, "law"), ui::Tone::Danger), ui::prose(s(v, "detail")), ui::faint(ago(u(v, "at_ms")))]
-                    .spacing(8)
-                    .into(),
-            );
+            record.push(row![ui::badge(s(v, "law"), ui::Tone::Danger), ui::prose(s(v, "detail")), ui::faint(ago(u(v, "at_ms")))].spacing(8).into());
         }
-        let fines = p.and_then(|p| p.get("fines"));
         if f(fines, "count") > 0.0 {
-            record.push(
-                ui::faint(format!("{} fines, {} cr in total", f(fines, "count"), compact(f(fines, "total")))).into(),
-            );
+            record.push(ui::faint(format!("{} fines, {} cr in total", f(fines, "count"), compact(f(fines, "total")))).into());
         }
     } else if p.is_some() {
         record.push(ui::faint("A clean record: no violations, no fines.").into());
     }
 
+    let n = state.infractions.len();
     let headline: Element<'a, Msg> = if state.extras_at.is_none() {
         ui::faint("Loading…").into()
-    } else if state.infractions.is_empty() {
+    } else if n == 0 {
         ui::badge("No infractions", ui::Tone::Ok)
     } else {
-        let n = state.infractions.len();
         ui::badge(&format!("{} infraction{}", n, if n == 1 { "" } else { "s" }), ui::Tone::Danger)
     };
     let mut inf: Vec<Element<'a, Msg>> = vec![ui::label("Infractions").into(), headline];
-    for r in state.infractions.iter().take(10) {
+    let shown = if state.infractions_all { n } else { INFRACTIONS_SHOWN };
+    for r in state.infractions.iter().take(shown) {
         inf.push(
             row![
-                ui::prose(pick_str(s(r, "law_title"), s(r, "law"))),
+                ui::link(pick_str(s(r, "law_title"), s(r, "law")), Msg::Go(Id::Rules), false),
                 ui::mono(s(r, "tool"), 12.0, ui::INK_2),
                 ui::faint(s(r, "detail")),
                 ui::faint(ago(u(r, "at_ms"))),
             ]
             .spacing(10)
+            .align_y(Alignment::Center)
             .into(),
         );
     }
+    if n > INFRACTIONS_SHOWN {
+        inf.push(ui::link(if state.infractions_all { "Show fewer" } else { "Show all" }, Msg::ShowAll, false));
+    }
 
     let info = column![ident, tiles_a, tiles_b, column(record).spacing(6), column(inf).spacing(6)].spacing(14).width(Length::Fill);
-    ui::card("Profile", row![portrait, info].spacing(24).into())
-}
-
-fn tile<'a>(label: &'static str, value: String, sub: String) -> Element<'a, Msg> {
-    container(column![ui::label(label), ui::mono(value, 16.0, ui::INK), ui::faint(sub)].spacing(4))
+    container(row![portrait, info].spacing(24))
+        .padding(20)
         .width(Length::Fill)
+        .style(frame(Some(ui::SHEET), ui::INK))
         .into()
 }
 
-fn transcript_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut lines: Vec<Element<'a, Msg>> = Vec::new();
+/// A profile tile: its label, its figure (text or a meter) and its caption, on paper.
+fn tile<'a>(label: &'static str, value: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
+    container(column![text(label.to_uppercase()).font(MONO_SEMIBOLD).size(11.0).color(ui::INK_2), value, ui::mono(sub, 11.0, ui::INK_3)].spacing(6))
+        .padding([12, 14])
+        .width(Length::Fill)
+        .style(frame(Some(ui::PAPER), ui::RULE))
+        .into()
+}
+
+fn figure<'a>(value: String) -> Element<'a, Msg> {
+    text(value).font(MONO_BOLD).size(22.0).color(ui::INK).into()
+}
+
+fn figure_faint<'a>(value: &'static str) -> Element<'a, Msg> {
+    ui::faint(value).into()
+}
+
+/// A meter: a 2px-ruled track filled to `value` of `max`, its caption under it.
+fn meter<'a>(value: f64, max: f64, fill: Color, caption: String) -> Element<'a, Msg> {
+    let pct = (value / max * 100.0).clamp(0.0, 100.0).round() as u16;
+    let mut bar = row![].height(Length::Fill);
+    if pct > 0 {
+        bar = bar.push(
+            container(Space::new().width(Length::Fill).height(Length::Fill))
+                .width(Length::FillPortion(pct))
+                .height(Length::Fill)
+                .style(move |_: &Theme| container::Style { background: Some(fill.into()), ..Default::default() }),
+        );
+    }
+    if pct < 100 {
+        bar = bar.push(Space::new().width(Length::FillPortion(100 - pct)).height(Length::Fill));
+    }
+    let track = container(bar).width(Length::Fill).height(Length::Fixed(14.0)).style(frame(Some(ui::SHEET), ui::INK));
+    column![track, text(caption).font(MONO_SEMIBOLD).size(12.0).color(ui::INK)].spacing(4).width(Length::Fill).into()
+}
+
+fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
+    // Entries group into their work item's section; a rule divides one section from the next.
+    let mut groups: Vec<Vec<&'a Value>> = Vec::new();
     for e in &state.entries {
-        lines.extend(entry_view(e));
+        match groups.last_mut() {
+            Some(group) if group.first().is_some_and(|first| u(first, "work") == u(e, "work")) => group.push(e),
+            _ => groups.push(vec![e]),
+        }
     }
-    if lines.is_empty() {
-        lines.push(ui::faint("No messages yet.").into());
+    let count = groups.len();
+    let mut sections: Vec<Element<'a, Msg>> = Vec::new();
+    for (i, group) in groups.into_iter().enumerate() {
+        let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+        for e in group {
+            parts.extend(entry_view(&state.open, e));
+        }
+        sections.push(column(parts).spacing(12).width(Length::Fill).into());
+        if i + 1 < count {
+            sections.push(ui::hairline());
+        }
     }
-    scrollable(column(lines).spacing(12).width(Length::Fill)).height(Length::Fixed(TRANSCRIPT_HEIGHT)).into()
+    let lines: Element<'a, Msg> = column(sections).spacing(16).width(Length::Fill).into();
+    container(scrollable(lines).height(Length::Fixed(TRANSCRIPT_HEIGHT)))
+        .padding(16)
+        .width(Length::Fill)
+        .style(frame(None, ui::RULE))
+        .into()
 }
 
 fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -468,9 +601,11 @@ fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
     column![editor, row![Space::new().width(Length::Fill), send]].spacing(8).into()
 }
 
-/// One transcript entry as the web renders it: turns, tool calls and results compact, errors marked.
-fn entry_view<'a>(e: &'a Value) -> Vec<Element<'a, Msg>> {
+/// One transcript entry as the web renders it: turns, tool calls and results (collapsed until
+/// opened), decisions, errors. Blocks key their open state by the entry's seq and block index.
+fn entry_view<'a>(open: &HashSet<(u64, usize)>, e: &'a Value) -> Vec<Element<'a, Msg>> {
     let d = e.get("data").unwrap_or(&Value::Null);
+    let seq = u(e, "seq");
     match s(e, "kind") {
         "work_start" => vec![ui::badge(s(d, "kind"), ui::Tone::Info), ui::prose(s(d, "prompt")).into()],
         "work_end" => {
@@ -487,8 +622,8 @@ fn entry_view<'a>(e: &'a Value) -> Vec<Element<'a, Msg>> {
         "model_response" => {
             let mut out: Vec<Element<'a, Msg>> = Vec::new();
             if let Some(blocks) = d.get("content").and_then(Value::as_array) {
-                for b in blocks {
-                    out.extend(block_view(b));
+                for (idx, b) in blocks.iter().enumerate() {
+                    out.extend(block_view(open, seq, idx, b));
                 }
             }
             out
@@ -502,28 +637,129 @@ fn entry_view<'a>(e: &'a Value) -> Vec<Element<'a, Msg>> {
         "tool_result" => {
             let failed = d.get("is_error").and_then(Value::as_bool).unwrap_or(false);
             let body = pick_str(s(d, "content"), s(d, "output"));
-            vec![
-                ui::badge(if failed { "Error" } else { "Output" }, if failed { ui::Tone::Danger } else { ui::Tone::Ok }),
-                ui::mono(preview(body, 400), 12.0, ui::INK).into(),
-            ]
+            let key = (seq, 0);
+            let opened = open.contains(&key);
+            let (label, tone) = if failed { ("Error", CRIT) } else { ("Output", OK) };
+            let mut out = vec![disclosure(label.to_string(), tone, opened, Msg::Expand(key))];
+            if opened {
+                out.push(pre(body.to_string()));
+            }
+            out
         }
         "error" => vec![ui::error_line(pick_str(s(d, "message"), "Error"))],
         _ => Vec::new(),
     }
 }
 
-fn block_view<'a>(b: &'a Value) -> Vec<Element<'a, Msg>> {
+fn block_view<'a>(open: &HashSet<(u64, usize)>, seq: u64, idx: usize, b: &'a Value) -> Vec<Element<'a, Msg>> {
     match s(b, "type") {
         "text" => vec![ui::markdown(s(b, "text"))],
         "tool_use" => {
-            let input = b.get("input").map(|i| i.to_string()).unwrap_or_default();
-            vec![
-                ui::mono(format!("→ {}", s(b, "name")), 12.0, ui::INK_2).into(),
-                ui::faint(preview(&input, 160)).into(),
-            ]
+            let key = (seq, idx);
+            let opened = open.contains(&key);
+            let mut out = vec![chip(format!("→ {}", s(b, "name")), opened, Msg::Expand(key))];
+            if opened {
+                let input = serde_json::to_string_pretty(b.get("input").unwrap_or(&Value::Null)).unwrap_or_default();
+                out.push(pre(input));
+            }
+            out
         }
         _ => Vec::new(),
     }
+}
+
+/// A transcript disclosure: a marker and a mono label in a tone, that opens and shuts its body.
+fn disclosure<'a>(label: String, tone: Color, opened: bool, msg: Msg) -> Element<'a, Msg> {
+    let marker = if opened { "▾" } else { "▸" };
+    button(row![ui::mono(marker, 11.0, ui::INK_3), ui::mono(label, 12.0, tone)].spacing(6))
+        .padding(0)
+        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: ui::INK, border: Border::default(), ..Default::default() })
+        .on_press(msg)
+        .into()
+}
+
+/// A tool call's name as the web's chip: bordered, mono, opening its input.
+fn chip<'a>(label: String, opened: bool, msg: Msg) -> Element<'a, Msg> {
+    let marker = if opened { "▾" } else { "▸" };
+    button(row![ui::mono(marker, 10.0, ui::INK_3), ui::mono(label, 11.0, ui::INK_2)].spacing(6))
+        .padding([2, 8])
+        .style(|_: &Theme, _: button::Status| button::Style {
+            background: Some(HOVER.into()),
+            text_color: ui::INK_2,
+            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// An opened body in mono, on a ruled panel.
+fn pre<'a>(body: String) -> Element<'a, Msg> {
+    container(ui::mono(body, 12.0, ui::INK_2)).padding(8).width(Length::Fill).style(frame(None, ui::RULE)).into()
+}
+
+/// The details card: the agent's ids, its VM, when it connected and was seen, its tokens.
+fn details_card<'a>(a: &'a Value) -> Element<'a, Msg> {
+    let usage = a.get("usage");
+    let run = match s(a, "run") {
+        "" => "—",
+        run => run,
+    };
+    let vm = a.get("vm").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "—".to_string());
+    let rows: Vec<Element<'a, Msg>> = vec![
+        kv("CID", ui::mono(u(a, "cid").to_string(), 13.0, ui::INK).into()),
+        kv("Run", ui::mono(run, 13.0, ui::INK).into()),
+        kv("VM", ui::mono(vm, 13.0, ui::INK).into()),
+        kv("Connected", ui::prose(when(a, "connected_at_ms")).into()),
+        kv("Last seen", ui::prose(when(a, "last_seen_ms")).into()),
+        kv("Tokens in", ui::mono(compact(f(usage, "input_tokens")), 13.0, ui::INK).into()),
+        kv("Tokens out", ui::mono(compact(f(usage, "output_tokens")), 13.0, ui::INK).into()),
+    ];
+    ui::card("Details", column(rows).spacing(8).into())
+}
+
+fn kv<'a>(key: &'static str, value: Element<'a, Msg>) -> Element<'a, Msg> {
+    row![container(ui::label(key)).width(Length::Fixed(96.0)), value].spacing(12).align_y(Alignment::Center).into()
+}
+
+/// The queue card: the work running now, and how many items wait behind it.
+fn queue_card<'a>(a: &'a Value) -> Element<'a, Msg> {
+    let work: Element<'a, Msg> = match a.get("work").filter(|w| !w.is_null()) {
+        Some(w) => column![ui::badge(s(w, "kind"), ui::Tone::Info), ui::prose(preview(s(w, "prompt"), 160))].spacing(6).into(),
+        None => ui::faint("Nothing running").into(),
+    };
+    ui::card("Queue", column![work, ui::faint(format!("{} queued", u(a, "queue")))].spacing(8).into())
+}
+
+/// A bordered panel, optionally filled: the web's cards, tiles and mono frames.
+fn frame(fill: Option<Color>, edge: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_: &Theme| container::Style {
+        background: fill.map(Into::into),
+        border: Border { color: edge, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
+}
+
+/// Mixes `over` into `base` by `amount` (0 keeps `base`, 1 is `over`).
+fn mix(base: Color, over: Color, amount: f32) -> Color {
+    Color { r: base.r * amount + over.r * (1.0 - amount), g: base.g * amount + over.g * (1.0 - amount), b: base.b * amount + over.b * (1.0 - amount), a: 1.0 }
+}
+
+/// CSS `hsl()`: hue in degrees, saturation and lightness 0 to 1.
+fn hsl(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    Color::from_rgb(r + m, g + m, b + m)
 }
 
 fn offline(state: &State) -> bool {
@@ -548,6 +784,18 @@ fn conduct_text(score: f64) -> &'static str {
         "Under watch"
     } else {
         "In trouble"
+    }
+}
+
+fn conduct_tone(score: f64) -> Color {
+    if score >= 90.0 {
+        OK
+    } else if score >= 70.0 {
+        INFO
+    } else if score >= 40.0 {
+        WARN
+    } else {
+        CRIT
     }
 }
 
@@ -595,7 +843,7 @@ fn compact(n: f64) -> String {
 }
 
 /// How long ago an epoch-millisecond instant was, in the web's short words.
-fn ago(ms: u64) -> String {
+pub(super) fn ago(ms: u64) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(ms);
     let secs = now.saturating_sub(ms) / 1000;
     match secs {
@@ -603,5 +851,44 @@ fn ago(ms: u64) -> String {
         60..=3599 => format!("{}m ago", secs / 60),
         3600..=86_399 => format!("{}h ago", secs / 3600),
         _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
+/// The `ago` of a record's field, or a dash when the record does not carry it.
+fn when(a: &Value, key: &str) -> String {
+    a.get(key).and_then(Value::as_u64).map(ago).unwrap_or_else(|| "—".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hsl_matches_css_hsl() {
+        let red = hsl(0.0, 1.0, 0.5);
+        assert!((red.r - 1.0).abs() < 1e-4 && red.g.abs() < 1e-4 && red.b.abs() < 1e-4);
+        let grey = hsl(200.0, 0.0, 0.5);
+        assert!((grey.r - 0.5).abs() < 1e-4 && (grey.g - 0.5).abs() < 1e-4 && (grey.b - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn conduct_bands_match_the_web() {
+        assert_eq!(conduct_text(90.0), "Exemplary");
+        assert_eq!(conduct_text(70.0), "Good standing");
+        assert_eq!(conduct_text(40.0), "Under watch");
+        assert_eq!(conduct_text(39.9), "In trouble");
+    }
+
+    #[test]
+    fn figures_compact_like_the_web() {
+        assert_eq!(compact(999.0), "999");
+        assert_eq!(compact(1500.0), "1.5k");
+        assert_eq!(compact(2_500_000.0), "2.5M");
+    }
+
+    #[test]
+    fn previews_cut_on_characters() {
+        assert_eq!(preview("héllo", 3), "hél…");
+        assert_eq!(preview("abc", 3), "abc");
     }
 }
