@@ -333,7 +333,8 @@ pub fn refresh_board(&mut self) {
 /// Frames the fleet's bounding sphere for the stage's size. Nothing happens until both are there.
 pub fn fit_machines(&mut self) {
     let (w, h) = self.size;
-    if w <= 0.0 || h <= 0.0 {
+    // A robot lab keeps the camera its options set (`cam`), not the fleet's framing.
+    if w <= 0.0 || h <= 0.0 || self.lab.is_some() {
         return;
     }
     if let Some(fleet) = &self.fleet {
@@ -628,6 +629,11 @@ pub fn tick(&mut self, now: Instant) -> Motion {
             if w > 0.0 && h > 0.0 {
                 let camera = self.machines.orbit.camera(w / h);
                 let mut frame = self.machines.frame(w / h);
+                // The robot lab's `bg` is the Machines view's sky too (the lab's line-up is on the machines' ground).
+                if let Some(bg) = self.lab.as_ref().and_then(lab::Lab::background) {
+                    frame.world.background = bg;
+                    frame.world.flat_background = true;
+                }
                 frame.animated = self.fleet.as_ref().zip(self.fleet_data.as_ref()).map(|(f, d)| Arc::new(f.instances(d)));
                 if let Some(fleet) = &self.fleet {
                     frame.overlays = machine_overlays(fleet, &camera, w, h, self.scale, self.hovered_machine.as_deref());

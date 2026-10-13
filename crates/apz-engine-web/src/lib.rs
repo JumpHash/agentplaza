@@ -212,9 +212,13 @@ pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEn
         vars.insert(env.to_string(), value);
     }
     vars.entry("APZ_ROBOT_LAB".to_string()).or_insert_with(|| "all".to_string());
+    // The lab is built when the first fleet arrives (Stage::apply_fleet), after `start` resolves, so the options stay
+    // set for the lab engine's life; `destroy` clears them. One engine per page, so nothing else reads them meanwhile.
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
-    apz_engine::set_env_overrides(BTreeMap::new());
+    if started.is_err() {
+        apz_engine::set_env_overrides(BTreeMap::new());
+    }
     started
 }
 
@@ -357,6 +361,8 @@ impl WebEngine {
     /// Stops the loop, disconnects the observers, removes every listener and drops the surface.
     pub fn destroy(&self) {
         self.teardown();
+        // A lab engine's options (start_lab) end with it.
+        apz_engine::set_env_overrides(BTreeMap::new());
     }
 }
 

@@ -48,6 +48,9 @@ pub fn models_for(kind: &str, vendor: Option<&str>) -> (&'static str, &'static s
 /// inline material (colour, emissive, glow, opacity, flat).
 const PALETTE_SRC: &str = include_str!("../../../assets/hardware/palette.json");
 
+/// The animation shader of the baked fan spins and LED blinks (`vs_spin`, `vs_blink`).
+pub const HW_ANIM_WGSL: &str = include_str!("shaders/hw_anim.wgsl");
+
 /// The opacity a cutaway fades to while it stands between the eye and the focus, or over the plaza
 /// area (the web's `CUTAWAY_OPACITY`).
 pub const CUTAWAY_OPACITY: f32 = 0.15;
@@ -808,6 +811,25 @@ fn label_node(l: &Label, top: f32) -> Obj {
 
 /// Parts under this bounding radius (in units) get no ink outline: they read as specks.
 const OUTLINE_MIN: f32 = 0.6;
+/// One frame of a spin's angle: `Built::update` advances it by `dt` seconds at `rps` revolutions per second.
+fn spin_step(angle: f32, rps: f32, dt: f32) -> f32 {
+    (angle + rps * TAU * dt) % TAU
+}
+
+/// The emissive level a blink sets at clock `t`: `glow` for the first half of each `period` (shifted by
+/// `phase` seconds), `glow * 0.1` after. `vs_blink` in hw_anim.wgsl computes the same term on the GPU.
+fn blink_level(period: f32, phase: f32, glow: f32, t: f32) -> f32 {
+    let on = ((t + phase) % period) < period * 0.5;
+    if on { glow } else { glow * 0.1 }
+}
+
+/// `vs_spin` (hw_anim.wgsl) at `time` seconds, in Rust: the batch-frame rest point `p` turned about `pivot`
+/// on the unit `axis`, `rps` revolutions per second from `phase` radians at time 0.
+pub fn spin_point_shader(pivot: Vec3, axis: Vec3, rps: f32, phase: f32, p: Vec3, time: f32) -> Vec3 {
+    let angle = phase + TAU * rps * time;
+    pivot + Quat::from_axis_angle(axis, angle) * (p - pivot)
+}
+
 const MAX_USE_DEPTH: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1444,7 +1466,7 @@ impl Built {
                 _ => l.spin_rps,
             };
             if rps != 0.0 {
-                l.angle = (l.angle + rps * TAU * dt) % TAU;
+                l.angle = spin_step(l.angle, rps, dt);
                 q *= Quat::from_axis_angle(l.spin_axis, l.angle);
             }
             l.obj.set_quaternion(q);
@@ -1455,8 +1477,7 @@ impl Built {
                 m.emissive_intensity = l.glow.max(0.6) * (0.5 + 0.5 * (TAU * t / period).sin());
             }
             if let Some((period, phase)) = l.blink {
-                let on = ((t + phase) % period) < period * 0.5;
-                m.emissive_intensity = if on { l.glow } else { l.glow * 0.1 };
+                m.emissive_intensity = blink_level(period, phase, l.glow, t);
             }
             match l.tag {
                 Some(Tag::Status) => {
@@ -1638,6 +1659,42 @@ pub fn place_atom(model: &Model, root: &Obj, palette: &PropPalette) -> Option<pr
 
 #[cfg(test)]
 mod tests {
+    /// `vs_spin`'s maths (the baked rest point turned about its pivot on the batch-frame axis) against the
+    /// CPU pose `Built::update` gives a spinning part: 60 fps for ten seconds, a busy fan.
+    #[test]
+    fn the_fan_spin_shader_matches_the_cpu_pose() {
+        use glam::{Quat, Vec3};
+        let at = Vec3::new(1.0, 2.0, 3.0);
+        let rest_q = Quat::from_rotation_x(0.2);
+        let axis = Vec3::Y;
+        let rps = 2.0 * (1.0 + 2.0 * 0.5);
+        let v = Vec3::new(0.3, 0.1, -0.4);
+        let rest = at + rest_q * v;
+        let axis_b = rest_q * axis;
+        let dt = 1.0 / 60.0;
+        let mut angle = 0.0;
+        for step in 1..=600 {
+            angle = super::spin_step(angle, rps, dt);
+            let t = step as f32 * dt;
+            let cpu = at + (rest_q * Quat::from_axis_angle(axis, angle)) * v;
+            let shader = super::spin_point_shader(at, axis_b, rps, 0.0, rest, t);
+            assert!(cpu.abs_diff_eq(shader, 1e-3), "t = {t}: cpu {cpu} shader {shader}");
+        }
+    }
+
+    /// `vs_blink`'s term (the half-period on or the 0.1 level off, shifted by the phase) against the CPU level.
+    #[test]
+    fn the_led_blink_shader_matches_the_cpu_level() {
+        let (period, phase, glow) = (0.8_f32, 0.25_f32, 1.5_f32);
+        for k in 0..200 {
+            let t = k as f32 * 0.037;
+            let on = ((t + phase) % period) < period * 0.5;
+            let shader = if on { glow } else { glow * 0.1 };
+            let cpu = super::blink_level(period, phase, glow, t);
+            assert!((cpu - shader).abs() < 1e-6, "t = {t}: cpu {cpu} shader {shader}");
+        }
+    }
+
     use super::*;
 
     fn plaza_palette() -> PropPalette {
