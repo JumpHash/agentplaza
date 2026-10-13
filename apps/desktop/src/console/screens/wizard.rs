@@ -322,7 +322,7 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
             }
             wizard.refresh_choices();
             if wizard.model.is_empty() {
-                if let Some(first) = wizard.choices.first() {
+                if let Some(first) = wizard.choices.iter().find(|c| !picker::trains_on_data(&wizard.models, &c.id)) {
                     wizard.model = first.id.clone();
                 }
             }

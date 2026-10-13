@@ -11,6 +11,14 @@
 //!
 //! Captures: `APZ_FLOOR_MACHINE=<id>` opens that machine's view at start, and `APZ_FLOOR_POPUP=<id>`
 //! opens that machine's popup in the Machines view.
+//! `APZ_AUTO_ENTER=<secs>` presses the popup's ENTER (the popup's machine, else the hub's) once the fleet is read
+//! and that many seconds after the screen starts; `APZ_AUTO_BACK=<secs>` presses Back at that time (as Esc does).
+//! `APZ_AUTO_SELECT=<secs>` opens the popup of the hub's machine (as a click does) at that time, once the fleet is read.
+//! A hidden snapshot window takes no clicks or keys, so these stand in for them (the ENTER strip's frames).
+//! `APZ_PERF=1` also logs to stderr: each frame whose wall gap from the last one is over 16 ms (with its work time),
+//! each update over 16 ms, the popup's open and its board prebuild, and the ENTER's start, with times from the screen's start.
+//! The popup's board is queued, not built at once: its layout and robots at the popup's open, then its rooms a district
+//! per frame and its bake (`work_board`, the web's warm queue); ENTER builds what is left (`finish_board`).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,12 +29,14 @@ use iced::{Alignment, Border, Color, Element, Length, Point, Shadow, Subscriptio
 use serde_json::Value;
 
 use super::Id;
-use crate::console::floor3d::controls::FOV_DEG;
-use crate::console::floor3d::fleet::{self, build_fleet, FleetResponse, FleetScene, Machine};
-use crate::console::floor3d::hardware::{self, Params, Status};
-use crate::console::floor3d::scene::{Color as SceneColor, Frame};
-use crate::console::floor3d::world::view::{machine_overlays, FloorProgram, Label};
-use crate::console::floor3d::world::{display_name, AgentInfo, Floor};
+use apz_engine::stage::{ms_since, perf_line, perf_log_on, perf_t, Stage, View};
+use apz_engine::{Engine, Motion};
+use crate::console::floor3d::fleet::{self, FleetResponse, Machine};
+use crate::console::floor3d::hardware::Status;
+use crate::console::floor3d::scene::Color as SceneColor;
+use crate::console::floor3d::world::view::Label;
+use crate::console::floor_engine::FloorProgram;
+use crate::console::floor3d::world::display_name;
 use crate::console::{client, events, ui, Ctx};
 use crate::theme::OK;
 
@@ -42,89 +52,36 @@ const POPUP_NAMES: usize = 6;
 /// The fleet poll.
 const FLEET_EVERY: Duration = Duration::from_secs(5);
 
-/// Which scene the screen shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum View {
-    /// The fleet: every machine, with its popup.
-    Machines,
-    /// One machine's view: its board.
-    Machine(String),
-    /// The default workstation's board, shown directly because the fleet could not be read.
-    Plaza,
+/// The Floor screen's state: the engine (its stage is what the Floor shows and how it moves), the motion of the
+/// last frame (how often the window should draw next), plus the screen's own timing origin. The screen reads and
+/// drives the stage through `Deref`.
+pub struct State(pub Engine, Motion);
+
+impl std::ops::Deref for State {
+    type Target = Stage;
+    fn deref(&self) -> &Stage {
+        &self.0.stage
+    }
 }
 
-pub struct State {
-    /// The per-machine view: the machine's board with its agents.
-    pub floor: Floor,
-    /// The agents from `GET /v1/agents`: the board's rooms and robots are the ones on its machine.
-    agents: Vec<AgentInfo>,
-    /// The Machines view's scene: the Floor's sky and ground, with the fleet's group in its root.
-    pub machines: Floor,
-    /// The fleet scene, built from the first snapshot.
-    pub fleet: Option<FleetScene>,
-    /// The latest `GET /v1/fleet` snapshot: the popup's facts and the scene's update.
-    fleet_data: Option<FleetResponse>,
-    fleet_error: Option<String>,
-    /// A fleet request is in flight; one was sent at least once; one was answered.
-    fleet_asking: bool,
-    fleet_started: bool,
-    fleet_seen: bool,
-    /// The shown view.
-    pub view: View,
-    /// The machine whose popup is open (Machines view only).
-    popup: Option<String>,
-    /// The machine under the pointer (Machines view only).
-    hovered_machine: Option<String>,
-    /// The frame the shader draws; rebuilt on every animation tick.
-    pub frame: Arc<Frame>,
-    /// The stage's size in pixels, as the shader reports it.
-    pub size: (f32, f32),
-    pub error: Option<String>,
-    /// The previous animation tick, for the step's dt.
-    pub last: Option<Instant>,
-    /// Device pixels per logical pixel, for the labels' textures (2 for crisp text: the window's
-    /// scale factor is not known to the widget).
-    pub scale: f32,
-    /// The user has orbited, panned or zoomed: a resize no longer refits the view.
-    pub moved: bool,
+impl std::ops::DerefMut for State {
+    fn deref_mut(&mut self) -> &mut Stage {
+        &mut self.0.stage
+    }
 }
 
 impl Default for State {
     fn default() -> State {
-        let mut floor = Floor::new();
-        let mut machines = Floor::machines();
-        let view = match std::env::var("APZ_FLOOR_MACHINE").ok().filter(|id| !id.is_empty()) {
-            Some(id) => View::Machine(id),
-            None => View::Machines,
-        };
-        let popup = std::env::var("APZ_FLOOR_POPUP").ok().filter(|id| !id.is_empty());
-        let frame = Arc::new(if view == View::Machines { machines.frame(1.0) } else { floor.frame(1.0) });
-        State {
-            floor,
-            agents: Vec::new(),
-            machines,
-            fleet: None,
-            fleet_data: None,
-            fleet_error: None,
-            fleet_asking: false,
-            fleet_started: false,
-            fleet_seen: false,
-            view,
-            popup,
-            hovered_machine: None,
-            frame,
-            size: (0.0, 0.0),
-            error: None,
-            last: None,
-            scale: 2.0,
-            moved: false,
-        }
+        perf_t(Instant::now()); // the timing lines' origin: the screen's start
+        let mut engine = Engine::detached();
+        engine.set_scale(2.0);
+        State(engine, Motion::Active) // the first frame draws
     }
 }
 
 impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("State").field("error", &self.error).field("size", &self.size).finish_non_exhaustive()
+        self.0.stage.fmt(f)
     }
 }
 
@@ -159,6 +116,8 @@ pub enum Msg {
     Enter(String),
     /// Back to the machines.
     Back,
+    /// The capture hooks' clock (`APZ_AUTO_ENTER`, `APZ_AUTO_BACK`), every 100 ms while one is set.
+    AutoTick,
     /// Navigate to another screen.
     Go(Id),
 }
@@ -171,13 +130,18 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
-/// Animation frames from the window, the fleet poll and Esc, while the Floor is the shown screen.
-pub fn subscription() -> Subscription<Msg> {
-    // On a software adapter, 30 frames a second: every frame costs the CPU the whole picture.
-    let frames = if crate::console::floor3d::render::light() {
-        iced::time::every(Duration::from_millis(33)).map(Msg::Frame)
-    } else {
-        iced::window::frames().map(Msg::Frame)
+/// Animation frames from the window, the fleet poll and Esc, while the Floor is the shown screen. The frames follow
+/// the last frame's motion: every frame while something is active, 12 a second while only the decoration turns,
+/// none at rest (a change or input brings them back on the next update).
+pub fn subscription(state: &State) -> Subscription<Msg> {
+    let frames = match state.1 {
+        // On a software adapter, 30 frames a second: every frame costs the CPU the whole picture.
+        Motion::Active if crate::console::floor3d::render::light() => {
+            iced::time::every(Duration::from_millis(33)).map(Msg::Frame)
+        }
+        Motion::Active => iced::window::frames().map(Msg::Frame),
+        Motion::Ambient => iced::time::every(Duration::from_millis(83)).map(Msg::Frame),
+        Motion::Rest => Subscription::none(),
     };
     let poll = iced::time::every(FLEET_EVERY).map(|_| Msg::FleetTick);
     let esc = iced::event::listen_with(|event, _status, _window| match event {
@@ -187,7 +151,12 @@ pub fn subscription() -> Subscription<Msg> {
         }) => Some(Msg::Escape),
         _ => None,
     });
-    Subscription::batch([frames, poll, esc])
+    let auto = if ["APZ_AUTO_ENTER", "APZ_AUTO_BACK", "APZ_AUTO_SELECT"].iter().any(|v| std::env::var_os(v).is_some()) {
+        iced::time::every(Duration::from_millis(100)).map(|_| Msg::AutoTick)
+    } else {
+        Subscription::none()
+    };
+    Subscription::batch([frames, poll, esc, auto])
 }
 
 /// The hub's events, while the Floor is open.
@@ -214,196 +183,34 @@ fn fleet_request(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     client::task(move || client.call("GET", "/v1/fleet", None), Msg::Fleet)
 }
 
-/// The scene the shown view draws.
-fn active(state: &mut State) -> &mut Floor {
-    match state.view {
-        View::Machines => &mut state.machines,
-        _ => &mut state.floor,
-    }
-}
-
-/// Frames the whole plaza for the stage's size (`resetView`). Nothing happens until the stage has a size.
-fn reset_plaza(state: &mut State) {
-    let (w, h) = state.size;
-    if w > 0.0 && h > 0.0 {
-        state.floor.reset_view(w / h);
-        state.floor.fitted = true;
-    }
-}
-
-/// The first fit of the board: once there is a board and the stage has a size.
-fn fit_plaza(state: &mut State) {
-    if state.floor.board.is_some() {
-        reset_plaza(state);
-    }
-}
-
-/// The machine whose board the Machine view shows: the one the view names, else the hub, else the
-/// first. None without a fleet.
-fn board_machine(state: &State) -> Option<&Machine> {
-    let data = state.fleet_data.as_ref()?;
-    let named = match &state.view {
-        View::Machine(id) => data.machines.iter().find(|m| &m.id == id),
-        _ => None,
-    };
-    named.or_else(|| data.machines.iter().find(|m| m.role == "hub")).or_else(|| data.machines.first())
-}
-
-/// The params a machine's board is built with: its GPUs, its Apple chip's cores and memory, and
-/// whether it is a Mac Studio (the model's `when` parts read them).
-fn board_params(m: &Machine) -> Params {
-    let mut params = Params::default().with("gpus", m.gpus.len() as f64);
-    if let Some(apple) = &m.apple {
-        params = params
-            .with("p_cores", apple.p_cores as f64)
-            .with("e_cores", apple.e_cores as f64)
-            .with("gpu_cores", apple.gpu_cores as f64)
-            .with("memory_gib", apple.unified_memory_gib as f64);
-    }
-    let studio = m.model.as_deref().is_some_and(|name| name.contains("Studio"));
-    params.with("studio", if studio { 1.0 } else { 0.0 })
-}
-
-/// Shows the Machine view's board: the machine's own model with its params, or the default
-/// workstation without a fleet, and the agents on the machine (the hub's own when it names none).
-/// The board is rebuilt only when its model, params or status change; the rooms and robots follow
-/// the agents every time.
-fn refresh_board(state: &mut State) {
-    if matches!(state.view, View::Machines) {
-        return;
-    }
-    let (name, params, on, status) = match board_machine(state) {
-        Some(m) => {
-            let (_, board) = hardware::models_for(&m.kind, m.vendor.as_deref());
-            let on: Vec<AgentInfo> = state.agents.iter().filter(|a| m.agents.contains(&a.cid)).cloned().collect();
-            (board, board_params(m), on, fleet::status_of(&m.status))
-        }
-        None => ("board/workstation", Params::default(), state.agents.clone(), Status::Online),
-    };
-    let Some(model) = hardware::model(name) else { return };
-    let key = format!("{name}|{:?}|{status:?}", params.values);
-    if state.floor.board.as_ref().map(|b| b.key.as_str()) != Some(key.as_str()) {
-        state.floor.show_board(key, model, params, status);
-        // A new board is framed afresh.
-        state.moved = false;
-    }
-    state.floor.sync(&on);
-    if !state.floor.fitted {
-        fit_plaza(state);
-    }
-}
-
-/// Frames the fleet's bounding sphere for the stage's size. Nothing happens until both are there.
-fn fit_machines(state: &mut State) {
-    let (w, h) = state.size;
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    if let Some(fleet) = &state.fleet {
-        let f = fleet.frame();
-        state.machines.fit_sphere(f.center, f.radius, w / h);
-    }
-}
-
-/// Frames the shown view.
-fn fit_active(state: &mut State) {
-    match state.view {
-        View::Machines => fit_machines(state),
-        _ => fit_plaza(state),
-    }
-}
-
-/// Shows another view: its camera is framed afresh and the popup closes.
-fn set_view(state: &mut State, view: View) {
-    state.view = view;
-    state.popup = None;
-    state.moved = false;
-    refresh_board(state);
-    fit_active(state);
-}
-
-/// The machine under the stage point `at` (the ray through the Machines' camera).
-fn machine_at(state: &State, at: Point) -> Option<String> {
-    let (w, h) = state.size;
-    let fleet = state.fleet.as_ref()?;
-    if w <= 0.0 || h <= 0.0 {
-        return None;
-    }
-    let (origin, dir) = state.machines.orbit.camera(w / h).ray(at.x, at.y, w, h);
-    fleet.pick(origin.to_array(), dir.normalize_or_zero().to_array())
-}
-
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     let mut task = Task::none();
+    let perf_msg = perf_log_on().then(|| (format!("{msg:?}").chars().take(32).collect::<String>(), Instant::now()));
+    // The ENTER sequence drives the camera: the orbit and the reset take no input meanwhile.
+    if state.driving() && matches!(msg, Msg::Rotate { .. } | Msg::Pan { .. } | Msg::Dolly(_) | Msg::ResetView) {
+        return task;
+    }
+    // Any message but a frame changes the screen: the engine marks it, and the next frame draws at full rate.
+    if !matches!(msg, Msg::Frame(_)) {
+        state.0.touch();
+        state.1 = Motion::Active;
+    }
     match msg {
         Msg::Frame(now) => {
             let started = Instant::now();
-            let dt = state.last.map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32()).min(0.05);
-            state.last = Some(now);
-            let (w, h) = state.size;
-            match state.view {
-                View::Machines => {
-                    state.machines.orbit.update();
-                    state.machines.step(dt, now_ms(now));
-                    if let (Some(fleet), Some(data)) = (state.fleet.as_mut(), state.fleet_data.as_ref()) {
-                        fleet.update(dt, data);
-                    }
-                    if w > 0.0 && h > 0.0 {
-                        let camera = state.machines.orbit.camera(w / h);
-                        let mut frame = state.machines.frame(w / h);
-                        if let Some(fleet) = &state.fleet {
-                            frame.overlays = machine_overlays(fleet, &camera, w, h, state.scale, state.hovered_machine.as_deref());
-                        }
-                        state.frame = Arc::new(frame);
-                    }
-                }
-                _ => {
-                    state.floor.orbit.update();
-                    state.floor.step(dt, now_ms(now));
-                    if w > 0.0 && h > 0.0 {
-                        let mut frame = state.floor.frame(w / h);
-                        frame.overlays = state.floor.label_overlays(w, h, state.scale);
-                        state.frame = Arc::new(frame);
-                    }
-                }
-            }
+            let size = state.size;
+            let out = state.0.advance(now, size);
+            state.1 = out.motion;
             perf(started.elapsed(), now);
+            frame_log(now, started.elapsed());
         }
-        Msg::Agents(Ok(v)) => {
-            state.error = None;
-            state.agents = agent_list(&v);
-            refresh_board(state);
-        }
+        Msg::Agents(Ok(v)) => state.apply_agents(apz_engine::agent_list(&v)),
         Msg::Agents(Err(e)) => state.error = Some(e),
         Msg::Fleet(res) => {
             state.fleet_asking = false;
             match res.and_then(|v| serde_json::from_value::<FleetResponse>(v).map_err(|e| e.to_string())) {
-                Ok(data) => {
-                    state.fleet_error = None;
-                    state.fleet_seen = true;
-                    if state.fleet.is_none() {
-                        let fleet = build_fleet(&data, &state.machines.fleet_palette());
-                        state.machines.root.add(&fleet.group);
-                        state.fleet = Some(fleet);
-                    }
-                    state.fleet_data = Some(data);
-                    // The fallback gives way to the machines once they can be read.
-                    if state.view == View::Plaza {
-                        set_view(state, View::Machines);
-                    } else if state.view == View::Machines && !state.moved {
-                        fit_machines(state);
-                    } else if matches!(state.view, View::Machine(_)) {
-                        // The machine's own model, once the fleet names it.
-                        refresh_board(state);
-                    }
-                }
-                Err(e) => {
-                    state.fleet_error = Some(e);
-                    // Nothing read yet: the plaza is shown directly.
-                    if !state.fleet_seen && state.view == View::Machines {
-                        set_view(state, View::Plaza);
-                    }
-                }
+                Ok(data) => state.apply_fleet(data),
+                Err(e) => state.fleet_failed(e),
             }
         }
         Msg::FleetTick => {
@@ -411,58 +218,30 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 task = fleet_request(state, ctx);
             }
         }
-        Msg::Resized(w, h) => {
-            state.size = (w, h);
-            if !state.moved {
-                fit_active(state);
-            }
-        }
-        Msg::Rotate { dx, dy, height } => {
-            state.moved = true;
-            active(state).orbit.rotate(dx, dy, height);
-        }
-        Msg::Pan { dx, dy, height } => {
-            state.moved = true;
-            active(state).orbit.pan(dx, dy, height, FOV_DEG);
-        }
-        Msg::Dolly(steps) => {
-            state.moved = true;
-            active(state).orbit.dolly(steps);
-        }
-        Msg::Hover(at) => match state.view {
-            View::Machines => {
-                let hit = at.and_then(|p| machine_at(state, p));
-                if let Some(fleet) = state.fleet.as_mut() {
-                    fleet.hover(hit.as_deref());
-                }
-                state.hovered_machine = hit;
-            }
-            _ => {
-                let (w, h) = state.size;
-                let hit = at.and_then(|p| state.floor.pick(p.x, p.y, w, h));
-                state.floor.hovered = hit;
-            }
-        },
-        Msg::Select(at) => match state.view {
-            View::Machines => state.popup = at.and_then(|p| machine_at(state, p)),
-            _ => {
-                let (w, h) = state.size;
-                let hit = at.and_then(|p| state.floor.pick(p.x, p.y, w, h));
-                state.floor.selected = hit;
-            }
-        },
+        Msg::Resized(w, h) => state.resize(w, h),
+        Msg::Rotate { dx, dy, height } => state.rotate(dx, dy, height),
+        Msg::Pan { dx, dy, height } => state.pan(dx, dy, height),
+        Msg::Dolly(steps) => state.dolly(steps),
+        Msg::Hover(at) => state.hover(at.map(|p| (p.x, p.y))),
+        Msg::Select(at) => state.select(at.map(|p| (p.x, p.y))),
         Msg::Event(e) => state.floor.on_event(&e.kind, &e.data),
-        Msg::ResetView => {
-            state.moved = false;
-            match state.view {
-                View::Machines => fit_machines(state),
-                _ => reset_plaza(state),
+        Msg::ResetView => state.reset_view(),
+        Msg::Escape => {
+            if state.popup.is_some() {
+                state.popup = None;
+            } else {
+                state.leave();
             }
         }
-        Msg::Escape => state.popup = None,
-        Msg::Enter(id) => set_view(state, View::Machine(id)),
-        Msg::Back => set_view(state, View::Machines),
+        Msg::Enter(id) => state.enter(id),
+        Msg::Back => state.leave(),
+        Msg::AutoTick => state.auto_tick(),
         Msg::Go(_) => {}
+    }
+    if let Some((name, t0)) = perf_msg {
+        if ms_since(t0) > 16.0 {
+            perf_line(&format!("update {name} took {:.1} ms at {:.3} s", ms_since(t0), perf_t(t0)));
+        }
     }
     task
 }
@@ -769,32 +548,6 @@ fn now_millis() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Milliseconds on a monotonic clock that starts at the first frame.
-fn now_ms(at: Instant) -> f64 {
-    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    at.saturating_duration_since(*EPOCH.get_or_init(|| at)).as_secs_f64() * 1000.0
-}
-
-/// The agents from the hub's list: a bare array, or `{ "agents": [...] }`.
-fn agent_list(v: &Value) -> Vec<AgentInfo> {
-    let items = v.as_array().or_else(|| v.get("agents").and_then(Value::as_array)).cloned().unwrap_or_default();
-    items
-        .iter()
-        .filter_map(|a| {
-            let text = |key: &str| a.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-            let status = text("status");
-            Some(AgentInfo {
-                cid: a.get("cid")?.as_u64()?,
-                name: text("name"),
-                role: text("role"),
-                status: if status.is_empty() { "idle".to_string() } else { status },
-                tier: text("tier"),
-                model: text("model"),
-            })
-        })
-        .collect()
-}
-
 /// `APZ_PERF`: frames per second and the floor's CPU time per frame, every two seconds.
 fn perf(cpu: std::time::Duration, now: Instant) {
     use std::sync::Mutex;
@@ -814,6 +567,28 @@ fn perf(cpu: std::time::Duration, now: Instant) {
             total.as_secs_f64() * 1000.0 / f64::from(*frames)
         );
         *stats = None;
+    }
+}
+
+
+
+
+
+/// `APZ_PERF`: a frame whose wall gap from the previous frame is over 16 ms, with the time its work took.
+fn frame_log(now: Instant, work: std::time::Duration) {
+    static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    if !perf_log_on() {
+        return;
+    }
+    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+    let gap = last.replace(now).map(|t| now.saturating_duration_since(t));
+    if let Some(gap) = gap.filter(|g| g.as_secs_f64() > 0.016) {
+        perf_line(&format!(
+            "frame {:.1} ms at {:.3} s (work {:.1} ms)",
+            gap.as_secs_f64() * 1000.0,
+            perf_t(now),
+            work.as_secs_f64() * 1000.0
+        ));
     }
 }
 

@@ -1,7 +1,8 @@
 //! Embeds the AgentPlaza icon and version info in `agentplaza-desktop.exe`, so Explorer,
 //! the taskbar and Start show the AgentPlaza icon. Only a Windows target built on a Windows
 //! host gets the resource; elsewhere this does nothing (a warning when the target is Windows,
-//! because the resource compiler exists only on Windows).
+//! because the resource compiler exists only on Windows). The asset lists the renderer compiles
+//! in (hardware models, robot files) are built by `crates/apz-engine/build.rs`.
 use std::path::Path;
 
 fn main() {
@@ -9,7 +10,10 @@ fn main() {
     let icon = Path::new(&manifest_dir).join("../../packaging/icons/agentplaza.ico");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", icon.display());
+    windows_icon(&icon);
+}
 
+fn windows_icon(icon: &Path) {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

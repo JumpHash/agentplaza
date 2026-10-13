@@ -113,6 +113,8 @@ pub struct NodeStatus {
     /// The guest CIDs as `A-B`; empty when not joined.
     pub cids: String,
     pub running: bool,
+    /// apz-link's pid while it runs: the first pid `find_pids` finds, the scan Start and Stop use.
+    pub pid: Option<u32>,
 }
 
 /// The node's identity (`node/node.json` under the data directory) and whether apz-link runs.
@@ -126,12 +128,14 @@ pub fn node_status() -> NodeStatus {
         (Some(base), Some(count)) if count > 0 => cid_range(base, count),
         _ => String::new(),
     };
+    let pids = find_pids("apz-link");
     NodeStatus {
         joined: node.is_some(),
         hub: text("hub_url"),
         node_id: text("node_id"),
         cids,
-        running: !find_pids("apz-link").is_empty(),
+        running: !pids.is_empty(),
+        pid: pids.first().copied(),
     }
 }
 
@@ -577,6 +581,12 @@ mod tests {
     #[test]
     fn proc_scan_finds_nothing_for_an_impossible_name() {
         assert!(find_pids("agentplaza-no-such-service-zz9").is_empty());
+    }
+
+    #[test]
+    fn node_status_pid_agrees_with_running() {
+        let status = node_status();
+        assert_eq!(status.running, status.pid.is_some());
     }
 
     #[test]

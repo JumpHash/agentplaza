@@ -94,6 +94,24 @@ pub fn point_x(i: usize, n: usize, left: f32, width: f32) -> f32 {
 }
 
 /// The point nearest to `x` (in the same frame as `left`), or None when `x` is off the plot or there are no points.
+/// The window point a snapshot hovers the charts at (`APZ_HOVER`). Set once, before the first draw,
+/// by the snapshot path only.
+static SNAPSHOT_HOVER: std::sync::OnceLock<iced::Point> = std::sync::OnceLock::new();
+
+/// Sets the window point the charts draw a hover at (the snapshot path's `APZ_HOVER`).
+pub fn set_snapshot_hover(point: iced::Point) {
+    let _ = SNAPSHOT_HOVER.set(point);
+}
+
+/// The hovered point of a chart for the snapshot's window point, when that point is over its plot.
+fn snapshot_hover_index(bounds: Rectangle, n: usize, left: f32, width: f32) -> Option<usize> {
+    let p = *SNAPSHOT_HOVER.get()?;
+    if !bounds.contains(p) {
+        return None;
+    }
+    point_at(p.x - bounds.x, n, left, width)
+}
+
 pub fn point_at(x: f32, n: usize, left: f32, width: f32) -> Option<usize> {
     if n == 0 || width <= 0.0 || x < left || x > left + width {
         return None;
@@ -135,6 +153,8 @@ pub struct StackedArea {
     pub format: fn(f64) -> String,
     /// What the chart says when every value is zero.
     pub empty: &'static str,
+    /// The tooltip's heading per point when it differs from the x label (the Lab's "step N · time"); None uses the label.
+    pub heads: Option<Vec<String>>,
 }
 
 impl<M> canvas::Program<M> for StackedArea {
@@ -159,6 +179,9 @@ impl<M> canvas::Program<M> for StackedArea {
         let (left, top, width, height) = plot(bounds, PAD_LEFT, PAD_BOTTOM);
         let tops = stacked_tops(&self.series);
         let n = tops.first().map_or(0, Vec::len);
+        // A snapshot hovers the chart at its window point (`APZ_HOVER`), as a real cursor would.
+        let hover = (*hover).or_else(|| snapshot_hover_index(bounds, n, left, width));
+        let hover = &hover;
         let peak = tops.last().map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
         let ceiling = nice_ceiling(peak);
         let y = |v: f64| top + height - (v / ceiling) as f32 * height;
@@ -235,7 +258,7 @@ impl<M> canvas::Program<M> for StackedArea {
                     (v > 0.0).then(|| (series.color, format!("{}  {}", series.key, (self.format)(v))))
                 })
                 .collect();
-            let heading = self.labels.get(i).cloned().unwrap_or_default();
+            let heading = self.heads.as_ref().and_then(|h| h.get(i)).or_else(|| self.labels.get(i)).cloned().unwrap_or_default();
             let box_w = 200.0;
             let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
             let bx = if hx > left + width / 2.0 { hx - 12.0 - box_w } else { hx + 12.0 };
@@ -330,7 +353,12 @@ impl<M> canvas::Program<M> for Sparkline {
 
 /// A stacked area of `series` over `labels`, `height` pixels tall, filling the width.
 pub fn stacked_area<'a, M: 'a>(series: Vec<Series>, labels: Vec<String>, format: fn(f64) -> String, empty: &'static str) -> Element<'a, M> {
-    iced::widget::canvas(StackedArea { series, labels, format, empty }).width(Length::Fill).height(Length::Fixed(260.0)).into()
+    iced::widget::canvas(StackedArea { series, labels, format, empty, heads: None }).width(Length::Fill).height(Length::Fixed(260.0)).into()
+}
+
+/// A stacked area whose tooltip heads read `heads[i]` (the x-axis keeps `labels`).
+pub fn stacked_area_with_heads<'a, M: 'a>(series: Vec<Series>, labels: Vec<String>, heads: Vec<String>, format: fn(f64) -> String, empty: &'static str) -> Element<'a, M> {
+    iced::widget::canvas(StackedArea { series, labels, format, empty, heads: Some(heads) }).width(Length::Fill).height(Length::Fixed(260.0)).into()
 }
 
 /// Bars of `values` in `color`, 56 pixels tall, filling the width.

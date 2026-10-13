@@ -4,6 +4,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use iced::widget::text::Wrapping;
 use iced::widget::{checkbox, column, container, row, text_input, Space};
 use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde::Deserialize;
@@ -127,7 +128,7 @@ pub struct State {
     pub notice: Option<String>,
     /// The open dialog, if any.
     pub dialog: Option<Dialog>,
-    /// This machine as a node (loaded on open and on the poll).
+    /// This machine as a node (loaded on open and on the poll); its pid feeds the Status row.
     pub node: Option<NodeStatus>,
     /// The join code being typed; the node's action running; its progress lines and error.
     pub code: String,
@@ -164,7 +165,7 @@ pub enum Msg {
     /// Copy a value to the clipboard.
     Copy(String),
     Close,
-    /// This machine's node status, read from its identity files.
+    /// This machine's node status, read from its identity files and the process table.
     NodeLoaded(NodeStatus),
     CodeEdit(String),
     /// Join the network the code names, then start the node.
@@ -342,7 +343,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             }
             if token.is_empty() {
-                state.node_error = Some("Paste the join code from the hub first.".to_string());
+                state.node_error = Some("Paste the join code first.".to_string());
                 return Task::none();
             }
             state.node_busy = true;
@@ -471,7 +472,7 @@ fn nodes_view<'a>(nodes: &'a Load<Vec<NodeView>>) -> Element<'a, Msg> {
     match nodes {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load the machines.", ""),
-        Load::Ready(list) if list.is_empty() => ui::empty("link", "No machines yet.", ""),
+        Load::Ready(list) if list.is_empty() => ui::empty("link", "No machines yet", "Add a node here to bring a machine into this network, or join this hub to another network below."),
         Load::Ready(list) => table(
             &[(3, "Name"), (2, "State"), (2, "Address"), (1, "Agents"), (1, "CIDs"), (3, "Machine"), (2, "Last seen"), (3, "")],
             list.iter().map(node_row).collect(),
@@ -713,7 +714,7 @@ fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
 /// joined, with its services and Leave. Progress and errors show under either.
 fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![ui::prose(
-        "Lend this computer to another network: its agents run here in sealed machines. Your own plaza keeps running.",
+        "Make this hub's machine a node of another network: it lends its machine to that network's agents. Its own plaza keeps running.",
     )
     .into()];
     parts.push(match &state.node {
@@ -727,7 +728,7 @@ fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if let Some(error) = &state.node_error {
         parts.push(ui::error_line(error.as_str()));
     }
-    ui::card("Join a network", column(parts).spacing(12).width(Length::Fill).into())
+    ui::card("Join another network", column(parts).spacing(12).width(Length::Fill).into())
 }
 
 /// The join form: the code (monospace) and the Join button.
@@ -735,13 +736,13 @@ fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
     let busy = state.node_busy;
     column![
         ui::label("Join code"),
-        text_input("paste the join code", &state.code)
+        text_input("Paste the join code", &state.code)
             .font(crate::theme::MONO)
             .style(crate::theme::input)
             .padding(8.0)
             .on_input(Msg::CodeEdit)
             .on_submit(Msg::Join),
-        ui::faint("The code is made on the hub, under Add a node. It is single use and expires."),
+        ui::faint("Get a code from the other network's Nodes screen (Add a node)."),
         ui::btn(if busy { "Joining…" } else { "Join" }, None, ui::Kind::Primary, (!busy).then_some(Msg::Join)),
     ]
     .spacing(10)
@@ -760,8 +761,8 @@ fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
     };
     let leave: Element<'a, Msg> = if state.leaving {
         column![
-            ui::faint("This computer stops lending itself to that network, and the agents it runs here stop."),
-            checkbox(state.forget).label("Forget this network (remove its identity and key)").on_toggle(Msg::ToggleForget),
+            ui::faint("This node stops lending its machine to that network, and its agents there go offline."),
+            checkbox(state.forget).label("Forget this network: remove the saved hub, so joining again needs a new code.").on_toggle(Msg::ToggleForget),
             row![
                 ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::CancelLeave)),
                 ui::btn("Leave", None, ui::Kind::Danger, (!busy).then_some(Msg::Leave)),
@@ -773,12 +774,16 @@ fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
     } else {
         ui::btn("Leave", None, ui::Kind::Danger, (!busy).then_some(Msg::AskLeave))
     };
-    let service: Element<'a, Msg> = row![ui::badge(badge_text, tone), toggle].spacing(10).align_y(Alignment::Center).into();
+    let mut status = row![ui::badge(badge_text, tone)].spacing(10).align_y(Alignment::Center);
+    if let Some(pid) = node.pid {
+        status = status.push(ui::faint(format!("pid {pid}")).wrapping(Wrapping::None));
+    }
+    let service: Element<'a, Msg> = status.push(toggle).into();
     column![
         fact("Hub", ui::mono(or_dash(&node.hub), 12.0, ui::INK).into()),
-        fact("Node", ui::mono(or_dash(&node.node_id), 12.0, ui::INK).into()),
+        fact("This node", ui::mono(or_dash(&node.node_id), 12.0, ui::INK).into()),
         fact("CIDs", ui::mono(or_dash(&node.cids), 12.0, ui::INK).into()),
-        service,
+        fact("Status", service),
         leave,
     ]
     .spacing(12)

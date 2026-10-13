@@ -5,8 +5,9 @@
 use std::collections::BTreeMap;
 
 use iced::widget::{button, column, container, row, scrollable, tooltip, Space};
-use iced::{Alignment, Border, Element, Length, Padding, Subscription, Task, Theme};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 
+use super::events;
 use super::screens::{Id, NAV};
 use super::{ui, Ctx};
 use crate::theme::{CRIT, HOVER, OK};
@@ -28,13 +29,27 @@ pub struct State {
     /// The plaza's held state (STOP ALL), as the hub reports it.
     pub paused: bool,
     pub held_note: String,
+    /// What the hold stopped and who held it: `cancelled`, `since_ms` and `by` from `/v1/plaza/state`.
+    pub held_cancelled: u64,
+    pub held_since_ms: u64,
+    pub held_by: String,
     /// Counts per screen key (agents, approvals, …).
     pub counts: BTreeMap<&'static str, u32>,
+    /// The top bar's working and idle agent counts (`/v1/overview`).
+    pub working: u32,
+    pub idle: u32,
+    /// The top bar's node indicator (`noded` in `/v1/overview`).
+    pub node_ok: bool,
     pub hub_ok: bool,
     /// The hub's address, shown faint in the sidebar footer.
     pub hub: String,
     /// The graphics adapter, when it is a software fallback (the 3D floor will crawl on it).
     pub software_gpu: Option<String>,
+    /// The hub's target, once the shell has one: the top bar's frame stream runs on it.
+    pub target: Option<apz_http::client::Target>,
+    /// A count reload is in flight; a frame that asks for one meanwhile sets `again`.
+    pub loading: bool,
+    pub again: bool,
 }
 
 impl Default for State {
@@ -45,10 +60,19 @@ impl Default for State {
             width: 248.0,
             paused: false,
             held_note: String::new(),
+            held_cancelled: 0,
+            held_since_ms: 0,
+            held_by: String::new(),
             counts: Default::default(),
+            working: 0,
+            idle: 0,
+            node_ok: false,
             hub_ok: false,
             hub: String::new(),
             software_gpu: None,
+            target: None,
+            loading: false,
+            again: false,
         }
     }
 }
@@ -65,6 +89,8 @@ pub enum Msg {
     Loaded(Result<serde_json::Value, String>),
     /// `POST /v1/plaza/stop` or `/v1/plaza/resume` answered.
     Done(Result<serde_json::Value, String>),
+    /// A hub frame from the top bar's stream.
+    Frame(events::Event),
 }
 
 /// The shell's own data: the plaza's held state and the sidebar counts.
@@ -109,16 +135,55 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
         Msg::Done(Err(_)) => (Task::none(), None),
         Msg::Loaded(Ok(v)) => {
             state.hub_ok = v["overview"]["hub"].as_bool().unwrap_or(false);
+            state.node_ok = v["overview"]["noded"].as_bool().unwrap_or(false);
+            state.working = v["overview"]["agents"]["working"].as_u64().unwrap_or(0) as u32;
+            state.idle = v["overview"]["agents"]["idle"].as_u64().unwrap_or(0) as u32;
             state.counts.insert("agents", v["overview"]["agents"]["total"].as_u64().unwrap_or(0) as u32);
-            state.paused = v["control"]["paused"].as_bool().unwrap_or(false);
-            state.held_note = v["control"]["reason"].as_str().unwrap_or("").to_string();
+            set_control(state, &v["control"]);
             state.hub = ctx.client.base().to_string();
-            (Task::none(), None)
+            state.target = Some(ctx.client.target.clone());
+            state.loading = false;
+            (if std::mem::take(&mut state.again) { load(ctx) } else { Task::none() }, None)
         }
         Msg::Loaded(Err(_)) => {
             state.hub_ok = false;
+            state.node_ok = false;
+            state.loading = false;
+            (if std::mem::take(&mut state.again) { load(ctx) } else { Task::none() }, None)
+        }
+        Msg::Frame(event) => {
+            if apply_frame(state, &event.kind, &event.data) {
+                if state.loading {
+                    state.again = true;
+                } else {
+                    state.loading = true;
+                    return (load(ctx), None);
+                }
+            }
             (Task::none(), None)
         }
+    }
+}
+
+/// The hold's fields from `/v1/plaza/state` or a `plaza` frame (the same shape).
+fn set_control(state: &mut State, v: &serde_json::Value) {
+    state.paused = v["paused"].as_bool().unwrap_or(false);
+    state.held_note = v["reason"].as_str().unwrap_or("").to_string();
+    state.held_cancelled = v["cancelled"].as_u64().unwrap_or(0);
+    state.held_since_ms = v["since_ms"].as_u64().unwrap_or(0);
+    state.held_by = v["by"].as_str().unwrap_or("").to_string();
+}
+
+/// Applies one hub frame to the top bar: a `plaza` frame sets the hold as it is; an agent or work change
+/// moves the counts, so it asks for a reload of `/v1/overview`. Returns true when that reload is wanted.
+fn apply_frame(state: &mut State, kind: &str, data: &serde_json::Value) -> bool {
+    match kind {
+        "plaza" => {
+            set_control(state, data);
+            false
+        }
+        "agent" | "work" => true,
+        _ => false,
     }
 }
 
@@ -126,18 +191,56 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
 pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let mut main = column![top_bar(state, wrap)];
     if state.paused {
-        main = main.push(held_banner(state));
+        main = main.push(held_banner(state, wrap));
     }
     if let Some(adapter) = &state.software_gpu {
         main = main.push(gpu_banner(adapter));
     }
+    // A screen that does not scroll its own page is wrapped in one, so a squeezed screen scrolls instead of clipping.
+    let screen = if manages_scroll(&state.current) {
+        screen
+    } else {
+        scrollable(screen).id(SCREEN_SCROLL.clone()).width(Length::Fill).height(Length::Fill).into()
+    };
     main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
     let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
     row![sidebar(state, wrap), main].height(Length::Fill).into()
 }
 
-pub fn subscription(_state: &State) -> Subscription<Msg> {
-    Subscription::none()
+/// The id of the wrap around a screen that does not scroll its own page; the Machines screen scrolls
+/// to a machine's section through it.
+pub static SCREEN_SCROLL: std::sync::LazyLock<iced::widget::Id> =
+    std::sync::LazyLock::new(iced::widget::Id::unique);
+
+/// Screens whose view scrolls its own page (a `scrollable` inside `ui::sheet`), or that handle their own
+/// pointer input (Floor's canvas). The shell wraps every other screen; add a screen here once its view scrolls itself.
+fn manages_scroll(id: &super::screens::Id) -> bool {
+    use super::screens::Id;
+    matches!(
+        id,
+        Id::Overview
+            | Id::Agents
+            | Id::Projects
+            | Id::Tasks
+            | Id::Git
+            | Id::Library
+            | Id::Floor
+            | Id::Society
+            | Id::Conversations
+            | Id::Board
+            | Id::Treasury
+            | Id::Rules
+            | Id::Usage
+            | Id::Tools
+            | Id::Agent(_)
+    )
+}
+
+pub fn subscription(state: &State) -> Subscription<Msg> {
+    match &state.target {
+        Some(target) => events::top_bar(target).map(Msg::Frame),
+        None => Subscription::none(),
+    }
 }
 
 fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
@@ -257,24 +360,30 @@ fn footer<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a
 
 fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let toggle = ui::btn("", Some("panel-left"), ui::Kind::Ghost, Some(wrap(Msg::ToggleSidebar)));
-    let title = NAV.iter().find(|e| e.0 == state.current).map(|e| e.1).unwrap_or("Agent");
-    let dot = if state.hub_ok { OK } else { CRIT };
-    let hub = row![
-        container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0))).style(move |_: &Theme| container::Style {
-            background: Some(dot.into()),
-            ..Default::default()
-        }),
-        ui::mono("Hub", 11.5, ui::INK_2),
+    let title = NAV
+        .iter()
+        .find(|e| e.0 == state.current)
+        .map(|e| e.1)
+        .or_else(|| super::screens::lab::Section::of(&state.current).map(|_| "Lab"))
+        .unwrap_or("Agent");
+    let health = row![
+        indicator(state.hub_ok, "HUB"),
+        indicator(state.node_ok, "NODE"),
+        row![hollow_mark(ui::INK_2), ui::mono(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, ui::INK_2)]
+            .spacing(7)
+            .align_y(Alignment::Center),
     ]
-    .spacing(6)
+    .spacing(14)
     .align_y(Alignment::Center);
-    let control = if state.paused {
-        ui::btn("Resume", Some("play"), ui::Kind::Primary, Some(wrap(Msg::Resume)))
+    let mut right = row![health].spacing(16).align_y(Alignment::Center);
+    if state.paused {
+        right = right.push(row![ui::mono("◆", 11.0, CRIT), ui::mono("HELD", 11.5, CRIT)].spacing(5).align_y(Alignment::Center));
+        right = right.push(top_btn("RESUME", "play", ui::SIGNAL, wrap(Msg::Resume)));
     } else {
-        ui::btn("Stop all", Some("stop"), ui::Kind::Danger, Some(wrap(Msg::StopAll)))
-    };
+        right = right.push(top_btn("STOP ALL", "stop", CRIT, wrap(Msg::StopAll)));
+    }
     container(
-        row![toggle, ui::mono(title.to_uppercase(), 13.0, ui::INK), Space::new().width(Length::Fill), hub, control]
+        row![toggle, ui::mono(title.to_uppercase(), 13.0, ui::INK), Space::new().width(Length::Fill), right]
             .spacing(16)
             .align_y(Alignment::Center),
     )
@@ -306,13 +415,84 @@ fn gpu_banner<'a, M: 'a>(adapter: &'a str) -> Element<'a, M> {
     .into()
 }
 
-fn held_banner<'a, M: 'a>(state: &'a State) -> Element<'a, M> {
+/// The web's outlined square mark (`base.css`, "Marks"): an 8 px box with a 1 px border in `tone`.
+fn hollow_mark<'a, M: 'a>(tone: Color) -> Element<'a, M> {
+    container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
+        .style(move |_: &Theme| container::Style {
+            border: Border { color: tone, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A header button at the web's `.btn` size: 36 px high, 14 px sides, 11.5 px mono, white on `fill` with an
+/// ink border. `ui::btn` is 29 px high, so the top bar draws its own.
+fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M) -> Element<'a, M> {
+    let inner = row![ui::icon(icon_name, 14.0, Color::WHITE), ui::mono(label.to_uppercase(), 11.5, Color::WHITE)]
+        .spacing(7)
+        .align_y(Alignment::Center);
+    button(inner)
+        .padding([10, 14])
+        .on_press(msg)
+        .style(move |_: &Theme, _: button::Status| button::Style {
+            background: Some(fill.into()),
+            text_color: Color::WHITE,
+            border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A square status light and its label, as the web's top bar draws the hub and node.
+fn indicator<'a, M: 'a>(up: bool, label: &'static str) -> Element<'a, M> {
+    let tone = if up { OK } else { CRIT };
+    row![
+        container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0))).style(move |_: &Theme| container::Style {
+            background: Some(tone.into()),
+            ..Default::default()
+        }),
+        ui::mono(label, 11.5, ui::INK_2),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The web's relative time: "just now", "42s ago", "5m ago", "3h ago", "2d ago"; a dash when unknown.
+fn ago_text(ms: u64) -> String {
+    if ms == 0 {
+        return "—".into();
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let s = now.saturating_sub(ms) / 1000;
+    match s {
+        0..=4 => "just now".into(),
+        5..=59 => format!("{s}s ago"),
+        60..=3599 => format!("{}m ago", s / 60),
+        3600..=86399 => format!("{}h ago", s / 3600),
+        _ => format!("{}d ago", s / 86400),
+    }
+}
+
+/// The held banner under the top bar, worded as the web's: what was cancelled, when, by whom and why.
+fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
+    let by = if state.held_by.is_empty() { String::new() } else { format!(" by {}", state.held_by) };
+    let reason = if state.held_note.is_empty() { String::new() } else { format!(": {}", state.held_note) };
+    let text = format!(
+        "The plaza is stopped — {} running items were cancelled {}{}{}. Nothing new starts until you resume.",
+        state.held_cancelled,
+        ago_text(state.held_since_ms),
+        by,
+        reason
+    );
     container(
-        column![
-            ui::mono("Everything is held: no agent works until you resume.", 12.5, CRIT),
-            ui::faint(state.held_note.clone()),
+        row![
+            hollow_mark(CRIT),
+            ui::mono(text, 12.5, CRIT).width(Length::Fill),
+            top_btn("RESUME", "play", ui::SIGNAL, wrap(Msg::Resume)),
         ]
-        .spacing(4),
+        .spacing(10)
+        .align_y(Alignment::Center),
     )
     .padding([10, 16])
     .width(Length::Fill)
@@ -352,5 +532,37 @@ mod tests {
         assert_eq!(s.width, 200.0);
         let _ = update(&mut s, Msg::Resize(1000.0), &ctx);
         assert_eq!(s.width, 420.0);
+    }
+
+    #[test]
+    fn events_plaza_frame_sets_the_hold_without_a_reload() {
+        let mut s = State::default();
+        let held = serde_json::json!({ "paused": true, "since_ms": 1000, "by": "owner", "reason": "held", "cancelled": 3 });
+        assert!(!apply_frame(&mut s, "plaza", &held));
+        assert!(s.paused);
+        assert_eq!((s.held_cancelled, s.held_since_ms), (3, 1000));
+        assert_eq!((s.held_by.as_str(), s.held_note.as_str()), ("owner", "held"));
+        let resumed = serde_json::json!({ "paused": false, "since_ms": 0, "by": "", "reason": "", "cancelled": 0 });
+        assert!(!apply_frame(&mut s, "plaza", &resumed));
+        assert!(!s.paused);
+    }
+
+    #[test]
+    fn events_agent_and_work_frames_ask_for_a_reload_and_others_do_not() {
+        let mut s = State::default();
+        assert!(apply_frame(&mut s, "agent", &serde_json::json!({ "cid": 1 })));
+        assert!(apply_frame(&mut s, "work", &serde_json::json!({})));
+        assert!(!apply_frame(&mut s, "transcript", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn events_reload_waits_for_the_one_in_flight() {
+        let ctx = ctx();
+        let mut s = State::default();
+        s.loading = true;
+        let frame = events::Event { kind: "agent".into(), data: serde_json::json!({}) };
+        let _ = update(&mut s, Msg::Frame(frame), &ctx);
+        assert!(s.again);
+        assert!(s.loading);
     }
 }

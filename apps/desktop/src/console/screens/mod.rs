@@ -24,6 +24,17 @@ pub mod tools;
 pub mod machines;
 pub mod nodes;
 pub mod agent;
+pub mod sanctions;
+pub mod lab;
+pub mod lab_common;
+pub mod lab_jobs;
+pub mod lab_job_detail;
+pub mod lab_recipes;
+pub mod lab_datasets;
+pub mod lab_models;
+pub mod lab_model_detail;
+pub mod lab_breeders;
+pub mod lab_hf;
 
 use iced::{Element, Task};
 
@@ -53,6 +64,17 @@ pub enum Id {
     Nodes,
     /// One agent's page.
     Agent(u64),
+    /// The Lab: its overview (the section strip's first tab).
+    Lab,
+    LabJobs,
+    /// One job's page, by its id.
+    LabJobDetail(String),
+    LabRecipes,
+    LabDatasets,
+    LabModels,
+    /// One model's page, by its id.
+    LabModelDetail(String),
+    LabBreeders,
 }
 
 /// The sidebar's entries: (screen, label, section, icon), in order.
@@ -71,6 +93,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Council, "Council", "Social", "council"),
     (Id::Treasury, "Treasury", "Social", "treasury"),
     (Id::Rules, "Rules", "Social", "rules"),
+    (Id::Lab, "Lab", "Lab", "brain"),
     (Id::Models, "Models", "Setup", "models"),
     (Id::Usage, "Usage", "Setup", "zap"),
     (Id::Tools, "Tools", "Setup", "wrench"),
@@ -100,6 +123,14 @@ pub struct Screens {
     pub machines: machines::State,
     pub nodes: nodes::State,
     pub agent: agent::State,
+    pub lab: lab::State,
+    pub lab_jobs: lab_jobs::State,
+    pub lab_job_detail: lab_job_detail::State,
+    pub lab_recipes: lab_recipes::State,
+    pub lab_datasets: lab_datasets::State,
+    pub lab_models: lab_models::State,
+    pub lab_model_detail: lab_model_detail::State,
+    pub lab_breeders: lab_breeders::State,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +155,14 @@ pub enum Msg {
     Machines(machines::Msg),
     Nodes(nodes::Msg),
     Agent(agent::Msg),
+    Lab(lab::Msg),
+    LabJobs(lab_jobs::Msg),
+    LabJobDetail(lab_job_detail::Msg),
+    LabRecipes(lab_recipes::Msg),
+    LabDatasets(lab_datasets::Msg),
+    LabModels(lab_models::Msg),
+    LabModelDetail(lab_model_detail::Msg),
+    LabBreeders(lab_breeders::Msg),
 }
 
 /// The navigation a screen's message asks for.
@@ -149,6 +188,14 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Machines(m) => machines::go(m),
         Msg::Nodes(m) => nodes::go(m),
         Msg::Agent(m) => agent::go(m),
+        Msg::Lab(m) => lab::go(m),
+        Msg::LabJobs(m) => lab_jobs::go(m),
+        Msg::LabJobDetail(m) => lab_job_detail::go(m),
+        Msg::LabRecipes(m) => lab_recipes::go(m),
+        Msg::LabDatasets(m) => lab_datasets::go(m),
+        Msg::LabModels(m) => lab_models::go(m),
+        Msg::LabModelDetail(m) => lab_model_detail::go(m),
+        Msg::LabBreeders(m) => lab_breeders::go(m),
     }
 }
 
@@ -156,6 +203,11 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
 pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     if let Id::Agent(cid) = id {
         screens.agent = agent::State { cid, ..Default::default() };
+    }
+    match &id {
+        Id::LabJobDetail(job) => screens.lab_job_detail = lab_job_detail::State { job: job.clone(), ..Default::default() },
+        Id::LabModelDetail(model) => screens.lab_model_detail = lab_model_detail::State { model: model.clone(), ..Default::default() },
+        _ => {}
     }
     refresh(screens, &id, ctx)
 }
@@ -183,6 +235,14 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Machines => machines::load(&mut screens.machines, ctx).map(Msg::Machines),
         Id::Nodes => nodes::load(&mut screens.nodes, ctx).map(Msg::Nodes),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
+        Id::Lab => lab::load(&mut screens.lab, ctx).map(Msg::Lab),
+        Id::LabJobs => lab_jobs::load(&mut screens.lab_jobs, ctx).map(Msg::LabJobs),
+        Id::LabJobDetail(_) => lab_job_detail::load(&mut screens.lab_job_detail, ctx).map(Msg::LabJobDetail),
+        Id::LabRecipes => lab_recipes::load(&mut screens.lab_recipes, ctx).map(Msg::LabRecipes),
+        Id::LabDatasets => lab_datasets::load(&mut screens.lab_datasets, ctx).map(Msg::LabDatasets),
+        Id::LabModels => lab_models::load(&mut screens.lab_models, ctx).map(Msg::LabModels),
+        Id::LabModelDetail(_) => lab_model_detail::load(&mut screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
+        Id::LabBreeders => lab_breeders::load(&mut screens.lab_breeders, ctx).map(Msg::LabBreeders),
     }
 }
 
@@ -208,16 +268,30 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Machines(m) => machines::update(&mut screens.machines, m, ctx).map(Msg::Machines),
         Msg::Nodes(m) => nodes::update(&mut screens.nodes, m, ctx).map(Msg::Nodes),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
+        Msg::Lab(m) => lab::update(&mut screens.lab, m, ctx).map(Msg::Lab),
+        Msg::LabJobs(m) => lab_jobs::update(&mut screens.lab_jobs, m, ctx).map(Msg::LabJobs),
+        Msg::LabJobDetail(m) => lab_job_detail::update(&mut screens.lab_job_detail, m, ctx).map(Msg::LabJobDetail),
+        Msg::LabRecipes(m) => lab_recipes::update(&mut screens.lab_recipes, m, ctx).map(Msg::LabRecipes),
+        Msg::LabDatasets(m) => lab_datasets::update(&mut screens.lab_datasets, m, ctx).map(Msg::LabDatasets),
+        Msg::LabModels(m) => lab_models::update(&mut screens.lab_models, m, ctx).map(Msg::LabModels),
+        Msg::LabModelDetail(m) => lab_model_detail::update(&mut screens.lab_model_detail, m, ctx).map(Msg::LabModelDetail),
+        Msg::LabBreeders(m) => lab_breeders::update(&mut screens.lab_breeders, m, ctx).map(Msg::LabBreeders),
     }
 }
 
 /// The shown screen's own subscriptions: the Floor's animation frames and the hub's events while it is open.
 pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
-        Id::Floor => iced::Subscription::batch([floor::subscription(), floor::events(ctx)]).map(Msg::Floor),
+        Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
+        Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury).map(Msg::Treasury),
+        Id::LabJobs => lab_jobs::subscription(&screens.lab_jobs, ctx).map(Msg::LabJobs),
         Id::Society => society::subscription().map(Msg::Society),
+        Id::Lab => lab::subscription(&screens.lab, ctx).map(Msg::Lab),
+        Id::LabModels => lab_models::subscription(ctx).map(Msg::LabModels),
+        Id::Rules => rules::subscription(ctx).map(Msg::Rules),
+        Id::LabJobDetail(_) => lab_common::live(&ctx.client).filter_map(|e| lab_common::training_frame(&e)).map(lab_job_detail::Msg::Live).map(Msg::LabJobDetail),
         _ => iced::Subscription::none(),
     }
 }
@@ -244,5 +318,13 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::Machines => machines::view(&screens.machines, ctx).map(Msg::Machines),
         Id::Nodes => nodes::view(&screens.nodes, ctx).map(Msg::Nodes),
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
+        Id::Lab => lab::view(&screens.lab, ctx).map(Msg::Lab),
+        Id::LabJobs => lab_jobs::view(&screens.lab_jobs, ctx).map(Msg::LabJobs),
+        Id::LabJobDetail(_) => lab_job_detail::view(&screens.lab_job_detail, ctx).map(Msg::LabJobDetail),
+        Id::LabRecipes => lab_recipes::view(&screens.lab_recipes, ctx).map(Msg::LabRecipes),
+        Id::LabDatasets => lab_datasets::view(&screens.lab_datasets, ctx).map(Msg::LabDatasets),
+        Id::LabModels => lab_models::view(&screens.lab_models, ctx).map(Msg::LabModels),
+        Id::LabModelDetail(_) => lab_model_detail::view(&screens.lab_model_detail, ctx).map(Msg::LabModelDetail),
+        Id::LabBreeders => lab_breeders::view(&screens.lab_breeders, ctx).map(Msg::LabBreeders),
     }
 }

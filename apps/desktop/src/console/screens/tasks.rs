@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, pick_list, row, scrollable, text, text_editor, text_input, Space};
 use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
+use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -72,6 +73,9 @@ pub struct AgentRecord {
     pub tier: String,
     #[serde(default)]
     pub status: String,
+    /// "llm" or "model".
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,7 +150,7 @@ impl Draft {
             details: text_editor::Content::new(),
             acceptance: text_editor::Content::new(),
             role: Pick::any_role(),
-            budget: "100".into(),
+            budget: String::new(),
             assignee: Pick::scheduler(),
             posting: false,
         }
@@ -315,17 +319,32 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     if d.posting || d.title.trim().is_empty() {
         return Task::none();
     }
+    // Empty leaves the budget to the hub's default; anything given must be a whole number of
+    // credits at or above the hub's minimum (the hub refuses the rest with its own 400).
     let budget_text = d.budget.trim().to_string();
-    let budget = if budget_text.is_empty() { Ok(100.0) } else { budget_text.parse::<f64>() };
-    let Ok(budget) = budget else {
-        state.error = Some("Budget must be a number.".into());
-        return Task::none();
+    let budget = if budget_text.is_empty() {
+        None
+    } else {
+        match budget_text.parse::<i64>() {
+            Ok(credits) if credits >= MIN_TASK_BUDGET => Some(credits),
+            Ok(_) => {
+                state.error = Some(format!("Budget must be at least {MIN_TASK_BUDGET} credits."));
+                return Task::none();
+            }
+            Err(_) => {
+                state.error = Some("Budget must be a whole number of credits.".into());
+                return Task::none();
+            }
+        }
     };
     let title = d.title.trim().to_string();
     let details = d.details.text().trim().to_string();
     let acceptance = d.acceptance.text().trim().to_string();
     let goal = if details.is_empty() { title } else { format!("{title}\n\n{details}") };
-    let mut body = json!({ "goal": goal, "budget": budget });
+    let mut body = json!({ "goal": goal });
+    if let Some(budget) = budget {
+        body["budget"] = json!(budget);
+    }
     if !acceptance.is_empty() {
         body["acceptance"] = json!(acceptance);
     }
@@ -814,7 +833,8 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
     let details = text_editor(&d.details).placeholder("Details").on_action(Msg::FormDetails).height(120.0);
     let acceptance = text_editor(&d.acceptance).placeholder("Acceptance").on_action(Msg::FormAcceptance).height(80.0);
     let role = pick_list(role_options(&state.agents), Some(d.role.clone()), Msg::FormRole).width(Length::Fill);
-    let budget = text_input("100", &d.budget).on_input(Msg::FormBudget).style(theme::input).padding(8.0);
+    let budget_hint = format!("{DEFAULT_TASK_BUDGET} (hub default)");
+    let budget = text_input(&budget_hint, &d.budget).on_input(Msg::FormBudget).style(theme::input).padding(8.0);
     let mut assignee_options = vec![Pick::scheduler()];
     assignee_options.extend(idle_workers(&state.agents).into_iter().map(|a| Pick {
         key: a.cid.to_string(),

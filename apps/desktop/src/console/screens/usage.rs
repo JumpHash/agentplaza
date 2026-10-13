@@ -307,6 +307,8 @@ pub struct Data {
     /// Every price looked up so far; `None` where the hub has no price.
     prices: BTreeMap<String, Option<Price>>,
     head: Option<PriceHead>,
+    /// The contributor models the presets flag (`provider/model`): they train on what they are sent.
+    trains: BTreeSet<String>,
 }
 
 // ---- Messages ----
@@ -531,6 +533,7 @@ fn fetch(c: &Client, q: Query) -> Result<Data, String> {
         }
     }
     let head = if q.want_head { c.get::<PriceHead>("/v1/prices").ok() } else { None };
+    let kinds: Vec<serde_json::Value> = c.get("/v1/provider-kinds").unwrap_or_default();
     Ok(Data {
         summary,
         timeline,
@@ -541,7 +544,25 @@ fn fetch(c: &Client, q: Query) -> Result<Data, String> {
         settings,
         prices,
         head,
+        trains: trains_models(&kinds),
     })
+}
+
+/// The contributor models the provider presets flag (`options.trains_on_data`), as `provider/model`.
+fn trains_models(kinds: &[serde_json::Value]) -> BTreeSet<String> {
+    kinds
+        .iter()
+        .flat_map(|kind| {
+            let id = kind["id"].as_str().unwrap_or_default().to_string();
+            kind["options"]["trains_on_data"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(move |name| name.as_str().map(|n| format!("{id}/{n}")))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// `GET /v1/usage/calls` with its filters; `before` pages back from an id.
@@ -881,6 +902,7 @@ fn prices_line<'a>(state: &'a State) -> Element<'a, Msg> {
                 .map(|s| match s.name.as_str() {
                     "openrouter" => "OpenRouter".to_string(),
                     "litellm" => "LiteLLM".to_string(),
+                    "opencode" => "OpenCode Zen".to_string(),
                     other => other.to_string(),
                 })
                 .collect();
@@ -1037,15 +1059,26 @@ fn table<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
     }
     for g in rows {
         let share = if total_value > 0.0 { state.unit.value(&g.totals) / total_value } else { 0.0 };
-        lines = lines.push(table_row(state.group.display(&g.key, &d.agents), &g.totals, Some(share)));
+        let trains = matches!(state.group, GroupBy::Model) && d.trains.contains(&g.key);
+        lines = lines.push(table_row(state.group.display(&g.key, &d.agents), trains, &g.totals, Some(share)));
     }
     if !groups.is_empty() {
-        lines = lines.push(table_row("Total".to_string(), &d.summary.totals, None));
+        lines = lines.push(table_row("Total".to_string(), false, &d.summary.totals, None));
     }
     lines.into()
 }
 
-fn table_row<'a>(name: String, t: &Totals, share: Option<f64>) -> Element<'a, Msg> {
+/// `content`, with the contributor warning badge after it when `trains` is set.
+fn with_badge<'a>(content: impl Into<Element<'a, Msg>>, trains: bool) -> Element<'a, Msg> {
+    let content = content.into();
+    if trains {
+        row![content, ui::trains_badge()].spacing(8).align_y(Alignment::Center).into()
+    } else {
+        content
+    }
+}
+
+fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> Element<'a, Msg> {
     let bar: Element<'a, Msg> = match share {
         Some(s) => {
             let pct = (s.clamp(0.0, 1.0) * 100.0).round() as u16;
@@ -1066,7 +1099,7 @@ fn table_row<'a>(name: String, t: &Totals, share: Option<f64>) -> Element<'a, Ms
     };
     let num = |v: String| cell(2, true, text(v).font(MONO).size(12.0).color(INK_2));
     row![
-        cell(5, false, text(name).font(MONO).size(12.0).color(INK)),
+        cell(5, false, with_badge(text(name).font(MONO).size(12.0).color(INK), trains)),
         num(commas(&t.calls.to_string())),
         num(compact(t.input as f64)),
         num(compact(t.output as f64)),
@@ -1132,7 +1165,7 @@ fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
             cell(3, false, txt(stamp(c.at_ms))),
             cell(3, false, txt(agent)),
             cell(2, false, txt(c.role.clone())),
-            cell(4, false, txt(c.model.clone())),
+            cell(4, false, with_badge(txt(c.model.clone()), d.trains.contains(&c.model))),
             cell(2, true, txt(compact(c.input as f64))),
             cell(2, true, txt(compact(c.output as f64))),
             cell(2, true, txt(compact(c.cache_read as f64))),
@@ -1305,5 +1338,17 @@ mod tests {
         let uses = settings_uses(&s);
         assert_eq!(uses["m/a"], vec!["default".to_string(), "role architect".to_string()]);
         assert_eq!(uses["m/o"], vec!["orchestrator".to_string()]);
+    }
+
+    #[test]
+    fn the_presets_flag_contributor_models_by_provider_and_model() {
+        let kinds = vec![
+            json!({"id": "meta", "options": {"trains_on_data": ["muse-spark-1.3-contributor"]}}),
+            json!({"id": "deepseek", "options": {"reasoning_effort": true}}),
+        ];
+        let flagged = trains_models(&kinds);
+        assert!(flagged.contains("meta/muse-spark-1.3-contributor"));
+        assert!(!flagged.contains("meta/muse-spark-1.3"));
+        assert_eq!(flagged.len(), 1);
     }
 }

@@ -10,11 +10,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use iced::widget::{canvas, column, container, mouse_area, row, scrollable, Space};
-use iced::{border, mouse, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
+use iced::{border, mouse, Alignment, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::Id;
+use super::{sanctions, Id};
 use crate::console::floor3d::world::layout::agent_hue;
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::{client, Ctx};
@@ -115,21 +115,7 @@ pub enum Key {
     Role(&'static str, String),
 }
 
-/// The family a role belongs to. The orchestrator tier is the command family, and a role that no
-/// family lists is "other".
-pub fn role_family(role: &str, tier: &str) -> &'static str {
-    if tier.trim().eq_ignore_ascii_case("orchestrator") {
-        return "command";
-    }
-    match role.trim().to_ascii_lowercase().as_str() {
-        "orchestrator" | "mayor" | "mayor-office" => "command",
-        "architect" | "builder" | "qa" | "reviewer" | "release" => "build",
-        "edge-operator" | "incident" | "security-reviewer" => "operations",
-        "librarian" | "researcher" | "planner" => "knowledge",
-        "finance" | "auditor" => "money",
-        _ => "other",
-    }
-}
+pub use apz_engine::roles::role_family;
 
 /// A family's name on screen.
 pub fn family_label(family: &str) -> &'static str {
@@ -166,6 +152,8 @@ pub struct State {
     selected: Option<Key>,
     /// The peers whose private notes are expanded in the panel.
     open_notes: HashSet<u64>,
+    /// The agents with an active suspension: they carry the suspended mark.
+    suspended: HashSet<u64>,
     /// The family toggle; None follows the agent count.
     group: Option<bool>,
     /// The families and roles open, outermost first. Only used while grouped.
@@ -199,6 +187,8 @@ pub enum Msg {
     Rated(Result<Value, String>),
     /// Expand or collapse a peer's private note.
     Note(u64),
+    /// The sanctions register, read once per refresh for the suspended marks.
+    Sanctions(Result<sanctions::Register, String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -212,7 +202,11 @@ pub fn go(msg: &Msg) -> Option<Id> {
 /// Loads the society (called when it opens and on every poll tick).
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
-    client::task(move || client.get::<Society>("/v1/society"), Msg::Loaded)
+    let sanctions_client = ctx.client.clone();
+    Task::batch([
+        client::task(move || client.get::<Society>("/v1/society"), Msg::Loaded),
+        client::task(move || sanctions::list(&sanctions_client, None, None, None), Msg::Sanctions),
+    ])
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -301,6 +295,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             load(state, ctx)
         }
+        Msg::Sanctions(result) => {
+            // Keep the last marks when the register cannot be read; the next refresh tries again.
+            if let Ok(register) = result {
+                state.suspended = register.suspensions.iter().filter(|s| s.active).map(|s| s.cid).collect();
+            }
+            Task::none()
+        }
     }
 }
 
@@ -371,7 +372,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Some(d) => {
             let grouped = is_grouped(state);
             let grow = state.anim.as_ref().map(|a| Grow { origin: a.origin, t: ease(a.at.elapsed()), keys: &a.keys });
-            let graph = Graph { scene: &state.scene, pos: &state.pos, selected: state.selected.as_ref(), grow };
+            let graph = Graph { scene: &state.scene, pos: &state.pos, selected: state.selected.as_ref(), grow, suspended: &state.suspended };
             let panel = match &state.selected {
                 Some(Key::Agent(cid)) => match d.agents.iter().find(|a| a.cid == *cid) {
                     Some(me) => detail(state, d, me),
@@ -810,26 +811,6 @@ fn name_of(a: &Agent) -> String {
     }
 }
 
-/// The agent's head and body colour, as the web's `hsl()`.
-fn hsl(h: f32, s: f32, l: f32) -> Color {
-    let h = h.rem_euclid(360.0) / 360.0;
-    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
-    let p = 2.0 * l - q;
-    let channel = |t: f32| {
-        let t = if t < 0.0 { t + 1.0 } else if t > 1.0 { t - 1.0 } else { t };
-        if t < 1.0 / 6.0 {
-            p + (q - p) * 6.0 * t
-        } else if t < 0.5 {
-            q
-        } else if t < 2.0 / 3.0 {
-            p + (q - p) * (2.0 / 3.0 - t) * 6.0
-        } else {
-            p
-        }
-    };
-    Color::from_rgb(channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0))
-}
-
 /// Maps the layout's box onto the canvas: the whole box, fitted and centred (the web's
 /// `preserveAspectRatio` meet).
 #[derive(Clone, Copy)]
@@ -903,6 +884,7 @@ struct Graph<'a> {
     pos: &'a HashMap<Key, Pt>,
     selected: Option<&'a Key>,
     grow: Option<Grow<'a>>,
+    suspended: &'a HashSet<u64>,
 }
 
 impl Graph<'_> {
@@ -1023,7 +1005,7 @@ impl canvas::Program<Msg> for Graph<'_> {
             let dim = self.selected.is_some_and(|sel| sel != &n.key && !touching.contains(&n.key));
             let alpha = if dim { 0.35 } else { 1.0 };
             match &n.key {
-                Key::Agent(_) => draw_agent(&mut frame, n, c, k, alpha, selected),
+                Key::Agent(_) => draw_agent(&mut frame, n, c, k, alpha, selected, self.suspended.contains(&n.members[0])),
                 _ => draw_cluster(&mut frame, n, c, k, alpha, selected),
             }
         }
@@ -1031,8 +1013,9 @@ impl canvas::Program<Msg> for Graph<'_> {
     }
 }
 
-/// An agent: a square body with a head, two eyes, a mouth and a name tag.
-fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32, selected: bool) {
+/// An agent: a square body with a head, two eyes, a mouth and a name tag. A suspended agent carries a
+/// danger-coloured ring segment at the top-right corner of its body.
+fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32, selected: bool, suspended: bool) {
     let cid = n.members[0];
     let sz = n.w * k;
     let half = sz / 2.0;
@@ -1044,16 +1027,24 @@ fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32,
     let antenna = canvas::Path::line(Point::new(c.x, c.y - half), Point::new(c.x, c.y - half - 12.0 * k));
     frame.stroke(&antenna, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
     let tip = canvas::Path::circle(Point::new(c.x, c.y - half - 13.0 * k), 4.5 * k);
-    frame.fill(&tip, hsl(hue, 0.7, 0.55).scale_alpha(alpha));
+    frame.fill(&tip, ui::hsl(hue, 0.7, 0.55).scale_alpha(alpha));
     frame.stroke(&tip, canvas::Stroke::default().with_color(ink).with_width(2.5 * k));
 
     // The body, and the ring round the selected agent.
     let body = canvas::Path::rectangle(Point::new(c.x - half, c.y - half), Size::new(sz, sz));
-    frame.fill(&body, hsl(hue, 0.6, 0.64).scale_alpha(alpha));
+    frame.fill(&body, ui::hsl(hue, 0.6, 0.64).scale_alpha(alpha));
     frame.stroke(&body, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
     if selected {
         let ring = canvas::Path::rectangle(Point::new(c.x - half - 5.0, c.y - half - 5.0), Size::new(sz + 10.0, sz + 10.0));
         frame.stroke(&ring, canvas::Stroke::default().with_color(ui::SIGNAL).with_width(2.0));
+    }
+    if suspended {
+        // A quarter ring centred on the body's top-right corner, outside the body: from straight up to straight right.
+        let corner = Point::new(c.x + half, c.y - half);
+        let arc = canvas::Path::new(|pb| {
+            pb.arc(canvas::path::Arc { center: corner, radius: 9.0 * k, start_angle: (-std::f32::consts::FRAC_PI_2).into(), end_angle: 0.0_f32.into() });
+        });
+        frame.stroke(&arc, canvas::Stroke::default().with_color(Tone::Danger.color().scale_alpha(alpha)).with_width(3.0 * k).with_line_cap(canvas::LineCap::Round));
     }
 
     // Two eyes: a white sclera with an ink pupil each.
@@ -1134,7 +1125,7 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
     });
     for (i, cid) in n.members.iter().take(3).enumerate() {
         let dot = canvas::Path::circle(Point::new(x0 + 14.0 + i as f32 * 12.0, y0 + h - 12.0), 4.5);
-        frame.fill(&dot, hsl(agent_hue(*cid), 0.6, 0.64).scale_alpha(alpha));
+        frame.fill(&dot, ui::hsl(agent_hue(*cid), 0.6, 0.64).scale_alpha(alpha));
         frame.stroke(&dot, canvas::Stroke::default().with_color(ink).with_width(1.2));
     }
 }
@@ -1143,7 +1134,8 @@ fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f3
 
 /// The controls above the graph: the family toggle, and Back when a level is open.
 fn toolbar<'a>(grouped: bool, depth: usize) -> Element<'a, Msg> {
-    let style: fn(&Theme) -> container::Style = if grouped { on_box } else { boxed };
+    let rule = ui::frame(None, ui::INK);
+    let style = move |t: &Theme| if grouped { on_box(t) } else { rule(t) };
     let colour = if grouped { ui::PAPER } else { ui::INK };
     let toggle = mouse_area(container(ui::mono("GROUP BY FAMILY", 11.0, colour)).padding([4.0, 8.0]).style(style)).on_press(Msg::Group);
     let mut bar = row![toggle].spacing(8);
@@ -1224,7 +1216,7 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
                 item = item.push(ui::btn(if open { "Show less" } else { "Show all" }, None, Kind::Ghost, Some(Msg::Note(peer))));
             }
         }
-        container(item).padding([10.0, 0.0]).width(Length::Fill).style(hairline_below).into()
+        container(item).padding([10.0, 0.0]).width(Length::Fill).style(ui::frame(None, ui::RULE)).into()
     };
 
     let outgoing: Vec<Element<'a, Msg>> = d
@@ -1240,8 +1232,12 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
         .map(|b| peer_row(b.from, b))
         .collect();
 
+    let mut title = row![ui::mono(name.clone(), 18.0, ui::INK)].spacing(8).align_y(Alignment::Center);
+    if state.suspended.contains(&me.cid) {
+        title = title.push(ui::badge("suspended", Tone::Danger));
+    }
     let mut panel = column![
-        column![ui::mono(name.clone(), 18.0, ui::INK), ui::faint(me.role.clone())].spacing(4),
+        column![title, ui::faint(me.role.clone())].spacing(4),
         stat("Reputation", if rated { format!("{} / 100", rep.round()) } else { "Unrated".to_string() }),
         meter(if rated { rep / 100.0 } else { 0.0 }),
         stat("Confidence", format!("{}%", (clamp(me.confidence, 0.0, 1.0) * 100.0).round())),
@@ -1343,7 +1339,7 @@ fn meter<'a>(frac: f32) -> Element<'a, Msg> {
     if filled < 1000 {
         parts.push(Space::new().width(Length::FillPortion(1000 - filled)).height(Length::Fill).into());
     }
-    container(row(parts).height(Length::Fill)).width(Length::Fill).height(6.0).style(boxed).into()
+    container(row(parts).height(Length::Fill)).width(Length::Fill).height(6.0).style(ui::frame(None, ui::INK)).into()
 }
 
 /// An opinion: the filled part is the expected trust e; the lighter tail runs on by the uncertainty u.
@@ -1362,7 +1358,7 @@ fn bar<'a>(o: &Opinion) -> Element<'a, Msg> {
     if fill + tail_w < 1000 {
         parts.push(Space::new().width(Length::FillPortion(1000 - fill - tail_w)).height(Length::Fill).into());
     }
-    let track = container(row(parts).height(Length::Fill)).width(Length::Fill).height(8.0).style(boxed);
+    let track = container(row(parts).height(Length::Fill)).width(Length::Fill).height(8.0).style(ui::frame(None, ui::INK));
     row![track, ui::mono(format!("{e:.2}"), 12.0, ui::INK)].spacing(8).into()
 }
 
@@ -1409,16 +1405,6 @@ fn tint_sized<'a>(width: f32, height: f32, colour: Color) -> Element<'a, Msg> {
 
 fn filled(colour: Color) -> container::Style {
     container::Style { background: Some(Background::Color(colour)), ..container::Style::default() }
-}
-
-/// A square-cornered box with a thin ink rule.
-fn boxed(_: &Theme) -> container::Style {
-    container::Style { border: iced::Border { color: ui::INK, width: 1.0, radius: 0.0.into() }, ..container::Style::default() }
-}
-
-/// A peer's row, with a rule under it.
-fn hairline_below(_: &Theme) -> container::Style {
-    container::Style { border: iced::Border { color: ui::RULE, width: 1.0, radius: 0.0.into() }, ..container::Style::default() }
 }
 
 /// A wallet figure, shortened: 1.2k, 3.4M.

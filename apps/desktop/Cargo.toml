@@ -7,12 +7,16 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# The board core: one Rust crate for the board, shared with the web (WASM). See docs/design/apz-board.md.
+apz-board = { path = "../../crates/apz-board" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
 # fallback the renderer stack drops to when wgpu cannot get a device.
 # `smol` (not `thread-pool`) is the executor: it provides `time::every` for the
 # 2 s poll and pulls no tokio.
 iced = { version = "0.14", default-features = false, features = [
     "wgpu",
+    # The widget operations the snapshot harness uses (APZ_SNAPSHOT_SCROLL).
+    "advanced",
     "tiny-skia",
     "smol",
     "crisp",
@@ -33,11 +37,17 @@ bytemuck = { version = "1", features = ["derive"] }
 tiny-skia = "0.11"
 ab_glyph = "0.2"
 # The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
+apz-engine = { path = "../../crates/apz-engine" }
 apz-http = { path = "../../crates/apz-http" }
+apz-plaza = { path = "../../crates/apz-plaza" }
 apz-os = { path = "../../crates/apz-os" }
 apz-trust = { path = "../../crates/apz-trust" }
 serde.workspace = true
 serde_json.workspace = true
+# The Lab's times are the owner's local time, as the web's (`clock` reads the zone on every platform).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# The Lab's upload picks its JSONL file with the native file dialog, as the web's file input does.
+rfd = "0.17"
 
 [dev-dependencies]
 # iced's headless harness: it drives the same widgets and application the

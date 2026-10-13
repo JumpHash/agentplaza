@@ -180,6 +180,10 @@ struct AgentRec {
     model_override: Option<String>,
     #[serde(default)]
     status: String,
+    /// The robot species the hub sent (read by the floor once it is wired).
+    #[serde(default)]
+    #[allow(dead_code)]
+    species: Option<String>,
 }
 
 #[derive(Deserialize)]

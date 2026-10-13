@@ -11,16 +11,15 @@ use iced::widget::{column, container, row, text, text_input, Space};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::{json, Value};
 
-use super::Id;
+use super::{sanctions, Id};
 use crate::console::{client, ui, Ctx};
-use crate::theme::{INK, MONO, SERIF};
+use crate::theme::{INK, SERIF};
 
-const SUBHEAD: Font = Font { weight: font::Weight::Bold, ..MONO };
 const STRONG: Font = Font { weight: font::Weight::Semibold, ..SERIF };
 
 /// A section heading (the web's `.approvals-subhead`: mono semibold caps).
 fn subhead<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_uppercase()).font(SUBHEAD).size(16.0).color(INK).into()
+    text(title.to_uppercase()).font(ui::MONO_BOLD).size(16.0).color(INK).into()
 }
 
 #[derive(Debug, Default)]
@@ -33,6 +32,8 @@ pub struct State {
     proposals: Vec<Proposal>,
     /// (cid, name) of every agent, to name the agents the approvals belong to.
     agents: Vec<(u64, String)>,
+    /// The sanction ids of the suspensions in force: an escalation offers Lift only for these.
+    suspensions: HashSet<u64>,
     /// Reasons typed but not yet sent, keyed `ap-<id>` (approval) or `pp-<id>` (proposal).
     drafts: HashMap<String, String>,
     /// Approvals whose decision is in flight (their buttons are disabled).
@@ -51,10 +52,12 @@ pub enum Msg {
     Approvals(Result<Value, String>),
     Proposals(Result<Value, String>),
     Agents(Result<Value, String>),
+    Sanctions(Result<sanctions::Register, String>),
     /// A reason typed for a draft key.
     Draft(String, String),
-    /// Approve (true) or deny (false) an approval.
-    Decide(String, bool),
+    /// Approve (true) or deny (false) an approval; `action` picks the sanction call explicitly
+    /// (`acknowledge`, `lift` or `retire`) and is None for tool and payment approvals.
+    Decide(String, bool, Option<&'static str>),
     Decided(String, Result<(), String>),
     RejectOpen(String),
     RejectCancel,
@@ -67,8 +70,14 @@ pub enum Msg {
 struct Approval {
     id: String,
     cid: u64,
+    /// "tool", "sanction" or "payment"; a tool approval is "tool".
+    kind: String,
+    /// What the approval is about: the tool for a tool approval.
+    subject: String,
     tool: String,
     input: Value,
+    /// The kind's own detail (a sanction's sanction_id, a payment's amount); the input for a tool.
+    detail: Value,
     created_ms: i64,
     state: String,
     reason: String,
@@ -76,11 +85,15 @@ struct Approval {
 
 impl Approval {
     fn from_value(v: &Value) -> Option<Self> {
+        let tool = field(v, "tool");
         Some(Self {
             id: v.get("id")?.as_str()?.to_string(),
             cid: v.get("cid")?.as_u64()?,
-            tool: field(v, "tool"),
+            kind: Some(field(v, "kind")).filter(|k| !k.is_empty()).unwrap_or_else(|| "tool".to_string()),
+            subject: Some(field(v, "subject")).filter(|s| !s.is_empty()).unwrap_or_else(|| tool.clone()),
             input: v.get("input").cloned().unwrap_or(Value::Null),
+            detail: v.get("detail").cloned().unwrap_or(Value::Null),
+            tool,
             created_ms: v.get("created_ms").and_then(Value::as_i64).unwrap_or(0),
             state: field(v, "state"),
             reason: field(v, "reason"),
@@ -171,11 +184,12 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let (c1, c2, c3) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
+    let (c1, c2, c3, c4) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     Task::batch([
         client::task(move || c1.get::<Value>("/v1/approvals"), Msg::Approvals),
         client::task(move || c2.get::<Value>("/v1/agent-proposals"), Msg::Proposals),
         client::task(move || c3.get::<Value>("/v1/agents"), Msg::Agents),
+        client::task(move || sanctions::list(&c4, None, None, None), Msg::Sanctions),
     ])
 }
 
@@ -203,13 +217,22 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
+        Msg::Sanctions(res) => {
+            if let Ok(register) = res {
+                state.suspensions = register.suspensions.iter().filter(|s| s.active).map(|s| s.id).collect();
+            }
+            Task::none()
+        }
         Msg::Draft(key, text) => {
             state.drafts.insert(key, text);
             Task::none()
         }
-        Msg::Decide(id, approve) => {
+        Msg::Decide(id, approve, action) => {
             state.busy.insert(id.clone());
             let mut body = json!({ "approve": approve });
+            if let Some(action) = action {
+                body["action"] = json!(action);
+            }
             let reason = state.drafts.get(&format!("ap-{id}")).map(|r| r.trim().to_string()).unwrap_or_default();
             if !reason.is_empty() {
                 body["reason"] = json!(reason);
@@ -305,26 +328,50 @@ fn entry<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
         .on_input(move |s| Msg::Draft(key.clone(), s))
         .size(13.0)
         .width(Length::Fill);
-    let no = ui::btn("Deny", None, ui::Kind::Danger, (!busy).then(|| Msg::Decide(a.id.clone(), false)));
-    let yes = ui::btn("Approve", None, ui::Kind::Primary, (!busy).then(|| Msg::Decide(a.id.clone(), true)));
+    // The owner's calls: a sanction offers acknowledge, lift (only while its suspension holds) and
+    // retire; a payment and a tool keep approve and deny.
+    let decide = |approve: bool, action: Option<&'static str>| (!busy).then(|| Msg::Decide(a.id.clone(), approve, action));
+    let calls: Vec<Element<'a, Msg>> = match a.kind.as_str() {
+        "sanction" => {
+            let lift = a.detail.get("sanction_id").and_then(Value::as_u64).filter(|id| state.suspensions.contains(id));
+            let mut calls = vec![ui::btn("Retire", None, ui::Kind::Danger, decide(false, Some("retire")))];
+            if lift.is_some() {
+                calls.push(ui::btn("Lift", None, ui::Kind::Secondary, decide(false, Some("lift"))));
+            }
+            calls.push(ui::btn("Acknowledge", None, ui::Kind::Primary, decide(true, Some("acknowledge"))));
+            calls
+        }
+        _ => vec![ui::btn("Deny", None, ui::Kind::Danger, decide(false, None)), ui::btn("Approve", None, ui::Kind::Primary, decide(true, None))],
+    };
+    let title: Element<'a, Msg> = match a.kind.as_str() {
+        "sanction" => ui::prose(format!("Escalation: {}", a.subject)).into(),
+        "payment" => ui::prose(format!("Payment awaiting approval: {}", a.subject)).into(),
+        _ => ui::mono(a.tool.clone(), 12.0, ui::INK).into(),
+    };
     let head = row![
         ui::btn(&name_of(&state.agents, a.cid), None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(a.cid)))),
-        ui::mono(a.tool.clone(), 12.0, ui::INK),
+        title,
         Space::new().width(Length::Fill),
         ui::faint(ago(a.created_ms)),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let input = serde_json::to_string_pretty(&a.input).unwrap_or_else(|_| "null".to_string());
-    frame(
-        column![
-            head,
-            code_box(input),
-            column![reason, row![Space::new().width(Length::Fill), no, yes].spacing(8).align_y(Alignment::Center)].spacing(8),
-        ]
-        .spacing(10)
-        .into(),
-    )
+    let shown = if a.kind == "tool" { &a.input } else { &a.detail };
+    let input = serde_json::to_string_pretty(shown).unwrap_or_else(|_| "null".to_string());
+    let mut actions = row![Space::new().width(Length::Fill)].spacing(8).align_y(Alignment::Center);
+    for call in calls {
+        actions = actions.push(call);
+    }
+    // A sanction shows no input: its subject is the escalation, and the note says what Retire records.
+    let mut stack = column![head];
+    if a.kind != "sanction" {
+        stack = stack.push(code_box(input));
+    }
+    stack = stack.push(column![reason, actions].spacing(8));
+    if a.kind == "sanction" {
+        stack = stack.push(ui::faint("Retire only records your decision. apid does not retire the agent."));
+    }
+    frame(stack.spacing(10).into())
 }
 
 /// One decided approval, as a line of the history.
@@ -337,7 +384,7 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     };
     let line = row![
         ui::badge(label, tone),
-        ui::mono(a.tool.clone(), 12.0, ui::INK),
+        ui::mono(if a.subject.is_empty() { a.tool.clone() } else { a.subject.clone() }, 12.0, ui::INK),
         ui::prose(name_of(&state.agents, a.cid)),
         reason_or_gap(&a.reason),
         ui::faint(ago(a.created_ms)),
@@ -370,7 +417,7 @@ fn proposals_view<'a>(state: &'a State) -> Element<'a, Msg> {
         items.extend(waiting.into_iter().map(|p| proposal_card(state, p)));
     }
     if !past.is_empty() {
-        items.push(ui::btn(&format!("Decided ({})", past.len()), None, ui::Kind::Ghost, Some(Msg::ToggleDecided)));
+        items.push(ui::disclosure(format!("Decided ({})", past.len()), ui::INK_2, state.proposals_open, Msg::ToggleDecided));
         if state.proposals_open {
             items.extend(past.into_iter().map(proposal_row));
         }

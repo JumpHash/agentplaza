@@ -26,6 +26,8 @@ pub const INK_3: Color = Color::from_rgb8(0x6c, 0x77, 0x90);
 pub const SIGNAL: Color = Color::from_rgb8(0xff, 0x7a, 0x2e);
 /// The signal's ink: a link or a lit label under the pointer (the web's `--signal-ink`, night theme).
 pub const SIGNAL_INK: Color = Color::from_rgb8(0xff, 0x9a, 0x5c);
+/// The ink on a solid signal fill: the primary button's text (the web's `#120800`).
+pub const ON_SIGNAL: Color = Color::from_rgb8(0x12, 0x08, 0x00);
 /// Information: a note, a passive state (the web's `--info-ink`, night theme). The register is
 /// dark only, so there is no light value.
 pub const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
@@ -227,23 +229,6 @@ pub fn register_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button
     }
 }
 
-/// The primary action: pressed in ink on the sheet, with the print shadow.
-pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
-    button::Style {
-        background: Some(
-            match status {
-                button::Status::Hovered | button::Status::Pressed => HOVER,
-                button::Status::Active | button::Status::Disabled => SHEET,
-            }
-            .into(),
-        ),
-        text_color: INK,
-        border: Border::default().width(1.0).color(INK),
-        shadow: print_shadow(),
-        snap: true,
-    }
-}
-
 /// A committing press in `tone`: it has to look like one, at every step.
 ///
 /// `armed` is the second press's own look — the tone filled, its label spent —
@@ -325,5 +310,22 @@ fn ruled(color: Color) -> rule::Style {
         radius: 0.0.into(),
         fill_mode: rule::FillMode::Full,
         snap: true,
+    }
+}
+
+/// The pick list as the web's select: no fill, the value set in ink, the signal rule while open.
+/// iced borders are uniform, so the web's bottom-only rule becomes a full hairline.
+pub fn pick_list(_theme: &Theme, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
+    use iced::widget::pick_list::Status;
+    let (edge, width) = match status {
+        Status::Opened { .. } => (SIGNAL, 2.0),
+        Status::Active | Status::Hovered => (INK, 1.0),
+    };
+    iced::widget::pick_list::Style {
+        text_color: INK,
+        placeholder_color: INK_3,
+        handle_color: INK_2,
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default().width(width).color(edge),
     }
 }

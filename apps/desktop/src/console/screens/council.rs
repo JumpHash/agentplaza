@@ -5,7 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{column, container, row, text_input, Space};
-use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
+use iced::{Alignment, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -286,14 +286,6 @@ fn ago(ms: f64) -> String {
     }
 }
 
-/// A card's frame: a 1px rule border, square corners.
-fn boxed(_: &Theme) -> container::Style {
-    container::Style {
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
-        ..Default::default()
-    }
-}
-
 /// The tally bar: yes, no, abstain, then the seats not yet voted, each as its share of the seats.
 fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
     let rest = t.seats.saturating_sub(t.yes + t.no + t.abstain);
@@ -308,7 +300,7 @@ fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
             );
         }
     }
-    container(bar).width(Length::Fill).style(boxed).into()
+    container(bar).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(ui::RULE_FAINT.into()), ..Default::default() }).into()
 }
 
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
@@ -384,6 +376,6 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
         container(stack).padding(16).width(Length::Fill),
     ])
     .width(Length::Fill)
-    .style(boxed)
+    .style(ui::frame(None, ui::RULE))
     .into()
 }

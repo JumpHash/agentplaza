@@ -26,8 +26,6 @@ const FLEET_COLS: usize = 4;
 const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
 const SERIF_BOLD: Font = Font { weight: Weight::Bold, ..theme::SERIF };
 const SERIF_ITALIC: Font = Font { style: FontStyle::Italic, ..theme::SERIF };
-const MONO_BOLD: Font = Font { weight: Weight::Bold, ..theme::MONO };
-const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::MONO };
 const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::MONO };
 
 #[derive(Debug, Default)]
@@ -232,7 +230,7 @@ fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
 /// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line.
 fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
     let body = column![
-        text(value).font(MONO_BOLD).size(34.0).color(INK),
+        text(value).font(ui::MONO_BOLD).size(34.0).color(INK),
         text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(INK_3),
         text(sub).font(SERIF_ITALIC).size(13.0).color(INK_2),
     ]
@@ -260,7 +258,7 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
     };
     let head = row![
         ui::icon::<Msg>("orchestrator", 15.0, INK),
-        text(name(orch).to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(INK),
+        text(name(orch).to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(INK),
         ui::faint(orch.role_label.clone()),
         marker_tag(status, tone, filled),
     ]
@@ -419,7 +417,7 @@ fn card<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>, flush: bool) -> Elem
 
 /// A card's title: mono, semibold, uppercase.
 fn card_title<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(INK).into()
+    text(title.to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(INK).into()
 }
 
 /// An empty state: an icon, a bold mono line, a faint serif sentence; centred.
@@ -427,7 +425,7 @@ fn empty<'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, Msg> {
     container(
         column![
             ui::icon::<Msg>(icon_name, 16.0, INK_3),
-            text(title.to_string()).font(MONO_BOLD).size(13.0).color(INK),
+            text(title.to_string()).font(ui::MONO_BOLD).size(13.0).color(INK),
             text(sentence.to_string()).font(theme::SERIF).size(14.0).color(INK_3),
         ]
         .spacing(10)
@@ -497,9 +495,9 @@ fn name(a: &Agent) -> String {
     }
 }
 
-/// The model's name: its last path segment.
+/// The model's name: everything after the provider (`openrouter/anthropic/claude-x` keeps `anthropic/claude-x`).
 fn model_name(model: &str) -> String {
-    model.rsplit('/').next().unwrap_or("—").to_string()
+    model.split_once('/').map_or(model, |(_, rest)| rest).to_string()
 }
 
 /// The model's provider: its first path segment.

@@ -30,7 +30,7 @@ const JOURNAL_PAGE: usize = 50;
 const SERIES_PAGE: usize = 25;
 /// One credit is a tenth of a cent.
 const CREDIT_USD: f64 = 0.001;
-const KNOWN_KINDS: [&str; 7] = ["mint", "escrow", "spend", "payment", "refund", "transfer", "fine"];
+const KNOWN_KINDS: [&str; 8] = ["mint", "escrow", "spend", "payment", "refund", "transfer", "fine", "model"];
 const BLUE: Color = Color::from_rgb8(0x6f, 0xa8, 0xdc);
 const PURPLE: Color = Color::from_rgb8(0xb4, 0x8e, 0xd6);
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -1324,7 +1324,7 @@ fn whole(text: &str) -> Option<i64> {
 fn kind_tone(kind: &str) -> ui::Tone {
     match kind {
         "mint" => ui::Tone::Ok,
-        "spend" => ui::Tone::Warn,
+        "spend" | "model" => ui::Tone::Warn,
         "payment" => ui::Tone::Signal,
         "refund" | "transfer" => ui::Tone::Info,
         "fine" => ui::Tone::Danger,
@@ -1372,6 +1372,9 @@ fn flow_series(points: &[Bucket]) -> Vec<chart::Series> {
 
 /// A kind's id as a reader sees it: "budget_move" is "Budget move", "subcontract" is "Subcontract".
 fn kind_label(kind: &str) -> String {
+    if kind == "model" {
+        return "Model call".to_string();
+    }
     let spaced = kind.replace('_', " ");
     let mut chars = spaced.chars();
     match chars.next() {

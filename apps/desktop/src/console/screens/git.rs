@@ -17,8 +17,6 @@ use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3};
 use crate::console::Ctx;
 use crate::theme::{self, CRIT, OK};
 
-/// Mono semibold: a repository's name (the web's `.git-row-main strong`).
-const MONO_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::MONO };
 /// Serif semibold: a pull request's title.
 const SERIF_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
 /// Serif bold: a review's author.
@@ -606,7 +604,7 @@ fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn repo_row<'a>(r: &Repo) -> Element<'a, Msg> {
     let description = if r.description.is_empty() { "No description".to_string() } else { r.description.clone() };
-    let name = text(r.name.clone()).font(MONO_SEMIBOLD).size(14.0).color(INK);
+    let name = text(r.name.clone()).font(ui::MONO_SEMIBOLD).size(14.0).color(INK);
     let info = column![name, ui::prose(description).size(13.0).color(INK_2)].spacing(2);
     let pulls = if r.open_prs == 1 { "pull request" } else { "pull requests" };
     let meta = column![
@@ -1023,7 +1021,7 @@ fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     if line.starts_with("@@") {
         (INK_3, Some(Color { a: 0.06, ..INK }), theme::MONO)
     } else if line.starts_with("+++") || line.starts_with("---") {
-        (INK_2, None, MONO_SEMIBOLD)
+        (INK_2, None, ui::MONO_SEMIBOLD)
     } else if line.starts_with('+') {
         (INK, Some(Color { a: 0.12, ..OK }), theme::MONO)
     } else if line.starts_with('-') {

@@ -7,13 +7,13 @@ use iced::widget::{button, column, container, rich_text, row, scrollable, span, 
 use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Theme};
 
 pub use crate::theme::{INK, INK_2, INK_3, PAPER, RULE, RULE_FAINT, SHEET, SIGNAL};
-use crate::theme::{CRIT, HOVER, INFO, MONO, OK, SERIF, SIGNAL_INK, WARN};
+use crate::theme::{CRIT, HOVER, INFO, MONO, OK, ON_SIGNAL, SERIF, SIGNAL_INK, WARN};
 
 /// Martian Mono at the web's chrome weights: 500 for badges, 600 for card heads and tabs, 700 for
 /// empty-state titles. The console embeds Regular, Medium and Bold, so 600 renders as Bold.
 const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..MONO };
-const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
-const MONO_BOLD: Font = Font { weight: Weight::Bold, ..MONO };
+pub const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
+pub const MONO_BOLD: Font = Font { weight: Weight::Bold, ..MONO };
 /// Source Serif 4 in italic: the error line.
 const SERIF_ITALIC: Font = Font { style: FontStyle::Italic, ..SERIF };
 
@@ -77,7 +77,7 @@ pub fn icon<'a, M: 'a>(name: &str, size: f32, color: Color) -> Element<'a, M> {
 /// unknown key.
 pub fn brand_logo<'a, M: 'a>(key: &str, size: f32) -> Element<'a, M> {
     match crate::console::brands::get(key) {
-        Some(brand) => svg(svg::Handle::from_memory(brand.svg.as_bytes().to_vec()))
+        Some(brand) => svg(svg::Handle::from_memory(on_dark(brand.svg).into_bytes()))
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
             .into(),
@@ -87,7 +87,13 @@ pub fn brand_logo<'a, M: 'a>(key: &str, size: f32) -> Element<'a, M> {
 
 /// The AgentPlaza mark: the hive (three ink cells around the signal-orange core).
 pub fn hive<'a, M: 'a>(size: f32) -> Element<'a, M> {
-    svg(svg::Handle::from_memory(HIVE.as_bytes().to_vec())).width(Length::Fixed(size)).height(Length::Fixed(size)).into()
+    svg(svg::Handle::from_memory(on_dark(HIVE).into_bytes())).width(Length::Fixed(size)).height(Length::Fixed(size)).into()
+}
+
+/// The marks are drawn in the light theme's ink (`#121613`), which vanishes on this app's dark paper: that ink
+/// becomes the theme's INK. Multi-colour marks keep their own colours (they never use that exact ink).
+fn on_dark(svg: &str) -> String {
+    svg.replace("#121613", "#e3e8f4")
 }
 
 /// The hive's SVG (the console's geometry; the landing page, JumpHash/agentplaza-landing, draws the same).
@@ -165,6 +171,14 @@ fn badge_marker(tone: Tone) -> (Color, Color, bool) {
     }
 }
 
+/// What a contributor model says of itself: its provider trains future models on what it is sent.
+pub const TRAINS_NOTE: &str = "Meta trains future models on everything sent to and returned by these models, so use them only for data you are happy to share.";
+
+/// The warning badge on a contributor model (one that trains its provider's future models).
+pub fn trains_badge<'a, M: 'a>() -> Element<'a, M> {
+    badge("WARNING: trains on your data", Tone::Warn)
+}
+
 /// A badge: a small square marker in the tone, then the label in mono caps. Not a bordered pill.
 pub fn badge<'a, M: 'a>(content: &str, tone: Tone) -> Element<'a, M> {
     let (marker, ink, filled) = badge_marker(tone);
@@ -197,26 +211,43 @@ pub enum Kind {
 
 /// A mono uppercase button with an optional leading icon.
 pub fn btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind: Kind, on_press: Option<M>) -> Element<'a, M> {
+    sized_btn(label_text, icon_name, kind, on_press, BTN)
+}
+
+/// The small twin of `btn`: the same kinds at a smaller size, for dense rows and card heads.
+pub fn btn_sm<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind: Kind, on_press: Option<M>) -> Element<'a, M> {
+    sized_btn(label_text, icon_name, kind, on_press, BTN_SM)
+}
+
+/// The button both sizes share; `size` sets the icon, the label and the padding.
+fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind: Kind, on_press: Option<M>, size: BtnSize) -> Element<'a, M> {
     let fg = match kind {
-        Kind::Primary | Kind::Danger => Color::WHITE,
+        Kind::Primary => ON_SIGNAL,
+        Kind::Danger => Color::WHITE,
         _ => INK,
     };
     let mut inner = row![].spacing(6).align_y(Alignment::Center);
     if let Some(name) = icon_name {
-        inner = inner.push(icon(name, 14.0, fg));
+        inner = inner.push(icon(name, size.icon, fg));
     }
-    inner = inner.push(text(label_text.to_uppercase()).font(MONO).size(11.5).color(fg));
-    let b = button(inner).padding([7, 12]).style(move |_: &Theme, status: button::Status| {
+    // The label sets no colour of its own: it takes the button style's text_color, so the hover ink reaches it.
+    inner = inner.push(text(label_text.to_uppercase()).font(MONO).size(size.text));
+    let b = button(inner).padding(size.padding).style(move |_: &Theme, status: button::Status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let (bg, border) = match kind {
-            Kind::Primary => (Some(SIGNAL), INK),
+            Kind::Primary => (Some(if hovered { SIGNAL_INK } else { SIGNAL }), SIGNAL),
             Kind::Danger => (Some(CRIT), INK),
             Kind::Secondary => (if hovered { Some(HOVER) } else { None }, INK),
             Kind::Ghost => (if hovered { Some(HOVER) } else { None }, Color::TRANSPARENT),
         };
+        // A primary goes white on hover, over the signal-ink fill; otherwise it keeps the dark ink.
+        let text_color = match kind {
+            Kind::Primary if hovered => Color::WHITE,
+            _ => fg,
+        };
         button::Style {
             background: bg.map(Into::into),
-            text_color: fg,
+            text_color,
             border: Border { color: border, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         }
@@ -694,6 +725,107 @@ pub fn hairline<'a, M: 'a>() -> Element<'a, M> {
     container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }).into()
 }
 
+/// The sizes a button is drawn at.
+#[derive(Clone, Copy)]
+struct BtnSize {
+    icon: f32,
+    text: f32,
+    padding: [f32; 2],
+}
+
+const BTN: BtnSize = BtnSize { icon: 14.0, text: 11.5, padding: [7.0, 12.0] };
+const BTN_SM: BtnSize = BtnSize { icon: 12.0, text: 10.0, padding: [4.0, 8.0] };
+
+/// Lays cards out in rows of three equal columns; a short last row keeps the same column widths.
+const CARD_GRID_COLS: usize = 3;
+
+pub fn card_grid<'a, M: 'a>(cards: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let mut out = column(Vec::<Element<'a, M>>::new()).spacing(16).width(Length::Fill);
+    let mut line: Vec<Element<'a, M>> = Vec::new();
+    for card in cards {
+        line.push(container(card).width(Length::FillPortion(1)).into());
+        if line.len() == CARD_GRID_COLS {
+            out = out.push(row(std::mem::take(&mut line)).spacing(16).width(Length::Fill));
+        }
+    }
+    if !line.is_empty() {
+        while line.len() < CARD_GRID_COLS {
+            line.push(Space::new().width(Length::FillPortion(1)).into());
+        }
+        out = out.push(row(line).spacing(16).width(Length::Fill));
+    }
+    out.into()
+}
+
+/// Chips in a wrapping row: a chip that runs past the row's width flows onto the next line.
+pub fn chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
+    row(chips).spacing(6).wrap().vertical_spacing(6).into()
+}
+
+/// A bordered panel, optionally filled: the web's cards, tiles and mono frames.
+pub fn frame(fill: Option<Color>, edge: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_: &Theme| container::Style {
+        background: fill.map(Into::into),
+        border: Border { color: edge, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
+}
+
+/// CSS `hsl()`: hue in degrees, saturation and lightness 0 to 1.
+pub fn hsl(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    Color::from_rgb(r + m, g + m, b + m)
+}
+
+/// A transcript disclosure: a marker and a mono label in a tone, that opens and shuts its body.
+pub fn disclosure<'a, M: Clone + 'a>(label: String, tone: Color, opened: bool, msg: M) -> Element<'a, M> {
+    let marker = if opened { "▾" } else { "▸" };
+    button(row![mono(marker, 11.0, INK_3), mono(label, 12.0, tone)].spacing(6))
+        .padding(0)
+        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: INK, border: Border::default(), ..Default::default() })
+        .on_press(msg)
+        .into()
+}
+
+/// A tool call's name as a chip: bordered, mono, opening its input.
+pub fn chip<'a, M: Clone + 'a>(label: String, opened: bool, msg: M) -> Element<'a, M> {
+    let marker = if opened { "▾" } else { "▸" };
+    button(row![mono(marker, 10.0, INK_3), mono(label, 11.0, INK_2)].spacing(6))
+        .padding([2, 8])
+        .style(|_: &Theme, _: button::Status| button::Style {
+            background: Some(HOVER.into()),
+            text_color: INK_2,
+            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// `s` cut to `max_chars` characters, the last of them an ellipsis when it had to be cut.
+/// A helper only: iced cannot clip text with a trailing ellipsis natively.
+pub fn ellipsize(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let kept: String = s.chars().take(max_chars - 1).collect();
+    format!("{}…", kept.trim_end())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,5 +896,98 @@ mod tests {
         let _: Element<'_, u8> = badge("ok", Tone::Ok);
         let _: Element<'_, u8> = empty("inbox", "Nothing here", "Nothing has happened yet.");
         let _: Element<'_, u8> = error_line("It broke.");
+    }
+
+    #[test]
+    fn hsl_matches_css_hsl() {
+        let near = |a: Color, b: Color| (a.r - b.r).abs() < 0.01 && (a.g - b.g).abs() < 0.01 && (a.b - b.b).abs() < 0.01;
+        assert!(near(hsl(0.0, 1.0, 0.5), Color::from_rgb(1.0, 0.0, 0.0)));
+        assert!(near(hsl(120.0, 1.0, 0.5), Color::from_rgb(0.0, 1.0, 0.0)));
+        assert!(near(hsl(240.0, 1.0, 0.5), Color::from_rgb(0.0, 0.0, 1.0)));
+        assert!(near(hsl(-120.0, 1.0, 0.5), Color::from_rgb(0.0, 0.0, 1.0)));
+        // CSS hsl(210 50% 50%) is rgb(64 128 191).
+        assert!(near(hsl(210.0, 0.5, 0.5), Color::from_rgb(0.25, 0.5, 0.75)));
+        assert!(near(hsl(0.0, 0.0, 0.5), Color::from_rgb(0.5, 0.5, 0.5)));
+    }
+}
+
+/// Whether [`open_url`] may open `url`: an `https://` link with a host, and no whitespace or
+/// control character anywhere (a leading space, a newline or a tab is refused).
+pub fn openable(url: &str) -> bool {
+    url.len() > "https://".len() && url.starts_with("https://") && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Opens an `https://` link in the system's browser: `open` on macOS, the URL protocol handler on
+/// Windows, `xdg-open` elsewhere. The URL is passed as one argument (no shell), and any other scheme
+/// is refused.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !openable(url) {
+        return Err(format!("not an https link: {url:?}"));
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    let mut child = command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("opening {url}: {e}"))?;
+    // Reap the opener when it exits, so it never lingers as a zombie.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod open_url_tests {
+    use super::openable;
+
+    #[test]
+    fn accepts_an_https_link() {
+        assert!(openable("https://huggingface.co/settings/tokens"));
+        assert!(openable("https://huggingface.co/meta-llama/Llama-3.2-1B"));
+    }
+
+    #[test]
+    fn refuses_every_other_scheme() {
+        for url in [
+            "http://huggingface.co/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<p>x</p>",
+            "ftp://example.com/",
+            "mailto:owner@example.com",
+            "HTTPS://huggingface.co/",
+            "https:/huggingface.co/",
+            "https://",
+            "",
+        ] {
+            assert!(!openable(url), "{url:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn refuses_whitespace_and_control_characters() {
+        for url in [
+            " https://huggingface.co/",
+            "https://huggingface.co/\nrm -rf /",
+            "https://huggingface.co/a b",
+            "https://huggingface.co/\t",
+            "https://huggingface.co/\r",
+            "https://huggingface.co/\u{0}",
+        ] {
+            assert!(!openable(url), "{url:?} must be refused");
+        }
     }
 }

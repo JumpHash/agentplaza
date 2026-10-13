@@ -11,14 +11,14 @@ use serde_json::Value;
 
 use super::wizard::{self, WizardMsg};
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::floor3d::world::layout::{agent_hue, role_hue};
+use crate::console::{client, render_card, ui, Ctx};
 use crate::theme::{self, HOVER, INK, INK_2, INK_3, OK, RULE, RULE_FAINT, SIGNAL, SHEET};
 use crate::console::ui::Kind;
 
 /// The web's `info` tone on the dark ground.
 const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
 /// The table's head labels and the badges: mono, semibold / medium.
-const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::MONO };
 const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::MONO };
 const SERIF_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SERIF };
 /// Table cells are 14px serif, as the web's `.table`.
@@ -108,6 +108,7 @@ struct AgentRow {
     role: String,
     role_label: String,
     orchestrator: bool,
+    species: String,
     status: String,
     model: String,
     model_source: String,
@@ -138,6 +139,7 @@ fn parse(v: &Value) -> Option<AgentRow> {
         role,
         role_label,
         orchestrator: field("tier") == "orchestrator",
+        species: field("species").to_string(),
         status: field("status"),
         model: field("model"),
         model_source: field("model_source"),
@@ -327,8 +329,8 @@ fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
         container(header).padding([12, 0]).width(Length::Fill).into(),
         rule(INK),
     ];
-    for a in rows {
-        lines.push(row_view(a));
+    for (slot, a) in rows.into_iter().enumerate() {
+        lines.push(row_view(a, slot));
         lines.push(rule(RULE_FAINT));
     }
     container(scrollable(column(lines).width(Length::Fill)).width(Length::Fill))
@@ -338,7 +340,7 @@ fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
 }
 
 fn head_label<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_uppercase()).font(MONO_SEMIBOLD).size(10.5).color(INK_3).wrapping(Wrapping::None).into()
+    text(label.to_uppercase()).font(ui::MONO_SEMIBOLD).size(10.5).color(INK_3).wrapping(Wrapping::None).into()
 }
 
 /// A table cell at `portion` of the row, its text at the web's 14px inset; `right` aligns it.
@@ -350,9 +352,9 @@ fn cell<'a>(portion: u16, content: Element<'a, Msg>, right: bool) -> Element<'a,
         .into()
 }
 
-fn row_view<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
+fn row_view<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let line = row![
-        cell(3, agent_cell(a), false),
+        cell(3, agent_cell(a, slot), false),
         cell(5, model_cell(a), false),
         cell(2, work_cell(a), false),
         cell(1, tokens_cell(a.tokens), true),
@@ -386,13 +388,14 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-fn agent_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
-    // The web draws the agent's portrait; until the desktop renders portraits it shows the
-    // initial the web falls back to.
+/// The web's avatar (`avatar(a, 40)`): the agent's robot on its hue, the initial tile under it where the GPU cannot draw.
+const AVATAR: f32 = 40.0;
+
+fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let initial = name(a).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-    let portrait = container(text(initial).font(MONO_SEMIBOLD).size(15.0).color(INK))
-        .width(Length::Fixed(40.0))
-        .height(Length::Fixed(40.0))
+    let tile = container(text(initial).font(ui::MONO_SEMIBOLD).size(15.0).color(INK))
+        .width(Length::Fixed(AVATAR))
+        .height(Length::Fixed(AVATAR))
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
         .style(|_: &Theme| container::Style {
@@ -400,6 +403,19 @@ fn agent_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
             border: Border { color: INK, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
+    let spec = render_card::PortraitSpec {
+        cid: a.cid,
+        orchestrator: a.orchestrator,
+        role_hue: if a.orchestrator { 25.0 } else { role_hue(&a.role) },
+        body_hue: agent_hue(a.cid),
+        offline: a.status == "offline",
+        species: crate::console::floor3d::robot::species_of(Some(a.species.as_str()), a.cid),
+    };
+    let layers: Vec<Element<'a, Msg>> = match render_card::robot_portrait(slot, spec, AVATAR) {
+        Some(robot) => vec![tile.into(), robot],
+        None => vec![tile.into()],
+    };
+    let portrait = iced::widget::stack(layers).width(Length::Fixed(AVATAR)).height(Length::Fixed(AVATAR));
     let name_line = row![
         dot(status_tone(&a.status)),
         text(name(a)).font(SERIF_SEMIBOLD).size(15.0).color(INK).wrapping(Wrapping::None),

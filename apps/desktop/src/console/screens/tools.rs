@@ -6,8 +6,10 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use iced::widget::{column, container, row, text_input, Space, Stack};
-use iced::{Alignment, Border, Element, Length, Task, Theme};
+use iced::font::Weight;
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, pick_list, row, scrollable, text, text_input, Space, Stack};
+use iced::{Alignment, Border, Color, Element, Font, Length, Task, Theme};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,6 +21,8 @@ use crate::theme;
 const DISC_PAGE: usize = 10;
 const DISC_KINDS: [&str; 5] = ["cli", "library", "service", "api", "technique"];
 const SECTIONS: [&str; 4] = ["Enabled", "Configured", "Needs a key", "Coming soon"];
+
+const SERIF_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SERIF };
 
 // ---- The hub's shapes (as apps/web/src/api.ts types them) -----------------------------------
 
@@ -640,7 +644,7 @@ fn gate(busy: bool, msg: Msg) -> Option<Msg> {
 }
 
 /// Percent-encodes a query value: every byte outside the unreserved set.
-fn encode(text: &str) -> String {
+pub(super) fn encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
@@ -716,14 +720,50 @@ fn boxed(_: &Theme) -> container::Style {
     }
 }
 
-/// A boxed frame: 1px rule, square corners.
+/// A card (the web's `.prov-card`): a boxed frame, 16px sides, 12px below.
 fn frame<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content).padding(14).width(Length::Fill).style(boxed).into()
+    container(content).padding(iced::Padding { top: 16.0, right: 16.0, bottom: 12.0, left: 16.0 }).width(Length::Fill).style(boxed).into()
 }
 
 /// A small boxed tag (the web's tool-chip).
 fn chip<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content).padding([2, 6]).style(boxed).into()
+    container(content).padding([2, 8]).style(boxed).into()
+}
+
+/// A 1px line in `color`, full width (the web's rules).
+fn rule_line<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
+        .into()
+}
+
+/// Items spread across the line with equal gaps (the web's `justify-content: space-between`).
+fn between<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let last = items.len().saturating_sub(1);
+    let mut line = row(Vec::new()).spacing(8).align_y(Alignment::Center).width(Length::Fill);
+    for (i, item) in items.into_iter().enumerate() {
+        line = line.push(item);
+        if i < last {
+            line = line.push(Space::new().width(Length::Fill));
+        }
+    }
+    line.into()
+}
+
+/// A card's actions (the web's `.prov-actions`): a faint rule, then the buttons from the left.
+fn card_footer<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    column![ui::hairline(), row(items).spacing(8).align_y(Alignment::Center)].spacing(10).into()
+}
+
+/// A card's head: the logo (or none), then a serif title over a one-line faint line, cut at the edge.
+fn card_head<'a>(logo: Option<Element<'a, Msg>>, title: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
+    let sub = container(ui::faint(sub).wrapping(Wrapping::None)).width(Length::Fill).height(Length::Fixed(18.0)).clip(true);
+    let block = column![title, sub].spacing(2).width(Length::Fill);
+    match logo {
+        Some(logo) => row![logo, block].spacing(12).align_y(Alignment::Center).into(),
+        None => block.into(),
+    }
 }
 
 /// A small square dot in a tone (the web's risk dot).
@@ -734,35 +774,31 @@ fn dot<'a>(tone: ui::Tone) -> Element<'a, Msg> {
         .into()
 }
 
+/// A section title (the web's `.prov-group-title`): small mono caps over a rule.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    ui::mono(title.to_uppercase(), 13.0, ui::INK).into()
+    column![ui::mono(title.to_uppercase(), 11.0, ui::INK), rule_line(ui::RULE)].spacing(6).width(Length::Fill).into()
 }
 
-/// Cards in two columns, as the web's grid.
-fn grid<'a>(cards: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut out = column![].spacing(14).width(Length::Fill);
-    let mut items = cards.into_iter();
-    while let Some(first) = items.next() {
-        let second: Element<'a, Msg> = match items.next() {
-            Some(card) => container(card).width(Length::FillPortion(1)).into(),
-            None => Space::new().width(Length::FillPortion(1)).into(),
-        };
-        out = out.push(row![container(first).width(Length::FillPortion(1)), second].spacing(14).width(Length::Fill));
-    }
-    out.into()
-}
-
+/// A connector's logo box (the web's 48px `.logo.lg`): its brand mark, else its initials.
 fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
-    if !c.brand.is_empty() {
-        return ui::brand_logo(&c.brand, 28.0);
-    }
-    let letters: String = c.label.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
-    container(ui::mono(letters, 11.0, ui::INK))
-        .padding([6, 4])
-        .width(Length::Fixed(36.0))
+    let inner: Element<'a, Msg> = if !c.brand.is_empty() {
+        ui::brand_logo(&c.brand, 26.0)
+    } else {
+        let letters: String = c.label.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
+        text(letters).font(ui::MONO_BOLD).size(13.0).color(ui::INK).into()
+    };
+    container(inner)
+        .width(Length::Fixed(48.0))
+        .height(Length::Fixed(48.0))
         .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
         .style(boxed)
         .into()
+}
+
+/// A card's title in the web's serif semibold, one line.
+fn card_title<'a>(label: &str) -> Element<'a, Msg> {
+    text(label.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(ui::INK).wrapping(Wrapping::None).into()
 }
 
 fn checks_box<'a>(checks: &[String]) -> Element<'a, Msg> {
@@ -789,54 +825,40 @@ fn connector_card<'a>(c: &Connector) -> Element<'a, Msg> {
     let needs_key = section == "Needs a key";
     let cli = c.kind == "cli";
 
-    let mut meta = row![
-        ui::badge(if cli { "CLI" } else { "API" }, if cli { ui::Tone::Signal } else { ui::Tone::Muted }),
-        ui::badge(text, tone),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
+    let mut meta = vec![ui::badge(if cli { "CLI" } else { "API" }, if cli { ui::Tone::Signal } else { ui::Tone::Muted })];
     if section != "Coming soon" && from_env_only(c) {
-        meta = meta.push(ui::badge("Key from env", ui::Tone::Info));
+        meta.push(ui::badge("Key from env", ui::Tone::Info));
     }
+    meta.push(ui::badge(text, tone));
 
-    let mut body = column![
-        row![
-            logo(c),
-            column![ui::mono(c.label.clone(), 14.0, ui::INK), ui::faint(c.description.clone())].spacing(2).width(Length::Fill),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        meta,
-    ]
-    .spacing(10);
+    let mut body = column![card_head(Some(logo(c)), card_title(&c.label), c.description.clone()), between(meta)].spacing(12);
 
     if !c.actions.is_empty() {
         let chips: Vec<Element<'a, Msg>> = c
             .actions
             .iter()
-            .map(|a| chip(row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 11.0, ui::INK)].spacing(6).align_y(Alignment::Center)))
+            .map(|a| chip(row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 11.0, ui::INK_2)].spacing(6).align_y(Alignment::Center)))
             .collect();
-        body = body.push(row(chips).spacing(6));
+        body = body.push(row(chips).spacing(8));
     }
 
     if section != "Coming soon" {
-        let mut footer = row![ui::btn(
+        let mut footer = vec![ui::btn(
             "Configure",
             None,
             if needs_key { ui::Kind::Primary } else { ui::Kind::Secondary },
             Some(Msg::Configure(c.id.clone())),
-        )]
-        .spacing(8);
+        )];
         if c.configured {
-            footer = footer.push(ui::btn("Test", None, ui::Kind::Secondary, Some(Msg::Test(c.id.clone()))));
-            footer = footer.push(ui::btn(
+            footer.push(ui::btn("Test", None, ui::Kind::Secondary, Some(Msg::Test(c.id.clone()))));
+            footer.push(ui::btn(
                 if c.enabled { "Disable" } else { "Enable" },
                 None,
                 ui::Kind::Ghost,
                 Some(Msg::SetEnabled(c.id.clone(), !c.enabled)),
             ));
         }
-        body = body.push(footer);
+        body = body.push(card_footer(footer));
     }
     frame(body)
 }
@@ -850,7 +872,7 @@ fn connectors_section<'a>(state: &State) -> Element<'a, Msg> {
             for section in SECTIONS {
                 let cards: Vec<Element<'a, Msg>> = list.iter().filter(|c| section_of(c) == section).map(|c| connector_card(c)).collect();
                 if !cards.is_empty() {
-                    col = col.push(column![group_title(section), grid(cards)].spacing(10));
+                    col = col.push(column![group_title(section), ui::card_grid(cards)].spacing(12));
                 }
             }
         }
@@ -915,26 +937,29 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
 
 fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
     let s = &p.spec;
+    let head = column![
+        card_title(&s.label),
+        ui::mono(s.id.clone(), 11.5, ui::INK_3).wrapping(Wrapping::None),
+    ]
+    .spacing(2)
+    .width(Length::Fill);
     let mut body = column![
-        ui::mono(s.label.clone(), 14.0, ui::INK),
-        ui::mono(s.id.clone(), 11.0, ui::INK_3),
-        row![
-            ui::faint(format!("proposed by {}", p.proposer)),
+        head,
+        between(vec![
+            ui::faint(format!("proposed by {}", p.proposer)).into(),
             ui::badge(&s.category, ui::Tone::Signal),
             ui::badge(&auth_label(&s.auth), ui::Tone::Muted),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        ]),
         ui::faint(s.description.clone()),
-        ui::mono(s.base_url.clone(), 11.0, ui::INK_2),
+        ui::mono(s.base_url.clone(), 11.0, ui::INK_2).wrapping(Wrapping::None),
     ]
-    .spacing(8);
+    .spacing(12);
 
     if !s.fields.is_empty() {
         let chips: Vec<Element<'a, Msg>> = s
             .fields
             .iter()
-            .map(|f| chip(ui::mono(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, ui::INK)))
+            .map(|f| chip(ui::mono(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, ui::INK_2)))
             .collect();
         body = body.push(row(chips).spacing(6));
     }
@@ -945,7 +970,7 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
             .map(|a| {
                 chip(row![
                     dot(risk_tone(&a.risk)),
-                    ui::mono(a.name.clone(), 11.0, ui::INK),
+                    ui::mono(a.name.clone(), 11.0, ui::INK_2),
                     ui::mono(format!(" {} {}", a.method, a.path), 11.0, ui::INK_3),
                 ]
                 .spacing(6)
@@ -957,7 +982,7 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
     if !p.checks.is_empty() {
         body = body.push(checks_box(&p.checks));
     }
-    body = body.push(gated_row(vec![ui::btn("Review", None, ui::Kind::Primary, Some(Msg::Review(p.id.clone())))]));
+    body = body.push(card_footer(vec![ui::btn("Review", None, ui::Kind::Primary, Some(Msg::Review(p.id.clone())))]));
     frame(body)
 }
 
@@ -991,7 +1016,7 @@ fn proposals_section<'a>(state: &State) -> Element<'a, Msg> {
         col = col.push(ui::faint("Nothing waiting for your review."));
     } else {
         let cards: Vec<Element<'a, Msg>> = pending.iter().map(|p| proposal_card(p)).collect();
-        col = col.push(grid(cards));
+        col = col.push(ui::card_grid(cards));
     }
     if !decided.is_empty() {
         let label = if state.show_decided { "Hide decided".to_string() } else { format!("Decided ({})", decided.len()) };
@@ -1082,34 +1107,32 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
         "rejected" => ("Rejected", ui::Tone::Danger),
         _ => ("Private", ui::Tone::Muted),
     };
-    let mut actions = row![ui::btn("Files", None, ui::Kind::Secondary, Some(Msg::OpenFiles(t.name.clone(), t.version)))].spacing(8);
+    let mut actions = vec![ui::btn("Files", None, ui::Kind::Secondary, Some(Msg::OpenFiles(t.name.clone(), t.version)))];
     if t.state == "pending" {
-        actions = actions.push(ui::btn("Publish", None, ui::Kind::Primary, Some(Msg::Publish(t.name.clone(), t.version))));
-        actions = actions.push(ui::btn("Reject", None, ui::Kind::Ghost, Some(Msg::OpenReject(t.name.clone(), t.version))));
+        actions.push(ui::btn("Publish", None, ui::Kind::Primary, Some(Msg::Publish(t.name.clone(), t.version))));
+        actions.push(ui::btn("Reject", None, ui::Kind::Ghost, Some(Msg::OpenReject(t.name.clone(), t.version))));
     }
-    actions = actions.push(ui::btn("Remove", None, ui::Kind::Ghost, Some(Msg::OpenRemove(t.name.clone(), t.version))));
+    actions.push(ui::btn("Remove", None, ui::Kind::Ghost, Some(Msg::OpenRemove(t.name.clone(), t.version))));
 
+    let title = iced::widget::text(format!("x_{}", t.name)).font(ui::MONO_SEMIBOLD).size(16.5).color(ui::INK).wrapping(Wrapping::None);
     let mut body = column![
-        ui::mono(format!("x_{}", t.name), 14.0, ui::INK),
-        ui::faint(t.description.clone()),
-        row![
-            ui::faint(format!("by {} · v{}", t.author, t.version)),
+        card_head(None, title.into(), t.description.clone()),
+        between(vec![
+            ui::faint(format!("by {} · v{}", t.author, t.version)).into(),
             ui::badge(text, tone),
-            ui::faint(format!("{} {}", t.calls, if t.calls == 1 { "call" } else { "calls" })),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+            ui::faint(format!("{} {}", t.calls, if t.calls == 1 { "call" } else { "calls" })).into(),
+        ]),
         ui::mono(t.command.join(" "), 11.0, ui::INK_2),
     ]
-    .spacing(8);
+    .spacing(12);
     if !t.requires.is_empty() {
-        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::mono(r.clone(), 11.0, ui::INK))).collect();
-        body = body.push(row(reqs).spacing(6));
+        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::mono(r.clone(), 11.0, ui::INK_2))).collect();
+        body = body.push(row(reqs).spacing(8));
     }
     if let Some(note) = &t.review_note {
         body = body.push(ui::faint(format!("Note: {note}")));
     }
-    body = body.push(actions);
+    body = body.push(card_footer(actions));
     frame(body)
 }
 
@@ -1126,10 +1149,10 @@ fn library_section<'a>(state: &State) -> Element<'a, Msg> {
     let pending: Vec<Element<'a, Msg>> = state.library.iter().filter(|t| t.state == "pending").map(|t| library_card(t)).collect();
     let rest: Vec<Element<'a, Msg>> = state.library.iter().filter(|t| t.state != "pending").map(|t| library_card(t)).collect();
     if !pending.is_empty() {
-        col = col.push(column![group_title("Waiting for your review"), grid(pending)].spacing(10));
+        col = col.push(column![group_title("Waiting for your review"), ui::card_grid(pending)].spacing(10));
     }
     if !rest.is_empty() {
-        col = col.push(column![group_title("Library"), grid(rest)].spacing(10));
+        col = col.push(column![group_title("Library"), ui::card_grid(rest)].spacing(10));
     }
     col.into()
 }
@@ -1185,21 +1208,29 @@ fn remove_tool_body<'a>(state: &State, version: u64) -> Element<'a, Msg> {
 
 // ---- Found by agents ------------------------------------------------------------------------
 
-fn kind_button<'a>(label: &str, value: &str, active: bool) -> Element<'a, Msg> {
-    ui::btn(
-        label,
-        None,
-        if active { ui::Kind::Primary } else { ui::Kind::Ghost },
-        Some(Msg::FilterKind(value.to_string())),
-    )
+/// A kind choice in the found-list picker; an empty `value` is all kinds.
+#[derive(Debug, Clone, PartialEq)]
+struct KindChoice {
+    value: String,
+    label: String,
 }
 
+impl std::fmt::Display for KindChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// One found tool, as a row over a rule (the web's `.disc-row`).
 fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
-    let mut head = row![ui::mono(d.name.clone(), 13.0, ui::INK), chip(ui::mono(d.kind.clone(), 11.0, ui::INK))]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let mut name = row![
+        text(d.name.clone()).font(SERIF_SEMIBOLD).size(15.0).color(ui::INK).wrapping(Wrapping::None),
+        chip(ui::mono(d.kind.clone(), 11.0, ui::INK_2)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
     if d.flagged.is_some() {
-        head = head.push(ui::badge("flagged", ui::Tone::Danger));
+        name = name.push(ui::badge("flagged", ui::Tone::Danger));
     }
     let flag = if d.flagged.is_some() {
         ui::btn("Unflag", None, ui::Kind::Ghost, Some(Msg::Unflag(d.id.clone())))
@@ -1212,16 +1243,12 @@ fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
         ui::btn("Remove", None, ui::Kind::Danger, Some(Msg::OpenRemoveFound(d.id.clone(), d.name.clone()))),
     ]
     .spacing(8);
-    let summary = column![
-        head,
-        row![
-            container(ui::faint(d.what_for.clone())).width(Length::Fill),
-            ui::faint(format!("by {} · {} endorsements", d.by, d.endorsed_by.len())),
-        ]
-        .spacing(12),
-    ]
-    .spacing(6)
-    .width(Length::Fill);
+    let what = container(text(d.what_for.clone()).font(theme::SERIF).size(14.0).color(ui::INK_2).wrapping(Wrapping::None))
+        .width(Length::Fill)
+        .height(Length::Fixed(18.0))
+        .clip(true);
+    let by = ui::mono(format!("by {} · {} endorsements", d.by, d.endorsed_by.len()), 11.0, ui::INK_3).wrapping(Wrapping::None);
+    let summary = column![name, row![what, by].spacing(8).align_y(Alignment::Center)].spacing(4).width(Length::Fill);
     let mut body = column![row![summary, actions].spacing(12).align_y(Alignment::Center)].spacing(10);
 
     if expanded {
@@ -1231,25 +1258,27 @@ fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
         ]
         .spacing(8);
         if !d.tags.is_empty() {
-            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::mono(t.clone(), 11.0, ui::INK))).collect();
-            details = details.push(row(tags).spacing(6));
+            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::mono(t.clone(), 11.0, ui::INK_2))).collect();
+            details = details.push(row(tags).spacing(8));
         }
         // Agents write these URLs, so only web links are shown (as the proposal review does).
         if let Some(url) = d.url.as_ref().filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
             details = details.push(ui::mono(url.clone(), 11.0, ui::INK_2));
         }
-        body = body.push(frame(details));
+        body = body.push(details);
     }
-    frame(body)
+    column![container(body).padding(iced::Padding::from([10.0, 0.0])).width(Length::Fill), rule_line(ui::RULE)].width(Length::Fill).into()
 }
 
+/// The pager, right-aligned (the web's `.disc-pager`).
 fn pager<'a>(page: usize, pages: usize) -> Element<'a, Msg> {
     row![
+        Space::new().width(Length::Fill),
         ui::btn("Previous", None, ui::Kind::Ghost, (page > 1).then_some(Msg::Page(-1))),
-        ui::faint(format!("page {page} of {pages}")),
+        ui::mono(format!("page {page} of {pages}"), 11.0, ui::INK_3),
         ui::btn("Next", None, ui::Kind::Ghost, (page < pages).then_some(Msg::Page(1))),
     ]
-    .spacing(12)
+    .spacing(10)
     .align_y(Alignment::Center)
     .into()
 }
@@ -1264,24 +1293,24 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
     let pages = rows.len().div_ceil(DISC_PAGE).max(1);
     let page = state.page.clamp(1, pages);
 
+    // The web's toolbar: one line of search, the kind picker and the count.
     let search = text_input("Search name, use, tags, by", &state.query)
         .on_input(Msg::Query)
-        .padding(8)
+        .font(theme::MONO)
+        .size(13.0)
+        .padding([6, 8])
         .style(theme::input);
-    let mut kinds = row![kind_button("All kinds", "", state.kind.is_empty())].spacing(6);
-    for k in DISC_KINDS {
-        kinds = kinds.push(kind_button(k, k, state.kind == k));
-    }
-    let toolbar = column![
-        row![
-            container(search).width(Length::Fill),
-            ui::faint(format!("{} found", state.toolbox.len())),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        kinds,
+    let mut choices = vec![KindChoice { value: String::new(), label: "All kinds".to_string() }];
+    choices.extend(DISC_KINDS.iter().map(|k| KindChoice { value: k.to_string(), label: k.to_string() }));
+    let selected = choices.iter().find(|c| c.value == state.kind).cloned();
+    let kind = pick_list(choices, selected, |c: KindChoice| Msg::FilterKind(c.value));
+    let toolbar = row![
+        container(search).width(Length::Fill),
+        kind,
+        ui::mono(format!("{} found", state.toolbox.len()), 11.0, ui::INK_3).wrapping(Wrapping::None),
     ]
-    .spacing(10);
+    .spacing(10)
+    .align_y(Alignment::Center);
 
     let list: Element<'a, Msg> = if state.toolbox.is_empty() {
         ui::empty("models", "Nothing yet", "Agents record what they find with plaza_toolbox_share.")
@@ -1295,7 +1324,7 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
             .take(DISC_PAGE)
             .map(|d| found_row(d, state.expanded.contains(&d.id)))
             .collect();
-        column![column(items).spacing(8), pager(page, pages)].spacing(12).into()
+        column![column(items).width(Length::Fill), pager(page, pages)].spacing(10).width(Length::Fill).into()
     };
 
     column![group_title("Found by agents"), ui::faint("Software, services and techniques agents found on the internet, tried in their VMs and recommend to each other."), toolbar, list]
@@ -1377,5 +1406,6 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Some(layer) => Stack::with_children(vec![body, layer]).into(),
         None => body,
     };
-    ui::sheet(ui::view_head("Tools", vec![]), body)
+    // The page scrolls as the web does: a tall list is not squeezed into the window.
+    scrollable(ui::sheet(ui::view_head("Tools", vec![]), body)).height(Length::Fill).into()
 }

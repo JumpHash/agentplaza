@@ -9,12 +9,16 @@
 pub mod boot;
 pub mod brands;
 pub mod cli_link;
-pub mod floor3d;
+// The Floor's 3D engine lives in `crates/apz-engine`; `floor3d::` is kept as its name here.
+pub use apz_engine as floor3d;
+pub mod floor_engine;
 pub mod chart;
 pub mod client;
 pub mod events;
 pub mod icons;
+pub mod lab_api;
 pub mod picker;
+pub(crate) mod render_card;
 pub mod screens;
 pub mod services;
 pub mod setup;
@@ -35,6 +39,8 @@ pub struct Console {
     pub boot: boot::State,
     pub shell: shell::State,
     pub screens: screens::Screens,
+    /// `APZ_PICK=<machine id>` (a capture hook): the machine the Machines screen picks once after its first load.
+    pick: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +59,11 @@ pub enum Msg {
 
 fn boot() -> (Console, Task<Msg>) {
     let (boot, task) = boot::init();
-    let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default() };
+    if let Some(point) = snapshot_hover() {
+        chart::set_snapshot_hover(point);
+    }
+    let pick = std::env::var("APZ_PICK").ok().filter(|id| !id.trim().is_empty());
+    let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default(), pick };
     // For development and captures: `APZ_CONNECT=<hub url>` (and `APZ_TOKEN`) skips the chooser,
     // `APZ_SCREEN=<screen label>` opens that screen.
     let info = iced::system::information().map(Msg::System);
@@ -64,7 +74,57 @@ fn boot() -> (Console, Task<Msg>) {
     if let Ok(name) = std::env::var("APZ_SCREEN") {
         if let Some((id, ..)) = screens::NAV.iter().find(|(_, label, ..)| label.eq_ignore_ascii_case(&name)) {
             console.shell.current = id.clone();
+        } else if name.eq_ignore_ascii_case("LabJobs") {
+            // A Lab section has no nav entry; this opens the Jobs tab for the snapshot harness.
+            console.shell.current = screens::Id::LabJobs;
         }
+    }
+    // `APZ_AGENT=<cid>` opens that agent's page: its `Id::Agent` is the current screen, which `screens::open` loads below.
+    if let Some(cid) = std::env::var("APZ_AGENT").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+        console.shell.current = screens::Id::Agent(cid);
+    }
+    // `APZ_JOB=<id>` opens that Lab job's page: its `Id::LabJobDetail` is the current screen, as `APZ_AGENT` does for an agent.
+    if let Ok(job) = std::env::var("APZ_JOB") {
+        console.shell.current = screens::Id::LabJobDetail(job);
+    }
+    // `APZ_LAB_MODEL=<model id>`, `APZ_SCREEN=LabModels|LabBreeders|LabRecipes|LabDatasets` open the Lab screens the sidebar does not list (capture hooks).
+    if let Ok(model) = std::env::var("APZ_LAB_MODEL") {
+        console.shell.current = screens::Id::LabModelDetail(model);
+    } else if std::env::var("APZ_SCREEN").is_ok_and(|s| s == "LabModels") {
+        console.shell.current = screens::Id::LabModels;
+    } else if std::env::var("APZ_SCREEN").is_ok_and(|s| s == "LabBreeders") {
+        console.shell.current = screens::Id::LabBreeders;
+    } else if std::env::var("APZ_SCREEN").is_ok_and(|s| s == "LabRecipes") {
+        console.shell.current = screens::Id::LabRecipes;
+    } else if std::env::var("APZ_SCREEN").is_ok_and(|s| s == "LabDatasets") {
+        console.shell.current = screens::Id::LabDatasets;
+    }
+    // `APZ_DIALOG=vet|export|upload|plan` opens that Lab dialog prefilled on its screen (capture hooks; `plan` previews the Jobs form);
+    // `APZ_DIALOG_FILE=<path>` is the JSONL file the upload dialog shows as picked.
+    match std::env::var("APZ_DIALOG").ok().as_deref() {
+        Some("vet") => {
+            console.shell.current = screens::Id::LabRecipes;
+            screens::lab_recipes::capture_vet(&mut console.screens.lab_recipes);
+        }
+        Some("export") => {
+            console.shell.current = screens::Id::LabDatasets;
+            screens::lab_datasets::capture(&mut console.screens.lab_datasets, screens::lab_datasets::Capture::Export);
+        }
+        Some("upload") => {
+            console.shell.current = screens::Id::LabDatasets;
+            let file = std::env::var("APZ_DIALOG_FILE").ok().map(std::path::PathBuf::from);
+            screens::lab_datasets::capture(&mut console.screens.lab_datasets, screens::lab_datasets::Capture::Upload(file));
+        }
+        Some("plan") => {
+            console.shell.current = screens::Id::LabJobs;
+            screens::lab_jobs::capture_plan(&mut console.screens.lab_jobs);
+        }
+        _ => {}
+    }
+    // `APZ_VIEW=cards` opens the Lab Jobs list in its cards view (a capture hook, as `APZ_DIALOG`).
+    if std::env::var("APZ_VIEW").is_ok_and(|v| v == "cards") {
+        console.shell.current = screens::Id::LabJobs;
+        screens::lab_jobs::capture_cards(&mut console.screens.lab_jobs);
     }
     let tasks = Task::batch([
         screens::open(&mut console.screens, console.shell.current.clone(), &ctx).map(Msg::Screen),
@@ -103,14 +163,27 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
                 console.shell.current = id.clone();
                 return screens::open(&mut console.screens, id, &ctx).map(Msg::Screen);
             }
-            screens::update(&mut console.screens, msg, &ctx).map(Msg::Screen)
+            // `APZ_PICK`: the first load of the Machines screen picks that machine, as a topology click does.
+            let loaded = matches!(msg, screens::Msg::Machines(screens::machines::Msg::Loaded(Ok(_))));
+            let pick = if loaded { console.pick.take() } else { None };
+            let task = screens::update(&mut console.screens, msg, &ctx).map(Msg::Screen);
+            match pick {
+                Some(id) => Task::batch([task, pick_after_layout(id)]),
+                None => task,
+            }
         }
         Msg::System(info) => {
             eprintln!("agentplaza-desktop: graphics {} on {}", info.graphics_backend, info.graphics_adapter);
             console.shell.software_gpu = is_software(&info.graphics_adapter).then(|| info.graphics_adapter.clone());
             Task::none()
         }
-        Msg::Snapshot => iced::window::oldest().and_then(iced::window::screenshot).map(Msg::Shot),
+        Msg::Snapshot => {
+            let capture = iced::window::oldest().and_then(iced::window::screenshot).map(Msg::Shot);
+            match snapshot_scroll() {
+                Some(dy) => iced::advanced::widget::operate(ScrollBy(dy)).discard().chain(capture),
+                None => capture,
+            }
+        }
         Msg::Shot(shot) => {
             if let Ok(path) = std::env::var("APZ_SNAPSHOT") {
                 match save_png(&shot, &path) {
@@ -128,6 +201,17 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
             ])
         }
     }
+}
+
+/// The `APZ_PICK` pick, sent after a short wait so the screen has laid its sections out (the pick measures them).
+fn pick_after_layout(id: String) -> Task<Msg> {
+    Task::perform(
+        async move {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            id
+        },
+        |id| Msg::Screen(screens::Msg::Machines(screens::machines::Msg::Pick(id))),
+    )
 }
 
 fn view(console: &Console) -> Element<'_, Msg> {
@@ -210,6 +294,46 @@ fn snapshot_size() -> Option<iced::Size> {
     let (w, h) = value.split_once('x')?;
     let (w, h) = (w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?);
     (w >= 320.0 && h >= 240.0 && w <= 8192.0 && h <= 8192.0).then(|| iced::Size::new(w, h))
+}
+
+/// `APZ_SNAPSHOT_SCROLL=<px>`: before the capture, scrolls every scrollable that overflows its
+/// bounds down by this many pixels, so a long page's lower section can be framed. Read only by the
+/// snapshot path.
+fn snapshot_scroll() -> Option<f32> {
+    std::env::var_os("APZ_SNAPSHOT")?;
+    let value = std::env::var("APZ_SNAPSHOT_SCROLL").ok()?;
+    value.trim().parse::<f32>().ok().filter(|dy| *dy > 0.0)
+}
+
+/// `APZ_HOVER=<x>,<y>`: the window point the snapshot hovers the charts at, as a cursor there would
+/// (a chart shows its tooltip at that point). Read only by the snapshot path.
+fn snapshot_hover() -> Option<iced::Point> {
+    std::env::var_os("APZ_SNAPSHOT")?;
+    let value = std::env::var("APZ_HOVER").ok()?;
+    let (x, y) = value.split_once(',')?;
+    Some(iced::Point::new(x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
+}
+
+/// Scrolls the overflowing scrollables by `.0` pixels (the snapshot path only).
+struct ScrollBy(f32);
+
+impl iced::advanced::widget::Operation for ScrollBy {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&iced::advanced::widget::Id>,
+        bounds: iced::Rectangle,
+        content_bounds: iced::Rectangle,
+        _translation: iced::Vector,
+        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if content_bounds.height > bounds.height {
+            state.scroll_by(iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: self.0 }, bounds, content_bounds);
+        }
+    }
 }
 
 /// Writes a window screenshot as a PNG (`APZ_SNAPSHOT`).

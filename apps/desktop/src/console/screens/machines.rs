@@ -4,17 +4,20 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iced::widget::canvas::{self, Path, Stroke};
+use iced::advanced::widget::operation::{Operation, Outcome, Scrollable};
+use iced::advanced::widget::operate;
+use iced::widget::text::Wrapping;
 use iced::widget::{column, container, mouse_area, row, scrollable, Space};
-use iced::{mouse, Alignment, Border, Color, Element, Length, Pixels, Point, Rectangle, Task, Theme};
+use iced::{mouse, Alignment, Border, Color, Element, Length, Pixels, Point, Rectangle, Size, Task, Theme, Vector};
 use serde_json::Value;
 
 use super::Id;
 use crate::console::ui::{Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
-use crate::console::{client, ui, Ctx};
-use crate::theme::MONO;
+use crate::console::{client, render_card, ui, Ctx};
+use crate::theme::{MONO, PAPER};
 
 /// A machine's row in the topology, and the topology's fleet column.
 const ROW_H: f32 = 56.0;
@@ -50,6 +53,9 @@ pub enum Msg {
     Loaded(Result<Value, String>),
     /// The topology picked a machine.
     Pick(String),
+    PickChecked(String, f32, f32),
+    /// The pick's scroll has run and a frame has passed: measure the section again.
+    PickMeasure(String, f32),
     Sort(String, SortKey),
     ToggleRun(String),
     RunLoaded(String, Result<Value, String>),
@@ -110,6 +116,7 @@ struct Machine {
     id: String,
     name: String,
     kind: String,
+    vendor: String,
     model: Option<String>,
     apple: Option<Apple>,
     class: String,
@@ -246,7 +253,27 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Pick(id) => {
-            state.selected = Some(id);
+            let measure = SectionOffset {
+                section: section_id(&id),
+                scroll: crate::console::shell::SCREEN_SCROLL.clone(),
+                section_top: None,
+                view_top: None,
+                scrolled: 0.0,
+                visible: false,
+            };
+            state.selected = Some(id.clone());
+            // Measure the section against the screen's scroll, scroll so its top is the view's top, then check it.
+            operate(measure).then(move |target| {
+                eprintln!("agentplaza-desktop: pick {id}: scroll to {target:.1} px");
+                let scroll = crate::console::shell::SCREEN_SCROLL.clone();
+                iced::widget::operation::scroll_to(scroll, scrollable::AbsoluteOffset { x: 0.0, y: target }).chain(settle(id.clone(), target))
+            })
+        }
+        Msg::PickMeasure(id, target) => pick_check(id, target),
+        Msg::PickChecked(id, _target, needed) => {
+            let gap = needed;
+            let verdict = if gap.abs() <= PICK_TOLERANCE { "within 2 px: PASS" } else { "more than 2 px off: FAIL" };
+            eprintln!("agentplaza-desktop: pick {id}: section top {gap:+.1} px from the view top, {verdict}");
             Task::none()
         }
         Msg::Sort(id, key) => {
@@ -316,6 +343,7 @@ fn body<'a>(state: &'a State) -> Element<'a, Msg> {
                 parts.push(ui::empty("machine", "No machines.", "The plaza has no machines to show."));
             } else {
                 for m in &data.machines {
+                    parts.push(ui::hairline());
                     parts.push(section(state, data, m));
                 }
             }
@@ -330,7 +358,7 @@ fn topology<'a>(state: &'a State, data: &'a Data) -> Element<'a, Msg> {
     let fleet_h = data.machines.len().max(1) as f32 * ROW_H;
     let wires = iced::widget::canvas(Wires {
         live: data.machines.iter().map(|m| is_live(&m.runs)).collect(),
-        labels: data.machines.iter().map(|m| format!("{} agents · {} VMs", m.agents, machine_vms(m))).collect(),
+        labels: data.machines.iter().map(|m| format!("{} AGENTS · {} VMS", m.agents, machine_vms(m))).collect(),
     })
     .width(Length::Fill)
     .height(Length::Fixed(fleet_h));
@@ -414,7 +442,7 @@ fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
     };
     let selected = state.selected.as_deref() == Some(m.id.as_str());
     let content = column![
-        row![swatch(tone.color(), 8.0), ui::mono(m.name.clone(), 13.0, INK)].spacing(8).align_y(Alignment::Center),
+        row![swatch(tone.color(), 8.0), ui::mono(m.name.to_uppercase(), 13.0, INK)].spacing(8).align_y(Alignment::Center),
         ui::faint(format!("{} · {status}", kind_label(&m.kind))),
     ]
     .spacing(4);
@@ -430,23 +458,350 @@ fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
 fn block_style(selected: bool) -> impl Fn(&Theme) -> container::Style {
     move |_: &Theme| container::Style {
         background: if selected { Some(SHEET.into()) } else { None },
-        border: Border { color: if selected { INK } else { RULE }, width: 1.0, radius: 0.0.into() },
+        border: Border { color: if selected { SIGNAL } else { RULE }, width: 1.0, radius: 0.0.into() },
         ..Default::default()
+    }
+}
+
+// ---- A machine's device: its drawing in line art (the web's ui/devices.ts) ---------------------
+
+/// A machine's section's widget id: the topology finds the section by it, so no offset is guessed.
+fn section_id(machine: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("machine-section-{machine}"))
+}
+
+/// The section's top from the view's top after a pick: `target` is the offset the pick scrolled to, and `needed` the offset
+/// How far (px) a picked section's top may sit from the view's top and still pass the check.
+const PICK_TOLERANCE: f32 = 2.0;
+
+/// Waits about one frame after the scroll has run, then measures again: the second operation, in its own update.
+fn settle(id: String, target: f32) -> Task<Msg> {
+    Task::perform(
+        async {
+            std::thread::sleep(Duration::from_millis(50));
+        },
+        move |()| Msg::PickMeasure(id, target),
+    )
+}
+
+/// Measures the picked section again once its scroll has run, and reports it as `PickChecked`.
+fn pick_check(id: String, target: f32) -> Task<Msg> {
+    let measure = SectionOffset {
+        section: section_id(&id),
+        scroll: crate::console::shell::SCREEN_SCROLL.clone(),
+        section_top: None,
+        view_top: None,
+        scrolled: 0.0,
+        visible: true,
+    };
+    operate(measure).map(move |needed| Msg::PickChecked(id.clone(), target, needed))
+}
+
+/// Measures a machine's section in the screen's scroll: the offset that puts its top at the view's top.
+/// Both tops are window positions, so the scroll's current offset is added back.
+struct SectionOffset {
+    section: iced::widget::Id,
+    scroll: iced::widget::Id,
+    section_top: Option<f32>,
+    view_top: Option<f32>,
+    scrolled: f32,
+    /// Measures the gap still visible after the scroll (true), not the offset the scroll must reach (false).
+    visible: bool,
+}
+
+impl Operation<f32> for SectionOffset {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<f32>)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle) {
+        if id == Some(&self.section) {
+            self.section_top = Some(bounds.y);
+        }
+    }
+
+    fn scrollable(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle, content: Rectangle, translation: Vector, _state: &mut dyn Scrollable) {
+        if id == Some(&self.scroll) {
+            let max = (content.height - bounds.height).max(0.0);
+            eprintln!("agentplaza-desktop: pick scroll: view top {:.1}, view height {:.1}, content height {:.1}, max offset {:.1}, translation {:.1}", bounds.y, bounds.height, content.height, max, translation.y);
+            self.view_top = Some(bounds.y);
+            self.scrolled = translation.y;
+        }
+    }
+
+    fn finish(&self) -> Outcome<f32> {
+        match (self.section_top, self.view_top) {
+            (Some(section), Some(view)) => {
+                // The bounds come untranslated (they stay put as the scroll moves), so the offset the scroll must reach is
+                // section - view, and the gap still visible is that less the scroll's translation.
+                let offset = section - view;
+                let value = if self.visible { offset - self.scrolled } else { offset };
+                eprintln!("agentplaza-desktop: pick measure: section top {section:.1}, view top {view:.1}, translation {:.1}, {} {value:.1}", self.scrolled, if self.visible { "visible gap" } else { "offset" });
+                Outcome::Some(value)
+            }
+            _ => {
+                eprintln!("agentplaza-desktop: pick measure: section or view not found ({:?}, {:?})", self.section_top, self.view_top);
+                Outcome::None
+            }
+        }
+    }
+}
+
+const EDGE_GREEN: Color = Color::from_rgb8(0x5a, 0x9a, 0x78);
+const GOLD: Color = Color::from_rgb8(0xc9, 0xa2, 0x27);
+
+/// The device shapes: the web's looks (`lookOf`), with an Apple laptop as a MacBook and other Apple machines as a Mac mini.
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    Server,
+    Workstation,
+    Edge,
+    Laptop,
+    MacBook,
+    Mini,
+    Phone,
+}
+
+fn look_of(kind: &str, vendor: &str) -> Look {
+    if vendor != "apple" || kind == "phone" {
+        return match kind {
+            "workstation" => Look::Workstation,
+            "edge" => Look::Edge,
+            "laptop" => Look::Laptop,
+            "phone" => Look::Phone,
+            _ => Look::Server,
+        };
+    }
+    if kind == "laptop" {
+        Look::MacBook
+    } else {
+        Look::Mini
+    }
+}
+
+/// A pen over the web's 120 x 90 device grid, scaled to the figure's width; strokes take `ink`.
+struct Pen {
+    frame: canvas::Frame,
+    scale: f32,
+    ink: Color,
+}
+
+impl Pen {
+    fn at(&self, x: f32, y: f32) -> Point {
+        Point::new(x * self.scale, y * self.scale)
+    }
+
+    fn stroke(&self, width: f32) -> Stroke<'static> {
+        Stroke::default().with_color(self.ink).with_width(width * self.scale)
+    }
+
+    /// A box with rounded corners, filled when `fill` is set, and outlined.
+    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, fill: Option<Color>) {
+        let path = Path::rounded_rectangle(self.at(x, y), Size::new(w * self.scale, h * self.scale), (radius * self.scale).into());
+        if let Some(c) = fill {
+            self.frame.fill(&path, c);
+        }
+        self.frame.stroke(&path, self.stroke(1.5));
+    }
+
+    /// A box with no outline, only its fill.
+    fn solid(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let path = Path::rectangle(self.at(x, y), Size::new(w * self.scale, h * self.scale));
+        self.frame.fill(&path, color);
+    }
+
+    fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) {
+        let path = Path::line(self.at(x1, y1), self.at(x2, y2));
+        self.frame.stroke(&path, self.stroke(width));
+    }
+
+    fn circle(&mut self, cx: f32, cy: f32, r: f32, fill: Option<Color>, width: f32) {
+        let path = Path::circle(self.at(cx, cy), r * self.scale);
+        if let Some(c) = fill {
+            self.frame.fill(&path, c);
+        }
+        self.frame.stroke(&path, self.stroke(width));
+    }
+
+    fn poly(&mut self, points: &[(f32, f32)], fill: Color) {
+        let pts: Vec<Point> = points.iter().map(|&(x, y)| self.at(x, y)).collect();
+        let path = Path::new(|b| {
+            b.move_to(pts[0]);
+            for p in &pts[1..] {
+                b.line_to(*p);
+            }
+            b.close();
+        });
+        self.frame.fill(&path, fill);
+        self.frame.stroke(&path, self.stroke(1.5));
+    }
+
+    /// A status LED: signal green when the machine runs VMs, paper otherwise.
+    fn led(&mut self, cx: f32, cy: f32, active: bool) {
+        let fill = if active { Tone::Ok.color() } else { PAPER };
+        self.circle(cx, cy, 1.6, Some(fill), 1.0);
+    }
+}
+
+/// A small GPU card beside the device, its riser joining it at y 46.
+fn gpu_card(p: &mut Pen, riser: f32) {
+    p.line(riser, 46.0, 86.0, 46.0, 1.5);
+    p.rect(86.0, 36.0, 28.0, 24.0, 0.0, Some(SHEET));
+    p.circle(98.0, 46.0, 6.0, None, 1.5);
+    p.circle(98.0, 46.0, 1.5, None, 1.5);
+    p.solid(90.0, 56.0, 20.0, 3.0, GOLD);
+}
+
+/// A 2U rack chassis: two front bays with drive slots, vents and an LED row. Returns its riser's x.
+fn server(p: &mut Pen, active: bool) -> f32 {
+    p.rect(8.0, 18.0, 68.0, 44.0, 0.0, Some(SHEET));
+    p.rect(13.0, 23.0, 40.0, 14.0, 0.0, Some(PAPER));
+    for x in [17.0, 21.0, 25.0] {
+        p.line(x, 27.0, x, 33.0, 1.5);
+    }
+    p.rect(13.0, 41.0, 40.0, 15.0, 0.0, Some(PAPER));
+    for y in [45.0, 48.0, 51.0, 54.0] {
+        p.line(17.0, y, 49.0, y, 1.0);
+        p.line(58.0, y, 73.0, y, 1.0);
+    }
+    for x in [58.0, 63.0, 68.0, 73.0] {
+        p.led(x, 30.0, active);
+    }
+    76.0
+}
+
+/// A tower: a front panel with a drive bay, a power button, LEDs and side vents.
+fn workstation(p: &mut Pen, active: bool) -> f32 {
+    p.rect(26.0, 8.0, 42.0, 76.0, 0.0, Some(SHEET));
+    p.poly(&[(68.0, 8.0), (76.0, 3.0), (76.0, 79.0), (68.0, 84.0)], PAPER);
+    for y in [30.0, 36.0, 42.0] {
+        p.line(70.0, y - 1.25, 75.0, y - 4.4, 1.0);
+    }
+    p.rect(32.0, 14.0, 30.0, 18.0, 0.0, Some(PAPER));
+    p.line(36.0, 22.0, 58.0, 22.0, 1.0);
+    p.line(36.0, 26.0, 58.0, 26.0, 1.0);
+    for y in [70.0, 73.0, 76.0, 79.0] {
+        p.line(34.0, y, 62.0, y, 1.0);
+    }
+    p.circle(52.0, 60.0, 3.5, Some(PAPER), 1.5);
+    p.led(36.0, 60.0, active);
+    p.led(42.0, 60.0, active);
+    76.0
+}
+
+/// A single-board computer: a green board, a CPU die, a GPIO header, USB and ethernet.
+fn edge(p: &mut Pen, active: bool) -> f32 {
+    p.ink = EDGE_GREEN;
+    p.rect(10.0, 30.0, 70.0, 40.0, 0.0, Some(SHEET));
+    for (x, y) in [(14.0, 34.0), (76.0, 34.0), (14.0, 66.0), (76.0, 66.0)] {
+        p.circle(x, y, 1.5, None, 1.0);
+    }
+    p.ink = INK_2;
+    p.rect(30.0, 40.0, 20.0, 20.0, 0.0, Some(PAPER));
+    p.rect(36.0, 46.0, 8.0, 8.0, 0.0, None);
+    for i in 0..10 {
+        let x = 52.0 + i as f32 * 2.2;
+        p.circle(x, 34.0, 0.9, None, 0.8);
+        p.circle(x, 37.0, 0.9, None, 0.8);
+    }
+    p.rect(69.0, 48.0, 11.0, 9.0, 0.0, Some(PAPER));
+    p.rect(69.0, 58.0, 11.0, 9.0, 0.0, Some(PAPER));
+    p.rect(54.0, 60.0, 13.0, 10.0, 0.0, Some(PAPER));
+    p.led(18.0, 62.0, active);
+    p.led(23.0, 62.0, active);
+    80.0
+}
+
+/// A flat rounded box with a front light and a top line: a Mac mini or Studio.
+fn mini(p: &mut Pen, active: bool) -> f32 {
+    p.rect(10.0, 30.0, 66.0, 30.0, 8.0, Some(SHEET));
+    p.line(18.0, 35.0, 66.0, 35.0, 1.0);
+    p.line(20.0, 50.0, 50.0, 50.0, 1.0);
+    p.line(20.0, 53.0, 50.0, 53.0, 1.0);
+    p.led(66.0, 45.0, active);
+    76.0
+}
+
+/// A laptop, lid open: a screen with a camera dot, a base wedge with a keyboard line and a light.
+fn laptop(p: &mut Pen, active: bool) -> f32 {
+    p.rect(26.0, 14.0, 68.0, 46.0, 4.0, Some(SHEET));
+    p.rect(31.0, 19.0, 58.0, 36.0, 2.0, Some(PAPER));
+    p.circle(60.0, 16.5, 0.9, None, 0.8);
+    p.poly(&[(12.0, 60.0), (108.0, 60.0), (113.0, 70.0), (7.0, 70.0)], SHEET);
+    p.line(24.0, 65.0, 96.0, 65.0, 1.0);
+    p.led(102.0, 66.0, active);
+    0.0
+}
+
+/// A MacBook: a thin lid with a camera notch and a lit screen, on a slim aluminium base.
+fn macbook(p: &mut Pen, active: bool) -> f32 {
+    p.rect(24.0, 14.0, 72.0, 48.0, 6.0, Some(SHEET));
+    p.rect(29.0, 19.0, 62.0, 38.0, 3.0, Some(PAPER));
+    p.rect(55.0, 15.5, 10.0, 2.5, 1.2, Some(PAPER));
+    p.rect(12.0, 62.0, 96.0, 6.0, 3.0, Some(SHEET));
+    p.line(44.0, 65.0, 76.0, 65.0, 1.0);
+    p.led(104.0, 65.0, active);
+    0.0
+}
+
+/// A phone standing upright: a slim body, a screen, a speaker grille and a home bar.
+fn phone(p: &mut Pen, active: bool) -> f32 {
+    p.rect(40.0, 8.0, 40.0, 74.0, 7.0, Some(SHEET));
+    p.rect(44.0, 14.0, 32.0, 60.0, 2.0, Some(PAPER));
+    p.line(55.0, 11.0, 65.0, 11.0, 1.0);
+    p.line(54.0, 78.0, 66.0, 78.0, 1.5);
+    p.led(72.0, 11.0, active);
+    0.0
+}
+
+struct Device {
+    look: Look,
+    gpu: bool,
+    active: bool,
+}
+
+impl canvas::Program<Msg> for Device {
+    type State = ();
+
+    fn draw(&self, _state: &(), renderer: &iced::Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+        let mut pen = Pen { frame: canvas::Frame::new(renderer, bounds.size()), scale: bounds.width / 120.0, ink: INK_2 };
+        let riser = match self.look {
+            Look::Server => server(&mut pen, self.active),
+            Look::Workstation => workstation(&mut pen, self.active),
+            Look::Edge => edge(&mut pen, self.active),
+            Look::Laptop => laptop(&mut pen, self.active),
+            Look::MacBook => macbook(&mut pen, self.active),
+            Look::Mini => mini(&mut pen, self.active),
+            Look::Phone => phone(&mut pen, self.active),
+        };
+        let portable = matches!(self.look, Look::Laptop | Look::MacBook | Look::Phone);
+        if self.gpu && !portable {
+            gpu_card(&mut pen, riser);
+        }
+        vec![pen.frame.into_geometry()]
+    }
+}
+
+/// The machine's device drawing, 160 x 120 (the web draws it at 160 px wide on a 120 x 90 grid). The line art sits under
+/// the exterior's 3D card: the card is transparent where no mesh draws (its clear is 0, blitted over the page), so the
+/// line art shows through it; where the GPU cannot draw, the line art alone shows.
+fn device<'a>(m: &'a Machine, slot: usize) -> Element<'a, Msg> {
+    let active = is_live(&m.runs);
+    let drawing = Device { look: look_of(&m.kind, &m.vendor), gpu: !m.gpus.is_empty(), active };
+    let line_art: Element<'a, Msg> = iced::widget::canvas(drawing).width(Length::Fixed(160.0)).height(Length::Fixed(120.0)).into();
+    match render_card::exterior(slot, &m.kind, &m.vendor, m.gpus.len(), active) {
+        Some(card) => iced::widget::stack(vec![line_art, card]).width(Length::Fixed(160.0)).height(Length::Fixed(120.0)).into(),
+        None => line_art,
     }
 }
 
 // ---- A machine's section ----------------------------------------------------------------------
 
 fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
-    let figure: Element<'a, Msg> = container(ui::icon("machine", 64.0, INK_3))
-        .width(Length::Fixed(180.0))
-        .height(Length::Fixed(160.0))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(boxed)
-        .into();
+    let slot = data.machines.iter().position(|x| x.id == m.id).unwrap_or(0);
+    let figure: Element<'a, Msg> = device(m, slot);
     let parts: Vec<Element<'a, Msg>> = vec![
-        ui::mono(m.name.clone(), 18.0, INK).into(),
+        ui::mono(m.name.to_uppercase(), 18.0, INK).into(),
         ui::faint(sentence(m)).into(),
         live_stats(m),
         resources(state, data, m),
@@ -454,7 +809,10 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
         runs(state, m),
         technical(state, m),
     ];
-    row![figure, column(parts).spacing(16).width(Length::Fill)].spacing(24).into()
+    container(row![figure, column(parts).spacing(16).width(Length::Fill)].spacing(24))
+        .id(section_id(&m.id))
+        .width(Length::Fill)
+        .into()
 }
 
 /// The machine's tallies: CPU with its sparkline, memory, load and the agents' VMs.
@@ -483,12 +841,16 @@ fn live_stats<'a>(m: &'a Machine) -> Element<'a, Msg> {
 }
 
 fn tally<'a>(label: &str, figure: String, caption: Option<String>, extra: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::label(label).into(), ui::mono(figure, 20.0, INK).into()];
+    // A figure too long for its tally is ellipsized; a long figure (a load triple) sets smaller so it stays on one line.
+    // Labels, figures and captions are single lines: they never wrap.
+    let figure = ui::ellipsize(&figure, 18);
+    let size = if figure.chars().count() > 12 { 14.0 } else { 20.0 };
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::label(label).wrapping(Wrapping::None).into(), ui::mono(figure, size, INK).wrapping(Wrapping::None).into()];
     if let Some(extra) = extra {
         parts.push(extra);
     }
     if let Some(caption) = caption {
-        parts.push(ui::faint(caption).into());
+        parts.push(ui::faint(caption).wrapping(Wrapping::None).into());
     }
     container(column(parts).spacing(8)).padding(12).width(Length::FillPortion(1)).style(boxed).into()
 }
@@ -946,6 +1308,8 @@ fn human(mib: f64) -> String {
 }
 
 fn pct(n: f64) -> String {
+    // A rounding residue below a tenth of a point reads as zero, never as a signed "-0.0%".
+    let n = if n.abs() < 0.05 { 0.0 } else { n };
     format!("{n:.1}%")
 }
 
@@ -1031,6 +1395,7 @@ fn parse_machine(m: &Value) -> Option<Machine> {
     Some(Machine {
         name: text(m, "name"),
         kind: text(m, "kind"),
+        vendor: text(m, "vendor"),
         model: opt_text(m, "model"),
         apple: m.get("apple").filter(|a| a.is_object()).map(|a| Apple {
             chip: text(a, "chip"),
@@ -1125,6 +1490,38 @@ fn parse_vm_row(v: &Value) -> VmRow {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The offset `SectionOffset::finish` gives for a section's and the view's tops (window positions), the scroll, and
+    /// whether the section is already visible. Hidden, the offset is section − view; visible, the gap still showing is
+    /// that less the scroll's translation.
+    fn offset(section_top: Option<f32>, view_top: Option<f32>, scrolled: f32, visible: bool) -> Option<f32> {
+        let measure = SectionOffset { section: section_id("m"), scroll: section_id("s"), section_top, view_top, scrolled, visible };
+        match measure.finish() {
+            Outcome::Some(y) => Some(y),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn machines_pick_offset_is_the_section_less_the_view_and_less_the_scroll_when_visible() {
+        // Hidden: the section's top sits 300 px below the view's top, and the scroll is not taken off (the bounds stay put).
+        assert_eq!(offset(Some(400.0), Some(100.0), 100.0, false), Some(300.0));
+        // Visible: the same tops with the scroll at 100 leave 300 - 100 = 200.
+        assert_eq!(offset(Some(400.0), Some(100.0), 100.0, true), Some(200.0));
+    }
+
+    #[test]
+    fn machines_offset_puts_the_section_top_at_the_view_top() {
+        // Unscrolled, hidden: the section starts 400 px below the view's top, so the offset is 400.
+        assert_eq!(offset(Some(500.0), Some(100.0), 0.0, false), Some(400.0));
+        // Scrolled 250, hidden: the translation is ignored, the section still starts 200 px below, so the offset is 200.
+        assert_eq!(offset(Some(300.0), Some(100.0), 250.0, false), Some(200.0));
+        // Scrolled 250, visible: 300 - 100 - 250 = -50, so the section's top sits 50 px above the view's top.
+        assert_eq!(offset(Some(300.0), Some(100.0), 250.0, true), Some(-50.0));
+        // Without both tops there is nothing to scroll to.
+        assert_eq!(offset(None, Some(100.0), 0.0, false), None);
+        assert_eq!(offset(Some(500.0), None, 0.0, false), None);
+    }
 
     #[test]
     fn machines_name_the_apple_chip_and_the_laptop_kind() {

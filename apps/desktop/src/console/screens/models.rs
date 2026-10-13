@@ -1,13 +1,18 @@
 //! The Models screen (parity with the web console's `models` view). Two tabs. Providers: the
 //! hub's providers as cards grouped by how they are credentialed, with keys, tests, their models,
 //! edits, removal, and adding one from the catalogue. Policy & defaults: the orchestrator and
-//! worker allowlists, the defaults and per-role models, the limits and the prices, saved whole.
+//! worker model lists, the defaults and per-role models, the limits (with the fetch blocklist:
+//! a domain and its subdomains, or `*.domain` for subdomains only) and the prices, saved whole.
 //! A key is typed into a secure field and is never echoed or logged.
+//!
+//! Captures: `APZ_MODELS_TAB=policy` opens the Policy & defaults tab at start.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input, Space};
-use iced::{Element, Length, Task, Theme};
+use iced::font::{Font, Weight};
+use iced::widget::text::{self as text_mod, Wrapping};
+use iced::widget::{button, column, container, pick_list, rich_text, row, span, text, text_editor, text_input, Space};
+use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -15,6 +20,10 @@ use super::Id;
 use crate::console::client::{self, Client};
 use crate::console::ui::{Kind, Tone};
 use crate::console::{ui, Ctx};
+use crate::theme::{self, MONO, SERIF};
+
+const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
+const SERIF_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..SERIF };
 
 const GROUPS: [&str; 3] = ["Configured with a key", "Needs a key", "Local"];
 const EFFORTS: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
@@ -200,6 +209,8 @@ pub struct ModelInfo {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub trains_on_data: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -241,6 +252,9 @@ pub struct Settings {
     pub fetch_block: Vec<String>,
     #[serde(default)]
     pub prices: BTreeMap<String, Price>,
+    /// The owner's confirmation that contributor models may be defaults, role models and policy entries.
+    #[serde(default)]
+    pub allow_training_models: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_models: Option<bool>,
     #[serde(flatten)]
@@ -344,6 +358,8 @@ pub struct Policy {
     errors: BTreeSet<String>,
     /// What the user typed into each text field, so a half-typed value stays on screen.
     raw: BTreeMap<String, String>,
+    /// The fetch blocklist editor: one host per line.
+    block: text_editor::Content,
     add_orchestrator: String,
     add_worker: String,
     saving: bool,
@@ -351,6 +367,7 @@ pub struct Policy {
 
 impl Policy {
     fn new(settings: Settings, view: ModelsView) -> Policy {
+        let block = text_editor::Content::with_text(&settings.fetch_block.join("\n"));
         let known: BTreeSet<String> = view.models.iter().map(|m| format!("{}/{}", m.provider, m.id)).collect();
         Policy {
             saved: settings.clone(),
@@ -359,6 +376,7 @@ impl Policy {
             known,
             errors: BTreeSet::new(),
             raw: BTreeMap::new(),
+            block,
             add_orchestrator: String::new(),
             add_worker: String::new(),
             saving: false,
@@ -442,8 +460,9 @@ pub enum Msg {
     PolicyRemove(Tier, usize),
     PolicyDefault(Slot, Opt),
     PolicyEffort(String),
+    PolicyAllowTraining(bool),
     PolicyNumber(Num, String),
-    PolicyFetchBlock(String),
+    PolicyFetchBlock(text_editor::Action),
     TogglePrices,
     PolicySave,
     PolicySaved(Result<Settings, String>),
@@ -471,6 +490,13 @@ pub fn go(msg: &Msg) -> Option<Id> {
 /// Loads the screen's data (called when it opens and on every poll tick). The providers tab
 /// reloads every time; the policy reloads only when there are no unsaved edits to lose.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    // Snapshot knob: `APZ_MODELS_TAB=policy` opens the Policy & defaults tab once, at start.
+    static START_TAB: std::sync::Once = std::sync::Once::new();
+    START_TAB.call_once(|| {
+        if std::env::var("APZ_MODELS_TAB").is_ok_and(|t| t == "policy") {
+            state.tab = Tab::Policy;
+        }
+    });
     match state.tab {
         Tab::Providers => Task::batch(vec![providers_task(ctx), default_task(ctx)]),
         Tab::Policy => match &state.policy {
@@ -771,6 +797,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
+        Msg::PolicyAllowTraining(on) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.copy.allow_training_models = on;
+            }
+            Task::none()
+        }
         Msg::PolicyEffort(v) => {
             if let Some(p) = state.policy.as_mut() {
                 p.copy.effort = if v == "default" { None } else { Some(v) };
@@ -819,10 +851,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::PolicyFetchBlock(text) => {
+        Msg::PolicyFetchBlock(action) => {
             if let Some(p) = state.policy.as_mut() {
-                p.copy.fetch_block = split_list(&text);
-                p.raw.insert("fetch_block".to_string(), text);
+                p.block.perform(action);
+                p.copy.fetch_block = split_list(&p.block.text());
             }
             Task::none()
         }
@@ -843,6 +875,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::PolicySaved(Ok(saved)) => {
             if let Some(p) = state.policy.as_mut() {
                 p.copy = saved.clone();
+                p.block = text_editor::Content::with_text(&saved.fetch_block.join("\n"));
                 p.saved = saved;
                 p.raw.clear();
                 p.errors.clear();
@@ -944,12 +977,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let tabs: Element<'a, Msg> = row(vec![
-        ui::btn("Providers", None, tab_kind(state.tab == Tab::Providers), Some(Msg::Tab(Tab::Providers))),
-        ui::btn("Policy & defaults", None, tab_kind(state.tab == Tab::Policy), Some(Msg::Tab(Tab::Policy))),
-    ])
-    .spacing(8)
-    .into();
+    let tabs: Element<'a, Msg> = tabs_strip(state);
     let mut parts: Vec<Element<'a, Msg>> = vec![tabs];
     if let Some(e) = &state.error {
         parts.push(ui::error_line(e));
@@ -964,12 +992,29 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     ui::sheet(ui::view_head("Models", vec![]), column(parts).spacing(16).into())
 }
 
-fn tab_kind(active: bool) -> Kind {
-    if active {
-        Kind::Secondary
-    } else {
-        Kind::Ghost
+/// The tab strip, as the web's `.tabs`: mono caps, the chosen tab underlined, a hairline under the
+/// strip. The shared `ui::tabs` stretches each cell across the strip; these cells keep to their labels.
+fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut strip = row(Vec::new()).spacing(22);
+    for (tab, name) in [(Tab::Providers, "Providers"), (Tab::Policy, "Policy & defaults")] {
+        let on = state.tab == tab;
+        let spans: Vec<text_mod::Span<'a>> = vec![span(name.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(if on { ui::INK } else { ui::INK_3 }).underline(on)];
+        let label = rich_text(spans);
+        let cell = button(container(label).padding(Padding { top: 10.0, right: 0.0, bottom: 8.0, left: 0.0 }))
+            .padding(0.0)
+            .style(move |_: &Theme, status: button::Status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: None,
+                    text_color: if on || hovered { ui::INK } else { ui::INK_3 },
+                    border: Border::default(),
+                    ..Default::default()
+                }
+            })
+            .on_press(Msg::Tab(tab));
+        strip = strip.push(cell);
     }
+    column(vec![strip.into(), ui::hairline()]).into()
 }
 
 fn providers_task(ctx: &Ctx) -> Task<Msg> {
@@ -1007,6 +1052,16 @@ fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
 }
 
 /// The kind entry a configured provider was made from: same id, else the first of the same kind.
+/// A policy sub-heading: serif semibold 13px in ink-3, as the web's `.models-policy h3`.
+fn h3<'a>(title: &str) -> Element<'a, Msg> {
+    text(title.to_string()).font(SERIF_SEMIBOLD).size(13.0).color(ui::INK_3).into()
+}
+
+/// The provider kinds that answer decision questions; the rest are chat (as the web's `isDecisionKind`).
+fn is_decision_kind(kind: &str) -> bool {
+    matches!(kind, "openai-decisions" | "systemone" | "azure-decisions")
+}
+
 fn kind_of<'a>(state: &'a State, p: &Provider) -> Option<&'a ProviderKind> {
     state.kinds.iter().find(|k| k.id == p.id).or_else(|| state.kinds.iter().find(|k| k.kind == p.kind))
 }
@@ -1025,7 +1080,19 @@ fn credential_badge(credential: &str) -> (&'static str, Tone) {
         "none" => ("No key needed", Tone::Muted),
         "command" => ("Command", Tone::Info),
         "missing" => ("Key missing", Tone::Warn),
+        "sealed" => ("Sealed", Tone::Warn),
+        "out_of_scope" => ("Out of scope", Tone::Muted),
         _ => ("Unknown", Tone::Muted),
+    }
+}
+
+/// A provider's model count line. OpenRouter's list is fetched live from its API, so the line says so.
+fn model_count_label(kind_id: &str, n: usize) -> String {
+    let noun = if n == 1 { "model" } else { "models" };
+    if kind_id == "openrouter" {
+        format!("fetched live, {n} {noun}")
+    } else {
+        format!("{n} {noun}")
     }
 }
 
@@ -1087,7 +1154,11 @@ fn model_options(p: &Policy, tier: Tier, current: &str, inherit: Option<&str>) -
     let names: BTreeMap<String, String> = p
         .models
         .iter()
-        .map(|m| (format!("{}/{}", m.provider, m.id), m.name.clone().unwrap_or_else(|| m.id.clone())))
+        .map(|m| {
+            let name = m.name.clone().unwrap_or_else(|| m.id.clone());
+            let label = if m.trains_on_data { format!("{name} · WARNING: trains on your data") } else { name };
+            (format!("{}/{}", m.provider, m.id), label)
+        })
         .collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for entry in tier_list(&p.copy, tier) {
@@ -1102,6 +1173,16 @@ fn model_options(p: &Policy, tier: Tier, current: &str, inherit: Option<&str>) -
         out.push(Opt { value: current.to_string(), label });
     }
     out
+}
+
+/// Whether the `provider/model` `base` is a contributor model the hub listed (`/v1/models`).
+fn listed_trains(models: &[ModelInfo], base: &str) -> bool {
+    models.iter().any(|m| m.trains_on_data && format!("{}/{}", m.provider, m.id) == base)
+}
+
+/// Whether a preset's `options.trains_on_data` names the model `id`.
+fn options_trains(options: Option<&Value>, id: &str) -> bool {
+    options.and_then(|o| o.get("trains_on_data")).and_then(Value::as_array).is_some_and(|names| names.iter().any(|n| n.as_str() == Some(id)))
 }
 
 fn spacer<'a>() -> Element<'a, Msg> {
@@ -1120,6 +1201,8 @@ fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> 
 
 // ----- Providers tab -------------------------------------------------------------------------
 
+/// Cards per row in a provider or kind grid, as the web's `minmax(300px, 1fr)` at the console's width.
+
 fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![row(vec![spacer(), ui::btn("Add provider", None, Kind::Primary, Some(Msg::OpenCatalogue))]).into()];
     if let Some(d) = dialog_view(state) {
@@ -1128,35 +1211,46 @@ fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.providers.is_empty() {
         parts.push(ui::empty("models", "No providers yet", ""));
     }
-    parts.push(provider_group(state, "chat", "Chat models", None));
-    parts.push(provider_group(state, "decisions", "Decisions", Some(DECISIONS_LEDE)));
-    parts.push(decision_model_card(state));
-    parts.push(try_it_card(state));
-    column(parts).spacing(16).into()
+    parts.push(chat_section(state));
+    parts.push(decisions_section(state));
+    column(parts).spacing(24).into()
 }
 
-/// One of the two provider groups: its heading (and lede), then its providers under their
-/// credential groups.
-fn provider_group<'a>(state: &'a State, group: &str, title: &str, lede: Option<&str>) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::label(title).into()];
-    if let Some(lede) = lede {
-        items.push(ui::prose(lede.to_string()).into());
-    }
-    let mut sections: Vec<Element<'a, Msg>> = Vec::new();
+/// The providers tab's section heading: mono caps, as the web's `.prov-section-title`.
+fn section_title<'a>(title: &str) -> Element<'a, Msg> {
+    text(title.to_uppercase()).font(MONO_SEMIBOLD).size(16.0).color(ui::INK).into()
+}
+
+/// A credential group's heading: small mono caps over a hairline, as the web's `.prov-group-title`.
+fn group_title<'a>(title: &str) -> Element<'a, Msg> {
+    column(vec![text(title.to_uppercase()).font(MONO).size(11.0).color(ui::INK_3).into(), ui::hairline()]).spacing(6).into()
+}
+
+/// The chat providers, under their credential groups.
+fn chat_section<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = vec![section_title("Chat models")];
     for credential in GROUPS {
-        let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == group && group_of(p) == credential).map(|p| provider_card(state, p)).collect();
+        let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == "chat" && group_of(p) == credential).map(|p| provider_card(state, p)).collect();
         if cards.is_empty() {
             continue;
         }
-        sections.push(column(vec![ui::label(credential).into(), column(cards).spacing(12).into()]).spacing(8).into());
+        items.push(column(vec![group_title(credential), ui::card_grid(cards)]).spacing(12).into());
     }
-    if sections.is_empty() {
-        items.push(ui::faint("None yet").into());
-    } else {
-        items.extend(sections);
-    }
-    column(items).spacing(8).into()
+    column(items).spacing(12).into()
 }
+
+/// The Decisions section: the decision providers, the decision model and the Try-it form.
+fn decisions_section<'a>(state: &'a State) -> Element<'a, Msg> {
+    let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == "decisions").map(|p| provider_card(state, p)).collect();
+    let mut items: Vec<Element<'a, Msg>> = vec![section_title("Decisions"), text(DECISIONS_LEDE).font(theme::SERIF).size(16.0).color(ui::INK_2).into()];
+    if !cards.is_empty() {
+        items.push(ui::card_grid(cards));
+    }
+    items.push(decision_model_card(state));
+    items.push(try_it_card(state));
+    column(items).spacing(16).into()
+}
+
 
 /// The decision models the plaza may use: every decisions-group provider's models, as `provider/model`.
 fn decision_options(providers: &[Provider]) -> Vec<String> {
@@ -1308,48 +1402,78 @@ fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
     let title = kind.map_or(p.id.as_str(), |k| k.label.as_str());
     let n = p.models.len();
     let key_label = if p.credential == "missing" { "Add key" } else { "Key" };
+    let sub = format!("{} · {}", p.id, p.base_url.clone().unwrap_or_else(|| "—".to_string()));
 
-    let head: Element<'a, Msg> = row(vec![
-        ui::brand_logo::<Msg>(brand, 28.0),
-        column(vec![
-            ui::mono(p.id.clone(), 11.0, ui::INK_3).into(),
-            ui::mono(p.base_url.clone().unwrap_or_else(|| "—".to_string()), 11.0, ui::INK_3).into(),
-        ])
-        .spacing(2)
-        .into(),
+    // The brand in a ruled 48px tile, then the kind's name and the id and URL in mono.
+    let logo: Element<'a, Msg> = container(ui::brand_logo::<Msg>(brand, 26.0))
+        .padding(10)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::PAPER.into()),
+            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into();
+    let names: Element<'a, Msg> = column(vec![
+        text(title.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(ui::INK).wrapping(Wrapping::None).into(),
+        ui::mono(ui::ellipsize(&sub, 28), 11.5, ui::INK_3).wrapping(Wrapping::None).into(),
     ])
-    .spacing(12)
+    .spacing(2)
+    .width(Length::Fill)
     .into();
-    let meta: Element<'a, Msg> = row(vec![
-        ui::badge(credential, tone),
-        ui::faint(format!("{n} {}", if n == 1 { "model" } else { "models" })).into(),
-    ])
-    .spacing(10)
-    .into();
+    let head: Element<'a, Msg> = row(vec![logo, names]).spacing(12).align_y(Alignment::Center).into();
+
+    let kind_id = kind.map_or(p.id.as_str(), |k| k.id.as_str());
+    let n_label = ui::faint(model_count_label(kind_id, n));
+    let meta: Element<'a, Msg> = row(vec![ui::badge(credential, tone), spacer(), n_label.into()]).align_y(Alignment::Center).into();
+
     let actions: Element<'a, Msg> = row(vec![
-        ui::btn("Test", None, Kind::Secondary, Some(Msg::Test(p.id.clone()))),
-        ui::btn(key_label, None, Kind::Secondary, Some(Msg::OpenKey(p.id.clone()))),
+        ui::btn_sm("Test", None, Kind::Secondary, Some(Msg::Test(p.id.clone()))),
+        ui::btn_sm(key_label, None, Kind::Secondary, Some(Msg::OpenKey(p.id.clone()))),
         spacer(),
-        ui::btn("", Some("models"), Kind::Ghost, Some(Msg::ToggleModels(p.id.clone()))),
-        ui::btn("", Some("edit"), Kind::Ghost, Some(Msg::OpenEdit(p.id.clone()))),
-        ui::btn("", Some("trash"), Kind::Ghost, Some(Msg::OpenRemove(p.id.clone()))),
+        ui::btn_sm("", Some("models"), Kind::Ghost, Some(Msg::ToggleModels(p.id.clone()))),
+        ui::btn_sm("", Some("edit"), Kind::Ghost, Some(Msg::OpenEdit(p.id.clone()))),
+        ui::btn_sm("", Some("trash"), Kind::Ghost, Some(Msg::OpenRemove(p.id.clone()))),
     ])
-    .spacing(8)
+    .spacing(4)
+    .align_y(Alignment::Center)
     .into();
 
-    let mut body: Vec<Element<'a, Msg>> = vec![head, meta, actions];
+    let mut body: Vec<Element<'a, Msg>> = vec![head, meta, column(vec![ui::hairline(), container(actions).padding(Padding { top: 10.0, right: 0.0, bottom: 0.0, left: 0.0 }).into()]).into()];
     if state.expanded.contains(&p.id) {
-        body.push(model_list(state, &p.id));
+        body.push(
+            column(vec![ui::hairline(), container(model_list(state, p)).padding(Padding { top: 12.0, right: 0.0, bottom: 0.0, left: 0.0 }).into()]).into(),
+        );
     }
-    ui::card(title, column(body).spacing(12).into())
+    container(column(body).spacing(12))
+        .padding(Padding { top: 16.0, right: 16.0, bottom: 12.0, left: 16.0 })
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
 }
 
-fn model_list<'a>(state: &'a State, id: &str) -> Element<'a, Msg> {
-    match state.listed.get(id) {
+fn model_list<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
+    let kind = kind_of(state, p);
+    let trains = |id: &str| options_trains(p.options.as_ref(), id) || options_trains(kind.and_then(|k| k.options.as_ref()), id);
+    match state.listed.get(&p.id) {
         None => ui::faint("Loading…").into(),
         Some(list) if list.is_empty() => ui::faint("No models listed").into(),
         Some(list) => {
-            let items: Vec<Element<'a, Msg>> = list.iter().map(|m| ui::mono(m.id.clone(), 12.0, ui::INK).into()).collect();
+            let mut items: Vec<Element<'a, Msg>> = list
+                .iter()
+                .map(|m| {
+                    let mut line: Vec<Element<'a, Msg>> = vec![ui::mono(m.id.clone(), 12.0, ui::INK).into()];
+                    if trains(&m.id) {
+                        line.push(ui::trains_badge());
+                    }
+                    row(line).spacing(8).align_y(Alignment::Center).into()
+                })
+                .collect();
+            if list.iter().any(|m| trains(&m.id)) {
+                items.push(ui::faint(ui::TRAINS_NOTE).into());
+            }
             column(items).spacing(4).into()
         }
     }
@@ -1384,25 +1508,47 @@ fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
                 .copied()
                 .filter(|k| q.is_empty() || format!("{} {} {}", k.label, k.id, k.kind).to_lowercase().contains(&q))
                 .collect();
-            let tiles: Vec<Element<'a, Msg>> = if shown.is_empty() {
+            let catalogue: Element<'a, Msg> = if shown.is_empty() {
                 let none = if free.is_empty() { "Every provider is already configured" } else { "No matches" };
-                vec![ui::faint(none).into()]
+                ui::faint(none).into()
             } else {
-                shown.into_iter().map(kind_tile).collect()
+                let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+                for (title, decisions) in [("Chat", false), ("Decisions", true)] {
+                    let tiles: Vec<Element<'a, Msg>> = shown.iter().copied().filter(|k| is_decision_kind(&k.kind) == decisions).map(kind_tile).collect();
+                    if !tiles.is_empty() {
+                        parts.push(group_title(title));
+                        parts.push(ui::card_grid(tiles));
+                    }
+                }
+                column(parts).spacing(12).into()
             };
-            let items: Vec<Element<'a, Msg>> = vec![
-                text_input("Search providers", search).on_input(Msg::CatalogueSearch).padding(8).into(),
-                column(tiles).spacing(4).into(),
-            ];
+            let items: Vec<Element<'a, Msg>> = vec![text_input("Search providers", search).on_input(Msg::CatalogueSearch).padding(8).into(), catalogue];
             Some(ui::card("Add provider", column(items).spacing(12).into()))
         }
         Dialog::Form(form) => Some(form_view(state, form)),
     }
 }
 
+/// One provider kind in the catalogue: the brand and its label, in a ruled tile.
 fn kind_tile<'a>(k: &'a ProviderKind) -> Element<'a, Msg> {
-    let content: Vec<Element<'a, Msg>> = vec![ui::brand_logo::<Msg>(&k.brand, 18.0), text(k.label.as_str()).into()];
-    button(row(content).spacing(8)).on_press(Msg::PickKind(k.id.clone())).width(Length::Fill).into()
+    let content: Vec<Element<'a, Msg>> = vec![
+        ui::brand_logo::<Msg>(&k.brand, 18.0),
+        text(k.label.as_str()).font(theme::SERIF).size(14.0).color(ui::INK).wrapping(Wrapping::None).width(Length::Fill).into(),
+    ];
+    button(row(content).spacing(8).align_y(Alignment::Center))
+        .on_press(Msg::PickKind(k.id.clone()))
+        .padding(12)
+        .width(Length::Fill)
+        .style(|_: &Theme, status: button::Status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(if hovered { theme::HOVER } else { theme::SHEET }.into()),
+                text_color: ui::INK,
+                border: Border { color: if hovered { ui::INK_3 } else { ui::RULE }, width: 1.0, radius: 0.0.into() },
+                ..Default::default()
+            }
+        })
+        .into()
 }
 
 /// The shared add and edit form.
@@ -1453,7 +1599,14 @@ fn policy_view<'a>(state: &'a State) -> Element<'a, Msg> {
     };
     let save_enabled = !p.saving && p.errors.is_empty() && p.dirty();
     let bar: Element<'a, Msg> = row(vec![spacer(), ui::btn("Save", Some("check"), Kind::Primary, save_enabled.then_some(Msg::PolicySave))]).into();
-    let items: Vec<Element<'a, Msg>> = vec![bar, policy_card(p), defaults_card(p), limits_card(p), prices_card(state, p)];
+    let s = &p.copy;
+    let trains = s.model_policy.orchestrator.iter().chain(&s.model_policy.worker).any(|e| listed_trains(&p.models, parse_entry(e).0))
+        || [&s.default_model, &s.orchestrator_model].into_iter().chain(s.role_models.values()).any(|e| listed_trains(&p.models, parse_entry(e).0));
+    let mut items: Vec<Element<'a, Msg>> = vec![bar];
+    if trains {
+        items.push(ui::faint(ui::TRAINS_NOTE).into());
+    }
+    items.extend([policy_card(p), defaults_card(p), limits_card(p), prices_card(state, p)]);
     column(items).spacing(16).into()
 }
 
@@ -1483,21 +1636,38 @@ fn tier_column<'a>(p: &'a Policy, tier: Tier, title: &str) -> Element<'a, Msg> {
         .padding(8)
         .into();
     let add_row: Element<'a, Msg> = row(vec![add, ui::btn("Add model", None, Kind::Secondary, Some(Msg::PolicyAdd(tier)))]).spacing(8).into();
-    let items: Vec<Element<'a, Msg>> = vec![ui::label(title).into(), column(rows).spacing(6).into(), add_row];
+    let items: Vec<Element<'a, Msg>> = vec![h3(title), column(rows).spacing(6).into(), add_row];
     column(items).spacing(10).width(Length::FillPortion(1)).into()
 }
 
 fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> Element<'a, Msg> {
     let (base, effort) = parse_entry(entry);
     let listed = p.known.contains(base);
-    let dot_tone = if listed { Tone::Ok } else { Tone::Muted };
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::mono("●", 12.0, dot_tone.color()).into(), ui::mono(base.to_string(), 12.0, ui::INK).into()];
+    // The availability square: filled when the provider lists the model, hollow when it does not.
+    let marker: Element<'a, Msg> = container(Space::new())
+        .width(Length::Fixed(8.0))
+        .height(Length::Fixed(8.0))
+        .style(move |_: &Theme| container::Style {
+            background: if listed { Some(theme::OK.into()) } else { None },
+            border: Border { color: if listed { theme::OK } else { ui::INK_3 }, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into();
+    // The whole id, nested slashes included: it wraps rather than being cut off.
+    let mut items: Vec<Element<'a, Msg>> = vec![marker, ui::mono(base.to_string(), 12.0, ui::INK).wrapping(Wrapping::WordOrGlyph).into()];
     if effort.is_some() {
         items.push(ui::badge("effort pinned", Tone::Signal));
     }
+    if listed_trains(&p.models, base) {
+        items.push(ui::trains_badge());
+    }
     items.push(spacer());
     items.push(ui::btn("", Some("x"), Kind::Ghost, Some(Msg::PolicyRemove(tier, index))));
-    row(items).spacing(8).into()
+    column(vec![
+        container(row(items).spacing(8).align_y(Alignment::Center)).padding(Padding { top: 8.0, right: 0.0, bottom: 8.0, left: 0.0 }).into(),
+        ui::hairline(),
+    ])
+    .into()
 }
 
 fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
@@ -1505,7 +1675,7 @@ fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = vec![
         labelled("Orchestrator model", picker(model_options(p, Tier::Orchestrator, &s.orchestrator_model, None), &s.orchestrator_model, Slot::Orchestrator)),
         labelled("Worker default", picker(model_options(p, Tier::Worker, &s.default_model, None), &s.default_model, Slot::Worker)),
-        ui::label("Per role").into(),
+        h3("Per role"),
     ];
     if s.role_models.is_empty() {
         items.push(ui::empty("agents", "No roles connected", ""));
@@ -1526,6 +1696,14 @@ fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
         .into();
         items.push(role_row);
     }
+    items.push(h3("Contributor models"));
+    items.push(
+        iced::widget::checkbox(s.allow_training_models)
+            .label("Allow as defaults, role models and policy entries")
+            .on_toggle(Msg::PolicyAllowTraining)
+            .into(),
+    );
+    items.push(ui::faint(ui::TRAINS_NOTE).into());
     ui::card("Defaults", column(items).spacing(12).into())
 }
 
@@ -1544,9 +1722,10 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let effort: Element<'a, Msg> = pick_list(effort_options, Some(effort_current), |v: String| Msg::PolicyEffort(v))
         .width(Length::Fill)
         .into();
-    let block: Element<'a, Msg> = text_input("example.com, *.example.net, …", &p.shown("fetch_block", s.fetch_block.join(", ")))
-        .on_input(Msg::PolicyFetchBlock)
-        .padding(8)
+    let block: Element<'a, Msg> = text_editor(&p.block)
+        .placeholder("example.com\n*.example.net")
+        .on_action(Msg::PolicyFetchBlock)
+        .height(120.0)
         .into();
     let items: Vec<Element<'a, Msg>> = vec![
         labelled("Max turns", turns),
@@ -1565,12 +1744,7 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
     }
     keys.extend(s.prices.keys().cloned());
 
-    let toggle = ui::btn(
-        if state.prices_open { "Hide models" } else { "Show models" },
-        None,
-        Kind::Ghost,
-        Some(Msg::TogglePrices),
-    );
+    let toggle = ui::link("Models", Msg::TogglePrices, false);
     if !state.prices_open {
         return ui::card("Prices", toggle);
     }
@@ -1598,8 +1772,13 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
                 .padding(6)
                 .into()
         };
+        let key_cell: Element<'a, Msg> = if listed_trains(&p.models, &key) {
+            row(vec![ui::mono(key.clone(), 12.0, ui::INK).into(), ui::trains_badge()]).spacing(8).align_y(Alignment::Center).into()
+        } else {
+            ui::mono(key.clone(), 12.0, ui::INK).into()
+        };
         let line: Element<'a, Msg> = row(vec![
-            ui::mono(key.clone(), 12.0, ui::INK).into(),
+            key_cell,
             side_input(Side::Input),
             side_input(Side::Output),
         ])
