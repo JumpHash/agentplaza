@@ -104,11 +104,12 @@ impl Default for Config {
     }
 }
 
-/// The daemon's state: its runs and when it started.
+/// The daemon's state: its runs, when it started, and the machine facts probed once at start.
 pub struct Node {
     registry: Registry,
     started_at_ms: u64,
     stats: Arc<stats::Stats>,
+    probed: Probed,
 }
 
 /// `GET /v1/machine`.
@@ -116,13 +117,17 @@ pub struct Node {
 pub struct MachineView {
     pub name: String,
     pub arch: &'static str,
+    pub os: &'static str,
     pub backend: &'static str,
     pub irqchip: &'static str,
     pub class: &'static str,
     pub kind: &'static str,
+    pub cpu: Cpu,
     pub gpus: Vec<Gpu>,
     pub cpus: u32,
     pub memory_mib: u64,
+    /// The size of the state directory's filesystem, in GiB; null when unknown.
+    pub storage_gib: Option<u64>,
     pub vsock_mode: &'static str,
     pub started_at_ms: u64,
 }
@@ -136,22 +141,25 @@ impl Node {
                 .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
+            probed: probe_host(&apz_os::dirs::state()),
         }
     }
 
     pub fn machine(&self) -> MachineView {
         let class = machine_class();
-        let gpus = host_gpus();
         MachineView {
             name: hostname(),
             arch: machine_arch(),
+            os: machine_os(),
             backend: machine_backend(),
             irqchip: machine_irqchip(),
             class,
-            kind: machine_kind(class, &gpus),
-            gpus,
+            kind: self.probed.kind,
+            cpu: self.probed.cpu.clone(),
+            gpus: host_gpus(),
             cpus: host_cpus(),
             memory_mib: host_memory_mib(),
+            storage_gib: self.probed.storage_gib,
             vsock_mode: "uds-muxer",
             started_at_ms: self.started_at_ms,
         }
@@ -333,20 +341,218 @@ fn nvidia_models(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The machine kind the console groups by: `edge` (Pi), `apple`,
-/// `workstation` (a server-class machine with a GPU), or `server`.
-fn machine_kind(class: &str, gpus: &[Gpu]) -> &'static str {
-    match class {
-        "pi4" | "pi5" => "edge",
-        "apple" => "apple",
-        "server" if !gpus.is_empty() => "workstation",
-        _ => "server",
+/// The host's operating system, for the machine model.
+fn machine_os() -> &'static str {
+    if cfg!(target_os = "android") {
+        "android"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
     }
+}
+
+/// The CPU: the model name, the physical cores and the logical CPUs (threads).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Cpu {
+    pub model: String,
+    pub cores: u32,
+    pub threads: u32,
+}
+
+/// The machine facts that do not change while the daemon runs, probed once at start.
+#[derive(Debug, Clone)]
+struct Probed {
+    kind: &'static str,
+    cpu: Cpu,
+    storage_gib: Option<u64>,
+}
+
+const DMI_CHASSIS: &str = "/sys/class/dmi/id/chassis_type";
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply";
+const DEVICE_TREE_MODEL: &str = "/proc/device-tree/model";
+const WINDOWS_CPU_KEY: &str = r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0";
+
+/// Probes the machine once: its kind, CPU and the size of the state directory's filesystem.
+fn probe_host(state_dir: &Path) -> Probed {
+    let tree = device_tree_model();
+    let sbc = matches!(machine_class(), "pi4" | "pi5") || tree.as_deref().is_some_and(|model| model.contains("Raspberry Pi"));
+    let kind = if cfg!(target_os = "macos") {
+        apple_kind(&sysctl("hw.model").unwrap_or_default())
+    } else {
+        kind_of(cfg!(target_os = "android"), sbc, chassis_type(), has_battery(Path::new(POWER_SUPPLY_DIR)))
+    };
+    Probed { kind, cpu: probe_cpu(tree.as_deref()), storage_gib: storage_gib(state_dir) }
+}
+
+/// The machine kind from what the host reports: `phone` (Android), `edge` (a single-board
+/// computer), `laptop` (a laptop chassis or a battery), `server` (a server chassis) or
+/// `workstation`. Chassis types are the SMBIOS values of `chassis_type`.
+fn kind_of(android: bool, sbc: bool, chassis: Option<u32>, battery: bool) -> &'static str {
+    const LAPTOP: [u32; 6] = [8, 9, 10, 14, 31, 32];
+    const SERVER: [u32; 4] = [17, 23, 25, 28];
+    if android {
+        "phone"
+    } else if sbc {
+        "edge"
+    } else if battery || chassis.is_some_and(|c| LAPTOP.contains(&c)) {
+        "laptop"
+    } else if chassis.is_some_and(|c| SERVER.contains(&c)) {
+        "server"
+    } else {
+        "workstation"
+    }
+}
+
+/// A Mac's kind from its `hw.model` (`MacBookPro18,3`, `Macmini9,1`): a laptop when the model is a "Book".
+fn apple_kind(model: &str) -> &'static str {
+    if model.contains("Book") {
+        "laptop"
+    } else {
+        "workstation"
+    }
+}
+
+/// The DMI chassis type of the machine, when the firmware reports one.
+fn chassis_type() -> Option<u32> {
+    parse_chassis(&std::fs::read_to_string(DMI_CHASSIS).ok()?)
+}
+
+fn parse_chassis(text: &str) -> Option<u32> {
+    text.trim().parse().ok()
+}
+
+/// Whether a `BAT*` power supply is listed under `dir` (a laptop's battery).
+fn has_battery(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("BAT"))
+}
+
+/// The device-tree model of an arm board (`/proc/device-tree/model`), when there is one.
+fn device_tree_model() -> Option<String> {
+    parse_device_tree_model(&std::fs::read(DEVICE_TREE_MODEL).ok()?)
+}
+
+/// The device-tree `model` property: text ending in a NUL byte.
+fn parse_device_tree_model(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes).trim_end_matches('\0').trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// The CPU of the host. Linux reads `/proc/cpuinfo`; macOS asks `sysctl`; Windows reads the
+/// registry through `reg query` (its core count is not probed, so it reports the threads).
+/// Probed once, at start.
+fn probe_cpu(tree: Option<&str>) -> Cpu {
+    let logical = host_cpus();
+    if cfg!(target_os = "macos") {
+        return Cpu {
+            model: sysctl("machdep.cpu.brand_string").unwrap_or_else(|| "unknown".to_string()),
+            cores: sysctl("hw.physicalcpu").and_then(|n| n.parse().ok()).unwrap_or(logical),
+            threads: sysctl("hw.logicalcpu").and_then(|n| n.parse().ok()).unwrap_or(logical),
+        };
+    }
+    if cfg!(target_os = "windows") {
+        let model = command_stdout("reg", &["query", WINDOWS_CPU_KEY, "/v", "ProcessorNameString"])
+            .and_then(|out| parse_reg_string(&out, "ProcessorNameString"));
+        return Cpu { model: model.unwrap_or_else(|| "unknown".to_string()), cores: logical, threads: logical };
+    }
+    parse_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default(), tree, logical)
+}
+
+/// `/proc/cpuinfo` as a CPU. The model is the first "model name", else the device-tree model
+/// (arm boards), else the "Hardware" line. Threads are the "processor" blocks; cores are the
+/// distinct (physical id, core id) pairs, a block without a core id counting as its own core.
+/// `logical` stands for both when the text lists no processor.
+fn parse_cpuinfo(text: &str, tree: Option<&str>, logical: u32) -> Cpu {
+    let (mut model, mut hardware) = (None, None);
+    // (physical id, core id) of each "processor" block, in order.
+    let mut blocks: Vec<(Option<&str>, Option<&str>)> = Vec::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        match key {
+            "processor" => blocks.push((None, None)),
+            "physical id" => {
+                if let Some(block) = blocks.last_mut() {
+                    block.0 = Some(value);
+                }
+            }
+            "core id" => {
+                if let Some(block) = blocks.last_mut() {
+                    block.1 = Some(value);
+                }
+            }
+            "model name" => model = model.or(Some(value)),
+            "Hardware" => hardware = hardware.or(Some(value)),
+            _ => {}
+        }
+    }
+    let cores: std::collections::BTreeSet<(String, String)> = blocks
+        .iter()
+        .enumerate()
+        .map(|(index, &(physical, core))| {
+            (physical.unwrap_or("0").to_string(), core.map_or_else(|| index.to_string(), str::to_string))
+        })
+        .collect();
+    let (threads, cores) = match u32::try_from(blocks.len()) {
+        Ok(threads) if threads > 0 => (threads, u32::try_from(cores.len()).unwrap_or(u32::MAX)),
+        _ => (logical, logical),
+    };
+    let model = model
+        .or(tree)
+        .or(hardware)
+        .map_or_else(|| "unknown".to_string(), str::to_string);
+    Cpu { model, cores, threads }
+}
+
+/// The data of value `name` in `reg query` output (`    ProcessorNameString    REG_SZ    Intel ...`).
+fn parse_reg_string(output: &str, name: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let (_, data) = line.trim().strip_prefix(name)?.split_once("REG_SZ")?;
+        let data = data.trim();
+        (!data.is_empty()).then(|| data.to_string())
+    })
+}
+
+/// The total size in GiB of the filesystem holding `dir` (`/` when `dir` does not exist), from
+/// `df -Pk`. None on Windows or when `df` fails.
+fn storage_gib(dir: &Path) -> Option<u64> {
+    if cfg!(target_os = "windows") {
+        return None;
+    }
+    let target = if dir.exists() { dir } else { Path::new("/") };
+    parse_df_gib(&command_stdout("df", &["-Pk", target.to_str()?])?)
+}
+
+/// The total of a `df -Pk` table: the second column (1024-byte blocks) of its first data line.
+fn parse_df_gib(output: &str) -> Option<u64> {
+    let kib: u64 = output.lines().nth(1)?.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib / (1024 * 1024))
+}
+
+fn sysctl(name: &str) -> Option<String> {
+    command_stdout("sysctl", &["-n", name])
+}
+
+/// The trimmed stdout of a command that succeeds, or None.
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program).args(args).output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::gpu_vendor;
+    use super::{apple_kind, kind_of, parse_chassis, parse_cpuinfo, parse_df_gib, parse_device_tree_model, parse_reg_string};
+    use super::{gpu_vendor, has_battery, Cpu};
 
     #[test]
     fn pci_vendor_ids_map_to_gpu_vendors() {
@@ -355,6 +561,98 @@ mod tests {
         assert_eq!(gpu_vendor("0x8086"), Some("Intel"));
         assert_eq!(gpu_vendor("0x106b"), Some("Apple"));
         assert_eq!(gpu_vendor("0x1af4"), None);
+    }
+
+    const X86_CPUINFO: &str = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 9 5900X 12-Core Processor\n\
+        physical id\t: 0\ncore id\t\t: 0\n\nprocessor\t: 1\nmodel name\t: AMD Ryzen 9 5900X 12-Core Processor\n\
+        physical id\t: 0\ncore id\t\t: 1\n\nprocessor\t: 2\nmodel name\t: AMD Ryzen 9 5900X 12-Core Processor\n\
+        physical id\t: 0\ncore id\t\t: 0\n\nprocessor\t: 3\nmodel name\t: AMD Ryzen 9 5900X 12-Core Processor\n\
+        physical id\t: 0\ncore id\t\t: 1\n";
+
+    #[test]
+    fn cpuinfo_counts_threads_and_distinct_cores() {
+        let cpu = parse_cpuinfo(X86_CPUINFO, None, 1);
+        assert_eq!(cpu, Cpu { model: "AMD Ryzen 9 5900X 12-Core Processor".into(), cores: 2, threads: 4 });
+    }
+
+    #[test]
+    fn arm_cpuinfo_falls_back_to_the_device_tree_model_then_hardware() {
+        let arm = "processor\t: 0\nBogoMIPS\t: 108.00\nCPU implementer\t: 0x41\n\nprocessor\t: 1\nBogoMIPS\t: 108.00\n\
+            Hardware\t: BCM2835\nModel\t\t: Raspberry Pi 4 Model B\n";
+        let tree = parse_cpuinfo(arm, Some("Raspberry Pi 4 Model B Rev 1.4"), 4);
+        assert_eq!(tree, Cpu { model: "Raspberry Pi 4 Model B Rev 1.4".into(), cores: 2, threads: 2 });
+        let hardware = parse_cpuinfo(arm, None, 4);
+        assert_eq!(hardware.model, "BCM2835");
+    }
+
+    #[test]
+    fn cpuinfo_without_processors_reports_the_logical_count() {
+        let cpu = parse_cpuinfo("", None, 6);
+        assert_eq!(cpu, Cpu { model: "unknown".into(), cores: 6, threads: 6 });
+    }
+
+    #[test]
+    fn device_tree_model_drops_the_nul_terminator() {
+        assert_eq!(parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").as_deref(), Some("Raspberry Pi 5 Model B Rev 1.0"));
+        assert_eq!(parse_device_tree_model(b"\0"), None);
+    }
+
+    #[test]
+    fn chassis_types_parse_as_numbers() {
+        assert_eq!(parse_chassis("10\n"), Some(10));
+        assert_eq!(parse_chassis(""), None);
+    }
+
+    #[test]
+    fn kind_follows_the_chassis_table() {
+        for chassis in [8, 9, 10, 14, 31, 32] {
+            assert_eq!(kind_of(false, false, Some(chassis), false), "laptop", "chassis {chassis}");
+        }
+        for chassis in [17, 23, 25, 28] {
+            assert_eq!(kind_of(false, false, Some(chassis), false), "server", "chassis {chassis}");
+        }
+        for chassis in [3, 4, 6, 7] {
+            assert_eq!(kind_of(false, false, Some(chassis), false), "workstation", "chassis {chassis}");
+        }
+        assert_eq!(kind_of(false, false, None, false), "workstation");
+        assert_eq!(kind_of(false, false, Some(17), true), "laptop", "a battery wins over the chassis");
+    }
+
+    #[test]
+    fn kind_puts_phones_and_single_board_computers_first() {
+        assert_eq!(kind_of(true, false, Some(10), true), "phone");
+        assert_eq!(kind_of(false, true, Some(3), false), "edge");
+    }
+
+    #[test]
+    fn a_battery_marks_a_laptop() {
+        let dir = std::env::temp_dir().join(format!("noded-power-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("AC")).unwrap();
+        assert!(!has_battery(&dir));
+        std::fs::create_dir_all(dir.join("BAT0")).unwrap();
+        assert!(has_battery(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn apple_models_with_book_are_laptops() {
+        assert_eq!(apple_kind("MacBookPro18,3"), "laptop");
+        assert_eq!(apple_kind("Macmini9,1"), "workstation");
+        assert_eq!(apple_kind(""), "workstation");
+    }
+
+    #[test]
+    fn reg_query_output_yields_the_named_string() {
+        let out = "\nHKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\n    ProcessorNameString    REG_SZ    Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz\n";
+        assert_eq!(parse_reg_string(out, "ProcessorNameString").as_deref(), Some("Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz"));
+        assert_eq!(parse_reg_string(out, "Identifier"), None);
+    }
+
+    #[test]
+    fn df_table_gives_the_total_in_gib() {
+        let out = "Filesystem     1024-blocks       Used Available Capacity Mounted on\n/dev/sda2      1953514584 1000000000 900000000      53% /\n";
+        assert_eq!(parse_df_gib(out), Some(1863));
+        assert_eq!(parse_df_gib("Filesystem\n"), None);
     }
 }
 

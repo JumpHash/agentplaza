@@ -126,10 +126,28 @@ fn local_json(port: u16, path: &str) -> Value {
     }
 }
 
+/// The fields noded reports about the machine that a heartbeat carries to the hub.
+const NODED_MACHINE_FIELDS: [&str; 8] = ["kind", "cpu", "os", "arch", "backend", "gpus", "memory_mib", "storage_gib"];
+
+/// The machine a heartbeat reports: this machine's summary (`join::machine_summary`) with
+/// noded's machine facts (`NODED_MACHINE_FIELDS`) laid over it when the daemon answers, so the
+/// hub holds the same description a local view shows.
+fn machine_report(noded: u16) -> Value {
+    let mut machine = join::machine_summary();
+    if let (Value::Object(report), Value::Object(facts)) = (&mut machine, local_json(noded, "/v1/machine")) {
+        for key in NODED_MACHINE_FIELDS {
+            if let Some(value) = facts.get(key) {
+                report.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    machine
+}
+
 fn heartbeat_once(identity: &Identity, key: &NodeKey, local: Local) {
     let path = format!("/v1/nodes/{}/heartbeat", identity.node_id);
     let body = json!({
-        "machine": join::machine_summary(),
+        "machine": machine_report(local.noded),
         "status": local_json(local.vsockd, "/v1/status"),
         "runs": local_json(local.noded, "/v1/runs"),
     });
