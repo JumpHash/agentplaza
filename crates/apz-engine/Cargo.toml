@@ -21,6 +21,7 @@ fancy-regex = "0.14"
 tiny-skia = "0.11"
 # `Instant` for the frame clock: std on native, performance.now() in the browser.
 web-time = "1"
+bevy_ecs = { version = "0.18.1", default-features = false, features = ["std"] }
 
 # The browser: WebGPU, with WebGL2 as the fallback (the engine's two backends on wasm32).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

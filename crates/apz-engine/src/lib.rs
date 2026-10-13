@@ -10,8 +10,10 @@
 //! `floor3d/robot.ts`; `props` ↔ `floor3d/props.ts`; `outskirts` ↔ `floor3d/outskirts.ts`; `rooms` ↔
 //! `floor3d/rooms/*`; `controls` ↔ three's OrbitControls; `world` ↔ `floor.ts`.
 
+pub mod assets;
 pub mod canvas;
 pub mod controls;
+pub mod core;
 pub mod engine;
 pub mod entry;
 pub mod entry_scene;
