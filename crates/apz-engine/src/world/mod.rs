@@ -10,6 +10,7 @@ pub mod labels;
 pub mod layout;
 pub mod lift_mesh;
 pub mod motion;
+pub mod nav;
 pub mod walkway_mesh;
 pub mod view;
 
@@ -251,6 +252,8 @@ pub struct Floor {
     rooms_job: Option<layout::RoomsJob>,
     /// The last board layout, with the key it is for (the board and the roster): `begin_sync` reuses it.
     layout_cache: Option<(String, board_layout::BoardLayout)>,
+    /// The board's navigation (nav.rs) when its layout is the shared one: the robots walk its grid.
+    pub nav: Option<nav::BoardNav>,
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
     /// The GPU-animated batches of the statics (`bake_split`), versioned with them.
@@ -302,6 +305,7 @@ impl Floor {
             static_lights: Vec::new(),
             rooms_job: None,
             layout_cache: None,
+            nav: None,
             deep_dynamic: Vec::new(),
         };
         layout::base(&mut floor);

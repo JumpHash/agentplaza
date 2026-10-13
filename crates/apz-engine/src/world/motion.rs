@@ -429,6 +429,17 @@ impl Floor {
         for light in self.lit_by_role.values_mut() {
             light.lit = false;
         }
+        // The board's navigation walks the robots (nav.rs): one step with the goals set last frame, then each robot takes
+        // its pose and sends its goal below. Without it, the robots walk straight on the engine's own layout.
+        let walked = match self.nav.as_mut() {
+            Some(nav) => {
+                let list: Vec<(u64, f32, f32)> = self.bots.iter().map(|b| (b.agent.cid, b.x, b.y)).collect();
+                nav.sync(&list);
+                nav.step(dt);
+                true
+            }
+            None => false,
+        };
         for i in 0..self.bots.len() {
             let status = self.bots[i].agent.status.clone();
             let cid = self.bots[i].agent.cid;
@@ -467,17 +478,31 @@ impl Floor {
                 gx = s.as_ref().map_or(self.bots[i].tx, |sc| sc.gx);
                 gy = s.as_ref().map_or(self.bots[i].ty, |sc| sc.gy);
             }
+            let pose = match self.nav.as_mut() {
+                Some(nav) if walked => {
+                    nav.goal(cid, gx, gy);
+                    nav.pose(cid)
+                }
+                _ => None,
+            };
+            if let Some(p) = pose {
+                let b = &mut self.bots[i];
+                b.x = p.x as f32;
+                b.y = p.z as f32;
+                b.py = p.y as f32;
+                b.vy = 0.0;
+            }
             let (x0, y0) = (self.bots[i].x, self.bots[i].y);
             let (dx, dy) = (gx - x0, gy - y0);
             let dist = dx.hypot(dy);
-            self.bots[i].moving = dist > 0.02;
+            self.bots[i].moving = pose.map_or(dist > 0.02, |p| p.moving);
             // Step toward the next waypoint (the goal itself when the walk is in one room). A blocked
             // step tries nearby headings, else the robot waits this frame.
             let (wx, wy) = self.waypoint(i, (gx, gy));
             let (ex, ey) = (wx - x0, wy - y0);
             let check_props = (home.0 - x0).hypot(home.1 - y0) > 0.9;
-            let mut travel: Option<f32> = None;
-            if self.bots[i].moving {
+            let mut travel: Option<f32> = pose.map(|p| p.heading as f32);
+            if self.bots[i].moving && pose.is_none() {
                 let step = (SPEED * dt).min(ex.hypot(ey));
                 let to_goal = ex.atan2(ey);
                 for off in STEER {
@@ -548,9 +573,13 @@ impl Floor {
                 self.bots[i].highlighted = highlight;
                 self.bots[i].robot.set_highlighted(highlight);
             }
-            // Gravity: walk up slopes, fall where the ground drops away.
+            // Gravity: walk up slopes, fall where the ground drops away (the navigation's body does it when it walks).
             let ground = self.ground_at(x, y);
-            {
+            if let Some(p) = pose {
+                let b = &mut self.bots[i];
+                b.robot.set_body(super::nav::body_of(p.body), t);
+                b.robot.group.set_scalar(p.scale as f32);
+            } else {
                 let b = &mut self.bots[i];
                 if b.py > ground + 0.001 {
                     b.vy -= GRAVITY * dt;
@@ -741,6 +770,33 @@ mod tests {
             .collect();
         floor.sync(&list);
         floor
+    }
+
+    #[test]
+    fn robots_walk_the_shared_layouts_navigation() {
+        // The floor owns its pending shared layout by its address, so it is built where it stays (board_floor moves it).
+        let mut floor = board_floor(&["builder", "librarian", "reviewer"], "idle");
+        let list: Vec<AgentInfo> = floor.bots.iter().map(|b| b.agent.clone()).collect();
+        floor.layout_cache = None;
+        floor.sync(&list);
+        let t0 = std::time::Instant::now();
+        while floor.nav.is_none() && t0.elapsed() < std::time::Duration::from_secs(30) {
+            floor.step_rooms(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(floor.nav.is_some(), "the shared layout's navigation is built");
+        let start: Vec<(f32, f32)> = floor.bots.iter().map(|b| (b.x, b.y)).collect();
+        for k in 0..900 {
+            floor.step(1.0 / 60.0, f64::from(k) * 1000.0 / 60.0 + 10_000.0, 0.0, 0.0);
+            let nav = floor.nav.as_ref().expect("still there");
+            for b in &floor.bots {
+                if let Some(c) = nav.world.grid().cell_at(f64::from(b.x), f64::from(b.y)) {
+                    assert_eq!(nav.world.grid().blocked[c], 0, "a robot stands on a blocked cell");
+                }
+            }
+        }
+        let moved = floor.bots.iter().zip(&start).filter(|(b, s)| (b.x - s.0).hypot(b.y - s.1) > 0.5).count();
+        assert!(moved > 0, "the idle robots wander on the grid");
     }
 
     #[test]

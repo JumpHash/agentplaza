@@ -243,6 +243,8 @@ fn bounds_of(group: &Obj, part: &Obj) -> Option<(Vec3, Vec3)> {
 /// A district's place on the board, what seeds and fits its room: the machine's id (`''` without a board's machine),
 /// the district's index in the layout, its desks (the homes that point at it, at least one) and the board's copper.
 struct RoomSite<'a> {
+    /// The layout's turn and door for the room, when it has them (the shared layout's).
+    plan: Option<(f32, Door)>,
     machine: &'a str,
     index: usize,
     agents: usize,
@@ -338,14 +340,19 @@ fn district_mesh(floor: &mut Floor, d: &District, y: f32, base: f32, site: &Room
     }
 
     // The room faces the centre: square rooms turn in quarter turns so they stay square to their slab.
+    // The shared layout gives the turn and the door (its aisle side); the engine's own layout faces the centre.
     let facing = (-d.cx).atan2(-d.cy);
-    let turn = if d.round { facing } else { ((facing / FRAC_PI_2) + 0.5).floor() * FRAC_PI_2 };
+    let turn = match site.plan {
+        Some((turn, _)) => turn,
+        None if d.round => facing,
+        None => ((facing / FRAC_PI_2) + 0.5).floor() * FRAC_PI_2,
+    };
     // The room's seed (machine, role, district index) and walkway side: the trace point nearest the room, in the
     // room's turned frame. Its inner size is the cell less the wall margin. A cell below the role's minimum is built
     // at its size and warned (`rooms::build_room`), not enlarged: the board's slot sizes need raising for those roles.
     // TODO: room.spots (where each robot stands in this room) are not stored on the district yet; the behaviour engine reads them.
     let seed = room_seed(site.machine, &d.role, site.index);
-    let door = door_side(d.cx, d.cy, turn, site.graph);
+    let door = site.plan.map_or_else(|| door_side(d.cx, d.cy, turn, site.graph), |(_, door)| door);
     let inner = 2.0 * f64::from(d.r) - WALL_MARGIN;
     let options = RoomOptions { seed, door, w: inner, d: inner, agents: Some(site.agents) };
     let built = rooms::build_room(&d.role, d.r, d.hue, &rooms::kit_palette(&c), &options);
@@ -536,6 +543,7 @@ impl Floor {
             atom: [0.0; 3],
             bounds: Bounds { cx: 0.0, cz: 0.0, w: 0.0, d: 0.0 },
             pcb_top: 0.0,
+            shared: None,
         };
 
         self.root.remove(&self.ground);
@@ -562,9 +570,24 @@ impl Floor {
         self.fitted = false;
     }
 
+    /// The board's navigation for its layout: built from the shared layout (its walkways under the board's group), or
+    /// none for the engine's own layout. The robots join it on their next step.
+    fn rebuild_nav(&mut self) {
+        if let (Some(old), Some(board)) = (self.nav.take(), self.board.as_ref()) {
+            board.obj.remove(&old.root);
+        }
+        let Some(board) = self.board.as_ref() else { return };
+        let Some((shared, gpus)) = board.layout.shared.clone() else { return };
+        let nav = super::nav::BoardNav::new(&shared, gpus, &self.machine_id, &self.colors);
+        board.obj.add(&nav.root);
+        self.statics_dirty = true;
+        self.nav = Some(nav);
+    }
+
     /// Takes the board, its robots and rooms out of the scene.
     fn clear_board(&mut self) {
         self.rooms_job = None;
+        self.nav = None;
         self.root.remove(&self.board_ground);
         if let Some(old) = self.board.take() {
             self.root.remove(&old.obj);
@@ -626,7 +649,7 @@ impl Floor {
         loop {
             let index = job.next;
             let bd = &job.items[index];
-            let site = RoomSite { machine: &job.machine, index, agents: job.desks[index].max(1), graph: &job.graph };
+            let site = RoomSite { plan: bd.plan, machine: &job.machine, index, agents: job.desks[index].max(1), graph: &job.graph };
             let g = district_mesh(self, &bd.district, bd.y, job.base, &site);
             self.district_group.add(&g);
             self.statics_dirty = true;
@@ -738,6 +761,7 @@ impl Floor {
         board.layout = layout;
         if changed {
             self.start_rooms();
+            self.rebuild_nav();
         }
 
         let mut seen = HashSet::new();

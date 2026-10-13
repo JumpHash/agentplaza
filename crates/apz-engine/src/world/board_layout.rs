@@ -56,6 +56,9 @@ pub struct Bounds {
 #[allow(dead_code)] // the Floor integration consumes it next
 #[derive(Debug, Clone)]
 pub struct BoardDistrict {
+    /// The room's turn and door from the shared layout (nav-scene.ts roomPlan reads the layout's): None for the engine's
+    /// own layout, whose rooms face the centre and open to the nearest trace.
+    pub plan: Option<(f32, crate::rooms::generate::Door)>,
     /// The room's key: its role, or `unnamed:<cid>` for an agent with no role (its `district.role` is then
     /// `other`, the family). The web keeps the key in its grouping only; this is the same key.
     pub key: String,
@@ -79,6 +82,9 @@ pub struct BoardLayout {
     pub atom: [f32; 3],
     pub bounds: Bounds,
     pub pcb_top: f32,
+    /// The shared layout this one came from and its GPU count (None for the engine's own layout): the board's
+    /// navigation (nav.rs) is built from it.
+    pub shared: Option<(std::sync::Arc<apz_board::layout::Layout>, u32)>,
 }
 
 /// The board's copper: nodes are the distinct trace points, edges join consecutive points.
@@ -520,10 +526,10 @@ pub fn layout_on_board_with(
         let mut members = g.members.clone();
         members.sort_by_key(|a| a.cid);
         place_homes(&mut homes, districts.len(), &district, &members, w.min(d));
-        districts.push(BoardDistrict { key: g.key.clone(), district, y: s.top, slot: s.id.clone(), w, d });
+        districts.push(BoardDistrict { plan: None, key: g.key.clone(), district, y: s.top, slot: s.id.clone(), w, d });
     }
 
-    BoardLayout { districts, homes, atom, bounds, pcb_top }
+    BoardLayout { districts, homes, atom, bounds, pcb_top, shared: None }
 }
 
 /// The world scale the shared board core may grow a layout to (the apz-board tests' cap).
@@ -581,7 +587,11 @@ pub fn shared_layout_of(key: &SharedKey) -> Result<apz_board::layout::Layout, St
 /// The shared layout for a key as the engine's `BoardLayout`; None (logged once) when the shared core cannot seat it.
 fn compute(key: &SharedKey) -> Option<BoardLayout> {
     match shared_layout_of(key) {
-        Ok(shared) => Some(board_layout_of(&shared)),
+        Ok(shared) => {
+            let mut layout = board_layout_of(&shared);
+            layout.shared = Some((std::sync::Arc::new(shared), key.gpus));
+            Some(layout)
+        }
         Err(reason) => {
             static LOGGED: std::sync::Once = std::sync::Once::new();
             LOGGED.call_once(|| eprintln!("apz-engine: the shared board layout failed ({reason}); the engine's own is used"));
@@ -682,7 +692,14 @@ pub fn board_layout_of(shared: &apz_board::layout::Layout) -> BoardLayout {
             } else {
                 room.role.clone()
             };
+            let door = match room.door {
+                apz_board::layout::Door::N => crate::rooms::generate::Door::N,
+                apz_board::layout::Door::S => crate::rooms::generate::Door::S,
+                apz_board::layout::Door::E => crate::rooms::generate::Door::E,
+                apz_board::layout::Door::W => crate::rooms::generate::Door::W,
+            };
             BoardDistrict {
+                plan: Some((room.turn as f32, door)),
                 key,
                 district: District {
                     role: if room.role.is_empty() { "other".to_string() } else { room.role.clone() },
@@ -712,6 +729,7 @@ pub fn board_layout_of(shared: &apz_board::layout::Layout) -> BoardLayout {
         atom: [ax as f32, ay as f32, az as f32],
         bounds: Bounds { cx: b.cx as f32, cz: b.cz as f32, w: b.w as f32, d: b.d as f32 },
         pcb_top: shared.pcb_top as f32,
+        shared: None,
     }
 }
 
