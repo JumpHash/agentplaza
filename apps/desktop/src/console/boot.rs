@@ -5,6 +5,9 @@
 //! - **Join a hub**: this machine becomes a node of another hub (paste a join token).
 //! - **Connect to a hub**: open the console of a hub elsewhere (its URL and the owner token).
 //! The choice is remembered (`~/.config/agentplaza/desktop.json`) and offered first next time.
+//!
+//! Start locally and Host a hub first check every requirement (`setup`), and install or set up
+//! what is missing only after the user agrees to each step.
 
 use std::time::Duration;
 
@@ -14,6 +17,7 @@ use iced::{Alignment, Border, Color, Element, Length, Subscription, Task, Theme}
 use super::cli_link::{self, CliLink};
 use super::client::{self, Client};
 use super::services::{self, Mode};
+use super::setup;
 use super::ui::{self, Kind, Tone};
 use crate::theme::HOVER;
 
@@ -71,8 +75,16 @@ pub struct State {
     pub busy: bool,
     /// The remembered choice, offered as "Continue".
     pub remembered: Option<Choice>,
-    /// The local services, listed on the "Start locally" form.
-    pub services: Vec<services::Service>,
+    /// The requirements of Start locally and Host a hub, as last checked.
+    pub checks: Vec<setup::Check>,
+    /// The requirements are being checked.
+    pub checking: bool,
+    /// The requirement being installed or set up.
+    pub fixing: Option<setup::Need>,
+    /// The requirement whose fix waits for the user's go-ahead.
+    pub confirm: Option<setup::Need>,
+    /// Progress lines from installing and setting up requirements.
+    pub setup_log: Vec<String>,
     /// The `agentplaza` command: offered on the chooser when it can be linked onto PATH here.
     pub cli: CliLink,
     /// The outcome of the last "Add" press, shown under the command row.
@@ -93,6 +105,18 @@ pub enum Msg {
     Started(Result<Vec<String>, String>),
     /// The hub answered (or not) — Ok carries the client to use.
     Connected(Result<Client, String>),
+    /// Check the requirements again.
+    Check,
+    /// The requirements were checked.
+    Checked(Vec<setup::Check>),
+    /// Ask before installing or setting up this requirement.
+    Ask(setup::Need),
+    /// Drop the pending question.
+    Cancel,
+    /// Install or set up this requirement (the user agreed).
+    Fix(setup::Need),
+    /// The fix finished: its progress lines and the outcome.
+    Fixed(setup::Need, Result<(), String>, Vec<String>),
     /// Link the `agentplaza` command onto PATH.
     LinkCli,
     /// The command was linked (or not).
@@ -127,14 +151,22 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             }
             state.choice = Some(choice);
             state.error = None;
-            state.services = if choice == Choice::Local { services::status(Mode::Local) } else { Vec::new() };
-            (Task::none(), None)
+            state.confirm = None;
+            match setup_mode(Some(choice)) {
+                Some(mode) => {
+                    state.checks.clear();
+                    state.checking = true;
+                    (check_task(mode), None)
+                }
+                None => (Task::none(), None),
+            }
         }
         Msg::Back => {
-            if !state.busy {
+            if !state.busy && state.fixing.is_none() {
                 state.choice = None;
                 state.error = None;
                 state.log.clear();
+                state.confirm = None;
             }
             (Task::none(), None)
         }
@@ -155,6 +187,30 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             (Task::none(), None)
         }
         Msg::Go => go(state),
+        Msg::Check => match setup_mode(state.choice) {
+            Some(mode) if !state.checking && state.fixing.is_none() => {
+                state.checking = true;
+                (check_task(mode), None)
+            }
+            _ => (Task::none(), None),
+        },
+        Msg::Checked(checks) => {
+            state.checks = checks;
+            state.checking = false;
+            (Task::none(), None)
+        }
+        Msg::Ask(need) => {
+            if state.fixing.is_none() {
+                state.confirm = Some(need);
+            }
+            (Task::none(), None)
+        }
+        Msg::Cancel => {
+            state.confirm = None;
+            (Task::none(), None)
+        }
+        Msg::Fix(need) => fix_requirement(state, need),
+        Msg::Fixed(need, result, lines) => fix_done(state, need, result, lines),
         Msg::LinkCli => link_cli(state),
         Msg::CliLinked(result) => {
             state.cli_note = Some(match result {
@@ -184,12 +240,34 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
     }
 }
 
+/// The setup mode of an option that needs the requirement checks (Start locally, Host a hub).
+fn setup_mode(choice: Option<Choice>) -> Option<setup::Mode> {
+    match choice {
+        Some(Choice::Local) => Some(setup::Mode::Local),
+        Some(Choice::Host) => Some(setup::Mode::Hub),
+        _ => None,
+    }
+}
+
+/// Start may run: the requirements are checked, every required one passes, nothing is in progress.
+fn can_start(state: &State) -> bool {
+    !state.checking && state.fixing.is_none() && setup::ready(&state.checks)
+}
+
+/// Checks every requirement off the UI thread.
+fn check_task(mode: setup::Mode) -> Task<Msg> {
+    Task::perform(async move { setup::check_all(mode) }, Msg::Checked)
+}
+
 /// Runs the chosen option's action.
 fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
     let Some(choice) = state.choice else {
         return (Task::none(), None);
     };
     if state.busy {
+        return (Task::none(), None);
+    }
+    if setup_mode(Some(choice)).is_some() && !can_start(state) {
         return (Task::none(), None);
     }
     state.error = None;
@@ -224,6 +302,42 @@ fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
         }
     };
     (task, None)
+}
+
+/// Installs or sets up one requirement off the UI thread, its progress lines kept for the log.
+fn fix_requirement(state: &mut State, need: setup::Need) -> (Task<Msg>, Option<Client>) {
+    if state.fixing.is_some() {
+        return (Task::none(), None);
+    }
+    state.confirm = None;
+    state.fixing = Some(need);
+    let task = Task::perform(
+        async move {
+            let mut lines = Vec::new();
+            let result = setup::fix(need, &mut |line: String| lines.push(line));
+            (need, result, lines)
+        },
+        |(need, result, lines)| Msg::Fixed(need, result, lines),
+    );
+    (task, None)
+}
+
+/// A fix finished: its lines and the outcome go to the log, then the requirements are checked again.
+fn fix_done(state: &mut State, need: setup::Need, result: Result<(), String>, lines: Vec<String>) -> (Task<Msg>, Option<Client>) {
+    state.fixing = None;
+    let label = state.checks.iter().find(|check| check.need == need).map_or("requirement", |check| check.label);
+    state.setup_log.extend(lines);
+    state.setup_log.push(match result {
+        Ok(()) => format!("{label}: ✓ done"),
+        Err(error) => format!("{label}: {error}"),
+    });
+    match setup_mode(state.choice) {
+        Some(mode) => {
+            state.checking = true;
+            (check_task(mode), None)
+        }
+        None => (Task::none(), None),
+    }
 }
 
 /// Links the `agentplaza` command in the background (macOS asks for a password).
@@ -371,16 +485,17 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     let head = row![
         column![ui::mono(choice.title(), 26.0, ui::INK), ui::faint(choice.sentence())].spacing(4),
         Space::new().width(Length::Fill),
-        ui::btn("Back", None, Kind::Ghost, (!busy).then_some(Msg::Back)),
+        ui::btn("Back", None, Kind::Ghost, (!busy && state.fixing.is_none()).then_some(Msg::Back)),
     ]
     .align_y(Alignment::Center);
     let mut page: Vec<Element<'_, Msg>> = vec![head.into()];
     match choice {
-        Choice::Local => page.push(services_list(&state.services)),
+        Choice::Local => page.push(requirements(state)),
         Choice::Host => {
             page.push(ui::label("Bind address").into());
             page.push(text_input("0.0.0.0", &state.bind).on_input(Msg::Bind).on_submit(Msg::Go).into());
             page.push(ui::faint("Other machines reach this hub at this machine's public address, on the port it shows once started.").into());
+            page.push(requirements(state));
         }
         Choice::Join => {
             page.push(ui::label("Join token").into());
@@ -399,7 +514,12 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
         Choice::Join => "Join",
         Choice::Connect => "Connect",
     };
-    page.push(ui::btn(action, Some(choice.icon()), Kind::Primary, (!busy).then_some(Msg::Go)));
+    let gated = setup_mode(Some(choice)).is_some();
+    let ready = !gated || can_start(state);
+    page.push(ui::btn(action, Some(choice.icon()), Kind::Primary, (!busy && ready).then_some(Msg::Go)));
+    if gated && !ready && !state.checking {
+        page.push(ui::faint("Install or set up what is missing first.").into());
+    }
     if busy {
         page.push(ui::loading());
     }
@@ -412,31 +532,77 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     column(page).spacing(14).into()
 }
 
-/// The local services and their state.
-fn services_list(services: &[services::Service]) -> Element<'static, Msg> {
-    if services.is_empty() {
-        return ui::faint("No services are listed for this mode.").into();
+/// The requirements of Start locally and Host a hub: one row each, with its state and, when it can
+/// be installed or set up here, the button that asks first. Then the progress of the last fix.
+fn requirements(state: &State) -> Element<'_, Msg> {
+    let mut page: Vec<Element<'_, Msg>> = vec![ui::label("Requirements").into()];
+    if state.checking {
+        page.push(ui::faint("Checking what is installed...").into());
     }
-    let rows: Vec<Element<'static, Msg>> = services
-        .iter()
-        .map(|svc| {
-            let tone = match svc.state.as_str() {
-                "running" => Tone::Ok,
-                "missing" => Tone::Warn,
-                _ => Tone::Muted,
-            };
-            row![
-                ui::mono(svc.name.clone(), 13.0, ui::INK),
-                ui::faint(svc.detail.clone()),
-                Space::new().width(Length::Fill),
-                ui::badge(&svc.state, tone),
+    for check in &state.checks {
+        let (stamp, tone) = match check.state {
+            setup::State::Ok => ("OK", Tone::Ok),
+            setup::State::Missing => ("MISSING", Tone::Warn),
+            setup::State::Blocked => ("NEEDS YOU", Tone::Danger),
+            setup::State::Warning => ("WARNING", Tone::Muted),
+        };
+        let action: Element<'_, Msg> = match (check.state, check.fix.is_some()) {
+            (setup::State::Missing, true) => {
+                let text = match check.need {
+                    setup::Need::Docker => "Install",
+                    setup::Need::DockerRunning => "Start",
+                    _ => "Set up",
+                };
+                ui::btn(text, None, Kind::Ghost, (state.fixing.is_none()).then_some(Msg::Ask(check.need)))
+            }
+            _ => Space::new().into(),
+        };
+        let line = row![
+            ui::mono(check.label, 13.0, ui::INK),
+            ui::faint(check.detail.clone()),
+            Space::new().width(Length::Fill),
+            action,
+            ui::badge(stamp, tone),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+        let mut block: Vec<Element<'_, Msg>> = vec![line.into()];
+        if state.confirm == Some(check.need) {
+            let buttons = row![
+                ui::btn("Go ahead", None, Kind::Primary, Some(Msg::Fix(check.need))),
+                ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Cancel)),
             ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into()
-        })
-        .collect();
-    column(rows).spacing(8).into()
+            .spacing(12);
+            let question = check.fix.clone().unwrap_or_default();
+            block.push(
+                container(column![ui::prose(question), buttons].spacing(12))
+                    .padding(14)
+                    .width(Length::Fill)
+                    .style(confirm_box)
+                    .into(),
+            );
+        }
+        page.push(column(block).spacing(8).into());
+    }
+    if let Some(need) = state.fixing {
+        let label = state.checks.iter().find(|check| check.need == need).map_or("requirement", |check| check.label);
+        page.push(ui::faint(format!("Working on {label}...")).into());
+    }
+    page.push(ui::btn("Check again", None, Kind::Ghost, (!state.checking && state.fixing.is_none()).then_some(Msg::Check)));
+    if !state.setup_log.is_empty() {
+        let start = state.setup_log.len().saturating_sub(12);
+        page.push(log_lines(&state.setup_log[start..]));
+    }
+    column(page).spacing(10).into()
+}
+
+/// The box that asks before a fix runs: the same paper and rule as the option cards.
+fn confirm_box(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(ui::SHEET.into()),
+        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
 }
 
 /// The progress lines, mono and faint.
