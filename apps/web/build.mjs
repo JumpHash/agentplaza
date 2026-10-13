@@ -60,14 +60,14 @@ if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
     throw new Error(`build: wasm-bindgen CLI is ${cliBindgen} but Cargo.lock pins ${pinnedBindgen}`);
   }
 
-  run('cargo', ['build', '-p', 'apz-engine-web', '--target', 'wasm32-unknown-unknown', '--release'], { cwd: repoRoot });
+  run('cargo', ['build', '-p', 'apz-engine-web', '--target', 'wasm32-unknown-unknown', '--profile', 'wasm-release'], { cwd: repoRoot });
 
   rmSync(engineScratch, { recursive: true, force: true });
   try {
     run('wasm-bindgen', [
       '--target', 'web',
       '--out-dir', engineScratch,
-      join(repoRoot, 'target/wasm32-unknown-unknown/release', `${engineLib}.wasm`),
+      join(repoRoot, 'target/wasm32-unknown-unknown/wasm-release', `${engineLib}.wasm`),
     ]);
     // wasm-opt works on the wasm-bindgen output (the bytes the glue loads), not the raw cargo output.
     const bindgenWasm = join(engineScratch, `${engineLib}_bg.wasm`);

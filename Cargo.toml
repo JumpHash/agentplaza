@@ -57,6 +57,16 @@ strip = "debuginfo"
 # double that for little speed at run time.
 lto = false
 
+# The web engine (crates/apz-engine-web) ships to every browser that opens the console: built for size, with the
+# whole program optimised at link time. Only apps/web/build.mjs uses this profile.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
 # The desktop app draws every frame on the CPU side too (scene walk, batching): its dev builds
 # stay fast with the app itself optimised (dependencies are, below).
 [profile.dev.package.agentplaza-desktop]
