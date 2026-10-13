@@ -38,6 +38,7 @@ import { buildGridSteps, type NavTerrace } from '../src/views/floor3d/nav';
 import { NAV_CROUCH_TIME, NAV_DROP_DOWN, NAV_JUMP_TIME, NAV_LAND_TIME, NAV_LIFT_DWELL, NAV_LIFT_SPEED, NAV_RESPAWN_IN, NAV_RESPAWN_OUT, NAV_STEP } from '../src/views/floor3d/nav-types';
 import { bodyScale, newBody, stepBody, type Body, type Surfaces } from '../src/views/floor3d/nav-height';
 import { ROOM_CATALOG, roomLayout } from '../src/views/floor3d/rooms';
+import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { navScene, type NavScene } from '../src/views/floor3d/nav-scene';
 import { mulberry32 } from '../src/views/floor3d/rooms/gen';
 import navFixtures from '../../../assets/nav/fixtures.json';
@@ -2551,6 +2552,27 @@ const roomMinimum = (role: string, agents: number): number => {
   eq(policy.includes("'unsafe-eval'"), false, "csp: the policy never allows 'unsafe-eval'");
   eq(script.includes("'unsafe-inline'"), false, "csp: script-src allows no inline script");
 }
+
+// The hub-as-a-server tab's setup text: the Claude Code command carries the URL and the bearer header, and the
+// desktop block runs the stdio bridge against the hub's origin, never with the token in it.
+{
+  const url = 'https://hub.example.test/mcp';
+  const s = setupSnippets(url, 'apz_mcp_test');
+  eq(s.claudeCode, 'claude mcp add --transport http agentplaza https://hub.example.test/mcp --header "Authorization: Bearer apz_mcp_test"', 'hub mcp: the Claude Code command carries the URL and the header');
+  eq(hubOrigin(url), 'https://hub.example.test', 'hub mcp: the origin is the URL without its /mcp path');
+  eq(JSON.parse(s.desktop).mcpServers.agentplaza.args, ['mcp', 'serve', '--hub', 'https://hub.example.test'], 'hub mcp: the desktop block serves the hub origin');
+  eq(s.desktopLogin, 'agentplaza mcp login --hub https://hub.example.test', 'hub mcp: the login line names the hub origin');
+  eq(s.desktop.includes('apz_mcp_test'), false, 'hub mcp: the desktop block never carries the token');
+  eq(s.generic, 'URL: https://hub.example.test/mcp\nAuthorization: Bearer apz_mcp_test', 'hub mcp: the generic setup is the URL and the header');
+}
+{
+  // Open mode: no token, so no header and no login line.
+  const o = setupSnippets('https://hub.example.test/mcp', null);
+  eq(o.claudeCode, 'claude mcp add --transport http agentplaza https://hub.example.test/mcp', 'hub mcp: open mode drops the header');
+  eq(o.desktopLogin, null, 'hub mcp: open mode has no login line');
+  eq(o.generic, 'URL: https://hub.example.test/mcp', 'hub mcp: open mode generic setup is the URL alone');
+}
+sectionEnd('hub mcp tests: ok');
 
 sectionEnd('rooms tests: ok');
 

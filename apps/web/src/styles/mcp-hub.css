@@ -1,0 +1,55 @@
+/* Setup > MCP > This hub as a server: the enable card, the new-token form with its reveal box, the tokens and the
+   call log. Colours come from tokens.css; the table and confirm styles are mcp.css's. */
+
+.mcp-hub-host { min-width: 0; }
+
+.hub-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  max-width: var(--content-max);
+  min-width: 0;
+}
+
+.hub-switch { display: inline-flex; align-items: center; gap: 10px; width: fit-content; font-weight: 600; cursor: pointer; }
+.hub-switch input { width: 16px; height: 16px; margin: 0; accent-color: var(--signal); }
+
+.hub-group { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.hub-group legend,
+.hub-label { font-size: 13px; font-weight: 600; padding: 0; margin-bottom: var(--s2); }
+
+.hub-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.hub-radio,
+.hub-scope { display: flex; align-items: baseline; gap: var(--s2); cursor: pointer; }
+.hub-radio input,
+.hub-scope input,
+.hub-tool input { accent-color: var(--signal); margin: 0; }
+.hub-scope { padding: var(--s1, 4px) 0; }
+
+.hub-origins { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.hub-origins li { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+
+.hub-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.hub-url { word-break: break-all; }
+
+.hub-tool-group { border: 0; margin: 0; padding: 0; min-width: 0; }
+.hub-tool-group legend { font-size: 13px; font-weight: 600; padding: 0; margin-bottom: var(--s1, 4px); }
+.hub-tool { display: inline-flex; align-items: center; gap: 6px; margin: 2px 16px 2px 0; font-size: 13px; }
+.hub-tool input:disabled + code { opacity: 0.5; }
+
+.hub-reveal { display: flex; flex-direction: column; gap: var(--s3); border: 1px solid var(--signal); padding: var(--s4); }
+.hub-reveal h3 { margin: 0; }
+.hub-warn { margin: 0; font-size: 13px; font-weight: 600; }
+.hub-token-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.hub-token { word-break: break-all; }
+
+.hub-snippet { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.hub-snippet-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.hub-snippet pre { margin: 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+
+.hub-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); }
+
+[hidden] { display: none !important; }
+.hub-auth { display: flex; flex-wrap: wrap; gap: var(--s3); }
+.hub-warning { display: flex; flex-direction: column; gap: var(--s2); border: 1px solid var(--danger); color: var(--danger); padding: var(--s3); }
+.hub-warning p { margin: 0; }

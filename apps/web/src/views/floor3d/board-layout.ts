@@ -1144,9 +1144,14 @@ export function layoutOnBoard(
 ): BoardLayout {
   const board = groundSlots(declared, params);
   let s = 1;
+  // The sound pass that seated the most agents: past the scale cap it is the layout, and the agents it could not seat get
+  // no robot on the board (the floor skips an agent without a home), rather than the whole board failing to open.
+  let best: Pass | null = null;
   for (;;) {
     if (s > BOARD_SCALE_CAP + 1e-9) {
-      throw new Error(`board layout: ${list.length} agents do not seat on ${board.kind} within the world scale cap ${BOARD_SCALE_CAP}`);
+      if (!best) throw new Error(`board layout: nothing lays out on ${board.kind} within the world scale cap ${BOARD_SCALE_CAP}`);
+      console.warn(`board layout: ${list.length - best.layout.homes.size} of ${list.length} agents do not seat on ${board.kind} within the world scale cap ${BOARD_SCALE_CAP}`);
+      return best.layout;
     }
     // Fall back through the candidate exits. A pass is checked with the rooms in place: its rejected landings (the room check),
     // then the plates the nav grid cannot reach (the grid's own landing, rule 6). Each round excludes those and plans again.
@@ -1158,7 +1163,9 @@ export function layoutOnBoard(
       for (const key of bad) excluded.add(key);
       pass = layoutAtScale(list, board, params, table, s, excluded);
     }
-    if (pass.rejected.length === 0 && unreachedKeys(board, params, pass).length === 0 && pass.layout.homes.size === list.length) return pass.layout;
+    const sound = pass.rejected.length === 0 && unreachedKeys(board, params, pass).length === 0;
+    if (sound && pass.layout.homes.size === list.length) return pass.layout;
+    if (sound && (!best || pass.layout.homes.size > best.layout.homes.size)) best = pass;
     s *= BOARD_SCALE_STEP;
   }
 }

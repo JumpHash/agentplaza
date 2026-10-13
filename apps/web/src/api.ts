@@ -948,3 +948,45 @@ export const mcpApi = {
   serverTools: (id: string) => get<McpToolRow[]>(`/v1/mcp/servers/${encodeURIComponent(id)}/tools`),
   serverLogs: (id: string, limit = 100) => get<McpLogLine[]>(`/v1/mcp/servers/${encodeURIComponent(id)}/logs?limit=${limit}`),
 };
+
+// ---- This hub as an MCP server (docs/design/hub-mcp.md, "Hub API") ----------------------------------------------
+export type HubBind = 'local' | 'remote';
+export type HubScope = 'observe' | 'operate' | 'govern';
+export type HubAuthMode = 'secure' | 'open';
+export interface HubMcpStatus {
+  enabled: boolean; bind: HubBind; allowed_origins: string[]; url: string; tokens: number; stored: boolean;
+  auth_mode: HubAuthMode; open_scope: HubScope;
+  /** Set while open mode is on: the server's own warning. */
+  warning?: string | null;
+}
+export interface HubMcpSettings {
+  enabled: boolean; bind: HubBind; allowed_origins: string[];
+  auth_mode: HubAuthMode; open_scope: HubScope;
+  /** Required (true) for open + remote; the server refuses it otherwise. */
+  confirm_open_remote?: boolean;
+}
+export interface HubToken {
+  id: string; name: string; scope: HubScope; tools: string[]; created_ms: number;
+  expires_ms: number | null; last_used_ms: number | null; calls: number; revoked_at_ms: number | null;
+}
+export interface HubTokenBody { name: string; scope: HubScope; tools?: string[]; expires_days?: number }
+/** The token is in `token` once, at creation; the record never carries it. */
+export interface HubTokenCreated { token: string; record: HubToken }
+export interface HubCall { token_id: string; tool: string; args_sha256: string; ok: boolean; error: string | null; duration_ms: number; at_ms: number }
+export interface HubCallsQuery { token?: string; tool?: string; limit?: number }
+
+export const hubMcpApi = {
+  status: () => get<HubMcpStatus>('/v1/hub-mcp'),
+  save: (body: HubMcpSettings) => put<HubMcpStatus>('/v1/hub-mcp', body),
+  tokens: () => get<{ tokens: HubToken[] }>('/v1/hub-mcp/tokens'),
+  createToken: (body: HubTokenBody) => post<HubTokenCreated>('/v1/hub-mcp/tokens', body),
+  revokeToken: (id: string) => del<unknown>(`/v1/hub-mcp/tokens/${encodeURIComponent(id)}`),
+  calls: (q: HubCallsQuery = {}) => {
+    const params = new URLSearchParams();
+    if (q.token) params.set('token', q.token);
+    if (q.tool) params.set('tool', q.tool);
+    if (q.limit) params.set('limit', String(q.limit));
+    const qs = params.toString();
+    return get<{ calls: HubCall[] }>(`/v1/hub-mcp/calls${qs ? `?${qs}` : ''}`);
+  },
+};

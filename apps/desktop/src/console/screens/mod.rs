@@ -21,6 +21,7 @@ pub mod rules;
 pub mod models;
 pub mod usage;
 pub mod tools;
+pub mod vault;
 pub mod machines;
 pub mod nodes;
 pub mod agent;
@@ -60,6 +61,7 @@ pub enum Id {
     Models,
     Usage,
     Tools,
+    Vault,
     Machines,
     Nodes,
     /// One agent's page.
@@ -97,6 +99,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Models, "Models", "Setup", "models"),
     (Id::Usage, "Usage", "Setup", "zap"),
     (Id::Tools, "Tools", "Setup", "wrench"),
+    (Id::Vault, "Vault", "Setup", "key"),
     (Id::Machines, "Machines", "Setup", "machine"),
     (Id::Nodes, "Nodes", "Setup", "link"),
 ];
@@ -120,6 +123,7 @@ pub struct Screens {
     pub models: models::State,
     pub usage: usage::State,
     pub tools: tools::State,
+    pub vault: vault::State,
     pub machines: machines::State,
     pub nodes: nodes::State,
     pub agent: agent::State,
@@ -152,6 +156,7 @@ pub enum Msg {
     Models(models::Msg),
     Usage(usage::Msg),
     Tools(tools::Msg),
+    Vault(vault::Msg),
     Machines(machines::Msg),
     Nodes(nodes::Msg),
     Agent(agent::Msg),
@@ -185,6 +190,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Models(m) => models::go(m),
         Msg::Usage(m) => usage::go(m),
         Msg::Tools(m) => tools::go(m),
+        Msg::Vault(m) => vault::go(m),
         Msg::Machines(m) => machines::go(m),
         Msg::Nodes(m) => nodes::go(m),
         Msg::Agent(m) => agent::go(m),
@@ -232,6 +238,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Models => models::load(&mut screens.models, ctx).map(Msg::Models),
         Id::Usage => usage::load(&mut screens.usage, ctx).map(Msg::Usage),
         Id::Tools => tools::load(&mut screens.tools, ctx).map(Msg::Tools),
+        Id::Vault => vault::load(&mut screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::load(&mut screens.machines, ctx).map(Msg::Machines),
         Id::Nodes => nodes::load(&mut screens.nodes, ctx).map(Msg::Nodes),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
@@ -265,6 +272,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Models(m) => models::update(&mut screens.models, m, ctx).map(Msg::Models),
         Msg::Usage(m) => usage::update(&mut screens.usage, m, ctx).map(Msg::Usage),
         Msg::Tools(m) => tools::update(&mut screens.tools, m, ctx).map(Msg::Tools),
+        Msg::Vault(m) => vault::update(&mut screens.vault, m, ctx).map(Msg::Vault),
         Msg::Machines(m) => machines::update(&mut screens.machines, m, ctx).map(Msg::Machines),
         Msg::Nodes(m) => nodes::update(&mut screens.nodes, m, ctx).map(Msg::Nodes),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
@@ -315,6 +323,7 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::Models => models::view(&screens.models, ctx).map(Msg::Models),
         Id::Usage => usage::view(&screens.usage, ctx).map(Msg::Usage),
         Id::Tools => tools::view(&screens.tools, ctx).map(Msg::Tools),
+        Id::Vault => vault::view(&screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::view(&screens.machines, ctx).map(Msg::Machines),
         Id::Nodes => nodes::view(&screens.nodes, ctx).map(Msg::Nodes),
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),

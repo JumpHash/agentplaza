@@ -5,12 +5,13 @@
 
 import '../styles/mcp.css';
 import { mcpApi, type McpServerView, type McpTestResult } from '../api';
-import { ago, attempt, badge, button, clip, empty, modal, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, clip, empty, modal, tabs, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import type { Cleanup } from './index';
 import { openLogsDrawer } from './mcp-logs';
 import { openWizard } from './mcp-wizard';
+import { mountHubTab } from './mcp-hub';
 import { STATUS_LABEL, STATUS_TONE, statusSummary, transportText } from './mcp-common';
 import { errorText } from './vault-common';
 
@@ -113,6 +114,30 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const addButton = (): HTMLElement => button('Add server', openAdd, { kind: 'primary', icon: 'plus' });
 
+  // The two tabs: the servers, and this hub as a server. Leaving the hub tab empties its page, token included.
+  let tab: 'servers' | 'hub' = 'servers';
+  let hubCleanup: Cleanup | null = null;
+  const hubBody = h('div.mcp-hub-host');
+  const tabBar = (): HTMLElement =>
+    tabs(
+      [
+        { key: 'servers', label: 'MCP servers' },
+        { key: 'hub', label: 'This hub as a server' },
+      ],
+      tab,
+      (key) => setTab(key === 'hub' ? 'hub' : 'servers'),
+    );
+  const setTab = (next: 'servers' | 'hub'): void => {
+    if (next === tab) return;
+    if (hubCleanup) {
+      hubCleanup();
+      hubCleanup = null;
+    }
+    tab = next;
+    if (next === 'hub') hubCleanup = mountHubTab(hubBody);
+    draw();
+  };
+
   function actionsFor(s: McpServerView): HTMLElement {
     const running = s.status === 'running';
     return h(
@@ -209,8 +234,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       h(
         'div.mcp-page',
         null,
-        h('div.mcp-toolbar', null, servers?.length ? addButton() : null),
-        body,
+        tabBar(),
+        tab === 'hub' ? hubBody : [h('div.mcp-toolbar', null, servers?.length ? addButton() : null), body],
       ),
     );
   }
@@ -222,6 +247,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   return () => {
     alive = false;
+    if (hubCleanup) hubCleanup();
     if (timer !== undefined) clearTimeout(timer);
     offs.forEach((off) => off());
   };
