@@ -84,7 +84,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/tasks/{id}/bid", |app, req, p| bid_task(app, p.get("id"), &req.body))
         .post("/v1/tasks/{id}/award", |app, req, p| award_task(app, p.get("id"), &req.body))
         .get("/v1/treasury", |app, _, _| treasury_view(app))
-        .get("/v1/treasury/journal", |app, _, _| treasury_journal(app))
+        .get("/v1/treasury/journal", |app, req, _| treasury_journal(app, req))
+        .get("/v1/treasury/series", |app, req, _| treasury_series(app, req))
         .post("/v1/treasury/mint", |app, req, _| treasury_mint(app, &req.body))
         .post("/v1/treasury/fine", |app, req, _| treasury_fine(app, &req.body))
         .get("/v1/treasury/wallets", |app, _, _| treasury_wallets(app))
@@ -180,10 +181,123 @@ fn treasury_view(app: &App) -> Response {
     Response::json(200, &view)
 }
 
-/// `GET /v1/treasury/journal`: the double-entry journal, bounded to the newest
-/// [`treasury::JOURNAL_LIMIT`] entries.
-fn treasury_journal(app: &App) -> Response {
-    Response::json(200, &app.plaza.treasury.journal(treasury::JOURNAL_LIMIT))
+/// The longest `task` a journal filter may name, in bytes.
+const JOURNAL_TASK_MAX: usize = 256;
+
+/// The span a treasury series covers when the request names no `from`: 30 days.
+const SERIES_SPAN_MS: u64 = 30 * 86_400_000;
+
+/// `GET /v1/treasury/journal?before=&limit=&kind=&wallet=&task=`: the double-entry
+/// journal a page at a time, newest first. `before` is an entry id (the page is
+/// the entries below it), `limit` is `1..=256` (default 50), `kind` an entry
+/// kind, `wallet` an agent's cid (the entries posting to its wallet) and `task` a
+/// task id. The body is `{entries, total, limit, truncated, next_before}`:
+/// `total` counts the entries the filters match, `truncated` says older matches
+/// remain, and `next_before` is the `before` for the next page.
+fn treasury_journal(app: &App, req: &Request) -> Response {
+    let query = match journal_query(req) {
+        Ok(query) => query,
+        Err(response) => return response,
+    };
+    let limit = query.limit;
+    let page = app.plaza.treasury.journal_page(&query);
+    let truncated = page.next_before.is_some();
+    Response::json(
+        200,
+        &serde_json::json!({
+            "entries": page.entries,
+            "total": page.total,
+            "limit": limit,
+            "truncated": truncated,
+            "next_before": page.next_before,
+        }),
+    )
+}
+
+/// The paging and filters a journal read asks for. An empty `kind`, `wallet` or
+/// `task` names no filter.
+fn journal_query(req: &Request) -> Result<treasury::JournalQuery, Response> {
+    let limit = match req.query_param("limit") {
+        None => treasury::JOURNAL_PAGE,
+        Some(raw) => match raw.parse::<usize>() {
+            Ok(n) if (1..=treasury::JOURNAL_LIMIT).contains(&n) => n,
+            _ => {
+                return Err(Response::error(
+                    400,
+                    &format!("limit must be 1..={}, not {raw:?}", treasury::JOURNAL_LIMIT),
+                ))
+            }
+        },
+    };
+    let before = match req.query_param("before") {
+        None => None,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(id) => Some(id),
+            Err(_) => return Err(Response::error(400, &format!("before must name an entry id, not {raw:?}"))),
+        },
+    };
+    let kind = match req.query_param("kind").map(percent_decode) {
+        Some(kind) if !kind.is_empty() => {
+            if !treasury::EntryKind::ALL.iter().any(|known| known.as_str() == kind) {
+                let kinds: Vec<&str> = treasury::EntryKind::ALL.iter().map(|known| known.as_str()).collect();
+                return Err(Response::error(400, &format!("kind must be one of {}, not {kind:?}", kinds.join(", "))));
+            }
+            Some(kind)
+        }
+        _ => None,
+    };
+    let wallet = match req.query_param("wallet") {
+        Some(raw) if !raw.is_empty() => match raw.parse::<u64>() {
+            Ok(cid) => Some(cid.to_string()),
+            Err(_) => return Err(Response::error(400, &format!("wallet must name an agent cid, not {raw:?}"))),
+        },
+        _ => None,
+    };
+    let task = match req.query_param("task").map(percent_decode) {
+        Some(task) if task.len() > JOURNAL_TASK_MAX => {
+            return Err(Response::error(400, &format!("task is longer than {JOURNAL_TASK_MAX} bytes")))
+        }
+        Some(task) if !task.is_empty() => Some(task),
+        _ => None,
+    };
+    Ok(treasury::JournalQuery { before, limit, kind, wallet, task })
+}
+
+/// `GET /v1/treasury/series?from=&to=&bucket=hour|day`: the treasury over time,
+/// one point per bucket of `[from, to)`, in milliseconds since the Unix epoch.
+/// `to` defaults to now, `from` to 30 days before `to`, and `bucket` to `day`
+/// (hours and days are UTC). A range of more than 2000 buckets is refused.
+fn treasury_series(app: &App, req: &Request) -> Response {
+    const HOUR_MS: u64 = 3_600_000;
+    const DAY_MS: u64 = 86_400_000;
+    let bucket_ms = match req.query_param("bucket").unwrap_or("day") {
+        "hour" => HOUR_MS,
+        "day" => DAY_MS,
+        other => return Response::error(400, &format!("bucket must be hour or day, not {other:?}")),
+    };
+    let to = match instant_param(req, "to") {
+        Ok(to) => to.unwrap_or_else(apz_plaza::now_ms),
+        Err(response) => return response,
+    };
+    let from = match instant_param(req, "from") {
+        Ok(from) => from.unwrap_or_else(|| to.saturating_sub(SERIES_SPAN_MS)),
+        Err(response) => return response,
+    };
+    match app.plaza.treasury.series(from, to, bucket_ms) {
+        Ok(series) => Response::json(200, &series),
+        Err(reason) => Response::error(400, &reason),
+    }
+}
+
+/// A query parameter naming an instant, in milliseconds since the Unix epoch.
+fn instant_param(req: &Request, name: &str) -> Result<Option<u64>, Response> {
+    match req.query_param(name) {
+        None => Ok(None),
+        Some(raw) => raw
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| Response::error(400, &format!("{name} must be milliseconds since the epoch, not {raw:?}"))),
+    }
 }
 
 /// `POST /v1/treasury/mint` `{amount}`: mints credits into the plaza's budget.

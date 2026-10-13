@@ -146,6 +146,13 @@ pub const MAX_ACCOUNTS: usize = 4 * crate::tasks::MAX_TASKS;
 /// them (oldest of those first), so a response is bounded.
 pub const JOURNAL_LIMIT: usize = 256;
 
+/// The page size the journal endpoint serves when a request names no `limit`.
+pub const JOURNAL_PAGE: usize = 50;
+
+/// The most points one treasury series returns; a wider range with the same
+/// bucket is refused, so the response stays bounded.
+pub const SERIES_MAX_POINTS: usize = 2000;
+
 /// The kinds of account, the schema's `treasury.account_kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1404,40 +1411,7 @@ impl Treasury {
         let start = total.saturating_sub(limit);
         let entries = inner.entries[start..]
             .iter()
-            .map(|entry| {
-                let postings = entry
-                    .postings
-                    .iter()
-                    .map(|posting| PostingView {
-                        account: posting.account_id,
-                        kind: inner
-                            .account_kind(posting.account_id)
-                            .map_or("unknown", AccountKind::as_str),
-                        owner_ref: inner
-                            .accounts
-                            .iter()
-                            .find(|account| account.id == posting.account_id)
-                            .map_or_else(String::new, |account| account.owner_ref.clone()),
-                        amount: posting.amount,
-                    })
-                    .collect();
-                EntryView {
-                    id: entry.id,
-                    kind: entry.kind.as_str(),
-                    task_id: entry.task_id.clone(),
-                    root_task: entry.root_task.clone(),
-                    memo: entry.memo.clone(),
-                    posted_by: entry.posted_by,
-                    created_at: entry.created_at,
-                    amount: entry
-                        .postings
-                        .iter()
-                        .filter(|posting| posting.amount > 0)
-                        .map(|posting| i128::from(posting.amount))
-                        .sum(),
-                    postings,
-                }
-            })
+            .map(|entry| entry_view(&inner, entry))
             .collect();
         JournalView {
             entries,
@@ -1445,6 +1419,195 @@ impl Treasury {
             limit,
             truncated: total > limit,
         }
+    }
+
+    /// One page of the journal, newest first, filtered by `query`.
+    ///
+    /// `total` counts every entry the filters match, whatever the cursor, so a
+    /// caller can say how many there are. `next_before` is the id of the page's
+    /// oldest entry when older matches remain: pass it as `before` for the next
+    /// page. Pages are disjoint and consecutive, so walking `next_before` visits
+    /// every match exactly once.
+    pub fn journal_page(&self, query: &JournalQuery) -> JournalPage {
+        let inner = self.lock();
+        let limit = query.limit.clamp(1, JOURNAL_LIMIT);
+        // `Some(None)`: the wallet names no account, so no entry can match it.
+        let wallet: Option<Option<u64>> = query.wallet.as_deref().map(|raw| {
+            raw.parse::<u64>().ok().and_then(|cid| {
+                inner
+                    .find_account(AccountKind::AgentEarnings, &agent_owner(cid))
+                    .map(|account| account.id)
+            })
+        });
+        let matches = |entry: &Entry| {
+            query.kind.as_deref().is_none_or(|kind| entry.kind.as_str() == kind)
+                && wallet.is_none_or(|account| {
+                    account.is_some_and(|id| entry.postings.iter().any(|posting| posting.account_id == id))
+                })
+                && query.task.as_deref().is_none_or(|task| entry.task_id.as_deref() == Some(task))
+        };
+        let mut total = 0;
+        let mut page: Vec<&Entry> = Vec::new();
+        let mut more = false;
+        for entry in inner.entries.iter().rev().filter(|entry| matches(entry)) {
+            total += 1;
+            if query.before.is_some_and(|before| entry.id >= before) {
+                continue;
+            }
+            if page.len() < limit {
+                page.push(entry);
+            } else {
+                more = true;
+            }
+        }
+        let next_before = if more { page.last().map(|entry| entry.id) } else { None };
+        JournalPage {
+            entries: page.into_iter().map(|entry| entry_view(&inner, entry)).collect(),
+            total,
+            next_before,
+        }
+    }
+
+    /// The treasury over time: the flows posted in each bucket of `[from_ms,
+    /// to_ms)`, and the balances at the bucket's end. See [`TreasurySeries`].
+    ///
+    /// Buckets are `bucket_ms` wide and aligned to multiples of it (a day bucket
+    /// starts at UTC midnight); the first and last are clipped to the range.
+    /// Every bucket is present, empty ones included. An entry belongs to the
+    /// bucket its `created_at` falls in. Balances are replayed from the postings
+    /// (nothing is stored): the opening balance is every entry before `from_ms`,
+    /// so the figures are exact whatever the range. Refused for an empty range, a
+    /// zero bucket, or more than [`SERIES_MAX_POINTS`] buckets.
+    pub fn series(&self, from_ms: u64, to_ms: u64, bucket_ms: u64) -> Result<TreasurySeries, String> {
+        if bucket_ms == 0 {
+            return Err("the bucket must be a positive number of milliseconds".to_string());
+        }
+        if from_ms >= to_ms {
+            return Err(format!("from ({from_ms}) must be before to ({to_ms})"));
+        }
+        let start = from_ms - from_ms % bucket_ms;
+        let count = usize::try_from((to_ms - start).div_ceil(bucket_ms)).unwrap_or(usize::MAX);
+        if count > SERIES_MAX_POINTS {
+            return Err(format!(
+                "the range holds {count} buckets, past the cap of {SERIES_MAX_POINTS}; use a wider bucket"
+            ));
+        }
+        let inner = self.lock();
+        let accounts: BTreeMap<u64, (AccountKind, &str)> = inner
+            .accounts
+            .iter()
+            .map(|account| (account.id, (account.kind, account.owner_ref.as_str())))
+            .collect();
+        let mut points: Vec<SeriesPoint> = (0..count)
+            .map(|index| {
+                let bucket_start = start.saturating_add((index as u64).saturating_mul(bucket_ms));
+                SeriesPoint {
+                    at_ms: bucket_start.max(from_ms),
+                    end_ms: bucket_start.saturating_add(bucket_ms).min(to_ms),
+                    entries: 0,
+                    minted: 0,
+                    escrowed: 0,
+                    paid: 0,
+                    refunded: 0,
+                    fined: 0,
+                    spent: 0,
+                    by_kind: EntryKind::ALL.iter().map(|kind| (kind.as_str(), 0)).collect(),
+                    plaza_budget_end: 0,
+                    circulating_end: 0,
+                    treasury_end: 0,
+                }
+            })
+            .collect();
+        // What each bucket moves in the three balances, in the order
+        // [plaza budget, circulating, treasury], and what was there before `from_ms`.
+        let mut moves = vec![[0i128; 3]; count];
+        let mut opening = [0i128; 3];
+        for entry in &inner.entries {
+            let mut moved = [0i128; 3];
+            let mut size = 0i128;
+            for posting in &entry.postings {
+                let amount = i128::from(posting.amount);
+                if amount > 0 {
+                    size += amount;
+                }
+                match accounts.get(&posting.account_id) {
+                    Some((AccountKind::TownBudget, owner)) if *owner == PLAZA_OWNER => moved[0] += amount,
+                    Some((AccountKind::TaskEscrow | AccountKind::AgentEarnings, _)) => moved[1] += amount,
+                    Some((AccountKind::Treasury, _)) => moved[2] += amount,
+                    _ => {}
+                }
+            }
+            if entry.created_at < from_ms {
+                for (total, amount) in opening.iter_mut().zip(moved) {
+                    *total += amount;
+                }
+                continue;
+            }
+            if entry.created_at >= to_ms {
+                continue;
+            }
+            // `created_at` is in `[from_ms, to_ms)`, so the index is below `count`.
+            let index = usize::try_from((entry.created_at - start) / bucket_ms).unwrap_or(usize::MAX);
+            let point = &mut points[index];
+            point.entries += 1;
+            *point.by_kind.entry(entry.kind.as_str()).or_insert(0) += size;
+            match entry.kind {
+                EntryKind::Mint => point.minted += size,
+                EntryKind::Subcontract => point.escrowed += size,
+                EntryKind::Payment => point.paid += size,
+                EntryKind::Refund => point.refunded += size,
+                EntryKind::Fine => point.fined += size,
+                EntryKind::Spend => point.spent += size,
+                _ => {}
+            }
+            for (total, amount) in moves[index].iter_mut().zip(moved) {
+                *total += amount;
+            }
+        }
+        let mut balances = opening;
+        for (point, moved) in points.iter_mut().zip(&moves) {
+            for (balance, amount) in balances.iter_mut().zip(moved) {
+                *balance += amount;
+            }
+            point.plaza_budget_end = balances[0];
+            point.circulating_end = balances[1];
+            point.treasury_end = balances[2];
+        }
+        Ok(TreasurySeries { from_ms, to_ms, bucket_ms, points })
+    }
+
+    /// The `n` agent wallets with the largest balances, richest first (ties by
+    /// cid). Each carries what it has earned (its `payment` credits) and what has
+    /// left it (every debit: transfers out, fines, fees, clawbacks), over the
+    /// journal's life.
+    pub fn top_wallets(&self, n: usize) -> Vec<WalletRank> {
+        let inner = self.lock();
+        let mut flows: BTreeMap<u64, (i128, i128)> = BTreeMap::new();
+        for entry in &inner.entries {
+            for posting in &entry.postings {
+                let amount = i128::from(posting.amount);
+                let (earned, spent) = flows.entry(posting.account_id).or_insert((0, 0));
+                if entry.kind == EntryKind::Payment && amount > 0 {
+                    *earned += amount;
+                }
+                if amount < 0 {
+                    *spent -= amount;
+                }
+            }
+        }
+        let mut ranks: Vec<WalletRank> = inner
+            .accounts
+            .iter()
+            .filter(|account| account.kind == AccountKind::AgentEarnings)
+            .filter_map(|account| {
+                let cid = account.owner_ref.strip_prefix("cid:")?.parse::<u64>().ok()?;
+                let (earned, spent) = flows.get(&account.id).copied().unwrap_or((0, 0));
+                Some(WalletRank { cid, balance: inner.balance(account.id), earned, spent })
+            })
+            .collect();
+        ranks.sort_by(|a, b| b.balance.cmp(&a.balance).then(a.cid.cmp(&b.cid)));
+        ranks.truncate(n);
+        ranks
     }
 
     /// The append-only guard: checks that the journal has only ever been
@@ -1680,6 +1843,42 @@ fn account_views(inner: &Inner) -> Vec<AccountView> {
         .collect()
 }
 
+/// One entry as the journal endpoints report it, its postings named by account kind and owner.
+fn entry_view(inner: &Inner, entry: &Entry) -> EntryView {
+    let postings = entry
+        .postings
+        .iter()
+        .map(|posting| PostingView {
+            account: posting.account_id,
+            kind: inner
+                .account_kind(posting.account_id)
+                .map_or("unknown", AccountKind::as_str),
+            owner_ref: inner
+                .accounts
+                .iter()
+                .find(|account| account.id == posting.account_id)
+                .map_or_else(String::new, |account| account.owner_ref.clone()),
+            amount: posting.amount,
+        })
+        .collect();
+    EntryView {
+        id: entry.id,
+        kind: entry.kind.as_str(),
+        task_id: entry.task_id.clone(),
+        root_task: entry.root_task.clone(),
+        memo: entry.memo.clone(),
+        posted_by: entry.posted_by,
+        created_at: entry.created_at,
+        amount: entry
+            .postings
+            .iter()
+            .filter(|posting| posting.amount > 0)
+            .map(|posting| i128::from(posting.amount))
+            .sum(),
+        postings,
+    }
+}
+
 /// One posting as the API reports it.
 #[derive(Debug, Serialize)]
 pub struct PostingView {
@@ -1757,6 +1956,94 @@ pub struct TreasuryView {
     pub spent: i128,
     /// The note on why `spent` is zero.
     pub note: &'static str,
+}
+
+/// What a journal page asks for (see [`Treasury::journal_page`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalQuery {
+    /// Only entries with an id below this: the page after a cursor.
+    pub before: Option<u64>,
+    /// The most entries the page holds, clamped to `1..=`[`JOURNAL_LIMIT`].
+    pub limit: usize,
+    /// Only entries of this kind, spelled as [`EntryKind::as_str`] spells it.
+    pub kind: Option<String>,
+    /// Only entries that post to this agent's wallet (its `agent_earnings`
+    /// account), named by the agent's cid in decimal. A cid with no wallet
+    /// matches nothing.
+    pub wallet: Option<String>,
+    /// Only entries of this task (`task_id`).
+    pub task: Option<String>,
+}
+
+/// One page of the journal (see [`Treasury::journal_page`]).
+#[derive(Debug, Serialize)]
+pub struct JournalPage {
+    /// The page's entries, newest first.
+    pub entries: Vec<EntryView>,
+    /// How many entries of the journal the filters match, the cursor not counted.
+    pub total: usize,
+    /// The `before` for the next, older page, or `None` when this page is the last.
+    pub next_before: Option<u64>,
+}
+
+/// One bucket of the treasury series (see [`Treasury::series`]). Each flow is
+/// the entries of its kind posted in the bucket, measured as an entry's size
+/// (the total of its credit-side postings, which equals its debits).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SeriesPoint {
+    /// The bucket's start, in milliseconds since the Unix epoch (clipped to the range's start).
+    pub at_ms: u64,
+    /// The bucket's end, exclusive (clipped to the range's end).
+    pub end_ms: u64,
+    /// How many entries were posted in the bucket.
+    pub entries: usize,
+    /// Credits minted (`mint` entries).
+    pub minted: i128,
+    /// Credits locked into task escrow from the plaza's budget (`subcontract` entries).
+    pub escrowed: i128,
+    /// Credits paid to agents for verified work (`payment` entries).
+    pub paid: i128,
+    /// Credits refunded to the plaza's budget (`refund` entries).
+    pub refunded: i128,
+    /// Credits fined from agent wallets into the treasury (`fine` entries).
+    pub fined: i128,
+    /// Metered model spend (`spend` entries). Real money, in credits.
+    pub spent: i128,
+    /// The size of every entry kind posted in the bucket, zero for kinds that did not
+    /// occur; `clawback`, `fee`, `budget_move` and `transfer` appear here only.
+    pub by_kind: BTreeMap<&'static str, i128>,
+    /// The plaza's budget (its `town_budget` account) at the bucket's end.
+    pub plaza_budget_end: i128,
+    /// The credits in play at the bucket's end: task escrows plus agent wallets.
+    pub circulating_end: i128,
+    /// The treasury's balance (collected fines and fees) at the bucket's end.
+    pub treasury_end: i128,
+}
+
+/// The treasury over `[from_ms, to_ms)` (see [`Treasury::series`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TreasurySeries {
+    /// The range's start, in milliseconds since the Unix epoch.
+    pub from_ms: u64,
+    /// The range's end, exclusive.
+    pub to_ms: u64,
+    /// The bucket width in milliseconds.
+    pub bucket_ms: u64,
+    /// Every bucket in the range, oldest first.
+    pub points: Vec<SeriesPoint>,
+}
+
+/// One agent wallet as the top-wallets query reports it (see [`Treasury::top_wallets`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WalletRank {
+    /// The agent's cid.
+    pub cid: u64,
+    /// The wallet's balance.
+    pub balance: i128,
+    /// Credits the wallet has earned from task payments, over the journal's life.
+    pub earned: i128,
+    /// Credits debited from the wallet over the journal's life (transfers out, fines, fees, clawbacks).
+    pub spent: i128,
 }
 
 #[cfg(test)]
@@ -2887,5 +3174,244 @@ mod economy_tests {
         assert_eq!(treasury.wallet(3), 0);
         assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET) - 200);
         assert!(treasury.verify_journal().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+
+    /// An empty journal: `new` would post the plaza's starting mint as entry 1 at
+    /// the current time, which the ids and dates these tests set do not expect.
+    fn treasury() -> Treasury {
+        Treasury::empty(EventBus::new())
+    }
+
+    fn query(limit: usize) -> JournalQuery {
+        JournalQuery { before: None, limit, kind: None, wallet: None, task: None }
+    }
+
+    fn ids(page: &JournalPage) -> Vec<u64> {
+        page.entries.iter().map(|entry| entry.id).collect()
+    }
+
+    /// Seven entries: the plaza's mint (1), funds for t1, t2 and t3 (2, 3, 5), a
+    /// spend on t1 (4), a second plaza mint (6) and a spend on t2 (7).
+    fn seven(treasury: &Treasury) {
+        treasury.mint_plaza_budget(100).expect("mint");
+        treasury.fund_task("t1", 5).expect("fund t1");
+        treasury.fund_task("t2", 5).expect("fund t2");
+        treasury.charge_spend(Some("t1"), 1, "model").expect("spend t1");
+        treasury.fund_task("t3", 5).expect("fund t3");
+        treasury.mint_plaza_budget(3).expect("mint");
+        treasury.charge_spend(Some("t2"), 2, "model").expect("spend t2");
+    }
+
+    /// Wallets: the plaza's mint (1), t1 funded 200 and spent 100 (so up to 20 can
+    /// be paid), cid 1 paid 10 (4) and cid 2 paid 5 (5), cid 1 sends 4 to cid 3 (6),
+    /// and cid 2 is fined 1 (7).
+    fn wallets(treasury: &Treasury) {
+        treasury.mint_plaza_budget(200).expect("mint");
+        treasury.fund_task("t1", 200).expect("fund");
+        treasury.charge_spend(Some("t1"), 100, "model").expect("spend");
+        treasury.pay_agent("t1", 1, 10).expect("pay cid 1");
+        treasury.pay_agent("t1", 2, 5).expect("pay cid 2");
+        treasury.transfer(1, 3, 4, "tip").expect("transfer");
+        treasury.fine(2, 1, "late").expect("fine");
+    }
+
+    /// The journal with its entries dated: the plaza's mint at 9 000 (before the
+    /// ranges the tests use), a fund of 40 at 10 500, a spend of 10 at 10 600, a
+    /// payment of 2 to cid 2 at 12 100, a refund of 28 at 13 200 and a fine of 1
+    /// on cid 2 at 13 500.
+    fn dated(treasury: &Treasury) {
+        treasury.mint_plaza_budget(100).expect("mint");
+        treasury.fund_task("t1", 40).expect("fund");
+        treasury.charge_spend(Some("t1"), 10, "model").expect("spend");
+        treasury.pay_agent("t1", 2, 2).expect("pay");
+        treasury.refund_task_to_budget("t1").expect("refund");
+        treasury.fine(2, 1, "late").expect("fine");
+        let times = [9_000, 10_500, 10_600, 12_100, 13_200, 13_500];
+        let mut inner = treasury.lock();
+        for (entry, at) in inner.entries.iter_mut().zip(times) {
+            entry.created_at = at;
+        }
+    }
+
+    #[test]
+    fn pages_are_disjoint_consecutive_and_newest_first() {
+        let treasury = treasury();
+        seven(&treasury);
+        let first = treasury.journal_page(&query(3));
+        assert_eq!(ids(&first), vec![7, 6, 5]);
+        assert_eq!(first.total, 7);
+        assert_eq!(first.next_before, Some(5));
+        assert_eq!(first.entries[0].kind, "spend");
+        assert_eq!(first.entries[0].postings.len(), 2);
+
+        let second = treasury.journal_page(&JournalQuery { before: first.next_before, ..query(3) });
+        assert_eq!(ids(&second), vec![4, 3, 2]);
+        assert_eq!(second.next_before, Some(2));
+
+        let last = treasury.journal_page(&JournalQuery { before: second.next_before, ..query(3) });
+        assert_eq!(ids(&last), vec![1]);
+        assert_eq!(last.next_before, None);
+        assert_eq!(last.total, 7);
+
+        // A page that fits holds everything, with no cursor.
+        let whole = treasury.journal_page(&query(JOURNAL_LIMIT));
+        assert_eq!(ids(&whole), vec![7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(whole.next_before, None);
+        // The limit clamps to 1..=JOURNAL_LIMIT.
+        assert_eq!(ids(&treasury.journal_page(&query(0))), vec![7]);
+        assert_eq!(treasury.journal_page(&query(10_000)).entries.len(), 7);
+        // Each entry reads exactly as the journal endpoint reads it, in reverse order.
+        let chronological = serde_json::to_value(treasury.journal(JOURNAL_LIMIT).entries).expect("json");
+        let newest_first = serde_json::to_value(whole.entries).expect("json");
+        assert_eq!(
+            newest_first,
+            serde_json::Value::Array(chronological.as_array().expect("array").iter().rev().cloned().collect())
+        );
+    }
+
+    #[test]
+    fn kind_and_task_filters_narrow_pages_and_total() {
+        let treasury = treasury();
+        seven(&treasury);
+        let subcontracts = treasury.journal_page(&JournalQuery { kind: Some("subcontract".into()), ..query(2) });
+        assert_eq!(ids(&subcontracts), vec![5, 3]);
+        assert_eq!(subcontracts.total, 3);
+        assert_eq!(subcontracts.next_before, Some(3));
+        let rest = treasury.journal_page(&JournalQuery {
+            kind: Some("subcontract".into()),
+            before: subcontracts.next_before,
+            ..query(2)
+        });
+        assert_eq!(ids(&rest), vec![2]);
+        assert_eq!(rest.total, 3);
+        assert_eq!(rest.next_before, None);
+
+        let task = treasury.journal_page(&JournalQuery { task: Some("t1".into()), ..query(JOURNAL_LIMIT) });
+        assert_eq!(ids(&task), vec![4, 2]);
+        assert_eq!(task.total, 2);
+
+        let both = treasury.journal_page(&JournalQuery {
+            kind: Some("spend".into()),
+            task: Some("t2".into()),
+            ..query(JOURNAL_LIMIT)
+        });
+        assert_eq!(ids(&both), vec![7]);
+
+        // A kind no entry has, or a task with no entries, matches nothing.
+        let fees = treasury.journal_page(&JournalQuery { kind: Some("fee".into()), ..query(JOURNAL_LIMIT) });
+        assert_eq!((fees.total, fees.entries.len(), fees.next_before), (0, 0, None));
+        let nobody = treasury.journal_page(&JournalQuery { task: Some("nobody".into()), ..query(JOURNAL_LIMIT) });
+        assert_eq!(nobody.total, 0);
+    }
+
+    #[test]
+    fn the_wallet_filter_matches_postings_to_or_from_the_wallet() {
+        let treasury = treasury();
+        wallets(&treasury);
+        let with_wallet = |wallet: &str| JournalQuery { wallet: Some(wallet.into()), ..query(JOURNAL_LIMIT) };
+        // Cid 1: its payment (4) and its transfer out (6).
+        assert_eq!(ids(&treasury.journal_page(&with_wallet("1"))), vec![6, 4]);
+        // Cid 2: its payment (5) and its fine (7).
+        assert_eq!(ids(&treasury.journal_page(&with_wallet("2"))), vec![7, 5]);
+        // Cid 3 is only the receiver of the transfer.
+        assert_eq!(ids(&treasury.journal_page(&with_wallet("3"))), vec![6]);
+        // No wallet, or a value that is not a cid, matches nothing.
+        assert_eq!(treasury.journal_page(&with_wallet("9")).total, 0);
+        assert_eq!(treasury.journal_page(&with_wallet("one")).total, 0);
+        let payments = treasury.journal_page(&JournalQuery {
+            wallet: Some("1".into()),
+            kind: Some("payment".into()),
+            ..query(JOURNAL_LIMIT)
+        });
+        assert_eq!(ids(&payments), vec![4]);
+    }
+
+    #[test]
+    fn top_wallets_ranks_by_balance_with_earned_and_spent() {
+        let treasury = treasury();
+        wallets(&treasury);
+        let top = treasury.top_wallets(2);
+        assert_eq!(
+            top,
+            vec![
+                WalletRank { cid: 1, balance: 6, earned: 10, spent: 4 },
+                WalletRank { cid: 2, balance: 4, earned: 5, spent: 1 },
+            ]
+        );
+        // Ties break by cid, and a wallet that has only received is ranked too.
+        let all = treasury.top_wallets(10);
+        assert_eq!(all.iter().map(|rank| rank.cid).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(all[2], WalletRank { cid: 3, balance: 4, earned: 0, spent: 0 });
+    }
+
+    #[test]
+    fn series_buckets_every_bucket_and_carries_the_balances() {
+        let treasury = treasury();
+        dated(&treasury);
+        let series = treasury.series(10_000, 14_000, 1_000).expect("a series");
+        let spans: Vec<(u64, u64)> = series.points.iter().map(|point| (point.at_ms, point.end_ms)).collect();
+        assert_eq!(spans, vec![(10_000, 11_000), (11_000, 12_000), (12_000, 13_000), (13_000, 14_000)]);
+
+        // The fund and the spend.
+        let first = &series.points[0];
+        assert_eq!((first.entries, first.escrowed, first.spent), (2, 40, 10));
+        assert_eq!((first.plaza_budget_end, first.circulating_end, first.treasury_end), (60, 30, 0));
+        assert_eq!(first.by_kind["subcontract"], 40);
+        assert_eq!(first.by_kind["fine"], 0);
+        assert_eq!(first.by_kind.len(), EntryKind::ALL.len());
+
+        // An empty bucket, its balances carried from the one before.
+        let empty = &series.points[1];
+        assert_eq!((empty.entries, empty.spent, empty.escrowed, empty.paid), (0, 0, 0, 0));
+        assert_eq!((empty.plaza_budget_end, empty.circulating_end), (60, 30));
+
+        // The payment.
+        let paid = &series.points[2];
+        assert_eq!((paid.entries, paid.paid), (1, 2));
+        assert_eq!((paid.plaza_budget_end, paid.circulating_end), (60, 30));
+
+        // The refund and the fine.
+        let last = &series.points[3];
+        assert_eq!((last.entries, last.refunded, last.fined), (2, 28, 1));
+        assert_eq!((last.plaza_budget_end, last.circulating_end, last.treasury_end), (88, 1, 1));
+        // The last bucket's balances are the live ones, since every entry is in the range.
+        assert_eq!(last.plaza_budget_end, treasury.plaza_budget_balance());
+        assert_eq!(last.circulating_end, treasury.wallet(2) + treasury.escrow_balance("t1"));
+    }
+
+    #[test]
+    fn series_clips_the_ends_and_counts_what_came_before_the_range() {
+        let treasury = treasury();
+        dated(&treasury);
+        // Buckets [10 500, 11 000) and [11 000, 12 000): the first starts at `from`,
+        // so the fund at 10 500 counts, and the mint at 9 000 is in the opening balance.
+        let series = treasury.series(10_500, 12_000, 1_000).expect("a series");
+        let spans: Vec<(u64, u64)> = series.points.iter().map(|point| (point.at_ms, point.end_ms)).collect();
+        assert_eq!(spans, vec![(10_500, 11_000), (11_000, 12_000)]);
+        assert_eq!(series.points[0].escrowed, 40);
+        assert_eq!(series.points[0].spent, 10);
+        assert_eq!(series.points[0].plaza_budget_end, 60);
+        assert_eq!(series.points[1].circulating_end, 30);
+        // The payment (12 100) is past `to`, so it is in no bucket.
+        assert_eq!(series.points.iter().map(|point| point.paid).sum::<i128>(), 0);
+    }
+
+    #[test]
+    fn series_refuses_empty_ranges_zero_buckets_and_too_many_points() {
+        let treasury = treasury();
+        assert!(treasury.series(5, 5, 1).is_err());
+        assert!(treasury.series(6, 5, 1).is_err());
+        assert!(treasury.series(0, 10, 0).is_err());
+        assert!(treasury.series(0, 2_000, 1).is_ok());
+        assert!(treasury.series(0, 2_001, 1).is_err());
+        // An empty journal reads as zeros.
+        let empty = treasury.series(0, 3, 1).expect("a series");
+        assert_eq!(empty.points.len(), 3);
+        assert!(empty.points.iter().all(|point| point.entries == 0 && point.plaza_budget_end == 0));
     }
 }
