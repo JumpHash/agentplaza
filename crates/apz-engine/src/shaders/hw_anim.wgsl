@@ -47,6 +47,8 @@ struct Globals {
     point_color: array<vec4<f32>, 4>,
     // x: point lights; y: shadow texel; z: animation clock (s, wrapped); w: unused.
     counts: vec4<f32>,
+    // The fans' angles by fleet machine, 4 per vec4 (render.rs `Globals`; the floor does not read them).
+    machine_angle: array<vec4<f32>, 32>,
 }
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -185,6 +187,7 @@ struct SpinIn {
     @location(2) color: vec4<f32>,
     @location(3) pivot_phase: vec4<f32>,  // xyz pivot (the part's origin), w phase (radians at time 0)
     @location(4) axis_rps: vec4<f32>,     // xyz unit axis, w revolutions per second
+    @location(5) machine: f32,            // the fleet machine whose fan angle it turns by, or -1 for its own rate
 }
 
 struct Pose {
@@ -192,8 +195,15 @@ struct Pose {
     normal: vec3<f32>,
 }
 
+// A fan's angle: its fleet machine's entry in the table (clamped to the table).
+fn fan_angle(machine: f32) -> f32 {
+    let k = u32(clamp(machine, 0.0, 127.0));
+    return g.machine_angle[k / 4u][k % 4u];
+}
+
 fn spin_pose(v: SpinIn) -> Pose {
-    let angle = v.pivot_phase.w + TAU * v.axis_rps.w * g.counts.z;
+    let own = v.pivot_phase.w + TAU * v.axis_rps.w * g.counts.z;
+    let angle = select(own, fan_angle(v.machine), v.machine >= 0.0);
     let k = v.axis_rps.xyz;
     var p: Pose;
     p.world = v.pivot_phase.xyz + rotate_about(k, angle, v.pos - v.pivot_phase.xyz);

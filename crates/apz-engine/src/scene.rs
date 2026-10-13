@@ -398,7 +398,9 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NodeAnim {
     /// Turns about `axis` through `pivot` at `rps` revolutions per second, from `phase` radians at time 0.
-    Spin { pivot: Vec3, axis: Vec3, rps: f32, phase: f32 },
+    /// With `machine` set (a fan of fleet machine `machine`), its angle is that machine's entry in the fleet's
+    /// fan-angle table instead, and `rps` and `phase` are unused.
+    Spin { pivot: Vec3, axis: Vec3, rps: f32, phase: f32, machine: Option<usize> },
     /// Blinks `rate` times a second (period 1 / rate): `hi` for the first half of each period, shifted by
     /// `phase` seconds, and `lo` for the second half.
     Blink { rate: f32, phase: f32, lo: f32, hi: f32 },
@@ -824,7 +826,7 @@ pub struct Draw {
 /// Whether the static bake takes the GPU-animated nodes (fan spins, LED blinks) out of the per-frame
 /// draws. Off until the render pass draws [`Baked::animated`]: while off, [`bake`] is unchanged and such
 /// nodes stay dynamic.
-pub const GPU_HW_ANIM: bool = false;
+pub const GPU_HW_ANIM: bool = true;
 
 /// The kind of a GPU animation batch: the shader that animates it (`vs_spin` or `vs_blink`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -844,6 +846,8 @@ pub struct AnimVertex {
     pub color: [f32; 4],
     pub params: [f32; 4],
     pub axis: [f32; 4],
+    /// The fleet machine whose fan-angle table entry a fan turns by, or -1 (a spin's own angle, or a blink).
+    pub machine: f32,
 }
 
 /// Animated parts merged into one draw of one kind (`draw.model` is identity; `vertices` line up with
@@ -1303,16 +1307,16 @@ pub fn bake_split(root: &Obj, gpu_anim: bool) -> Baked {
 
 /// The shader parameters of an animation for a part whose world matrix is `model`: the kind, then
 /// `params` and `axis` (see [`AnimVertex`]). A spin's pivot and axis move into the batch frame.
-fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4]) {
+fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4], f32) {
     match *anim {
-        NodeAnim::Spin { pivot, axis, rps, phase } => {
+        NodeAnim::Spin { pivot, axis, rps, phase, machine } => {
             let (p, k) = (model.transform_point3(pivot), model.transform_vector3(axis).normalize_or_zero());
-            (AnimKind::Spin, [p.x, p.y, p.z, phase], [k.x, k.y, k.z, rps])
+            (AnimKind::Spin, [p.x, p.y, p.z, phase], [k.x, k.y, k.z, rps], machine.map_or(-1.0, |m| m as f32))
         }
         NodeAnim::Blink { rate, phase, lo, hi } => {
             let period = if rate > 0.0 { 1.0 / rate } else { 1.0 };
             let off = if hi != 0.0 { lo / hi } else { 0.0 };
-            (AnimKind::Blink, [period, phase, hi, off], [0.0; 4])
+            (AnimKind::Blink, [period, phase, hi, off], [0.0; 4], -1.0)
         }
     }
 }
@@ -1321,11 +1325,11 @@ fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4]) {
 /// each vertex carrying its part's animation parameters.
 fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
     // Per part: its geometry, world matrix, tint, and animation parameters.
-    type Part = (Geo, Mat4, Option<[f32; 3]>, [f32; 4], [f32; 4]);
+    type Part = (Geo, Mat4, Option<[f32; 3]>, [f32; 4], [f32; 4], f32);
     let mut groups: Vec<(Draw, AnimKind, Vec<Part>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for AnimDraw { draw: d, anim } in items {
-        let (kind, params, axis) = anim_params(&anim, d.model);
+        let (kind, params, axis, machine) = anim_params(&anim, d.model);
         let tag = if kind == AnimKind::Spin { "s" } else { "b" };
         let (key, tint) = match d.kind {
             DrawKind::Outline => (format!("o|{tag}|{}|{}|{}", d.render_order, d.lod, d.fade), None),
@@ -1343,7 +1347,7 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
             ),
             _ => (format!("m|{tag}|{}|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade), None),
         };
-        let part = (Arc::clone(&d.geo), d.model, tint, params, axis);
+        let part = (Arc::clone(&d.geo), d.model, tint, params, axis, machine);
         match index.get(&key) {
             Some(&at) => groups[at].2.push(part),
             None => {
@@ -1370,6 +1374,7 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
                         color: geo.colors.get(i).map_or([1.0; 4], |c| [c[0], c[1], c[2], 1.0]),
                         params: p.3,
                         axis: p.4,
+                        machine: p.5,
                     });
                 }
             }
@@ -1608,7 +1613,7 @@ mod tests {
             let fan = Obj::mesh(&geo, &toon);
             fan.set_position(2.0, 0.0, 0.0)
                 .set_dynamic(!gpu)
-                .set_anim(NodeAnim::Spin { pivot: Vec3::ZERO, axis: Vec3::Y, rps: 2.0, phase: 0.0 });
+                .set_anim(NodeAnim::Spin { pivot: Vec3::ZERO, axis: Vec3::Y, rps: 2.0, phase: 0.0, machine: None });
             root.add(&fan);
             let led = Obj::mesh(&geo, &basic);
             led.set_dynamic(!gpu).set_anim(NodeAnim::Blink { rate: 1.0, phase: 0.0, lo: 0.1, hi: 1.0 });

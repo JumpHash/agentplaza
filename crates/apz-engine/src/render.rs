@@ -299,6 +299,9 @@ struct Row {
     robot: [[f32; 4]; 3],
 }
 
+/// The fleet's fan-angle table: 4 angles per vec4 (`fleet::MACHINE_SLOTS` machines).
+const MACHINE_VEC4: usize = crate::fleet::MACHINE_SLOTS / 4;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct Globals {
@@ -320,6 +323,8 @@ struct Globals {
     point_pos: [[f32; 4]; 4],
     point_color: [[f32; 4]; 4],
     counts: [f32; 4],
+    /// The fans' angles by fleet machine (`fleet::FleetInstances::machine_angles`), read by hw_anim.wgsl only.
+    machine_angle: [[f32; 4]; MACHINE_VEC4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -591,7 +596,7 @@ struct AnimPipelines {
     blink_outline: wgpu::RenderPipeline,
 }
 
-/// One animated batch on the GPU: its `AnimVertex` stream (18 floats each), its indices, its kind, whether it is an
+/// One animated batch on the GPU: its `AnimVertex` stream (19 floats each), its indices, its kind, whether it is an
 /// ink hull, and whether it casts a shadow.
 struct GpuAnimBatch {
     kind: super::scene::AnimKind,
@@ -609,11 +614,22 @@ impl Drop for GpuAnimBatch {
     }
 }
 
-/// The bytes of one animated vertex: position, normal, colour, params and axis, 18 floats.
-const ANIM_STRIDE: u64 = 18 * 4;
+/// The fleet's fan-angle table as the Globals block holds it (`MACHINE_VEC4` vec4s, zero past the fleet).
+fn machine_angles(fleet: Option<&crate::fleet::FleetInstances>) -> [[f32; 4]; MACHINE_VEC4] {
+    let mut out = [[0.0; 4]; MACHINE_VEC4];
+    if let Some(f) = fleet {
+        for (i, a) in f.machine_angles.iter().enumerate().take(MACHINE_VEC4 * 4) {
+            out[i / 4][i % 4] = *a;
+        }
+    }
+    out
+}
+
+/// The bytes of one animated vertex: position, normal, colour, params, axis and machine, 19 floats.
+const ANIM_STRIDE: u64 = 19 * 4;
 
 fn anim_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
+    const ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32];
     wgpu::VertexBufferLayout { array_stride: ANIM_STRIDE, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
 }
 
@@ -703,13 +719,14 @@ impl AnimGpu {
 /// An animated batch's buffers: its vertices as flat `AnimVertex` floats, and its indices (identity when the
 /// geometry has none).
 fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::AnimBatch) -> GpuAnimBatch {
-    let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 18);
+    let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 19);
     for v in &b.vertices {
         flat.extend(v.pos);
         flat.extend(v.normal);
         flat.extend(v.color);
         flat.extend(v.params);
         flat.extend(v.axis);
+        flat.push(v.machine);
     }
     let indices: Vec<u32> = if b.draw.geo.indices.is_empty() { (0..b.vertices.len() as u32).collect() } else { b.draw.geo.indices.clone() };
     let vertex_bytes: &[u8] = bytemuck::cast_slice(&flat);
@@ -1751,6 +1768,7 @@ impl Primitive {
             point_pos,
             point_color,
             counts: [f.lights.len().min(4) as f32, 1.0 / SHADOW_SIZE as f32, f.time % WRAP_PERIOD, 0.0],
+            machine_angle: machine_angles(f.animated.as_deref()),
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         p.fleet.prepare(device, queue, p.format, samples, proj * view, f.time, f.animated.as_ref());
@@ -2098,6 +2116,8 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
             for _ in 0..p.fleet.draw(&mut pass) {
                 p.count(PASS_MESH);
             }
+            // The fleet's instanced draws leave their own group at 0; the animated hardware reads the floor's globals.
+            pass.set_bind_group(0, &p.globals_group, &[]);
             for _ in 0..p.anim.draw(&mut pass) {
                 p.count(PASS_MESH);
             }
@@ -2137,7 +2157,7 @@ mod tests {
     #[test]
     fn globals_match_the_shaders_layout() {
         // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4, all 16-byte aligned.
-        assert_eq!(std::mem::size_of::<Globals>(), 4 * 64 + 11 * 16 + 8 * 16 + 16);
+        assert_eq!(std::mem::size_of::<Globals>(), 4 * 64 + 11 * 16 + 8 * 16 + 16 + MACHINE_VEC4 * 16);
         // 112 bytes of material and transform, plus the robot hues (shell, shell2, panel) as three vec4s.
         assert_eq!(std::mem::size_of::<Row>(), 112 + 3 * 16);
     }

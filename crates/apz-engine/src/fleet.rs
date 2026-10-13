@@ -583,12 +583,17 @@ pub struct RingInstance {
     pub color: [f32; 4],
 }
 
+/// The fleet's fan-angle table: one entry per machine (the GPU's Globals hold this many).
+pub const MACHINE_SLOTS: usize = 128;
+
 /// The animated draws' instance data: `PACKET_SLOTS` slots each way on every cable (the live ones
 /// spread evenly in phase), then one ring per machine.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FleetInstances {
     pub packets: Vec<PacketInstance>,
     pub rings: Vec<RingInstance>,
+    /// Each machine's fan angle by its fleet index (`Built::set_machine`), `MACHINE_SLOTS` long.
+    pub machine_angles: Vec<f32>,
 }
 
 /// The packet slots alive on a cable carrying `rate` packets a second. A packet is in flight for
@@ -703,7 +708,10 @@ impl FleetScene {
             .collect();
         let (radius, angles) = ring_layout(&radii);
 
-        if let Some((h, (model, built))) = hub_prepared {
+        if let Some((h, (model, mut built))) = hub_prepared {
+            if self.machines.len() < MACHINE_SLOTS {
+                built.set_machine(self.machines.len());
+            }
             let node = place_machine(
                 &self.group,
                 &self.palette,
@@ -715,8 +723,11 @@ impl FleetScene {
             );
             self.machines.insert(h.id.clone(), node);
         }
-        for ((m, (model, built)), angle) in node_prepared.into_iter().zip(angles) {
+        for ((m, (model, mut built)), angle) in node_prepared.into_iter().zip(angles) {
             let base = ring_point(radius, angle);
+            if self.machines.len() < MACHINE_SLOTS {
+                built.set_machine(self.machines.len());
+            }
             let node = place_machine(
                 &self.group,
                 &self.palette,
@@ -817,7 +828,7 @@ impl FleetScene {
     /// The animated draws' instance data for the scene as `fleet` describes it: each cable's slots both
     /// ways (`live_slots` of them alive), then each machine's status ring. Rebuilt when this changes.
     pub fn instances(&self, fleet: &FleetResponse) -> FleetInstances {
-        let mut out = FleetInstances::default();
+        let mut out = FleetInstances { machine_angles: vec![0.0; MACHINE_SLOTS], ..Default::default() };
         for link in &self.links {
             let (online, rate) = link_state(fleet, &link.a, &link.b);
             let live = if online { live_slots(rate) } else { 0 };
@@ -829,6 +840,9 @@ impl FleetScene {
             out.packets.extend(direction_slots(from, to, live, true, rgba(named("led-info"))));
         }
         for m in self.machines.values() {
+            if let Some(i) = m.built.machine().filter(|&i| i < MACHINE_SLOTS) {
+                out.machine_angles[i] = m.built.fan_angle();
+            }
             let online = m.status == Status::Online;
             out.rings.push(RingInstance {
                 centre: [m.base[0], 0.05, m.base[2], m.footprint * 1.3],
@@ -948,9 +962,9 @@ mod tests {
 
     /// The fleet's draw items on the 15-machine feed, measured (its statics merged by colour, instances
     /// unfolded into the merge: 29 static; the merged meshes of identical rigs instanced, one draw per
-    /// content; its cables, status rings and animated hardware unmerged, 422 per frame; its packets
+    /// content; its cables and status rings unmerged, 297 per frame, its fans and LEDs in 3 GPU batches; its packets
     /// instanced, so they hold no objects). A ratchet: it must not grow.
-    const FLEET_DRAW_ITEMS: usize = 451;
+    const FLEET_DRAW_ITEMS: usize = 326;
 
     fn fleet_draw_items() -> (usize, usize) {
         let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
@@ -973,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the Machines view budget is 300 draw items; the fleet draws 451 (see FLEET_DRAW_ITEMS): 29 static, 422 per-frame"]
+    #[ignore = "the Machines view budget is 300 draw items; the fleet draws 326 (see FLEET_DRAW_ITEMS): 29 static, 297 per-frame"]
     fn the_fifteen_machine_fleet_draws_within_budget() {
         let (statics, dynamic) = fleet_draw_items();
         assert!(statics + dynamic <= 300, "the Machines view draws {} items, over the 300 budget", statics + dynamic);

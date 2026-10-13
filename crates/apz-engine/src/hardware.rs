@@ -830,6 +830,12 @@ pub fn spin_point_shader(pivot: Vec3, axis: Vec3, rps: f32, phase: f32, p: Vec3,
     pivot + Quat::from_axis_angle(axis, angle) * (p - pivot)
 }
 
+/// `vs_spin`'s pose for a fan: the rest point turned about its pivot on the batch-frame axis by the fan's angle
+/// from the fleet's table (`Built::fan_angle`).
+pub fn fan_point_shader(pivot: Vec3, axis: Vec3, angle: f32, p: Vec3) -> Vec3 {
+    pivot + Quat::from_axis_angle(axis, angle) * (p - pivot)
+}
+
 /// The host's clock wrap in seconds (`WRAP_PERIOD` in hw_anim.wgsl): a spin's rate is a multiple of 1 / this.
 const HW_WRAP_PERIOD: f32 = 3600.0;
 
@@ -842,7 +848,7 @@ fn gpu_anim_of(tag: Option<Tag>, spin: Option<(Vec3, f32)>, blink: Option<(f32, 
         return None;
     }
     let quantise = |rps: f32| (rps * HW_WRAP_PERIOD).round() / HW_WRAP_PERIOD;
-    let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis, rps: quantise(rps), phase: 0.0 };
+    let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis, rps: quantise(rps), phase: 0.0, machine: None };
     match (tag, spin, blink) {
         (Some(Tag::Fan), spin, _) => Some(spin_of(spin.map_or(Vec3::Y, |s| s.0), 2.0)),
         (_, Some((axis, rps)), _) if rps != 0.0 => Some(spin_of(axis, rps)),
@@ -897,6 +903,8 @@ struct Live {
     /// Axis, angle in radians at full open, and whether it follows the opening.
     swing: Option<(Vec3, f32, bool)>,
     angle: f32,
+    /// Whether `gpu_anim_of` gave this part a GPU animation (a fan's spin then takes its machine's angle).
+    gpu_anim: bool,
 }
 
 /// Machine state, as the Machines view reads it.
@@ -939,6 +947,10 @@ pub struct Built {
     fade_nodes: Vec<Obj>,
     live: Vec<Live>,
     t: f32,
+    /// The fleet index of this machine's fan-angle table entry (`set_machine`), if it has one.
+    machine: Option<usize>,
+    /// This machine's fan angle (radians): `update` turns it as the fans turn, and the GPU reads it.
+    fan_angle: f32,
 }
 
 struct Builder {
@@ -1058,6 +1070,7 @@ impl Builder {
                 slide: None,
                 swing: None,
                 angle: 0.0,
+                gpu_anim: false,
             });
         }
         obj
@@ -1201,7 +1214,8 @@ impl Builder {
                 anim.is_some_and(|a| a.pulse.is_some() || a.slide.is_some() || a.swing.is_some()),
             );
             // Its pose or colour changes every frame, unless the GPU animates it (scene::GPU_HW_ANIM).
-            obj.set_dynamic(!(scene::GPU_HW_ANIM && gpu.is_some()));
+            let on_gpu = gpu.is_some();
+            obj.set_dynamic(!(scene::GPU_HW_ANIM && on_gpu));
             if let Some(a) = gpu {
                 obj.set_anim(a);
             }
@@ -1221,6 +1235,7 @@ impl Builder {
                     .and_then(|a| a.swing.as_ref())
                     .map(|s| (axis_of(&s.axis), s.to.to_radians(), s.on == "enter")),
                 angle: 0.0,
+                gpu_anim: on_gpu,
             });
         }
         (self.lod, self.fade, self.dynamic) = (saved_lod, saved_fade, saved_dynamic);
@@ -1295,7 +1310,7 @@ pub fn build_tinted(model: &Model, params: &Params, tints: &[Option<u32>]) -> Bu
         })
         .collect();
     let fade_nodes = b.fades.iter().map(|(_, node)| node.clone()).collect();
-    Built { root, parts: b.parts, fades, fade_nodes, live: b.live, t: 0.0 }
+    Built { root, parts: b.parts, fades, fade_nodes, live: b.live, t: 0.0, machine: None, fan_angle: 0.0 }
 }
 
 /// The model with its GPU cards retinted: card i (the i-th top-level card part, in model order) takes an inline material of
@@ -1462,6 +1477,25 @@ impl Built {
     }
 
     /// The live nodes this model animates or tags: each one is a draw the CPU moves every frame.
+    /// The fleet index of this machine's fan-angle table entry (see `set_machine`).
+    pub fn machine(&self) -> Option<usize> {
+        self.machine
+    }
+
+    /// This machine's fan angle in radians: `update` advances it as its fans turn, and the GPU turns them by it.
+    pub fn fan_angle(&self) -> f32 {
+        self.fan_angle
+    }
+
+    /// Gives this machine its entry `index` in the fleet's fan-angle table: its GPU-animated fans turn by that
+    /// entry from now on, not by their own rate.
+    pub fn set_machine(&mut self, index: usize) {
+        self.machine = Some(index);
+        for l in self.live.iter().filter(|l| l.tag == Some(Tag::Fan) && l.gpu_anim) {
+            l.obj.set_anim(scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis: l.spin_axis, rps: 0.0, phase: 0.0, machine: Some(index) });
+        }
+    }
+
     pub fn animated_parts(&self) -> usize {
         self.live.len()
     }
@@ -1482,6 +1516,11 @@ impl Built {
         let led_ok = named("led-ok", 0x4fa36a);
         let led_off = named("led-off", 0x4a4f5c);
 
+        // The fans turn together at one rate (the `rps` of each fan below), so one angle serves them all.
+        let fan_rps = if online { 2.0 * (1.0 + 2.0 * activity) } else { 0.0 };
+        if fan_rps != 0.0 {
+            self.fan_angle = spin_step(self.fan_angle, fan_rps, dt);
+        }
         for l in self.live.iter_mut() {
             if let Some((to, on_enter)) = l.slide {
                 let k = if on_enter { open } else { 0.0 };
@@ -1713,6 +1752,39 @@ mod tests {
             let shader = super::spin_point_shader(at, axis_b, rps, 0.0, rest, t);
             assert!(cpu.abs_diff_eq(shader, 1e-3), "t = {t}: cpu {cpu} shader {shader}");
         }
+    }
+
+    /// `vs_spin`'s fan angle (the machine's table entry, `Built::fan_angle`) against the CPU pose of the same fan
+    /// through an activity change: idle, busy, then offline, where the fan holds still.
+    #[test]
+    fn the_fan_angle_table_matches_the_cpu_fan() {
+        use glam::{Quat, Vec3};
+        let m: Model = parse(SAMPLE).unwrap();
+        let mut built = build(&m, &Params::default());
+        built.set_machine(3);
+        assert_eq!(built.machine(), Some(3));
+        let fan = built.live.iter().position(|l| l.tag == Some(Tag::Fan)).expect("the sample has a fan");
+        let (at, rest_q, axis) = (built.live[fan].rest, built.live[fan].rest_q, built.live[fan].spin_axis);
+        let v = Vec3::new(0.3, 0.1, -0.4);
+        let rest = at + rest_q * v;
+        let axis_b = rest_q * axis;
+        let dt = 1.0 / 60.0;
+        let mut clock = 0.0;
+        let mut held = None;
+        for (status, activity, steps) in [(Status::Online, 0.0, 60), (Status::Online, 0.8, 300), (Status::Offline, 0.8, 120)] {
+            if status == Status::Offline {
+                held = Some(built.fan_angle());
+            }
+            let state = State { status, activity, open: 0.0 };
+            for step in 0..steps {
+                built.update(dt, clock, &state);
+                clock += dt;
+                let cpu = at + (rest_q * Quat::from_axis_angle(axis, built.live[fan].angle)) * v;
+                let shader = super::fan_point_shader(at, axis_b, built.fan_angle(), rest);
+                assert!(cpu.abs_diff_eq(shader, 1e-3), "step {step}: cpu {cpu} shader {shader}");
+            }
+        }
+        assert!((built.fan_angle() - held.unwrap()).abs() < 1e-6, "an offline fan held still");
     }
 
     /// `vs_blink`'s term (the half-period on or the 0.1 level off, shifted by the phase) against the CPU level.
