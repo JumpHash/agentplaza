@@ -29,7 +29,9 @@ export type Range = '7d' | '30d' | '90d' | 'all';
 export type FlowKey = 'minted' | 'escrowed' | 'paid' | 'refunded' | 'fined' | 'spent';
 export type Flows = Record<FlowKey | 'entries', number>;
 export interface Sort { key: string; dir: 1 | -1 }
-export interface BarLayer { key: FlowKey; label: string; color: string; values: number[] }
+export interface BarLayer { key: string; label: string; color: string; values: number[] }
+/** One stacked layer: its value per bucket. */
+export interface LayerSpec { key: string; label: string; color: string; value: (p: TreasuryPoint) => number }
 export interface BarData { labels: string[]; layers: BarLayer[] }
 type View = 'chart' | 'table';
 
@@ -69,6 +71,31 @@ const KIND_TONE: Record<string, Tone> = {
   fee: 'warn',
   subcontract: 'accent',
   budget_move: 'muted',
+};
+/** The journal's kinds in human words: the filter, the badges and the flows legend. */
+const KIND_LABEL: Record<string, string> = {
+  mint: 'Mint',
+  budget_move: 'Budget move',
+  payment: 'Payment',
+  refund: 'Refund',
+  fine: 'Fine',
+  fee: 'Fee',
+  clawback: 'Clawback',
+  spend: 'Spend',
+  subcontract: 'Subcontract',
+  transfer: 'Transfer',
+};
+const KIND_COLOR: Record<string, string> = {
+  mint: 'var(--chart-1)',
+  payment: 'var(--chart-2)',
+  fee: 'var(--chart-3)',
+  refund: 'var(--chart-4)',
+  clawback: 'var(--chart-5)',
+  spend: 'var(--chart-6)',
+  budget_move: 'var(--chart-7)',
+  subcontract: 'var(--chart-8)',
+  fine: 'var(--danger)',
+  transfer: 'var(--ink-2)',
 };
 
 // ---- Pure helpers (tested) -------------------------------------------------
@@ -115,11 +142,20 @@ export function balanceData(points: TreasuryPoint[], labelOf: (at: number) => st
   };
 }
 
-/** The flows per bucket, one layer per kind. */
-export function barData(points: TreasuryPoint[], labelOf: (at: number) => string): BarData {
+/** The six flow totals as layers (the default), or any layers the caller names. */
+const FLOW_LAYERS: LayerSpec[] = FLOWS.map((f) => ({ key: f.key, label: f.label, color: f.color, value: (p) => p[f.key] }));
+/** One layer per journal kind, read from `by_kind`: every kind the plaza moves, not just the six totals. */
+export const kindLayers = (): LayerSpec[] =>
+  KINDS.map((k) => ({ key: k, label: KIND_LABEL[k] ?? k, color: KIND_COLOR[k] ?? 'var(--ink-3)', value: (p) => p.by_kind[k] ?? 0 }));
+/** The kinds that moved in the range, in journal order. Kinds at zero in every bucket are left out. */
+export const activeKinds = (points: TreasuryPoint[]): string[] =>
+  KINDS.filter((k) => points.some((p) => (p.by_kind[k] ?? 0) > 0));
+
+/** The flows per bucket, one layer per layer spec (the six flow totals unless told otherwise). */
+export function barData(points: TreasuryPoint[], labelOf: (at: number) => string, layers: LayerSpec[] = FLOW_LAYERS): BarData {
   return {
     labels: points.map((p) => labelOf(p.at_ms)),
-    layers: FLOWS.map((f) => ({ key: f.key, label: f.label, color: f.color, values: points.map((p) => p[f.key]) })),
+    layers: layers.map((l) => ({ key: l.key, label: l.label, color: l.color, values: points.map((p) => l.value(p)) })),
   };
 }
 
@@ -198,6 +234,10 @@ function tween(step: (k: number) => void): () => void {
   return () => cancelAnimationFrame(id);
 }
 
+/** A tile's note as clean lines: each part stays whole, and lines break only between parts. */
+const note = (el: HTMLElement, parts: (string | Node)[]): void =>
+  el.replaceChildren(...parts.map((p, i) => h('span', null, p, i < parts.length - 1 ? ' ·' : '')));
+
 const tipOf = (head: string, rows: [string, string][]): HTMLElement =>
   h('div.tr-tip', null, h('b', null, head), ...rows.map(([k, v]) => h('div.tr-tip-row', null, h('span', null, k), h('span.tr-tip-v', null, v))));
 
@@ -235,11 +275,11 @@ function journalRow(e: JournalEntry, names: ReadonlyMap<number, string>, enter: 
     'div.tr-row',
     { 'data-key': `j-${e.id}` },
     h('span.tr-at', { title: new Date(e.created_at).toLocaleString('en-GB') }, ago(e.created_at)),
-    badge(e.kind, KIND_TONE[e.kind] ?? 'muted'),
+    badge(KIND_LABEL[e.kind] ?? e.kind, KIND_TONE[e.kind] ?? 'muted'),
     h('span.tr-amt', null, money(e.amount)),
     h('span.tr-move', null, `${from || '—'} → ${to || '—'}`),
     task ? h('a.tr-task', { href: href('tasks', task) }, task) : h('span.tr-task'),
-    h('span.tr-memo', null, e.memo || e.kind),
+    h('span.tr-memo', { title: e.memo || e.kind }, e.memo || e.kind),
   );
   if (enter) row.classList.add('tr-enter');
   return row;
@@ -251,7 +291,8 @@ interface BarsOptions { format: (v: number) => string; tooltip: (i: number) => N
 interface BarsHandle { update(d: BarData, hidden: ReadonlySet<string>): void; destroy(): void }
 
 function stackedBars(el: HTMLElement, opts: BarsOptions): BarsHandle {
-  const PL = 48;
+  // The left margin fits the widest y tick (set on each draw), so long figures are never clipped.
+  let PL = 48;
   const PR = 12;
   const PT = 12;
   const PB = 26;
@@ -272,9 +313,10 @@ function stackedBars(el: HTMLElement, opts: BarsOptions): BarsHandle {
     const n = data.labels.length;
     const py1 = H - PB;
     const ph = py1 - PT;
-    const pw = W - PL - PR;
     const ticks = niceScale(shownMax);
     const top = ticks[ticks.length - 1] ?? 1;
+    PL = Math.max(40, Math.max(...ticks.map((v) => opts.format(v).length)) * 7 + 14);
+    const pw = W - PL - PR;
     const slot = n ? pw / n : pw;
     const bw = Math.max(1, Math.min(30, slot * 0.68));
     const y = (v: number): number => py1 - (v / top) * ph;
@@ -395,7 +437,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const viewHost = h('div.tr-seg');
   const fineBtn = button('Fine an agent', () => openFine());
   const mintBtn = button('Mint budget', () => openMint(), { kind: 'primary' });
+  // Hidden until there is an error: an empty child of the view would still take a flex gap.
   const errBox = h('div');
+  errBox.hidden = true;
 
   // ---- tiles ----
   const tile = (label: string): Tile => {
@@ -440,32 +484,33 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     tooltip: (i) => {
       const p = pointAt(i);
       if (!p) return h('span');
-      return tipOf(labelOf(p.at_ms), FLOWS.filter((f) => !hidden.has(f.key)).map((f) => [f.label, money(p[f.key])]));
+      const kinds = activeKinds(series?.points ?? []).filter((k) => !hidden.has(k));
+      return tipOf(labelOf(p.at_ms), kinds.map((k) => [KIND_LABEL[k] ?? k, money(p.by_kind[k] ?? 0)]));
     },
   });
   const flowChartPane = h('div.tr-pane', null, flowHost);
   const flowTable = h('div.tr-tablewrap');
   const flowTablePane = h('div.tr-pane', null, flowTable);
-  const legendKeys = FLOWS.map((f) => {
+  const legend = h('div.tr-legend');
+  /** One toggle per kind that moved in the range; a hidden kind is struck through. */
+  const legendKey = (k: string): HTMLElement => {
     const sw = h('i.tr-swatch');
-    sw.style.background = f.color;
-    const b = h(
+    sw.style.background = KIND_COLOR[k] ?? 'var(--ink-3)';
+    return h(
       'button.tr-key',
       {
         type: 'button',
-        'aria-pressed': 'true',
+        'aria-pressed': String(!hidden.has(k)),
         onclick: () => {
-          if (hidden.has(f.key)) hidden.delete(f.key);
-          else hidden.add(f.key);
+          if (hidden.has(k)) hidden.delete(k);
+          else hidden.add(k);
           renderFlows();
         },
       },
       sw,
-      f.label,
+      KIND_LABEL[k] ?? k,
     );
-    return { key: f.key, el: b };
-  });
-  const legend = h('div.tr-legend', null, ...legendKeys.map((x) => x.el));
+  };
 
   const diagram = h('div.tr-flow-wrap');
   const walletsHost = h('div');
@@ -475,7 +520,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const olderBtn = button('Load older', () => void loadOlder());
   const journalFoot = h('div.tr-foot', null, countEl, olderBtn);
 
-  const kindSel = select([{ value: '', label: 'All kinds' }, ...KINDS.map((k) => ({ value: k, label: k }))], '');
+  const kindSel = select([{ value: '', label: 'All kinds' }, ...KINDS.map((k) => ({ value: k, label: KIND_LABEL[k] ?? k }))], '');
   kindSel.setAttribute('aria-label', 'Kind');
   kindSel.addEventListener('change', () => {
     filters.kind = kindSel.value;
@@ -620,20 +665,20 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const f = flowsOf(series?.points ?? []);
     const last = series?.points.at(-1);
     countTo(tiles.plaza.fig, t.plaza_budget, money);
-    tiles.plaza.sub.textContent = `≈ ${usd(creditsUsd(t.plaza_budget))} at $0.001 a credit`;
+    note(tiles.plaza.sub, [`≈ ${usd(creditsUsd(t.plaza_budget))}`, '$0.001 a credit']);
     countTo(tiles.circulating.fig, escrow + walletSum, money);
-    tiles.circulating.sub.textContent = `${money(escrow)} in escrow · ${money(walletSum)} in wallets`;
+    note(tiles.circulating.sub, [`${money(escrow)} in escrow`, `${money(walletSum)} in wallets`]);
     countTo(tiles.paid.fig, f.paid, money);
-    tiles.paid.sub.textContent = `≈ ${usd(creditsUsd(f.paid))} · ${money(f.spent)} spent`;
+    note(tiles.paid.sub, [`≈ ${usd(creditsUsd(f.paid))}`, `${money(f.spent)} spent`]);
     if (usage) {
       countTo(tiles.cost.fig, usage.totals.usd, usd);
-      tiles.cost.sub.replaceChildren(`≈ ${money(creditsOf(usage.totals.usd))} credits metered · `, h('a', { href: href('usage') }, 'see usage'));
+      note(tiles.cost.sub, [`≈ ${money(creditsOf(usage.totals.usd))} credits metered`, h('a', { href: href('usage') }, 'see usage')]);
     } else {
       tiles.cost.fig.textContent = '—';
-      tiles.cost.sub.textContent = 'usage unavailable';
+      note(tiles.cost.sub, ['usage unavailable']);
     }
     countTo(tiles.treasury.fig, last?.treasury_end ?? 0, money);
-    tiles.treasury.sub.textContent = `${money(f.fined)} fined in range`;
+    note(tiles.treasury.sub, [`${money(f.fined)} fined in range`]);
   };
 
   const renderBalances = (): void => {
@@ -659,20 +704,27 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const renderFlows = (): void => {
     const s = series;
-    if (s) flowChart.update(barData(s.points, (at) => bucketLabel(at, s.bucket_ms)), hidden);
-    for (const k of legendKeys) k.el.setAttribute('aria-pressed', String(!hidden.has(k.key)));
+    if (!s) return;
+    flowChart.update(barData(s.points, (at) => bucketLabel(at, s.bucket_ms), kindLayers()), hidden);
+    replace(legend, ...activeKinds(s.points).map(legendKey));
   };
 
   const renderFlowTable = (): void => {
     const s = series;
     if (!s) return;
-    const f = flowsOf(s.points);
+    const kinds = activeKinds(s.points);
     const cols: Col<TreasuryPoint>[] = [
       { key: 'at', label: 'Bucket', value: (p) => p.at_ms, cell: (p) => bucketLabel(p.at_ms, s.bucket_ms) },
       { key: 'entries', label: 'Entries', num: true, value: (p) => p.entries, cell: (p) => money(p.entries) },
-      ...FLOWS.map((x) => ({ key: x.key, label: x.label, num: true, value: (p: TreasuryPoint) => p[x.key], cell: (p: TreasuryPoint) => money(p[x.key]) })),
+      ...kinds.map((k) => ({
+        key: k,
+        label: KIND_LABEL[k] ?? k,
+        num: true,
+        value: (p: TreasuryPoint) => p.by_kind[k] ?? 0,
+        cell: (p: TreasuryPoint) => money(p.by_kind[k] ?? 0),
+      })),
     ];
-    const foot = ['Total', money(f.entries), ...FLOWS.map((x) => money(f[x.key]))];
+    const foot = ['Total', money(flowsOf(s.points).entries), ...kinds.map((k) => money(s.points.reduce((sum, p) => sum + (p.by_kind[k] ?? 0), 0)))];
     replace(flowTable, sortable(cols, s.points, flowSort, (next) => {
       flowSort = next;
       renderFlowTable();
@@ -834,9 +886,13 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       total = page.total;
       if (!olderLoaded) nextBefore = page.next_before;
       replace(errBox);
+      errBox.hidden = true;
       renderAll();
     } catch (err) {
-      if (alive && mine === gen) replace(errBox, h('div.tr-error', null, `Treasury unreachable: ${msg(err)}`));
+      if (alive && mine === gen) {
+        replace(errBox, h('div.tr-error', null, `Treasury unreachable: ${msg(err)}`));
+        errBox.hidden = false;
+      }
     }
   };
 
