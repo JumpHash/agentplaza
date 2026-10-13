@@ -1,10 +1,16 @@
 //! The Society screen (parity with the web console's `society` view): the agents as a graph of
 //! who knows whom, drawn on a canvas, and the selected agent's opinions in both directions.
+//!
+//! Above `GROUP_AT` agents the graph opens grouped by family: a family is a cluster node, a click
+//! pops it open into its roles (a role with one agent shows that agent), and a role pops open into
+//! its agents. The breadcrumb climbs back up, and the toggle switches between the family level and
+//! the agent level at any size.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-use iced::widget::{canvas, column, container, row, scrollable, Space};
-use iced::{mouse, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
+use iced::widget::{canvas, column, container, mouse_area, row, scrollable, Space};
+use iced::{border, mouse, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -20,7 +26,7 @@ const LH: f32 = 700.0;
 /// The least scale the graph is drawn at. Name tags are a fixed size in pixels, so the room they
 /// take is reserved in world units at this scale.
 const TAG_SCALE: f32 = 0.7;
-/// Clear space kept between two agents' footprints.
+/// Clear space kept between two nodes' footprints.
 const GAP: f32 = 10.0;
 /// Collision passes. A box too crowded to clear in this many is left with the overlap it has.
 const PASSES: usize = 400;
@@ -29,6 +35,17 @@ const LATER_STEPS: usize = 150;
 const REST: f32 = 150.0;
 const DISAGREE: f32 = 0.25;
 const NOTE_PREVIEW: usize = 220;
+/// Above this many agents the graph opens at the family level.
+const GROUP_AT: usize = 24;
+/// Name tags and cluster labels are mono text of this size, in pixels, with this padding.
+const LABEL_SIZE: f32 = 13.0;
+/// One mono character at `LABEL_SIZE`, a little generous so that no glyph is cut off.
+const LABEL_CHAR: f32 = 0.7 * LABEL_SIZE;
+const LABEL_PAD: f32 = 8.0;
+/// The pop: how long the nodes that come into view take to grow out of the ones that went, and the
+/// step between frames.
+const POP: Duration = Duration::from_millis(250);
+const FRAME: Duration = Duration::from_millis(16);
 const RED: Color = Color::from_rgb8(0xe5, 0x53, 0x3d);
 const AMBER: Color = Color::from_rgb8(0xf2, 0xb8, 0x4b);
 const GREEN: Color = Color::from_rgb8(0x3f, 0xae, 0x6a);
@@ -49,6 +66,9 @@ pub struct Agent {
     pub name: String,
     #[serde(default)]
     pub role: String,
+    /// The server's tier for the role, when it sends one; "orchestrator" is the command family.
+    #[serde(default)]
+    pub tier: String,
     #[serde(default)]
     pub reputation: f32,
     #[serde(default)]
@@ -86,16 +106,73 @@ pub struct Pt {
     pub y: f32,
 }
 
+/// What a node stands for: one agent, or a family or role cluster of agents. A role names its
+/// family too, because one role name can sit in more than one family.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Key {
+    Agent(u64),
+    Family(&'static str),
+    Role(&'static str, String),
+}
+
+/// The family a role belongs to. The orchestrator tier is the command family, and a role that no
+/// family lists is "other".
+pub fn role_family(role: &str, tier: &str) -> &'static str {
+    if tier.trim().eq_ignore_ascii_case("orchestrator") {
+        return "command";
+    }
+    match role.trim().to_ascii_lowercase().as_str() {
+        "orchestrator" | "mayor" | "mayor-office" => "command",
+        "architect" | "builder" | "qa" | "reviewer" | "release" => "build",
+        "edge-operator" | "incident" | "security-reviewer" => "operations",
+        "librarian" | "researcher" | "planner" => "knowledge",
+        "finance" | "auditor" => "money",
+        _ => "other",
+    }
+}
+
+/// A family's name on screen.
+pub fn family_label(family: &str) -> &'static str {
+    match family {
+        "command" => "Command",
+        "build" => "Build",
+        "operations" => "Operations",
+        "knowledge" => "Knowledge",
+        "money" => "Money",
+        _ => "Other",
+    }
+}
+
+fn family_of(a: &Agent) -> &'static str {
+    role_family(&a.role, &a.tier)
+}
+
+/// Whether an agent is in a node's group: the agent itself, its family, or its role.
+fn in_group(a: &Agent, key: &Key) -> bool {
+    match key {
+        Key::Agent(cid) => a.cid == *cid,
+        Key::Family(f) => family_of(a) == *f,
+        Key::Role(f, r) => family_of(a) == *f && a.role == *r,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     pub error: Option<String>,
     data: Option<Society>,
     loaded: bool,
-    /// Where each agent sits, by cid; kept across refreshes so the graph does not jump.
-    pos: HashMap<u64, Pt>,
-    selected: Option<u64>,
+    /// Where each node sits, by key; kept across refreshes so the graph does not jump.
+    pos: HashMap<Key, Pt>,
+    selected: Option<Key>,
     /// The peers whose private notes are expanded in the panel.
     open_notes: HashSet<u64>,
+    /// The family toggle; None follows the agent count.
+    group: Option<bool>,
+    /// The families and roles open, outermost first. Only used while grouped.
+    nav: Vec<Key>,
+    scene: Scene,
+    /// The pop in progress.
+    anim: Option<Anim>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +181,17 @@ pub enum Msg {
     Go(Id),
     Loaded(Result<Society, String>),
     /// Select an agent, or clear the selection with `None`.
-    Pick(Option<u64>),
+    Pick(Option<Key>),
+    /// Pop a family or a role open one level, and select it.
+    Open(Key),
+    /// Select an agent, and open the family and role it sits in.
+    Member(u64),
+    /// Go up to the first `n` levels of the path (the breadcrumb, Back).
+    Level(usize),
+    /// Switch between the family level and the agent level.
+    Group,
+    /// One frame of the pop.
+    Frame,
     /// The owner rates an agent: +1 trust more, -1 trust less.
     Rate(u64, f32),
     Rated(Result<Value, String>),
@@ -132,12 +219,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Loaded(Ok(data)) => {
             state.error = None;
             state.loaded = true;
-            layout(&data.agents, &data.bonds, &mut state.pos);
-            if state.selected.is_some_and(|cid| !data.agents.iter().any(|a| a.cid == cid)) {
+            if state.selected.as_ref().is_some_and(|key| !data.agents.iter().any(|a| in_group(a, key))) {
                 state.selected = None;
             }
             state.data = Some(data);
-            Task::none()
+            refresh(state)
         }
         Msg::Loaded(Err(e)) => {
             // Keep the last good view; the next poll tries again.
@@ -145,11 +231,51 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = Some(e);
             Task::none()
         }
-        Msg::Pick(cid) => {
-            state.selected = cid;
+        Msg::Pick(key) => {
+            state.selected = key;
             state.open_notes.clear();
             Task::none()
         }
+        Msg::Open(key) => {
+            state.nav = match &key {
+                Key::Family(f) => vec![Key::Family(*f)],
+                Key::Role(f, r) => vec![Key::Family(*f), Key::Role(*f, r.clone())],
+                Key::Agent(_) => state.nav.clone(),
+            };
+            state.selected = Some(key);
+            state.open_notes.clear();
+            refresh(state)
+        }
+        Msg::Member(cid) => {
+            let path = state
+                .data
+                .as_ref()
+                .and_then(|d| d.agents.iter().find(|a| a.cid == cid))
+                .map(|a| vec![Key::Family(family_of(a)), Key::Role(family_of(a), a.role.clone())]);
+            if let (Some(path), true) = (path, is_grouped(state)) {
+                state.nav = path;
+            }
+            state.selected = Some(Key::Agent(cid));
+            state.open_notes.clear();
+            refresh(state)
+        }
+        Msg::Level(n) => {
+            state.nav.truncate(n);
+            refresh(state)
+        }
+        Msg::Group => {
+            let on = is_grouped(state);
+            state.group = Some(!on);
+            state.nav.clear();
+            refresh(state)
+        }
+        Msg::Frame => match &state.anim {
+            Some(a) if a.at.elapsed() < POP => tick(),
+            _ => {
+                state.anim = None;
+                Task::none()
+            }
+        },
         Msg::Note(peer) => {
             if !state.open_notes.remove(&peer) {
                 state.open_notes.insert(peer);
@@ -170,6 +296,63 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// Whether the graph is grouped by family now.
+fn is_grouped(state: &State) -> bool {
+    state.data.as_ref().is_some_and(|d| state.group.unwrap_or(d.agents.len() > GROUP_AT))
+}
+
+/// Rebuilds the scene for the current level and lays it out. The nodes that come into view grow
+/// out of the spot the ones that went out of view left.
+fn refresh(state: &mut State) -> Task<Msg> {
+    let grouped = is_grouped(state);
+    if !grouped {
+        state.nav.clear();
+    }
+    let Some(data) = state.data.as_ref() else { return Task::none() };
+    let live: HashSet<u64> = data.agents.iter().map(|a| a.cid).collect();
+    state.pos.retain(|key, _| match key {
+        Key::Agent(cid) => live.contains(cid),
+        _ => true,
+    });
+    let scene = build_scene(data, grouped, &state.nav);
+    let old: HashSet<Key> = state.scene.nodes.iter().map(|n| n.key.clone()).collect();
+    let next: HashSet<Key> = scene.nodes.iter().map(|n| n.key.clone()).collect();
+    let gone: Vec<Pt> = old.difference(&next).filter_map(|k| state.pos.get(k).copied()).collect();
+    let fresh: HashSet<Key> = next.difference(&old).cloned().collect();
+    layout(&scene.nodes, &scene.links, &mut state.pos);
+    state.scene = scene;
+    if old.is_empty() || fresh.is_empty() {
+        return Task::none();
+    }
+    let origin = if gone.is_empty() {
+        Pt { x: LW / 2.0, y: LH / 2.0 }
+    } else {
+        let n = gone.len() as f32;
+        Pt { x: gone.iter().map(|p| p.x).sum::<f32>() / n, y: gone.iter().map(|p| p.y).sum::<f32>() / n }
+    };
+    state.anim = Some(Anim { at: Instant::now(), origin, keys: fresh });
+    tick()
+}
+
+/// The next frame of the pop. The screen has no frame clock of its own, so a short timer drives it.
+fn tick() -> Task<Msg> {
+    Task::perform(async { std::thread::sleep(FRAME) }, |_| Msg::Frame)
+}
+
+/// The pop in progress: the nodes in `keys` grow out of `origin`.
+#[derive(Debug)]
+struct Anim {
+    at: Instant,
+    origin: Pt,
+    keys: HashSet<Key>,
+}
+
+/// Ease-out over the pop's duration, from 0 to 1.
+fn ease(elapsed: Duration) -> f32 {
+    let t = (elapsed.as_secs_f32() / POP.as_secs_f32()).min(1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match &state.data {
         _ if !state.loaded => ui::loading(),
@@ -178,13 +361,24 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             ui::empty("society", "No agents yet", "Spawn agents and they show up here, with what they think of one another.")
         }
         Some(d) => {
-            let graph = Graph { data: d, pos: &state.pos, selected: state.selected };
-            let panel = match state.selected.and_then(|cid| d.agents.iter().find(|a| a.cid == cid)) {
-                Some(me) => detail(state, d, me),
-                None => legend(),
+            let grouped = is_grouped(state);
+            let grow = state.anim.as_ref().map(|a| Grow { origin: a.origin, t: ease(a.at.elapsed()), keys: &a.keys });
+            let graph = Graph { scene: &state.scene, pos: &state.pos, selected: state.selected.as_ref(), grow };
+            let panel = match &state.selected {
+                Some(Key::Agent(cid)) => match d.agents.iter().find(|a| a.cid == *cid) {
+                    Some(me) => detail(state, d, me),
+                    None => legend(),
+                },
+                Some(key) if d.agents.iter().any(|a| in_group(a, key)) => group_panel(d, key),
+                _ => legend(),
             };
+            let mut left = column![toolbar(grouped, state.nav.len())];
+            if grouped {
+                left = left.push(crumbs(&state.nav));
+            }
+            left = left.push(canvas(graph).width(Length::Fill).height(Length::Fill));
             row![
-                container(canvas(graph).width(Length::Fill).height(Length::Fill)).width(Length::FillPortion(3)).height(Length::Fill),
+                container(left).width(Length::FillPortion(3)).height(Length::Fill),
                 container(scrollable(column![panel]).width(Length::Fill)).width(Length::FillPortion(2)).height(Length::Fill),
             ]
             .spacing(16)
@@ -195,10 +389,145 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     ui::sheet(ui::view_head("Society", vec![]), body)
 }
 
+// ---- Scene -----------------------------------------------------------------
+
+/// What the graph draws at the current level: the nodes in view and the links among them.
+#[derive(Debug, Default)]
+struct Scene {
+    nodes: Vec<Node>,
+    links: Vec<Link>,
+}
+
+#[derive(Debug)]
+struct Node {
+    key: Key,
+    /// The name tag of an agent, or the label inside a cluster.
+    label: String,
+    /// The agents it stands for, by cid, sorted.
+    members: Vec<u64>,
+    /// The box in world units: the robot's side for an agent, sized by member count for a cluster.
+    w: f32,
+    h: f32,
+    fp: Foot,
+}
+
+#[derive(Debug)]
+struct Link {
+    from: Key,
+    to: Key,
+    /// The summed contact strength.
+    strength: f32,
+    /// The expected trust: the holder's opinion for a directed link, the mean over the bonds for an
+    /// aggregated one.
+    e: f32,
+    /// A bond drawn with its direction (agent level); aggregated links are undirected.
+    directed: bool,
+    mutual: bool,
+}
+
+/// The nodes in view at this level, and the links among them.
+fn build_scene(d: &Society, grouped: bool, nav: &[Key]) -> Scene {
+    let mut count: HashMap<Key, usize> = HashMap::new();
+    for a in &d.agents {
+        *count.entry(Key::Role(family_of(a), a.role.clone())).or_insert(0) += 1;
+    }
+    let key_of: HashMap<u64, Key> =
+        d.agents.iter().map(|a| (a.cid, if grouped { visible(a, nav, &count) } else { Key::Agent(a.cid) })).collect();
+    let mut order: Vec<Key> = Vec::new();
+    let mut groups: HashMap<Key, Vec<&Agent>> = HashMap::new();
+    for a in &d.agents {
+        let key = key_of[&a.cid].clone();
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(a);
+    }
+    let nodes: Vec<Node> = order.iter().map(|k| node_of(k, &groups[k])).collect();
+    let links = links(&d.bonds, |cid| key_of.get(&cid).cloned(), grouped);
+    Scene { nodes, links }
+}
+
+/// The node an agent is drawn in at this level: its family, or once the family is open, its role
+/// (or its own node when the role has one agent, or the role is open).
+fn visible(a: &Agent, nav: &[Key], count: &HashMap<Key, usize>) -> Key {
+    let fam = family_of(a);
+    match nav.first() {
+        Some(Key::Family(open)) if *open == fam => {
+            let role_open = matches!(nav.get(1), Some(Key::Role(f, r)) if *f == fam && *r == a.role);
+            let many = count.get(&Key::Role(fam, a.role.clone())).is_some_and(|n| *n >= 2);
+            if many && !role_open {
+                Key::Role(fam, a.role.clone())
+            } else {
+                Key::Agent(a.cid)
+            }
+        }
+        _ => Key::Family(fam),
+    }
+}
+
+/// A node for a key and the agents it stands for.
+fn node_of(key: &Key, members: &[&Agent]) -> Node {
+    if let (Key::Agent(_), [a]) = (key, members) {
+        let s = side(a.reputation);
+        return Node { key: key.clone(), label: label_of(a), members: vec![a.cid], w: s, h: s, fp: foot(a) };
+    }
+    let mut cids: Vec<u64> = members.iter().map(|a| a.cid).collect();
+    cids.sort_unstable();
+    let label = match key {
+        Key::Family(f) => family_label(f).to_string(),
+        Key::Role(_, r) if r.trim().is_empty() => "unassigned".to_string(),
+        Key::Role(_, r) => clip(r),
+        Key::Agent(_) => String::new(),
+    };
+    // Sized by member count on a square root scale, and wide enough for its label.
+    let size = 52.0 + 10.0 * (cids.len() as f32).sqrt();
+    let w = size.max(label_width(&label));
+    let h = size.max(60.0);
+    Node { key: key.clone(), label, members: cids, w, h, fp: Foot { half: w / 2.0, up: h / 2.0 + 8.0, down: h / 2.0 + 8.0 } }
+}
+
+/// The links among the nodes in view. At the agent level each bond is kept with its direction. Once
+/// grouped, the bonds between two nodes become one undirected link: strengths summed, trust averaged.
+/// Bonds inside one node are left out.
+fn links(bonds: &[Bond], key_of: impl Fn(u64) -> Option<Key>, grouped: bool) -> Vec<Link> {
+    if !grouped {
+        let pairs: HashSet<(u64, u64)> = bonds.iter().map(|b| (b.from, b.to)).collect();
+        return bonds
+            .iter()
+            .filter_map(|b| {
+                let (from, to) = (key_of(b.from)?, key_of(b.to)?);
+                (from != to).then(|| Link {
+                    from,
+                    to,
+                    strength: b.strength,
+                    e: b.opinion.e,
+                    directed: true,
+                    mutual: pairs.contains(&(b.to, b.from)),
+                })
+            })
+            .collect();
+    }
+    let mut agg: BTreeMap<(Key, Key), (f32, f32, usize)> = BTreeMap::new();
+    for b in bonds {
+        let (Some(a), Some(z)) = (key_of(b.from), key_of(b.to)) else { continue };
+        if a == z {
+            continue;
+        }
+        let pair = if a <= z { (a, z) } else { (z, a) };
+        let entry = agg.entry(pair).or_insert((0.0, 0.0, 0));
+        entry.0 += b.strength;
+        entry.1 += b.opinion.e;
+        entry.2 += 1;
+    }
+    agg.into_iter()
+        .map(|((from, to), (strength, esum, n))| Link { from, to, strength, e: esum / n as f32, directed: false, mutual: false })
+        .collect()
+}
+
 // ---- Layout ----------------------------------------------------------------
 
-/// What an agent takes up around its centre, in world units.
-#[derive(Clone, Copy)]
+/// What a node takes up around its centre, in world units.
+#[derive(Debug, Clone, Copy)]
 struct Foot {
     /// Half the width: the robot, or its name tag when that is wider.
     half: f32,
@@ -218,7 +547,7 @@ fn foot(a: &Agent) -> Foot {
 /// only when both are positive.
 fn overlap(p: Pt, fp: Foot, q: Pt, fq: Foot) -> (f32, f32) {
     let (dx, dy) = (q.x - p.x, q.y - p.y);
-    // Stacked vertically, the lower agent's name tag must clear the upper agent's antenna.
+    // Stacked vertically, the lower node's name tag must clear the upper node's antenna.
     let stack = if dy >= 0.0 { fp.down + fq.up } else { fq.down + fp.up };
     (fp.half + fq.half + GAP - dx.abs(), stack + GAP - dy.abs())
 }
@@ -236,57 +565,55 @@ fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
     v.max(lo).min(hi)
 }
 
-/// Places the agents. Agents already placed stay where they are; only new ones move, under the
-/// springs and repulsion of the whole graph, and then clear of everyone's footprint. Departed
-/// agents are dropped.
-fn layout(agents: &[Agent], bonds: &[Bond], pos: &mut HashMap<u64, Pt>) {
-    let live: HashSet<u64> = agents.iter().map(|a| a.cid).collect();
-    pos.retain(|cid, _| live.contains(cid));
-    let fresh: Vec<u64> = agents.iter().map(|a| a.cid).filter(|cid| !pos.contains_key(cid)).collect();
+/// Places the nodes. Nodes already placed stay where they are; only new ones move, under the
+/// springs and repulsion of the whole graph, and then clear of everyone's footprint.
+fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
+    let fresh: Vec<usize> = (0..nodes.len()).filter(|&i| !pos.contains_key(&nodes[i].key)).collect();
     if fresh.is_empty() {
         return;
     }
-    let placed = !pos.is_empty();
+    let placed = nodes.iter().any(|n| pos.contains_key(&n.key));
     if placed {
-        // A newcomer takes the clearest spot near its contacts; the agents already placed do not move.
-        for a in agents.iter().filter(|a| fresh.contains(&a.cid)) {
-            let spot = clearest(a, agents, bonds, pos);
-            pos.insert(a.cid, spot);
+        // A newcomer takes the clearest spot near its contacts; the nodes already placed do not move.
+        for &i in &fresh {
+            let spot = clearest(nodes, i, links, pos);
+            pos.insert(nodes[i].key.clone(), spot);
         }
     } else {
-        for (i, cid) in fresh.iter().enumerate() {
-            let angle = i as f32 * 2.39996; // golden angle, so a crowd fans out evenly
-            let r = 70.0 + 26.0 * (i as f32).sqrt();
-            pos.insert(*cid, Pt { x: LW / 2.0 + angle.cos() * r, y: LH / 2.0 + angle.sin() * r });
+        for (n, &i) in fresh.iter().enumerate() {
+            let angle = n as f32 * 2.39996; // golden angle, so a crowd fans out evenly
+            let r = 70.0 + 26.0 * (n as f32).sqrt();
+            pos.insert(nodes[i].key.clone(), Pt { x: LW / 2.0 + angle.cos() * r, y: LH / 2.0 + angle.sin() * r });
         }
     }
 
-    let is_fresh: HashSet<u64> = fresh.iter().copied().collect();
-    let mut bodies: Vec<Body> = agents
+    let is_fresh: HashSet<usize> = fresh.iter().copied().collect();
+    let mut bodies: Vec<Body> = nodes
         .iter()
-        .map(|a| {
-            let p = pos.get(&a.cid).copied().unwrap_or(Pt { x: LW / 2.0, y: LH / 2.0 });
-            Body { x: p.x, y: p.y, vx: 0.0, vy: 0.0, fixed: !is_fresh.contains(&a.cid), fp: foot(a) }
+        .enumerate()
+        .map(|(i, n)| {
+            let p = pos.get(&n.key).copied().unwrap_or(Pt { x: LW / 2.0, y: LH / 2.0 });
+            Body { x: p.x, y: p.y, vx: 0.0, vy: 0.0, fixed: !is_fresh.contains(&i), fp: n.fp }
         })
         .collect();
-    let index: HashMap<u64, usize> = agents.iter().enumerate().map(|(i, a)| (a.cid, i)).collect();
+    let index: HashMap<&Key, usize> = nodes.iter().enumerate().map(|(i, n)| (&n.key, i)).collect();
 
     // One spring per unordered pair; stronger contacts pull harder.
     let mut springs: Vec<(usize, usize, f32)> = Vec::new();
-    for bond in bonds {
-        let (Some(&a), Some(&z)) = (index.get(&bond.from), index.get(&bond.to)) else { continue };
+    for link in links {
+        let (Some(&a), Some(&z)) = (index.get(&link.from), index.get(&link.to)) else { continue };
         if a == z {
             continue;
         }
         let (lo, hi) = (a.min(z), a.max(z));
-        let k = 0.01 + 0.02 * clamp(bond.strength / 10.0, 0.0, 1.0);
+        let k = 0.01 + 0.02 * clamp(link.strength / 10.0, 0.0, 1.0);
         match springs.iter_mut().find(|s| s.0 == lo && s.1 == hi) {
             Some(s) => s.2 = k.max(s.2),
             None => springs.push((lo, hi, k)),
         }
     }
 
-    let steps = if fresh.len() == agents.len() { FIRST_STEPS } else { LATER_STEPS };
+    let steps = if fresh.len() == nodes.len() { FIRST_STEPS } else { LATER_STEPS };
     for _ in 0..steps {
         for i in 0..bodies.len() {
             for j in (i + 1)..bodies.len() {
@@ -311,7 +638,7 @@ fn layout(agents: &[Agent], bonds: &[Bond], pos: &mut HashMap<u64, Pt>) {
             bodies[z].vy -= fy;
         }
         for b in &mut bodies {
-            // Centring, then damping; placed agents keep their coordinates.
+            // Centring, then damping; placed nodes keep their coordinates.
             b.vx = clamp((b.vx + (LW / 2.0 - b.x) * 0.004) * 0.8, -25.0, 25.0);
             b.vy = clamp((b.vy + (LH / 2.0 - b.y) * 0.004) * 0.8, -25.0, 25.0);
             if b.fixed {
@@ -325,31 +652,33 @@ fn layout(agents: &[Agent], bonds: &[Bond], pos: &mut HashMap<u64, Pt>) {
         stretch(&mut bodies);
     }
     separate(&mut bodies);
-    for (a, b) in agents.iter().zip(&bodies) {
-        pos.insert(a.cid, Pt { x: b.x, y: b.y });
+    for (n, b) in nodes.iter().zip(&bodies) {
+        pos.insert(n.key.clone(), Pt { x: b.x, y: b.y });
     }
 }
 
-/// The clearest spot for a newcomer: the free room to its nearest agent, capped so that any spot
+/// The clearest spot for node `i`: the free room to its nearest neighbour, capped so that any spot
 /// with room is as good as another, then the spot nearest its contacts among those.
-fn clearest(a: &Agent, agents: &[Agent], bonds: &[Bond], pos: &HashMap<u64, Pt>) -> Pt {
-    let fp = foot(a);
-    let others: Vec<(Pt, Foot)> = agents
+fn clearest(nodes: &[Node], i: usize, links: &[Link], pos: &HashMap<Key, Pt>) -> Pt {
+    let me = &nodes[i];
+    let fp = me.fp;
+    let others: Vec<(Pt, Foot)> = nodes
         .iter()
-        .filter(|o| o.cid != a.cid)
-        .filter_map(|o| pos.get(&o.cid).map(|p| (*p, foot(o))))
+        .enumerate()
+        .filter(|(j, _)| *j != i)
+        .filter_map(|(_, o)| pos.get(&o.key).map(|p| (*p, o.fp)))
         .collect();
-    let peers: Vec<Pt> = bonds
+    let peers: Vec<Pt> = links
         .iter()
-        .filter_map(|b| {
-            let other = if b.from == a.cid {
-                b.to
-            } else if b.to == a.cid {
-                b.from
+        .filter_map(|l| {
+            let other = if l.from == me.key {
+                &l.to
+            } else if l.to == me.key {
+                &l.from
             } else {
                 return None;
             };
-            pos.get(&other).copied()
+            pos.get(other).copied()
         })
         .collect();
     let target = if peers.is_empty() {
@@ -381,8 +710,8 @@ fn clearest(a: &Agent, agents: &[Agent], bonds: &[Bond], pos: &HashMap<u64, Pt>)
     best
 }
 
-/// Stretches the agents over the box, each axis on its own, so a first layout uses all of it.
-/// A single row or column of agents goes to the middle of its axis.
+/// Stretches the nodes over the box, each axis on its own, so a first layout uses all of it.
+/// A single row or column of nodes goes to the middle of its axis.
 fn stretch(bodies: &mut [Body]) {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for b in bodies.iter() {
@@ -404,8 +733,8 @@ fn stretch(bodies: &mut [Body]) {
     }
 }
 
-/// Pushes the footprints apart until none clash, or the passes run out. A clash moves both agents
-/// along the axis where they overlap least; a placed agent stays put. Agents are kept in the box.
+/// Pushes the footprints apart until none clash, or the passes run out. A clash moves both nodes
+/// along the axis where they overlap least; a placed node stays put. Nodes are kept in the box.
 fn separate(bodies: &mut [Body]) {
     for _ in 0..PASSES {
         let mut clashed = false;
@@ -511,19 +840,28 @@ impl Xf {
     }
 }
 
-/// The name tag's text: the name, cut to 16 characters.
-fn label_of(a: &Agent) -> String {
-    let name = name_of(a);
+/// A label cut to 16 characters.
+fn clip(name: &str) -> String {
     if name.chars().count() > 16 {
         name.chars().take(15).chain(std::iter::once('…')).collect()
     } else {
-        name
+        name.to_string()
     }
+}
+
+/// The name tag's text for an agent.
+fn label_of(a: &Agent) -> String {
+    clip(&name_of(a))
+}
+
+/// The width in pixels of a label drawn in the mono label size, with its padding.
+fn label_width(label: &str) -> f32 {
+    label.chars().count() as f32 * LABEL_CHAR + 2.0 * LABEL_PAD
 }
 
 /// The name tag's width in pixels for a label.
 fn tag_width(label: &str) -> f32 {
-    (label.chars().count() as f32 * 7.4 + 16.0).max(56.0)
+    label_width(label).max(56.0)
 }
 
 /// A curve from a's edge to z's edge, bowed to one side. Reversed bonds bow apart.
@@ -537,22 +875,52 @@ fn edge_curve(a: Pt, z: Pt, ra: f32, rz: f32) -> (Pt, Pt, Pt) {
     (p0, c, p1)
 }
 
+/// How far a node's edges start from its centre.
+fn radius(n: &Node) -> f32 {
+    n.w.min(n.h) / 2.0 + 8.0
+}
+
+/// The pop in progress, as the graph draws it: `keys` sit at `origin` at t = 0 and at their spots at t = 1.
+#[derive(Clone, Copy)]
+struct Grow<'a> {
+    origin: Pt,
+    t: f32,
+    keys: &'a HashSet<Key>,
+}
+
 struct Graph<'a> {
-    data: &'a Society,
-    pos: &'a HashMap<u64, Pt>,
-    selected: Option<u64>,
+    scene: &'a Scene,
+    pos: &'a HashMap<Key, Pt>,
+    selected: Option<&'a Key>,
+    grow: Option<Grow<'a>>,
 }
 
 impl Graph<'_> {
-    /// The agent under a point of the canvas, if any: its body or its name tag.
-    fn hit(&self, at: Point, size: Size) -> Option<u64> {
+    /// Where a node is drawn, in world units.
+    fn at(&self, key: &Key) -> Option<Pt> {
+        let p = *self.pos.get(key)?;
+        Some(match self.grow {
+            Some(g) if g.t < 1.0 && g.keys.contains(key) => {
+                Pt { x: g.origin.x + (p.x - g.origin.x) * g.t, y: g.origin.y + (p.y - g.origin.y) * g.t }
+            }
+            _ => p,
+        })
+    }
+
+    /// The node under a point of the canvas, if any: its body, or for an agent its name tag too.
+    fn hit(&self, at: Point, size: Size) -> Option<Key> {
         let xf = Xf::fit(size);
-        for a in self.data.agents.iter().rev() {
-            let Some(p) = self.pos.get(&a.cid) else { continue };
-            let c = xf.map(*p);
-            let half = side(a.reputation) * xf.s / 2.0;
-            if (at.x - c.x).abs() <= half && at.y >= c.y - half - 16.0 && at.y <= c.y + half + 30.0 {
-                return Some(a.cid);
+        for n in self.scene.nodes.iter().rev() {
+            let Some(p) = self.at(&n.key) else { continue };
+            let c = xf.map(p);
+            let (up, down) = if matches!(n.key, Key::Agent(_)) { (16.0, 30.0) } else { (0.0, 0.0) };
+            let (w, h) = match n.key {
+                Key::Agent(_) => (n.w * xf.s, n.h * xf.s),
+                _ => cluster_box(n, xf.s),
+            };
+            let (hw, hh) = (w / 2.0, h / 2.0);
+            if (at.x - c.x).abs() <= hw && at.y >= c.y - hh - up && at.y <= c.y + hh + down {
+                return Some(n.key.clone());
             }
         }
         None
@@ -565,43 +933,55 @@ impl canvas::Program<Msg> for Graph<'_> {
     fn update(&self, _state: &mut (), event: &canvas::Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
         let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else { return None };
         let at = cursor.position_in(bounds)?;
-        // A click on an agent selects it; a click on the background clears the selection.
-        Some(canvas::Action::publish(Msg::Pick(self.hit(at, bounds.size()))).and_capture())
+        // A click on an agent selects it, on a cluster pops it open, and on the background clears the selection.
+        let msg = match self.hit(at, bounds.size()) {
+            Some(key @ (Key::Family(_) | Key::Role(..))) => Msg::Open(key),
+            key => Msg::Pick(key),
+        };
+        Some(canvas::Action::publish(msg).and_capture())
     }
 
     fn draw(&self, _state: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let xf = Xf::fit(bounds.size());
         let k = xf.s;
-        let agents: HashMap<u64, &Agent> = self.data.agents.iter().map(|a| (a.cid, a)).collect();
-        let bonds: HashSet<(u64, u64)> = self.data.bonds.iter().map(|b| (b.from, b.to)).collect();
+        let nodes: HashMap<&Key, &Node> = self.scene.nodes.iter().map(|n| (&n.key, n)).collect();
+        // The nodes the selection has a link to.
+        let touching: HashSet<&Key> = match self.selected {
+            Some(sel) => self
+                .scene
+                .links
+                .iter()
+                .filter_map(|l| if &l.from == sel { Some(&l.to) } else if &l.to == sel { Some(&l.from) } else { None })
+                .collect(),
+            None => HashSet::new(),
+        };
 
-        // Edges first, so the nodes sit on top of them.
-        for b in &self.data.bonds {
-            let (Some(from), Some(to), Some(a), Some(z)) = (self.pos.get(&b.from), self.pos.get(&b.to), agents.get(&b.from), agents.get(&b.to)) else {
+        // Links first, so the nodes sit on top of them.
+        for l in &self.scene.links {
+            let (Some(from), Some(to), Some(a), Some(z)) = (self.at(&l.from), self.at(&l.to), nodes.get(&l.from), nodes.get(&l.to)) else {
                 continue;
             };
-            if b.from == b.to {
-                continue;
-            }
-            let (p0, c, p1) = edge_curve(*from, *to, side(a.reputation) / 2.0 + 8.0, side(z.reputation) / 2.0 + 8.0);
+            let (p0, c, p1) = edge_curve(from, to, radius(a), radius(z));
             let (s0, sc, s1) = (xf.map(p0), xf.map(c), xf.map(p1));
             let path = canvas::Path::new(|pb| {
                 pb.move_to(s0);
                 pb.quadratic_curve_to(sc, s1);
             });
-            let mutual = bonds.contains(&(b.to, b.from));
-            let mut dashed = false;
-            let mut arrow = false;
-            let (colour, width) = match self.selected {
-                None => (if mutual { ui::INK_2 } else { ui::INK_3 }, if mutual { 1.5 } else { 1.2 }),
-                Some(sel) if b.from == sel || b.to == sel => {
-                    let out = b.from == sel;
-                    dashed = !out;
-                    arrow = out;
-                    (band(b.opinion.e), 1.5 + 4.0 * clamp(b.strength / 10.0, 0.0, 1.0))
+            let (colour, width, dashed, arrow) = if l.directed {
+                match self.selected {
+                    None => (if l.mutual { ui::INK_2 } else { ui::INK_3 }, if l.mutual { 1.5 } else { 1.2 }, false, false),
+                    Some(sel) if l.from == *sel || l.to == *sel => {
+                        let out = l.from == *sel;
+                        (band(l.e), 1.5 + 4.0 * clamp(l.strength / 10.0, 0.0, 1.0), !out, out)
+                    }
+                    Some(_) => (ui::INK_3.scale_alpha(0.25), 1.0, false, false),
                 }
-                Some(_) => (ui::INK_3.scale_alpha(0.25), 1.0),
+            } else {
+                // Aggregated: thicker with the summed strength, coloured by the mean trust.
+                let touches = self.selected.is_some_and(|sel| l.from == *sel || l.to == *sel);
+                let colour = if self.selected.is_some() && !touches { band(l.e).scale_alpha(0.2) } else { band(l.e) };
+                (colour, 1.0 + 4.0 * clamp(l.strength / 40.0, 0.0, 1.0), false, false)
             };
             let mut stroke = canvas::Stroke::default().with_color(colour).with_width(width * k.max(0.5));
             if dashed {
@@ -625,70 +1005,169 @@ impl canvas::Program<Msg> for Graph<'_> {
             }
         }
 
-        // Nodes: a square body with a head, two eyes, a mouth and a name tag.
-        for a in &self.data.agents {
-            let Some(p) = self.pos.get(&a.cid) else { continue };
-            let c = xf.map(*p);
-            let sz = side(a.reputation) * k;
-            let half = sz / 2.0;
-            let hue = agent_hue(a.cid);
-            let linked = self.selected.is_some_and(|sel| bonds.contains(&(sel, a.cid)) || bonds.contains(&(a.cid, sel)));
-            let alpha = if self.selected.is_some_and(|sel| sel != a.cid && !linked) { 0.35 } else { 1.0 };
-            let ink = ui::INK.scale_alpha(alpha);
-
-            // The print shadow, the antenna and its tip.
-            frame.fill_rectangle(Point::new(c.x - half + 3.0, c.y - half + 3.0), Size::new(sz, sz), ui::INK.scale_alpha(0.85 * alpha));
-            let antenna = canvas::Path::line(Point::new(c.x, c.y - half), Point::new(c.x, c.y - half - 12.0 * k));
-            frame.stroke(&antenna, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
-            let tip = canvas::Path::circle(Point::new(c.x, c.y - half - 13.0 * k), 4.5 * k);
-            frame.fill(&tip, hsl(hue, 0.7, 0.55).scale_alpha(alpha));
-            frame.stroke(&tip, canvas::Stroke::default().with_color(ink).with_width(2.5 * k));
-
-            // The body, and the ring round the selected agent.
-            let body = canvas::Path::rectangle(Point::new(c.x - half, c.y - half), Size::new(sz, sz));
-            frame.fill(&body, hsl(hue, 0.6, 0.64).scale_alpha(alpha));
-            frame.stroke(&body, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
-            if self.selected == Some(a.cid) {
-                let ring = canvas::Path::rectangle(Point::new(c.x - half - 5.0, c.y - half - 5.0), Size::new(sz + 10.0, sz + 10.0));
-                frame.stroke(&ring, canvas::Stroke::default().with_color(ui::SIGNAL).with_width(2.0));
+        // Nodes: the agents as robots, the clusters as labelled boxes.
+        for n in &self.scene.nodes {
+            let Some(p) = self.at(&n.key) else { continue };
+            let c = xf.map(p);
+            let selected = self.selected == Some(&n.key);
+            let dim = self.selected.is_some_and(|sel| sel != &n.key && !touching.contains(&n.key));
+            let alpha = if dim { 0.35 } else { 1.0 };
+            match &n.key {
+                Key::Agent(_) => draw_agent(&mut frame, n, c, k, alpha, selected),
+                _ => draw_cluster(&mut frame, n, c, k, alpha, selected),
             }
-
-            // Two eyes: a white sclera with an ink pupil each.
-            for dir in [-1.0_f32, 1.0] {
-                let ex = c.x + dir * sz * 0.2;
-                let ey = c.y - sz * 0.08;
-                let sclera = canvas::Path::circle(Point::new(ex, ey), sz * 0.14);
-                frame.fill(&sclera, Color::WHITE.scale_alpha(alpha));
-                frame.stroke(&sclera, canvas::Stroke::default().with_color(ink).with_width(2.0 * k));
-                let pupil = canvas::Path::circle(Point::new(ex + 1.5 * k, ey + 1.5 * k), sz * 0.06);
-                frame.fill(&pupil, ink);
-            }
-
-            // The mouth.
-            let mouth = canvas::Path::new(|pb| {
-                pb.move_to(Point::new(c.x - sz * 0.16, c.y + sz * 0.22));
-                pb.quadratic_curve_to(Point::new(c.x, c.y + sz * 0.34), Point::new(c.x + sz * 0.16, c.y + sz * 0.22));
-            });
-            frame.stroke(&mouth, canvas::Stroke::default().with_color(ink).with_width(2.5 * k).with_line_cap(canvas::LineCap::Round));
-
-            // The name tag, under the body.
-            let label = label_of(a);
-            let tag_w = tag_width(&label);
-            let tag_top = c.y + half + 8.0 * k;
-            let tag = canvas::Path::rectangle(Point::new(c.x - tag_w / 2.0, tag_top), Size::new(tag_w, 22.0));
-            frame.fill(&tag, ui::PAPER.scale_alpha(alpha));
-            frame.stroke(&tag, canvas::Stroke::default().with_color(ink).with_width(1.0));
-            frame.fill_text(canvas::Text {
-                content: label,
-                position: Point::new(c.x - tag_w / 2.0 + 8.0, tag_top + 4.0),
-                color: ink,
-                size: 13.0.into(),
-                font: crate::theme::MONO,
-                ..canvas::Text::default()
-            });
         }
-
         vec![frame.into_geometry()]
+    }
+}
+
+/// An agent: a square body with a head, two eyes, a mouth and a name tag.
+fn draw_agent(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32, selected: bool) {
+    let cid = n.members[0];
+    let sz = n.w * k;
+    let half = sz / 2.0;
+    let hue = agent_hue(cid);
+    let ink = ui::INK.scale_alpha(alpha);
+
+    // The print shadow, the antenna and its tip.
+    frame.fill_rectangle(Point::new(c.x - half + 3.0, c.y - half + 3.0), Size::new(sz, sz), ui::INK.scale_alpha(0.85 * alpha));
+    let antenna = canvas::Path::line(Point::new(c.x, c.y - half), Point::new(c.x, c.y - half - 12.0 * k));
+    frame.stroke(&antenna, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
+    let tip = canvas::Path::circle(Point::new(c.x, c.y - half - 13.0 * k), 4.5 * k);
+    frame.fill(&tip, hsl(hue, 0.7, 0.55).scale_alpha(alpha));
+    frame.stroke(&tip, canvas::Stroke::default().with_color(ink).with_width(2.5 * k));
+
+    // The body, and the ring round the selected agent.
+    let body = canvas::Path::rectangle(Point::new(c.x - half, c.y - half), Size::new(sz, sz));
+    frame.fill(&body, hsl(hue, 0.6, 0.64).scale_alpha(alpha));
+    frame.stroke(&body, canvas::Stroke::default().with_color(ink).with_width(3.0 * k));
+    if selected {
+        let ring = canvas::Path::rectangle(Point::new(c.x - half - 5.0, c.y - half - 5.0), Size::new(sz + 10.0, sz + 10.0));
+        frame.stroke(&ring, canvas::Stroke::default().with_color(ui::SIGNAL).with_width(2.0));
+    }
+
+    // Two eyes: a white sclera with an ink pupil each.
+    for dir in [-1.0_f32, 1.0] {
+        let ex = c.x + dir * sz * 0.2;
+        let ey = c.y - sz * 0.08;
+        let sclera = canvas::Path::circle(Point::new(ex, ey), sz * 0.14);
+        frame.fill(&sclera, Color::WHITE.scale_alpha(alpha));
+        frame.stroke(&sclera, canvas::Stroke::default().with_color(ink).with_width(2.0 * k));
+        let pupil = canvas::Path::circle(Point::new(ex + 1.5 * k, ey + 1.5 * k), sz * 0.06);
+        frame.fill(&pupil, ink);
+    }
+
+    // The mouth.
+    let mouth = canvas::Path::new(|pb| {
+        pb.move_to(Point::new(c.x - sz * 0.16, c.y + sz * 0.22));
+        pb.quadratic_curve_to(Point::new(c.x, c.y + sz * 0.34), Point::new(c.x + sz * 0.16, c.y + sz * 0.22));
+    });
+    frame.stroke(&mouth, canvas::Stroke::default().with_color(ink).with_width(2.5 * k).with_line_cap(canvas::LineCap::Round));
+
+    // The name tag, under the body.
+    let tag_w = tag_width(&n.label);
+    let tag_top = c.y + half + 8.0 * k;
+    let tag = canvas::Path::rectangle(Point::new(c.x - tag_w / 2.0, tag_top), Size::new(tag_w, 22.0));
+    frame.fill(&tag, ui::PAPER.scale_alpha(alpha));
+    frame.stroke(&tag, canvas::Stroke::default().with_color(ink).with_width(1.0));
+    frame.fill_text(canvas::Text {
+        content: n.label.clone(),
+        position: Point::new(c.x - tag_w / 2.0 + LABEL_PAD, tag_top + 4.0),
+        color: ink,
+        size: LABEL_SIZE.into(),
+        font: crate::theme::MONO,
+        ..canvas::Text::default()
+    });
+}
+
+/// A cluster's drawn box in pixels: its world size scaled, but never narrower than its label or its
+/// count, which are drawn at a fixed size.
+fn cluster_box(n: &Node, k: f32) -> (f32, f32) {
+    let count = label_width(&format!("{} agents", n.members.len()));
+    ((n.w * k).max(label_width(&n.label)).max(count), (n.h * k).max(56.0))
+}
+
+/// A cluster: a labelled box with its member count, and up to three of its members as dots.
+fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32, selected: bool) {
+    let (w, h) = cluster_box(n, k);
+    let (x0, y0) = (c.x - w / 2.0, c.y - h / 2.0);
+    let ink = ui::INK.scale_alpha(alpha);
+    let radius = border::Radius::from(8.0 * k);
+
+    frame.fill(
+        &canvas::Path::rounded_rectangle(Point::new(x0 + 3.0, y0 + 3.0), Size::new(w, h), radius),
+        ui::INK.scale_alpha(0.85 * alpha),
+    );
+    let body = canvas::Path::rounded_rectangle(Point::new(x0, y0), Size::new(w, h), radius);
+    frame.fill(&body, ui::PAPER.scale_alpha(alpha));
+    frame.stroke(&body, canvas::Stroke::default().with_color(ink).with_width(2.5 * k));
+    if selected {
+        let ring = canvas::Path::rounded_rectangle(Point::new(x0 - 5.0, y0 - 5.0), Size::new(w + 10.0, h + 10.0), radius);
+        frame.stroke(&ring, canvas::Stroke::default().with_color(ui::SIGNAL).with_width(2.0));
+    }
+
+    frame.fill_text(canvas::Text {
+        content: n.label.clone(),
+        position: Point::new(x0 + LABEL_PAD, y0 + 7.0),
+        color: ink,
+        size: LABEL_SIZE.into(),
+        font: crate::theme::MONO,
+        ..canvas::Text::default()
+    });
+    frame.fill_text(canvas::Text {
+        content: format!("{} agents", n.members.len()),
+        position: Point::new(x0 + LABEL_PAD, y0 + 26.0),
+        color: ui::INK_2.scale_alpha(alpha),
+        size: 12.0.into(),
+        font: crate::theme::MONO,
+        ..canvas::Text::default()
+    });
+    for (i, cid) in n.members.iter().take(3).enumerate() {
+        let dot = canvas::Path::circle(Point::new(x0 + 14.0 + i as f32 * 12.0, y0 + h - 12.0), 4.5);
+        frame.fill(&dot, hsl(agent_hue(*cid), 0.6, 0.64).scale_alpha(alpha));
+        frame.stroke(&dot, canvas::Stroke::default().with_color(ink).with_width(1.2));
+    }
+}
+
+// ---- Breadcrumb and controls -----------------------------------------------
+
+/// The controls above the graph: the family toggle, and Back when a level is open.
+fn toolbar<'a>(grouped: bool, depth: usize) -> Element<'a, Msg> {
+    let style: fn(&Theme) -> container::Style = if grouped { on_box } else { boxed };
+    let colour = if grouped { ui::PAPER } else { ui::INK };
+    let toggle = mouse_area(container(ui::mono("GROUP BY FAMILY", 11.0, colour)).padding([4.0, 8.0]).style(style)).on_press(Msg::Group);
+    let mut bar = row![toggle].spacing(8);
+    if grouped && depth > 0 {
+        bar = bar.push(ui::btn("Back", None, Kind::Secondary, Some(Msg::Level(depth - 1))));
+    }
+    bar.push(Space::new().width(Length::Fill)).into()
+}
+
+fn on_box(_: &Theme) -> container::Style {
+    filled(ui::INK)
+}
+
+/// The breadcrumb, "All families › Build › builder": each crumb but the last one climbs back to it.
+fn crumbs<'a>(nav: &[Key]) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![crumb("All families", 0, nav.is_empty())];
+    for (i, key) in nav.iter().enumerate() {
+        let label = match key {
+            Key::Family(f) => family_label(f).to_string(),
+            Key::Role(_, r) => r.clone(),
+            Key::Agent(_) => String::new(),
+        };
+        parts.push(ui::faint("›").into());
+        parts.push(crumb(&label, i + 1, i + 1 == nav.len()));
+    }
+    row(parts).spacing(8).into()
+}
+
+fn crumb<'a>(label: &str, level: usize, current: bool) -> Element<'a, Msg> {
+    let text = ui::mono(label.to_string(), 12.0, if current { ui::INK } else { ui::INK_2 });
+    if current {
+        text.into()
+    } else {
+        mouse_area(text).on_press(Msg::Level(level)).into()
     }
 }
 
@@ -721,7 +1200,7 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
             "added" => (Tone::Ok, "added"),
             _ => (Tone::Muted, "met"),
         };
-        let mut top = row![ui::btn(&peer_name, None, Kind::Ghost, Some(Msg::Pick(Some(peer)))), ui::badge(kind, kind_tone)].spacing(8);
+        let mut top = row![ui::btn(&peer_name, None, Kind::Ghost, Some(Msg::Pick(Some(Key::Agent(peer))))), ui::badge(kind, kind_tone)].spacing(8);
         if gap(peer) {
             top = top.push(ui::badge("they disagree", Tone::Warn));
         }
@@ -777,6 +1256,67 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
     }
     out.push(panel.into());
     column(out).spacing(14).padding(4.0).into()
+}
+
+/// A family's or a role's panel: its members, the trust that runs in and out of it, and its
+/// strongest ties outside.
+fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
+    let members: Vec<&Agent> = d.agents.iter().filter(|a| in_group(a, key)).collect();
+    let inside: HashSet<u64> = members.iter().map(|a| a.cid).collect();
+    let names: HashMap<u64, &Agent> = d.agents.iter().map(|a| (a.cid, a)).collect();
+    let outside: Vec<&Bond> = d.bonds.iter().filter(|b| inside.contains(&b.from) != inside.contains(&b.to)).collect();
+    let mean = |list: Vec<f32>| -> Option<f32> { (!list.is_empty()).then(|| list.iter().sum::<f32>() / list.len() as f32) };
+    let trust_in = mean(outside.iter().filter(|b| inside.contains(&b.to)).map(|b| b.opinion.e).collect());
+    let trust_out = mean(outside.iter().filter(|b| inside.contains(&b.from)).map(|b| b.opinion.e).collect());
+    let shown = |v: Option<f32>| v.map(|e| format!("{e:.2}")).unwrap_or_else(|| "none yet".to_string());
+    let mut ties = outside.clone();
+    ties.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+
+    let title = match key {
+        Key::Family(f) => family_label(f).to_string(),
+        Key::Role(_, r) => r.clone(),
+        Key::Agent(_) => String::new(),
+    };
+    let member_list: Element<'a, Msg> = if members.is_empty() {
+        ui::faint("No agents here.").into()
+    } else {
+        column(members.iter().map(|a| ui::btn(&name_of(a), None, Kind::Ghost, Some(Msg::Member(a.cid)))).collect::<Vec<Element<'a, Msg>>>())
+            .spacing(4)
+            .into()
+    };
+    let tie_list: Vec<Element<'a, Msg>> = ties
+        .iter()
+        .take(6)
+        .map(|b| -> Element<'a, Msg> {
+            let (mine, other) = if inside.contains(&b.from) { (b.from, b.to) } else { (b.to, b.from) };
+            let mine_name = names.get(&mine).map(|a| name_of(a)).unwrap_or_else(|| format!("agent {mine}"));
+            let other_name = names.get(&other).map(|a| name_of(a)).unwrap_or_else(|| format!("agent {other}"));
+            column![
+                ui::btn(&other_name, None, Kind::Ghost, Some(Msg::Member(other))),
+                ui::faint(format!("{mine_name} · strength {:.1}", b.strength)),
+                bar(&b.opinion),
+            ]
+            .spacing(6)
+            .into()
+        })
+        .collect();
+    let ties_col: Element<'a, Msg> = if tie_list.is_empty() {
+        ui::faint("No ties outside yet.").into()
+    } else {
+        column(tie_list).spacing(10).into()
+    };
+
+    let panel = column![
+        column![ui::mono(title, 18.0, ui::INK), ui::faint(format!("{} agents", members.len()))].spacing(4),
+        stat("Mean trust in", shown(trust_in)),
+        stat("Mean trust out", shown(trust_out)),
+        ui::label("Members"),
+        member_list,
+        ui::label("Strongest outside ties"),
+        ties_col,
+    ]
+    .spacing(14);
+    column![panel].padding(4.0).into()
 }
 
 fn stat<'a>(key: &'static str, value: String) -> Element<'a, Msg> {
@@ -889,11 +1429,20 @@ mod tests {
     use super::*;
 
     fn agent(cid: u64, reputation: f32, name: &str) -> Agent {
-        Agent { cid, name: name.to_string(), role: String::new(), reputation, confidence: 0.0, wallet: 0.0 }
+        Agent { cid, name: name.to_string(), role: String::new(), tier: String::new(), reputation, confidence: 0.0, wallet: 0.0 }
+    }
+
+    /// An agent with a role, named after its cid.
+    fn member(cid: u64, role: &str) -> Agent {
+        Agent { role: role.to_string(), ..agent(cid, 50.0, &format!("agent {cid}")) }
     }
 
     fn bond(from: u64, to: u64, strength: f32) -> Bond {
         Bond { from, to, kind: "met".into(), strength, note: None, opinion: Opinion { e: 0.5, u: 0.0 } }
+    }
+
+    fn bond_e(from: u64, to: u64, strength: f32, e: f32) -> Bond {
+        Bond { opinion: Opinion { e, u: 0.0 }, ..bond(from, to, strength) }
     }
 
     /// Sixteen agents, ring and cross bonds, names of mixed length.
@@ -904,17 +1453,17 @@ mod tests {
         (agents, bonds)
     }
 
-    /// Every agent lies inside the box, and no two footprints clash.
-    fn assert_clear(agents: &[Agent], pos: &HashMap<u64, Pt>) {
-        for a in agents {
-            let (p, f) = (pos[&a.cid], foot(a));
-            assert!(p.x - f.half >= 0.0 && p.x + f.half <= LW, "agent {} leaves the box sideways", a.cid);
-            assert!(p.y - f.up >= 0.0 && p.y + f.down <= LH, "agent {} leaves the box vertically", a.cid);
+    /// Every node lies inside the box, and no two footprints clash.
+    fn assert_clear(nodes: &[Node], pos: &HashMap<Key, Pt>) {
+        for n in nodes {
+            let (p, f) = (pos[&n.key], n.fp);
+            assert!(p.x - f.half >= 0.0 && p.x + f.half <= LW, "{:?} leaves the box sideways", n.key);
+            assert!(p.y - f.up >= 0.0 && p.y + f.down <= LH, "{:?} leaves the box vertically", n.key);
         }
-        for (i, a) in agents.iter().enumerate() {
-            for b in &agents[i + 1..] {
-                let (ox, oy) = overlap(pos[&a.cid], foot(a), pos[&b.cid], foot(b));
-                assert!(ox <= 0.0 || oy <= 0.0, "agents {} and {} clash: {ox:.1} by {oy:.1}", a.cid, b.cid);
+        for (i, a) in nodes.iter().enumerate() {
+            for b in &nodes[i + 1..] {
+                let (ox, oy) = overlap(pos[&a.key], a.fp, pos[&b.key], b.fp);
+                assert!(ox <= 0.0 || oy <= 0.0, "{:?} and {:?} clash: {ox:.1} by {oy:.1}", a.key, b.key);
             }
         }
     }
@@ -922,11 +1471,12 @@ mod tests {
     #[test]
     fn layout_spreads_agents_over_the_box_without_clashes() {
         let (agents, bonds) = crowd();
+        let s = build_scene(&Society { agents, bonds }, false, &[]);
         let mut pos = HashMap::new();
-        layout(&agents, &bonds, &mut pos);
-        assert_clear(&agents, &pos);
-        let xs: Vec<f32> = agents.iter().map(|a| pos[&a.cid].x).collect();
-        let ys: Vec<f32> = agents.iter().map(|a| pos[&a.cid].y).collect();
+        layout(&s.nodes, &s.links, &mut pos);
+        assert_clear(&s.nodes, &pos);
+        let xs: Vec<f32> = s.nodes.iter().map(|n| pos[&n.key].x).collect();
+        let ys: Vec<f32> = s.nodes.iter().map(|n| pos[&n.key].y).collect();
         let span = |v: &[f32]| v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min);
         assert!(span(&xs) > 0.6 * LW, "the graph is not spread across the width");
         assert!(span(&ys) > 0.6 * LH, "the graph is not spread across the height");
@@ -934,15 +1484,70 @@ mod tests {
 
     #[test]
     fn a_new_agent_joins_without_moving_the_placed_ones() {
-        let (mut agents, bonds) = crowd();
+        let (agents, bonds) = crowd();
+        let mut d = Society { agents, bonds };
         let mut pos = HashMap::new();
-        layout(&agents, &bonds, &mut pos);
+        let s = build_scene(&d, false, &[]);
+        layout(&s.nodes, &s.links, &mut pos);
         let before = pos.clone();
-        agents.push(agent(99, 50.0, "Newcomer"));
-        layout(&agents, &bonds, &mut pos);
-        for (cid, p) in &before {
-            assert_eq!(pos[cid], *p, "agent {cid} moved");
+        d.agents.push(agent(99, 50.0, "Newcomer"));
+        let s = build_scene(&d, false, &[]);
+        layout(&s.nodes, &s.links, &mut pos);
+        for (key, p) in &before {
+            assert_eq!(pos[key], *p, "{key:?} moved");
         }
-        assert_clear(&agents, &pos);
+        assert_clear(&s.nodes, &pos);
+    }
+
+    #[test]
+    fn roles_map_to_families() {
+        assert_eq!(role_family("builder", ""), "build");
+        assert_eq!(role_family("security-reviewer", ""), "operations");
+        assert_eq!(role_family("librarian", ""), "knowledge");
+        assert_eq!(role_family("auditor", ""), "money");
+        assert_eq!(role_family("mayor", ""), "command");
+        assert_eq!(role_family("builder", "orchestrator"), "command", "the orchestrator tier is the command family");
+        assert_eq!(role_family("tinker", ""), "other", "an unknown role is other");
+        assert_eq!(family_label("money"), "Money");
+        assert_eq!(family_label("unknown"), "Other");
+    }
+
+    #[test]
+    fn cross_contacts_between_two_clusters_make_one_edge() {
+        let d = Society {
+            agents: vec![member(1, "builder"), member(2, "architect"), member(3, "finance"), member(4, "auditor")],
+            bonds: vec![bond_e(1, 3, 2.0, 0.2), bond_e(2, 4, 3.0, 0.8), bond_e(3, 1, 1.0, 0.5), bond_e(1, 2, 4.0, 0.9)],
+        };
+        let key_of = |cid: u64| d.agents.iter().find(|a| a.cid == cid).map(|a| Key::Family(family_of(a)));
+        let edges = links(&d.bonds, key_of, true);
+        assert_eq!(edges.len(), 1, "the bond inside Build is left out, the cross bonds make one edge");
+        assert!((edges[0].strength - 6.0).abs() < 1e-4, "summed strength");
+        assert!((edges[0].e - 0.5).abs() < 1e-4, "mean trust of 0.2, 0.8 and 0.5");
+    }
+
+    #[test]
+    fn families_open_into_roles_and_a_single_role_collapses() {
+        let d = Society {
+            agents: vec![member(1, "builder"), member(2, "builder"), member(3, "builder"), member(4, "architect"), member(5, "finance")],
+            bonds: vec![],
+        };
+        let keys = |nav: &[Key]| -> Vec<Key> { build_scene(&d, true, nav).nodes.into_iter().map(|n| n.key).collect() };
+        let top = keys(&[]);
+        assert!(top.contains(&Key::Family("build")) && top.contains(&Key::Family("money")));
+
+        let build = keys(&[Key::Family("build")]);
+        assert!(build.contains(&Key::Role("build", "builder".into())), "a role with several agents is a cluster");
+        assert!(build.contains(&Key::Agent(4)), "a role with one agent shows that agent directly");
+        assert!(!build.contains(&Key::Family("build")), "the open family is replaced by its roles");
+        assert!(build.contains(&Key::Family("money")), "the other families stay as clusters");
+
+        let mut nav = vec![Key::Family("build"), Key::Role("build", "builder".into())];
+        let role = keys(&nav);
+        assert!(role.contains(&Key::Agent(1)) && role.contains(&Key::Agent(2)) && role.contains(&Key::Agent(3)));
+        assert!(!role.contains(&Key::Role("build", "builder".into())));
+
+        // The breadcrumb's "Build" climbs back to the family's roles.
+        nav.truncate(1);
+        assert_eq!(keys(&nav), build);
     }
 }
