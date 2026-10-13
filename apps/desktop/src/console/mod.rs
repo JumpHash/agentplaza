@@ -23,6 +23,7 @@ pub mod screens;
 pub mod services;
 pub mod setup;
 pub mod shell;
+pub mod toast;
 pub mod ui;
 
 use iced::{Element, Subscription, Task};

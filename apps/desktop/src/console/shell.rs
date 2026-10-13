@@ -3,13 +3,14 @@
 //! health, STOP ALL / RESUME) and the held banner — as on the web console.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, row, scrollable, tooltip, Space};
+use iced::widget::{button, column, container, row, scrollable, tooltip, Space, Stack};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 
 use super::events;
 use super::screens::{Id, NAV};
-use super::{ui, Ctx};
+use super::{toast, ui, Ctx};
 use crate::theme::{CRIT, HOVER, OK};
 
 /// The sidebar's display mode.
@@ -50,6 +51,8 @@ pub struct State {
     /// A count reload is in flight; a frame that asks for one meanwhile sets `again`.
     pub loading: bool,
     pub again: bool,
+    /// The toasts on screen, newest last; they outlive the screen that raised them.
+    pub toasts: Vec<toast::Toast>,
 }
 
 impl Default for State {
@@ -73,6 +76,7 @@ impl Default for State {
             target: None,
             loading: false,
             again: false,
+            toasts: Vec::new(),
         }
     }
 }
@@ -91,6 +95,10 @@ pub enum Msg {
     Done(Result<serde_json::Value, String>),
     /// A hub frame from the top bar's stream.
     Frame(events::Event),
+    /// Puts a toast up for `toast::LIFETIME`.
+    Toast(toast::Kind, String),
+    /// The toasts' clock: takes down the ones whose time is up. Ticks only while a toast is on screen.
+    ToastTick(Instant),
 }
 
 /// The shell's own data: the plaza's held state and the sidebar counts.
@@ -151,6 +159,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             state.loading = false;
             (if std::mem::take(&mut state.again) { load(ctx) } else { Task::none() }, None)
         }
+        Msg::Toast(kind, text) => {
+            toast::push(&mut state.toasts, kind, text, Instant::now());
+            (Task::none(), None)
+        }
+        Msg::ToastTick(now) => {
+            toast::expire(&mut state.toasts, now);
+            (Task::none(), None)
+        }
         Msg::Frame(event) => {
             if apply_frame(state, &event.kind, &event.data) {
                 if state.loading {
@@ -204,7 +220,11 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
     };
     main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
     let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
-    row![sidebar(state, wrap), main].height(Length::Fill).into()
+    let base: Element<'a, M> = row![sidebar(state, wrap), main].height(Length::Fill).into();
+    if state.toasts.is_empty() {
+        return base;
+    }
+    Stack::new().push(base).push(toast::view(&state.toasts)).into()
 }
 
 /// The id of the wrap around a screen that does not scroll its own page; the Machines screen scrolls
@@ -238,10 +258,13 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
 }
 
 pub fn subscription(state: &State) -> Subscription<Msg> {
-    match &state.target {
+    let frames = match &state.target {
         Some(target) => events::top_bar(target).map(Msg::Frame),
         None => Subscription::none(),
-    }
+    };
+    // The toasts' clock runs only while a toast is on screen (a quarter-second step ends them within 4.25 s).
+    let clock = if state.toasts.is_empty() { Subscription::none() } else { iced::time::every(Duration::from_millis(250)).map(Msg::ToastTick) };
+    Subscription::batch([frames, clock])
 }
 
 fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
