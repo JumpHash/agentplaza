@@ -737,6 +737,8 @@ pub struct World {
     pub fog_far: f32,
     /// The clear colour behind everything (the sky dome covers it).
     pub background: Color,
+    /// Paint the sky dome in `background` too, one flat colour (the robot lab's `bg=dark|light`).
+    pub flat_background: bool,
     /// The outline hull's thickness and ink (`toon.ts`: 0.024, 0x2b2420).
     pub outline_thickness: f32,
     pub ink: Color,
@@ -761,6 +763,7 @@ impl Default for World {
             fog_near: 60.0,
             fog_far: 230.0,
             background: Color::hex(0x05071a),
+            flat_background: false,
             outline_thickness: 0.024,
             ink: Color::hex(0x2b2420),
         }
@@ -846,6 +849,8 @@ pub struct Frame {
     pub fades: Arc<Vec<Fade>>,
     /// What the cutaways keep in view: the board's atom (None: the camera's target).
     pub focus: Option<Vec3>,
+    /// The plaza's box (min, max): a cutaway standing over it fades as the web's `overArea` does (None: no plaza).
+    pub plaza: Option<(Vec3, Vec3)>,
     /// The Machines view instanced animation (cable packets and status rings), or None.
     pub animated: Option<Arc<crate::fleet::FleetInstances>>,
 }
@@ -1206,14 +1211,14 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
     let mut groups: Vec<(Draw, Vec<Part>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut rest = Vec::new();
-    for d in draws {
+    for d in draws.into_iter().flat_map(unfold) {
         let fade = if by_fade { d.fade } else { 0 };
         let (key, tint) = match d.kind {
-            DrawKind::Mesh if d.material.shading == Shading::Toon => (
+            DrawKind::Mesh if d.material.shading == Shading::Toon && d.geo.slots.is_empty() => (
                 format!("c|{}|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade),
                 Some(d.material.color.to_array()),
             ),
-            DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.colors.is_empty() && d.geo.slots.is_empty() => (
+            DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.slots.is_empty() => (
                 format!(
                     "b|{}|{}|{}|{}|{}|{}|{}|{}",
                     class_of(&d.material),
@@ -1257,6 +1262,26 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
     out
 }
 
+/// An instanced draw as one plain draw per instance, its matrix and colour (multiplied into the
+/// material's, as the GPU does) baked in, so that it merges with the rest. Outline instances keep
+/// the ink. Other draws pass through.
+fn unfold(d: Draw) -> Vec<Draw> {
+    let (instances, count, kind) = match &d.kind {
+        DrawKind::Instanced(instances, count) => (Arc::clone(instances), *count, DrawKind::Mesh),
+        DrawKind::OutlineInstanced(instances, count) => (Arc::clone(instances), *count, DrawKind::Outline),
+        _ => return vec![d],
+    };
+    let outline = matches!(kind, DrawKind::Outline);
+    instances
+        .iter()
+        .take(count)
+        .map(|inst| {
+            let color = if outline { d.material.color } else { d.material.color.mul(inst.color) };
+            Draw { kind: kind.clone(), model: inst.matrix * d.model, material: Material { color, ..d.material.clone() }, ..d.clone() }
+        })
+        .collect()
+}
+
 /// What makes two toon materials differ in more than their base colour: everything but `color`.
 fn class_of(m: &Material) -> String {
     format!(
@@ -1285,13 +1310,19 @@ pub fn merge(parts: &[(Geo, Mat4)]) -> Geo {
 /// [`merge`], with each part's vertex colour (None: white). A merge with no colours at all has none.
 pub fn merge_tinted(parts: &[(Geo, Mat4, Option<[f32; 3]>)]) -> Geo {
     let total: usize = parts.iter().map(|(g, _, _)| g.positions.len()).sum();
-    let tinted = parts.iter().any(|p| p.2.is_some());
+    let tinted = parts.iter().any(|p| p.2.is_some() || !p.0.colors.is_empty());
     let (mut positions, mut normals, mut uvs, mut indices) =
         (Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total), Vec::new());
     let mut colors: Vec<[f32; 3]> = Vec::with_capacity(if tinted { total } else { 0 });
     for (geo, m, tint) in parts {
         if tinted {
-            colors.extend(std::iter::repeat(tint.unwrap_or([1.0; 3])).take(geo.positions.len()));
+            // The part's own vertex colours (if any) times its tint: the colour the GPU would multiply.
+            let t = tint.unwrap_or([1.0; 3]);
+            if geo.colors.is_empty() {
+                colors.extend(std::iter::repeat(t).take(geo.positions.len()));
+            } else {
+                colors.extend(geo.colors.iter().map(|c| [c[0] * t[0], c[1] * t[1], c[2] * t[2]]));
+            }
         }
         let base = positions.len() as u32;
         let normal_matrix = Mat3::from_mat4(*m).inverse().transpose();

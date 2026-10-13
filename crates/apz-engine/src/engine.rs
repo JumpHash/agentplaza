@@ -425,6 +425,19 @@ impl Engine {
         self.dirty = true;
     }
 
+    /// Aims the active floor's camera at `target`, from `eye` (or from where it is now, keeping its distance).
+    /// The host's debug look: it does not change the scene, only the framing.
+    pub fn look_at(&mut self, target: [f32; 3], eye: Option<[f32; 3]>) {
+        let target = glam::Vec3::from_array(target);
+        let floor = self.stage.active();
+        let eye = match eye {
+            Some(e) => glam::Vec3::from_array(e),
+            None => floor.orbit.camera(1.0).eye,
+        };
+        floor.orbit.look(eye, target);
+        self.touch();
+    }
+
     /// Marks the state as changed, for a host that changed [`Engine::stage`] directly.
     pub fn touch(&mut self) {
         self.dirty = true;
@@ -568,6 +581,11 @@ impl Engine {
     /// The draw calls of the last frame drawn with the GPU by category (zeros without a GPU).
     pub fn draw_stats(&self) -> render::DrawStats {
         self.gpu.as_ref().map_or_else(render::DrawStats::default, Renderer::draw_stats)
+    }
+
+    /// Seconds since the ENTER sequence began (`Entry::elapsed`), or None when no sequence runs. The debug hook reads it.
+    pub fn entry_time(&self) -> Option<f64> {
+        self.stage.entry.as_ref().map(|e| e.elapsed())
     }
 }
 

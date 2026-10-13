@@ -9,6 +9,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -178,6 +179,45 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
     Ok(engine_web)
 }
 
+/// The robot lab's options and the `APZ_ROBOT_*` name each one sets (read by `robots::lab` when the stage builds).
+const LAB_OPTIONS: [(&str, &str); 10] = [
+    ("species", "APZ_ROBOT_LAB"),
+    ("clip", "APZ_ROBOT_CLIP"),
+    ("tool", "APZ_ROBOT_TOOL"),
+    ("carry", "APZ_ROBOT_CARRY"),
+    ("state", "APZ_ROBOT_STATE"),
+    ("hue", "APZ_ROBOT_HUE"),
+    ("orch", "APZ_ROBOT_ORCH"),
+    ("cam", "APZ_ROBOT_CAM"),
+    ("t", "APZ_ROBOT_T"),
+    ("bg", "APZ_ROBOT_BG"),
+];
+
+/// Starts the engine as the robot lab: `opts` is `{ backend?, species?, clip?, tool?, carry?, state?, hue?, orch?, cam?, t?, bg? }`
+/// (a missing species is `all`; a boolean `orch` is 1 or 0). The options are set as env names only while the stage builds.
+#[wasm_bindgen]
+pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
+    let mut vars = BTreeMap::new();
+    for (key, env) in LAB_OPTIONS {
+        let v = Reflect::get(&opts, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED);
+        let value = if let Some(s) = v.as_string() {
+            s
+        } else if let Some(b) = v.as_bool() {
+            (if b { "1" } else { "0" }).to_string()
+        } else if let Some(n) = v.as_f64() {
+            n.to_string()
+        } else {
+            continue;
+        };
+        vars.insert(env.to_string(), value);
+    }
+    vars.entry("APZ_ROBOT_LAB".to_string()).or_insert_with(|| "all".to_string());
+    apz_engine::set_env_overrides(vars);
+    let started = start(canvas, opts).await;
+    apz_engine::set_env_overrides(BTreeMap::new());
+    started
+}
+
 #[wasm_bindgen]
 impl WebEngine {
     /// One machine's stage pose rendered offscreen at `w` by `h` (each at most 512), as RGBA8 bytes. A Promise, since the
@@ -231,6 +271,15 @@ impl WebEngine {
         self.shared.borrow_mut().engine.command(cmd);
     }
 
+    /// Aims the camera at (x, y, z) from `dist` away, at polar angle `polar` from +Y and `azimuth` (radians, as the
+    /// web's `__apzLookAt`: an eye at target + spherical(dist, polar, azimuth), three.js convention).
+    pub fn look_at(&self, x: f32, y: f32, z: f32, dist: f32, polar: f32, azimuth: f32) {
+        let (sp, cp) = polar.sin_cos();
+        let (sa, ca) = azimuth.sin_cos();
+        let eye = [x + dist * sp * sa, y + dist * cp, z + dist * sp * ca];
+        self.shared.borrow_mut().engine.look_at([x, y, z], Some(eye));
+    }
+
     /// Registers `cb(kind, id)`, called on each click in the scene: kind 'machine', 'robot' or 'none', and id the
     /// machine id, the robot's cid as a string, or ''.
     pub fn on_pick(&self, cb: Function) {
@@ -276,6 +325,11 @@ impl WebEngine {
     /// Whether the engine wants another frame.
     pub fn busy(&self) -> bool {
         self.shared.borrow().engine.busy()
+    }
+
+    /// Seconds since the ENTER sequence began, or undefined when none runs (the debug hook's entry clock).
+    pub fn entry_time(&self) -> Option<f64> {
+        self.shared.borrow().engine.entry_time()
     }
 
     /// The frames drawn with the GPU so far.

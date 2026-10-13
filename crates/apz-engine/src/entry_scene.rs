@@ -253,6 +253,11 @@ impl Entry {
         Entry::new(None, entry::DIRECT_START, true, board_fog)
     }
 
+    /// Seconds since the sequence began on its timeline: a handoff starts at 0, a direct load at the wave's start.
+    pub fn elapsed(&self) -> f64 {
+        self.t - if self.direct { entry::DIRECT_START } else { 0.0 }
+    }
+
     /// Whether the sequence drives the camera (the orbit ignores input meanwhile).
     pub fn driving(&self) -> bool {
         !self.finished

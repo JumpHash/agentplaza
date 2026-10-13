@@ -23,6 +23,8 @@ interface LabelMeta {
 
 /** The surface of the wasm engine this mount uses (the crate's WebEngine, wasm-bindgen --target web). */
 interface WebEngine {
+  /** Seconds since ENTER began (the entry clock), or undefined when no sequence runs. */
+  entry_time: () => number | undefined;
   backend(): string;
   set_feed(json: string): void;
   command(name: string, arg?: string | null): void;
@@ -35,15 +37,31 @@ interface WebEngine {
   draw_calls(): number;
   draw_breakdown(): Uint32Array;
   draw_stats(): string;
+  look_at(x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void;
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   destroy(): void;
 }
 
 /** The glue module: its default export loads the .wasm; `start` builds the engine on a canvas. */
+/** The robot lab's options, as the route names them; each maps to its APZ_ROBOT_* name in the engine. Unset ones take the lab's defaults. */
+export interface LabOptions {
+  species?: string;
+  clip?: string;
+  tool?: string;
+  carry?: string;
+  state?: string;
+  hue?: number;
+  orch?: boolean;
+  cam?: string;
+  t?: number;
+  bg?: string;
+}
+
 interface EngineGlue {
   default: () => Promise<unknown>;
   start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
+  start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
 
 /** One reusable DOM label: the pool grows to the most labels a view has, and is never rebuilt per frame. */
@@ -65,15 +83,27 @@ export function engineWanted(): boolean {
   return new URLSearchParams(location.search).get('engine') === 'wasm' && glueName() !== '';
 }
 
-/** Loads the glue and starts an engine on the canvas: the Floor's mount and the Machines rows share it. Throws without a glue. */
-export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
+/** The glue, loaded and initialised. Throws without a glue (this build has no engine). */
+async function loadGlue(): Promise<EngineGlue> {
   const name = glueName();
   if (name === '') throw new Error('this build has no engine');
   const glueUrl = new URL('./' + name, document.baseURI).href;
-  const backend: 'auto' | 'webgl2' = new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto';
   const glue = (await import(/* @vite-ignore */ glueUrl)) as EngineGlue;
   await glue.default();
-  return glue.start(canvas, { backend });
+  return glue;
+}
+
+/** The backend the page asks for: webgl2 with ?gl=1, else auto. */
+const backendOf = (): 'auto' | 'webgl2' => (new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto');
+
+/** Loads the glue and starts an engine on the canvas: the Floor's mount and the Machines rows share it. Throws without a glue. */
+export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
+  return (await loadGlue()).start(canvas, { backend: backendOf() });
+}
+
+/** The robot lab on the wasm engine: the route's options under the engine's APZ_ROBOT_* names. Throws without a glue. */
+export async function startLabEngine(canvas: HTMLCanvasElement, lab: LabOptions): Promise<WebEngine> {
+  return (await loadGlue()).start_lab(canvas, { ...lab, backend: backendOf() });
 }
 
 /** A thumbnail request a destroyed engine never answered: the caller asks again on the engine that replaces it. */
@@ -486,8 +516,8 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   };
 
   // Debug hooks (window.__apz*) for tests and developers: the same names and return shapes as the three.js Floor,
-  // backed by the engine. The engine has no nav world (cells, lifts, shoves, the ground audit) and no camera setter
-  // yet, so those hooks answer null and log once; the entry clock and the robot list are not exposed either.
+  // backed by the engine. The engine has no nav world (cells, lifts, shoves, the ground audit) yet, so those hooks answer
+  // null and log once. The camera is WebEngine.look_at (no hook names it yet); the robot list is not exposed either.
   const installDebugHooks = (started: WebEngine): (() => void) => {
     const w = window as unknown as Record<string, unknown>;
     const logged = new Set<string>();
@@ -506,7 +536,8 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
       }
     };
     const hooks: Record<string, unknown> = {
-      __apzLookAt: stub('__apzLookAt'),
+      __apzLookAt: (x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void =>
+        started.look_at(x, y, z, dist, polar, azimuth),
       __apzScene: () => ({ frames: started.frames_drawn(), draws: started.draw_calls(), stats: stats() }),
       __apzPerf: () => ({
         frames: started.frames_drawn(),
@@ -526,7 +557,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
       __apzOpen: (id: string) => started.command('popup', id),
       __apzEnter: (id: string) => started.command('enter', id),
       __apzBack: () => started.command('back'),
-      __apzEntryTime: () => null,
+      __apzEntryTime: () => started.entry_time() ?? null,
       __apzBots: () => [],
       __apzTrace: () => ({ frames: started.frames_drawn(), draws: started.draw_calls() }),
       __apzNavCell: stub('__apzNavCell'),

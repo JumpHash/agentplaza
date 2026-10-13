@@ -13,6 +13,7 @@ use glam::{Mat4, Vec3};
 
 use super::fleet::{FleetInstances, PacketInstance, RingInstance, WRAP_PERIOD};
 use super::scene::{merge, world_sphere, Draw, DrawKind, Fade, Frame, Frustum, Geo, Lod, Shading, Side, Texture};
+use super::hardware::{over_area, CUTAWAY_OPACITY};
 
 /// A rectangle in pixels: the host's widget or target rectangle.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1195,8 +1196,6 @@ pub struct Primitive {
 
 /// Where a level of detail switches on or off: this far (as a fraction) inside or past its threshold.
 const LOD_HYSTERESIS: f32 = 0.05;
-/// The opacity a cutaway fades to while it stands between the eye and the focus.
-const FADE_TO: f32 = 0.25;
 /// An instanced part casts a shadow only when its geometry is at least this big (units): a resistor
 /// in a copper array does not.
 const SHADOW_MIN_INSTANCE: f32 = 1.0;
@@ -1255,6 +1254,17 @@ fn is_transparent(d: &Draw, alpha: f32) -> bool {
     d.material.transparent || d.material.additive || matches!(d.material.shading, Shading::Shadow) || alpha < 1.0
 }
 
+/// The opacity a cutaway eases toward: `CUTAWAY_OPACITY` while the segment from the eye to the focus
+/// passes through its box, or the plaza area is known and the box stands over it; else 100 %.
+fn fade_target(f: &Fade, eye: Vec3, focus: Vec3, plaza: Option<(Vec3, Vec3)>) -> f32 {
+    let hit = segment_hits(f.min, f.max, eye, focus) || plaza.is_some_and(|(lo, hi)| over_area(f.min, f.max, lo, hi));
+    if hit {
+        CUTAWAY_OPACITY
+    } else {
+        1.0
+    }
+}
+
 /// Whether the segment `a`..`b` passes through the box `min`..`max` (the slab test).
 fn segment_hits(min: Vec3, max: Vec3, a: Vec3, b: Vec3) -> bool {
     let d = b - a;
@@ -1299,14 +1309,15 @@ impl Pipeline {
         mask
     }
 
-    /// Eases each cutaway's opacity toward 25 % while the segment from the eye to the focus passes
-    /// through its box, and back to 100 % once it does not (settled in about 0.3 s).
-    fn fade_step(&mut self, fades: &[Fade], eye: Vec3, focus: Vec3, time: f32) {
+    /// Eases each cutaway's opacity toward `CUTAWAY_OPACITY` while the segment from the eye to the focus
+    /// passes through its box or the box is over the plaza area, and back to 100 % once it is not
+    /// (settled in about 0.3 s).
+    fn fade_step(&mut self, fades: &[Fade], eye: Vec3, focus: Vec3, plaza: Option<(Vec3, Vec3)>, time: f32) {
         let dt = self.fade_time.map_or(0.0, |t| (time - t).clamp(0.0, 0.1));
         self.fade_time = Some(time);
         let k = 1.0 - (-dt * 12.0).exp();
         for f in fades {
-            let target = if segment_hits(f.min, f.max, eye, focus) { FADE_TO } else { 1.0 };
+            let target = fade_target(f, eye, focus, plaza);
             let a = self.fade_alpha.entry(f.id).or_insert(1.0);
             *a += (target - *a) * k;
         }
@@ -1501,12 +1512,13 @@ impl Primitive {
         let light_view = Mat4::look_at_rh(w.sun_position, Vec3::ZERO, Vec3::Y);
         let e = w.shadow_extent;
         let light_proj = Mat4::orthographic_rh(-e, e, -e, e, w.shadow_near, w.shadow_far);
-        let (sky_top, sky_horizon, sky_ground) = f
+        let sky = f
             .statics
             .iter()
             .chain(&f.draws)
-            .find_map(|d| if let Shading::Sky { top, horizon, ground } = d.material.shading { Some((top, horizon, ground)) } else { None })
-            .unwrap_or((w.background, w.background, w.background));
+            .find_map(|d| if let Shading::Sky { top, horizon, ground } = d.material.shading { Some((top, horizon, ground)) } else { None });
+        let flat = (w.background, w.background, w.background);
+        let (sky_top, sky_horizon, sky_ground) = if w.flat_background { flat } else { sky.unwrap_or(flat) };
         let v4 = |c: super::scene::Color, a: f32| [c.r, c.g, c.b, a];
         let mut point_pos = [[0.0; 4]; 4];
         let mut point_color = [[0.0; 4]; 4];
@@ -1550,7 +1562,7 @@ impl Primitive {
         // Detail levels (by the eye's distance, with hysteresis) and the cutaways' fades.
         let eye = camera.eye;
         let mask = p.detail_mask(f.lod, eye);
-        p.fade_step(&f.fades, eye, f.focus.unwrap_or(camera.target), f.time);
+        p.fade_step(&f.fades, eye, f.focus.unwrap_or(camera.target), f.plaza, f.time);
         let fades_now = p.fade_alpha.clone();
         let alpha = |d: &Draw| -> f32 {
             let fade = if d.fade != 0 { fades_now.get(&d.fade).copied().unwrap_or(1.0) } else { 1.0 };
@@ -1918,3 +1930,24 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod plaza_fade_tests {
+    use super::*;
+
+    #[test]
+    fn a_part_over_the_plaza_eases_to_the_cutaway_opacity() {
+        // The part's box is clear of the eye-to-focus segment (both at x = 100), but over the plaza area.
+        let part = Fade { id: 1, min: Vec3::new(10.0, 0.0, 10.0), max: Vec3::new(12.0, 2.0, 12.0) };
+        let (eye, focus) = (Vec3::new(100.0, 50.0, 100.0), Vec3::new(100.0, 0.0, 100.0));
+        let plaza = Some((Vec3::new(-20.0, -1.0, -20.0), Vec3::new(20.0, 5.0, 20.0)));
+        assert_eq!(fade_target(&part, eye, focus, None), 1.0);
+        assert_eq!(fade_target(&part, eye, focus, plaza), CUTAWAY_OPACITY);
+        // Eased with the fade's rate over 0.1 s steps, it settles at the cutaway opacity.
+        let k = 1.0 - (-0.1f32 * 12.0).exp();
+        let mut a = 1.0f32;
+        for _ in 0..60 {
+            a += (fade_target(&part, eye, focus, plaza) - a) * k;
+        }
+        assert!((a - 0.15).abs() < 1e-3, "settled at {a}");
+    }
+}

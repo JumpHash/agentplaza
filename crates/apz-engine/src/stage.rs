@@ -302,6 +302,8 @@ pub fn refresh_board(&mut self) {
     let Some(model) = hardware::model(name) else { return };
     let key = format!("{name}|{:?}|{status:?}", params.values);
     let mut built = false;
+    // The machine the board is for, as the web's route names it: its rooms are seeded by it, and its built parts are cached by it.
+    self.floor.machine_id = named.clone().unwrap_or_default();
     if self.floor.board.as_ref().map(|b| b.key.as_str()) != Some(key.as_str()) {
         self.floor.show_board(key, model, params, status);
         // A new board is framed afresh (a prebuild, while the Machines view shows, leaves the view as it is).
@@ -310,8 +312,6 @@ pub fn refresh_board(&mut self) {
         }
         built = true;
     }
-    // The machine the board is for, as the web's route names it: its rooms are seeded by it.
-    self.floor.machine_id = named.unwrap_or_default();
     // While the popup shows, the rooms and the bake wait for `work_board`'s frames (a board in view is built at once).
     if in_machines {
         self.floor.begin_sync(&on);
@@ -681,6 +681,11 @@ pub fn tick(&mut self, now: Instant) -> Motion {
             if w > 0.0 && h > 0.0 {
                 let mut frame = self.floor.frame(w / h);
                 frame.overlays = self.floor.label_overlays(w, h, self.scale);
+                // The robot lab's `bg` (dark or light) replaces the floor's sky colour.
+                if let Some(bg) = self.lab.as_ref().and_then(lab::Lab::background) {
+                    frame.world.background = bg;
+                    frame.world.flat_background = true;
+                }
                 self.frame = Arc::new(frame);
             }
         }

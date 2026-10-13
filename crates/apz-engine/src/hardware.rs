@@ -48,6 +48,21 @@ pub fn models_for(kind: &str, vendor: Option<&str>) -> (&'static str, &'static s
 /// inline material (colour, emissive, glow, opacity, flat).
 const PALETTE_SRC: &str = include_str!("../../../assets/hardware/palette.json");
 
+/// The opacity a cutaway fades to while it stands between the eye and the focus, or over the plaza
+/// area (the web's `CUTAWAY_OPACITY`).
+pub const CUTAWAY_OPACITY: f32 = 0.15;
+
+/// Whether a cutaway part (`part_min`..`part_max`) stands over the plaza area (`area_min`..`area_max`):
+/// its footprint overlaps the area's in world x and z, and its top is above the area's floor, so from a
+/// raised view it stands over the robots (the web's `overArea`).
+pub fn over_area(part_min: Vec3, part_max: Vec3, area_min: Vec3, area_max: Vec3) -> bool {
+    part_max.y > area_min.y
+        && part_min.x < area_max.x
+        && part_max.x > area_min.x
+        && part_min.z < area_max.z
+        && part_max.z > area_min.z
+}
+
 // ---- Schema ---------------------------------------------------------------------------------
 
 /// A model file. `view` says which of the three kinds it is.
@@ -121,8 +136,8 @@ pub struct Part {
     /// close enough to the board (see `scene::Lod`). None: always.
     #[serde(default)]
     pub detail: Option<u8>,
-    /// Fades to 25 % opacity while it stands between the camera and the board's focus (the atom,
-    /// or the orbit's target). The part and its children fade together.
+    /// Fades to `CUTAWAY_OPACITY` (15 %) while it stands between the camera and the board's focus (the
+    /// atom, or the orbit's target), or over the plaza area. The part and its children fade together.
     #[serde(default)]
     pub cutaway: bool,
     /// `gpus`, `gpus >= n`, `!gpus`: shown only if it holds on the params.
@@ -1942,5 +1957,27 @@ mod rig_tests {
         assert_eq!(a.len(), b.len(), "{name}: the merged roots hold every vertex");
         assert!(all_matched(&a, &b, 1e-5) && all_matched(&b, &a, 1e-5), "{name}: the merged roots move the vertices");
         assert!(merged.len() <= unmerged.len(), "{name}: the merge never draws more than the meshes");
+    }
+}
+
+#[cfg(test)]
+mod over_area_tests {
+    use super::*;
+
+    #[test]
+    fn over_area_takes_inside_crossing_outside_and_below_the_floor() {
+        let (lo, hi) = (Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 5.0, 10.0));
+        // Inside.
+        assert!(over_area(Vec3::new(-1.0, 1.0, -1.0), Vec3::new(1.0, 2.0, 1.0), lo, hi));
+        // Crossing the x edge.
+        assert!(over_area(Vec3::new(8.0, 1.0, -1.0), Vec3::new(14.0, 2.0, 1.0), lo, hi));
+        // Outside in x and z.
+        assert!(!over_area(Vec3::new(20.0, 1.0, 20.0), Vec3::new(22.0, 2.0, 22.0), lo, hi));
+        // Touching the x edge only: the part's min x (10) is not below the area's max x (10).
+        assert!(!over_area(Vec3::new(10.0, 1.0, 0.0), Vec3::new(12.0, 2.0, 1.0), lo, hi));
+        // Below the floor: its top (-1) is under the area's floor (0).
+        assert!(!over_area(Vec3::new(0.0, -3.0, 0.0), Vec3::new(1.0, -1.0, 1.0), lo, hi));
+        // Its top exactly at the floor is not above it.
+        assert!(!over_area(Vec3::new(0.0, -3.0, 0.0), Vec3::new(1.0, 0.0, 1.0), lo, hi));
     }
 }

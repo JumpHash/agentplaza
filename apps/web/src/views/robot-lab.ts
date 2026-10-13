@@ -14,6 +14,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { h } from '../ui/dom';
+import { startLabEngine, type LabOptions } from './engine-mount';
 import type { Cleanup } from './index';
 import { makeRobot, ROBOT_PALETTE, type Robot, type RobotState } from './floor3d/robot';
 import { registry } from './floor3d/robots/files';
@@ -113,7 +114,46 @@ const PROP_CAM: Record<Cam, { lineup: [number, number, number]; one: [number, nu
   top: { lineup: [0, 18, 0.5], one: [0, 5.6, 0.9] },
 };
 
+/** `engine=wasm` on the route: the same lab on the wasm engine, its canvas filling the root. The options are read once. */
+function mountEngineLab(root: HTMLElement, route: URLSearchParams): Cleanup {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:70vh;min-height:420px;touch-action:none';
+  root.append(canvas);
+  const tRaw = route.get('t') ?? '';
+  const lab: LabOptions = {
+    species: route.get('species') ?? 'all',
+    clip: route.get('clip') ?? '',
+    tool: route.get('tool') ?? '',
+    carry: route.get('carry') ?? '',
+    state: route.get('state') ?? 'idle',
+    hue: Number(route.get('hue') ?? 200),
+    orch: route.get('orch') === '1',
+    cam: route.get('cam') ?? 'front',
+    t: tRaw !== '' && Number.isFinite(Number(tRaw)) ? Math.max(0, Number(tRaw)) : undefined,
+    bg: route.get('bg') ?? '',
+  };
+  let engine: { destroy: () => void } | null = null;
+  let closed = false;
+  startLabEngine(canvas, lab).then(
+    (started) => {
+      if (closed) started.destroy();
+      else engine = started;
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      canvas.replaceWith(h('p', { style: 'color:var(--ink-2)' }, `The engine did not start: ${msg}`));
+    },
+  );
+  return () => {
+    closed = true;
+    engine?.destroy();
+    canvas.remove();
+  };
+}
+
 export function mount(root: HTMLElement): Cleanup {
+  const route = new URLSearchParams(location.hash.split('?')[1] ?? '');
+  if (route.get('engine') === 'wasm') return mountEngineLab(root, route);
   const reg = registry();
   const propReg = propRegistry();
   let state = readState(location.hash);

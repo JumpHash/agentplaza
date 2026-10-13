@@ -41,9 +41,23 @@ pub mod world;
 pub use engine::{agent_list, feed_from_json, Cmd, Engine, Feed, FrameOut, Pick, Renderer, Thumbnail};
 pub use stage::Motion;
 
+/// The env overrides a host sets (the web's robot lab passes its options as `APZ_ROBOT_*`). They read before the real env.
+static ENV_OVERRIDES: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Replaces the env overrides; an empty map clears them. A browser has no environment, so this is how the web sets knobs.
+pub fn set_env_overrides(map: std::collections::BTreeMap<String, String>) {
+    if let Ok(mut m) = ENV_OVERRIDES.lock() {
+        *m = map;
+    }
+}
+
 /// An `APZ_*` capture or debug knob from the environment. A browser has no environment, so every knob reads as
-/// unset there (the defaults apply).
+/// unset there (the defaults apply), unless the host set it with `set_env_overrides`.
 pub(crate) fn env_var(name: &str) -> Option<String> {
+    if let Some(v) = ENV_OVERRIDES.lock().ok().and_then(|m| m.get(name).cloned()) {
+        return Some(v);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var(name).ok()

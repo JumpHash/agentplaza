@@ -94,6 +94,7 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
         overlays: Vec::new(),
         lod: None,
         fades: Arc::new(Vec::new()),
+        plaza: None,
         focus: None,
     }
 }

@@ -12,6 +12,7 @@ use glam::{Mat4, Quat, Vec3};
 use super::board_layout::{layout_on_board, trace_graph, BoardDistrict, BoardLayout, BoardParams, Bounds, TraceGraph};
 use super::{AgentInfo, Board, Bot, Colors, District, DistrictLight, Floor, Shared, TracePulses};
 use crate::canvas::Canvas;
+use crate::entry_scene::{board_key, release_board, take_board};
 use crate::controls::FOV_DEG;
 use crate::geometry;
 use crate::hardware::{self, Model, Params, Pulses, Status};
@@ -488,7 +489,9 @@ impl Floor {
     /// previous board, its robots and rooms; `sync` places the rooms and robots.
     pub fn show_board(&mut self, key: String, model: &'static Model, params: Params, status: Status) {
         self.clear_board();
-        let built = hardware::build(model, &params);
+        // The built parts are the machine's own (its id, model and params): a machine shown again takes them from the cache.
+        let cache_key = board_key(&self.machine_id, &key, &params);
+        let built = take_board(&mut self.boards, &cache_key, || hardware::build(model, &params));
         let obj = Obj::group();
         obj.add(&built.root);
         obj.add(&hardware::traces(model));
@@ -518,6 +521,7 @@ impl Floor {
         self.root.add(&obj);
         self.board = Some(Board {
             key,
+            cache_key,
             model,
             params,
             status,
@@ -542,6 +546,9 @@ impl Floor {
         self.root.remove(&self.board_ground);
         if let Some(old) = self.board.take() {
             self.root.remove(&old.obj);
+            // The built parts leave the scene with the board and go back to the cache (not dropped).
+            old.obj.remove(&old.built.root);
+            release_board(&mut self.boards, &old.cache_key, old.built);
         }
         for bot in self.bots.drain(..) {
             remove_bot(&self.root, &bot);
@@ -839,6 +846,19 @@ mod tests {
         let once = floor.root.get().children.len();
         floor.show_board("again".into(), model, Params::default(), Status::Online);
         assert_eq!(floor.root.get().children.len(), once, "a second board replaces the first, it does not add to the scene");
+    }
+
+    #[test]
+    fn showing_a_machines_board_again_takes_its_built_parts_from_the_cache() {
+        let model = hardware::model("board/workstation").expect("the workstation board parses");
+        let mut floor = Floor::new();
+        floor.machine_id = "m-1".into();
+        floor.show_board("first".into(), model, Params::default(), Status::Online);
+        let first = floor.board.as_ref().expect("a board").built.root.clone();
+        floor.show_board("other".into(), model, Params::default().with("gpus", 1.0), Status::Online);
+        floor.show_board("first".into(), model, Params::default(), Status::Online);
+        let again = floor.board.as_ref().expect("a board").built.root.clone();
+        assert!(first == again, "the second showing takes the built parts back from the cache, it does not build them again");
     }
 
     #[test]

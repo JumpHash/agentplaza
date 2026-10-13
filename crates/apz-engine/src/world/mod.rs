@@ -17,6 +17,7 @@ use std::sync::Arc;
 use glam::{Quat, Vec3};
 
 use super::controls::{Orbit, FOV_DEG};
+use super::entry_scene::BoardCache;
 use super::hardware::{Built, Model, Params, Pulses, Status};
 use super::props::{Anim, Box2, PropPalette};
 use board_layout::{BoardLayout, TraceGraph};
@@ -126,6 +127,8 @@ pub struct TracePulses {
 pub struct Board {
     /// The model, params and status the board was built with: a change rebuilds it.
     pub key: String,
+    /// The key the built parts are cached under (`board_key`): the board goes back to `Floor::boards` by it.
+    pub cache_key: String,
     pub model: &'static Model,
     pub params: Params,
     pub status: Status,
@@ -214,6 +217,8 @@ pub struct Floor {
     pub board: Option<Board>,
     /// The machine whose board this is, as the web's route names it (`''` on the fleet): it seeds the rooms.
     pub machine_id: String,
+    /// The built boards no longer shown, by `board_key`: a machine shown again takes its parts from here.
+    pub boards: BoardCache,
     /// The starfield (it turns slowly) and its ringed planet (it spins).
     pub stars: Obj,
     pub planet: Obj,
@@ -265,6 +270,7 @@ impl Floor {
             backdrop: Obj::group(),
             board: None,
             machine_id: String::new(),
+            boards: BoardCache::new(3),
             stars: Obj::group(),
             planet: Obj::group(),
             dust: Obj::group(),
@@ -337,8 +343,29 @@ impl Floor {
                 radius: 0.5 * Vec3::from(b.model.size).length(),
             }),
             fades: Arc::new(self.board.as_ref().map(|b| b.built.fades.clone()).unwrap_or_default()),
+            plaza: self.plaza_area(),
             focus: self.board.as_ref().and_then(|b| b.model.anchors.atom).map(Vec3::from),
         }
+    }
+
+    /// The plaza area the cutaways fade over (the web's `plazaArea`): the points the default view frames,
+    /// grown by a third of their size on each side in x and z (the shrouds beside the plaza stand in view).
+    /// None without a board.
+    pub fn plaza_area(&self) -> Option<(Vec3, Vec3)> {
+        if self.board.is_none() {
+            return None;
+        }
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for p in self.fit_points() {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        let grow = (hi - lo) / 3.0;
+        lo.x -= grow.x;
+        hi.x += grow.x;
+        lo.z -= grow.z;
+        hi.z += grow.z;
+        Some((lo, hi))
     }
 
     pub fn bot(&self, cid: u64) -> Option<&Bot> {

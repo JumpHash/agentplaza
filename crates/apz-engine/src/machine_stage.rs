@@ -387,6 +387,7 @@ impl MachineStage {
             overlays: Vec::new(),
             lod: None,
             fades: Arc::new(Vec::new()), // no cutaways on the stage
+            plaza: None,
             focus: None,
         }
     }

@@ -18,16 +18,16 @@ more. three.js is removed when every row below says **done**. Status comes from 
 | 10 | Body clips: crouch, jump, air, fall, land (`robot.ts`) | done in the engine (`BodyMode`, tested pose for pose against the web formulas); `apz-board` motion does not drive it yet |
 | 11 | Board scale growth to seat agents (`board-layout.ts`) | in `apz-board`; the engine board must use the `apz-board` Layout |
 | 12 | Grounding, drawn tops and support (`ground.ts`, `drawn-tops.ts`) | in `apz-board` (support field); engine hookup missing |
-| 13 | Warm-up budget for board builds (`warm.ts`) | missing |
+| 13 | Warm-up budget for board builds (`warm.ts`) | `warm.rs`: budgeted steps and an LRU build cache; the ENTER board does not go through the cache yet (`stage.rs` `refresh_board`) |
 | 14 | Shadow proxies (`bake.ts`) | missing |
 | 15 | Portrait studio (`portrait.ts`) | done in the engine (`portrait.rs`, offscreen) and on the web under `?engine=wasm`; the desktop still draws its own copy in `render_card.rs` |
-| 16 | Robot lab: species, clip, tool, carry, hue, orch, cam (`robot-lab.ts`) | the engine has a basic lab; hue, orch and cam, and the web hookup, are missing |
-| 17 | Z-fight lint over the hardware models (`zfight.ts`) | missing |
-| 18 | Robot design audit and eye seating (`robots/audit.ts`, `seat.ts`) | missing |
+| 16 | Robot lab: species, clip, tool, carry, hue, orch, cam (`robot-lab.ts`) | hue, orchestrator, camera presets, frozen clock and background are in the engine lab; the web hookup needs a wasm lab entry, and the background is not drawn yet |
+| 17 | Z-fight lint over the hardware models (`zfight.ts`) | ported (`apz-board::zfight`), counts equal to the web on all 11 cases; committed with the board fixes |
+| 18 | Robot design audit and eye seating (`robots/audit.ts`, `seat.ts`) | done (`robots/audit.rs`); issue counts not yet cross-checked against the TS run |
 | 19 | Nav overlay `?nav=1` (`nav-overlay.ts`) | missing |
-| 20 | Debug hooks (`__apzLookAt`, `__apzLifts`, `__apzNavCell`, `__apzScene` …) | partial (`apzEngine` counters) |
-| 21 | Cutaway of tall parts over the plaza (the web fix of 2026-10-13) | check the engine against it |
-| 22 | Performance budget (≤300 machines, ≤400 board, 0 frames at rest) | in progress: 847 draws on WebGPU (animated layer instanced, animated subtrees merged); next, instance identical merged roots |
+| 20 | Debug hooks (`__apzLookAt`, `__apzLifts`, `__apzNavCell`, `__apzScene` …) | the web's names are installed in engine mode; LookAt, EntryTime and Bots, and the nav and lift hooks, are stubs until the engine has them |
+| 21 | Cutaway of tall parts over the plaza (the web fix of 2026-10-13) | the ENTER distance fade matches the web; the hardware cutaway (`overArea`, `CUTAWAY_OPACITY` in `hardware.ts`) is being checked |
+| 22 | Performance budget (≤300 machines, ≤400 board, 0 frames at rest) | in progress: 689 draws (identical rigs instanced); next, the 267 static batches and the loose per-frame draws |
 
 ## Beyond three.js (engine only)
 
