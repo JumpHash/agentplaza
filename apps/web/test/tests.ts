@@ -11,7 +11,7 @@ import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, mov
 import * as THREE from 'three';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildModel, currentPulses, evalWhen, modelsFor, parseWhen, placeAtom, traceMeshes, validate, validatePalette } from '../src/views/floor3d/hardware';
+import { buildModel, currentPulses, evalWhen, modelsFor, parseWhen, placeAtom, repeatOffsets, traceMeshes, validate, validatePalette } from '../src/views/floor3d/hardware';
 import { MODELS, PALETTE, PALETTE_FILE } from '../src/views/floor3d/hardware-index';
 
 let failures = 0;
@@ -233,6 +233,19 @@ const repeatModel = {
 const r0 = buildModel(repeatModel);
 eq([...r0.parts.keys()].sort(), ['fin', 'fin#1', 'fin#2'], 'when hides a part; a repeat count names a param');
 eq(buildModel(repeatModel, { gpus: 1 }).parts.has('gpu'), true, 'when shows a part with its param');
+eq(validate(hwPart({ repeat: { count: 'p_cores/4', step: [1, 0, 0] } }), 'ok'), [], 'a repeat count may be a param over n');
+mentions(hwPart({ repeat: { count: 'p_cores/0', step: [1, 0, 0] } }), 'param name', 'a repeat count over 0 is an error');
+mentions(hwPart({ repeat: { count: 2, step: [1, 0, 0], wrap: 4 } }), 'missing row', 'a wrap needs a row');
+mentions(hwPart({ repeat: { count: 2, step: [1, 0, 0], row: [0, 0, 1] } }), 'row needs a wrap', 'a row needs a wrap');
+mentions(hwPart({ repeat: { count: 2, step: [1, 0, 0], wrap: 0, row: [0, 0, 1] } }), 'wrap: a whole number', 'a wrap of 0 is an error');
+eq(validate(hwPart({ repeat: { count: 10, step: [1, 0, 0], wrap: 4, row: [0, 0, 1] } }), 'ok'), [], 'a wrapped repeat validates');
+// count 10, wrap 4, step [1, 0, 0], row [0, 0, 1]: rows of four, then two on the third row. The desktop loader's test checks the same numbers.
+eq(repeatOffsets({ count: 10, step: [1, 0, 0], wrap: 4, row: [0, 0, 1] }, {}), [
+  [0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0], [0, 0, 1], [1, 0, 1], [2, 0, 1], [3, 0, 1], [0, 0, 2], [1, 0, 2],
+], 'a wrapped repeat lays its copies in rows');
+eq(repeatOffsets({ count: 'n', step: [2, 0, 0] }, { n: 3 }), [[0, 0, 0], [2, 0, 0], [4, 0, 0]], 'a line of copies at step * i');
+eq(repeatOffsets({ count: 'p_cores/4', step: [1, 0, 0] }, { p_cores: 10 }).length, 3, 'a param over 4 rounds up: 10 gives 3 copies');
+eq(repeatOffsets({ count: 'p_cores/4', step: [1, 0, 0] }, {}).length, 0, 'a missing param repeats nothing');
 
 const statusModel = { schema: 1, kind: 'x', view: 'part', size: [1, 1, 1], parts: [{ id: 'led', geo: { type: 'sphere', r: 0.2 }, mat: 'led-ok', tag: 'status' }] };
 const sb = buildModel(statusModel);

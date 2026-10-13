@@ -2,9 +2,100 @@
   "schema": 1,
   "kind": "workstation",
   "view": "board",
-  "size": [40, 2, 30],
-  "parts": [ { "id": "pcb", "geo": { "type": "box", "w": 40, "h": 0.4, "d": 30 }, "at": [0, 0.2, 0], "mat": "pcb" }, { "id": "cpu0", "geo": { "type": "box", "w": 8, "h": 0.8, "d": 8 }, "at": [0, 0.8, 0], "mat": "ic" } ],
-  "anchors": { "camera": { "at": [0, 40, 30], "look": [0, 0, 0] }, "atom": [0, 4, 0] },
-  "slots": [ { "id": "cpu0", "on": "cpu0", "type": "cpu", "top": 1.2, "rect": [-4, -4, 8, 8], "capacity": 4 } ],
-  "traces": []
+  "size": [64, 7, 56],
+  "params": { "gpus": 1 },
+  "parts": [
+    { "id": "pcb", "geo": { "type": "box", "w": 64, "h": 0.4, "d": 56 }, "at": [0, 0.2, 0], "mat": "pcb-black" },
+    { "id": "silk_zx", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [-20, 0.42, -26], "mat": "silkscreen", "outline": false, "label": { "text": "ZX-ATX", "size": 0.9, "color": "#e8eadf" } },
+    { "id": "silk_rear", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [-28.5, 0.42, -27.6], "mat": "silkscreen", "outline": false, "label": { "text": "REAR I/O", "size": 0.5, "color": "#e8eadf" } },
+
+    { "id": "usb_a", "geo": { "type": "box", "w": 2.8, "h": 3.0, "d": 3.2 }, "at": [-30.8, 2.2, -25.2], "mat": "port",
+      "children": [ { "geo": { "type": "box", "w": 0.12, "h": 0.9, "d": 1.4 }, "at": [-1.42, -0.6, 0], "mat": "port-hole", "outline": false, "repeat": { "count": 2, "step": [0, 1.2, 0] } } ] },
+    { "id": "usb_b", "geo": { "type": "box", "w": 2.8, "h": 3.0, "d": 3.2 }, "at": [-30.8, 2.2, -21.5], "mat": "port",
+      "children": [ { "geo": { "type": "box", "w": 0.12, "h": 0.9, "d": 1.4 }, "at": [-1.42, -0.6, 0], "mat": "port-hole", "outline": false, "repeat": { "count": 2, "step": [0, 1.2, 0] } } ] },
+    { "id": "audio", "geo": { "type": "cyl", "rt": 0.7, "rb": 0.7, "h": 0.9 }, "at": [-31.7, 1.2, -6.8], "rot": [0, 0, 90], "mat": "port", "repeat": { "count": 3, "step": [0, 0, 1.1] } },
+    { "id": "nic_pt", "use": "parts/nic", "at": [-27.2, 0.4, -15], "rot": [0, 180, 0] },
+
+    { "id": "socket", "geo": { "type": "box", "w": 12, "h": 0.6, "d": 12 }, "at": [0, 0.7, -14], "mat": "metal-dark" },
+    { "id": "cpu0", "geo": { "type": "rbox", "w": 9, "h": 0.9, "d": 9, "r": 0.4 }, "at": [0, 1.45, -14], "mat": "ihs", "label": { "text": "CPU0", "size": 0.7, "color": "#e8eadf" } },
+
+    { "id": "vrm_l", "use": "parts/vrm-bank", "at": [-14.5, 0.4, -13] },
+    { "id": "vrm_top_hs", "geo": { "type": "rbox", "w": 8, "h": 1.0, "d": 4.6, "r": 0.3 }, "at": [-9, 0.9, -22.6], "mat": "heatsink",
+      "children": [ { "geo": { "type": "box", "w": 0.5, "h": 1.6, "d": 4.4 }, "at": [-3, 0.8, 0], "mat": "heatsink", "repeat": { "count": 5, "step": [1.5, 0, 0] } } ] },
+    { "id": "choke_t", "geo": { "type": "cyl", "rt": 0.9, "rb": 0.9, "h": 1.2 }, "at": [-12, 1.0, -26.5], "mat": "inductor", "repeat": { "count": 3, "step": [3, 0, 0] } },
+
+    { "id": "eps8", "geo": { "type": "rbox", "w": 7, "h": 2.2, "d": 2.4, "r": 0.3 }, "at": [6, 1.5, -25.5], "mat": "plastic", "label": { "text": "EPS_12V", "size": 0.45, "color": "#e8eadf" },
+      "children": [ { "geo": { "type": "box", "w": 1.2, "h": 0.1, "d": 1.0 }, "at": [-2.4, 1.1, 0], "mat": "port-hole", "outline": false, "repeat": { "count": 4, "step": [1.6, 0, 0] } } ] },
+    { "id": "atx24", "geo": { "type": "rbox", "w": 3.6, "h": 2.4, "d": 14, "r": 0.3 }, "at": [27.4, 1.6, -15], "mat": "plastic", "label": { "text": "ATX_PWR", "size": 0.45, "color": "#e8eadf" },
+      "children": [
+        { "geo": { "type": "box", "w": 0.55, "h": 0.1, "d": 0.6 }, "at": [-0.9, 1.25, -6], "mat": "port-hole", "outline": false, "repeat": { "count": 12, "step": [0, 0, 1.0] } },
+        { "geo": { "type": "box", "w": 0.55, "h": 0.1, "d": 0.6 }, "at": [0.9, 1.25, -6], "mat": "port-hole", "outline": false, "repeat": { "count": 12, "step": [0, 0, 1.0] } }
+      ] },
+    { "id": "sata", "geo": { "type": "box", "w": 2.4, "h": 1.2, "d": 1.6 }, "at": [28.6, 1.0, 4.5], "mat": "plastic", "repeat": { "count": 4, "step": [0, 0, 2.8] } },
+    { "id": "silk_sata", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [26.2, 0.42, 9], "mat": "silkscreen", "outline": false, "label": { "text": "SATA", "size": 0.45, "color": "#e8eadf" } },
+    { "id": "fpanel", "geo": { "type": "box", "w": 9, "h": 1.0, "d": 1.6 }, "at": [24.5, 0.9, 26.2], "mat": "plastic", "label": { "text": "F_PANEL", "size": 0.45, "color": "#e8eadf" },
+      "children": [ { "geo": { "type": "box", "w": 0.35, "h": 0.5, "d": 0.35 }, "at": [-4.05, 0.75, 0], "mat": "gold", "repeat": { "count": 10, "step": [0.9, 0, 0] } } ] },
+    { "id": "led_pwr", "geo": { "type": "cyl", "rt": 0.35, "rb": 0.35, "h": 0.3 }, "at": [29.5, 1.0, 24.8], "mat": "led-ok", "tag": "status" },
+    { "id": "cpu_fan", "geo": { "type": "box", "w": 2.6, "h": 1.0, "d": 1.2 }, "at": [3, 0.9, -22], "mat": "plastic", "label": { "text": "CPU_FAN", "size": 0.4, "color": "#e8eadf" } },
+    { "id": "sys_fan1", "geo": { "type": "box", "w": 2.6, "h": 1.0, "d": 1.2 }, "at": [-22.5, 0.9, 26.5], "mat": "plastic", "label": { "text": "SYS_FAN1", "size": 0.35, "color": "#e8eadf" } },
+    { "id": "sys_fan2", "geo": { "type": "box", "w": 1.2, "h": 1.0, "d": 2.6 }, "at": [-22.5, 0.9, 4], "mat": "plastic", "label": { "text": "SYS_FAN2", "size": 0.35, "color": "#e8eadf" } },
+
+    { "id": "dimm_bank", "geo": { "type": "box", "w": 10.2, "h": 0.8, "d": 13 }, "at": [14.2, 0.8, -13.5], "mat": "plastic" },
+    { "id": "dimm_1", "use": "parts/dimm", "at": [10.5, 1.2, -13.5], "rot": [0, 90, 0] },
+    { "id": "dimm_2", "use": "parts/dimm", "at": [13, 1.2, -13.5], "rot": [0, 90, 0] },
+    { "id": "dimm_3", "use": "parts/dimm", "at": [15.5, 1.2, -13.5], "rot": [0, 90, 0] },
+    { "id": "dimm_4", "use": "parts/dimm", "at": [18, 1.2, -13.5], "rot": [0, 90, 0] },
+    { "id": "silk_dimm", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [14.2, 0.42, -21.2], "mat": "silkscreen", "outline": false, "label": { "text": "DIMM", "size": 0.4, "color": "#e8eadf" } },
+
+    { "id": "pcie1", "geo": { "type": "rbox", "w": 30, "h": 1.0, "d": 1.8, "r": 0.3 }, "at": [0, 0.9, 0], "mat": "plastic" },
+    { "id": "pcie2", "geo": { "type": "rbox", "w": 30, "h": 1.0, "d": 1.8, "r": 0.3 }, "at": [0, 0.9, 12], "mat": "plastic" },
+    { "id": "pcie3", "geo": { "type": "rbox", "w": 30, "h": 1.0, "d": 1.8, "r": 0.3 }, "at": [0, 0.9, 22], "mat": "plastic" },
+    { "id": "silk_pcie1", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [19.5, 0.42, -0.5], "mat": "silkscreen", "outline": false, "label": { "text": "PCIE1", "size": 0.5, "color": "#e8eadf" } },
+    { "id": "silk_pcie2", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [19.5, 0.42, 12], "mat": "silkscreen", "outline": false, "label": { "text": "PCIE2", "size": 0.5, "color": "#e8eadf" } },
+    { "id": "silk_pcie3", "geo": { "type": "plane", "w": 0.2, "d": 0.2 }, "at": [-21.5, 0.42, 23], "mat": "silkscreen", "outline": false, "label": { "text": "PCIE3", "size": 0.5, "color": "#e8eadf" } },
+    { "id": "gpu0", "use": "parts/gpu-pcie", "at": [-12.8, 0, 0], "scale": 1.8, "when": "gpus >= 1" },
+    { "id": "gpu1", "use": "parts/gpu-pcie", "at": [-12.8, 0, 22.5], "scale": 1.8, "when": "gpus >= 2" },
+
+    { "id": "m2_a", "use": "parts/m2-ssd", "at": [-6, 0.4, 15.5] },
+    { "id": "m2_b", "use": "parts/m2-ssd", "at": [6, 0.4, 15.5] },
+    { "id": "m2_c", "use": "parts/m2-ssd", "at": [6, 0.4, 8.5] },
+
+    { "id": "chipset", "geo": { "type": "rbox", "w": 8, "h": 1.6, "d": 8, "r": 0.5 }, "at": [22, 1.2, 20], "mat": "heatsink", "label": { "text": "CHIPSET", "size": 0.55, "color": "#e8eadf" } },
+    { "id": "bios", "geo": { "type": "box", "w": 2.4, "h": 0.9, "d": 1.6 }, "at": [19.5, 0.85, 9], "mat": "ic", "label": { "text": "BIOS", "size": 0.35, "color": "#e8eadf" } },
+    { "id": "cmos", "geo": { "type": "cyl", "rt": 1.4, "rb": 1.4, "h": 0.5 }, "at": [24, 0.65, 12.5], "mat": "battery", "label": { "text": "CMOS", "size": 0.35, "color": "#e8eadf" } },
+    { "id": "cap_c", "geo": { "type": "cyl", "rt": 0.9, "rb": 0.9, "h": 2.0 }, "at": [-21, 1.4, 14.5], "mat": "capacitor", "repeat": { "count": 3, "step": [0, 0, 2.4] },
+      "children": [ { "geo": { "type": "cyl", "rt": 0.75, "rb": 0.75, "h": 0.08 }, "at": [0, 1.04, 0], "mat": "capacitor-top" } ] },
+    { "id": "cap_bank", "use": "parts/cap-bank", "at": [22.5, 0.4, -4], "rot": [0, 90, 0] }
+  ],
+  "anchors": {
+    "camera": { "at": [0, 58, 46], "look": [0, 0, 0] },
+    "atom": [0, 5.4, -14]
+  },
+  "slots": [
+    { "id": "slot_cpu", "on": "cpu0", "type": "cpu", "top": 1.9, "rect": [-4.5, -18.5, 9, 9], "capacity": 4 },
+    { "id": "slot_mem", "on": "dimm_bank", "type": "memory", "top": 6.2, "rect": [9.6, -18.5, 6, 6], "capacity": 3 },
+    { "id": "slot_gpu0", "on": "gpu0", "type": "gpu", "top": 6.3, "rect": [-10, -3, 20, 6], "capacity": 4 },
+    { "id": "slot_gpu1", "on": "gpu1", "type": "gpu", "top": 6.3, "rect": [-10, 20, 20, 5], "capacity": 4 },
+    { "id": "slot_m2a", "on": "m2_a", "type": "storage", "top": 0.95, "rect": [-9, 14, 6, 3], "capacity": 2 },
+    { "id": "slot_m2b", "on": "m2_b", "type": "storage", "top": 0.95, "rect": [3, 14, 6, 3], "capacity": 2 },
+    { "id": "slot_m2c", "on": "m2_c", "type": "storage", "top": 0.95, "rect": [3, 7, 6, 3], "capacity": 2 },
+    { "id": "slot_nic", "on": "nic_pt", "type": "network", "top": 1.2, "rect": [-25.6, -16.6, 3.2, 3.2], "capacity": 2 },
+    { "id": "slot_pwr", "on": "vrm_l", "type": "power", "top": 2.8, "rect": [-17.5, -11.5, 6, 3], "capacity": 2 },
+    { "id": "slot_io", "on": "chipset", "type": "io", "top": 2.0, "rect": [18.8, 16.8, 6, 6], "capacity": 2 }
+  ],
+  "traces": [
+    { "path": [[6, -12], [8.5, -12]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "dimm_bank" },
+    { "path": [[6, -9], [8.5, -9]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "dimm_bank" },
+    { "path": [[-6, -18.5], [-14.5, -18.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "vrm_l" },
+    { "path": [[-6, -12], [-8.5, -12]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "vrm_l" },
+    { "path": [[1.5, -8], [1.5, -1.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "gpu0" },
+    { "path": [[-2, -8], [-2, -1.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "gpu0" },
+    { "path": [[3, -8], [3, -6.5], [16.5, -6.5], [16.5, 22.5], [15.5, 22.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "gpu1" },
+    { "path": [[-6, -8], [-6, -6.2], [-18.3, -6.2], [-18.3, 22.5], [-15.5, 22.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "gpu1" },
+    { "path": [[3, -8], [3, -6.5], [16.5, -6.5], [16.5, 19], [18, 19]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "chipset" },
+    { "path": [[-3, -8], [-3, -5.4], [-17.5, -5.4], [-17.5, 15.5], [-10, 15.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "m2_a" },
+    { "path": [[3, -8], [3, -6.5], [16.5, -6.5], [16.5, 15.5], [10, 15.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "m2_b" },
+    { "path": [[3, -8], [3, -6.5], [16.5, -6.5], [16.5, 8.5], [10, 8.5]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "m2_c" },
+    { "path": [[-18.3, -6.2], [-21.5, -6.2], [-21.5, -15], [-22.4, -15]], "y": 0.46, "width": 0.25, "from": "cpu0", "to": "nic_pt" }
+  ]
 }

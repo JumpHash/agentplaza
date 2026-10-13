@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "m2-ssd",
+  "view": "part",
+  "size": [8.0, 0.5, 2.2],
+  "parts": [
+    { "id": "pcb", "geo": { "type": "box", "w": 8.0, "h": 0.2, "d": 2.2 }, "at": [0, 0.1, 0], "mat": "pcb" },
+    { "id": "fingers", "geo": { "type": "box", "w": 0.5, "h": 0.06, "d": 1.8 }, "at": [-3.75, 0.23, 0], "mat": "gold" },
+    { "id": "nand", "repeat": { "count": 4, "step": [0.85, 0, 0] }, "geo": { "type": "box", "w": 0.75, "h": 0.25, "d": 1.2 }, "at": [-2.0, 0.325, 0], "mat": "ic" },
+    { "id": "dram", "geo": { "type": "box", "w": 0.9, "h": 0.2, "d": 0.9 }, "at": [1.1, 0.3, 0.2], "mat": "ic" },
+    { "id": "controller", "geo": { "type": "box", "w": 1.1, "h": 0.3, "d": 1.1 }, "at": [2.5, 0.35, 0], "mat": "ic", "label": { "text": "CTRL", "size": 0.28, "color": "#e8eadf" } },
+    { "id": "label-plate", "geo": { "type": "box", "w": 2.0, "h": 0.02, "d": 0.35 }, "at": [-2.0, 0.21, -0.9], "mat": "silkscreen", "label": { "text": "2280", "size": 0.3, "color": "#1f2328" } }
+  ]
+}

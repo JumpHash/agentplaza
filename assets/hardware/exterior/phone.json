@@ -2,7 +2,1352 @@
   "schema": 1,
   "kind": "phone",
   "view": "exterior",
-  "size": [4, 6, 4],
-  "parts": [ { "id": "body", "geo": { "type": "rbox", "w": 4, "h": 6, "d": 4, "r": 0.3 }, "at": [0, 3, 0], "mat": "case" } ],
-  "anchors": { "label": [0, 7, 0], "port": [0, 1, -2], "camera": { "at": [6, 5, 6], "look": [0, 3, 0] }, "open": "body", "atom": [0, 3, 0] }
+  "size": [
+    4.4,
+    8.9,
+    3.0
+  ],
+  "parts": [
+    {
+      "id": "frame_top",
+      "geo": {
+        "type": "rbox",
+        "w": 3.5,
+        "h": 0.25,
+        "d": 0.45,
+        "r": 0.113
+      },
+      "at": [
+        0,
+        7.675,
+        0
+      ],
+      "mat": "aluminium"
+    },
+    {
+      "id": "frame_bottom",
+      "geo": {
+        "type": "rbox",
+        "w": 3.5,
+        "h": 0.25,
+        "d": 0.45,
+        "r": 0.113
+      },
+      "at": [
+        0,
+        0.425,
+        0
+      ],
+      "mat": "aluminium"
+    },
+    {
+      "id": "frame_left",
+      "geo": {
+        "type": "rbox",
+        "w": 0.25,
+        "h": 7.0,
+        "d": 0.45,
+        "r": 0.113
+      },
+      "at": [
+        -1.625,
+        4.05,
+        0
+      ],
+      "mat": "aluminium"
+    },
+    {
+      "id": "frame_right",
+      "geo": {
+        "type": "rbox",
+        "w": 0.25,
+        "h": 7.0,
+        "d": 0.45,
+        "r": 0.113
+      },
+      "at": [
+        1.625,
+        4.05,
+        0
+      ],
+      "mat": "aluminium"
+    },
+    {
+      "id": "gap_left",
+      "geo": {
+        "type": "rbox",
+        "w": 0.27,
+        "h": 0.08,
+        "d": 0.46,
+        "r": 0.03
+      },
+      "at": [
+        -1.625,
+        1.6,
+        0
+      ],
+      "mat": "rubber",
+      "outline": false,
+      "repeat": {
+        "count": 2,
+        "step": [
+          0,
+          1.6,
+          0
+        ]
+      }
+    },
+    {
+      "id": "gap_right",
+      "geo": {
+        "type": "rbox",
+        "w": 0.27,
+        "h": 0.08,
+        "d": 0.46,
+        "r": 0.03
+      },
+      "at": [
+        1.625,
+        1.6,
+        0
+      ],
+      "mat": "rubber",
+      "outline": false,
+      "repeat": {
+        "count": 2,
+        "step": [
+          0,
+          1.6,
+          0
+        ]
+      }
+    },
+    {
+      "id": "glass",
+      "geo": {
+        "type": "rbox",
+        "w": 3.3,
+        "h": 7.2,
+        "d": 0.035,
+        "r": 0.016
+      },
+      "at": [
+        0,
+        4.05,
+        0.2075
+      ],
+      "mat": "glass",
+      "outline": false
+    },
+    {
+      "id": "screen",
+      "geo": {
+        "type": "rbox",
+        "w": 3.1,
+        "h": 6.7,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        0,
+        4.1,
+        0.18
+      ],
+      "mat": "screen-on",
+      "tag": "screen",
+      "outline": false
+    },
+    {
+      "id": "sheen",
+      "geo": {
+        "type": "rbox",
+        "w": 0.35,
+        "h": 6.2,
+        "d": 0.004,
+        "r": 0.002
+      },
+      "at": [
+        -0.95,
+        4.1,
+        0.229
+      ],
+      "mat": {
+        "color": "#ffffff",
+        "opacity": 0.1,
+        "flat": true
+      },
+      "outline": false
+    },
+    {
+      "id": "punch",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03
+      },
+      "at": [
+        0,
+        7.1,
+        0.232
+      ],
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "mat": "rubber"
+    },
+    {
+      "id": "punch_ring",
+      "geo": {
+        "type": "torus",
+        "r": 0.1,
+        "tube": 0.02
+      },
+      "at": [
+        0,
+        7.1,
+        0.235
+      ],
+      "mat": "aluminium"
+    },
+    {
+      "id": "earpiece",
+      "geo": {
+        "type": "rbox",
+        "w": 0.7,
+        "h": 0.05,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        0,
+        7.52,
+        0.231
+      ],
+      "mat": "plastic",
+      "outline": false
+    },
+    {
+      "id": "status_icons",
+      "geo": {
+        "type": "rbox",
+        "w": 0.14,
+        "h": 0.07,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        1.1,
+        7.1,
+        0.2
+      ],
+      "mat": "silkscreen",
+      "outline": false,
+      "repeat": {
+        "count": 3,
+        "step": [
+          -0.2,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "app_a",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.5,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        -1.08,
+        6.4,
+        0.2
+      ],
+      "mat": {
+        "color": "#ff7a1a",
+        "emissive": "#ff7a1a",
+        "glow": 0.8,
+        "flat": true
+      },
+      "outline": false,
+      "repeat": {
+        "count": 4,
+        "step": [
+          0.72,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "app_b",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.5,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        -1.08,
+        5.45,
+        0.2
+      ],
+      "mat": {
+        "color": "#2bd47d",
+        "emissive": "#2bd47d",
+        "glow": 0.8,
+        "flat": true
+      },
+      "outline": false,
+      "repeat": {
+        "count": 4,
+        "step": [
+          0.72,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "app_c",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.5,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        -1.08,
+        4.5,
+        0.2
+      ],
+      "mat": {
+        "color": "#6cc8ff",
+        "emissive": "#6cc8ff",
+        "glow": 0.8,
+        "flat": true
+      },
+      "outline": false,
+      "repeat": {
+        "count": 4,
+        "step": [
+          0.72,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "app_d",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.5,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        -1.08,
+        3.55,
+        0.2
+      ],
+      "mat": {
+        "color": "#e8590c",
+        "emissive": "#e8590c",
+        "glow": 0.6,
+        "flat": true
+      },
+      "outline": false,
+      "repeat": {
+        "count": 4,
+        "step": [
+          0.72,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "nav_pill",
+      "geo": {
+        "type": "rbox",
+        "w": 1.2,
+        "h": 0.1,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        0,
+        1.25,
+        0.2
+      ],
+      "mat": "silkscreen",
+      "outline": false
+    },
+    {
+      "id": "back",
+      "geo": {
+        "type": "box",
+        "w": 0.06,
+        "h": 0.06,
+        "d": 0.06
+      },
+      "at": [
+        -1.7,
+        4.05,
+        -0.225
+      ],
+      "mat": "metal-dark",
+      "anim": {
+        "swing": {
+          "axis": "y",
+          "to": 110,
+          "on": "enter"
+        }
+      },
+      "children": [
+        {
+          "id": "back_glass",
+          "geo": {
+            "type": "rbox",
+            "w": 3.4,
+            "h": 7.2,
+            "d": 0.05,
+            "r": 0.023
+          },
+          "at": [
+            1.7,
+            0,
+            0
+          ],
+          "mat": {
+            "color": "#2c4f6b"
+          }
+        },
+        {
+          "id": "island",
+          "geo": {
+            "type": "rbox",
+            "w": 1.35,
+            "h": 1.35,
+            "d": 0.12,
+            "r": 0.054
+          },
+          "at": [
+            0.75,
+            2.85,
+            -0.085
+          ],
+          "mat": "case"
+        },
+        {
+          "id": "lens1",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.19,
+            "rb": 0.19,
+            "h": 0.1
+          },
+          "at": [
+            0.5,
+            3.2,
+            -0.195
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "metal-dark"
+        },
+        {
+          "id": "lens1_glass",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.13,
+            "rb": 0.13,
+            "h": 0.02
+          },
+          "at": [
+            0.5,
+            3.2,
+            -0.251
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "die"
+        },
+        {
+          "id": "lens1_ring",
+          "geo": {
+            "type": "torus",
+            "r": 0.2,
+            "tube": 0.03
+          },
+          "at": [
+            0.5,
+            3.2,
+            -0.245
+          ],
+          "mat": "aluminium"
+        },
+        {
+          "id": "lens2",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.19,
+            "rb": 0.19,
+            "h": 0.1
+          },
+          "at": [
+            1.0,
+            3.2,
+            -0.195
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "metal-dark"
+        },
+        {
+          "id": "lens2_glass",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.13,
+            "rb": 0.13,
+            "h": 0.02
+          },
+          "at": [
+            1.0,
+            3.2,
+            -0.251
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "die"
+        },
+        {
+          "id": "lens2_ring",
+          "geo": {
+            "type": "torus",
+            "r": 0.2,
+            "tube": 0.03
+          },
+          "at": [
+            1.0,
+            3.2,
+            -0.245
+          ],
+          "mat": "aluminium"
+        },
+        {
+          "id": "lens3",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.19,
+            "rb": 0.19,
+            "h": 0.1
+          },
+          "at": [
+            0.75,
+            2.5,
+            -0.195
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "metal-dark"
+        },
+        {
+          "id": "lens3_glass",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.13,
+            "rb": 0.13,
+            "h": 0.02
+          },
+          "at": [
+            0.75,
+            2.5,
+            -0.251
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "die"
+        },
+        {
+          "id": "lens3_ring",
+          "geo": {
+            "type": "torus",
+            "r": 0.2,
+            "tube": 0.03
+          },
+          "at": [
+            0.75,
+            2.5,
+            -0.245
+          ],
+          "mat": "aluminium"
+        },
+        {
+          "id": "flash",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.08,
+            "rb": 0.08,
+            "h": 0.03
+          },
+          "at": [
+            1.2,
+            2.45,
+            -0.16
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": {
+            "color": "#fff2cc",
+            "emissive": "#fff2cc",
+            "glow": 1.0,
+            "flat": true
+          }
+        },
+        {
+          "id": "island_mic",
+          "geo": {
+            "type": "cyl",
+            "rt": 0.03,
+            "rb": 0.03,
+            "h": 0.02
+          },
+          "at": [
+            0.25,
+            2.3,
+            -0.155
+          ],
+          "rot": [
+            90,
+            0,
+            0
+          ],
+          "mat": "port-hole"
+        },
+        {
+          "id": "fingerprint",
+          "geo": {
+            "type": "torus",
+            "r": 0.42,
+            "tube": 0.04
+          },
+          "at": [
+            1.7,
+            -0.95,
+            -0.05
+          ],
+          "mat": "metal-dark"
+        },
+        {
+          "id": "logo_ring",
+          "geo": {
+            "type": "torus",
+            "r": 0.3,
+            "tube": 0.03
+          },
+          "at": [
+            1.7,
+            -0.95,
+            -0.05
+          ],
+          "mat": "aluminium"
+        },
+        {
+          "id": "logo_core",
+          "geo": {
+            "type": "sphere",
+            "r": 0.2
+          },
+          "at": [
+            1.7,
+            -0.95,
+            -0.07
+          ],
+          "mat": "case-accent"
+        },
+        {
+          "id": "bands",
+          "geo": {
+            "type": "rbox",
+            "w": 3.1,
+            "h": 0.04,
+            "d": 0.02,
+            "r": 0.009
+          },
+          "at": [
+            1.7,
+            -3.05,
+            -0.04
+          ],
+          "mat": "aluminium",
+          "repeat": {
+            "count": 2,
+            "step": [
+              0,
+              0.12,
+              0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "midplate",
+      "geo": {
+        "type": "rbox",
+        "w": 3.2,
+        "h": 6.9,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        0,
+        4.05,
+        0.1
+      ],
+      "mat": "metal-dark"
+    },
+    {
+      "id": "battery",
+      "geo": {
+        "type": "rbox",
+        "w": 2.9,
+        "h": 5.8,
+        "d": 0.16,
+        "r": 0.072
+      },
+      "at": [
+        0,
+        4.2,
+        -0.01
+      ],
+      "mat": "battery"
+    },
+    {
+      "id": "battery_label",
+      "geo": {
+        "type": "rbox",
+        "w": 1.2,
+        "h": 1.6,
+        "d": 0.01,
+        "r": 0.005
+      },
+      "at": [
+        0.6,
+        5.2,
+        -0.095
+      ],
+      "mat": {
+        "color": "#d9dcd6",
+        "flat": true
+      },
+      "outline": false
+    },
+    {
+      "id": "board",
+      "geo": {
+        "type": "rbox",
+        "w": 2.2,
+        "h": 2.7,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        0.15,
+        2.0,
+        -0.12
+      ],
+      "mat": "pcb"
+    },
+    {
+      "id": "soc",
+      "geo": {
+        "type": "rbox",
+        "w": 0.8,
+        "h": 0.8,
+        "d": 0.05,
+        "r": 0.023
+      },
+      "at": [
+        0.25,
+        2.0,
+        -0.16
+      ],
+      "mat": "ihs"
+    },
+    {
+      "id": "soc_die",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.5,
+        "d": 0.01,
+        "r": 0.005
+      },
+      "at": [
+        0.25,
+        2.0,
+        -0.19
+      ],
+      "mat": "die",
+      "outline": false
+    },
+    {
+      "id": "ram",
+      "geo": {
+        "type": "rbox",
+        "w": 0.7,
+        "h": 0.5,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        -0.55,
+        2.0,
+        -0.16
+      ],
+      "mat": "ic-top"
+    },
+    {
+      "id": "rf",
+      "geo": {
+        "type": "rbox",
+        "w": 0.22,
+        "h": 0.22,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        -0.7,
+        1.2,
+        -0.16
+      ],
+      "mat": "ic",
+      "repeat": {
+        "count": 5,
+        "step": [
+          0.3,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "pmic",
+      "geo": {
+        "type": "rbox",
+        "w": 0.4,
+        "h": 0.4,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        0.85,
+        1.2,
+        -0.16
+      ],
+      "mat": "ic"
+    },
+    {
+      "id": "shield_a",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.35,
+        "d": 0.05,
+        "r": 0.023
+      },
+      "at": [
+        -0.5,
+        3.0,
+        -0.165
+      ],
+      "mat": "metal-dark"
+    },
+    {
+      "id": "shield_b",
+      "geo": {
+        "type": "rbox",
+        "w": 0.35,
+        "h": 0.5,
+        "d": 0.05,
+        "r": 0.023
+      },
+      "at": [
+        0.85,
+        2.9,
+        -0.165
+      ],
+      "mat": "metal-dark"
+    },
+    {
+      "id": "caps",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.05,
+        "h": 0.05
+      },
+      "at": [
+        -0.9,
+        0.95,
+        -0.17
+      ],
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "mat": "capacitor",
+      "repeat": {
+        "count": 4,
+        "step": [
+          0.14,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "caps2",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.05,
+        "h": 0.05
+      },
+      "at": [
+        -0.9,
+        2.5,
+        -0.17
+      ],
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "mat": "capacitor",
+      "repeat": {
+        "count": 5,
+        "step": [
+          0.14,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "inductor",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.06
+      },
+      "at": [
+        -0.6,
+        3.27,
+        -0.17
+      ],
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "mat": "inductor",
+      "repeat": {
+        "count": 3,
+        "step": [
+          0.3,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "connector",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.1,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        0.75,
+        1.0,
+        -0.16
+      ],
+      "mat": "gold"
+    },
+    {
+      "id": "usb_board",
+      "geo": {
+        "type": "rbox",
+        "w": 0.7,
+        "h": 0.16,
+        "d": 0.08,
+        "r": 0.03
+      },
+      "at": [
+        0,
+        0.95,
+        -0.17
+      ],
+      "mat": "port"
+    },
+    {
+      "id": "power",
+      "geo": {
+        "type": "rbox",
+        "w": 0.12,
+        "h": 0.7,
+        "d": 0.16,
+        "r": 0.05
+      },
+      "at": [
+        1.8,
+        6.1,
+        0
+      ],
+      "mat": "case-accent"
+    },
+    {
+      "id": "status_strip",
+      "geo": {
+        "type": "rbox",
+        "w": 0.03,
+        "h": 2.2,
+        "d": 0.1,
+        "r": 0.01
+      },
+      "at": [
+        1.77,
+        3.6,
+        0
+      ],
+      "mat": "led-ok",
+      "tag": "status",
+      "outline": false
+    },
+    {
+      "id": "vol_up",
+      "geo": {
+        "type": "rbox",
+        "w": 0.12,
+        "h": 0.55,
+        "d": 0.16,
+        "r": 0.05
+      },
+      "at": [
+        -1.8,
+        5.5,
+        0
+      ],
+      "mat": "metal-dark"
+    },
+    {
+      "id": "vol_down",
+      "geo": {
+        "type": "rbox",
+        "w": 0.12,
+        "h": 0.55,
+        "d": 0.16,
+        "r": 0.05
+      },
+      "at": [
+        -1.8,
+        4.8,
+        0
+      ],
+      "mat": "metal-dark"
+    },
+    {
+      "id": "sim_tray",
+      "geo": {
+        "type": "rbox",
+        "w": 0.1,
+        "h": 0.4,
+        "d": 0.2,
+        "r": 0.03
+      },
+      "at": [
+        -1.8,
+        6.9,
+        0
+      ],
+      "mat": "metal-dark"
+    },
+    {
+      "id": "sim_hole",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.035,
+        "rb": 0.035,
+        "h": 0.04
+      },
+      "at": [
+        -1.84,
+        6.9,
+        0
+      ],
+      "rot": [
+        0,
+        0,
+        90
+      ],
+      "mat": "port-hole"
+    },
+    {
+      "id": "usb",
+      "geo": {
+        "type": "rbox",
+        "w": 0.62,
+        "h": 0.12,
+        "d": 0.22,
+        "r": 0.05
+      },
+      "at": [
+        0,
+        0.33,
+        0
+      ],
+      "mat": "port-hole"
+    },
+    {
+      "id": "speaker",
+      "geo": {
+        "type": "rbox",
+        "w": 0.12,
+        "h": 0.06,
+        "d": 0.14,
+        "r": 0.02
+      },
+      "at": [
+        0.6,
+        0.29,
+        0
+      ],
+      "mat": "port-hole",
+      "outline": false,
+      "repeat": {
+        "count": 4,
+        "step": [
+          0.18,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "mic",
+      "geo": {
+        "type": "rbox",
+        "w": 0.12,
+        "h": 0.06,
+        "d": 0.14,
+        "r": 0.02
+      },
+      "at": [
+        -0.7,
+        0.29,
+        0
+      ],
+      "mat": "port-hole",
+      "outline": false
+    },
+    {
+      "id": "dock",
+      "geo": {
+        "type": "rbox",
+        "w": 4.4,
+        "h": 0.22,
+        "d": 2.0,
+        "r": 0.099
+      },
+      "at": [
+        0,
+        0.11,
+        0
+      ],
+      "mat": "case"
+    },
+    {
+      "id": "dock_plug",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.08,
+        "d": 0.2,
+        "r": 0.02
+      },
+      "at": [
+        0,
+        0.26,
+        0
+      ],
+      "mat": "port"
+    },
+    {
+      "id": "cradle_front",
+      "geo": {
+        "type": "rbox",
+        "w": 3.6,
+        "h": 0.38,
+        "d": 0.3,
+        "r": 0.1
+      },
+      "at": [
+        0,
+        0.41,
+        0.4
+      ],
+      "mat": "rubber"
+    },
+    {
+      "id": "cradle_back",
+      "geo": {
+        "type": "rbox",
+        "w": 3.6,
+        "h": 0.38,
+        "d": 0.3,
+        "r": 0.1
+      },
+      "at": [
+        0,
+        0.41,
+        -0.4
+      ],
+      "mat": "rubber"
+    },
+    {
+      "id": "dock_cable",
+      "geo": {
+        "type": "rbox",
+        "w": 0.14,
+        "h": 0.14,
+        "d": 1.8,
+        "r": 0.06
+      },
+      "at": [
+        0,
+        0.12,
+        -1.9
+      ],
+      "mat": "cable"
+    },
+    {
+      "id": "dock_accent",
+      "geo": {
+        "type": "rbox",
+        "w": 3.8,
+        "h": 0.03,
+        "d": 0.02,
+        "r": 0.009
+      },
+      "at": [
+        0,
+        0.16,
+        1.01
+      ],
+      "mat": "case-accent",
+      "outline": false
+    },
+    {
+      "id": "dock_status",
+      "geo": {
+        "type": "rbox",
+        "w": 0.14,
+        "h": 0.1,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        1.5,
+        0.11,
+        1.01
+      ],
+      "mat": "led-ok",
+      "tag": "status",
+      "outline": false
+    },
+    {
+      "id": "dock_activity",
+      "geo": {
+        "type": "rbox",
+        "w": 0.14,
+        "h": 0.1,
+        "d": 0.04,
+        "r": 0.018
+      },
+      "at": [
+        1.1,
+        0.11,
+        1.01
+      ],
+      "mat": "led-info",
+      "tag": "activity",
+      "outline": false
+    }
+  ],
+  "anchors": {
+    "label": [
+      0,
+      8.4,
+      0
+    ],
+    "port": [
+      0,
+      0.3,
+      0
+    ],
+    "camera": {
+      "at": [
+        3.8,
+        5.6,
+        -5.2
+      ],
+      "look": [
+        0.2,
+        4.0,
+        -0.2
+      ]
+    },
+    "open": "back",
+    "atom": [
+      0,
+      2.6,
+      0.24
+    ]
+  }
 }

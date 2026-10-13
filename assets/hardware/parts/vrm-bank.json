@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "kind": "vrm-bank",
+  "view": "part",
+  "size": [12.0, 2.4, 10.0],
+  "parts": [
+    { "id": "strip", "geo": { "type": "box", "w": 12.0, "h": 0.2, "d": 10.0 }, "at": [0, 0.1, 0], "mat": "pcb-dark", "label": { "text": "VRM", "size": 0.6, "color": "#e8eadf" } },
+    { "id": "choke", "repeat": { "count": 4, "step": [2.4, 0, 0] }, "geo": { "type": "rbox", "w": 1.8, "h": 1.2, "d": 1.8, "r": 0.2 }, "at": [-3.6, 0.8, -1.4], "mat": "inductor" },
+    { "id": "fet", "repeat": { "count": 8, "step": [1.2, 0, 0] }, "geo": { "type": "box", "w": 1.0, "h": 0.5, "d": 1.2 }, "at": [-4.2, 0.45, 1.6], "mat": "ic" },
+    { "id": "sink-base", "geo": { "type": "box", "w": 6.2, "h": 0.4, "d": 2.4 }, "at": [0, 0.4, 3.6], "mat": "heatsink" },
+    { "id": "sink-fin", "repeat": { "count": 6, "step": [0.8, 0, 0] }, "geo": { "type": "box", "w": 0.25, "h": 2.0, "d": 2.2 }, "at": [-2.0, 1.4, 3.6], "mat": "heatsink" }
+  ]
+}

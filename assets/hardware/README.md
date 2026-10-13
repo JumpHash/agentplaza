@@ -63,7 +63,7 @@ Each part has `geo` (or `use`, not both), and optionally:
 - `at`, `rot` (degrees), `scale` (a number or `[sx, sy, sz]`).
 - `mat`: a palette name (`"pcb"`) or an inline material `{ "color": "#1f6b3a", "emissive": "#000", "glow": 1.5, "opacity": 0.4, "additive": false, "flat": false }`.
 - `outline`: the ink outline (default on for solids, off for `plane`/`ring` decals).
-- `repeat`: `{ "count": 4, "step": [0, 0, 1.2] }`. The count is a number (1 to 64) or the name of a numeric param, e.g. `"p_cores"`.
+- `repeat`: `{ "count": 4, "step": [0, 0, 1.2] }`. Copy `i` sits at `step * i`. The count is a number (1 to 64), the name of a numeric param (`"p_cores"`), or `"<param>/<n>"` for the param over `n`, rounded up (`"p_cores/4"`: 10 cores give 3 copies). Add `"wrap": w` and `"row": [dx, dy, dz]` to lay the copies in rows of `w`: copy `i` sits at `step * (i % w) + row * floor(i / w)`. So `{ "count": 10, "wrap": 4, "step": [1, 0, 0], "row": [0, 0, 1] }` makes rows of four, then two. `wrap` is a whole number 1 or more; `row` is required with `wrap` and needs it.
 - `when`: shown only when the expression holds: `"gpus"`, `"!gpus"`, `"gpus >= 2"`, `"gpu_cores >= 30"`. Any lower-case param name works; the value comes from the build's params.
 - `anim`: `spin` (`{axis, rps}`), `pulse` (`{period}`), `blink` (`{period, phase}`), `slide` (`{to, on: "enter"}`, `to` is the open position in the part's parent frame), `swing` (`{axis, to, on: "enter"}`, `to` in degrees). `slide` and `swing` follow the `open` state (0 to 1, eased).
 - `tag`: `status` (the LED takes the machine's status colour), `activity` (blinks while agents work), `fan` (spins while online, faster under load), `screen` (glows while online).
@@ -105,6 +105,9 @@ Open the lab at `#/hardware-lab` (it is not in the sidebar). Query parameters, a
 - `open`: 0 to 1 (the ENTER progress for `slide` and `swing`).
 - `traces`: 1 or 0 (boards: show the copper and pulses).
 - `cam`: `iso` (default), `top`, `front`, `side`, or `anchor` (the file's `anchors.camera`). The camera frames the model's `size`.
+- Any other key whose name is a param name (lower-case, digits, `_`) and whose value is a number is a model param, and overrides the model's `params` default: `&p_cores=16&e_cores=8&gpu_cores=76&studio=1`. Keys the lab uses itself (`model`, `gpus`, `status`, `working`, `open`, `traces`, `cam`) cannot be params.
+
+The model's params (except `gpus`, which has its buttons) show as number inputs in the controls, and changing one rebuilds the model. Changing the model clears the param overrides, since each model has its own defaults.
 
 The controls keep the URL in step, so a link to the view is the URL itself. Screenshots:
 

@@ -17,6 +17,17 @@ import boardLaptop from '../../../../../assets/hardware/board/laptop.json';
 import boardPhone from '../../../../../assets/hardware/board/phone.json';
 import boardServer from '../../../../../assets/hardware/board/server.json';
 import boardWorkstation from '../../../../../assets/hardware/board/workstation.json';
+import partGpuPcie from '../../../../../assets/hardware/parts/gpu-pcie.json';
+import partDimm from '../../../../../assets/hardware/parts/dimm.json';
+import partSodimm from '../../../../../assets/hardware/parts/sodimm.json';
+import partM2Ssd from '../../../../../assets/hardware/parts/m2-ssd.json';
+import partFan120 from '../../../../../assets/hardware/parts/fan-120.json';
+import partHeatsinkTower from '../../../../../assets/hardware/parts/heatsink-tower.json';
+import partCapBank from '../../../../../assets/hardware/parts/cap-bank.json';
+import partVrmBank from '../../../../../assets/hardware/parts/vrm-bank.json';
+import partNic from '../../../../../assets/hardware/parts/nic.json';
+import partUsbC from '../../../../../assets/hardware/parts/usb-c.json';
+import partRj45 from '../../../../../assets/hardware/parts/rj45.json';
 
 // The JSON is checked by validate() (a test runs it on every file), not by the TypeScript types.
 const model = (raw: unknown): Model => raw as Model;
@@ -40,4 +51,15 @@ export const MODELS: Record<string, Model> = {
   'board/phone': model(boardPhone),
   'board/server': model(boardServer),
   'board/workstation': model(boardWorkstation),
+  'parts/gpu-pcie': model(partGpuPcie),
+  'parts/dimm': model(partDimm),
+  'parts/sodimm': model(partSodimm),
+  'parts/m2-ssd': model(partM2Ssd),
+  'parts/fan-120': model(partFan120),
+  'parts/heatsink-tower': model(partHeatsinkTower),
+  'parts/cap-bank': model(partCapBank),
+  'parts/vrm-bank': model(partVrmBank),
+  'parts/nic': model(partNic),
+  'parts/usb-c': model(partUsbC),
+  'parts/rj45': model(partRj45),
 };

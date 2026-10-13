@@ -58,7 +58,19 @@ pub fn models_for(kind: &str, vendor: Option<&str>) -> (&'static str, &'static s
 
 /// Reusable part files (`parts/*.json`), referenced by `use: "parts/<name>"`. Empty until the
 /// part files land: add each as `("parts/<name>", include_str!(...))`, in the web index's order.
-pub static PARTS: &[(&str, &str)] = &[];
+pub static PARTS: &[(&str, &str)] = &[
+    ("parts/gpu-pcie", include_str!("../../../../../assets/hardware/parts/gpu-pcie.json")),
+    ("parts/dimm", include_str!("../../../../../assets/hardware/parts/dimm.json")),
+    ("parts/sodimm", include_str!("../../../../../assets/hardware/parts/sodimm.json")),
+    ("parts/m2-ssd", include_str!("../../../../../assets/hardware/parts/m2-ssd.json")),
+    ("parts/fan-120", include_str!("../../../../../assets/hardware/parts/fan-120.json")),
+    ("parts/heatsink-tower", include_str!("../../../../../assets/hardware/parts/heatsink-tower.json")),
+    ("parts/cap-bank", include_str!("../../../../../assets/hardware/parts/cap-bank.json")),
+    ("parts/vrm-bank", include_str!("../../../../../assets/hardware/parts/vrm-bank.json")),
+    ("parts/nic", include_str!("../../../../../assets/hardware/parts/nic.json")),
+    ("parts/usb-c", include_str!("../../../../../assets/hardware/parts/usb-c.json")),
+    ("parts/rj45", include_str!("../../../../../assets/hardware/parts/rj45.json")),
+];
 
 /// The shared palette (`palette.json`): `{"schema": 1, "colors": {name: material}}`, each entry an
 /// inline material (colour, emissive, glow, opacity, flat).
@@ -207,18 +219,44 @@ pub struct InlineMat {
     pub flat: bool,
 }
 
+/// Copies of a part. Copy i sits at `step * i`; with `wrap`, at `step * (i % wrap) + row * (i / wrap)`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Repeat {
     pub count: Count,
     pub step: [f32; 3],
+    pub wrap: Option<u32>,
+    pub row: Option<[f32; 3]>,
 }
 
-/// A repeat count: a number, or the name of a numeric param (`"p_cores"`), read at build time.
+/// A repeat count: a number, or a numeric param's name (`"p_cores"`), or `"p_cores/4"` (the param over 4,
+/// rounded up), read at build time.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Count {
     Num(u32),
     Param(String),
+}
+
+/// A named count split into its param and divisor: `"p_cores"` is (p_cores, 1), `"p_cores/4"` is (p_cores, 4).
+/// None when it is neither a param name nor a param name over a whole number 1 or more.
+fn split_count(s: &str) -> Option<(&str, u32)> {
+    let (name, div) = match s.split_once('/') {
+        Some((name, div)) if !div.starts_with('0') && div.bytes().all(|b| b.is_ascii_digit()) => (name, div.parse::<u32>().ok()?),
+        Some(_) => return None,
+        None => (s, 1),
+    };
+    let mut chars = name.chars();
+    let first_ok = matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c == '_');
+    (first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some((name, div))
+}
+
+/// Where copy `i` of a repeat sits (see `Repeat`). A `wrap` of 0 is a validation error; it counts as no wrap here.
+fn repeat_offset(r: &Repeat, i: u32) -> Vec3 {
+    let (col, line) = match r.wrap {
+        Some(w) if w >= 1 => (i % w, i / w),
+        _ => (i, 0),
+    };
+    Vec3::from(r.step) * col as f32 + Vec3::from(r.row.unwrap_or([0.0; 3])) * line as f32
 }
 
 /// Silkscreen text on a part's top.
@@ -518,9 +556,21 @@ impl Check<'_> {
             if let Some(r) = &p.repeat {
                 match &r.count {
                     Count::Num(0) => self.err("repeat count must be at least 1".to_string()),
-                    Count::Param(name) if !self.params.contains_key(name) => {
-                        self.err(format!("repeat count '{name}' is not a param of the model"))
-                    }
+                    Count::Param(s) => match split_count(s) {
+                        None => self.err(format!("repeat count '{s}' is not a param name or 'param/n'")),
+                        Some((name, _)) if !self.params.contains_key(name) => {
+                            self.err(format!("repeat count '{name}' is not a param of the model"))
+                        }
+                        Some(_) => {}
+                    },
+                    _ => {}
+                }
+                if r.wrap == Some(0) {
+                    self.err("repeat wrap must be at least 1".to_string());
+                }
+                match (r.wrap, r.row) {
+                    (Some(_), None) => self.err("repeat wrap needs a row [dx, dy, dz]".to_string()),
+                    (None, Some(_)) => self.err("repeat row needs a wrap".to_string()),
                     _ => {}
                 }
             }
@@ -771,13 +821,16 @@ impl Builder {
         let node = match &p.repeat {
             Some(rep) => {
                 let group = Obj::group();
-                // A named count reads its param now; a missing or negative one repeats nothing.
+                // A named count reads its param now; a missing or negative one repeats nothing. "p/n" is the param over n,
+                // rounded up. At most 64 copies, as in the browser loader.
                 let n = match &rep.count {
                     Count::Num(n) => *n,
-                    Count::Param(name) => self.vals.get(name).map(|v| v.round().max(0.0) as u32).unwrap_or(0),
+                    Count::Param(s) => split_count(s)
+                        .and_then(|(name, div)| self.vals.get(name).map(|v| (v.round().max(0.0) as u32).div_ceil(div)))
+                        .unwrap_or(0),
                 };
-                for i in 0..n {
-                    let copy = self.node(p, at + Vec3::from(rep.step) * i as f32);
+                for i in 0..n.min(64) {
+                    let copy = self.node(p, at + repeat_offset(rep, i));
                     group.add(&copy);
                 }
                 group
@@ -1213,6 +1266,52 @@ mod tests {
         for needle in ["duplicate id", "unknown part", "bad when", "unknown tag", "missing part", "two points"] {
             assert!(errs.iter().any(|e| e.contains(needle)), "no '{needle}' in {errs:?}");
         }
+    }
+
+    #[test]
+    fn repeat_wrap_lays_copies_in_rows() {
+        // The same numbers as the browser loader's test: count 10, wrap 4, step [1, 0, 0], row [0, 0, 1].
+        let r = Repeat { count: Count::Num(10), step: [1.0, 0.0, 0.0], wrap: Some(4), row: Some([0.0, 0.0, 1.0]) };
+        let offsets: Vec<[f32; 3]> = (0..10).map(|i| repeat_offset(&r, i).to_array()).collect();
+        let expected = [
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [3.0, 0.0, 1.0], [0.0, 0.0, 2.0], [1.0, 0.0, 2.0],
+        ];
+        assert_eq!(offsets, expected);
+        // Without a wrap the copies stay in one line.
+        let line = Repeat { count: Count::Num(3), step: [2.0, 0.0, 0.0], wrap: None, row: None };
+        let line_offsets: Vec<[f32; 3]> = (0..3).map(|i| repeat_offset(&line, i).to_array()).collect();
+        assert_eq!(line_offsets, [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn repeat_counts_name_a_param_or_its_share() {
+        assert_eq!(split_count("p_cores"), Some(("p_cores", 1)));
+        assert_eq!(split_count("p_cores/4"), Some(("p_cores", 4)));
+        for bad in ["p/0", "p/", "p/+3", "p/04", "p/x", "9p", "p-x", ""] {
+            assert_eq!(split_count(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn repeat_wrap_row_and_count_are_checked_and_built() {
+        let src = r##"{
+          "schema": 1, "kind": "x", "view": "part", "size": [1, 1, 1], "params": { "n": 4 },
+          "parts": [
+            { "id": "a", "geo": { "type": "box", "w": 1, "h": 1, "d": 1 }, "repeat": { "count": "n/2", "step": [1, 0, 0], "wrap": 2 } },
+            { "id": "b", "geo": { "type": "box", "w": 1, "h": 1, "d": 1 }, "repeat": { "count": 2, "step": [1, 0, 0], "row": [0, 0, 1] } },
+            { "id": "c", "geo": { "type": "box", "w": 1, "h": 1, "d": 1 }, "repeat": { "count": "n/x", "step": [1, 0, 0], "wrap": 0, "row": [0, 0, 1] } }
+          ]
+        }"##;
+        let m: Model = parse(src).unwrap();
+        let errs = validate(&m, "repeats");
+        for needle in ["needs a row", "row needs a wrap", "param name or 'param/n'", "wrap must be at least 1"] {
+            assert!(errs.iter().any(|e| e.contains(needle)), "no '{needle}' in {errs:?}");
+        }
+        // n = 4 over 2 is two copies of "a"; a bad count builds nothing and a bad wrap does not panic.
+        let built = build(&m, &Params::default());
+        assert_eq!(built.parts.get("a").unwrap().get().children.len(), 2);
+        assert_eq!(built.parts.get("b").unwrap().get().children.len(), 2);
     }
 
     #[test]

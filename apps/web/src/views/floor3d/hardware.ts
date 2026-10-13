@@ -55,6 +55,17 @@ export interface Label {
   color?: string;
 }
 
+/**
+ * Copies of a part. count: a number 1..64, a numeric param's name ("p_cores"), or "p_cores/4" (the param
+ * divided by 4, rounded up). Copy i sits at step * i; with wrap, at step * (i % wrap) + row * floor(i / wrap).
+ */
+export interface Repeat {
+  count: number | string;
+  step: Vec3;
+  wrap?: number;
+  row?: Vec3;
+}
+
 export interface Part {
   id?: string;
   geo?: Geo;
@@ -64,8 +75,7 @@ export interface Part {
   scale?: Vec3 | number;
   mat?: MatRef;
   outline?: boolean;
-  /** count: a number 1..64, or the name of a numeric param ("p_cores"). */
-  repeat?: { count: number | string; step: Vec3 };
+  repeat?: Repeat;
   when?: string;
   anim?: Anim;
   tag?: Tag;
@@ -126,6 +136,9 @@ export type Resolver = (name: string) => Model | undefined;
 // ---- Constants -----------------------------------------------------------------------------
 
 const isParamName = (v: unknown): v is string => typeof v === 'string' && /^[a-z_]\w*$/.test(v);
+/** "p_cores/4": a param's name, a slash, and a whole number 1 or more. */
+const COUNT_REF = /^([a-z_]\w*)\/([1-9]\d*)$/;
+const isCountRef = (v: unknown): boolean => isParamName(v) || (typeof v === 'string' && COUNT_REF.test(v));
 const VIEWS = ['exterior', 'board', 'part'];
 const TAGS: readonly string[] = ['status', 'activity', 'fan', 'screen'];
 const AXES: readonly string[] = ['x', 'y', 'z'];
@@ -370,11 +383,18 @@ function checkPart(p: unknown, path: string, c: VCtx): void {
   if (p.mat !== undefined) checkMatRef(p.mat, `${path}.mat`, c);
   if (p.outline !== undefined && typeof p.outline !== 'boolean') fail(c, `${path}.outline`, 'expected true or false');
   if (p.repeat !== undefined) {
-    if (!isObj(p.repeat)) fail(c, `${path}.repeat`, 'expected {count, step}');
-    else shape(p.repeat, `${path}.repeat`, c, {
-      count: [true, (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 64) || isParamName(v), 'count 1..64 or a param name'],
-      step: [true, isVec3, 'step [dx, dy, dz]'],
-    });
+    const r: unknown = p.repeat;
+    if (!isObj(r)) fail(c, `${path}.repeat`, 'expected {count, step}');
+    else {
+      shape(r, `${path}.repeat`, c, {
+        count: [true, (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 64) || isCountRef(v), 'count 1..64, a param name or "param/n"'],
+        step: [true, isVec3, 'step [dx, dy, dz]'],
+        wrap: [false, (v) => Number.isInteger(v) && (v as number) >= 1, 'wrap: a whole number 1 or more'],
+        row: [false, isVec3, 'row [dx, dy, dz]'],
+      });
+      if (r.wrap !== undefined && r.row === undefined) fail(c, `${path}.repeat.row`, 'missing row [dx, dy, dz] (a wrap needs one)');
+      if (r.row !== undefined && r.wrap === undefined) fail(c, `${path}.repeat.row`, 'row needs a wrap');
+    }
   }
   if (p.when !== undefined) checkWhen(p.when, `${path}.when`, c);
   if (p.anim !== undefined) checkAnim(p.anim, `${path}.anim`, c);
@@ -579,10 +599,32 @@ function buildPart(p: Part, ctx: Ctx, scope: string): THREE.Object3D | null {
   }
   if (!p.repeat) return buildOne(p, ctx, scope, 0, ZERO);
   const holder = new THREE.Group();
-  const [sx, sy, sz] = p.repeat.step;
-  const count = typeof p.repeat.count === 'number' ? p.repeat.count : Math.round(ctx.params[p.repeat.count] ?? 0);
-  for (let i = 0; i < Math.min(64, count); i++) holder.add(buildOne(p, ctx, scope, i, [sx * i, sy * i, sz * i]));
+  repeatOffsets(p.repeat, ctx.params).forEach((offset, i) => holder.add(buildOne(p, ctx, scope, i, offset)));
   return holder;
+}
+
+/** A repeat's copy count, read from the params now: a number, a param's value, or a param's value over n, rounded up. */
+function repeatCount(count: number | string, params: Params): number {
+  if (typeof count === 'number') return count;
+  const ref = COUNT_REF.exec(count);
+  if (ref) {
+    const [, name = '', over = '1'] = ref;
+    return Math.ceil(Math.round(params[name] ?? 0) / Number(over));
+  }
+  return Math.round(params[count] ?? 0);
+}
+
+/** Where each copy of a repeat sits: copy i at step * i, or with wrap at step * (i % wrap) + row * floor(i / wrap). */
+export function repeatOffsets(r: Repeat, params: Params): Vec3[] {
+  const [sx, sy, sz] = r.step;
+  const [rx, ry, rz] = r.row ?? ZERO;
+  const out: Vec3[] = [];
+  for (let i = 0; i < Math.min(64, repeatCount(r.count, params)); i++) {
+    const col = r.wrap ? i % r.wrap : i;
+    const line = r.wrap ? Math.floor(i / r.wrap) : 0;
+    out.push([sx * col + rx * line, sy * col + ry * line, sz * col + rz * line]);
+  }
+  return out;
 }
 
 function buildOne(p: Part, ctx: Ctx, scope: string, inst: number, offset: Vec3): THREE.Object3D {

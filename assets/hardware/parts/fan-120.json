@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "kind": "fan-120",
+  "view": "part",
+  "size": [12.0, 3.7, 12.0],
+  "parts": [
+    { "id": "frame", "geo": { "type": "rbox", "w": 12.0, "h": 2.6, "d": 12.0, "r": 0.9 }, "at": [0, 1.3, 0], "mat": "fan" },
+    { "id": "well", "geo": { "type": "cyl", "rt": 4.6, "rb": 4.6, "h": 0.05 }, "at": [0, 2.625, 0], "mat": "metal-dark" },
+    { "id": "ring", "geo": { "type": "ring", "ri": 4.6, "ro": 5.6 }, "at": [0, 2.62, 0], "mat": "fan-blade", "outline": false },
+    { "id": "screws-front", "repeat": { "count": 2, "step": [10.4, 0, 0] }, "geo": { "type": "cyl", "rt": 0.35, "rb": 0.35, "h": 0.3 }, "at": [-5.2, 2.75, 5.2], "mat": "solder" },
+    { "id": "screws-back", "repeat": { "count": 2, "step": [10.4, 0, 0] }, "geo": { "type": "cyl", "rt": 0.35, "rb": 0.35, "h": 0.3 }, "at": [-5.2, 2.75, -5.2], "mat": "solder" },
+    {
+      "id": "impeller",
+      "geo": { "type": "cyl", "rt": 1.1, "rb": 1.1, "h": 1.0 },
+      "at": [0, 3.2, 0],
+      "mat": "fan-blade",
+      "tag": "fan",
+      "children": [
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [2.7, 0, 0], "rot": [0, 0, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [1.68, 0, -2.11], "rot": [0, 51.43, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-0.6, 0, -2.63], "rot": [0, 102.86, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-2.43, 0, -1.17], "rot": [0, 154.29, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-2.43, 0, 1.17], "rot": [0, 205.71, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-0.6, 0, 2.63], "rot": [0, 257.14, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [1.68, 0, 2.11], "rot": [0, 308.57, 0], "mat": "fan-blade" }
+      ]
+    }
+  ]
+}

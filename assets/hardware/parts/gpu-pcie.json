@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "gpu-pcie",
+  "view": "part",
+  "size": [14.2, 3.5, 5.6],
+  "parts": [
+    { "id": "backplate", "geo": { "type": "rbox", "w": 13.6, "h": 0.5, "d": 5.6, "r": 0.15 }, "at": [7.0, 0.25, 0], "mat": "metal-dark" },
+    { "id": "pcb", "geo": { "type": "box", "w": 13.2, "h": 0.3, "d": 5.4 }, "at": [7.4, 0.65, 0], "mat": "pcb" },
+    { "id": "fingers", "geo": { "type": "box", "w": 0.8, "h": 0.3, "d": 4.6 }, "at": [0.4, 0.65, 0], "mat": "gold" },
+    { "id": "shroud", "geo": { "type": "rbox", "w": 13.4, "h": 2.4, "d": 5.6, "r": 0.35 }, "at": [7.3, 2.0, 0], "mat": "gpu-shroud" },
+    { "id": "accent", "geo": { "type": "box", "w": 12.6, "h": 0.22, "d": 0.12 }, "at": [7.1, 1.6, 2.86], "mat": "gpu-accent", "anim": { "pulse": { "period": 2.4 } } },
+    { "id": "label-plate", "geo": { "type": "box", "w": 1.8, "h": 0.1, "d": 3.0 }, "at": [1.4, 3.25, 0], "mat": "pcb-black", "label": { "text": "GPU", "size": 0.9, "color": "#e8eadf" } },
+    { "id": "power", "repeat": { "count": 2, "step": [2.0, 0, 0] }, "geo": { "type": "box", "w": 1.4, "h": 0.7, "d": 0.9 }, "at": [5.8, 3.55, 2.2], "mat": "rubber" },
+    { "id": "fin", "repeat": { "count": 6, "step": [0, 0, 0.8] }, "geo": { "type": "box", "w": 0.25, "h": 2.0, "d": 0.35 }, "at": [14.15, 2.0, -2.0], "mat": "metal-dark" },
+    {
+      "id": "fan",
+      "repeat": { "count": 3, "step": [3.9, 0, 0] },
+      "geo": { "type": "cyl", "rt": 1.75, "rb": 1.75, "h": 0.25 },
+      "at": [4.2, 3.325, 0],
+      "mat": "fan",
+      "tag": "fan",
+      "children": [
+        { "geo": { "type": "ring", "ri": 1.45, "ro": 1.7 }, "at": [0, 0.14, 0], "mat": "fan-blade", "outline": false },
+        { "geo": { "type": "cyl", "rt": 0.45, "rb": 0.45, "h": 0.3 }, "at": [0, 0.2, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [0.95, 0.12, 0], "rot": [0, 0, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [0.59, 0.12, -0.74], "rot": [0, 51.43, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [-0.21, 0.12, -0.93], "rot": [0, 102.86, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [-0.86, 0.12, -0.41], "rot": [0, 154.29, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [-0.86, 0.12, 0.41], "rot": [0, 205.71, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [-0.21, 0.12, 0.93], "rot": [0, 257.14, 0], "mat": "fan-blade" },
+        { "geo": { "type": "rbox", "w": 1.6, "h": 0.12, "d": 0.5, "r": 0.05 }, "at": [0.59, 0.12, 0.74], "rot": [0, 308.57, 0], "mat": "fan-blade" }
+      ]
+    }
+  ]
+}

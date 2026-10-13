@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "kind": "sodimm",
+  "view": "part",
+  "size": [7.5, 3.4, 1.0],
+  "parts": [
+    { "id": "fingers", "geo": { "type": "box", "w": 7.0, "h": 0.5, "d": 0.45 }, "at": [0, 0.25, 0], "mat": "gold" },
+    { "id": "pcb", "geo": { "type": "box", "w": 7.5, "h": 2.5, "d": 0.45 }, "at": [0, 1.75, 0], "mat": "dimm" },
+    { "id": "chip-front", "repeat": { "count": 4, "step": [1.5, 0, 0] }, "geo": { "type": "box", "w": 1.1, "h": 1.0, "d": 0.22 }, "at": [-2.25, 1.9, 0.34], "mat": "dimm-chip" },
+    { "id": "chip-back", "repeat": { "count": 4, "step": [1.5, 0, 0] }, "geo": { "type": "box", "w": 1.1, "h": 1.0, "d": 0.22 }, "at": [-2.25, 1.9, -0.34], "mat": "dimm-chip" },
+    { "id": "shield", "geo": { "type": "rbox", "w": 7.2, "h": 0.4, "d": 1.0, "r": 0.15 }, "at": [0, 3.2, 0], "mat": "aluminium", "label": { "text": "SO-DIMM", "size": 0.4, "color": "#1f2328" } }
+  ]
+}

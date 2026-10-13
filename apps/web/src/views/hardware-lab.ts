@@ -1,7 +1,8 @@
 // The hardware lab: a developer screen for the hardware models under assets/hardware/. It shows one
 // model under the Floor's lighting, with its state controls and its validation errors in red.
 // Route: #/hardware-lab?model=exterior/workstation&gpus=1&status=online&working=0&open=0&traces=1&cam=iso
-// (cam: iso | top | front | side | anchor). The URL is kept in step with the controls.
+// (cam: iso | top | front | side | anchor). Any other numeric key is a model param, overriding its default:
+// &p_cores=16&e_cores=8&gpu_cores=76. The model's params are number inputs in the controls. The URL is kept in step.
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -23,9 +24,14 @@ interface LabState {
   open: number;
   traces: boolean;
   cam: Cam;
+  /** Model params from the URL (every numeric key the lab does not use itself); they override the model's defaults. */
+  params: Record<string, number>;
 }
 
-const DEFAULT_STATE: LabState = { model: 'exterior/workstation', gpus: 0, status: 'online', working: 0, open: 0, traces: true, cam: 'iso' };
+const DEFAULT_STATE: LabState = { model: 'exterior/workstation', gpus: 0, status: 'online', working: 0, open: 0, traces: true, cam: 'iso', params: {} };
+/** The query keys the lab reads for itself; any other key that holds a number is a model param. */
+const LAB_KEYS = new Set(['model', 'gpus', 'status', 'working', 'open', 'traces', 'cam']);
+const PARAM_KEY = /^[a-z_]\w*$/;
 
 /** The lab's state from the route's query; a missing or bad value takes its default. */
 function readState(hash: string): LabState {
@@ -36,6 +42,10 @@ function readState(hash: string): LabState {
   };
   const status = q.get('status') ?? '';
   const cam = q.get('cam') ?? '';
+  const params: Record<string, number> = {};
+  q.forEach((value, key) => {
+    if (!LAB_KEYS.has(key) && PARAM_KEY.test(key) && value.trim() !== '' && Number.isFinite(Number(value))) params[key] = Number(value);
+  });
   return {
     model: q.get('model') ?? DEFAULT_STATE.model,
     gpus: Math.round(num('gpus', 0, 2, DEFAULT_STATE.gpus)),
@@ -44,8 +54,14 @@ function readState(hash: string): LabState {
     open: num('open', 0, 1, DEFAULT_STATE.open),
     traces: q.has('traces') ? q.get('traces') !== '0' : DEFAULT_STATE.traces,
     cam: (CAMS as readonly string[]).includes(cam) ? (cam as Cam) : DEFAULT_STATE.cam,
+    params,
   };
 }
+
+const sameParams = (a: Record<string, number>, b: Record<string, number>): boolean => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+};
 
 /** Frees a built model's own geometry and materials (the shared outline material stays). */
 function disposeTree(root: THREE.Object3D): void {
@@ -77,7 +93,7 @@ export function mount(root: HTMLElement): Cleanup {
   const field = (label: string, control: HTMLElement): HTMLElement => h('label', { style: 'display:flex;gap:6px;align-items:center' }, h('span', { style: 'font-size:12px;color:var(--ink-2)' }, label), control);
   const modelSel = h(
     'select',
-    { 'aria-label': 'Model', onchange: () => { state.model = modelSel.value; rebuild(true); writeUrl(); sync(); } },
+    { 'aria-label': 'Model', onchange: () => { state.model = modelSel.value; state.params = {}; rebuild(true); writeUrl(); sync(); } },
     ...Object.keys(MODELS).sort().map((k) => h('option', { value: k }, k)),
   );
   const gpuBtns = [0, 1, 2].map((n) => h('button', { type: 'button', class: 'btn', onclick: () => { state.gpus = n; rebuild(false); writeUrl(); sync(); } }, `${n} GPU${n === 1 ? '' : 's'}`));
@@ -92,11 +108,45 @@ export function mount(root: HTMLElement): Cleanup {
   const openOut = h('span', { style: 'font-family:var(--mono);font-size:12px;min-width:4ch' });
   const tracesIn = h('input', { type: 'checkbox', 'aria-label': 'Traces', onchange: () => { state.traces = tracesIn.checked; writeUrl(); sync(); } });
   const camBtns = CAMS.map((c) => h('button', { type: 'button', class: 'btn', onclick: () => { state.cam = c; frame(current?.model, c); writeUrl(); sync(); } }, c));
+  // The model's own params (gpus has its buttons): number inputs, rebuilt on each change.
+  const paramsBar = h('div', { style: bar.style });
+  const paramIns = new Map<string, HTMLInputElement>();
+  let paramsOf = '';
+  const syncParams = (): void => {
+    const model = MODELS[state.model];
+    if (state.model !== paramsOf) {
+      paramsOf = state.model;
+      paramIns.clear();
+      const keys = Object.keys(model?.params ?? {}).filter((k) => k !== 'gpus').sort();
+      paramsBar.style.display = keys.length ? 'flex' : 'none';
+      paramsBar.replaceChildren(
+        ...keys.map((k) => {
+          const input = h('input', {
+            type: 'number',
+            step: 'any',
+            'aria-label': `param ${k}`,
+            style: 'width:9ch;font-family:var(--mono);font-size:12px',
+            oninput: () => {
+              // A half-typed value (empty, or "-") is not a param yet; the input keeps what was typed.
+              if (!Number.isFinite(input.valueAsNumber)) return;
+              state.params[k] = input.valueAsNumber;
+              rebuild(false);
+              writeUrl();
+            },
+          });
+          paramIns.set(k, input);
+          return field(k, input);
+        }),
+      );
+    }
+    for (const [k, input] of paramIns) input.value = String(state.params[k] ?? model?.params?.[k] ?? 0);
+  };
   const toolbar = h(
     'div',
     { style: 'display:flex;flex-direction:column;border-bottom:1px solid var(--rule);padding:0 12px' },
     h('div', { style: bar.style }, field('model', modelSel), h('span', { style: 'display:flex;gap:4px' }, ...gpuBtns), field('status', statusSel)),
     h('div', { style: bar.style }, field('working', workingIn), workingOut, field('open', openIn), openOut, field('traces (boards)', tracesIn)),
+    paramsBar,
     h('div', { style: bar.style }, h('span', { style: 'font-size:12px;color:var(--ink-2)' }, 'camera'), h('span', { style: 'display:flex;gap:4px' }, ...camBtns)),
   );
   const errorsEl = h('pre', { style: 'margin:0;padding:8px 12px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;color:var(--crit)' });
@@ -113,6 +163,7 @@ export function mount(root: HTMLElement): Cleanup {
     openOut.textContent = state.open.toFixed(2);
     tracesIn.checked = state.traces;
     camBtns.forEach((b, i) => (b.style.outline = CAMS[i] === state.cam ? '2px solid var(--accent)' : ''));
+    syncParams();
   };
   const writeUrl = (): void => {
     const q = new URLSearchParams({
@@ -124,6 +175,7 @@ export function mount(root: HTMLElement): Cleanup {
       traces: state.traces ? '1' : '0',
       cam: state.cam,
     });
+    for (const [k, v] of Object.entries(state.params)) q.set(k, String(v));
     history.replaceState(null, '', `#/hardware-lab?${q.toString().replace(/%2F/g, '/')}`);
   };
 
@@ -218,7 +270,7 @@ export function mount(root: HTMLElement): Cleanup {
     const model = MODELS[state.model];
     lastErrors = model ? validate(model, state.model) : [`no model named "${state.model}" (see the Model menu)`];
     if (model) {
-      const built = buildModel(model, { gpus: state.gpus });
+      const built = buildModel(model, { ...state.params, gpus: state.gpus });
       let traces: THREE.Group | null = null;
       let pulses: Pulses | null = null;
       if (model.view === 'board') {
@@ -242,7 +294,7 @@ export function mount(root: HTMLElement): Cleanup {
   const onHash = (): void => {
     if (!location.hash.startsWith('#/hardware-lab')) return;
     const next = readState(location.hash);
-    const changed = next.model !== state.model || next.gpus !== state.gpus;
+    const changed = next.model !== state.model || next.gpus !== state.gpus || !sameParams(next.params, state.params);
     const reframe = next.model !== state.model || next.cam !== state.cam;
     state = next;
     if (changed || reframe) rebuild(reframe);
