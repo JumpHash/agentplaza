@@ -1,0 +1,14 @@
+# apz-trainer:cpu. Build from trainer/: docker build -f Dockerfile.cpu -t apz-trainer:cpu .
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1" \
+ && pip install --no-cache-dir "numpy>=1.26" "onnx>=1.16" "onnxruntime>=1.18"
+
+COPY apz_train /opt/apz/apz_train
+COPY recipes /opt/apz/recipes
+
+ENV PYTHONPATH=/opt/apz \
+    APZ_RECIPES=/opt/apz/recipes \
+    PYTHONUNBUFFERED=1
+WORKDIR /opt/apz
+CMD ["python", "-m", "apz_train.run", "--help"]

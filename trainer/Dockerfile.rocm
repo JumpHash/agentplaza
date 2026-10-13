@@ -1,0 +1,14 @@
+# apz-trainer:rocm. Build from trainer/: docker build -f Dockerfile.rocm -t apz-trainer:rocm .
+# ROCm 6.4.4 with PyTorch 2.5.1; runs through torch.cuda (HIP), so the runtime code path is the same.
+FROM rocm/pytorch:rocm6.4.4_ubuntu22.04_py3.10_pytorch_release_2.5.1
+
+RUN pip install --no-cache-dir "numpy>=1.26" "onnx>=1.16" "onnxruntime>=1.18"
+
+COPY apz_train /opt/apz/apz_train
+COPY recipes /opt/apz/recipes
+
+ENV PYTHONPATH=/opt/apz \
+    APZ_RECIPES=/opt/apz/recipes \
+    PYTHONUNBUFFERED=1
+WORKDIR /opt/apz
+CMD ["python", "-m", "apz_train.run", "--help"]

@@ -1,0 +1,28 @@
+# Foundry trainer: CPU tests of the single, tight (gloo, 2 processes) and loose (2 islands through a
+# local hub) paths, ONNX export and checks. The GPU images are built by hand or at release.
+name: trainer
+
+on:
+  push:
+    paths: ["trainer/**", ".github/workflows/trainer.yml"]
+  pull_request:
+    paths: ["trainer/**", ".github/workflows/trainer.yml"]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: trainer tests (CPU)
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: trainer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest -q

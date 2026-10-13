@@ -1,0 +1,14 @@
+# apz-trainer:cuda. Build from trainer/: docker build -f Dockerfile.cuda -t apz-trainer:cuda .
+# The base is pinned by tag (PyTorch 2.5.1, CUDA 12.4, cuDNN 9); pin the digest at release time.
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+RUN pip install --no-cache-dir "numpy>=1.26" "onnx>=1.16" "onnxruntime>=1.18"
+
+COPY apz_train /opt/apz/apz_train
+COPY recipes /opt/apz/recipes
+
+ENV PYTHONPATH=/opt/apz \
+    APZ_RECIPES=/opt/apz/recipes \
+    PYTHONUNBUFFERED=1
+WORKDIR /opt/apz
+CMD ["python", "-m", "apz_train.run", "--help"]

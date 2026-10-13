@@ -1,0 +1,7 @@
+.venv/
+**/__pycache__/
+out/
+tests/
+.pytest_cache/
+.gitignore
+*.md

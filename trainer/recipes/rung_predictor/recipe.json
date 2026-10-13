@@ -1,0 +1,36 @@
+{
+  "id": "rung-predictor@1",
+  "title": "Rung predictor: which rung of the cascade a task needs",
+  "description": "Small MLP over task features (numeric + hashed categorical) predicting the lowest rung (cheap, mid, frontier) that passes verification. Objective: expected cost including escalation, with calibration (ECE) reported.",
+  "label": "label",
+  "input": {
+    "names": ["num", "cat"],
+    "numeric": ["prompt_chars", "prompt_tokens", "tool_count", "history_turns", "attachments", "prior_failures"],
+    "categorical": ["task_kind", "domain", "tenant_tier", "requested_model"],
+    "hash_buckets": 4096,
+    "embedding_dim": 8
+  },
+  "output": {
+    "names": ["logits"],
+    "classes": ["cheap", "mid", "frontier"]
+  },
+  "shard": false,
+  "defaults": {
+    "hidden": 128,
+    "depth": 2,
+    "prices": [1.0, 10.0, 100.0],
+    "lambda_ce": 0.1,
+    "lr": 0.002,
+    "weight_decay": 0.0001,
+    "batch_size": 256,
+    "steps": 2000,
+    "warmup": 100,
+    "seed": 0,
+    "val_fraction": 0.2,
+    "eval_every": 250,
+    "checkpoint_every": 500,
+    "log_every": 50,
+    "patience": 0,
+    "amp": true
+  }
+}
