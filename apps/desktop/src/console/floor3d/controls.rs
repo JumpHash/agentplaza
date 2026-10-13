@@ -9,6 +9,8 @@ use super::scene::Camera;
 
 /// three's `EPS`: keeps the polar angle off the poles.
 const POLE_EPS: f32 = 1e-6;
+/// The camera's vertical field of view, degrees.
+pub const FOV_DEG: f32 = 40.0;
 /// A pending delta at or below this is settled; `update` reports `false` once all are.
 const SETTLED: f32 = 1e-4;
 /// three's zoom base: one wheel step scales the distance by 0.95.
@@ -108,10 +110,10 @@ impl Orbit {
         self.scale = 1.0;
     }
 
-    /// The camera now (fov 40°, near 0.5, far 1000).
+    /// The camera now (fov `FOV_DEG`, near 0.5, far 1000).
     pub fn camera(&self, aspect: f32) -> Camera {
         let eye = self.target + self.radius * self.eye_direction();
-        Camera { eye, target: self.target, fov: 40.0, near: 0.5, far: 1000.0, aspect }
+        Camera { eye, target: self.target, fov: FOV_DEG, near: 0.5, far: 1000.0, aspect }
     }
 
     /// Unit vector from the target to the eye, from the spherical coordinates.

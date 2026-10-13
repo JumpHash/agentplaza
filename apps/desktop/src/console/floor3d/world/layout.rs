@@ -8,6 +8,7 @@ use glam::{Mat4, Quat, Vec3};
 
 use super::{AgentInfo, Bot, Colors, District, DistrictLight, Floor, Shared};
 use crate::console::floor3d::canvas::Canvas;
+use crate::console::floor3d::controls::FOV_DEG;
 use crate::console::floor3d::geometry;
 use crate::console::floor3d::props::{self, Box2, PropPalette, Site};
 use crate::console::floor3d::outskirts;
@@ -34,6 +35,10 @@ pub const DAIS_RAMP: f32 = 2.2; // width of the dais's sloped skirt
 pub const GRAVITY: f32 = 9.8; // world units per second squared
 pub const POLAR: f32 = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 pub const AZIMUTH: f32 = FRAC_PI_4;
+/// The fit's bounding sphere is this much bigger than the plaza, so it sits with a small margin.
+const FIT_MARGIN: f32 = 1.06;
+/// Height the fit allows above the plaza for the robots and their labels, grid units.
+const LABEL_HEADROOM: f32 = 4.0;
 #[allow(dead_code)] // read by motion.rs
 pub const SOCIAL_NEAR: f32 = 9.5; // districts this close count as neighbours for a visit or a chat
 #[allow(dead_code)] // read by motion.rs
@@ -556,14 +561,31 @@ impl Floor {
         }
     }
 
-    /// `resetView()`: the isometric-ish view that fits every district.
-    pub fn reset_view(&mut self) {
-        let mut extent: f32 = 6.0;
+    /// The radius of the disc about the origin that holds every district's slab and its ramp, the
+    /// orchestrator's dais, and the robots' labels above them (`LABEL_HEADROOM`, grid units).
+    pub fn plaza_radius(&self) -> f32 {
+        let mut reach = DAIS_R + DAIS_RAMP;
         for d in &self.districts {
-            extent = extent.max(d.cx.abs() + d.r).max(d.cy.abs() + d.r);
+            // A square's farthest corner from the origin; a round room's rim.
+            let far = if d.round {
+                d.cx.hypot(d.cy) + d.r
+            } else {
+                (d.cx.abs() + d.r).hypot(d.cy.abs() + d.r)
+            };
+            reach = reach.max(far + RAMP);
         }
-        let dist = extent * 2.6 + 6.0;
+        reach.hypot(LABEL_HEADROOM)
+    }
+
+    /// `resetView()`: the isometric-ish view that fits the whole plaza in a `aspect` (width / height)
+    /// stage. The plaza is a disc about the origin; its bounding sphere is fitted to the frustum's
+    /// narrower half-angle, so it fits both ways.
+    pub fn reset_view(&mut self, aspect: f32) {
         let target = Vec3::new(0.0, 0.4, 0.0);
+        let radius = self.plaza_radius() * FIT_MARGIN;
+        let half_v = (FOV_DEG / 2.0).to_radians();
+        let half_h = (half_v.tan() * aspect.max(1e-3)).atan();
+        let dist = radius / half_v.min(half_h).sin();
         // three's setFromSphericalCoords(dist, POLAR, AZIMUTH).
         let offset = Vec3::new(
             dist * POLAR.sin() * AZIMUTH.sin(),

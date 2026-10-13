@@ -24,7 +24,18 @@ pub struct Label {
     pub x: f32,
     pub y: f32,
     pub working: bool,
+    /// The agent is idle: its label is left out unless it is selected.
+    pub idle: bool,
+    /// The selected agent: drawn with its full label, even when idle.
+    pub selected: bool,
     pub highlighted: bool,
+}
+
+impl Label {
+    /// Whether the label is drawn at all: an idle agent's only when it is selected.
+    pub fn is_shown(&self) -> bool {
+        self.selected || !self.idle
+    }
 }
 
 /// The second line of a label and the card (`shown` in floor.ts).
@@ -58,6 +69,8 @@ impl Floor {
                 x,
                 y,
                 working: bot.agent.status == "working",
+                idle: bot.agent.status == "idle",
+                selected: self.selected == Some(cid),
                 highlighted: self.hovered == Some(cid) || self.selected == Some(cid),
             });
         }

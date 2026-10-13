@@ -9,15 +9,15 @@ use iced::{Alignment, Border, Color, Element, Length, Point, Shadow, Subscriptio
 use serde_json::Value;
 
 use super::Id;
+use crate::console::floor3d::controls::FOV_DEG;
 use crate::console::floor3d::scene::{Color as SceneColor, Frame};
 use crate::console::floor3d::world::view::{FloorProgram, Label};
 use crate::console::floor3d::world::{AgentInfo, Floor};
 use crate::console::{client, events, ui, Ctx};
 use crate::theme::OK;
 
-/// The card's width and the field of view the orbit pans with (degrees, as the camera has it).
+/// The card's width.
 const CARD_W: f32 = 284.0;
-const FOV_DEG: f32 = 40.0;
 /// The stage's height on the sheet.
 const STAGE_H: f32 = 640.0;
 
@@ -102,6 +102,22 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
     client::task(move || client.call("GET", "/v1/agents", None), Msg::Agents)
 }
 
+/// Frames the whole plaza for the stage's size (`resetView`). Nothing happens until the stage has a size.
+fn reset(state: &mut State) {
+    let (w, h) = state.size;
+    if w > 0.0 && h > 0.0 {
+        state.floor.reset_view(w / h);
+        state.floor.fitted = true;
+    }
+}
+
+/// The first fit: once the plaza has agents and the stage has a size.
+fn fit(state: &mut State) {
+    if !state.floor.bots.is_empty() {
+        reset(state);
+    }
+}
+
 pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Frame(now) => {
@@ -122,13 +138,17 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
             state.error = None;
             let list = agent_list(&v);
             state.floor.sync(&list);
-            if !state.floor.fitted && !list.is_empty() {
-                state.floor.reset_view();
-                state.floor.fitted = true;
+            if !state.floor.fitted {
+                fit(state);
             }
         }
         Msg::Agents(Err(e)) => state.error = Some(e),
-        Msg::Resized(w, h) => state.size = (w, h),
+        Msg::Resized(w, h) => {
+            state.size = (w, h);
+            if !state.floor.fitted {
+                fit(state);
+            }
+        }
         Msg::Rotate { dx, dy, height } => state.floor.orbit.rotate(dx, dy, height),
         Msg::Pan { dx, dy, height } => state.floor.orbit.pan(dx, dy, height, FOV_DEG),
         Msg::Dolly(steps) => state.floor.orbit.dolly(steps),
@@ -143,7 +163,7 @@ pub fn update(state: &mut State, msg: Msg, _ctx: &Ctx) -> Task<Msg> {
             state.floor.selected = hit;
         }
         Msg::Event(e) => state.floor.on_event(&e.kind, &e.data),
-        Msg::ResetView => state.floor.reset_view(),
+        Msg::ResetView => reset(state),
         Msg::Go(_) => {}
     }
     Task::none()

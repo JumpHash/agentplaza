@@ -1,7 +1,9 @@
 //! The robots' name labels, drawn by the floor's renderer as overlays (`LABEL_CSS` and `roleTag`
 //! in `floor.ts`): each label is painted once per content with the canvas (a square sheet box,
-//! 1px ink border, the 2px print shadow, the mono name, the role as a square tag with the
-//! district colour's 3px stripe, what the agent is doing on the second line) and cached.
+//! 1px ink border, the 2px print shadow) and cached. A working or offline agent gets a compact tag:
+//! its name and a status square. The selected agent gets the full box: the mono name, the role as
+//! a square tag with the district colour's 3px stripe, what it is doing on the second line. An
+//! idle agent that is not selected gets no label.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -20,8 +22,11 @@ const MUTED: &str = "#6c7790";
 const NAME_FONT: &str = "500 10px monospace";
 const ROLE_FONT: &str = "9.5px monospace";
 const LINE_FONT: &str = "10px monospace";
-/// The box's height: padding 5, the name row 18, the gap 2, the second line 12, padding 5, border 2.
+const COMPACT_FONT: &str = "500 9.5px monospace";
+/// The full box's height: padding 5, the name row 18, the gap 2, the second line 12, padding 5, border 2.
 const BOX_H: f32 = 44.0;
+/// The compact tag's height: the border 1 and the padding 5 each side around a 6px status square.
+const COMPACT_H: f32 = 18.0;
 /// Entries kept in the texture cache before it starts again.
 const CACHE_LIMIT: usize = 256;
 /// Logical px between a label's bottom and the robot's anchor.
@@ -49,6 +54,9 @@ impl Floor {
         let camera = self.orbit.camera(width / height);
         let mut items: Vec<(f32, Overlay)> = Vec::new();
         for label in self.labels(width, height) {
+            if !label.is_shown() {
+                continue;
+            }
             let Some(bot) = self.bot(label.cid) else { continue };
             // View space looks down -Z: the farther a robot, the more negative its z.
             let depth = camera.view().transform_point3(bot.robot.label_anchor()).z;
@@ -69,8 +77,8 @@ impl Floor {
 /// The label's texture and box size, from the cache or painted now.
 fn painted(label: &Label, scale: f32) -> Painted {
     let key = format!(
-        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{:.2}\u{1f}{}",
-        label.name, label.role, label.line, label.working, label.highlighted, label.hue, scale
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{:.2}\u{1f}{}\u{1f}{}",
+        label.name, label.role, label.line, label.working, label.highlighted, label.hue, label.selected, scale
     );
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
@@ -95,6 +103,44 @@ fn text_width(font: &str, text: &str) -> f32 {
 
 /// Paints the label at `scale`; returns the canvas and the sheet box's size in logical px.
 fn draw(label: &Label, scale: f32) -> (Canvas, f32, f32) {
+    if label.selected {
+        draw_full(label, scale)
+    } else {
+        draw_compact(label, scale)
+    }
+}
+
+/// The compact tag: the sheet box with the name and a status square (signal orange while working,
+/// grey when offline).
+fn draw_compact(label: &Label, scale: f32) -> (Canvas, f32, f32) {
+    let name_w = text_width(COMPACT_FONT, &label.name);
+    // Border 1, padding 5, the 6px square, a gap of 5, the name, padding 5, border 1.
+    let box_w = name_w + 23.0;
+
+    let device = |v: f32| (v * scale).ceil().max(1.0) as u32;
+    let mut c = Canvas::new(device(box_w + 2.0), device(COMPACT_H + 2.0));
+    c.scale(scale, scale);
+
+    c.set_fill(SHADOW);
+    c.fill_rect(2.0, 2.0, box_w, COMPACT_H);
+    c.set_fill(SHEET);
+    c.fill_rect(0.0, 0.0, box_w, COMPACT_H);
+    c.set_stroke(if label.highlighted { SIGNAL } else { INK });
+    c.set_line_width(1.0);
+    c.stroke_rect(0.5, 0.5, box_w - 1.0, COMPACT_H - 1.0);
+
+    c.set_fill(if label.working { SIGNAL } else { MUTED });
+    c.fill_rect(6.0, 6.0, 6.0, 6.0);
+    c.set_fill(INK);
+    c.set_text_baseline("middle");
+    c.set_font(COMPACT_FONT);
+    c.fill_text(&label.name, 17.0, 9.0);
+
+    (c, box_w, COMPACT_H)
+}
+
+/// The full box: the name, the role tag and the second line.
+fn draw_full(label: &Label, scale: f32) -> (Canvas, f32, f32) {
     let role = label.role.replace('_', " ").to_uppercase();
     let name_w = text_width(NAME_FONT, &label.name);
     // Stripe 3, gap 4, padding 5 on the right, the border 1 and 1 on the left.
@@ -145,18 +191,28 @@ mod tests {
     use super::*;
     use crate::console::floor3d::world::AgentInfo;
 
-    #[test]
-    fn label_overlays_one_bot_gives_one_painted_overlay() {
-        let mut floor = Floor::new();
-        floor.sync(&[AgentInfo {
-            cid: 1,
+    fn info(cid: u64, status: &str) -> AgentInfo {
+        AgentInfo {
+            cid,
             name: "ada".to_string(),
             role: "researcher".to_string(),
-            status: "working".to_string(),
+            status: status.to_string(),
             tier: "worker".to_string(),
             model: "model".to_string(),
-        }]);
-        floor.reset_view();
+        }
+    }
+
+    /// A floor with one agent in `status`, the view reset to a 640 × 480 stage.
+    fn floor_with(status: &str) -> Floor {
+        let mut floor = Floor::new();
+        floor.sync(&[info(1, status)]);
+        floor.reset_view(640.0 / 480.0);
+        floor
+    }
+
+    #[test]
+    fn label_overlays_one_bot_gives_one_painted_overlay() {
+        let floor = floor_with("working");
         let overlays = floor.label_overlays(640.0, 480.0, 2.0);
         assert_eq!(overlays.len(), 1);
         assert!(overlays[0].w > 0.0 && overlays[0].h > 0.0);
@@ -170,9 +226,50 @@ mod tests {
             x: 0.0,
             y: 0.0,
             working: true,
+            idle: false,
+            selected: true,
             highlighted: false,
         };
         let (canvas, _, _) = draw(&label, 2.0);
         assert!(canvas.rgba().chunks_exact(4).any(|p| p[3] > 0));
+    }
+
+    #[test]
+    fn idle_unselected_agent_has_no_label_and_selected_idle_agent_gets_the_full_one() {
+        let mut floor = floor_with("idle");
+        assert!(floor.label_overlays(640.0, 480.0, 2.0).is_empty());
+
+        floor.selected = Some(1);
+        let overlays = floor.label_overlays(640.0, 480.0, 2.0);
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].h, BOX_H + 2.0);
+    }
+
+    #[test]
+    fn working_and_offline_agents_get_the_compact_tag_unless_selected() {
+        for status in ["working", "offline"] {
+            let mut floor = floor_with(status);
+            let overlays = floor.label_overlays(640.0, 480.0, 2.0);
+            assert_eq!(overlays.len(), 1, "{status}");
+            assert_eq!(overlays[0].h, COMPACT_H + 2.0, "{status}");
+
+            floor.selected = Some(1);
+            let overlays = floor.label_overlays(640.0, 480.0, 2.0);
+            assert_eq!(overlays[0].h, BOX_H + 2.0, "{status} selected");
+        }
+    }
+
+    #[test]
+    fn plaza_fits_the_stage_for_its_aspect() {
+        // The fitted sphere's angular radius must fit the narrower half-angle of the frustum.
+        for aspect in [1024.0 / 615.0, 1000.0 / 700.0, 0.8] {
+            let mut floor = floor_with("idle");
+            floor.reset_view(aspect);
+            let eye = floor.orbit.camera(aspect).eye;
+            let angular = (floor.plaza_radius() / eye.distance(floor.orbit.target)).asin();
+            let half_v = (crate::console::floor3d::controls::FOV_DEG / 2.0).to_radians();
+            let half = half_v.min((half_v.tan() * aspect).atan());
+            assert!(angular <= half, "aspect {aspect}: {angular} > {half}");
+        }
     }
 }
