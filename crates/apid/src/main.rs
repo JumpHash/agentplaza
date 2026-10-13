@@ -28,6 +28,7 @@ mod prices;
 mod providers;
 mod role;
 mod scheduler;
+mod sanctions;
 mod settings;
 mod society;
 mod spawned;

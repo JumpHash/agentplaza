@@ -35,6 +35,14 @@ struct Gone {
     reason: String,
 }
 
+/// The egress proxy's question before it dials: may agent `cid` connect to `host`? The port is
+/// not part of the decision (the proxy gates ports itself), so it is not read here.
+#[derive(Deserialize)]
+struct EgressCheck {
+    cid: u64,
+    host: String,
+}
+
 /// One egress decision and its outcome, reported by the hub's egress proxy.
 #[derive(Deserialize)]
 struct Egress {
@@ -89,6 +97,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({})))
             })
         })
+        // The egress proxy asks before it dials a host for an agent: the fetch allowlist and the laws.
+        .post("/internal/egress/check", |app, req, _p| {
+            let check: EgressCheck = match req.json() {
+                Ok(check) => check,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            authorized(app, req, &check.cid.to_string(), |cid| Ok(Response::json(200, &egress_check(app, cid, &check.host))))
+        })
         // An agent's decision (from its VM: `POST http://plaza.gateway/decisions`, which vsockd
         // forwards here with the agent's CID).
         .post("/internal/v1/agents/{cid}/gateway/decisions", |app, req, p| {
@@ -120,6 +136,64 @@ pub(crate) fn authorized(
         return Response::error(403, "missing or wrong internal token");
     }
     f(cid).unwrap_or_else(|response| response)
+}
+
+/// Whether `host` is on the fetch allowlist: an exact entry, or a `*.suffix` entry, which covers
+/// the subdomains of `suffix` but not `suffix` itself. Case-insensitive. An empty list allows nothing.
+pub(crate) fn on_fetch_allowlist(allow: &[String], host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    allow.iter().any(|entry| {
+        let entry = entry.trim().to_ascii_lowercase();
+        match entry.strip_prefix("*.") {
+            Some(suffix) => {
+                !suffix.is_empty()
+                    && host.strip_suffix(format!(".{suffix}").as_str()).is_some_and(|label| !label.is_empty())
+            }
+            None => !entry.is_empty() && host == entry,
+        }
+    })
+}
+
+/// The law ids in a refusal `Laws::refuse_op` made: `refused by law S-013d, C-002: titles`.
+pub(crate) fn law_of(refusal: &str) -> Option<String> {
+    let ids = refusal.strip_prefix("refused by law ")?.split(':').next()?.trim();
+    (!ids.is_empty()).then(|| ids.to_string())
+}
+
+/// What the egress proxy is told about one connection.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct EgressVerdict {
+    pub allow: bool,
+    pub law: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// The decision for a connection to `host`: a law refusal first (it names the law, and the laws
+/// have recorded it), then the allowlist.
+pub(crate) fn egress_verdict(allowlisted: bool, law_refusal: Option<String>, host: &str) -> EgressVerdict {
+    if let Some(refusal) = law_refusal {
+        return EgressVerdict { allow: false, law: law_of(&refusal), reason: Some(refusal) };
+    }
+    if allowlisted {
+        return EgressVerdict { allow: true, law: None, reason: None };
+    }
+    EgressVerdict { allow: false, law: None, reason: Some(format!("refused: {host} is not on the fetch allowlist")) }
+}
+
+/// The answer to the egress proxy for agent `cid` connecting to `host`. The laws are asked for
+/// every host, so a forbidden attempt is recorded as a violation even when the allowlist would
+/// refuse it too. The laws only forbid here: a permit is not required (see the report on
+/// `Laws::refuse_op`).
+fn egress_check(app: &App, cid: u64, host: &str) -> Value {
+    let role = app.agents.get(cid).map(|agent| agent.role).unwrap_or_default();
+    let resource = jhrl::authz::Entity { ty: "Host".into(), id: host.into() };
+    // The host's group is not known here (the towns' host-groups document is not code), so a law
+    // that names a group sees an empty one.
+    let attrs = std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);
+    let refusal = app.laws.refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
+    let allowlisted = on_fetch_allowlist(&app.settings.get().fetch_allow, host);
+    let verdict = egress_verdict(allowlisted, refusal, host);
+    json!({ "allow": verdict.allow, "law": verdict.law, "reason": verdict.reason })
 }
 
 /// One v3 guest line from agent `cid`; the reply for the guest, if any.
@@ -323,7 +397,8 @@ fn tool_request(
     );
     let granted: Vec<String> = profile(app, agent).tools.into_iter().map(|t| t.name).collect();
     // The plaza's laws and the grant come first (see `gate_call`).
-    let verdict = gate_call(&app.laws, cid, &agent.role, &granted, name, input);
+    let verdict = gate_call(&app.laws, cid, &agent.role, &granted, name, input)
+        .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err));
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue.
     let gate = if verdict.is_ok() { crate::approvals::gate(app, cid, name, input) } else { None };
@@ -442,6 +517,72 @@ mod tests {
         let summary = request_summary("m", &[Message::assistant(vec![])], &[]);
         assert_eq!(summary["last_user"], "");
         assert_eq!(summary["messages"], 1);
+    }
+}
+
+/// The egress check's decision: the allowlist's matching, the verdict, and the real laws' refusal.
+#[cfg(test)]
+mod egress_check_tests {
+    use super::*;
+    use crate::laws::{Laws, LAW_FILES};
+
+    fn list(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|entry| entry.to_string()).collect()
+    }
+
+    #[test]
+    fn the_allowlist_matches_exact_hosts_and_wildcard_subdomains_only() {
+        let allow = list(&["example.com", "*.pypi.org", "  Files.Example.NET "]);
+        for host in ["example.com", "EXAMPLE.com", "files.example.net", "a.pypi.org", "x.y.pypi.org"] {
+            assert!(on_fetch_allowlist(&allow, host), "{host} must be allowed");
+        }
+        for host in ["pypi.org", "evilpypi.org", "a.evilpypi.org", "example.com.evil.net", "sub.example.com", "pypi.org.evil.com", ".pypi.org", ""] {
+            assert!(!on_fetch_allowlist(&allow, host), "{host} must be refused");
+        }
+    }
+
+    #[test]
+    fn an_empty_allowlist_allows_nothing() {
+        assert!(!on_fetch_allowlist(&[], "example.com"));
+        assert!(!on_fetch_allowlist(&list(&[""]), ""));
+    }
+
+    #[test]
+    fn a_law_refusal_wins_and_names_its_law_and_an_allowlist_miss_names_the_host() {
+        let refusal = "refused by law S-013d, C-002: Researchers never write to repositories".to_string();
+        assert_eq!(
+            egress_verdict(true, Some(refusal.clone()), "git.hub.local"),
+            EgressVerdict { allow: false, law: Some("S-013d, C-002".into()), reason: Some(refusal) }
+        );
+        // A law refusal stands even for a host the allowlist names.
+        assert!(!egress_verdict(true, Some("refused by law X: t".into()), "example.com").allow);
+        assert_eq!(egress_verdict(true, None, "example.com"), EgressVerdict { allow: true, law: None, reason: None });
+        assert_eq!(
+            egress_verdict(false, None, "evil.example"),
+            EgressVerdict { allow: false, law: None, reason: Some("refused: evil.example is not on the fetch allowlist".into()) }
+        );
+    }
+
+    #[test]
+    fn the_law_ids_are_read_from_a_refusal() {
+        assert_eq!(law_of("refused by law S-013d: Researchers never write"), Some("S-013d".into()));
+        assert_eq!(law_of("refused: no law permits egress"), None);
+        assert_eq!(law_of("refused by law : title"), None);
+    }
+
+    #[test]
+    fn a_researcher_at_the_hub_git_is_refused_by_the_real_law_and_recorded() {
+        let dir = std::env::temp_dir().join(format!("apid-egress-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("violations.json"));
+        let files: Vec<(String, String)> = LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect();
+        let laws = Laws::from_files(&dir, files);
+        let resource = jhrl::authz::Entity { ty: "Host".into(), id: "git.hub.local".into() };
+        let attrs = std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str("hub-git"))]);
+        let refusal = laws.refuse_op(7, "researcher", "egress.connect", resource, attrs, &Value::Null);
+        let verdict = egress_verdict(true, refusal, "git.hub.local");
+        assert!(!verdict.allow && verdict.law.as_deref().unwrap_or_default().contains("S-013d"), "{verdict:?}");
+        assert!(laws.all_violations().iter().any(|(cid, violation)| *cid == 7 && violation.law == "S-013d"));
     }
 }
 

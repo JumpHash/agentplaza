@@ -22,6 +22,15 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// The session-end notice is best effort.
 const GONE_TIMEOUT: Duration = Duration::from_secs(2);
+/// An egress check is made before a connection is dialled, so it is kept short.
+const EGRESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// apid's decision on one egress connection: allowed, or refused with the reason the guest is told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressAnswer {
+    pub allow: bool,
+    pub reason: String,
+}
 
 /// Where apid's internal surface is, and the file that holds its token.
 /// Without a token file, forwarding is off and nothing is sent.
@@ -72,6 +81,16 @@ impl Apid {
     /// Sends one egress audit record (`record`, its JSON) for the agent at `cid`.
     pub fn egress(&self, cid: u32, record: &str) -> Result<(), String> {
         self.post(&format!("/internal/v1/agents/{cid}/egress"), record, Duration::from_secs(2)).map(drop)
+    }
+
+    /// Asks apid whether the agent at `cid` may connect to `host:port`: its fetch allowlist and its
+    /// laws decide. Every failure is an `Err`, and the caller refuses.
+    pub fn check_egress(&self, cid: u32, host: &str, port: u16) -> Result<EgressAnswer, String> {
+        let body = json!({ "cid": cid, "host": host, "port": port }).to_string();
+        let reply = self.post("/internal/egress/check", &body, EGRESS_CHECK_TIMEOUT)?;
+        let allow = reply.get("allow").and_then(serde_json::Value::as_bool).ok_or("apid's egress answer names no allow")?;
+        let reason = reply.get("reason").and_then(serde_json::Value::as_str).unwrap_or("refused").to_string();
+        Ok(EgressAnswer { allow, reason })
     }
 
     /// A plain TCP connection to apid's internal surface, for a relay that

@@ -86,6 +86,8 @@ pub struct Settings {
     pub memory_autoscale: bool,
     /// How much of the plaza's conversations and board is kept, and for how long.
     pub retention: Retention,
+    /// What the plaza does to an agent that breaks a law (see `sanctions.rs`).
+    pub sanctions: Sanctions,
 }
 
 impl Default for Settings {
@@ -103,7 +105,32 @@ impl Default for Settings {
             outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
             memory_autoscale: true,
             retention: Retention::default(),
+            sanctions: Sanctions::default(),
         }
+    }
+}
+
+/// The most credits fines may take from one agent in seven days, and the most one fine may take
+/// (sanctions.yaml, `caps.max_fine_per_week`).
+pub const FINES_PER_WEEK_MAX: u64 = 1000;
+
+/// Sanctions for law violations, by the schedule in sanctions.yaml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sanctions {
+    /// Whether violations are sanctioned at all. Off: nothing is applied and no suspension holds.
+    pub enabled: bool,
+    /// Whether the schedule's fines are taken from agents' earnings.
+    pub fines: bool,
+    /// Whether probation and lockout refuse the offending tool for their duration.
+    pub suspensions: bool,
+    /// The most one fine may take, in credits (`0..=FINES_PER_WEEK_MAX`).
+    pub max_fine: u64,
+}
+
+impl Default for Sanctions {
+    fn default() -> Self {
+        Self { enabled: true, fines: true, suspensions: true, max_fine: 300 }
     }
 }
 
@@ -300,6 +327,9 @@ impl Store {
                     "retention.{name} must be 0..={RETENTION_DAYS_MAX} (0 keeps everything), got {days}"
                 ));
             }
+        }
+        if new.sanctions.max_fine > FINES_PER_WEEK_MAX {
+            return Err(format!("sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}", new.sanctions.max_fine));
         }
         Ok(())
     }

@@ -409,6 +409,7 @@ impl Db {
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {
+    wire_violations(app);
     if !app.db.enabled() {
         eprintln!("db: no APZ_DATABASE_URL; state stays in files");
         return;
@@ -446,7 +447,13 @@ pub fn restore_all(app: &App) {
             app.db.append_infraction(&Infraction { cid, law: v.law, at_ms: v.at_ms, tool, detail: v.detail });
         }
     }
+}
+
+/// Every recorded violation goes to Postgres (when enabled) and to the sanctions. Wired with or
+/// without a database, so a violation is sanctioned whether or not the state lives in Postgres.
+fn wire_violations(app: &App) {
     let db = Arc::clone(&app.db);
+    let me = app.handle();
     app.laws.set_sink(Box::new(move |cid: u64, v: &crate::laws::Violation, tool: &str| {
         db.append_infraction(&Infraction {
             cid,
@@ -454,7 +461,10 @@ pub fn restore_all(app: &App) {
             at_ms: v.at_ms,
             tool: tool.to_string(),
             detail: v.detail.clone(),
-        })
+        });
+        if let Some(app) = me.upgrade() {
+            crate::sanctions::on_violation(&app, cid, v, tool);
+        }
     }));
 }
 

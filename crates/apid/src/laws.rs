@@ -48,7 +48,14 @@ pub struct Verdict {
     pub forbid: Vec<String>,
     /// True when no law permitted the call and none forbade it (default deny: refused, not recorded).
     pub unpermitted: bool,
+    /// Every operation the call was checked as (`tool.call` first), in request order.
+    pub requested: Vec<String>,
+    /// Ids of the permit laws that applied to some requested operation.
+    pub permit: Vec<String>,
 }
+
+/// The context one operation's laws read: the flags, and what the operation adds to them.
+type Context = BTreeMap<String, Value>;
 
 /// One law as the console's Rules view shows it.
 #[derive(Clone, Debug, Serialize)]
@@ -152,13 +159,11 @@ impl Laws {
             ]),
         );
         store.insert(&sandbox, BTreeMap::from([("agent".to_string(), jhrl::authz::entity_value(&agent))]));
-        let context = Value::record(BTreeMap::from([(
-            "flags".to_string(),
-            Value::set(flags.iter().map(|flag| Value::str(flag))),
-        )]));
-        let mut requests = vec![("tool.call", tool_entity)];
+        let flag_set = Value::set(flags.iter().map(|flag| Value::str(flag)));
+        let base: Context = BTreeMap::from([("flags".to_string(), flag_set)]);
+        let mut requests: Vec<(&str, Entity, Context)> = vec![("tool.call", tool_entity, Context::new())];
         if GUEST_EXEC.contains(&tool) || tool.starts_with(crate::library::PREFIX) {
-            requests.push(("tool.exec", sandbox));
+            requests.push(("tool.exec", sandbox, Context::new()));
         }
         // A message is a message.send to its recipient, and a board post one to the whole board
         // (no recipient). The recipient is checked even when its CID is missing or malformed: the
@@ -167,17 +172,26 @@ impl Laws {
             let to = input.get("to_cid").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
             let peer = Entity { ty: "Agent".into(), id: to };
             store.insert(&peer, member_attrs(""));
-            requests.push(("message.send", peer));
+            requests.push(("message.send", peer, Context::new()));
         }
         // A file shared or delivered to the plaza is an artifact published.
         if matches!(tool, "share_file" | "deliver_file") {
             let artifact = Entity { ty: "Artifact".into(), id: tool.into() };
             store.insert(&artifact, BTreeMap::new());
-            requests.push(("artifact.publish", artifact));
+            requests.push(("artifact.publish", artifact, Context::new()));
         }
+        requests.extend(plaza_operations(tool, input, agent_cid, &mut store));
         let mut verdict = Verdict::default();
-        for (i, (operation, resource)) in requests.into_iter().enumerate() {
-            let request = Request { principal: agent.clone(), operation: operation.into(), resource, context: context.clone() };
+        for (i, (operation, resource, extra)) in requests.into_iter().enumerate() {
+            verdict.requested.push(operation.to_string());
+            let mut context = base.clone();
+            context.extend(extra);
+            let request = Request {
+                principal: agent.clone(),
+                operation: operation.into(),
+                resource,
+                context: Value::record(context),
+            };
             match authorize(&self.program, &store, &request).decision {
                 Decision::Deny { by, .. } if !by.is_empty() => {
                     for id in by {
@@ -187,6 +201,13 @@ impl Laws {
                     }
                 }
                 Decision::Deny { .. } if i == 0 => verdict.unpermitted = true,
+                Decision::Allow { by } => {
+                    for id in by {
+                        if !verdict.permit.contains(&id) {
+                            verdict.permit.push(id);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -328,7 +349,7 @@ fn member_attrs(role: &str) -> BTreeMap<String, Value> {
     };
     BTreeMap::from([
         ("role".to_string(), Value::str(role)),
-        ("town".to_string(), Value::str("plaza")),
+        ("town".to_string(), Value::str(TOWN)),
         ("tier".to_string(), Value::str(tier)),
         ("seated".to_string(), Value::Bool(council::is_seated(role))),
     ])
@@ -426,6 +447,79 @@ const GUEST_EXEC: &[&str] = &[
     "bash", "bash_start", "write_file", "edit_file", "multi_edit", "download", "fetch_url", "install_packages", "code_engine", "tool_package", "deliver_file",
     "checkpoint_restore",
 ];
+
+/// The town every agent and task of this plaza belongs to, as the laws read it (`principal.town`).
+const TOWN: &str = "plaza";
+
+/// The operations a plaza tool performs beyond its `tool.call`, each with the resource and the
+/// context its laws read. A forbid whose condition reads a missing attribute applies (fail closed),
+/// so every attribute a forbid reads is supplied here. A tool performing several operations
+/// requests all of them.
+fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, store: &mut EntityStore) -> Vec<(&'static str, Entity, Context)> {
+    let text = |key: &str| input.get(key).and_then(Json::as_str).unwrap_or_default().to_string();
+    match tool {
+        "plaza_post_task" => vec![("task.create", Entity { ty: "Town".into(), id: TOWN.into() }, Context::new())],
+        "plaza_assign" => {
+            let cid = input.get("agent").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
+            let assignee = Entity { ty: "Agent".into(), id: cid };
+            store.insert(&assignee, member_attrs(""));
+            let context = Context::from([("assignee".to_string(), jhrl::authz::entity_value(&assignee))]);
+            vec![("task.assign", task_resource(store, text("task")), context)]
+        }
+        "plaza_verdict" => vec![("review.submit", task_resource(store, text("task")), Context::new())],
+        "submit_claim" => vec![("claim.submit", task_resource(store, text("task")), Context::new())],
+        // The plan of a project is approved as the task it stands for; its budget is not in the call.
+        "plaza_project_approve" => vec![("plan.approve", task_resource(store, text("id")), Context::new())],
+        // Memory is each agent's private library: a write is a change to its own store, with no
+        // verification evidence in the call (so a librarian's verified-evidence permit does not apply).
+        "memory_write" => {
+            let context = Context::from([
+                ("to_scope".to_string(), Value::str("private")),
+                ("verified".to_string(), Value::Bool(false)),
+                ("tainted".to_string(), Value::Bool(false)),
+                ("owner_reviewed".to_string(), Value::Bool(false)),
+            ]);
+            vec![("memory.change", memory_resource(agent_cid, store), context)]
+        }
+        "memory_read" | "memory_search" | "memory_list" => {
+            let context = Context::from([("scope".to_string(), Value::str("private"))]);
+            vec![("memory.read", memory_resource(agent_cid, store), context)]
+        }
+        // A name is a claim of identity: the name is reserved when it is a role's name (`check_name`
+        // refuses those too). No lookalike check exists yet, so name_confusable is false.
+        "plaza_set_name" => {
+            let name = text("name").trim().to_lowercase().replace(' ', "-");
+            let registry = Entity { ty: "Registry".into(), id: "names".into() };
+            store.insert(&registry, BTreeMap::new());
+            let context = Context::from([
+                ("name_reserved".to_string(), Value::Bool(crate::role::Role::parse(&name).is_some())),
+                ("name_confusable".to_string(), Value::Bool(false)),
+            ]);
+            vec![("registry.set_name", registry, context)]
+        }
+        // No artifact is marked hidden from a role yet: the hidden set is empty, so S-010d does not apply.
+        "plaza_get_file" => {
+            let artifact = Entity { ty: "Artifact".into(), id: text("id") };
+            store.insert(&artifact, BTreeMap::from([("hidden_from".to_string(), Value::set(std::iter::empty::<Value>()))]));
+            vec![("artifact.read", artifact, Context::new())]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The task a call names, as an entity of this town.
+fn task_resource(store: &mut EntityStore, id: String) -> Entity {
+    let task = Entity { ty: "Task".into(), id };
+    store.insert(&task, BTreeMap::from([("town".to_string(), Value::str(TOWN))]));
+    task
+}
+
+/// The memory store an agent writes its private notes to.
+fn memory_resource(agent_cid: &str, store: &mut EntityStore) -> Entity {
+    let memory = Entity { ty: "MemoryStore".into(), id: agent_cid.into() };
+    store.insert(&memory, BTreeMap::new());
+    memory
+}
 
 /// Where a tool comes from, as the tool laws (`tools.jhrl`) read it: a connector's action, a
 /// library tool another agent built, a host tool apid runs, or a guest tool in the agent's VM.
@@ -801,5 +895,77 @@ mod tests {
         assert!(laws.permits("builder", "bash"));
         // A second ask is answered from the memo, the same way.
         assert!(laws.permits("mayor", "plaza_project_approve"));
+    }
+
+    #[test]
+    fn a_task_post_is_checked_as_task_create() {
+        let laws = Laws::load(&scratch("task-create"));
+        let verdict = laws.check("7", crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task", &json!({"title": "t", "body": "b"}));
+        assert!(verdict.requested.iter().any(|op| op == "task.create"), "{verdict:?}");
+        assert!(verdict.forbid.is_empty() && !verdict.unpermitted, "{verdict:?}");
+    }
+
+    #[test]
+    fn a_verdict_is_checked_as_review_submit_under_the_reviewers_permit() {
+        let laws = Laws::load(&scratch("review-submit"));
+        let verdict = laws.check("7", "reviewer", "plaza_verdict", &json!({"task": "t-1", "pass": true, "notes": "ok"}));
+        assert!(verdict.requested.iter().any(|op| op == "review.submit"), "{verdict:?}");
+        assert!(verdict.permit.iter().any(|id| id == "S-002c"), "{verdict:?}");
+        assert!(verdict.forbid.is_empty(), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_project_approval_is_checked_as_plan_approve() {
+        let laws = Laws::load(&scratch("plan-approve"));
+        let verdict = laws.check("7", "mayor", "plaza_project_approve", &json!({"id": "p-1"}));
+        assert!(verdict.requested.iter().any(|op| op == "plan.approve"), "{verdict:?}");
+        assert!(verdict.forbid.is_empty() && !verdict.unpermitted, "{verdict:?}");
+    }
+
+    #[test]
+    fn a_memory_write_is_checked_as_memory_change() {
+        let laws = Laws::load(&scratch("memory-change"));
+        let verdict = laws.check("7", "librarian", "memory_write", &json!({"title": "t", "body": "b"}));
+        assert!(verdict.requested.iter().any(|op| op == "memory.change"), "{verdict:?}");
+        assert!(verdict.forbid.is_empty(), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_claim_is_checked_as_claim_submit_under_the_builders_permit() {
+        let laws = Laws::load(&scratch("claim-submit"));
+        let verdict = laws.check("7", "builder", "submit_claim", &json!({"task": "t-1", "summary": "done"}));
+        assert!(verdict.requested.iter().any(|op| op == "claim.submit"), "{verdict:?}");
+        assert!(verdict.permit.iter().any(|id| id == "S-001e"), "{verdict:?}");
+        assert!(verdict.forbid.is_empty(), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_task_assignment_is_checked_as_task_assign_under_the_mayors_permit() {
+        let laws = Laws::load(&scratch("task-assign"));
+        let verdict = laws.check("7", "mayor", "plaza_assign", &json!({"task": "t-1", "agent": 9}));
+        assert!(verdict.requested.iter().any(|op| op == "task.assign"), "{verdict:?}");
+        assert!(verdict.permit.iter().any(|id| id == "S-004a"), "{verdict:?}");
+    }
+
+    #[test]
+    fn a_name_of_a_role_is_refused_as_impersonation_and_a_personal_name_is_not() {
+        let laws = Laws::load(&scratch("set-name"));
+        let verdict = laws.check("7", "builder", "plaza_set_name", &json!({"name": "Mayor"}));
+        assert!(verdict.forbid.iter().any(|id| id == "C-003a"), "{verdict:?}");
+        let personal = laws.check("7", "builder", "plaza_set_name", &json!({"name": "Ada"}));
+        assert!(personal.requested.iter().any(|op| op == "registry.set_name"), "{personal:?}");
+        assert!(personal.forbid.is_empty(), "{personal:?}");
+    }
+
+    #[test]
+    fn a_hidden_artifact_is_refused_to_the_role_it_is_hidden_from() {
+        let laws = Laws::load(&scratch("hidden-artifact"));
+        let hidden = Entity { ty: "Artifact".into(), id: "acceptance.txt".into() };
+        let attrs = BTreeMap::from([("hidden_from".to_string(), Value::set([Value::str("builder")]))]);
+        let why = laws.refuse_op(7, "builder", "artifact.read", hidden, attrs, &Json::Null);
+        assert!(why.is_some_and(|w| w.contains("S-010d")));
+        let read = laws.check("7", "builder", "plaza_get_file", &json!({"id": "report.txt"}));
+        assert!(read.requested.iter().any(|op| op == "artifact.read"), "{read:?}");
+        assert!(read.forbid.is_empty(), "{read:?}");
     }
 }
