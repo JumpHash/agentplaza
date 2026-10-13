@@ -334,6 +334,13 @@ pub fn atom(palette: &PropPalette) -> (Obj, Anim) {
     globe.set_scalar(1.5);
     globe.set_position(0.0, 4.2, 0.0);
 
+    // The animation below moves these every frame: they are dynamic, so their draws stay per frame.
+    globe.set_dynamic(true);
+    halo.set_dynamic(true);
+    aura.set_dynamic(true);
+    for obj in nucleus.iter().chain(shells.iter().map(|sh| &sh.group)) {
+        obj.set_dynamic(true);
+    }
     let globe_anim = globe.clone();
     let animate: Anim = Box::new(move |t: f32| {
         globe_anim.set_position(0.0, 4.2 + (t * 0.9).sin() * 0.1, 0.0);

@@ -90,4 +90,4 @@ ray test remains the fallback.
 | Frames rendered at rest | 0 |
 | Ambient frame rate | 12 fps or less |
 | Select hitch | 50 ms or less |
-| wasm size (wasm-opt) | Target 1.5 MB gzip |
+| wasm size over the wire | 1.5 MB or less (1.24 MB brotli today; `tools/apz-pack`) |

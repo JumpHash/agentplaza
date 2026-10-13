@@ -205,8 +205,8 @@ impl fmt::Debug for Body {
     }
 }
 
-/// One response. Every response is written with `Cache-Control: no-store`
-/// and `Connection: close`.
+/// One response. Every response is written with `Connection: close`, and with
+/// `Cache-Control: no-store` unless the handler set its own `Cache-Control`.
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
@@ -274,11 +274,13 @@ impl Response {
         if let Body::Bytes(bytes) = &self.body {
             head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
         }
-        if matches!(self.body, Body::Upgrade(_)) {
-            head.push_str("Cache-Control: no-store\r\n\r\n");
-        } else {
-            head.push_str("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+        if !self.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("cache-control")) {
+            head.push_str("Cache-Control: no-store\r\n");
         }
+        if !matches!(self.body, Body::Upgrade(_)) {
+            head.push_str("Connection: close\r\n");
+        }
+        head.push_str("\r\n");
         out.write_all(head.as_bytes())?;
         let upgrade = match self.body {
             Body::Bytes(bytes) => {
@@ -401,5 +403,14 @@ mod tests {
         assert!(written.starts_with("HTTP/1.1 404 Not Found\r\n"), "{written}");
         assert!(written.contains("Content-Length: 24\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"));
         assert!(written.ends_with("{\"error\":\"say \\\"what\\\"\"}"), "{written}");
+    }
+
+    #[test]
+    fn a_handler_cache_control_replaces_no_store() {
+        let mut written = Vec::new();
+        Response::text(200, "x").with_header("Cache-Control", "max-age=60").write_to(&mut written).expect("a Vec takes it");
+        let written = String::from_utf8(written).expect("ASCII");
+        assert!(written.contains("Cache-Control: max-age=60\r\n"), "{written}");
+        assert!(!written.contains("no-store"), "{written}");
     }
 }

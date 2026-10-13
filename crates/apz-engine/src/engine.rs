@@ -201,8 +201,21 @@ impl Renderer {
     /// The pixels come from [`Thumbnail::pixels`].
     pub fn thumbnail_begin(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Thumbnail, String> {
         let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
+        self.draw_offscreen(machine.thumbnail_frame(w as f32 / h as f32), w, h)
+    }
+
+    /// An agent's robot portrait ([`crate::portrait`]) offscreen at `w` by `h` (each capped at [`THUMB_MAX`]). The pixels
+    /// come from [`Thumbnail::pixels`].
+    pub fn portrait_begin(&mut self, spec: &crate::portrait::PortraitSpec, w: u32, h: u32) -> Result<Thumbnail, String> {
+        let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
+        self.draw_offscreen(crate::portrait::frame(spec, w as f32 / h as f32, true), w, h)
+    }
+
+    /// One frame drawn offscreen as a card at `w` by `h` (capped at [`THUMB_MAX`]): a transparent clear, the sky left out.
+    pub(crate) fn draw_offscreen(&mut self, frame: Frame, w: u32, h: u32) -> Result<Thumbnail, String> {
+        let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
         let format = thumb_format(self.format);
-        let frame = Arc::new(machine.thumbnail_frame(w as f32 / h as f32));
+        let frame = Arc::new(frame);
         let bounds = render::Rect { x: 0.0, y: 0.0, width: w as f32, height: h as f32 };
         let primitive = render::Primitive { frame };
         let pipeline = self.thumb_pipeline.get_or_insert_with(|| {
@@ -279,6 +292,14 @@ impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn thumbnail(&mut self, machine: &crate::machine_stage::MachineStage, w: u32, h: u32) -> Result<Vec<u8>, String> {
         let thumb = self.thumbnail_begin(machine, w, h)?;
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("{e:?}"))?;
+        block_ready(thumb.pixels())
+    }
+
+    /// An agent's robot portrait as RGBA8 bytes, natively: the device is polled until the pixels are mapped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn portrait(&mut self, spec: &crate::portrait::PortraitSpec, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        let thumb = self.portrait_begin(spec, w, h)?;
         self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("{e:?}"))?;
         block_ready(thumb.pixels())
     }
@@ -481,6 +502,12 @@ impl Engine {
         let machine = self.stage.machine_stage_for(id).ok_or_else(|| format!("no machine '{id}' on the feed"))?;
         let gpu = self.gpu.as_mut().ok_or_else(|| "the engine has no GPU".to_string())?;
         gpu.thumbnail_begin(&machine, w, h)
+    }
+
+    /// Starts an agent's robot portrait, offscreen at `w` by `h` ([`Renderer::portrait_begin`]). Err when there is no GPU.
+    pub fn portrait_begin(&mut self, spec: &crate::portrait::PortraitSpec, w: u32, h: u32) -> Result<Thumbnail, String> {
+        let gpu = self.gpu.as_mut().ok_or_else(|| "the engine has no GPU".to_string())?;
+        gpu.portrait_begin(spec, w, h)
     }
 
     /// The frame the stage built at the last advance.

@@ -35,6 +35,39 @@ pub enum RobotPose {
     Cheer,
 }
 
+/// The body layer's mode (gravity and heights; `bodyClip` in floor.ts): its clip overrides the hold, the one-shot and the
+/// state's clip while it is set. `Ground` is none. `Fall` is the web's `fall`, `glide` and `out` (all `fall.air`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyMode {
+    Ground,
+    Crouch,
+    Air,
+    Fall,
+    Land,
+}
+
+impl BodyMode {
+    /// The clip the mode plays (`bodyClip` in floor.ts), or `None` on the ground.
+    pub fn clip_name(self) -> Option<&'static str> {
+        match self {
+            BodyMode::Ground => None,
+            BodyMode::Crouch => Some("jump.crouch"),
+            BodyMode::Air => Some("jump.air"),
+            BodyMode::Fall => Some("fall.air"),
+            BodyMode::Land => Some("land"),
+        }
+    }
+
+    /// The feet's height offset while the mode's clip plays (`AIR_FEET` in robot.ts): tucked in the air, hanging in the fall.
+    fn feet_tuck(self) -> Option<f32> {
+        match self {
+            BodyMode::Air => Some(0.06),
+            BodyMode::Fall => Some(-0.03),
+            _ => None,
+        }
+    }
+}
+
 /// A cid's species when the hub's record names none: the id from `index.json`'s order without the oracle (reserved for
 /// model agents, so the hub never deals it to a robot; the web's `robotVariant` skips it too), `cid % len` (neighbouring
 /// cids get different ones).
@@ -169,6 +202,14 @@ struct Once {
     dur: f32,
 }
 
+/// The body layer: its mode, the clip it plays, and the time it was entered (the clip plays from there).
+#[derive(Clone, Copy)]
+struct Body {
+    mode: BodyMode,
+    clip: &'static Clip,
+    start: f32,
+}
+
 /// The state's clips (`None` when the species and the shared file have none).
 #[derive(Clone, Copy)]
 struct StateClips {
@@ -194,6 +235,8 @@ pub struct Robot {
     last_t: f32,
     held_clip: Option<Timed>,
     once_clip: Option<Once>,
+    /// The body layer (see `BodyMode`): held until `Ground` or another mode.
+    body: Option<Body>,
     /// The held tool: its bone, and its holder group under it.
     held_tool: Option<(Obj, Obj)>,
     /// The carried item: the carry bone, and its holder group under it.
@@ -261,6 +304,7 @@ impl Robot {
             last_t: 0.0,
             held_clip: None,
             once_clip: None,
+            body: None,
             held_tool: None,
             carried: None,
             cur: (0..joints).map(rest_joint).collect(),
@@ -354,8 +398,11 @@ impl Robot {
         }
     }
 
-    /// The clip playing now and its elapsed time: a one-shot over a held clip over the state's clip.
+    /// The clip playing now and its elapsed time: the body layer over a one-shot over a held clip over the state's clip.
     fn active(&mut self, t: f32) -> Option<(&'static Clip, f64)> {
+        if let Some(b) = self.body {
+            return Some((b.clip, f64::from(t - b.start)));
+        }
         if let Some(o) = self.once_clip {
             if t - o.start >= o.dur {
                 self.once_clip = None;
@@ -505,6 +552,13 @@ impl Robot {
                 self.extras[b].z += 0.06 * p;
             }
         }
+        if let Some(tuck) = self.body.and_then(|b| b.mode.feet_tuck()) {
+            for bone in &sp.feet {
+                if let Some(b) = self.rig.index_of(bone) {
+                    self.extras[b].y += tuck;
+                }
+            }
+        }
         if sp.floats {
             let lift = if self.state == RobotState::Offline { FLOAT_OFFLINE } else { 0.035 * (2.2 * t).sin() };
             for name in ["base", "body"] {
@@ -562,6 +616,27 @@ impl Robot {
         } else {
             self.once_clip = Some(Once { clip, start: self.last_t, dur: clip.dur.unwrap_or(1.6) });
         }
+    }
+
+    /// The body layer (`setBody` in robot.ts): the mode's clip overrides the hold, the one-shot and the state's clip while
+    /// it is set, and plays from `now`. The same mode again keeps its entry time; `Ground` ends the layer.
+    pub fn set_body(&mut self, mode: BodyMode, now: f32) {
+        let Some(name) = mode.clip_name() else {
+            self.body = None;
+            return;
+        };
+        if self.body.is_some_and(|b| b.mode == mode) {
+            return;
+        }
+        let Some(clip) = clip_named(self.sp, name) else {
+            return warn_once(&format!("no body clip \"{name}\" for species \"{}\"", self.sp.id));
+        };
+        self.body = Some(Body { mode, clip, start: now });
+    }
+
+    /// The body layer's mode (`Ground` when none is set).
+    pub fn body_mode(&self) -> BodyMode {
+        self.body.map_or(BodyMode::Ground, |b| b.mode)
     }
 
     /// Holds a tool in the grip: one hand, or both (a two-handed tool aims at the other grip). `None` puts it down.
@@ -650,5 +725,113 @@ mod tests {
     fn species_falls_back_to_the_cid_when_the_record_has_none() {
         assert_eq!(species_of(None, 3), robot_variant(3));
         assert_eq!(species_of(Some("  "), 3), robot_variant(3));
+    }
+
+    // The web's body layer, mirrored from floor.ts (`bodyClip`) and robot.ts (`update`, BLEND, AIR_FEET). A body clip's
+    // channels hold still (a base, no amp, freq or rate), so each base is a goal; every joint eases toward its goal by
+    // k = min(1, dt·8) a frame, and a joint no clip names eases to rest. The feet take AIR_FEET's tuck.
+    const WEB_BLEND: f32 = 8.0;
+
+    /// floor.ts `bodyClip`: the web's clip id per mode.
+    fn web_body_clip(mode: BodyMode) -> Option<&'static str> {
+        match mode {
+            BodyMode::Ground => None,
+            BodyMode::Crouch => Some("jump.crouch"),
+            BodyMode::Air => Some("jump.air"),
+            BodyMode::Fall => Some("fall.air"),
+            BodyMode::Land => Some("land"),
+        }
+    }
+
+    /// The joints at rest (`restOf`): a scale and the eye lids at 1, the rest at 0.
+    fn web_rest(robot: &Robot) -> Vec<f32> {
+        (0..robot.cur.len()).map(|j| if j == robot.lid() || j % PROPS == 6 { 1.0 } else { 0.0 }).collect()
+    }
+
+    /// The goals of a body clip: its bases over the rest.
+    fn web_goals(robot: &Robot, clip_id: &str, rest: &[f32]) -> Vec<f32> {
+        use crate::robots::types::Param;
+        let clip = registry().clips.get(clip_id).expect("the shared body clip");
+        let mut goals = rest.to_vec();
+        for ch in &clip.channels {
+            assert!(ch.amp.is_none() && ch.freq.is_none() && ch.rate.is_none(), "{clip_id} holds still");
+            let Some(Param::Num(base)) = &ch.base else { panic!("{clip_id} has a numeric base") };
+            goals[robot.joint_of(&ch.bone, &ch.prop).expect("a joint")] = *base;
+        }
+        goals
+    }
+
+    /// The web's joints after `frames` frames of `dt` in `mode`, entered from rest.
+    fn web_joints(robot: &Robot, mode: BodyMode, frames: usize, dt: f32) -> Vec<f32> {
+        let rest = web_rest(robot);
+        let goals = match web_body_clip(mode) {
+            Some(id) => web_goals(robot, id, &rest),
+            None => rest.clone(),
+        };
+        let k = (dt * WEB_BLEND).min(1.0);
+        let mut cur = rest;
+        for _ in 0..frames {
+            for (c, g) in cur.iter_mut().zip(&goals) {
+                *c += (g - *c) * k;
+            }
+        }
+        cur
+    }
+
+    #[test]
+    fn body_modes_play_the_web_clip_and_pose() {
+        let palette = robot_palette();
+        let dt = 1.0 / 12.0; // the Ambient tier's rate
+        let samples = [1usize, 3, 12]; // 1/12 s, 1/4 s and 1 s into the mode
+        for mode in [BodyMode::Crouch, BodyMode::Air, BodyMode::Fall, BodyMode::Land] {
+            // The clip depends only on the time since entry, so an entry at 7.5 s is the same as one at 0.
+            for entered in [0.0f32, 7.5] {
+                let mut robot = Robot::new(200.0, false, &palette, 120.0);
+                robot.set_body(mode, entered);
+                assert_eq!(robot.body_mode(), mode);
+                assert_eq!(mode.clip_name(), web_body_clip(mode));
+                let mut frame = 0usize;
+                for &n in &samples {
+                    while frame < n {
+                        frame += 1;
+                        robot.update(dt, entered + frame as f32 * dt);
+                    }
+                    let want = web_joints(&robot, mode, n, dt);
+                    for (j, (got, exp)) in robot.cur.iter().zip(&want).enumerate() {
+                        assert!((got - exp).abs() < 1e-5, "{mode:?} entered {entered}, {n} frames, joint {j}: {got} vs {exp}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn air_lifts_the_feet_by_air_feet() {
+        let palette = robot_palette();
+        let cases = [
+            (BodyMode::Ground, 0.0f32),
+            (BodyMode::Crouch, 0.0),
+            (BodyMode::Air, 0.06),
+            (BodyMode::Fall, -0.03),
+            (BodyMode::Land, 0.0),
+        ];
+        let mut checked = 0;
+        for id in registry().index.species.iter().map(String::as_str) {
+            let mut robot = Robot::with_variant(200.0, false, &palette, 120.0, id);
+            let feet = robot.sp.feet.clone();
+            if feet.is_empty() {
+                continue;
+            }
+            checked += 1;
+            for (mode, want) in cases {
+                robot.set_body(mode, 0.0);
+                robot.update(1.0 / 12.0, 1.0 / 12.0);
+                for bone in &feet {
+                    let b = robot.rig.index_of(bone).expect("a foot bone");
+                    assert!((robot.extras[b].y - want).abs() < 1e-6, "{id} {mode:?}: {bone} lifts {want}, got {}", robot.extras[b].y);
+                }
+            }
+        }
+        assert!(checked > 0, "some species have feet to lift");
     }
 }

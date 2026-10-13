@@ -65,9 +65,11 @@ pub fn router() -> Router<App> {
         .get("/v1/robots/species", |app, _, _| crate::looks::species_list(app))
         .route("PUT", "/v1/agents/{cid}/species", |app, req, p| crate::looks::set_species(app, req, p));
     router
-        .get("/",|app, _, _| static_file(&app.config.console, "index.html"))
-        .get("/{file}", |app, _, p| static_file(&app.config.console, p.get("file")))
-        .get("/assets/{file}", |app, _, p| static_file(&app.config.console, &format!("assets/{}", p.get("file"))))
+        .get("/", |app, req, _| static_file(&app.config.console, "index.html", accepts(req)))
+        .get("/{file}", |app, req, p| static_file(&app.config.console, p.get("file"), accepts(req)))
+        .get("/assets/{file}", |app, req, p| {
+            static_file(&app.config.console, &format!("assets/{}", p.get("file")), accepts(req))
+        })
 }
 
 /// `GET /v1/machines`: the machines this plaza runs on. Today the one local
@@ -124,17 +126,65 @@ pub(crate) fn overview_value(app: &App) -> Value {
         })
 }
 
-/// One file under the console directory (no `..`, no absolute paths).
-fn static_file(root: &Path, name: &str) -> Response {
+/// The encodings a request accepts, from its `Accept-Encoding` (q=0 means refused).
+fn accepts(req: &apz_http::Request) -> Vec<String> {
+    req.header("accept-encoding")
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|part| {
+            let mut bits = part.split(';').map(str::trim);
+            let name = bits.next()?.to_ascii_lowercase();
+            let refused = bits.any(|b| b.strip_prefix("q=").and_then(|q| q.parse::<f32>().ok()) == Some(0.0));
+            (!name.is_empty() && !refused).then_some(name)
+        })
+        .collect()
+}
+
+/// One file under the console directory (no `..`, no absolute paths). When the build wrote a
+/// precompressed sibling (`.br`, `.gz`, see tools/apz-pack) the request accepts, that is served
+/// instead with its `Content-Encoding`. Content-hashed names never change, so they are cached for
+/// a year; everything else is revalidated.
+fn static_file(root: &Path, name: &str, accepts: Vec<String>) -> Response {
     let rel = Path::new(name);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Response::error(404, "not found");
     }
     let path = root.join(rel);
+    let cache = if is_fingerprinted(name) { "public, max-age=31536000, immutable" } else { "no-cache" };
+    for (encoding, suffix) in [("br", "br"), ("gzip", "gz")] {
+        if !accepts.iter().any(|a| a == encoding) {
+            continue;
+        }
+        let mut packed = path.as_os_str().to_owned();
+        packed.push(".");
+        packed.push(suffix);
+        if let Ok(bytes) = std::fs::read(&packed) {
+            return Response::new(200, content_type(&path), bytes)
+                .with_header("content-encoding", encoding)
+                .with_header("vary", "accept-encoding")
+                .with_header("cache-control", cache);
+        }
+    }
     match std::fs::read(&path) {
-        Ok(bytes) => Response::new(200, content_type(&path), bytes).with_header("cache-control", "no-cache"),
+        Ok(bytes) => Response::new(200, content_type(&path), bytes)
+            .with_header("vary", "accept-encoding")
+            .with_header("cache-control", cache),
         Err(_) => Response::error(404, "not found"),
     }
+}
+
+/// Build outputs named `<stem>-<hash>.<ext>`: esbuild's `main-I6T7NTXS.js` (8 base32
+/// characters) and apz-pack's `apz_engine_web-1a2b3c4d.js` (8 hex digits).
+fn is_fingerprinted(name: &str) -> bool {
+    let file = name.rsplit('/').next().unwrap_or(name);
+    let stem = file.split('.').next().unwrap_or("");
+    let stem = stem.strip_suffix("_bg").unwrap_or(stem);
+    stem.rsplit_once('-')
+        .is_some_and(|(head, hash)| {
+            let base32 = hash.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b));
+            let hex = hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            !head.is_empty() && hash.len() == 8 && (base32 || hex)
+        })
 }
 
 fn content_type(path: &Path) -> &'static str {
@@ -147,6 +197,61 @@ fn content_type(path: &Path) -> &'static str {
         Some("json") => apz_http::JSON,
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod static_tests {
+    use super::*;
+
+    fn header<'a>(resp: &'a Response, name: &str) -> Option<&'a str> {
+        resp.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn precompressed_siblings_are_served_when_accepted() {
+        let dir = std::env::temp_dir().join(format!("apid-static-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("apz_engine_web-1a2b3c4d_bg.wasm"), b"plain").unwrap();
+        std::fs::write(dir.join("apz_engine_web-1a2b3c4d_bg.wasm.br"), b"br").unwrap();
+        std::fs::write(dir.join("index.html"), b"<p>").unwrap();
+        let name = "apz_engine_web-1a2b3c4d_bg.wasm";
+
+        let br = static_file(&dir, name, vec!["gzip".into(), "br".into()]);
+        assert_eq!(br.bytes(), b"br");
+        assert_eq!(header(&br, "content-encoding"), Some("br"));
+        assert_eq!(header(&br, "content-type"), Some("application/wasm"));
+        assert!(header(&br, "cache-control").unwrap().contains("immutable"));
+
+        // gzip accepted but no .gz written: the plain bytes, unencoded.
+        let plain = static_file(&dir, name, vec!["gzip".into()]);
+        assert_eq!(plain.bytes(), b"plain");
+        assert_eq!(header(&plain, "content-encoding"), None);
+
+        let html = static_file(&dir, "index.html", vec!["br".into()]);
+        assert_eq!(header(&html, "cache-control"), Some("no-cache"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn accept_encoding_parsing_drops_refused_encodings() {
+        let req = apz_http::Request {
+            headers: vec![("accept-encoding".into(), "gzip, deflate, br;q=0, zstd".into())],
+            ..Default::default()
+        };
+        assert_eq!(accepts(&req), vec!["gzip", "deflate", "zstd"]);
+    }
+
+    #[test]
+    fn fingerprinted_names() {
+        assert!(is_fingerprinted("main-I6T7NTXS.js"));
+        assert!(is_fingerprinted("apz_engine_web-1a2b3c4d_bg.wasm"));
+        assert!(is_fingerprinted("assets/main-WE5MHQGG.css"));
+        assert!(!is_fingerprinted("index.html"));
+        assert!(!is_fingerprinted("inter-var.ttf"));
+        assert!(!is_fingerprinted("SourceSerif4-Semibold.ttf"));
     }
 }

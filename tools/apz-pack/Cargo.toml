@@ -1,0 +1,20 @@
+[package]
+name = "apz-pack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Packages the AgentPlaza web engine: cargo build, wasm-bindgen as a library, wasm-opt -Oz, content-hashed names"
+
+[dependencies]
+brotli = { version = "8", default-features = false, features = ["std"] }
+flate2 = "1.1"
+serde_json.workspace = true
+sha2.workspace = true
+wasm-bindgen-cli-support = "=0.2.129"
+wasm-opt = { version = "=0.116.1", default-features = false, optional = true }
+
+[features]
+# binaryen's wasm-opt, compiled from C++. Off by default: on the engine's opt-level z + fat LTO build, -Oz comes out
+# smaller raw but larger compressed (brotli 1331 KB against 1266 KB), so the packer would not keep it anyway.
+wasm-opt = ["dep:wasm-opt"]

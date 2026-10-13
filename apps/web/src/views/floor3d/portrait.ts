@@ -97,9 +97,36 @@ export interface PortraitSpec {
   species?: string | null;
 }
 
+/** The cache key of a portrait: its agent, hues, orchestrator, offline flag and species. */
+export function portraitKey(spec: PortraitSpec): string {
+  return `${spec.cid}|${spec.roleHue}|${Math.round(spec.bodyHue)}|${spec.orchestrator}|${spec.state === 'offline'}|${speciesOf(spec.species, spec.cid)}`;
+}
+
+/** The portrait's spec as the engine's JSON (`PortraitSpec::from_json`), with its species resolved as the studio resolves it. */
+export function portraitSpecJson(spec: PortraitSpec): string {
+  return JSON.stringify({
+    cid: spec.cid,
+    roleHue: spec.roleHue,
+    bodyHue: spec.bodyHue,
+    orchestrator: spec.orchestrator,
+    offline: spec.state === 'offline',
+    species: speciesOf(spec.species, spec.cid),
+  });
+}
+
+/** A portrait's PNG from the cache, by its key. The studio and the engine share the cache. */
+export function cachedPortrait(key: string): string | undefined {
+  return cache.get(key);
+}
+
+/** Keeps a portrait's PNG under its key. */
+export function rememberPortrait(key: string, url: string): void {
+  cache.set(key, url);
+}
+
 /** The agent's portrait as a PNG data URL, or null where WebGL is unavailable. */
 export function portrait(spec: PortraitSpec): string | null {
-  const key = `${spec.cid}|${spec.roleHue}|${Math.round(spec.bodyHue)}|${spec.orchestrator}|${spec.state === 'offline'}|${speciesOf(spec.species, spec.cid)}`;
+  const key = portraitKey(spec);
   const hit = cache.get(key);
   if (hit) return hit;
   const st = openStudio();

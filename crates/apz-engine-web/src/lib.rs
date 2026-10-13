@@ -191,6 +191,17 @@ impl WebEngine {
         })
     }
 
+    /// An agent's robot portrait, w by h: `json_spec` is the web's portrait spec (`cid`, `roleHue`, `bodyHue`, `orchestrator`,
+    /// `offline`, `species`). Resolves to RGBA8 bytes; a bad spec rejects with the reason as text.
+    pub fn portrait(&self, json_spec: String, w: u32, h: u32) -> Promise {
+        let started = apz_engine::portrait::PortraitSpec::from_json(&json_spec).and_then(|spec| self.shared.borrow_mut().engine.portrait_begin(&spec, w, h));
+        wasm_bindgen_futures::future_to_promise(async move {
+            let thumb = started.map_err(|e| JsValue::from_str(&e))?;
+            let pixels = thumb.pixels().await.map_err(|e| JsValue::from_str(&e))?;
+            Ok(Uint8Array::from(pixels.as_slice()).into())
+        })
+    }
+
     /// The backend the engine draws with: 'webgpu' or 'webgl2'.
     pub fn backend(&self) -> String {
         backend_name(self.shared.borrow().backend).to_string()

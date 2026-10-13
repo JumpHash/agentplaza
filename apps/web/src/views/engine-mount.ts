@@ -34,6 +34,7 @@ interface WebEngine {
   frames_drawn(): number;
   draw_calls(): number;
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
+  portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   destroy(): void;
 }
 
@@ -79,6 +80,8 @@ export const isEngineStopped = (e: unknown): boolean => e instanceof Error && e.
 
 /** One engine on a page: a machine's live orbit for a Machines row, or the thumbnails alone (no machine on show). */
 export interface EngineStage {
+  /** An agent's robot portrait from the engine: the JSON spec, w by h, RGBA8. Rejects ENGINE_STOPPED once destroyed. */
+  portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   /** The engine's RGBA8 thumbnail of a machine, w by h (each side at most 512). Rejects ENGINE_STOPPED once destroyed. */
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   /** Stops the engine and the fleet poll. The caller removes the canvas. */
@@ -175,6 +178,16 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
           throw closed ? new Error(ENGINE_STOPPED) : e;
         });
     },
+    portrait(json, w, h) {
+      return Promise.race([fleetSeen, stopped])
+        .then(() => {
+          if (closed || engine === null) throw new Error(closed ? ENGINE_STOPPED : 'the engine did not start');
+          return engine.portrait(json, w, h);
+        })
+        .catch((e: unknown) => {
+          throw closed ? new Error(ENGINE_STOPPED) : e;
+        });
+    },
     destroy() {
       closed = true;
       stopNow();
@@ -198,6 +211,7 @@ export function startThumbEngine(): EngineStage {
   const stage = startEngineStage(canvas, null);
   return {
     thumbnail: (id, w, h) => stage.thumbnail(id, w, h),
+    portrait: (json, w, h) => stage.portrait(json, w, h),
     destroy() {
       stage.destroy();
       canvas.remove();

@@ -880,14 +880,13 @@ pub enum Filter {
 }
 
 fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &mut Vec<Draw>, lights: &mut Vec<PointLightDraw>) {
-    let (world, dynamic, children, item) = {
+    let (world, dynamic, children) = {
         let n = node.get();
         if !n.visible {
             return;
         }
         let world = parent * local_of(&n);
-        let dynamic = dynamic_above || n.dynamic;
-        (world, dynamic, n.children.clone(), (n.kind.clone(), n.hull.clone(), n.cast_shadow, n.receive_shadow, n.render_order, n.lod, n.fade))
+        (world, dynamic_above || n.dynamic, n.children.clone())
     };
     let wanted = match filter {
         Filter::All => true,
@@ -895,52 +894,90 @@ fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &m
         Filter::Dynamic => dynamic,
     };
     if wanted {
-        let (kind, hull, cast_shadow, receive_shadow, render_order, lod, fade) = item;
-        let draw = |kind: DrawKind, geo: &Geo, mat: &Mat| {
-            let material = mat.snapshot();
-            material.visible.then(|| Draw { kind, geo: Arc::clone(geo), mat_id: mat.id(), material, model: world, cast_shadow, receive_shadow, render_order, lod, fade })
-        };
-        match &kind {
-            Kind::Group => {}
-            Kind::Mesh { geo, mat } => {
-                if let Some(d) = draw(DrawKind::Mesh, geo, mat) {
-                    draws.push(d);
-                    if let Some(hull) = &hull {
-                        draws.push(Draw { kind: DrawKind::Outline, geo: Arc::clone(hull), mat_id: 0, cast_shadow: false, receive_shadow: false, ..draws.last().cloned().expect("just pushed") });
-                    }
-                }
-            }
-            Kind::Instanced { geo, mat, instances, count } => {
-                if let Some(d) = draw(DrawKind::Instanced(Arc::clone(instances), *count), geo, mat) {
-                    let outline = hull.as_ref().map(|hull| Draw {
-                        kind: DrawKind::OutlineInstanced(Arc::clone(instances), *count),
-                        geo: Arc::clone(hull),
-                        mat_id: 0,
-                        cast_shadow: false,
-                        receive_shadow: false,
-                        ..d.clone()
-                    });
-                    draws.push(d);
-                    draws.extend(outline);
-                }
-            }
-            Kind::Points { positions, mat } => draws.extend(draw(DrawKind::Points(Arc::clone(positions)), &empty_geo(), mat)),
-            Kind::PointLight { color, intensity, distance, decay } => lights.push(PointLightDraw {
-                position: world.w_axis.truncate(),
-                color: *color,
-                intensity: *intensity,
-                distance: *distance,
-                decay: *decay,
-            }),
-        }
+        emit(node, world, draws, lights);
     }
     for child in &children {
         walk(child, world, dynamic, filter, draws, lights);
     }
 }
 
+/// Where a node's draws sit: its shadows, render order, detail level and cutaway.
+#[derive(Clone, Copy)]
+struct Place {
+    cast: bool,
+    receive: bool,
+    order: i32,
+    lod: u8,
+    fade: u32,
+}
+
+impl Place {
+    fn of(n: &Node) -> Place {
+        Place { cast: n.cast_shadow, receive: n.receive_shadow, order: n.render_order, lod: n.lod, fade: n.fade }
+    }
+}
+
+/// One draw of `kind` with `geo` and `mat` at `world`; None when the material is hidden.
+fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Option<Draw> {
+    let material = mat.snapshot();
+    material.visible.then(|| Draw {
+        kind,
+        geo: Arc::clone(geo),
+        mat_id: mat.id(),
+        material,
+        model: world,
+        cast_shadow: at.cast,
+        receive_shadow: at.receive,
+        render_order: at.order,
+        lod: at.lod,
+        fade: at.fade,
+    })
+}
+
+/// A mesh's draws at `world`: the mesh, then its ink hull (`hull` as geometry, without shadows).
+fn mesh_draws(geo: &Geo, mat: &Mat, hull: Option<&Geo>, world: Mat4, at: Place) -> Vec<Draw> {
+    let Some(d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else { return Vec::new() };
+    let outline = hull.map(|hull| Draw { kind: DrawKind::Outline, geo: Arc::clone(hull), mat_id: 0, cast_shadow: false, receive_shadow: false, ..d.clone() });
+    std::iter::once(d).chain(outline).collect()
+}
+
+/// The draws (and point lights) of one node's own geometry at `world`: a mesh and its ink hull, its
+/// instances, its points, or its light. A group draws nothing.
+fn emit(node: &Obj, world: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<PointLightDraw>) {
+    let (kind, hull, at) = {
+        let n = node.get();
+        (n.kind.clone(), n.hull.clone(), Place::of(&n))
+    };
+    match &kind {
+        Kind::Group => {}
+        Kind::Mesh { geo, mat } => draws.extend(mesh_draws(geo, mat, hull.as_ref(), world, at)),
+        Kind::Instanced { geo, mat, instances, count } => {
+            if let Some(d) = draw_of(DrawKind::Instanced(Arc::clone(instances), *count), geo, mat, world, at) {
+                let outline = hull.as_ref().map(|hull| Draw {
+                    kind: DrawKind::OutlineInstanced(Arc::clone(instances), *count),
+                    geo: Arc::clone(hull),
+                    mat_id: 0,
+                    cast_shadow: false,
+                    receive_shadow: false,
+                    ..d.clone()
+                });
+                draws.push(d);
+                draws.extend(outline);
+            }
+        }
+        Kind::Points { positions, mat } => draws.extend(draw_of(DrawKind::Points(Arc::clone(positions)), &empty_geo(), mat, world, at)),
+        Kind::PointLight { color, intensity, distance, decay } => lights.push(PointLightDraw {
+            position: world.w_axis.truncate(),
+            color: *color,
+            intensity: *intensity,
+            distance: *distance,
+            decay: *decay,
+        }),
+    }
+}
+
 /// The topmost dynamic nodes in `node`'s subtree (`node` included), each with its parent's world
-/// matrix: the only parts a frame has to walk once the rest is baked.
+/// matrix.
 pub fn dynamic_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4)> {
     let mut found = Vec::new();
     fn visit(node: &Obj, parent: Mat4, found: &mut Vec<(Obj, Mat4)>) {
@@ -960,7 +997,101 @@ pub fn dynamic_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4)> {
     found
 }
 
-/// The draws and point lights of these (dynamic) subtrees.
+/// A dynamic node, prepared for the frame. Its rigid descendants (static relative to it) are merged
+/// once, in its own frame: a frame moves the merged draws with the node's transform alone, so the node
+/// costs one draw per material rather than one per mesh. What can change between frames stays per
+/// frame: the node's own draw (its material may change), its instances, points and lights. A dynamic
+/// descendant is a rig of its own.
+#[derive(Debug, Clone)]
+pub struct Rig {
+    node: Obj,
+    /// The transform from the frame this rig hangs from to the node's parent (for a top rig, the
+    /// parent's world matrix).
+    chain: Mat4,
+    /// Drawn each frame, each at its transform in the node's frame: the node itself (identity) and
+    /// the rigid leaves that are not meshes.
+    loose: Vec<(Obj, Mat4)>,
+    /// The merged rigid meshes, in the node's frame.
+    merged: Vec<Draw>,
+    children: Vec<Rig>,
+}
+
+/// The rig of dynamic `node`, whose parent sits at `chain` (see [`Rig`]).
+fn rig_of(node: &Obj, chain: Mat4) -> Rig {
+    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), children: Vec::new() };
+    let mut meshes = Vec::new();
+    gather(node, Mat4::IDENTITY, true, &mut rig, &mut meshes);
+    rig.merged = merge_draws(meshes, true);
+    rig
+}
+
+/// Gathers `node`'s draws into `rig`: `parent` is the transform from the rig's frame to the node's
+/// parent. A rigid mesh goes into `meshes` at its place in the frame; a dynamic descendant is its own
+/// rig; an invisible rigid node is skipped (its visibility never changes: a node that does change is
+/// dynamic). An invisible root still gathers its children: its own visibility is checked per frame.
+fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<Draw>) {
+    let (dynamic, visible, rel, kind, hull, at, children) = {
+        let n = node.get();
+        let rel = if root { Mat4::IDENTITY } else { parent * local_of(&n) };
+        (n.dynamic, n.visible, rel, n.kind.clone(), n.hull.clone(), Place::of(&n), n.children.clone())
+    };
+    if !root && dynamic {
+        rig.children.push(rig_of(node, parent));
+        return;
+    }
+    if !root && !visible {
+        return;
+    }
+    if root {
+        rig.loose.push((node.clone(), Mat4::IDENTITY));
+    } else {
+        match kind {
+            Kind::Group => {}
+            Kind::Mesh { geo, mat } => meshes.extend(mesh_draws(&geo, &mat, hull.as_ref(), rel, at)),
+            _ => rig.loose.push((node.clone(), rel)),
+        }
+    }
+    for child in &children {
+        gather(child, rel, false, rig, meshes);
+    }
+}
+
+/// The rigs of the topmost dynamic nodes in `node`'s subtree (`node` included), each built once:
+/// `parent` is the world matrix above `node`.
+pub fn rigs(node: &Obj, parent: Mat4) -> Vec<Rig> {
+    dynamic_roots(node, parent).into_iter().map(|(root, chain)| rig_of(&root, chain)).collect()
+}
+
+/// Draws one rig this frame: `parent` is the frame its chain hangs from (identity at the top).
+fn frame_rig(rig: &Rig, parent: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<PointLightDraw>) {
+    let frame = {
+        let n = rig.node.get();
+        if !n.visible {
+            return;
+        }
+        parent * rig.chain * local_of(&n)
+    };
+    draws.extend(rig.merged.iter().map(|d| Draw { model: frame * d.model, ..d.clone() }));
+    for (node, rel) in &rig.loose {
+        emit(node, frame * *rel, draws, lights);
+    }
+    for child in &rig.children {
+        frame_rig(child, frame, draws, lights);
+    }
+}
+
+/// The draws and point lights of these rigs this frame.
+pub fn flatten_rigs(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) {
+    let mut draws = Vec::new();
+    let mut lights = Vec::new();
+    for rig in list {
+        frame_rig(rig, Mat4::IDENTITY, &mut draws, &mut lights);
+    }
+    (draws, lights)
+}
+
+/// The draws and point lights of these (dynamic) subtrees, unmerged: one draw per mesh, walked each
+/// frame.
 pub fn flatten_roots(roots: &[(Obj, Mat4)]) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut draws = Vec::new();
     let mut lights = Vec::new();
@@ -979,26 +1110,44 @@ fn empty_geo() -> Geo {
 /// with the vertices moved to world space (the web floor's `bakeStatic`). Hulls merge too.
 pub fn bake(root: &Obj) -> Vec<Draw> {
     let (draws, _) = flatten(root, Filter::Static);
-    // One merged draw per key. Toon meshes key by everything but their base colour: a batch of them
-    // carries each part's colour as vertex colour, under one material (the first's, in white).
+    merge_draws(draws, false)
+}
+
+/// Merges draws into one per material and state, their vertices moved into the common (identity)
+/// space. Toon meshes key by everything but their base colour: a batch carries each part's colour as
+/// vertex colour, under one material (the first's, in white). Basic meshes tint the same way, but
+/// only plain geometry, which a batch can hold. Outlines share one ink. With `by_fade`, a cutaway's
+/// draws never merge with the rest. Other draws (instances, points) pass through.
+fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
+    // One merged draw per key.
     type Part = (Geo, Mat4, Option<[f32; 3]>);
     let mut groups: Vec<(Draw, Vec<Part>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut rest = Vec::new();
     for d in draws {
+        let fade = if by_fade { d.fade } else { 0 };
         let (key, tint) = match d.kind {
-            DrawKind::Mesh if d.material.shading == Shading::Toon => {
-                (format!("c|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod), Some(d.material.color.to_array()))
-            }
-            // Basic meshes tint the same way (their program multiplies in the vertex colour too), but only plain
-            // geometry: a batch cannot carry another part's vertex colours or slots, and needs one uv and normal layout.
-            DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.colors.is_empty() && d.geo.slots.is_empty() => (
-                format!("b|{}|{}|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.geo.uvs.is_empty(), d.geo.normals.is_empty()),
+            DrawKind::Mesh if d.material.shading == Shading::Toon => (
+                format!("c|{}|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade),
                 Some(d.material.color.to_array()),
             ),
-            DrawKind::Mesh => (format!("m|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod), None),
-            // Outlines share one ink: key them by nothing but their kind.
-            DrawKind::Outline => (format!("o|{}|{}", d.render_order, d.lod), None),
+            DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.colors.is_empty() && d.geo.slots.is_empty() => (
+                format!(
+                    "b|{}|{}|{}|{}|{}|{}|{}|{}",
+                    class_of(&d.material),
+                    d.cast_shadow,
+                    d.receive_shadow,
+                    d.render_order,
+                    d.lod,
+                    d.geo.uvs.is_empty(),
+                    d.geo.normals.is_empty(),
+                    fade
+                ),
+                Some(d.material.color.to_array()),
+            ),
+            DrawKind::Mesh => (format!("m|{}|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade), None),
+            // Outlines share one ink: key them by their state alone.
+            DrawKind::Outline => (format!("o|{}|{}|{}", d.render_order, d.lod, fade), None),
             _ => {
                 rest.push(d);
                 continue;

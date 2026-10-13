@@ -248,7 +248,7 @@ pub struct Floor {
     statics_version: u64,
     static_lights: Vec<PointLightDraw>,
     /// The dynamic subtrees inside the root's static children (found when baking).
-    deep_dynamic: Vec<(Obj, glam::Mat4)>,
+    deep_dynamic: Vec<scene::Rig>,
 }
 
 impl Floor {
@@ -307,7 +307,7 @@ impl Floor {
             self.deep_dynamic = children
                 .iter()
                 .filter(|c| !c.get().dynamic)
-                .flat_map(|c| scene::dynamic_roots(c, root_world))
+                .flat_map(|c| scene::rigs(c, root_world))
                 .collect();
             self.statics_version += 1;
             self.statics_dirty = false;
@@ -315,10 +315,12 @@ impl Floor {
         // Only the moving parts are walked: the root's dynamic children (robots and packets come
         // and go) and the dynamic subtrees found inside the baked ones.
         let root_world = self.root.local_matrix();
-        let mut roots: Vec<(Obj, glam::Mat4)> =
+        let roots: Vec<(Obj, glam::Mat4)> =
             self.root.get().children.iter().filter(|c| c.get().dynamic).map(|c| (c.clone(), root_world)).collect();
-        roots.extend(self.deep_dynamic.iter().cloned());
-        let (draws, mut lights) = scene::flatten_roots(&roots);
+        let (mut draws, mut lights) = scene::flatten_roots(&roots);
+        let (rig_draws, rig_lights) = scene::flatten_rigs(&self.deep_dynamic);
+        draws.extend(rig_draws);
+        lights.extend(rig_lights);
         lights.extend(self.static_lights.iter().copied());
         Frame {
             animated: None,

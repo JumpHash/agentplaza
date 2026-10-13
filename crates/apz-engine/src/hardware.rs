@@ -1554,6 +1554,7 @@ impl Pulses {
             let n = ((len / 8.0).ceil() as usize).clamp(1, 4);
             for k in 0..n {
                 let sphere = Obj::mesh(&geo, &mat);
+                sphere.set_dynamic(true); // moved and shown every frame
                 obj.add(&sphere);
                 runs.push(Run {
                     path: tr.path.clone(),
@@ -1896,5 +1897,50 @@ mod tests {
         let geo = shape_geometry(&pts, 0.1);
         let n = pts.len();
         assert_eq!(geo.positions.len(), (2 * (n - 2) + 2 * n) * 3);
+    }
+}
+
+#[cfg(test)]
+mod rig_tests {
+    use super::*;
+
+    /// The world-space vertices of the meshes and ink hulls among `draws`.
+    fn world_vertices(draws: &[scene::Draw]) -> Vec<Vec3> {
+        draws
+            .iter()
+            .filter(|d| matches!(d.kind, scene::DrawKind::Mesh | scene::DrawKind::Outline))
+            .flat_map(|d| d.geo.positions.iter().map(|p| d.model.transform_point3(Vec3::from(*p))).collect::<Vec<_>>())
+            .collect()
+    }
+
+    /// Whether every point of `a` has a point of `b` within `tol` on each axis.
+    fn all_matched(a: &[Vec3], b: &[Vec3], tol: f32) -> bool {
+        let mut by_x = b.to_vec();
+        by_x.sort_by(|p, q| p.x.total_cmp(&q.x));
+        a.iter().all(|p| {
+            let from = by_x.partition_point(|q| q.x < p.x - tol);
+            by_x[from..].iter().take_while(|q| q.x <= p.x + tol).any(|q| (q.y - p.y).abs() <= tol && (q.z - p.z).abs() <= tol)
+        })
+    }
+
+    #[test]
+    fn merged_rigs_draw_the_same_world_vertices_as_the_unmerged_meshes() {
+        let params = Params::default();
+        let (name, model) = parsed()
+            .iter()
+            .filter_map(|(name, m)| m.as_ref().ok().map(|m| (*name, m)))
+            .find(|(_, m)| build(m, &params).animated_parts() > 0)
+            .expect("an embedded model animates");
+        let mut built = build(model, &params);
+        let roots = scene::rigs(&built.root, Mat4::IDENTITY);
+        assert!(!roots.is_empty(), "{name} has no dynamic roots");
+        built.update(0.1, 1.3, &State { status: Status::Online, activity: 0.5, open: 0.5 });
+        let unmerged = scene::flatten(&built.root, scene::Filter::Dynamic).0;
+        let merged = scene::flatten_rigs(&roots).0;
+        let (a, b) = (world_vertices(&unmerged), world_vertices(&merged));
+        assert!(!a.is_empty(), "{name}: no dynamic mesh to compare");
+        assert_eq!(a.len(), b.len(), "{name}: the merged roots hold every vertex");
+        assert!(all_matched(&a, &b, 1e-5) && all_matched(&b, &a, 1e-5), "{name}: the merged roots move the vertices");
+        assert!(merged.len() <= unmerged.len(), "{name}: the merge never draws more than the meshes");
     }
 }

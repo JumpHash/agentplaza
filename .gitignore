@@ -21,3 +21,5 @@ __pycache__/
 # web build staging (build.mjs swaps dist.next into dist)
 apps/web/dist.next/
 apps/web/dist.old/
+# apz-pack writes .br and .gz siblings into dist; the .br ones are committed, the .gz ones rebuilt
+apps/web/dist/*.gz

@@ -949,13 +949,14 @@ mod tests {
     /// The fleet's draw items on the 15-machine feed, measured when the budget test was written (its statics
     /// merged by material; its cables, status rings and animated hardware unmerged; its packets instanced, so
     /// they hold no objects). A ratchet: it must not grow.
-    const FLEET_DRAW_ITEMS: usize = 999;
+    const FLEET_DRAW_ITEMS: usize = 841;
 
     fn fleet_draw_items() -> (usize, usize) {
         let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
         let scene = build_fleet(&fleet, &plaza_palette());
         let statics = crate::scene::bake(&scene.group).len();
-        let dynamic = crate::scene::flatten(&scene.group, crate::scene::Filter::Dynamic).0.len();
+        let rigs = crate::scene::rigs(&scene.group, glam::Mat4::IDENTITY);
+        let dynamic = crate::scene::flatten_rigs(&rigs).0.len();
         let animated: usize = scene.machines.values().map(|m| m.built.animated_parts()).sum();
         eprintln!("fleet breakdown: {} cables, {} machines, {} animated hardware nodes", scene.links.len(), scene.machines.len(), animated);
         (statics, dynamic)
@@ -969,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the Machines view budget is 300 draw items; the fleet alone draws 999 (see FLEET_DRAW_ITEMS)"]
+    #[ignore = "the Machines view budget is 300 draw items; the fleet alone draws 841 (see FLEET_DRAW_ITEMS)"]
     fn the_fifteen_machine_fleet_draws_within_budget() {
         let (statics, dynamic) = fleet_draw_items();
         assert!(statics + dynamic <= 300, "the Machines view draws {} items, over the 300 budget", statics + dynamic);

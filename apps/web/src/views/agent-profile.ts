@@ -8,22 +8,86 @@ import { agentName, roleLabel } from '../roles';
 import { ago, badge, compact } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { agentHue, roleHue } from './floor';
-import { portrait } from './floor3d/portrait';
+import { cachedPortrait, portrait, portraitKey, portraitSpecJson, rememberPortrait, type PortraitSpec } from './floor3d/portrait';
+import { engineWanted, startThumbEngine, type EngineStage } from './engine-mount';
+
+/** The page's portrait engine: one per page, made when a portrait waits and destroyed a second after none waits. */
+let portraitEngine: EngineStage | null = null;
+let portraitWaiting = 0;
+let portraitIdle = 0;
+const pending = new Map<string, Promise<string | null>>();
+/** The studio's size: the same PNG, under the same cache key, as the three.js studio makes. */
+const PORTRAIT_PX = 384;
+
+/** RGBA8 pixels as a PNG data URL, or null where the canvas cannot draw. */
+function pngOf(rgba: Uint8Array, w: number, h: number): string | null {
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const g = cv.getContext('2d');
+  if (!g) return null;
+  g.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
+  return cv.toDataURL('image/png');
+}
+
+/** The portrait as a PNG from the engine, or null when the engine cannot draw it. Concurrent asks for one agent share a job. */
+function enginePortrait(spec: PortraitSpec): Promise<string | null> {
+  const key = portraitKey(spec);
+  const running = pending.get(key);
+  if (running) return running;
+  portraitEngine ??= startThumbEngine();
+  window.clearTimeout(portraitIdle);
+  portraitWaiting++;
+  const job = portraitEngine
+    .portrait(portraitSpecJson(spec), PORTRAIT_PX, PORTRAIT_PX)
+    .then((rgba) => {
+      const url = pngOf(rgba, PORTRAIT_PX, PORTRAIT_PX);
+      if (url) rememberPortrait(key, url);
+      return url;
+    })
+    .catch(() => null)
+    .finally(() => {
+      pending.delete(key);
+      portraitWaiting--;
+      if (portraitWaiting === 0) {
+        portraitIdle = window.setTimeout(() => {
+          portraitEngine?.destroy();
+          portraitEngine = null;
+        }, 1000);
+      }
+    });
+  pending.set(key, job);
+  return job;
+}
 
 /** The agent's portrait as an element: the photographed robot, or its initial on its colour. */
 export function avatar(a: Agent, size = 40): HTMLElement {
   const hue = agentHue(a.cid);
-  const url = portrait({
+  const spec: PortraitSpec = {
     species: a.species,
     cid: a.cid,
     roleHue: a.tier === 'orchestrator' ? 25 : roleHue(a.role),
     bodyHue: hue,
     orchestrator: a.tier === 'orchestrator',
     state: a.status === 'offline' ? 'offline' : 'idle',
-  });
+  };
   const frame = h('span.avatar', { style: `width:${size}px;height:${size}px;--hue:${hue}` });
-  if (url) frame.append(h('img', { src: url, alt: '', width: String(size), height: String(size) }));
-  else frame.append(h('span.avatar-initial', null, agentName(a).slice(0, 1).toUpperCase()));
+  const picture = (url: string): HTMLElement => h('img', { src: url, alt: '', width: String(size), height: String(size) });
+  const letter = (): HTMLElement => h('span.avatar-initial', null, agentName(a).slice(0, 1).toUpperCase());
+  if (!engineWanted()) {
+    const url = portrait(spec);
+    frame.append(url ? picture(url) : letter());
+  } else {
+    // The engine draws the portrait (?engine=wasm): the letter shows until its picture comes back.
+    const hit = cachedPortrait(portraitKey(spec));
+    if (hit) frame.append(picture(hit));
+    else {
+      frame.append(letter());
+      void enginePortrait(spec).then((url) => {
+        if (url) frame.replaceChildren(picture(url));
+      });
+    }
+  }
   if (a.status === 'offline') frame.classList.add('offline');
   return frame;
 }

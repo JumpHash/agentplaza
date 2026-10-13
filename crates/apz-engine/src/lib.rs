@@ -24,6 +24,7 @@ pub mod hardware;
 pub mod input;
 pub mod machine_stage;
 pub mod outskirts;
+pub mod portrait;
 pub mod props;
 pub mod render;
 pub mod robot;

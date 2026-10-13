@@ -10,11 +10,10 @@
 // same file names, so `npm run build` twice produces an identical dist.
 
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, copyFileSync, renameSync, existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -32,75 +31,27 @@ for (const file of readdirSync(fontsDir).filter((f) => f.endsWith('.ttf'))) {
   copyFileSync(join(fontsDir, file), join(dist, file));
 }
 
-// The engine wasm (crates/apz-engine-web): build it, bind it with wasm-bindgen, shrink it with
-// wasm-opt when present, then write it and its glue to the dist root under content-hashed names.
-const repoRoot = join(root, '../..');
-const engineLib = 'apz_engine_web';
-const engineScratch = join(root, 'dist.engine-tmp');
-
-// Runs a tool with its output inherited; throws on failure so the build stops.
-function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { stdio: 'inherit', ...opts });
-  if (r.error) throw r.error;
-  if (r.status !== 0) throw new Error(`build: ${cmd} ${args.join(' ')} exited with ${r.status}`);
-}
-
 // The engine is optional until crates/apz-engine-web exists: without it the app builds as before (the names are null
-// and the app keeps its three.js floor).
+// and the app keeps its three.js floor). With it, apz-pack (tools/apz-pack, Rust) builds the engine for wasm, binds it
+// with wasm-bindgen at the version Cargo.lock pins (and, built with --features wasm-opt, runs wasm-opt -Oz, kept only
+// when it compresses smaller), and writes the glue and the wasm to dist.next under content-hashed names. It prints one
+// JSON line with those names and the sizes.
+const repoRoot = join(root, '../..');
 let engineJsName = null;
 let engineWasmName = null;
-let engineWasm = null;
+let engineSizes = null;
 if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
-  // The wasm-bindgen CLI must be the exact version Cargo.lock pins, or the glue and the wasm disagree.
-  const lockText = readFileSync(join(repoRoot, 'Cargo.lock'), 'utf8');
-  const pinnedBindgen = lockText.match(/^name = "wasm-bindgen"\r?\nversion = "([^"]+)"/m)?.[1];
-  if (!pinnedBindgen) throw new Error('build: wasm-bindgen is not pinned in Cargo.lock');
-  const cliBindgen = execFileSync('wasm-bindgen', ['--version'], { encoding: 'utf8' }).trim().split(/\s+/).pop();
-  if (cliBindgen !== pinnedBindgen) {
-    throw new Error(`build: wasm-bindgen CLI is ${cliBindgen} but Cargo.lock pins ${pinnedBindgen}`);
-  }
-
-  run('cargo', ['build', '-p', 'apz-engine-web', '--target', 'wasm32-unknown-unknown', '--profile', 'wasm-release'], { cwd: repoRoot });
-
-  rmSync(engineScratch, { recursive: true, force: true });
-  try {
-    run('wasm-bindgen', [
-      '--target', 'web',
-      '--out-dir', engineScratch,
-      join(repoRoot, 'target/wasm32-unknown-unknown/wasm-release', `${engineLib}.wasm`),
-    ]);
-    // wasm-opt works on the wasm-bindgen output (the bytes the glue loads), not the raw cargo output.
-    const bindgenWasm = join(engineScratch, `${engineLib}_bg.wasm`);
-    engineWasm = readFileSync(bindgenWasm);
-    let hasWasmOpt = true;
-    try {
-      execFileSync('which', ['wasm-opt'], { stdio: 'ignore' });
-    } catch {
-      hasWasmOpt = false;
-    }
-    if (hasWasmOpt) {
-      const optimised = join(engineScratch, `${engineLib}_opt.wasm`);
-      run('wasm-opt', ['-Oz', '-o', optimised, bindgenWasm]);
-      engineWasm = readFileSync(optimised);
-    } else {
-      console.log('wasm-opt not found, skipped');
-    }
-
-    const engineHash = createHash('sha256').update(engineWasm).digest('hex').slice(0, 8);
-    engineWasmName = `${engineLib}-${engineHash}_bg.wasm`;
-    engineJsName = `${engineLib}-${engineHash}.js`;
-
-    // The glue loads its wasm by bare file name; point it at the fingerprinted copy, exactly once.
-    const glueRaw = readFileSync(join(engineScratch, `${engineLib}.js`), 'utf8');
-    const wasmRef = `'${engineLib}_bg.wasm'`;
-    if (glueRaw.split(wasmRef).length !== 2) {
-      throw new Error(`build: expected ${wasmRef} exactly once in the wasm-bindgen glue`);
-    }
-    writeFileSync(join(dist, engineWasmName), engineWasm);
-    writeFileSync(join(dist, engineJsName), glueRaw.replace(wasmRef, `'${engineWasmName}'`));
-  } finally {
-    rmSync(engineScratch, { recursive: true, force: true });
-  }
+  const out = execFileSync('cargo', ['run', '-q', '-p', 'apz-pack', '--release', '--', 'web-engine', '--out', dist], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const line = out.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{')).pop();
+  if (!line) throw new Error('build: apz-pack printed no JSON line');
+  const engine = JSON.parse(line);
+  engineJsName = engine.js;
+  engineWasmName = engine.wasm;
+  engineSizes = { bytes: engine.bytes, gzip: engine.gzip, brotli: engine.brotli, wasmOpt: engine.wasm_opt };
 } else {
   console.log('engine: crates/apz-engine-web is not there yet, skipped');
 }
@@ -157,6 +108,15 @@ const html = template
   .replaceAll('{{BUNDLE_HASH}}', bundleHash);
 writeFileSync(join(dist, 'index.html'), html);
 
+// Precompressed .br and .gz siblings of the js, css, wasm and html, for the hub to serve by Accept-Encoding
+// (apz-pack compress, Rust). The .br files are committed with dist; the .gz ones are rebuilt (see .gitignore).
+if (existsSync(join(repoRoot, 'tools/apz-pack/Cargo.toml'))) {
+  execFileSync('cargo', ['run', '-q', '-p', 'apz-pack', '--release', '--', 'compress', dist], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
+}
+
 const old = join(root, 'dist.old');
 rmSync(old, { recursive: true, force: true });
 if (existsSync(live)) renameSync(live, old);
@@ -168,4 +128,7 @@ console.log(`dist/index.html  ${kb(html.length)}`);
 console.log(`dist/${jsBase}  ${kb(readFileSync(join(live, jsBase)).length)}`);
 console.log(`dist/${cssBase}  ${kb(readFileSync(join(live, cssBase)).length)}`);
 console.log(`bundle sha256:${bundleHash.slice(0, 12)}…`);
-if (engineWasm) console.log(`dist/${engineWasmName}  ${kb(engineWasm.length)}  gzip -9 ${kb(gzipSync(engineWasm, { level: 9 }).length)}`);
+if (engineSizes) {
+  const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[engineSizes.wasmOpt];
+  console.log(`dist/${engineWasmName}  ${kb(engineSizes.bytes)}  br ${kb(engineSizes.brotli)}  gzip -9 ${kb(engineSizes.gzip)}  (${opt})`);
+}
